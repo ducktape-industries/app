@@ -3853,6 +3853,12 @@ impl Ducktape {
         if let Some(previous_handle) = self.wallets_load_task.take() {
             previous_handle.abort();
         }
+        // a join's wait left behind would open the Live screen over wherever
+        // the member went once their node answers.
+        self.provision_progress_generation = self.provision_progress_generation.wrapping_add(1);
+        if let Some(previous_handle) = self.provision_progress_task.take() {
+            previous_handle.abort();
+        }
         self.mutation_phase = MutationPhase::Idle;
         self.ceremony_phase = "".to_owned();
         self.ceremony_qr = "".to_owned();

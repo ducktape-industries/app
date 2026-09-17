@@ -336,3 +336,40 @@ checkpoint_blocks = 32
     note_served_chain(&endpoint, "team#c0ffee");
     assert_eq!(workspace_serving(root.path(), &endpoint), None);
 }
+
+/// THE JOIN WAITS HONESTLY (#18). The app attaches to a node it does not
+/// supervise, so step 4 never says "starting": every second it names the
+/// launcher command for the workspace, and once patience runs out it goes
+/// `blocked` with a line saying the app runs no nodes, still unsettled so
+/// the poll goes on.
+#[test]
+fn a_node_that_never_answers_is_waited_for_by_its_launcher_command() {
+    let command = "ducktape-node-launcher run --workspace '/home/member/.ducktape/dognet#d2a0ec8f'";
+    let steps: Vec<ProvisionStep> = (1..=PROVISION_PATIENCE + 2)
+        .map(|attempts| node_wait_step("/home/member/.ducktape/dognet#d2a0ec8f", attempts))
+        .collect();
+    for step in &steps {
+        assert_eq!(step.index, 4);
+        assert_eq!(step.label, format!("Waiting for your node · {command}"));
+        assert_eq!(step.command, command);
+        assert!(!step.settled, "the wait keeps polling: {step:?}");
+        assert!(!format!("{step:?}").contains("starting"), "{step:?}");
+    }
+    let (waiting, blocked) = steps.split_at(PROVISION_PATIENCE as usize - 1);
+    for step in waiting {
+        assert_eq!((step.state.as_str(), step.hint.as_str()), ("waiting", ""));
+    }
+    for step in blocked {
+        assert_eq!(step.state, "blocked");
+        assert_eq!(
+            step.hint,
+            "This app does not run nodes. Run that command in a terminal; this step continues when the node answers."
+        );
+    }
+
+    // a quote in the directory cannot end the quoted argument early.
+    assert_eq!(
+        node_wait_step("/home/o'neil/.ducktape/w#1", 1).command,
+        r"ducktape-node-launcher run --workspace '/home/o'\''neil/.ducktape/w#1'"
+    );
+}

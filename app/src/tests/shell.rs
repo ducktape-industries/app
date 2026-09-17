@@ -733,3 +733,33 @@ fn the_founding_command_is_typed_as_shown() {
         "{command} carries no placeholder brackets or sentence punctuation"
     );
 }
+
+/// BACK OUT OF A JOIN'S WAIT (#18). The blocked wait offers Back to networks;
+/// the poll it leaves behind must not open the Live screen over the network
+/// list once the member's node answers.
+#[test]
+fn leaving_a_joins_wait_drops_its_poll() {
+    let (mut app, _) = Ducktape::boot();
+    let _ = app.update(AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
+        chain_id: "dognet#d2a0ec8f".into(),
+        workspace: "/nowhere/dognet#d2a0ec8f".into(),
+        rpc: "http://127.0.0.1:1".into(),
+    }));
+    assert_eq!(app.hub_step, crate::HubStep::Provisioning);
+    let waiting = app.provision_progress_generation;
+
+    let _ = app.update(AppMessage::GoNetworks);
+    let answered = backend::ProvisionStep {
+        index: 5,
+        label: "Node API listening · http://127.0.0.1:1".into(),
+        state: "done".into(),
+        settled: true,
+        hint: String::new(),
+        command: String::new(),
+    };
+    let _ = app.update(AppMessage::ProvisionProgressReply(
+        waiting,
+        Some(Box::new(AppMessage::ProvisionStepped(answered))),
+    ));
+    assert_eq!(app.hub_step, crate::HubStep::Networks);
+}
