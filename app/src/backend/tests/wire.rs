@@ -270,8 +270,9 @@ async fn chat_round_trips_over_signed_frames() {
             std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();
         }
     }
-    let view =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/views/chat_view.wasm");
+    let view = crate::module_view::views_dir()
+        .expect("staged views")
+        .join("chat_view.wasm");
     std::fs::copy(view, modules.path().join("chat.view.wasm")).unwrap();
     let artifact = workspace_config::read_module_artifact(modules.path(), "chat").unwrap();
     let signer = ed25519::PrivateKey::from_seed(7);

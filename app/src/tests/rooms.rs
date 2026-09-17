@@ -432,32 +432,6 @@ fn the_host_folds_no_palette_of_its_own() {
     }
 }
 
-/// A CREDENTIAL NEVER CROSSES INTO A VIEW. The kernel reads the node's 0600
-/// link token and attaches it to the socket it opens; what reaches a guest is
-/// a topic and the frames on it. A view naming the token, or the file it
-/// lives in, would be a view holding an operator's capability — so the view
-/// tree is parsed for both.
-#[test]
-fn no_view_names_the_nodes_link_token() {
-    let views = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../crates/views")
-        .canonicalize()
-        .expect("the view tree");
-    let mut files = Vec::new();
-    collect_rust_files(&views, &mut files);
-    assert!(!files.is_empty(), "the walk found no view source at all");
-    for file in files {
-        let source = std::fs::read_to_string(&file).expect("read a view source");
-        for secret in ["read_link_token", "link.token", "admin.token"] {
-            assert!(
-                !source.contains(secret),
-                "{} names {secret}",
-                file.display()
-            );
-        }
-    }
-}
-
 /// Every `.rs` under `dir`, recursively — source only, never a build output.
 pub(crate) fn collect_rust_files(dir: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
     for entry in std::fs::read_dir(dir).expect("read a source dir") {
@@ -474,17 +448,15 @@ pub(crate) fn collect_rust_files(dir: &std::path::Path, files: &mut Vec<std::pat
     }
 }
 
-/// THE APP LINKS NO GUEST IT DOES NOT SPEAK FOR. Every crate under
-/// `crates/modules` the desktop links is a piece of a wasm guest compiled
-/// into a GUI, and every crate under `crates/views` it links is the same
-/// leak the other way — #2303's bar is that either tree could be its own
-/// repository and still build. So the line is READ OFF THE MANIFESTS rather
-/// than remembered: each name below is here because the app holds a wire
-/// that tree owns, a new name is a leak, and a name that leaves is a wave's
-/// progress.
+/// THE APP LINKS NO GUEST. A crate from ducktape-modules in the desktop is a
+/// piece of a wasm guest compiled into a GUI, and a crate from ducktape-views
+/// is the same leak the other way; the module wires the app does hold arrive
+/// from ducktape-sdk. So the line is READ OFF THE MANIFESTS rather than
+/// remembered: each dependency the app declares is followed to the source the
+/// workspace names for it, and no git or path source may be a guest's
+/// repository.
 #[test]
 fn the_app_links_only_what_it_still_speaks_for() {
-    use std::collections::BTreeSet;
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
     let read = |path: &str| {
         std::fs::read_to_string(root.join(path))
@@ -492,63 +464,38 @@ fn the_app_links_only_what_it_still_speaks_for() {
             .parse::<toml::Table>()
             .unwrap_or_else(|error| panic!("{path}: {error}"))
     };
-    // Which workspace crates live in each tree, by the path the workspace
-    // declares them at — the trees name themselves, so a crate that moves
-    // moves here too.
     let workspace = read("Cargo.toml");
     let declared = workspace["workspace"]["dependencies"]
         .as_table()
         .expect("the workspace declares its dependencies");
-    let living_in = |tree: &'static str| -> BTreeSet<String> {
-        declared
-            .iter()
-            .filter(|(_, spec)| {
-                spec.get("path")
-                    .and_then(toml::Value::as_str)
-                    .is_some_and(|path| path.starts_with(tree))
-            })
-            .map(|(name, _)| name.clone())
-            .collect()
-    };
-    let modules = living_in("crates/modules/");
-    let views = living_in("crates/views/");
-    assert!(modules.len() > 10, "the walk found no module crates");
-
     let app = read("app/Cargo.toml");
-    let linked: BTreeSet<String> = app["dependencies"]
+    let linked = app["dependencies"]
         .as_table()
-        .expect("the app declares its dependencies")
-        .keys()
-        .cloned()
-        .collect();
+        .expect("the app declares its dependencies");
     assert!(linked.len() > 20, "the walk found no app dependencies");
 
-    // chat: the client view model a composer's text is parsed by and a
-    // mention's account link is spelled by. forge: the blob read lane's own
-    // page bound and reply shape. gateway and identity: the provider
-    // registry and the account records the shell reads off the node.
-    let guests: Vec<&str> = linked.intersection(&modules).map(String::as_str).collect();
-    assert_eq!(guests, ["chat", "forge", "gateway", "identity"]);
-    // AND NOTHING FROM THE VIEW TREE AT ALL. `design` left for the SDK set
-    // (7c) and the guest SDK's `Task`, `Subscription` and `kit` moved beside
-    // the wire they build (7b), so what the two halves share they share from
-    // `crates/`, and the desktop links no crate a view's build produces.
-    let into_views: Vec<&str> = linked.intersection(&views).map(String::as_str).collect();
-    assert_eq!(into_views, [] as [&str; 0]);
-    let reaching: Vec<&str> = app["dependencies"]
-        .as_table()
-        .expect("the app declares its dependencies")
+    let sources: Vec<(&str, &str)> = linked
         .iter()
-        .filter(|(_, spec)| {
-            spec.get("path")
-                .and_then(toml::Value::as_str)
-                .is_some_and(|path| path.contains("crates/views"))
+        .filter_map(|(name, spec)| {
+            let spec = match spec.get("workspace").and_then(toml::Value::as_bool) {
+                Some(true) => &declared[name.as_str()],
+                _ => spec,
+            };
+            let source = spec.get("git").or_else(|| spec.get("path"))?.as_str()?;
+            Some((name.as_str(), source))
         })
-        .map(|(name, _)| name.as_str())
+        .collect();
+    assert!(sources.len() > 10, "the walk found no git or path sources");
+    let guests: Vec<&str> = sources
+        .iter()
+        .filter(|(_, source)| {
+            source.contains("ducktape-modules") || source.contains("ducktape-views")
+        })
+        .map(|(name, _)| *name)
         .collect();
     assert_eq!(
-        reaching,
+        guests,
         [] as [&str; 0],
-        "the app reaches into the view tree by path"
+        "the app links a crate from a guest's repository"
     );
 }
