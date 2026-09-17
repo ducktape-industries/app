@@ -27,6 +27,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use app_update::Sha;
+use app_update::workspace::{KEYS_DIR, RELEASE_KEY_FILE};
 
 const APP: &str = "ducktape";
 pub const BUNDLE: &str = "Ducktape.app";
@@ -116,6 +117,12 @@ impl Layout {
 
     pub fn state_path(&self) -> PathBuf {
         self.updates.join(STATE_FILE)
+    }
+
+    /// `<updates>/keys/release.pub`: the key the app's release channel
+    /// verifies under.
+    pub fn release_key_path(&self) -> PathBuf {
+        self.updates.join(KEYS_DIR).join(RELEASE_KEY_FILE)
     }
 
     /// macOS: what the flip wrote before `RENAME_SWAP`, so a boot in

@@ -509,7 +509,7 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
     });
     app.updater = Some(Updater::new(
         pending,
-        keys,
+        Some(keys),
         UpdatePaths::under(updates.path()),
     ));
     let (view, _) = app.native_view();
@@ -602,7 +602,7 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
     });
     app.updater = Some(Updater::new(
         staged,
-        app.updater.as_ref().unwrap().keys().clone(),
+        app.updater.as_ref().unwrap().keys().cloned(),
         UpdatePaths::under(updates.path()),
     ));
     assert_eq!(
@@ -619,7 +619,7 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
     });
     app.updater = Some(Updater::new(
         rolled_back,
-        app.updater.as_ref().unwrap().keys().clone(),
+        app.updater.as_ref().unwrap().keys().cloned(),
         UpdatePaths::under(updates.path()),
     ));
     assert_eq!(
@@ -643,6 +643,90 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
     assert!(shell.contains("letupdate_strip=state.update_strip();"));
     assert!(shell.contains("Message::UpdateAction(crate::UpdateAction::RestartToUpdate)"));
     assert!(shell.contains("Message::UpdateAction(crate::UpdateAction::DismissRollbackNotice)"));
+}
+
+/// `Rendered` is the launcher's contract, not the release channel's: an app
+/// the launcher started (`DUCKTAPE_RELEASE` + `DUCKTAPE_UPDATE_STATE`) on an
+/// install that pins no release key still settles a flipped release when
+/// its first window opens, and only the channel stays off. The env is the
+/// process's, so the app runs in a child of this test binary.
+#[test]
+fn a_launched_app_without_a_release_key_still_reports_it_rendered() {
+    use app_update::{Idle, PendingHealthy, Phase, Sha, state};
+
+    let root = tempfile::tempdir().unwrap();
+    let updates = root.path().join("cfg/ducktape/updates");
+    std::fs::create_dir_all(&updates).unwrap();
+    let state_path = updates.join("state.json");
+    let current = Sha::digest(b"flipped");
+    let previous = Sha::digest(b"before");
+    let pending = Phase::PendingHealthy(PendingHealthy {
+        current,
+        previous,
+        boots: 0,
+        pinned_sequence: 3,
+    });
+    std::fs::write(&state_path, state::encode(&pending)).unwrap();
+
+    let (_, module) = module_path!().split_once("::").unwrap();
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "--ignored", "--nocapture"])
+        .arg(format!("{module}::launched_without_a_key_child"))
+        .env("DUCKTAPE_RELEASE", current.to_string())
+        .env("DUCKTAPE_UPDATE_STATE", &state_path)
+        .env("XDG_DATA_HOME", root.path().join("data"))
+        .output()
+        .unwrap();
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(child.status.success(), "{out}");
+    assert!(out.contains("1 passed"), "the child ran: {out}");
+
+    let settled = state::decode(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert_eq!(
+        settled,
+        Phase::Idle(Idle {
+            current,
+            previous: Some(previous),
+            pinned_sequence: 3,
+        })
+    );
+    assert!(
+        !updates.join("keys").exists(),
+        "no key was pinned on the way"
+    );
+}
+
+/// The app half of the test above, run only in its child.
+#[test]
+#[ignore = "run by a_launched_app_without_a_release_key_still_reports_it_rendered"]
+fn launched_without_a_key_child() {
+    let mut app = Ducktape::initial_state();
+    let reading = app
+        .update_reading()
+        .expect("the launcher env makes an updater with or without a key");
+    assert!(matches!(
+        reading.phase,
+        app_update::Phase::PendingHealthy(_)
+    ));
+
+    // the channel is off: neither the wall tick nor Check now starts a fetch
+    let now = app.wall_now;
+    assert_eq!(app.updater.as_mut().unwrap().tick(now, true), None);
+    let _ = app.update(AppMessage::UpdateAction(UpdateAction::CheckNow));
+    assert!(!app.update_reading().unwrap().busy, "nothing is fetched");
+    let facts = app.update_facts();
+    assert_eq!(facts.checked, "never");
+    assert_eq!(facts.note, "Updates are off: no release key is pinned.");
+
+    // the first window is the healthy signal all the same
+    let _ = app.update(AppMessage::OnboardingOpened(
+        crate::shell::WindowKey::unique(),
+    ));
+    assert_eq!(app.update_facts().state, "idle");
 }
 
 #[test]

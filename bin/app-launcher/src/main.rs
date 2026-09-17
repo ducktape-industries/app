@@ -13,8 +13,8 @@
 //!   installed launcher before it flips;
 //! - `--rollback`: the manual escape hatch, the Settings row's `UserRollback`
 //!   from a shell;
-//! - `install --from <built release>`: seed, flip, write state (`make
-//!   install-app`).
+//! - `install --from <built release> [--release-key HEX]`: seed, flip,
+//!   write state, pin the release key (`make install-app`).
 //!
 //! When the update machinery cannot be trusted (no state, a link where a
 //! file should be, a flip that refused) a boot still runs the app beside
@@ -42,7 +42,7 @@ use crate::layout::{EnvInputs, Layout, Platform};
 use crate::refusal::Refusal;
 
 const TARGET: &str = "ducktape::update";
-const USAGE: &str = "usage: ducktape-launcher [app args...]\n       ducktape-launcher --qualify <state.json>\n       ducktape-launcher --rollback\n       ducktape-launcher install --from <built release dir or Ducktape.app>\n";
+const USAGE: &str = "usage: ducktape-launcher [app args...]\n       ducktape-launcher --qualify <state.json>\n       ducktape-launcher --rollback\n       ducktape-launcher install --from <built release dir or Ducktape.app> [--release-key HEX]\n";
 
 /// Every way the launcher can be invoked; one match in `main`.
 #[derive(Debug, PartialEq, Eq)]
@@ -50,7 +50,10 @@ enum Mode {
     Boot(Vec<OsString>),
     Qualify(PathBuf),
     Rollback,
-    Install { from: PathBuf },
+    Install {
+        from: PathBuf,
+        release_key: Option<String>,
+    },
     Help,
 }
 
@@ -76,12 +79,19 @@ fn parse(args: Vec<OsString>) -> Result<Mode, String> {
 }
 
 fn parse_install(args: Vec<OsString>) -> Result<Mode, String> {
-    match args.as_slice() {
-        [flag, from] if flag == "--from" => Ok(Mode::Install {
-            from: PathBuf::from(from),
-        }),
-        _ => Err("install needs exactly `--from <path>`".to_string()),
-    }
+    let (from, release_key) = match args.as_slice() {
+        [flag, from] if flag == "--from" => (from, None),
+        [flag, from, key_flag, key] | [key_flag, key, flag, from]
+            if flag == "--from" && key_flag == "--release-key" =>
+        {
+            (from, Some(key.to_string_lossy().into_owned()))
+        }
+        _ => return Err("install needs `--from <path>` [--release-key HEX]".to_string()),
+    };
+    Ok(Mode::Install {
+        from: PathBuf::from(from),
+        release_key,
+    })
 }
 
 fn main() -> ExitCode {
@@ -97,7 +107,7 @@ fn main() -> ExitCode {
         Mode::Boot(args) => boot(&args),
         Mode::Qualify(state) => run_qualify(&state),
         Mode::Rollback => rollback(),
-        Mode::Install { from } => run_install(&from),
+        Mode::Install { from, release_key } => run_install(&from, release_key.as_deref()),
         Mode::Help => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -184,9 +194,9 @@ fn run_qualify(state: &std::path::Path) -> ExitCode {
     }
 }
 
-fn run_install(from: &std::path::Path) -> ExitCode {
+fn run_install(from: &std::path::Path, release_key: Option<&str>) -> ExitCode {
     let result = host_layout().and_then(|layout| {
-        let sha = install::install(&layout, from)?;
+        let sha = install::install(&layout, from, release_key)?;
         Ok((layout, sha))
     });
     match result {
@@ -247,8 +257,38 @@ mod tests {
         assert_eq!(parse(vec!["--rollback".into()]).unwrap(), Mode::Rollback);
         assert_eq!(
             parse(vec!["install".into(), "--from".into(), "/b".into()]).unwrap(),
-            Mode::Install { from: "/b".into() }
+            Mode::Install {
+                from: "/b".into(),
+                release_key: None,
+            }
+        );
+        let pinned = Mode::Install {
+            from: "/b".into(),
+            release_key: Some("ab".into()),
+        };
+        assert_eq!(
+            parse(vec![
+                "install".into(),
+                "--from".into(),
+                "/b".into(),
+                "--release-key".into(),
+                "ab".into(),
+            ])
+            .unwrap(),
+            pinned
+        );
+        assert_eq!(
+            parse(vec![
+                "install".into(),
+                "--release-key".into(),
+                "ab".into(),
+                "--from".into(),
+                "/b".into(),
+            ])
+            .unwrap(),
+            pinned
         );
         assert!(parse(vec!["install".into()]).is_err());
+        assert!(parse(vec!["install".into(), "--release-key".into(), "ab".into()]).is_err());
     }
 }
