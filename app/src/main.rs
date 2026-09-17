@@ -13,6 +13,21 @@ mod video;
 mod view_tree;
 
 fn main() {
+    // answered before the log, the fd limit or a window exists: a walk report
+    // quotes this beside `ducktape --version`, in the same
+    // `<cargo version>+<build stamp>` shape (`build.rs` stamps it).
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");
+            println!("ducktape-app {}+{build}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        Some("--help" | "-h") => {
+            println!("usage: ducktape-app [--version]");
+            return;
+        }
+        _ => {}
+    }
     install_log();
     // macOS launches a GUI with a 256-fd soft limit; the app's own stores,
     // sockets and the node it hosts hit that as a bare EMFILE. raised AFTER
