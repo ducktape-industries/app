@@ -173,7 +173,7 @@ fn workspace_rpc(selector: &str) -> Result<String, String> {
         .ok_or_else(|| format!("no local workspace named {selector:?} to mint an invite from"))
 }
 
-/// One provisioning step. `state` is `done` | `running` | `pending` | `blocked`.
+/// One provisioning step. `state` is `done` | `waiting` | `blocked`.
 #[derive(Clone, Debug, Hash, PartialEq)]
 pub struct ProvisionStep {
     pub index: i64,
@@ -183,19 +183,28 @@ pub struct ProvisionStep {
     /// whether the phase advances BEFORE it moves the step into the reading,
     /// and reading `state` there would move the String out from under it.
     pub settled: bool,
+    /// A line under a blocked step saying what the member can do; empty otherwise.
+    pub hint: String,
+    /// The command a step names, for the screen's copy action; empty when none.
+    pub command: String,
 }
+
+/// What the blocked wait says once patience runs out. It names no origin for
+/// the launcher: this release ships only `ducktape` until core #2565 adds it.
+pub(crate) const NODE_WAIT_HINT: &str = "This app does not run nodes. Run that command in a terminal; this step continues when the node answers.";
 
 /// The five provisioning steps. Steps 1-3 are facts of the materialized
 /// workspace; steps 4-5 are a REAL `/v1/status` poll, because the app attaches
-/// to a node it does not supervise — when nothing answers, the step goes
-/// `blocked` and its label says which command starts it.
+/// to a node it does not supervise — the step names the launcher command that
+/// runs it and goes `blocked` when nothing answers in time.
 pub fn provision_progress(
     workspace: String,
     rpc: String,
 ) -> futures::stream::BoxStream<'static, ProvisionStep> {
     struct State {
         dir: Option<PathBuf>,
-        chain_id: String,
+        /// What the launcher is pointed at: the found directory, else the selector.
+        workspace: String,
         rpc: String,
         step: usize,
         attempts: u32,
@@ -203,14 +212,14 @@ pub fn provision_progress(
     let found = workspaces()
         .into_iter()
         .find(|(chain_id, dir)| *chain_id == workspace || dir.display().to_string() == workspace);
-    let (chain_id, dir) = match found {
-        Some((chain_id, dir)) => (chain_id, Some(dir)),
+    let (workspace, dir) = match found {
+        Some((_, dir)) => (dir.display().to_string(), Some(dir)),
         None => (workspace, None),
     };
     Box::pin(futures::stream::unfold(
         State {
             dir,
-            chain_id,
+            workspace,
             rpc,
             step: 0,
             attempts: 0,
@@ -266,29 +275,11 @@ pub fn provision_progress(
                     };
                     if up {
                         state.step = 4;
-                        return Some((registered_step(4, "Local node starting", true), state));
+                        return Some((registered_step(4, "Your node answered", true), state));
                     }
                     state.attempts += 1;
                     tokio::time::sleep(Duration::from_secs(1)).await;
-                    let stalled = state.attempts >= PROVISION_PATIENCE;
-                    let step = match stalled {
-                        false => ProvisionStep {
-                            index: 4,
-                            label: "Local node starting".into(),
-                            state: "running".into(),
-                            settled: false,
-                        },
-                        true => ProvisionStep {
-                            index: 4,
-                            label: format!(
-                                "Start the node · ducktape node run -n {}",
-                                state.chain_id
-                            ),
-                            state: "blocked".into(),
-                            settled: false,
-                        },
-                    };
-                    Some((step, state))
+                    Some((node_wait_step(&state.workspace, state.attempts), state))
                 }
                 4 => {
                     let listen = state
@@ -303,6 +294,8 @@ pub fn provision_progress(
                             label: format!("Node API listening · {listen}"),
                             state: "done".into(),
                             settled: true,
+                            hint: String::new(),
+                            command: String::new(),
                         },
                         state,
                     ))
@@ -312,6 +305,34 @@ pub fn provision_progress(
             }
         },
     ))
+}
+
+/// Step 4 until the node answers. The app runs no nodes: `ducktape-node-launcher`
+/// does, because node releases flip through it. So the step names that command
+/// for this workspace from the first second, never "starting", and after
+/// `PROVISION_PATIENCE` attempts goes `blocked` with [`NODE_WAIT_HINT`] while
+/// the poll goes on. The directory is single-quoted: a workspace directory
+/// carries the chain id's `#`, and a home may carry spaces.
+pub(crate) fn node_wait_step(workspace: &str, attempts: u32) -> ProvisionStep {
+    let command = format!(
+        "ducktape-node-launcher run --workspace '{}'",
+        workspace.replace('\'', r"'\''")
+    );
+    let blocked = attempts >= PROVISION_PATIENCE;
+    ProvisionStep {
+        index: 4,
+        label: format!("Waiting for your node · {command}"),
+        state: match blocked {
+            true => "blocked".into(),
+            false => "waiting".into(),
+        },
+        settled: false,
+        hint: match blocked {
+            true => NODE_WAIT_HINT.into(),
+            false => String::new(),
+        },
+        command,
+    }
 }
 
 /// A step whose fact is either established or missing.
@@ -324,6 +345,8 @@ fn registered_step(index: i64, label: &str, established: bool) -> ProvisionStep 
             false => "blocked".into(),
         },
         settled: established,
+        hint: String::new(),
+        command: String::new(),
     }
 }
 

@@ -1311,17 +1311,45 @@ impl DesktopWindow {
                     "This takes a moment on first launch.",
                 ));
                 let mut steps = panel().flex().flex_col().p_3().gap_2();
+                let mut blocked = false;
                 for step in &self.model.read(cx).state.provision_steps {
-                    steps = steps.child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .gap_3()
-                            .child(div().child(step.label.clone()))
-                            .child(hint(step.state.clone())),
-                    );
+                    blocked |= step.state == "blocked";
+                    steps = steps
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_3()
+                                .child(div().flex_1().min_w_0().child(step.label.clone()))
+                                .child(hint(step.state.clone()))
+                                .when(!step.command.is_empty(), |row| {
+                                    row.child(
+                                        self.action(
+                                            "copy-node-command",
+                                            "Copy command",
+                                            Message::CopyToClipboard(
+                                                step.command.clone(),
+                                                "Command copied".into(),
+                                            ),
+                                            false,
+                                        )
+                                        .outline(),
+                                    )
+                                }),
+                        )
+                        .when(!step.hint.is_empty(), |steps| {
+                            steps.child(hint(step.hint.clone()))
+                        });
                 }
-                body.child(steps)
+                // the wait keeps polling on this screen; leaving it drops the poll.
+                body.child(steps).when(blocked, |body| {
+                    body.child(
+                        self.action("provision-back", "Back to networks", Message::GoNetworks, busy)
+                            .ghost()
+                            .w_full(),
+                    )
+                })
             }
             HubStep::Live => body
                 .child(hero(
