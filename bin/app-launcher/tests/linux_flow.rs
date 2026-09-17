@@ -27,7 +27,8 @@ impl Rig {
         let rig = Rig {
             home: root.path().join("home"),
             config: root.path().join("cfg"),
-            data: root.path().join("data"),
+            // a space, so every flow runs where an unquoted `Exec` splits.
+            data: root.path().join("local share"),
             _root: root,
         };
         fs::create_dir_all(&rig.home).unwrap();
@@ -177,7 +178,7 @@ fn install_boot_update_crash_and_rollback() {
     .unwrap();
     assert!(
         entry.contains(&format!(
-            "Exec={} %u",
+            "Exec=\"{}\" %u",
             rig.install_dir()
                 .join("current/ducktape-launcher")
                 .display()

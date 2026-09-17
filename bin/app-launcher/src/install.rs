@@ -218,9 +218,35 @@ fn seed_dir(release_dir: &Path) -> PathBuf {
 /// `StartupWMClass`, so the window the app opens still associates with it.
 fn write_desktop_entry(layout: &Layout) -> Result<(), Refusal> {
     let entry = layout.desktop_entry();
-    let exec = layout.launcher_exec_path();
-    let text = DESKTOP_TEMPLATE.replace("@EXEC@", &exec.to_string_lossy());
+    let exec = exec_argument(&layout.launcher_exec_path());
+    let text = DESKTOP_TEMPLATE.replace("@EXEC@", &exec);
     fs::persist(&entry, &text)
+}
+
+/// A path as ONE `Exec` argument, per the Desktop Entry spec: quoted, with
+/// `"`, `` ` ``, `$` and `\` backslash-escaped inside the quotes and `%`
+/// doubled (a field code otherwise); then the file's string escaping, which
+/// doubles every backslash again and spells a newline `\n`. Unquoted, a data
+/// home with a space splits the path and the session drops the entry.
+// ponytail: GLib checks the program exists before it expands `%%`, so a
+// data home holding `%` stays hidden on GLib desktops however it is spelled;
+// the spec's `%%` is kept for the launchers that follow it.
+fn exec_argument(path: &Path) -> String {
+    let mut argument = String::from("\"");
+    for c in path.to_string_lossy().chars() {
+        match c {
+            '"' | '`' | '$' => {
+                argument.push_str("\\\\");
+                argument.push(c);
+            }
+            '\\' => argument.push_str("\\\\\\\\"),
+            '%' => argument.push_str("%%"),
+            '\n' => argument.push_str("\\n"),
+            _ => argument.push(c),
+        }
+    }
+    argument.push('"');
+    argument
 }
 
 #[cfg(test)]
@@ -232,5 +258,20 @@ mod tests {
         assert!(DESKTOP_TEMPLATE.contains("Exec=@EXEC@ %u"));
         assert!(DESKTOP_TEMPLATE.contains("StartupWMClass=dev.ducktape.app"));
         assert!(DESKTOP_TEMPLATE.contains("MimeType=x-scheme-handler/duck;"));
+    }
+
+    #[test]
+    fn the_exec_argument_is_one_quoted_argument_whatever_the_path_holds() {
+        assert_eq!(
+            exec_argument(Path::new(
+                "/home/op/.local/share/ducktape/current/ducktape-launcher"
+            )),
+            r#""/home/op/.local/share/ducktape/current/ducktape-launcher""#
+        );
+        assert_eq!(
+            exec_argument(Path::new(r#"/d a/"q"/$v/`c`/b\s/50%/ducktape-launcher"#)),
+            r#""/d a/\\"q\\"/\\$v/\\`c\\`/b\\\\s/50%%/ducktape-launcher""#
+        );
+        assert_eq!(exec_argument(Path::new("/a\nb")), r#""/a\nb""#);
     }
 }
