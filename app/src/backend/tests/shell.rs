@@ -373,3 +373,67 @@ fn a_node_that_never_answers_is_waited_for_by_its_launcher_command() {
         r"ducktape-node-launcher run --workspace '/home/o'\''neil/.ducktape/w#1'"
     );
 }
+
+/// THE HTTP CLIENT'S SENTENCE IS EVIDENCE, NOT COPY (#19). A node nothing
+/// listened for reached the launch window as "identity query failed: error
+/// sending request for url (…/v1/query)". The open path says it in the app's
+/// words and keeps the client's in the log — and only when the node is really
+/// out of reach: the client gives one reason for every exchange it could not
+/// complete, so a node that still answers keeps the failure's own sentence.
+#[tokio::test(flavor = "current_thread")]
+async fn a_node_nothing_answers_for_is_said_in_the_apps_words_and_logged_in_the_clients() {
+    #[derive(Clone, Default)]
+    struct Log(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let log = Log::default();
+    let _logging = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer({
+                let log = log.clone();
+                move || log.clone()
+            })
+            .finish(),
+    );
+    let lookup = |rpc: String| async move {
+        rpc_client(&rpc)
+            .expect("an http origin")
+            .query::<_, identity::IdentityReply>(
+                "identity",
+                &identity::IdentityQuery::OfKey { key: vec![7; 32] },
+            )
+            .await
+            .expect_err("no identity module answers here")
+    };
+
+    let dead = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        format!("http://{}", listener.local_addr().expect("its address"))
+    };
+    let failed = lookup(dead.clone()).await;
+    let raw = failed.message().to_string();
+    assert_eq!(failed.reason(), "rpc_client");
+    let said = exchange_failure(&dead, failed).await;
+    assert_eq!(said, format!("Can't reach this network's node at {dead}."));
+    let logged = String::from_utf8(log.0.lock().unwrap().clone()).unwrap();
+    assert!(
+        logged.contains("node_unreachable") && logged.contains(&raw),
+        "the client's own words are kept in the log: {logged}"
+    );
+
+    // a node that answers its status read is reachable, whatever the lookup
+    // could not read back from it.
+    let answering = node_that_serves_its_status_once(r#"{"height":1}"#).await;
+    let failed = lookup(answering.clone()).await;
+    let raw = failed.message().to_string();
+    let said = exchange_failure(&answering, failed).await;
+    assert_eq!(said, raw);
+}

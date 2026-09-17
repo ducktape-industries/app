@@ -27,12 +27,17 @@ pub(crate) enum HubStep {
     Provisioning,
     Live,
     Account,
+    /// The picked network could not be opened: its node did not answer the
+    /// open, before any wallet screen, or the account lookup after a finished
+    /// wallet ceremony failed. A retry and the way back.
+    Offline,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WalletDoor {
     Wallets,
     Password,
     Unreached,
+    Offline,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WindowSummon {
@@ -315,6 +320,9 @@ pub struct Ducktape {
     pub(crate) provision_index: i64,
     pub(crate) hub_chain_id: String,
     pub(crate) welcome_name_draft: String,
+    /// The account screen was opened from the workspace, not from a wallet
+    /// step: its Cancel goes back there.
+    pub(crate) welcome_from_console: bool,
     pub(crate) ceremony_phase: String,
     pub(crate) ceremony_qr: String,
     pub(crate) ceremony_detail: String,
@@ -488,6 +496,9 @@ pub(crate) enum AppMessage {
     PhraseConfirmed(String),
     PhraseConfirmFailed(crate::backend::AppError),
     GoRestore,
+    /// A new wallet from the wallet list: the same ceremony an empty
+    /// keystore opens on.
+    GoCreateWallet,
     GoLogin,
     RestoreSubmit(String, String),
     KeyRestored(String),
@@ -495,6 +506,8 @@ pub(crate) enum AppMessage {
     PickNetwork(String),
     OpenNetworkSubmit,
     ConnectRemoteSubmit(String),
+    /// Ask the node the open is on again, from the offline step.
+    RetryNetwork,
     WalletsLoaded(crate::backend::WalletList),
     ChainNamed(String),
     ChainProbeFailed(crate::backend::AppError),
@@ -718,6 +731,7 @@ impl Ducktape {
             provision_index: 0,
             hub_chain_id: "".to_owned(),
             welcome_name_draft: "".to_owned(),
+            welcome_from_console: false,
             ceremony_phase: "".to_owned(),
             ceremony_qr: "".to_owned(),
             ceremony_detail: "".to_owned(),
@@ -757,6 +771,11 @@ impl Ducktape {
                 })
                 .map(AppMessage::LiveUpdated),
             );
+        }
+        // the open wait reads the node's phase off the same push the console
+        // holds, so a joining or syncing node says so before the console opens.
+        let entering = self.console_entry == ConsoleEntry::Entering;
+        if self.connected || entering {
             subscriptions.push(
                 Subscription::run_with(self.connected_rpc.clone(), |rpc: &String| {
                     crate::backend::node_status_live(rpc.clone())

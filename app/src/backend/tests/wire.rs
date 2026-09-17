@@ -647,3 +647,24 @@ fn a_signed_write_records_the_block_that_took_it() {
          record until the node has answered with one"
     );
 }
+
+/// A write refusal reaches the view with the refusing module's OWN token, the
+/// way a read's does: the envelope is split once, in the rpc client, and the
+/// submit lane carries it through instead of stamping a constant over it.
+#[test]
+fn a_write_refusal_keeps_the_modules_token() {
+    let error = ducktape_rpc::refusal(
+        ducktape_rpc::StatusCode::BAD_REQUEST,
+        br#"{"error":"the text changed since you read it","reason":"stale_text"}"#,
+    );
+    let refusal = super::rpc::submit_refused(ducktape_rpc::SubmitFailure::Refused(error));
+    assert_eq!(
+        refusal,
+        view_wire::Refusal::new("stale_text", "the text changed since you read it")
+    );
+
+    // an exchange that never completed is still not a verdict
+    let unresolved =
+        super::rpc::submit_refused(ducktape_rpc::SubmitFailure::Unresolved("timed out".into()));
+    assert_eq!(unresolved.reason, "unresolved");
+}

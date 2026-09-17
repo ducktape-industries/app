@@ -185,6 +185,7 @@ impl Ducktape {
             AppMessage::PhraseConfirmed(pubkey) => self.on_phrase_confirmed(pubkey),
             AppMessage::PhraseConfirmFailed(cause) => self.on_phrase_confirm_failed(cause),
             AppMessage::GoRestore => self.on_go_restore(),
+            AppMessage::GoCreateWallet => self.on_go_create_wallet(),
             AppMessage::GoLogin => self.on_go_login(),
             AppMessage::RestoreSubmit(name, pw) => self.on_restore_submit(name, pw),
             AppMessage::KeyRestored(pubkey) => self.on_key_restored(pubkey),
@@ -192,6 +193,7 @@ impl Ducktape {
             AppMessage::PickNetwork(id) => self.on_pick_network(id),
             AppMessage::OpenNetworkSubmit => self.on_open_network_submit(),
             AppMessage::ConnectRemoteSubmit(endpoint) => self.on_connect_remote_submit(endpoint),
+            AppMessage::RetryNetwork => self.on_retry_network(),
             AppMessage::WalletsLoaded(list) => self.on_wallets_loaded(list),
             AppMessage::ChainNamed(id) => self.on_chain_named(id),
             AppMessage::ChainProbeFailed(_cause) => self.on_chain_probe_failed(_cause),
@@ -3244,6 +3246,15 @@ impl Ducktape {
         self.hub_step = HubStep::Restore;
         Task::none()
     }
+    fn on_go_create_wallet(&mut self) -> Task<AppMessage> {
+        if self.mutation_phase != MutationPhase::Idle {
+            return Task::none();
+        }
+        self.password = "".to_owned();
+        self.onboarding_error = "".to_owned();
+        self.hub_step = HubStep::Password;
+        Task::none()
+    }
     fn on_go_login(&mut self) -> Task<AppMessage> {
         if self.mutation_phase != MutationPhase::Idle {
             return Task::none();
@@ -3371,23 +3382,7 @@ impl Ducktape {
         self.onboarding_error = "".to_owned();
         self.password = "".to_owned();
         self.hub_wallet_selected = "".to_owned();
-        self.mutation_phase = MutationPhase::Onboarding;
-        let pending_task = Task::perform(
-            crate::backend::load_wallets(self.rpc.to_owned(), chain_id),
-            AppMessage::WalletsLoaded,
-        );
-        self.wallets_load_generation = self.wallets_load_generation.wrapping_add(1);
-        let request_generation = self.wallets_load_generation;
-        let (pending_task, request_handle) = pending_task.abortable();
-        if let Some(previous_handle) = self
-            .wallets_load_task
-            .replace(request_handle.abort_on_drop())
-        {
-            previous_handle.abort();
-        }
-        pending_task.map(move |reply_message| {
-            AppMessage::WalletsLoadReply(request_generation, Box::new(reply_message))
-        })
+        self.load_wallets(chain_id)
     }
     fn on_connect_remote_submit(&mut self, endpoint: String) -> Task<AppMessage> {
         if (self.mutation_phase != MutationPhase::Idle) || ((endpoint).trim().to_owned()).is_empty()
@@ -3399,9 +3394,24 @@ impl Ducktape {
         self.onboarding_error = "".to_owned();
         self.password = "".to_owned();
         self.hub_wallet_selected = "".to_owned();
+        self.load_wallets(String::new())
+    }
+    /// The same open again, on the endpoint it was made on. An empty chain id
+    /// records nothing, so the chain the first open noted for this endpoint
+    /// still names its keystore ([`crate::backend::load_wallets`]).
+    fn on_retry_network(&mut self) -> Task<AppMessage> {
+        if (self.mutation_phase != MutationPhase::Idle) || (self.rpc).is_empty() {
+            return Task::none();
+        }
+        self.onboarding_error = "".to_owned();
+        self.password = "".to_owned();
+        self.hub_wallet_selected = "".to_owned();
+        self.load_wallets(String::new())
+    }
+    fn load_wallets(&mut self, chain_id: String) -> Task<AppMessage> {
         self.mutation_phase = MutationPhase::Onboarding;
         let pending_task = Task::perform(
-            crate::backend::load_wallets(self.rpc.to_owned(), String::new()),
+            crate::backend::load_wallets(self.rpc.to_owned(), chain_id),
             AppMessage::WalletsLoaded,
         );
         self.wallets_load_generation = self.wallets_load_generation.wrapping_add(1);
@@ -3433,6 +3443,10 @@ impl Ducktape {
                 Task::none()
             }
             WalletDoor::Unreached => Task::none(),
+            WalletDoor::Offline => {
+                self.hub_step = HubStep::Offline;
+                Task::none()
+            }
         }
     }
     fn on_chain_named(&mut self, id: String) -> Task<AppMessage> {
@@ -3454,6 +3468,7 @@ impl Ducktape {
                 self.ceremony_qr = "".to_owned();
                 self.ceremony_detail = "".to_owned();
                 self.ceremony_left = "".to_owned();
+                self.welcome_from_console = false;
                 self.hub_step = HubStep::Account;
                 Task::none()
             }
@@ -3464,6 +3479,15 @@ impl Ducktape {
         cause: crate::backend::HydrationError,
     ) -> Task<AppMessage> {
         self.mutation_phase = MutationPhase::Idle;
+        // a confirmed phrase or a restore has already written the key: that
+        // screen has nothing left to confirm or restore, so the failure is
+        // said where the open can be retried or left.
+        let ceremony_over = matches!(self.hub_step, HubStep::Confirm | HubStep::Restore);
+        if ceremony_over {
+            self.hub_step = HubStep::Offline;
+            self.onboarding_error = format!("Your wallet is saved. {}", cause.message);
+            return Task::none();
+        }
         self.onboarding_error = cause.message.to_owned();
         Task::none()
     }
@@ -3474,7 +3498,12 @@ impl Ducktape {
         self.onboarding_error = "".to_owned();
         Task::done(AppMessage::NetworkEntered)
     }
+    /// Cancel stops a ceremony in flight and stays, so another way in can be
+    /// tried; on an idle screen it goes back where the person came from — the
+    /// workspace, or this network's wallet step (re-read: the key the account
+    /// was asked for may be new since the list was loaded).
     fn on_welcome_cancel(&mut self) -> Task<AppMessage> {
+        let idle = self.mutation_phase == MutationPhase::Idle;
         self.welcome_qr_auth_generation = self.welcome_qr_auth_generation.wrapping_add(1);
         if let Some(previous_handle) = self.welcome_qr_auth_task.take() {
             previous_handle.abort();
@@ -3488,7 +3517,13 @@ impl Ducktape {
         self.ceremony_qr = "".to_owned();
         self.ceremony_detail = "".to_owned();
         self.ceremony_left = "".to_owned();
-        Task::none()
+        if !idle {
+            return Task::none();
+        }
+        if self.welcome_from_console {
+            return self.on_welcome_skip();
+        }
+        self.on_retry_network()
     }
     fn on_welcome_create_submit(&mut self, name: String) -> Task<AppMessage> {
         if ((self.mutation_phase != MutationPhase::Idle) || (name).is_empty())
@@ -3721,6 +3756,7 @@ impl Ducktape {
         self.network_chain_id = "".to_owned();
         self.network_name =
             crate::backend::network_label(&self.network_chain_id, &self.connected_rpc);
+        self.node_phase.clear();
         self.hydration_generation += 1;
         self.connect_generation += 1;
         self.hydration_retry_attempt = 0;
@@ -3753,9 +3789,22 @@ impl Ducktape {
         if (self.connected_rpc).is_empty() {
             return Task::none();
         }
+        // an entry with no password is an unsigned one — the locked state
+        // (`require_password`). A key an earlier unlock seated, a wallet
+        // opened and then left for "Continue without a wallet", is dropped
+        // here on every way in, not kept signing under the skip.
+        let unsigned = (self.password).is_empty();
+        if unsigned {
+            self.signer_key = "".to_owned();
+        }
         self.console_entry = ConsoleEntry::Entering;
         self.connection_progress = "Loading chat and workspace…".to_owned();
         Task::batch([
+            match unsigned {
+                true => (Task::perform(crate::backend::lock_signer(), |value| value))
+                    .discard::<AppMessage>(),
+                false => Task::none(),
+            },
             (Task::perform(
                 crate::backend::remember_network(self.connected_rpc.to_owned()),
                 |value| value,
@@ -4096,6 +4145,7 @@ impl Ducktape {
         self.ceremony_qr = "".to_owned();
         self.ceremony_detail = "".to_owned();
         self.onboarding_error = "".to_owned();
+        self.welcome_from_console = true;
         self.hub_step = HubStep::Account;
         Task::batch([
             crate::shell::close::<AppMessage>(crate::backend::window_target(self.console_win)),

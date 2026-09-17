@@ -930,10 +930,19 @@ impl DesktopWindow {
                             self.action(
                                 "wallet-create",
                                 "Create a wallet",
-                                Message::LoginSkip,
+                                Message::GoCreateWallet,
                                 busy,
                             )
                             .outline(),
+                        )
+                        .child(
+                            self.action(
+                                "wallet-skip",
+                                "Continue without a wallet",
+                                Message::LoginSkip,
+                                busy,
+                            )
+                            .ghost(),
                         )
                         .child(
                             self.action(
@@ -1084,6 +1093,25 @@ impl DesktopWindow {
                 .child(
                     self.action("restore-back", "Back", Message::GoLogin, busy)
                         .ghost(),
+                ),
+            // the error line under the body says why — a node that did not
+            // answer, by its address.
+            HubStep::Offline => body
+                .child(hero(
+                    "Can't open this network",
+                    "Its node may be offline. Start it, then retry.",
+                ))
+                .child(
+                    self.action("offline-retry", "Retry", Message::RetryNetwork, busy)
+                        .loading(busy)
+                        .primary()
+                        .w_full()
+                        .h_8(),
+                )
+                .child(
+                    self.action("offline-back", "Back to networks", Message::GoNetworks, busy)
+                        .ghost()
+                        .w_full(),
                 ),
             HubStep::Networks => {
                 let state = &self.model.read(cx).state;
@@ -1472,7 +1500,13 @@ impl DesktopWindow {
                         .items_center()
                         .gap_2()
                         .child(gpui_kit::component::spinner::Spinner::new())
-                        .child(hint(self.model.read(cx).state.connection_progress.clone())),
+                        .child(hint({
+                            let state = &self.model.read(cx).state;
+                            crate::backend::opening_progress(
+                                &state.node_phase,
+                                &state.connection_progress,
+                            )
+                        })),
                 )
                 .child(
                     self.action("connection-cancel", "Cancel", Message::GoNetworks, false)

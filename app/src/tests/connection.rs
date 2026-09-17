@@ -280,3 +280,37 @@ fn a_failed_connect_retries_instead_of_giving_up() {
         "success clears the backoff"
     );
 }
+
+/// THE OPEN WAIT HEARS THE NODE (#27). A syncing node holds the workspace load
+/// for minutes; the status push the console holds starts when the wait does, so
+/// the wait can name the phase — and it is the same stream the console keeps,
+/// not a second one. A phase left from another network is not this one's.
+#[test]
+fn the_open_wait_holds_the_status_push_the_console_keeps() {
+    let keys = |app: &Ducktape| {
+        app.subscriptions()
+            .into_recipes()
+            .into_iter()
+            .map(|recipe| recipe.key)
+            .collect::<Vec<_>>()
+    };
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:38259".into();
+    app.hub_step = HubStep::Wallets;
+    app.node_phase = "syncing".into();
+    let idle = keys(&app);
+
+    let _ = app.update(AppMessage::NetworkEntered);
+    assert!(app.node_phase.is_empty());
+    let entering = keys(&app);
+    let added: Vec<_> = entering.iter().filter(|key| !idle.contains(key)).collect();
+    assert_eq!(added.len(), 1, "the wait holds the status push alone");
+    let status = *added[0];
+
+    app.connected = true;
+    assert!(keys(&app).contains(&status));
+
+    app.connected = false;
+    let _ = app.update(AppMessage::GoNetworks);
+    assert!(!keys(&app).contains(&status));
+}

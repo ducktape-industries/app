@@ -763,3 +763,301 @@ fn leaving_a_joins_wait_drops_its_poll() {
     ));
     assert_eq!(app.hub_step, crate::HubStep::Networks);
 }
+
+/// AN OFFLINE NETWORK SAYS SO FIRST (#19). A saved row reading `offline` still
+/// opened — by design — and the open then ran the whole wallet ceremony:
+/// password, 24 words, the confirm. Only the account lookup after it failed,
+/// in the HTTP client's words, under a Confirm heading whose instructions were
+/// gone and with no way back. The open asks the node before any wallet screen,
+/// and a node that does not answer is the offline step, with a retry and the
+/// way back; a lookup that fails after a ceremony wrote the key says the
+/// wallet is saved, on that step, never on the spent screen.
+#[tokio::test(flavor = "current_thread")]
+async fn an_offline_network_says_so_before_any_wallet_step() {
+    use futures::StreamExt as _;
+    /// Run a task's messages back through the app, as the runtime does, and
+    /// note every step the launch window passed through.
+    async fn settle(app: &mut Ducktape, task: view_wire::Task<AppMessage>) -> Vec<HubStep> {
+        let mut steps = Vec::new();
+        let mut pending = vec![task];
+        while let Some(task) = pending.pop() {
+            let mut messages = task.into_stream();
+            while let Some(message) = messages.next().await {
+                pending.push(app.update(message));
+                steps.push(app.hub_step);
+            }
+        }
+        steps
+    }
+    let wallet_screens = [
+        HubStep::Password,
+        HubStep::Phrase,
+        HubStep::Confirm,
+        HubStep::Wallets,
+        HubStep::Restore,
+        HubStep::Account,
+    ];
+    let dead = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        format!("http://{}", listener.local_addr().expect("its address"))
+    };
+    let unreachable = format!("Can't reach this network's node at {dead}.");
+    let (mut app, _) = Ducktape::boot();
+    app.hub_step = HubStep::Networks;
+    app.hub_networks = vec![backend::HubNetwork {
+        id: "dognet#d2a0ec8f".into(),
+        chain_id: "dognet#d2a0ec8f".into(),
+        name: "dognet".into(),
+        endpoint: dead.clone(),
+        kind: "local".into(),
+        last_used: 0,
+        probed: true,
+        live: false,
+        height: -1,
+        contract: 0,
+        another_network: false,
+        phase: String::new(),
+        behind_by: -1,
+    }];
+    app.hub_selected = "dognet#d2a0ec8f".into();
+    assert_eq!(
+        backend::network_row_label(&app.hub_networks[0]),
+        "dognet · offline"
+    );
+
+    let open = app.update(AppMessage::OpenNetworkSubmit);
+    assert_eq!(
+        app.mutation_phase,
+        MutationPhase::Onboarding,
+        "a dead row still opens"
+    );
+    let steps = settle(&mut app, open).await;
+    assert!(
+        !steps.iter().any(|step| wallet_screens.contains(step)),
+        "{steps:?}"
+    );
+    assert_eq!(app.hub_step, HubStep::Offline);
+    assert_eq!(app.onboarding_error, unreachable);
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+
+    // Retry asks the same node again; still down, still offline.
+    let retry = app.update(AppMessage::RetryNetwork);
+    assert_eq!(app.mutation_phase, MutationPhase::Onboarding);
+    let steps = settle(&mut app, retry).await;
+    assert!(
+        !steps.iter().any(|step| wallet_screens.contains(step)),
+        "{steps:?}"
+    );
+    assert_eq!(app.hub_step, HubStep::Offline);
+    assert_eq!(app.onboarding_error, unreachable);
+
+    let _ = app.update(AppMessage::GoNetworks);
+    assert_eq!(app.hub_step, HubStep::Networks);
+    assert!(app.onboarding_error.is_empty());
+
+    // A CEREMONY THAT FINISHED, against a node that is gone by the lookup: the
+    // confirm sealed the key and seated it before the account was asked for
+    // (`confirm_recovery_phrase`), which is what these two lines stand in for —
+    // the seal itself writes into the real home, which is not a test's to touch.
+    app.rpc = dead.clone();
+    app.hub_step = HubStep::Confirm;
+    app.mutation_phase = MutationPhase::Onboarding;
+    backend::set_local_user_key(Some(vec![7; 32])).await;
+    let confirmed = app.update(AppMessage::PhraseConfirmed("07".repeat(32)));
+    let steps = settle(&mut app, confirmed).await;
+    backend::set_local_user_key(None).await;
+    assert!(!steps.contains(&HubStep::Account), "{steps:?}");
+    assert_eq!(
+        app.hub_step,
+        HubStep::Offline,
+        "the spent Confirm screen is left"
+    );
+    assert_eq!(
+        app.onboarding_error,
+        format!("Your wallet is saved. {unreachable}")
+    );
+    assert_eq!(
+        app.signer_key,
+        "07".repeat(32),
+        "the saved wallet is still the seat"
+    );
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+}
+
+/// CREATE A WALLET ON WELCOME BACK MAKES A WALLET (#24). The button sent the
+/// skip, so a keystore holding any wallet — one whose password is gone, say —
+/// could never reach the ceremony again: the workspace opened unsigned. It
+/// opens the same password step an empty keystore lands on, and the skip is
+/// its own button.
+#[test]
+fn create_a_wallet_on_welcome_back_opens_the_wallet_ceremony() {
+    use futures::StreamExt as _;
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(AppMessage::WalletsLoaded(backend::WalletList {
+        wallets: vec![backend::WalletInfo {
+            name: "zk-dev".into(),
+            pubkey: "07".repeat(32),
+            state: "encrypted".into(),
+            active: true,
+        }],
+        error: String::new(),
+        keystore: true,
+        offline: false,
+    }));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+
+    let create = app.update(AppMessage::GoCreateWallet);
+    let queued = futures::executor::block_on(create.into_stream().collect::<Vec<_>>());
+    assert!(queued.is_empty(), "creating never enters the workspace");
+    assert_eq!(app.hub_step, HubStep::Password);
+
+    let _ = app.update(AppMessage::GoLogin);
+    assert_eq!(app.hub_step, HubStep::Wallets, "Back returns to the list");
+    let skip = app.update(AppMessage::LoginSkip);
+    let queued = futures::executor::block_on(skip.into_stream().collect::<Vec<_>>());
+    assert!(
+        matches!(queued.as_slice(), [AppMessage::NetworkEntered]),
+        "the skip still enters the workspace"
+    );
+}
+
+/// CANCEL ON AN IDLE ACCOUNT SCREEN GOES BACK (#25). Cancel only stopped a
+/// ceremony, so with none running the press did nothing — and the workspace
+/// the banner's Sign in had closed stayed closed. A ceremony in flight is
+/// still what Cancel stops; an idle screen goes back where it was opened
+/// from: the workspace, or the wallet step the key was just opened on.
+#[test]
+fn cancel_on_an_idle_account_screen_goes_back() {
+    use futures::StreamExt as _;
+    let (mut app, _) = Ducktape::boot();
+    app.connected = true;
+    app.connected_rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(AppMessage::OpenAccountWelcome);
+    let _ = app.update(AppMessage::WelcomeReopened(
+        crate::shell::WindowKey::unique(),
+    ));
+    assert_eq!(app.hub_step, HubStep::Account);
+
+    app.mutation_phase = MutationPhase::Onboarding;
+    app.ceremony_phase = "working".into();
+    let cancel = app.update(AppMessage::WelcomeCancel);
+    let queued = futures::executor::block_on(cancel.into_stream().collect::<Vec<_>>());
+    assert!(
+        queued.is_empty(),
+        "a ceremony in flight is stopped, not left"
+    );
+    assert_eq!(app.hub_step, HubStep::Account);
+    assert!(app.ceremony_phase.is_empty());
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+
+    let cancel = app.update(AppMessage::WelcomeCancel);
+    let queued = futures::executor::block_on(cancel.into_stream().collect::<Vec<_>>());
+    assert!(
+        matches!(queued.as_slice(), [AppMessage::NetworkEntered]),
+        "opened from the workspace, Cancel returns to it"
+    );
+
+    // opened by a wallet step, before any workspace: back to that step, read
+    // again — a wallet minted on the way is not in the list loaded before it.
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    app.hub_step = HubStep::Wallets;
+    app.password = "a password".into();
+    let _ = app.update(AppMessage::AccountProbed(backend::AccountData {
+        generation: 0,
+        exists: false,
+        number: String::new(),
+        name: String::new(),
+        bio: String::new(),
+    }));
+    assert_eq!(app.hub_step, HubStep::Account);
+    let asked = app.wallets_load_generation;
+    let _ = app.update(AppMessage::WelcomeCancel);
+    assert_ne!(
+        app.wallets_load_generation, asked,
+        "the wallet step is asked"
+    );
+    assert!(app.password.is_empty());
+    let _ = app.update(AppMessage::WalletsLoadReply(
+        app.wallets_load_generation,
+        Box::new(AppMessage::WalletsLoaded(backend::WalletList {
+            wallets: vec![backend::WalletInfo {
+                name: "zk-dev".into(),
+                pubkey: "07".repeat(32),
+                state: "encrypted".into(),
+                active: true,
+            }],
+            error: String::new(),
+            keystore: true,
+            offline: false,
+        })),
+    ));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+}
+
+/// ENTERING WITHOUT A WALLET DROPS AN UNLOCKED KEY (#38). A key unlocked on
+/// the wallet step stayed seated after the account screen was left, so
+/// "Continue without a wallet" on the list it went back to opened a signed
+/// workspace. An entry with no password is unsigned, whichever way it came
+/// in; picking the wallet still enters signed.
+#[test]
+fn entering_without_a_wallet_drops_an_unlocked_key() {
+    use futures::StreamExt as _;
+    let key = "07".repeat(32);
+    let listed = || {
+        AppMessage::WalletsLoaded(backend::WalletList {
+            wallets: vec![backend::WalletInfo {
+                name: "zk-dev".into(),
+                pubkey: "07".repeat(32),
+                state: "encrypted".into(),
+                active: true,
+            }],
+            error: String::new(),
+            keystore: true,
+            offline: false,
+        })
+    };
+    let account = |exists| {
+        AppMessage::AccountProbed(backend::AccountData {
+            generation: 0,
+            exists,
+            number: String::new(),
+            name: String::new(),
+            bio: String::new(),
+        })
+    };
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(listed());
+    let _ = app.update(AppMessage::UnlockSubmit("a password".into()));
+    let _ = app.update(AppMessage::KeyUnlocked(key.clone()));
+    let _ = app.update(account(false));
+    assert_eq!(app.hub_step, HubStep::Account);
+    let _ = app.update(AppMessage::WelcomeCancel);
+    let _ = app.update(AppMessage::WalletsLoadReply(
+        app.wallets_load_generation,
+        Box::new(listed()),
+    ));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+    let skip = app.update(AppMessage::LoginSkip);
+    let queued = futures::executor::block_on(skip.into_stream().collect::<Vec<_>>());
+    assert!(matches!(queued.as_slice(), [AppMessage::NetworkEntered]));
+    let _ = app.update(AppMessage::NetworkEntered);
+    assert_eq!(
+        backend::rail_identity(false, "", "", &app.signer_key).1,
+        "No signing key",
+        "the skip enters unsigned"
+    );
+
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(listed());
+    let _ = app.update(AppMessage::UnlockSubmit("a password".into()));
+    let _ = app.update(AppMessage::KeyUnlocked(key.clone()));
+    let found = app.update(account(true));
+    let queued = futures::executor::block_on(found.into_stream().collect::<Vec<_>>());
+    assert!(matches!(queued.as_slice(), [AppMessage::NetworkEntered]));
+    let _ = app.update(AppMessage::NetworkEntered);
+    assert_eq!(app.signer_key, key, "the picked wallet enters signed");
+}

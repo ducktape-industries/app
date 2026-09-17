@@ -35,11 +35,11 @@ pub(crate) fn refused(error: ducktape_rpc::Error) -> view_wire::Refusal {
 /// The write lane's own two answers, which are NOT the same answer: a node
 /// that said no has decided, and re-sending the same op cannot change it; an
 /// exchange that never completed leaves the op's fate unknown, so the view
-/// must re-read before it retries. That difference is the reason a token
-/// exists, so it is the token.
-fn submit_refused(failure: ducktape_rpc::SubmitFailure) -> view_wire::Refusal {
+/// must re-read before it retries. A node that said no named its reason, so
+/// that refusal reaches the view exactly as a read's does ([`refused`]).
+pub(crate) fn submit_refused(failure: ducktape_rpc::SubmitFailure) -> view_wire::Refusal {
     match failure {
-        ducktape_rpc::SubmitFailure::Refused(detail) => view_wire::Refusal::new("rejected", detail),
+        ducktape_rpc::SubmitFailure::Refused(error) => refused(error),
         ducktape_rpc::SubmitFailure::Unresolved(detail) => {
             view_wire::Refusal::new("unresolved", detail)
         }
