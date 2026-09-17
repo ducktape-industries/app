@@ -3468,6 +3468,7 @@ impl Ducktape {
                 self.ceremony_qr = "".to_owned();
                 self.ceremony_detail = "".to_owned();
                 self.ceremony_left = "".to_owned();
+                self.welcome_from_console = false;
                 self.hub_step = HubStep::Account;
                 Task::none()
             }
@@ -3497,7 +3498,12 @@ impl Ducktape {
         self.onboarding_error = "".to_owned();
         Task::done(AppMessage::NetworkEntered)
     }
+    /// Cancel stops a ceremony in flight and stays, so another way in can be
+    /// tried; on an idle screen it goes back where the person came from — the
+    /// workspace, or this network's wallet step (re-read: the key the account
+    /// was asked for may be new since the list was loaded).
     fn on_welcome_cancel(&mut self) -> Task<AppMessage> {
+        let idle = self.mutation_phase == MutationPhase::Idle;
         self.welcome_qr_auth_generation = self.welcome_qr_auth_generation.wrapping_add(1);
         if let Some(previous_handle) = self.welcome_qr_auth_task.take() {
             previous_handle.abort();
@@ -3511,7 +3517,13 @@ impl Ducktape {
         self.ceremony_qr = "".to_owned();
         self.ceremony_detail = "".to_owned();
         self.ceremony_left = "".to_owned();
-        Task::none()
+        if !idle {
+            return Task::none();
+        }
+        if self.welcome_from_console {
+            return self.on_welcome_skip();
+        }
+        self.on_retry_network()
     }
     fn on_welcome_create_submit(&mut self, name: String) -> Task<AppMessage> {
         if ((self.mutation_phase != MutationPhase::Idle) || (name).is_empty())
@@ -4120,6 +4132,7 @@ impl Ducktape {
         self.ceremony_qr = "".to_owned();
         self.ceremony_detail = "".to_owned();
         self.onboarding_error = "".to_owned();
+        self.welcome_from_console = true;
         self.hub_step = HubStep::Account;
         Task::batch([
             crate::shell::close::<AppMessage>(crate::backend::window_target(self.console_win)),

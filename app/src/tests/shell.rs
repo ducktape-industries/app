@@ -921,3 +921,77 @@ fn create_a_wallet_on_welcome_back_opens_the_wallet_ceremony() {
         "the skip still enters the workspace"
     );
 }
+
+/// CANCEL ON AN IDLE ACCOUNT SCREEN GOES BACK (#25). Cancel only stopped a
+/// ceremony, so with none running the press did nothing — and the workspace
+/// the banner's Sign in had closed stayed closed. A ceremony in flight is
+/// still what Cancel stops; an idle screen goes back where it was opened
+/// from: the workspace, or the wallet step the key was just opened on.
+#[test]
+fn cancel_on_an_idle_account_screen_goes_back() {
+    use futures::StreamExt as _;
+    let (mut app, _) = Ducktape::boot();
+    app.connected = true;
+    app.connected_rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(AppMessage::OpenAccountWelcome);
+    let _ = app.update(AppMessage::WelcomeReopened(
+        crate::shell::WindowKey::unique(),
+    ));
+    assert_eq!(app.hub_step, HubStep::Account);
+
+    app.mutation_phase = MutationPhase::Onboarding;
+    app.ceremony_phase = "working".into();
+    let cancel = app.update(AppMessage::WelcomeCancel);
+    let queued = futures::executor::block_on(cancel.into_stream().collect::<Vec<_>>());
+    assert!(
+        queued.is_empty(),
+        "a ceremony in flight is stopped, not left"
+    );
+    assert_eq!(app.hub_step, HubStep::Account);
+    assert!(app.ceremony_phase.is_empty());
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+
+    let cancel = app.update(AppMessage::WelcomeCancel);
+    let queued = futures::executor::block_on(cancel.into_stream().collect::<Vec<_>>());
+    assert!(
+        matches!(queued.as_slice(), [AppMessage::NetworkEntered]),
+        "opened from the workspace, Cancel returns to it"
+    );
+
+    // opened by a wallet step, before any workspace: back to that step, read
+    // again — a wallet minted on the way is not in the list loaded before it.
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    app.hub_step = HubStep::Wallets;
+    app.password = "a password".into();
+    let _ = app.update(AppMessage::AccountProbed(backend::AccountData {
+        generation: 0,
+        exists: false,
+        number: String::new(),
+        name: String::new(),
+        bio: String::new(),
+    }));
+    assert_eq!(app.hub_step, HubStep::Account);
+    let asked = app.wallets_load_generation;
+    let _ = app.update(AppMessage::WelcomeCancel);
+    assert_ne!(
+        app.wallets_load_generation, asked,
+        "the wallet step is asked"
+    );
+    assert!(app.password.is_empty());
+    let _ = app.update(AppMessage::WalletsLoadReply(
+        app.wallets_load_generation,
+        Box::new(AppMessage::WalletsLoaded(backend::WalletList {
+            wallets: vec![backend::WalletInfo {
+                name: "zk-dev".into(),
+                pubkey: "07".repeat(32),
+                state: "encrypted".into(),
+                active: true,
+            }],
+            error: String::new(),
+            keystore: true,
+            offline: false,
+        })),
+    ));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+}
