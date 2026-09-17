@@ -1085,6 +1085,25 @@ impl DesktopWindow {
                     self.action("restore-back", "Back", Message::GoLogin, busy)
                         .ghost(),
                 ),
+            // the error line under the body says why — a node that did not
+            // answer, by its address.
+            HubStep::Offline => body
+                .child(hero(
+                    "Can't open this network",
+                    "Its node may be offline. Start it, then retry.",
+                ))
+                .child(
+                    self.action("offline-retry", "Retry", Message::RetryNetwork, busy)
+                        .loading(busy)
+                        .primary()
+                        .w_full()
+                        .h_8(),
+                )
+                .child(
+                    self.action("offline-back", "Back to networks", Message::GoNetworks, busy)
+                        .ghost()
+                        .w_full(),
+                ),
             HubStep::Networks => {
                 let state = &self.model.read(cx).state;
                 let networks = state.hub_networks.clone();

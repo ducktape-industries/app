@@ -27,12 +27,17 @@ pub(crate) enum HubStep {
     Provisioning,
     Live,
     Account,
+    /// The picked network could not be opened: its node did not answer the
+    /// open, before any wallet screen, or the account lookup after a finished
+    /// wallet ceremony failed. A retry and the way back.
+    Offline,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WalletDoor {
     Wallets,
     Password,
     Unreached,
+    Offline,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WindowSummon {
@@ -495,6 +500,8 @@ pub(crate) enum AppMessage {
     PickNetwork(String),
     OpenNetworkSubmit,
     ConnectRemoteSubmit(String),
+    /// Ask the node the open is on again, from the offline step.
+    RetryNetwork,
     WalletsLoaded(crate::backend::WalletList),
     ChainNamed(String),
     ChainProbeFailed(crate::backend::AppError),

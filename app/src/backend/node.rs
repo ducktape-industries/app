@@ -443,9 +443,13 @@ pub async fn load_account(rpc: String, generation: i64) -> Result<AccountData, H
             return Ok(AccountData::none(generation));
         };
         let client = rpc_client(&rpc)?;
-        let reply: identity::IdentityReply = client
+        let reply: identity::IdentityReply = match client
             .query("identity", &identity::IdentityQuery::OfKey { key })
-            .await?;
+            .await
+        {
+            Ok(reply) => reply,
+            Err(error) => return Err(exchange_failure(&rpc, error).await),
+        };
         let account = match reply {
             identity::IdentityReply::Account(account) => account,
             identity::IdentityReply::Accounts(_)

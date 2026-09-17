@@ -85,26 +85,31 @@ pub struct HubState {
 
 /// A picked network's keystore: its wallet rows, why the listing is empty when
 /// it FAILED rather than being empty, and whether the keystore could be
-/// NAMED at all — a remote whose node never answered which network it serves
-/// has no keystore to open, and the pick stays where it is with that error.
+/// NAMED at all — a remote whose node answered but serves no network this app
+/// can hold an identity for has no keystore to open, and the pick stays where
+/// it is with that error. `offline` is the step before all of it: the node did
+/// not answer the open's status read, so nothing past it was read.
 #[derive(Clone, Debug, Hash, PartialEq)]
 pub struct WalletList {
     pub wallets: Vec<WalletInfo>,
     pub error: String,
     pub keystore: bool,
+    pub offline: bool,
 }
 
 /// Which step a picked network's keystore sends the launch window to, as the
-/// discriminant the handler branches on once: rows are the unlock surface, an
+/// discriminant the handler branches on once: a node that did not answer is
+/// the offline step, before any wallet screen; rows are the unlock surface, an
 /// empty keystore mints the device key, and a keystore that could not be named
-/// (the remote never answered) keeps the pick on screen with its error. There
-/// is no silent read-only door: every way into the console goes past a key,
-/// and "Continue read-only" is a button the person presses.
+/// keeps the pick on screen with its error. There is no silent read-only door:
+/// every way into the console goes past a key, and "Continue read-only" is a
+/// button the person presses.
 pub fn wallet_door(list: &WalletList) -> crate::WalletDoor {
-    match (list.keystore, list.wallets.is_empty()) {
-        (false, _) => crate::WalletDoor::Unreached,
-        (true, true) => crate::WalletDoor::Password,
-        (true, false) => crate::WalletDoor::Wallets,
+    match (list.offline, list.keystore, list.wallets.is_empty()) {
+        (true, _, _) => crate::WalletDoor::Offline,
+        (false, false, _) => crate::WalletDoor::Unreached,
+        (false, true, true) => crate::WalletDoor::Password,
+        (false, true, false) => crate::WalletDoor::Wallets,
     }
 }
 
@@ -416,6 +421,7 @@ fn wallet_rows(rpc: &str) -> Result<WalletList, String> {
             }],
             error: String::new(),
             keystore: true,
+            offline: false,
         });
     }
     let listed = keystore::wallet::list(&keystore_root(rpc)?)?;
@@ -431,6 +437,7 @@ fn wallet_rows(rpc: &str) -> Result<WalletList, String> {
             .collect(),
         error: String::new(),
         keystore: true,
+        offline: false,
     })
 }
 
@@ -473,19 +480,34 @@ pub async fn hub_state() -> HubState {
 ///
 /// `chain_id` is the picked network's, when the pick names one: a workspace
 /// on this device is opened as ITS chain, not as whichever workspace shares its
-/// endpoint ([`note_served_chain`]). A REMOTE's keystore is named by the
-/// network it serves, so its node is asked first (`/v1/status`); a node that
-/// cannot be reached, or serves no chain yet, has no keystore to open and the
-/// launch window stays on the pick with that error. A workspace on this device
-/// names its own keystore and is not asked.
+/// endpoint ([`note_served_chain`]). Every open asks the node first, with the
+/// same bounded `/v1/status` read the network rows are drawn from: a node that
+/// does not answer is offline, and saying so is the whole answer — no wallet
+/// screen runs ahead of a lookup that cannot succeed. A REMOTE's keystore is
+/// then named by the network that answer says it serves; one that serves no
+/// chain yet has no keystore to open and the launch window stays on the pick
+/// with that error. A workspace on this device names its own keystore.
 pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
     note_served_chain(&rpc, &chain_id);
-    if let Err(cause) = name_remote_keystore(&rpc).await {
+    let status = match probe_endpoint(&rpc).await {
+        Ok(status) => status,
+        Err(cause) => {
+            set_local_user_key(None).await;
+            return WalletList {
+                wallets: Vec::new(),
+                error: unreachable_node(&rpc, &cause),
+                keystore: false,
+                offline: true,
+            };
+        }
+    };
+    if let Err(cause) = name_remote_keystore(&rpc, &status) {
         set_local_user_key(None).await;
         return WalletList {
             wallets: Vec::new(),
             error: user_error(cause),
             keystore: false,
+            offline: false,
         };
     }
     let list = match wallet_rows(&rpc) {
@@ -502,6 +524,7 @@ pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
                 wallets: Vec::new(),
                 error: user_error(cause),
                 keystore: true,
+                offline: false,
             }
         }
     };
@@ -513,18 +536,15 @@ pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
 }
 
 /// Learn which network a remote endpoint serves, so its keystore has a name
-/// ([`keystore_root`]). A workspace on this device, or the key override, needs
-/// no asking. The status read is the only network round trip on the key path.
-async fn name_remote_keystore(rpc: &str) -> Result<(), String> {
+/// ([`keystore_root`]), off the status document the open already read — the
+/// only network round trip on the key path. A workspace on this device, or the
+/// key override, needs no asking.
+fn name_remote_keystore(rpc: &str, status: &serde_json::Value) -> Result<(), String> {
     let names_itself = env_user_key().is_some() || workspace_at(rpc).is_some();
     if names_itself {
         return Ok(());
     }
-    let status = rpc_client(rpc)?
-        .status_json()
-        .await
-        .map_err(|error| error.to_string())?;
-    let facts = super::node::node_facts(&status);
+    let facts = super::node::node_facts(status);
     // the same refusal the hub row prints for a probed node, for an endpoint
     // typed in directly: a console never opens against a surface this app was
     // not written for.
@@ -612,7 +632,7 @@ pub fn network_row_label(row: &HubNetwork) -> String {
 /// at the row's endpoint serves another network — opening that would put the
 /// other network's console under this row's name. A row the probe has not
 /// answered for, or a dead one, has no number to refuse on — opening those is
-/// the same as before, and the console says offline itself.
+/// the same as before, and the open says offline itself ([`load_wallets`]).
 pub fn contract_refuses(row: &HubNetwork) -> bool {
     let measured_live = row.probed && row.live;
     let mismatched = super::node::contract_match(row.contract) != super::node::ContractMatch::Match;
@@ -633,7 +653,7 @@ pub fn selected_network_refuses(networks: &[HubNetwork], id: &str) -> bool {
 pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
     use futures::StreamExt;
     let probes = known_networks().into_iter().map(move |row| async move {
-        let status = probe_endpoint(&row.endpoint).await;
+        let status = probe_endpoint(&row.endpoint).await.ok();
         let facts = status.as_ref().map(super::node::node_facts);
         HubProbe {
             id: row.id,
@@ -657,16 +677,47 @@ pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
 }
 
 /// One bounded status read: the `/v1/status` document when the node answers,
-/// `None` when it does not. 3s — a liveness dot must not hang the list.
-async fn probe_endpoint(endpoint: &str) -> Option<serde_json::Value> {
+/// the client's own account of why not when it does not. 3s — a liveness dot
+/// must not hang the list, and opening a network asks the row's question the
+/// row's way.
+async fn probe_endpoint(endpoint: &str) -> Result<serde_json::Value, String> {
     if endpoint.is_empty() {
-        return None;
+        return Err("no endpoint to ask".into());
     }
-    let client = rpc_client(endpoint).ok()?;
+    let client = rpc_client(endpoint)?;
     tokio::time::timeout(Duration::from_secs(3), client.status_json())
         .await
-        .ok()?
-        .ok()
+        .map_err(|_| "the status read timed out after 3s".to_string())?
+        .map_err(String::from)
+}
+
+/// The launch window's sentence for a node nothing answers at. The client's
+/// own words — the HTTP stack's, naming the URL and the socket error — are the
+/// evidence, so they go to the log and never to the screen.
+fn unreachable_node(rpc: &str, cause: &str) -> String {
+    let endpoint = canonical_endpoint(rpc.to_string());
+    tracing::warn!(
+        target: "ducktape::app",
+        reason = "node_unreachable",
+        endpoint = %endpoint,
+        cause,
+        "the node did not answer; the launch window says so in its own words"
+    );
+    format!("Can't reach this network's node at {endpoint}.")
+}
+
+/// A failed exchange with `rpc`, as the launch window says it. The client's
+/// `rpc_client` reason covers every exchange it could not complete — a request
+/// that never arrived and a reply it could not read alike — so the node is
+/// called unreachable only when the rows' own status read cannot reach it
+/// either. A node that answers keeps the failure's own sentence, and so does
+/// anything the node authored.
+pub(crate) async fn exchange_failure(rpc: &str, error: ducktape_rpc::Error) -> String {
+    let client_failed = error.reason() == "rpc_client";
+    if client_failed && probe_endpoint(rpc).await.is_err() {
+        return unreachable_node(rpc, error.message());
+    }
+    error.into()
 }
 
 /// Stamp a network's last-used time and — for an endpoint no workspace
@@ -1257,9 +1308,9 @@ mod tests {
         );
     }
 
-    /// A picked network's keystore decides the next step: rows unlock, an
-    /// empty keystore mints, and a keystore that could not be named (the
-    /// remote never answered) keeps the pick on screen — whatever rows it
+    /// A picked network's keystore decides the next step: a node that did not
+    /// answer is offline, rows unlock, an empty keystore mints, and a keystore
+    /// that could not be named keeps the pick on screen — whatever rows it
     /// claims. No door opens the console read-only on its own.
     #[test]
     fn the_wallet_door_follows_the_picked_keystore() {
@@ -1267,7 +1318,8 @@ mod tests {
             wallet_door(&WalletList {
                 wallets: rows(&[("a", true)]),
                 error: String::new(),
-                keystore: true
+                keystore: true,
+                offline: false,
             }),
             crate::WalletDoor::Wallets
         ));
@@ -1275,17 +1327,29 @@ mod tests {
             wallet_door(&WalletList {
                 wallets: vec![],
                 error: String::new(),
-                keystore: true
+                keystore: true,
+                offline: false,
             }),
             crate::WalletDoor::Password
         ));
         assert!(matches!(
             wallet_door(&WalletList {
                 wallets: vec![],
-                error: "unreachable".into(),
-                keystore: false
+                error: "no network served".into(),
+                keystore: false,
+                offline: false,
             }),
             crate::WalletDoor::Unreached
+        ));
+        // a node that never answered is offline, whatever else the list says.
+        assert!(matches!(
+            wallet_door(&WalletList {
+                wallets: rows(&[("a", true)]),
+                error: "Can't reach this network's node at http://127.0.0.1:1.".into(),
+                keystore: true,
+                offline: true,
+            }),
+            crate::WalletDoor::Offline
         ));
     }
 
