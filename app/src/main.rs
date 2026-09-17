@@ -6,11 +6,11 @@ mod backend;
 mod call;
 mod editor;
 mod module_view;
-mod shell;
 mod secret;
+mod shell;
 mod tray;
-mod view_tree;
 mod video;
+mod view_tree;
 
 fn main() {
     install_log();

@@ -468,4 +468,3 @@ pub(crate) fn now_seconds() -> i64 {
 pub fn current_wall_seconds() -> i64 {
     now_seconds()
 }
-

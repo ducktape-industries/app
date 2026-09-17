@@ -455,11 +455,7 @@ pub fn zoom(step: isize, cx: &mut App) {
     let nearest = ZOOM_STEPS
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| {
-            (*a - current)
-                .abs()
-                .total_cmp(&(*b - current).abs())
-        })
+        .min_by(|(_, a), (_, b)| (*a - current).abs().total_cmp(&(*b - current).abs()))
         .map(|(ix, _)| ix as isize)
         .unwrap_or(2);
     let next = (nearest + step).clamp(0, ZOOM_STEPS.len() as isize - 1) as usize;
@@ -530,8 +526,14 @@ pub fn apply_template_palette(cx: &mut App) -> anyhow::Result<()> {
             gray: hsl_of(if dark { 0x2f2f2f } else { 0xf8f8f7 }),
         };
         // Inline code and the code block come off the template's gray ramps.
-        theme.code_background = hsla_of(if dark { 0xe7e7f3 } else { 0x0f1624 }, if dark { 0.07 } else { 0.05 });
-        theme.code_foreground = hsla_of(if dark { 0xfbfbfe } else { 0x23252a }, if dark { 0.75 } else { 0.87 });
+        theme.code_background = hsla_of(
+            if dark { 0xe7e7f3 } else { 0x0f1624 },
+            if dark { 0.07 } else { 0.05 },
+        );
+        theme.code_foreground = hsla_of(
+            if dark { 0xfbfbfe } else { 0x23252a },
+            if dark { 0.75 } else { 0.87 },
+        );
         theme.code_block_background = hsla_of(
             if dark { 0xe8e8fd } else { 0x383838 },
             if dark { 0.05 } else { 0.04 },

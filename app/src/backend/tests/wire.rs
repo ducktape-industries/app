@@ -527,7 +527,11 @@ fn the_live_stream_subscribes_to_every_plane_the_console_reads() {
     assert_eq!(crate::backend::live::subscribed_planes(&[]), built_in);
     // a registry-listed id rides after the built-in planes, once: a
     // registered view reads its module's plane through `rpc.live`
-    let registry = ["boards".to_string(), "canvas".to_string(), "chat".to_string()];
+    let registry = [
+        "boards".to_string(),
+        "canvas".to_string(),
+        "chat".to_string(),
+    ];
     let mut expected: Vec<&str> = built_in.to_vec();
     expected.extend(["boards", "canvas"]);
     assert_eq!(crate::backend::live::subscribed_planes(&registry), expected);

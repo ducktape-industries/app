@@ -62,24 +62,96 @@ pub struct Emoji {
 /// A small, opinionated set — enough to type with, and the place to plug a
 /// full table in.
 pub const EMOJI: &[Emoji] = &[
-    Emoji { character: "😀", name: "grinning", keywords: &["smile", "happy"] },
-    Emoji { character: "😉", name: "wink", keywords: &["joke"] },
-    Emoji { character: "😍", name: "heart eyes", keywords: &["love"] },
-    Emoji { character: "🤔", name: "thinking", keywords: &["hmm"] },
-    Emoji { character: "🙌", name: "raised hands", keywords: &["celebrate", "yay"] },
-    Emoji { character: "👍", name: "thumbs up", keywords: &["+1", "ok", "yes"] },
-    Emoji { character: "👎", name: "thumbs down", keywords: &["-1", "no"] },
-    Emoji { character: "🔥", name: "fire", keywords: &["hot", "lit"] },
-    Emoji { character: "🚀", name: "rocket", keywords: &["ship", "launch"] },
-    Emoji { character: "✅", name: "check", keywords: &["done", "tick"] },
-    Emoji { character: "❌", name: "cross", keywords: &["no", "fail"] },
-    Emoji { character: "⚠️", name: "warning", keywords: &["caution"] },
-    Emoji { character: "💡", name: "bulb", keywords: &["idea", "note"] },
-    Emoji { character: "📝", name: "memo", keywords: &["note", "write"] },
-    Emoji { character: "🎉", name: "party", keywords: &["tada", "celebrate"] },
-    Emoji { character: "❤️", name: "heart", keywords: &["love"] },
-    Emoji { character: "🐛", name: "bug", keywords: &["issue", "defect"] },
-    Emoji { character: "☕", name: "coffee", keywords: &["break"] },
+    Emoji {
+        character: "😀",
+        name: "grinning",
+        keywords: &["smile", "happy"],
+    },
+    Emoji {
+        character: "😉",
+        name: "wink",
+        keywords: &["joke"],
+    },
+    Emoji {
+        character: "😍",
+        name: "heart eyes",
+        keywords: &["love"],
+    },
+    Emoji {
+        character: "🤔",
+        name: "thinking",
+        keywords: &["hmm"],
+    },
+    Emoji {
+        character: "🙌",
+        name: "raised hands",
+        keywords: &["celebrate", "yay"],
+    },
+    Emoji {
+        character: "👍",
+        name: "thumbs up",
+        keywords: &["+1", "ok", "yes"],
+    },
+    Emoji {
+        character: "👎",
+        name: "thumbs down",
+        keywords: &["-1", "no"],
+    },
+    Emoji {
+        character: "🔥",
+        name: "fire",
+        keywords: &["hot", "lit"],
+    },
+    Emoji {
+        character: "🚀",
+        name: "rocket",
+        keywords: &["ship", "launch"],
+    },
+    Emoji {
+        character: "✅",
+        name: "check",
+        keywords: &["done", "tick"],
+    },
+    Emoji {
+        character: "❌",
+        name: "cross",
+        keywords: &["no", "fail"],
+    },
+    Emoji {
+        character: "⚠️",
+        name: "warning",
+        keywords: &["caution"],
+    },
+    Emoji {
+        character: "💡",
+        name: "bulb",
+        keywords: &["idea", "note"],
+    },
+    Emoji {
+        character: "📝",
+        name: "memo",
+        keywords: &["note", "write"],
+    },
+    Emoji {
+        character: "🎉",
+        name: "party",
+        keywords: &["tada", "celebrate"],
+    },
+    Emoji {
+        character: "❤️",
+        name: "heart",
+        keywords: &["love"],
+    },
+    Emoji {
+        character: "🐛",
+        name: "bug",
+        keywords: &["issue", "defect"],
+    },
+    Emoji {
+        character: "☕",
+        name: "coffee",
+        keywords: &["break"],
+    },
 ];
 
 /// Someone who can be mentioned. Applications replace this list.

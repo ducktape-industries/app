@@ -47,8 +47,9 @@ pub const MODULE_OWNED: [&str; 6] = ["governance", "files", "pages", "chat", "fo
 
 /// The desktop's own views, staged beside the binary and asked for at boot.
 /// Every view that is not one of these comes off the connected node.
-pub const DESKTOP_OWNED: [&str; 6] =
-    ["members", "agents", "node", "explorer", "settings", "palette"];
+pub const DESKTOP_OWNED: [&str; 6] = [
+    "members", "agents", "node", "explorer", "settings", "palette",
+];
 
 pub fn desktop_owned(module: &str) -> bool {
     DESKTOP_OWNED.contains(&module)

@@ -11,15 +11,15 @@ use gpui_kit::{
     Window, canvas, div, img, px,
 };
 use gpui_notion::NotionEditor;
-use gpui_notion::editor::input_rules::InputRuleMode;
-use gpui_notion::editor::comments::{AnnotationMode, AnnotationRequested};
 use gpui_notion::editor::block::{
     BlockAttrs, BlockCaps, BlockContent, BlockContext, BlockLayout, BlockRegistry, BlockSpec, types,
 };
+use gpui_notion::editor::comments::{AnnotationMode, AnnotationRequested};
+use gpui_notion::editor::input_rules::InputRuleMode;
 use gpui_notion::editor::mark::{HighlightColor, Mark, MarkKind, MarkList, TextColor};
+use gpui_notion::editor::slash::{ApplicationMenu, ApplicationMenuAnchor, MenuAction};
 use gpui_notion::editor::theme::{ActiveEditorTheme as _, EditorTheme};
 use gpui_notion::editor::toolbar::{ToolbarAction, ToolbarItem};
-use gpui_notion::editor::slash::{ApplicationMenu, ApplicationMenuAnchor, MenuAction};
 use gpui_notion::editor::view::{Caret, DocumentChanged, LinkPressed, SelectionChanged};
 use view_wire as wire;
 use wire::editor_presentation::EditorMargin;
@@ -583,7 +583,6 @@ impl RichWireEditor {
         cx.notify();
     }
 
-
     fn annotation(&mut self, event: &AnnotationRequested, cx: &mut Context<Self>) {
         let Some(line) = self.editor.read(cx).index_of(event.block) else {
             return;
@@ -718,16 +717,15 @@ impl RichWireEditor {
             return;
         }
         let key = super::key_state(keystroke);
-        let claimed = self
-            .store
-            .projection(&self.key)
-            .and_then(|projection| projection.options.binding)
-            .is_some_and(|binding| {
-                binding
-                    .claims
-                    .iter()
-                    .any(|claim| claim.command && claim.matches(&key, cfg!(target_os = "macos")))
-            });
+        let claimed =
+            self.store
+                .projection(&self.key)
+                .and_then(|projection| projection.options.binding)
+                .is_some_and(|binding| {
+                    binding.claims.iter().any(|claim| {
+                        claim.command && claim.matches(&key, cfg!(target_os = "macos"))
+                    })
+                });
         if !claimed {
             return;
         }
@@ -1053,7 +1051,7 @@ mod tests {
     fn application_menu_request(cx: &mut gpui_kit::TestAppContext, gesture: MenuGesture) {
         use gpui_kit::test::TestWindowExt as _;
         use wire::editor_presentation::{
-            EditorMenu, EditorMenuAnchor, EditorMenuItem, EditorPresentation, EditorInteraction,
+            EditorInteraction, EditorMenu, EditorMenuAnchor, EditorMenuItem, EditorPresentation,
         };
         cx.update(gpui_kit::init);
         cx.update(init);

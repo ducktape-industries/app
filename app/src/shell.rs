@@ -2,7 +2,6 @@
 //! async actions await the result, so opening a window never reports success
 //! before the platform has actually opened it.
 
-use view_wire::Task;
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
@@ -12,6 +11,7 @@ use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
+use view_wire::Task;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WindowKey(u64);
@@ -612,10 +612,7 @@ impl DesktopWindow {
             let model = self.model.clone();
             self.overlay_route = Some(cx.subscribe(&view, move |_, _, event, cx| {
                 model.update(cx, |model, cx| {
-                    model.dispatch(
-                        routed(Message::RegisteredViewEvent, event.clone()),
-                        cx,
-                    )
+                    model.dispatch(routed(Message::RegisteredViewEvent, event.clone()), cx)
                 });
             }));
             self.overlay_module = Some(view);
@@ -700,11 +697,7 @@ impl DesktopWindow {
             }
         });
     }
-    fn observe_module_window(
-        &mut self,
-        event: view_wire::events::Window,
-        cx: &mut gpui_kit::App,
-    ) {
+    fn observe_module_window(&mut self, event: view_wire::events::Window, cx: &mut gpui_kit::App) {
         let (Some((_, module)), Some(route)) = (&self.module, self.module_route) else {
             return;
         };
@@ -1823,8 +1816,9 @@ impl DesktopWindow {
                 })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.model
-                        .update(cx, |model, cx| model.dispatch(Message::SelectShellTab(tab), cx));
+                    this.model.update(cx, |model, cx| {
+                        model.dispatch(Message::SelectShellTab(tab), cx)
+                    });
                 }));
                 #[cfg(test)]
                 let row = {
@@ -2615,7 +2609,9 @@ mod close_tests {
         // A real guest frame replaces interest; explicitly rearm this host-only
         // fixture before exercising the actual native presenter's release hook.
         queue_close_intent("closed");
-        model.update(cx, |model, _| model.state.shell_tab = ShellTab::View("files"));
+        model.update(cx, |model, _| {
+            model.state.shell_tab = ShellTab::View("files")
+        });
         let weak = presenter.downgrade();
         drop(presenter);
         handle
@@ -3018,8 +3014,7 @@ pub(crate) const BUNDLED_FACES: [&[u8]; 12] = [
 
 /// The emoji face, kept apart from [`BUNDLED_FACES`] because the two
 /// platforms differ on it (see the registration below).
-pub(crate) const EMOJI_FACE: &[u8] =
-    include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
+pub(crate) const EMOJI_FACE: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 
 /// The families a run falls back to when the primary face has no glyph, after
 /// the bundled Hangul face each chain leads with. WITHOUT this list a Korean

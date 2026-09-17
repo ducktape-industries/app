@@ -2,8 +2,8 @@
 //! opens: turn into, link and color.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{ActiveTheme, Disableable as _, Selectable as _, Sizable as _, h_flex};
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, IntoElement,
@@ -96,7 +96,12 @@ impl super::view::NotionEditor {
             return false;
         }
         self.index_of(id)
-            .map(|ix| BlockRegistry::global(cx).get(&self.blocks[ix].ty).caps().marks)
+            .map(|ix| {
+                BlockRegistry::global(cx)
+                    .get(&self.blocks[ix].ty)
+                    .caps()
+                    .marks
+            })
             .unwrap_or(false)
     }
 
@@ -155,12 +160,7 @@ impl super::view::NotionEditor {
             .child(self.mark_button("bold", "Bold", MarkKind::Bold, cx))
             .child(self.mark_button("italic", "Italic", MarkKind::Italic, cx))
             .child(self.mark_button("underline", "Underline", MarkKind::Underline, cx))
-            .child(self.mark_button(
-                "strikethrough",
-                "Strikethrough",
-                MarkKind::Strike,
-                cx,
-            ))
+            .child(self.mark_button("strikethrough", "Strikethrough", MarkKind::Strike, cx))
             .child(self.mark_button("code", "Code", MarkKind::Code, cx))
             .child(separator(cx))
             .child(
@@ -262,9 +262,7 @@ impl super::view::NotionEditor {
             return "Text".into();
         };
         let block = &self.blocks[ix];
-        BlockRegistry::global(cx)
-            .get(&block.ty)
-            .label(&block.attrs)
+        BlockRegistry::global(cx).get(&block.ty).label(&block.attrs)
     }
 
     fn render_more_menu(&self, focus: &FocusHandle, _cx: &mut Context<Self>) -> impl IntoElement {
@@ -305,26 +303,31 @@ impl super::view::NotionEditor {
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu.action_context(focus.clone()).label("Text color");
                 for color in TextColor::ALL {
-                    menu = menu.menu_element(Box::new(actions::ApplyColor::Text(color)), move |_, cx| {
-                        swatch_row(
-                            color.label(),
-                            cx.editor_theme()
-                                .text_color(color)
-                                .unwrap_or(cx.theme().foreground),
-                            cx,
-                        )
-                    });
+                    menu = menu.menu_element(
+                        Box::new(actions::ApplyColor::Text(color)),
+                        move |_, cx| {
+                            swatch_row(
+                                color.label(),
+                                cx.editor_theme()
+                                    .text_color(color)
+                                    .unwrap_or(cx.theme().foreground),
+                                cx,
+                            )
+                        },
+                    );
                 }
                 menu = menu.separator().label("Highlight color");
                 for color in HighlightColor::ALL {
-                    menu = menu
-                        .menu_element(Box::new(actions::ApplyColor::Highlight(color)), move |_, cx| {
+                    menu = menu.menu_element(
+                        Box::new(actions::ApplyColor::Highlight(color)),
+                        move |_, cx| {
                             swatch_row(
                                 color.label(),
                                 cx.editor_theme().highlight_fill(Some(color)),
                                 cx,
                             )
-                        });
+                        },
+                    );
                 }
                 menu
             })
@@ -380,7 +383,12 @@ impl super::view::NotionEditor {
             return;
         };
         // Escape returns focus to the text it was opened from.
-        self.focus_block(editor.block, super::view::Caret::At(editor.range.end), window, cx);
+        self.focus_block(
+            editor.block,
+            super::view::Caret::At(editor.range.end),
+            window,
+            cx,
+        );
         cx.notify();
     }
 
@@ -453,7 +461,9 @@ impl super::view::NotionEditor {
                     .icon(Lucide("corner-down-left"))
                     .tooltip("Apply link")
                     .disabled(!has_link)
-                    .on_click(cx.listener(|this, _, window, cx| this.apply_link_editor(window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.apply_link_editor(window, cx)),
+                    ),
             )
             .child(separator(cx))
             .child(
@@ -531,4 +541,3 @@ trait WhenNot: Sized {
 }
 
 impl<T: Sized> WhenNot for T {}
-

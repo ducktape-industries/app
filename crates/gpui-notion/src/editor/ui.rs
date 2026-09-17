@@ -52,14 +52,19 @@ pub fn menu_row(selected: bool, cx: &App) -> Div {
         .cursor_pointer()
         .text_size(theme.ui_text_size);
     if selected {
-        row.bg(cx.theme().accent).text_color(cx.theme().accent_foreground)
+        row.bg(cx.theme().accent)
+            .text_color(cx.theme().accent_foreground)
     } else {
         row.hover(|this| this.bg(cx.theme().accent.opacity(0.6)))
     }
 }
 
 /// A toolbar button: 2rem square, ghost by default, filled when active.
-pub fn toolbar_button(id: impl Into<gpui_kit::ElementId>, active: bool, cx: &App) -> gpui_kit::Stateful<Div> {
+pub fn toolbar_button(
+    id: impl Into<gpui_kit::ElementId>,
+    active: bool,
+    cx: &App,
+) -> gpui_kit::Stateful<Div> {
     let theme = cx.editor_theme();
     let button = div()
         .id(id)

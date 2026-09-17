@@ -546,5 +546,9 @@ fn the_app_links_only_what_it_still_speaks_for() {
         })
         .map(|(name, _)| name.as_str())
         .collect();
-    assert_eq!(reaching, [] as [&str; 0], "the app reaches into the view tree by path");
+    assert_eq!(
+        reaching,
+        [] as [&str; 0],
+        "the app reaches into the view tree by path"
+    );
 }

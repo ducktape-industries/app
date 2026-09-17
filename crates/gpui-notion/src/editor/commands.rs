@@ -9,8 +9,8 @@ use std::ops::Range;
 use gpui_kit::{App, Context, SharedString, Window};
 
 use super::block::{BlockAttrs, BlockContent, BlockId, BlockRegistry, BlockType, types};
-use super::mark::{Edit, HighlightColor, MarkKind, TextColor};
 use super::history::Step;
+use super::mark::{Edit, HighlightColor, MarkKind, TextColor};
 use super::view::{Caret, DocumentChanged, LinkPressed, NotionEditor};
 
 impl NotionEditor {
@@ -75,7 +75,9 @@ impl NotionEditor {
         });
 
         for id in ids {
-            let Some(ix) = self.index_of(id) else { continue };
+            let Some(ix) = self.index_of(id) else {
+                continue;
+            };
             let range = 0..self.blocks[ix].text.len();
             if range.is_empty() {
                 continue;
@@ -150,7 +152,9 @@ impl NotionEditor {
         if let Some(stored) = &block.stored_marks {
             return stored.iter().any(|k| k.id() == kind.id());
         }
-        block.marks.has(kind, &block.state.read(cx).selected_range())
+        block
+            .marks
+            .has(kind, &block.state.read(cx).selected_range())
     }
 
     pub fn toggle_bold(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -351,7 +355,13 @@ impl NotionEditor {
             .map(|b| b.ty == ty && b.attrs.level == attrs.level)
             .unwrap_or(false);
         if is_active {
-            self.set_block_type(id, types::PARAGRAPH.into(), BlockAttrs::default(), window, cx);
+            self.set_block_type(
+                id,
+                types::PARAGRAPH.into(),
+                BlockAttrs::default(),
+                window,
+                cx,
+            );
         } else {
             self.set_block_type(id, ty, attrs, window, cx);
         }
@@ -437,7 +447,9 @@ impl NotionEditor {
     /// Tiptap `setHorizontalRule`: replaces an empty block, else inserts after.
     pub fn set_horizontal_rule(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.record(Step::Structural, cx);
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if self.blocks[ix].text.is_empty() {
             let id = self.blocks[ix].id;
             self.set_block_type(
@@ -474,7 +486,9 @@ impl NotionEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let src = src.into();
         let attrs = BlockAttrs {
             src: (!src.is_empty()).then_some(src),
@@ -521,7 +535,9 @@ impl NotionEditor {
     /// of the type this one splits into.
     pub fn split_block(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.record(Step::Structural, cx);
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let range = self.blocks[ix].state.read(cx).selected_range();
         let (start, end) = (range.start, range.end);
 
@@ -535,7 +551,13 @@ impl NotionEditor {
                 self.lift_list_item(window, cx);
             } else {
                 let id = self.blocks[ix].id;
-                self.set_block_type(id, types::PARAGRAPH.into(), BlockAttrs::default(), window, cx);
+                self.set_block_type(
+                    id,
+                    types::PARAGRAPH.into(),
+                    BlockAttrs::default(),
+                    window,
+                    cx,
+                );
                 self.focus_block(id, Caret::Start, window, cx);
             }
             return;
@@ -569,7 +591,9 @@ impl NotionEditor {
     /// Tiptap `joinBackward`: Backspace at the start of a block.
     pub fn join_backward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.record(Step::Structural, cx);
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
 
         // A formatted block first returns to a plain paragraph.
         if self.blocks[ix].indent > 0 {
@@ -578,7 +602,13 @@ impl NotionEditor {
         }
         if self.blocks[ix].ty != types::PARAGRAPH {
             let id = self.blocks[ix].id;
-            self.set_block_type(id, types::PARAGRAPH.into(), BlockAttrs::default(), window, cx);
+            self.set_block_type(
+                id,
+                types::PARAGRAPH.into(),
+                BlockAttrs::default(),
+                window,
+                cx,
+            );
             self.focus_block(id, Caret::Start, window, cx);
             return;
         }
@@ -610,7 +640,9 @@ impl NotionEditor {
     /// Delete at the end of a block pulls the next one up.
     pub fn join_forward(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.record(Step::Structural, cx);
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if ix + 1 >= self.blocks.len() {
             return;
         }
@@ -712,7 +744,13 @@ impl NotionEditor {
         }
         if self.spec_at(ix, cx).caps().list {
             let id = self.blocks[ix].id;
-            self.set_block_type(id, types::PARAGRAPH.into(), BlockAttrs::default(), window, cx);
+            self.set_block_type(
+                id,
+                types::PARAGRAPH.into(),
+                BlockAttrs::default(),
+                window,
+                cx,
+            );
             self.focus_block(id, Caret::End, window, cx);
             return true;
         }
@@ -737,7 +775,9 @@ impl NotionEditor {
             cx.notify();
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let content = self.blocks[ix].content();
         let id = self.insert_block(ix + 1, content, window, cx);
         self.focus_block(id, Caret::End, window, cx);
@@ -749,12 +789,20 @@ impl NotionEditor {
             return;
         }
         self.record(Step::Structural, cx);
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if self.blocks.len() == 1 {
             let id = self.blocks[ix].id;
             self.set_block_text(ix, String::new(), Some(0), window, cx);
             self.blocks[ix].marks.clear();
-            self.set_block_type(id, types::PARAGRAPH.into(), BlockAttrs::default(), window, cx);
+            self.set_block_type(
+                id,
+                types::PARAGRAPH.into(),
+                BlockAttrs::default(),
+                window,
+                cx,
+            );
             return;
         }
         let id = self.blocks[ix].id;
@@ -767,7 +815,9 @@ impl NotionEditor {
     /// Move a block past its neighbour, taking focus with it.
     pub fn move_block(&mut self, delta: isize, cx: &mut Context<Self>) {
         self.record(Step::Structural, cx);
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let target = ix as isize + delta;
         if target < 0 || target as usize >= self.blocks.len() {
             return;
@@ -806,7 +856,9 @@ impl NotionEditor {
         let anchor = self.blocks.get(to).map(|block| block.id);
         let mut moving = Vec::new();
         for id in ids {
-            let Some(ix) = self.index_of(*id) else { continue };
+            let Some(ix) = self.index_of(*id) else {
+                continue;
+            };
             moving.push(self.blocks.remove(ix));
         }
         let at = match anchor.and_then(|id| self.index_of(id)) {
@@ -814,7 +866,8 @@ impl NotionEditor {
             None => self.blocks.len(),
         };
         for (offset, block) in moving.into_iter().enumerate() {
-            self.blocks.insert((at + offset).min(self.blocks.len()), block);
+            self.blocks
+                .insert((at + offset).min(self.blocks.len()), block);
         }
         cx.emit(DocumentChanged);
         cx.notify();
@@ -927,7 +980,9 @@ impl NotionEditor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if self.blocks[ix].ty != types::CODE_BLOCK {
             return;
         }
@@ -942,14 +997,18 @@ impl NotionEditor {
 
     /// Put the active block's text on the clipboard.
     pub fn copy_active_block(&mut self, cx: &mut Context<Self>) {
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let text = self.blocks[ix].text.clone();
         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
     }
 
     /// Insert plain text at the caret, as a paste of unformatted text does.
     pub fn insert_content(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let range = self.blocks[ix].state.read(cx).selected_range();
         let caret = range.start + text.len();
         self.edit_block_text(ix, range, text, Some(caret), window, cx);

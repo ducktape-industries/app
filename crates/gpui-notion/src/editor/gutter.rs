@@ -10,9 +10,8 @@ use gpui_kit::{
     ParentElement as _, Render, Styled as _, Window, div, px,
 };
 
-
-use super::block::BlockId;
 use super::actions;
+use super::block::BlockId;
 use super::block::BlockRegistry;
 use super::theme::ActiveEditorTheme;
 use super::ui::Lucide;
@@ -69,9 +68,7 @@ impl NotionEditor {
         let id = block.id;
         let text = block.text.clone();
         let layout = self.layout_at(ix, cx);
-        let label = BlockRegistry::global(cx)
-            .get(&block.ty)
-            .label(&block.attrs);
+        let label = BlockRegistry::global(cx).get(&block.ty).label(&block.attrs);
         let focus = self.focus_handle_for_editor();
         let is_table = BlockRegistry::global(cx).get(&block.ty).caps().grid;
         // Centre the controls on the block's first line, using the line
@@ -146,7 +143,12 @@ impl NotionEditor {
     /// the template's `+` button does.
     pub fn insert_block_below(&mut self, id: BlockId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(ix) = self.index_of(id) else { return };
-        let new_id = self.insert_block(ix + 1, super::block::BlockContent::paragraph(""), window, cx);
+        let new_id = self.insert_block(
+            ix + 1,
+            super::block::BlockContent::paragraph(""),
+            window,
+            cx,
+        );
         self.focus_block(new_id, Caret::Start, window, cx);
         self.open_slash_menu(window, cx);
     }
@@ -248,7 +250,12 @@ impl NotionEditor {
 
 /// `FluentBuilder::when` with both branches, kept local to this module.
 trait WhenElse: Sized {
-    fn when_else(self, condition: bool, then: impl FnOnce(Self) -> Self, other: impl FnOnce(Self) -> Self) -> Self {
+    fn when_else(
+        self,
+        condition: bool,
+        then: impl FnOnce(Self) -> Self,
+        other: impl FnOnce(Self) -> Self,
+    ) -> Self {
         if condition { then(self) } else { other(self) }
     }
 }
@@ -285,8 +292,7 @@ fn block_menu(
             }
         });
     }
-    menu
-        .menu("Comment", Box::new(actions::AddComment))
+    menu.menu("Comment", Box::new(actions::AddComment))
         .submenu("Color", window, cx, {
             let focus = color_focus.clone();
             move |menu, _, _| color_menu(focus.clone(), menu)
@@ -339,7 +345,10 @@ fn color_menu(focus: gpui_kit::FocusHandle, menu: PopupMenu) -> PopupMenu {
     }
     menu = menu.separator().label("Highlight color");
     for color in HighlightColor::ALL {
-        menu = menu.menu(color.label(), Box::new(actions::ApplyColor::Highlight(color)));
+        menu = menu.menu(
+            color.label(),
+            Box::new(actions::ApplyColor::Highlight(color)),
+        );
     }
     menu
 }

@@ -4,8 +4,8 @@
 //! boundary opens it, the characters after it filter, Enter commits and
 //! Escape closes, leaving the typed text alone.
 
-use gpui_kit::component::ActiveTheme;
 use gpui_kit::TestSupportExt as _;
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::{
     Anchor, AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _,
     Point, SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
@@ -14,8 +14,8 @@ use gpui_kit::{
 use super::block::{BlockId, BlockRegistry};
 use super::mark::MarkKind;
 use super::suggestion::{EMOJI, Emoji, Mention, Trigger, default_mentions, matches};
-use super::toolbar::OVERLAY_PRIORITY;
 use super::theme::ActiveEditorTheme;
+use super::toolbar::OVERLAY_PRIORITY;
 use super::ui;
 use super::view::NotionEditor;
 

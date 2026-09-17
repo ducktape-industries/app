@@ -1090,7 +1090,8 @@ impl Ducktape {
         if !self.connected {
             return Task::none();
         }
-        if (self.shell_tab == ShellTab::View("chat")) || (self.shell_tab == ShellTab::View("pages")) {
+        if (self.shell_tab == ShellTab::View("chat")) || (self.shell_tab == ShellTab::View("pages"))
+        {
             return Task::none();
         }
         self.settings_generation = crate::backend::keep_i64(
@@ -4050,7 +4051,9 @@ impl Ducktape {
     fn on_open_account(&mut self) -> Task<AppMessage> {
         let signed_in = crate::backend::account_probe(self.account_exists);
         match signed_in {
-            AccountProbe::Found => Task::done(AppMessage::SelectShellTab(ShellTab::View("settings"))),
+            AccountProbe::Found => {
+                Task::done(AppMessage::SelectShellTab(ShellTab::View("settings")))
+            }
             AccountProbe::Missing => self.on_open_account_welcome(),
         }
     }

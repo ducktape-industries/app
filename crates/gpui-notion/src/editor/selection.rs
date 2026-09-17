@@ -7,8 +7,8 @@
 use gpui_kit::base::actions::{SelectDown, SelectUp};
 use gpui_kit::component::input::{Copy, Cut, SelectAll};
 use gpui_kit::{
-    ClipboardItem, Context, MouseButton, MouseDownEvent, MouseMoveEvent,
-    MouseUpEvent, Pixels, Point, Window,
+    ClipboardItem, Context, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Pixels,
+    Point, Window,
 };
 
 use super::block::{BlockContent, BlockId, BlockRegistry, types};
@@ -310,14 +310,21 @@ impl NotionEditor {
         self.mouse_anchor = None;
     }
 
-    pub(crate) fn on_select_up(&mut self, _: &SelectUp, window: &mut Window, cx: &mut Context<Self>) {
+    pub(crate) fn on_select_up(
+        &mut self,
+        _: &SelectUp,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.has_block_selection() {
             if self.extend_block_selection(-1, window, cx) {
                 cx.stop_propagation();
             }
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if !self.caret_on_first_row(ix, cx) || ix == 0 {
             return;
         }
@@ -337,7 +344,9 @@ impl NotionEditor {
             }
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if !self.caret_on_last_row(ix, cx) || ix + 1 >= self.blocks.len() {
             return;
         }
@@ -352,7 +361,9 @@ impl NotionEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let selection = self.blocks[ix].state.read(cx).selected_range();
         let whole_block = !self.blocks[ix].text.is_empty()
             && selection.start == 0

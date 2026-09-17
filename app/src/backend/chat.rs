@@ -40,22 +40,54 @@ pub fn huddle_self(roster: Vec<HuddleParticipant>) -> bool {
 // The huddle's elapsed clock is a LOCAL session fact on a NATIVE `every 1s`
 // subscription — ui-lang ships one, so this app has no tick stream of its own.
 
-pub async fn join_huddle(rpc: String, password: String, channel_id: String) -> Result<bool, AppError> {
-    guest_participation(rpc, password, serde_json::json!({"kind":"join","channel":channel_id})).await?;
+pub async fn join_huddle(
+    rpc: String,
+    password: String,
+    channel_id: String,
+) -> Result<bool, AppError> {
+    guest_participation(
+        rpc,
+        password,
+        serde_json::json!({"kind":"join","channel":channel_id}),
+    )
+    .await?;
     Ok(true)
 }
 
-pub async fn move_huddle(rpc: String, password: String, leaving: String, channel_id: String) -> Result<String, AppError> {
-    guest_participation(rpc, password, serde_json::json!({"kind":"move","from":leaving,"channel":channel_id})).await
+pub async fn move_huddle(
+    rpc: String,
+    password: String,
+    leaving: String,
+    channel_id: String,
+) -> Result<String, AppError> {
+    guest_participation(
+        rpc,
+        password,
+        serde_json::json!({"kind":"move","from":leaving,"channel":channel_id}),
+    )
+    .await
 }
 
-pub async fn leave_huddle(rpc: String, password: String, channel_id: String) -> Result<bool, AppError> {
-    guest_participation(rpc, password, serde_json::json!({"kind":"leave","channel":channel_id})).await?;
+pub async fn leave_huddle(
+    rpc: String,
+    password: String,
+    channel_id: String,
+) -> Result<bool, AppError> {
+    guest_participation(
+        rpc,
+        password,
+        serde_json::json!({"kind":"leave","channel":channel_id}),
+    )
+    .await?;
     Ok(true)
 }
 
 /// The shell relays user intent; the deployed Chat component owns participation.
-async fn guest_participation(rpc: String, password: String, intent: serde_json::Value) -> Result<String, AppError> {
+async fn guest_participation(
+    rpc: String,
+    password: String,
+    intent: serde_json::Value,
+) -> Result<String, AppError> {
     require_seated_signer(password).await?;
     let result = chat_background(&rpc, intent).await?;
     result["channel"]
@@ -74,8 +106,13 @@ pub(crate) async fn chat_background(
     let result: serde_json::Value =
         serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
     if let Some(error) = result.get("error") {
-        return Err(AppError {message:error["message"].as_str().unwrap_or("Chat participation refused").into(),
-            committed:error["committed"].as_bool().unwrap_or(false)});
+        return Err(AppError {
+            message: error["message"]
+                .as_str()
+                .unwrap_or("Chat participation refused")
+                .into(),
+            committed: error["committed"].as_bool().unwrap_or(false),
+        });
     }
     Ok(result)
 }
