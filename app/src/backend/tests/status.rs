@@ -144,6 +144,32 @@ fn the_sync_label_shows_progress_only_while_catching_up() {
     assert_eq!(sync_label("", 412, 900), "");
 }
 
+/// THE OPEN WAIT NAMES WHAT IT WAITS ON (#27). A node that has not served yet
+/// holds every module read until it does, so the wait leads with its phase; a
+/// serving node, a phase core does not publish, or none at all leave the
+/// connection's own line alone.
+#[test]
+fn the_open_wait_names_a_node_that_has_not_served_yet() {
+    let loading = "Loading chat and workspace…";
+    assert_eq!(
+        opening_progress("syncing", loading),
+        "The node is syncing · Loading chat and workspace…"
+    );
+    assert_eq!(
+        opening_progress("joining", "Retrying automatically in 2s · retry 2"),
+        "The node is joining · Retrying automatically in 2s · retry 2"
+    );
+    for phase in ["starting", "recovering"] {
+        assert_eq!(
+            opening_progress(phase, loading),
+            format!("The node is {phase} · {loading}")
+        );
+    }
+    for phase in ["serving", "validating", "behind", "rebalancing", ""] {
+        assert_eq!(opening_progress(phase, loading), loading);
+    }
+}
+
 /// ONE CARD, ONE SAMPLE — AND THE SAMPLE IS THE WHOLE PAIR.
 ///
 /// A checkpoint carries no meaning alone; it only ever says how far the durable

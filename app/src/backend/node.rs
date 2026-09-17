@@ -292,6 +292,24 @@ pub(crate) fn sync_in_progress(phase: &str) -> bool {
     phase == "syncing"
 }
 
+/// Whether the node has not served yet: `starting`, `recovering`, `joining`,
+/// `syncing` — core's phases before `serving`/`validating`. Its height is not
+/// the network's then, so a reader names the phase instead of `block N`. Any
+/// other phase, known or not, is not this.
+pub(crate) fn before_serving(phase: &str) -> bool {
+    matches!(phase, "starting" | "recovering" | "joining" | "syncing")
+}
+
+/// The open wait's line: what the connection is doing, led by the node's
+/// phase while it has not served yet — its module reads wait on the sync, so
+/// the phase is what the wait is waiting for.
+pub fn opening_progress(phase: &str, progress: &str) -> String {
+    match before_serving(phase) {
+        true => format!("The node is {phase} · {progress}"),
+        false => progress.to_owned(),
+    }
+}
+
 pub async fn load_node_facts(rpc: String) -> Result<NodeFacts, AppError> {
     async {
         let client = rpc_client(&rpc)?;

@@ -596,8 +596,9 @@ pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<Hu
 /// The one line a network row prints after its name: the probe's reading,
 /// and — for a live node whose contract number is not this app's — the
 /// refusal, in the same voice as provisioning's `blocked` step. A node whose
-/// own phase is `behind` says so, by its gap when it published one, instead of
-/// a block number that reads as healthy.
+/// own phase is `behind` says so, by its gap when it published one, and a node
+/// that has not served yet ([`super::node::before_serving`]) names its phase,
+/// instead of a block number that reads as healthy.
 pub fn network_row_label(row: &HubNetwork) -> String {
     let unprobed = !row.probed;
     if unprobed {
@@ -615,6 +616,9 @@ pub fn network_row_label(row: &HubNetwork) -> String {
         }
         super::node::ContractMatch::Match if row.phase == "behind" => {
             format!("{} · behind", row.name)
+        }
+        super::node::ContractMatch::Match if super::node::before_serving(&row.phase) => {
+            format!("{} · {}", row.name, row.phase)
         }
         super::node::ContractMatch::Match => format!("{} · block {}", row.name, row.height),
         super::node::ContractMatch::NodeBehind | super::node::ContractMatch::NodeAhead => {
@@ -1286,6 +1290,30 @@ mod tests {
             network_row_label(&rows[0]),
             "walk · another network at this address"
         );
+    }
+
+    /// A NODE THAT HAS NOT SERVED YET IS NOT `block 0` (#27). A joining or
+    /// syncing node names its phase; a serving or validating one, and a phase
+    /// core does not publish, keep the height. None of them refuses to open.
+    #[test]
+    fn a_node_before_serving_reads_as_its_phase() {
+        for (phase, label) in [
+            ("starting", "walk · starting"),
+            ("recovering", "walk · recovering"),
+            ("joining", "walk · joining"),
+            ("syncing", "walk · syncing"),
+            ("serving", "walk · block 2033"),
+            ("validating", "walk · block 2033"),
+            ("rebalancing", "walk · block 2033"),
+        ] {
+            let probe = HubProbe {
+                phase: phase.into(),
+                ..answer("walk#0e1b62f1", "walk#0e1b62f1")
+            };
+            let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], probe);
+            assert_eq!(network_row_label(&rows[0]), label);
+            assert!(!contract_refuses(&rows[0]));
+        }
     }
 
     /// `node init --name walk` twice is two networks: rows that share a human
