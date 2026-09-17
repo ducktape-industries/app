@@ -48,6 +48,33 @@ fn a_status_without_operations_produces_unmeasured_readings() {
     assert_eq!(facts.reachable_validators, None);
 }
 
+/// `operations.follow` IS OPTIONAL. A node publishes it only once a peer
+/// answered a tip poll; before that the three facts are absent, not a node at
+/// genesis with no gap — and the phase beside them reads the same either way.
+#[test]
+fn follow_facts_are_read_when_published_and_unmeasured_when_not() {
+    let behind = serde_json::json!({
+        "operations": {
+            "phase": "behind",
+            "follow": { "network_height": 756, "behind_by": 601, "heard_at": 1758078000 },
+        },
+    });
+    let facts = node_facts(&behind);
+    assert_eq!(facts.phase, "behind");
+    assert_eq!(
+        (facts.network_height, facts.behind_by, facts.heard_at),
+        (756, 601, 1758078000)
+    );
+
+    let unheard = serde_json::json!({ "operations": { "phase": "serving" } });
+    let facts = node_facts(&unheard);
+    assert_eq!(facts.phase, "serving");
+    assert_eq!(
+        (facts.network_height, facts.behind_by, facts.heard_at),
+        (UNMEASURED, UNMEASURED, UNMEASURED)
+    );
+}
+
 /// SYNC IS READ OFF `phase`, NEVER OFF THE PRESENCE OF `sync`.
 ///
 /// `operations.sync` is set by `begin_sync` and never cleared — no writer in
@@ -256,6 +283,8 @@ fn a_network_row_refuses_only_a_live_node_with_another_contract() {
         height: 7,
         contract,
         another_network: false,
+        phase: "serving".into(),
+        behind_by: 0,
     };
     let expected = EXPECTED_NODE_CONTRACT;
 

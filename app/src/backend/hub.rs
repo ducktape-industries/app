@@ -40,6 +40,12 @@ pub struct HubNetwork {
     /// answers is then a sibling's. Its reading is not this row's — `live`
     /// stays false and no height or contract is taken from it.
     pub another_network: bool,
+    /// The node's own `phase` and `follow.behind_by` off the same probe
+    /// ([`NodeFacts::phase`], [`NodeFacts::behind_by`]): empty and `-1` until
+    /// this row's node has answered, and `-1` too when the node has heard no
+    /// tip. Read only by [`network_row_label`]; a behind node still opens.
+    pub phase: String,
+    pub behind_by: i64,
 }
 
 /// One probe answer. Never an error: a node that does not answer IS the
@@ -52,6 +58,8 @@ pub struct HubProbe {
     pub contract: u32,
     /// the chain id the answering node serves; empty when none answered.
     pub chain_id: String,
+    pub phase: String,
+    pub behind_by: i64,
 }
 
 /// One wallet row the launch window lists, straight off `keystore::wallet`.
@@ -159,6 +167,8 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
                 height: -1,
                 contract: 0,
                 another_network: false,
+                phase: String::new(),
+                behind_by: -1,
             }
         })
         .collect();
@@ -186,6 +196,8 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
             height: -1,
             contract: 0,
             another_network: false,
+            phase: String::new(),
+            behind_by: -1,
         });
     }
     rows.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.id.cmp(&b.id)));
@@ -549,6 +561,12 @@ pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<Hu
                 row.live = probe.live && !another;
                 row.height = if another { -1 } else { probe.height };
                 row.contract = if another { 0 } else { probe.contract };
+                row.phase = if another {
+                    String::new()
+                } else {
+                    probe.phase.clone()
+                };
+                row.behind_by = if another { -1 } else { probe.behind_by };
             }
             row
         })
@@ -557,7 +575,9 @@ pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<Hu
 
 /// The one line a network row prints after its name: the probe's reading,
 /// and — for a live node whose contract number is not this app's — the
-/// refusal, in the same voice as provisioning's `blocked` step.
+/// refusal, in the same voice as provisioning's `blocked` step. A node whose
+/// own phase is `behind` says so, by its gap when it published one, instead of
+/// a block number that reads as healthy.
 pub fn network_row_label(row: &HubNetwork) -> String {
     let unprobed = !row.probed;
     if unprobed {
@@ -570,6 +590,12 @@ pub fn network_row_label(row: &HubNetwork) -> String {
         return format!("{} · offline", row.name);
     }
     match super::node::contract_match(row.contract) {
+        super::node::ContractMatch::Match if row.phase == "behind" && row.behind_by >= 0 => {
+            format!("{} · behind by {}", row.name, row.behind_by)
+        }
+        super::node::ContractMatch::Match if row.phase == "behind" => {
+            format!("{} · behind", row.name)
+        }
         super::node::ContractMatch::Match => format!("{} · block {}", row.name, row.height),
         super::node::ContractMatch::NodeBehind | super::node::ContractMatch::NodeAhead => {
             format!(
@@ -619,6 +645,11 @@ pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
                 .and_then(|status| status["height"].as_i64())
                 .unwrap_or(-1),
             contract: facts.as_ref().map_or(0, |facts| facts.contract),
+            behind_by: facts.as_ref().map_or(-1, |facts| facts.behind_by),
+            phase: facts
+                .as_ref()
+                .map(|facts| facts.phase.clone())
+                .unwrap_or_default(),
             chain_id: facts.map(|facts| facts.chain_id).unwrap_or_default(),
         }
     });
@@ -1084,6 +1115,8 @@ mod tests {
             height: -1,
             contract: 0,
             another_network: false,
+            phase: String::new(),
+            behind_by: -1,
         }];
         assert_eq!(
             selected_network_name(rows.clone(), "demo#a1b2".into()),
@@ -1106,6 +1139,8 @@ mod tests {
             height: -1,
             contract: 0,
             another_network: false,
+            phase: String::new(),
+            behind_by: -1,
         }
     }
 
@@ -1116,6 +1151,8 @@ mod tests {
             height: 2033,
             contract: EXPECTED_NODE_CONTRACT,
             chain_id: chain_id.into(),
+            phase: "serving".into(),
+            behind_by: 0,
         }
     }
 
@@ -1161,6 +1198,43 @@ mod tests {
         let rows = apply_network_probe(vec![remote], answer("http://203.0.113.9:18844", "team#1"));
         assert!(rows[0].live && !rows[0].another_network);
         assert_eq!(rows[0].height, 2033);
+    }
+
+    /// A NODE THAT STOPPED FOLLOWING IS NOT `block N` (#16). The node's own
+    /// `behind` phase is the verdict; the row prints the gap it published, or
+    /// just `behind` before any peer answered its tip poll — and still opens,
+    /// because a behind node serves.
+    #[test]
+    fn a_behind_node_reads_as_behind_and_still_opens() {
+        let behind = HubProbe {
+            phase: "behind".into(),
+            behind_by: 7,
+            ..answer("walk#0e1b62f1", "walk#0e1b62f1")
+        };
+        let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], behind.clone());
+        assert_eq!(network_row_label(&rows[0]), "walk · behind by 7");
+        assert!(!contract_refuses(&rows[0]));
+        assert!(!selected_network_refuses(&rows, "walk#0e1b62f1"));
+
+        let unheard = HubProbe {
+            behind_by: -1,
+            ..behind.clone()
+        };
+        let rows = apply_network_probe(rows, unheard);
+        assert_eq!(network_row_label(&rows[0]), "walk · behind");
+
+        // a sibling's behind node on this row's port is still not this row's.
+        let rows = apply_network_probe(
+            rows,
+            HubProbe {
+                chain_id: "walk#37589218".into(),
+                ..behind
+            },
+        );
+        assert_eq!(
+            network_row_label(&rows[0]),
+            "walk · another network at this address"
+        );
     }
 
     /// `node init --name walk` twice is two networks: rows that share a human

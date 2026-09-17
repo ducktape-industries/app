@@ -24,6 +24,9 @@ fn a_pushed_status_moves_every_fact_it_carries() {
         sync_retries: 2,
         sync_failures: 1,
         sync_last_error: "peer hung up".into(),
+        network_height: 900,
+        behind_by: 12,
+        heard_at: 1_700_000_100,
     }));
 
     // ALL SEVENTEEN, because a field the handler forgot stays frozen at its

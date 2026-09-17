@@ -135,7 +135,9 @@ pub struct NodeFacts {
     /// for why a wire `0` lands here as [`UNMEASURED`].
     pub height: i64,
     /// The node's own lifecycle phase — `starting`, `recovering`, `joining`,
-    /// `syncing`, `validating`, `serving`, `draining`, `halted`.
+    /// `syncing`, `validating`, `serving`, `behind`, `draining`, `halted`.
+    /// `behind` is the node's own verdict (below a tip it heard, its height
+    /// unmoved for 36 s); the app sets no lag threshold of its own.
     ///
     /// THE ONLY TRUSTWORTHY DISCRIMINANT for whether a sync is happening. The
     /// `sync` block beside it is written by `begin_sync` and never cleared, so
@@ -156,6 +158,14 @@ pub struct NodeFacts {
     /// most recent attempt failed and nothing has moved since", which is a
     /// fact about now rather than a scar.
     pub sync_last_error: String,
+    /// `operations.follow`: the tip the last-polled peer answered, this node's
+    /// gap to it (floored at 0), and the unix seconds that answer landed. The
+    /// node omits the section until a peer has answered a tip poll, so all
+    /// three are [`UNMEASURED`] until then. A `heard_at` that stops moving
+    /// means the poll stopped answering — a different fault from a gap.
+    pub network_height: i64,
+    pub behind_by: i64,
+    pub heard_at: i64,
 }
 
 /// A DEFAULT IS A DOCUMENT NO NODE HAS PUBLISHED, so its three numbers are
@@ -191,6 +201,9 @@ impl Default for NodeFacts {
             sync_retries: 0,
             sync_failures: 0,
             sync_last_error: String::new(),
+            network_height: UNMEASURED,
+            behind_by: UNMEASURED,
+            heard_at: UNMEASURED,
         }
     }
 }
@@ -205,6 +218,7 @@ pub(crate) fn node_facts(status: &serde_json::Value) -> NodeFacts {
     let operations = &status["operations"];
     let consensus = &operations["consensus"];
     let sync = &operations["sync"];
+    let follow = &operations["follow"];
     NodeFacts {
         public_key: status["public_key"]
             .as_str()
@@ -234,6 +248,9 @@ pub(crate) fn node_facts(status: &serde_json::Value) -> NodeFacts {
         sync_retries: sync["retries"].as_i64().unwrap_or(0),
         sync_failures: sync["failures"].as_i64().unwrap_or(0),
         sync_last_error: sync["last_error"].as_str().unwrap_or_default().to_string(),
+        network_height: follow["network_height"].as_i64().unwrap_or(UNMEASURED),
+        behind_by: follow["behind_by"].as_i64().unwrap_or(UNMEASURED),
+        heard_at: follow["heard_at"].as_i64().unwrap_or(UNMEASURED),
     }
 }
 
