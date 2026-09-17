@@ -27,6 +27,8 @@ fn a_pushed_status_moves_every_fact_it_carries() {
         network_height: 900,
         behind_by: 12,
         heard_at: 1_700_000_100,
+        netstack_failure_reason: String::new(),
+        netstack_failure_detail: String::new(),
     }));
 
     // ALL SEVENTEEN, because a field the handler forgot stays frozen at its
@@ -818,6 +820,7 @@ async fn an_offline_network_says_so_before_any_wallet_step() {
         another_network: false,
         phase: String::new(),
         behind_by: -1,
+        netstack_failure: String::new(),
     }];
     app.hub_selected = "dognet#d2a0ec8f".into();
     assert_eq!(

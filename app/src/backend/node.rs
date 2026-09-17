@@ -166,6 +166,12 @@ pub struct NodeFacts {
     pub network_height: i64,
     pub behind_by: i64,
     pub heard_at: i64,
+    /// `operations.netstack.failure_reason` and `failure_detail`: why the node
+    /// has no mesh — a snake_case token and the sentence saying what an
+    /// operator does about it. Both empty while the plane is starting, running
+    /// or stopped; read these, not the `failed` backend beside them.
+    pub netstack_failure_reason: String,
+    pub netstack_failure_detail: String,
 }
 
 /// A DEFAULT IS A DOCUMENT NO NODE HAS PUBLISHED, so its three numbers are
@@ -204,6 +210,8 @@ impl Default for NodeFacts {
             network_height: UNMEASURED,
             behind_by: UNMEASURED,
             heard_at: UNMEASURED,
+            netstack_failure_reason: String::new(),
+            netstack_failure_detail: String::new(),
         }
     }
 }
@@ -219,6 +227,7 @@ pub(crate) fn node_facts(status: &serde_json::Value) -> NodeFacts {
     let consensus = &operations["consensus"];
     let sync = &operations["sync"];
     let follow = &operations["follow"];
+    let netstack = &operations["netstack"];
     NodeFacts {
         public_key: status["public_key"]
             .as_str()
@@ -251,6 +260,14 @@ pub(crate) fn node_facts(status: &serde_json::Value) -> NodeFacts {
         network_height: follow["network_height"].as_i64().unwrap_or(UNMEASURED),
         behind_by: follow["behind_by"].as_i64().unwrap_or(UNMEASURED),
         heard_at: follow["heard_at"].as_i64().unwrap_or(UNMEASURED),
+        netstack_failure_reason: netstack["failure_reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        netstack_failure_detail: netstack["failure_detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 

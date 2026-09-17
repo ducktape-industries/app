@@ -75,6 +75,47 @@ fn follow_facts_are_read_when_published_and_unmeasured_when_not() {
     );
 }
 
+/// `operations.netstack`'s failure pair is ADDITIVE (#41): a node whose plane
+/// failed publishes the token and the sentence, and one whose plane is
+/// starting, running or stopped publishes neither — which reads as no failure,
+/// not as a failure with nothing to say.
+#[test]
+fn a_failed_netstack_plane_is_read_and_a_healthy_one_reads_as_none() {
+    let failed = serde_json::json!({
+        "operations": {
+            "phase": "validating",
+            "netstack": {
+                "backend": "failed",
+                "failure_reason": "netstack_guest_unreadable",
+                "failure_detail": "no founding set beside the binary",
+            },
+        },
+    });
+    let facts = node_facts(&failed);
+    assert_eq!(
+        (
+            facts.netstack_failure_reason.as_str(),
+            facts.netstack_failure_detail.as_str()
+        ),
+        (
+            "netstack_guest_unreadable",
+            "no founding set beside the binary"
+        )
+    );
+
+    let running = serde_json::json!({
+        "operations": { "phase": "validating", "netstack": { "backend": "guest" } },
+    });
+    let facts = node_facts(&running);
+    assert_eq!(
+        (
+            facts.netstack_failure_reason.as_str(),
+            facts.netstack_failure_detail.as_str()
+        ),
+        ("", "")
+    );
+}
+
 /// SYNC IS READ OFF `phase`, NEVER OFF THE PRESENCE OF `sync`.
 ///
 /// `operations.sync` is set by `begin_sync` and never cleared — no writer in
@@ -311,6 +352,7 @@ fn a_network_row_refuses_only_a_live_node_with_another_contract() {
         another_network: false,
         phase: "serving".into(),
         behind_by: 0,
+        netstack_failure: String::new(),
     };
     let expected = EXPECTED_NODE_CONTRACT;
 
