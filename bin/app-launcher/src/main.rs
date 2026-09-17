@@ -153,6 +153,7 @@ fn rollback_through_state() -> Result<Refusal, Refusal> {
             format!("{} does not exist", layout.state_path().display()),
         )
     })?;
+    let from = phase.current();
     let settled = executor::drive(&layout, phase, Event::UserRollback)?;
     let exec = match settled.outcome {
         Outcome::Exec(exec) => exec,
@@ -163,7 +164,7 @@ fn rollback_through_state() -> Result<Refusal, Refusal> {
             ));
         }
     };
-    let (from, to) = (settled.phase.current(), exec.sha);
+    let to = exec.sha;
     tracing::info!(target: TARGET, event = "app_update_rolled_back", %from, %to, reason = "user_rollback");
     Ok(executor::exec(&exec, &[]))
 }
