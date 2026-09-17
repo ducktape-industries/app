@@ -850,6 +850,64 @@ fn leaving_a_joins_wait_drops_its_poll() {
     assert_eq!(app.hub_step, crate::HubStep::Networks);
 }
 
+/// THE READY SCREEN MINTS WHEN ASKED (#9). It minted an invitation the moment
+/// it opened, and the node's refusal stayed under "Your network is ready" in
+/// red for an invitation nobody had asked for. Nothing is minted until Copy
+/// invitation is pressed; a refusal is a sentence beside the button, not the
+/// screen's error, and the next press asks again; a minted one is copied.
+#[tokio::test(flavor = "current_thread")]
+async fn the_ready_screen_mints_an_invitation_only_when_asked() {
+    use futures::StreamExt as _;
+    let (mut app, _) = Ducktape::boot();
+    let _ = app.update(AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
+        chain_id: "nowhere#00000009".into(),
+        workspace: "/nowhere/nowhere#00000009".into(),
+        rpc: "http://127.0.0.1:1".into(),
+    }));
+    let waiting = app.provision_progress_generation;
+    let answered = backend::ProvisionStep {
+        index: 5,
+        label: "Node API listening · http://127.0.0.1:1".into(),
+        state: "done".into(),
+        settled: true,
+        hint: String::new(),
+        command: String::new(),
+    };
+    let ready = app.update(AppMessage::ProvisionProgressReply(
+        waiting,
+        Some(Box::new(AppMessage::ProvisionStepped(answered))),
+    ));
+    assert_eq!(app.hub_step, crate::HubStep::Live);
+    assert!(
+        ready.into_stream().next().await.is_none(),
+        "nothing is minted on arrival"
+    );
+
+    for press in ["first", "second"] {
+        let asked = app.update(AppMessage::CopyOnboardingInvite);
+        let Some(refused @ AppMessage::OnboardingInviteRefused(_)) =
+            asked.into_stream().next().await
+        else {
+            panic!("the {press} press asks for an invitation");
+        };
+        let _ = app.update(refused);
+        assert!(
+            app.invite_refusal
+                .starts_with("Your node did not make an invitation: "),
+            "{}",
+            app.invite_refusal
+        );
+        assert!(app.onboarding_error.is_empty(), "{}", app.onboarding_error);
+        assert_ne!(app.toast, "Invite copied");
+        assert_eq!(app.hub_step, crate::HubStep::Live);
+    }
+
+    let _ = app.update(AppMessage::OnboardingInviteMinted("minted-blob".into()));
+    assert_eq!(app.invite_link, "minted-blob");
+    assert!(app.invite_refusal.is_empty());
+    assert_eq!(app.toast, "Invite copied");
+}
+
 /// AN OFFLINE NETWORK SAYS SO FIRST (#19). A saved row reading `offline` still
 /// opened — by design — and the open then ran the whole wallet ceremony:
 /// password, 24 words, the confirm. Only the account lookup after it failed,
