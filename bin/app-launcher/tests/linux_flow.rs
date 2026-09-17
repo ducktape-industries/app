@@ -424,13 +424,14 @@ fn a_reinstall_of_a_newer_build_keeps_the_old_one_as_previous() {
     assert_eq!(rig.link("previous"), Some(link_target(sha_a)));
 }
 
-/// The release as packaging stages it: `ops/release/archive.sh` packs
-/// `{ducktape-launcher, ducktape-app, views/}` into
-/// `Ducktape-<sha7>-linux-<arch>.tar.zst`; what comes back out of that
-/// archive installs under the launcher IT ships (byte for byte, never the
-/// one running `install`), and that launcher boots the app.
+/// The release as packaging stages it: the Linux archive holds
+/// `{ducktape-launcher, ducktape-app, views/}` at its root, which is exactly
+/// the directory `install --from` takes. It installs under the launcher IT
+/// ships (byte for byte, never the one running `install`), and that launcher
+/// boots the app. Packing the archive is core's `ops/release/archive.sh` and
+/// is tested where the script lives.
 #[test]
-fn an_archived_release_installs_under_the_launcher_it_ships() {
+fn a_release_installs_under_the_launcher_it_ships() {
     let rig = Rig::new();
     let (source, sha) = rig.build("A");
     // the shipped launcher: distinguishable from the one running `install`
@@ -442,45 +443,11 @@ fn an_archived_release_installs_under_the_launcher_it_ships() {
         fs::Permissions::from_mode(0o755),
     )
     .unwrap();
-    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ops/release/archive.sh");
-    let out_dir = rig.home.join("archive");
-    let packed = Command::new("bash")
-        .arg(script)
-        .args(["--from", source.to_str().unwrap()])
-        .args(["--out-dir", out_dir.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(packed.status.success(), "{}", stderr(&packed));
-    let listed = fs::read_to_string(out_dir.join("archives.txt")).unwrap();
-    let (platform, archive) = listed.trim().split_once('=').unwrap();
-    assert_eq!(platform, format!("linux-{}", std::env::consts::ARCH));
-    let archive = PathBuf::from(archive);
-    let bytes = fs::read(&archive).unwrap();
-    let archive_sha = Sha::digest(&bytes);
-    assert_eq!(
-        archive.file_name().unwrap().to_str().unwrap(),
-        app_update::layout::archive_name(&archive_sha, platform)
-    );
-    assert!(stdout(&packed).contains(&format!("sha256:  {archive_sha}")));
-    assert!(stdout(&packed).contains(&format!("size:    {}", bytes.len())));
-
-    // out of the archive, exactly the release dir the launcher takes.
-    let unpacked = rig.home.join("unpacked");
-    fs::create_dir_all(&unpacked).unwrap();
-    let extracted = Command::new("tar")
-        .args(["--zstd", "-xf"])
-        .arg(&archive)
-        .arg("-C")
-        .arg(&unpacked)
-        .output()
-        .unwrap();
-    assert!(extracted.status.success(), "{}", stderr(&extracted));
-    assert!(unpacked.join("views").join("x_view.wasm").is_file());
 
     // `install` run by a launcher that is NOT the shipped one copies itself
     // in only when the source ships none; this source ships one, so the
     // installed launcher is the shipped file, byte for byte.
-    let installed = rig.launcher(&["install", "--from", unpacked.to_str().unwrap()]);
+    let installed = rig.launcher(&["install", "--from", source.to_str().unwrap()]);
     assert!(installed.status.success(), "{}", stderr(&installed));
     assert_eq!(
         fs::read_to_string(rig.release_dir(sha).join("ducktape-launcher")).unwrap(),
