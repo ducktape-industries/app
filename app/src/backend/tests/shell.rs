@@ -346,7 +346,7 @@ checkpoint_blocks = 32
 fn a_node_that_never_answers_is_waited_for_by_its_launcher_command() {
     let command = "ducktape-node-launcher run --workspace '/home/member/.ducktape/dognet#d2a0ec8f'";
     let steps: Vec<ProvisionStep> = (1..=PROVISION_PATIENCE + 2)
-        .map(|attempts| node_wait_step("/home/member/.ducktape/dognet#d2a0ec8f", attempts))
+        .map(|attempts| node_wait_step("/home/member/.ducktape/dognet#d2a0ec8f", attempts, ""))
         .collect();
     for step in &steps {
         assert_eq!(step.index, 4);
@@ -369,9 +369,30 @@ fn a_node_that_never_answers_is_waited_for_by_its_launcher_command() {
 
     // a quote in the directory cannot end the quoted argument early.
     assert_eq!(
-        node_wait_step("/home/o'neil/.ducktape/w#1", 1).command,
+        node_wait_step("/home/o'neil/.ducktape/w#1", 1, "").command,
         r"ducktape-node-launcher run --workspace '/home/o'\''neil/.ducktape/w#1'"
     );
+}
+
+/// A NODE THAT ANSWERS WITH NO MESH IS NOT READY (#41). Its netstack plane
+/// failed, so it answers `/v1/status` and still has no overlay for the rest of
+/// its boot: the wait does not settle on "Your node answered", it goes
+/// `blocked` on the first answer with core's sentence as the hint, and polls on.
+#[tokio::test(flavor = "current_thread")]
+async fn a_node_whose_netstack_plane_failed_holds_the_wait_with_its_sentence() {
+    let rpc = super::node_that_serves_its_status_once(
+        r#"{"height":3,"operations":{"phase":"validating","netstack":{"backend":"failed","failure_reason":"netstack_guest_unreadable","failure_detail":"no founding set beside the binary"}}}"#,
+    )
+    .await;
+    let mut steps = provision_progress("no-such-workspace#41".into(), rpc).skip(3);
+    let step = steps.next().await.expect("the wait reports");
+    assert_eq!(step.index, 4);
+    assert_eq!(
+        (step.state.as_str(), step.settled),
+        ("blocked", false),
+        "{step:?}"
+    );
+    assert_eq!(step.hint, "no founding set beside the binary");
 }
 
 /// THE HTTP CLIENT'S SENTENCE IS EVIDENCE, NOT COPY (#19). A node nothing

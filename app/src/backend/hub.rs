@@ -46,6 +46,10 @@ pub struct HubNetwork {
     /// tip. Read only by [`network_row_label`]; a behind node still opens.
     pub phase: String,
     pub behind_by: i64,
+    /// Why the node's mesh is down, off the same probe
+    /// ([`NodeFacts::netstack_failure_reason`]); empty while its plane is not
+    /// failed and until this row's node has answered.
+    pub netstack_failure: String,
 }
 
 /// One probe answer. Never an error: a node that does not answer IS the
@@ -60,6 +64,7 @@ pub struct HubProbe {
     pub chain_id: String,
     pub phase: String,
     pub behind_by: i64,
+    pub netstack_failure: String,
 }
 
 /// One wallet row the launch window lists, straight off `keystore::wallet`.
@@ -174,6 +179,7 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
                 another_network: false,
                 phase: String::new(),
                 behind_by: -1,
+                netstack_failure: String::new(),
             }
         })
         .collect();
@@ -203,6 +209,7 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
             another_network: false,
             phase: String::new(),
             behind_by: -1,
+            netstack_failure: String::new(),
         });
     }
     rows.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.id.cmp(&b.id)));
@@ -587,6 +594,11 @@ pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<Hu
                     probe.phase.clone()
                 };
                 row.behind_by = if another { -1 } else { probe.behind_by };
+                row.netstack_failure = if another {
+                    String::new()
+                } else {
+                    probe.netstack_failure.clone()
+                };
             }
             row
         })
@@ -598,7 +610,9 @@ pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<Hu
 /// refusal, in the same voice as provisioning's `blocked` step. A node whose
 /// own phase is `behind` says so, by its gap when it published one, and a node
 /// that has not served yet ([`super::node::before_serving`]) names its phase,
-/// instead of a block number that reads as healthy.
+/// instead of a block number that reads as healthy. A node whose netstack plane
+/// failed names that failure ahead of either: its mesh stays down for the rest
+/// of its boot, while a lag or a sync passes.
 pub fn network_row_label(row: &HubNetwork) -> String {
     let unprobed = !row.probed;
     if unprobed {
@@ -611,6 +625,9 @@ pub fn network_row_label(row: &HubNetwork) -> String {
         return format!("{} · offline", row.name);
     }
     match super::node::contract_match(row.contract) {
+        super::node::ContractMatch::Match if !row.netstack_failure.is_empty() => {
+            format!("{} · {}", row.name, row.netstack_failure.replace('_', " "))
+        }
         super::node::ContractMatch::Match if row.phase == "behind" && row.behind_by >= 0 => {
             format!("{} · behind by {}", row.name, row.behind_by)
         }
@@ -670,6 +687,10 @@ pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
                 .unwrap_or(-1),
             contract: facts.as_ref().map_or(0, |facts| facts.contract),
             behind_by: facts.as_ref().map_or(-1, |facts| facts.behind_by),
+            netstack_failure: facts
+                .as_ref()
+                .map(|facts| facts.netstack_failure_reason.clone())
+                .unwrap_or_default(),
             phase: facts
                 .as_ref()
                 .map(|facts| facts.phase.clone())
@@ -1172,6 +1193,7 @@ mod tests {
             another_network: false,
             phase: String::new(),
             behind_by: -1,
+            netstack_failure: String::new(),
         }];
         assert_eq!(
             selected_network_name(rows.clone(), "demo#a1b2".into()),
@@ -1196,6 +1218,7 @@ mod tests {
             another_network: false,
             phase: String::new(),
             behind_by: -1,
+            netstack_failure: String::new(),
         }
     }
 
@@ -1208,6 +1231,7 @@ mod tests {
             chain_id: chain_id.into(),
             phase: "serving".into(),
             behind_by: 0,
+            netstack_failure: String::new(),
         }
     }
 
@@ -1290,6 +1314,43 @@ mod tests {
             network_row_label(&rows[0]),
             "walk · another network at this address"
         );
+    }
+
+    /// A NODE WHOSE MESH IS DOWN IS NOT `block N` (#41). Its netstack plane
+    /// failed and stays failed for the boot, so the row names the failure in
+    /// words — ahead of a lag or a sync, which pass — and still opens; a node
+    /// that publishes no failure reads as before.
+    #[test]
+    fn a_node_whose_netstack_plane_failed_names_the_failure() {
+        for (phase, label) in [
+            ("validating", "walk · netstack guest unreadable"),
+            ("behind", "walk · netstack guest unreadable"),
+            ("syncing", "walk · netstack guest unreadable"),
+        ] {
+            let probe = HubProbe {
+                phase: phase.into(),
+                behind_by: 7,
+                netstack_failure: "netstack_guest_unreadable".into(),
+                ..answer("walk#0e1b62f1", "walk#0e1b62f1")
+            };
+            let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], probe);
+            assert_eq!(network_row_label(&rows[0]), label);
+            assert!(!contract_refuses(&rows[0]));
+        }
+
+        let healthy = apply_network_probe(
+            vec![workspace_row("walk#0e1b62f1")],
+            answer("walk#0e1b62f1", "walk#0e1b62f1"),
+        );
+        assert_eq!(network_row_label(&healthy[0]), "walk · block 2033");
+
+        // a sibling's failed node on this row's port is not this row's failure.
+        let sibling = HubProbe {
+            netstack_failure: "plane_exited".into(),
+            ..answer("walk#0e1b62f1", "walk#37589218")
+        };
+        let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], sibling);
+        assert_eq!(rows[0].netstack_failure, "");
     }
 
     /// A NODE THAT HAS NOT SERVED YET IS NOT `block 0` (#27). A joining or

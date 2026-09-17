@@ -268,10 +268,23 @@ pub fn provision_progress(
                 }
                 3 => {
                     // the app attaches to a node it does not supervise: the
-                    // only honest readiness signal is the node answering.
-                    let up = match rpc_client(&state.rpc) {
-                        Ok(client) => client.status().await.is_ok(),
-                        Err(_) => false,
+                    // only honest readiness signal is the node answering —
+                    // with a mesh, since a node whose netstack plane failed
+                    // answers too and keeps no overlay for the rest of its boot.
+                    let facts = match rpc_client(&state.rpc) {
+                        Ok(client) => client
+                            .status_json()
+                            .await
+                            .ok()
+                            .map(|status| node_facts(&status)),
+                        Err(_) => None,
+                    };
+                    let (up, plane_failure) = match facts {
+                        Some(facts) => (
+                            facts.netstack_failure_reason.is_empty(),
+                            facts.netstack_failure_detail,
+                        ),
+                        None => (false, String::new()),
                     };
                     if up {
                         state.step = 4;
@@ -279,7 +292,10 @@ pub fn provision_progress(
                     }
                     state.attempts += 1;
                     tokio::time::sleep(Duration::from_secs(1)).await;
-                    Some((node_wait_step(&state.workspace, state.attempts), state))
+                    Some((
+                        node_wait_step(&state.workspace, state.attempts, &plane_failure),
+                        state,
+                    ))
                 }
                 4 => {
                     let listen = state
@@ -311,14 +327,16 @@ pub fn provision_progress(
 /// does, because node releases flip through it. So the step names that command
 /// for this workspace from the first second, never "starting", and after
 /// `PROVISION_PATIENCE` attempts goes `blocked` with [`NODE_WAIT_HINT`] while
-/// the poll goes on. The directory is single-quoted: a workspace directory
-/// carries the chain id's `#`, and a home may carry spaces.
-pub(crate) fn node_wait_step(workspace: &str, attempts: u32) -> ProvisionStep {
+/// the poll goes on. A node that answered with its netstack plane failed
+/// (`plane_failure`, core's sentence; empty otherwise) is blocked at once with
+/// that sentence as the hint. The directory is single-quoted: a workspace
+/// directory carries the chain id's `#`, and a home may carry spaces.
+pub(crate) fn node_wait_step(workspace: &str, attempts: u32, plane_failure: &str) -> ProvisionStep {
     let command = format!(
         "ducktape-node-launcher run --workspace '{}'",
         workspace.replace('\'', r"'\''")
     );
-    let blocked = attempts >= PROVISION_PATIENCE;
+    let blocked = attempts >= PROVISION_PATIENCE || !plane_failure.is_empty();
     ProvisionStep {
         index: 4,
         label: format!("Waiting for your node · {command}"),
@@ -327,9 +345,10 @@ pub(crate) fn node_wait_step(workspace: &str, attempts: u32) -> ProvisionStep {
             false => "waiting".into(),
         },
         settled: false,
-        hint: match blocked {
-            true => NODE_WAIT_HINT.into(),
-            false => String::new(),
+        hint: match (blocked, plane_failure.is_empty()) {
+            (true, false) => plane_failure.into(),
+            (true, true) => NODE_WAIT_HINT.into(),
+            (false, _) => String::new(),
         },
         command,
     }
