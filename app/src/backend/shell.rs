@@ -279,13 +279,32 @@ pub fn provision_progress(
                             .map(|status| node_facts(&status)),
                         Err(_) => None,
                     };
-                    let (up, plane_failure) = match facts {
+                    let (up, plane_failure, phase) = match facts {
                         Some(facts) => (
                             facts.netstack_failure_reason.is_empty(),
                             facts.netstack_failure_detail,
+                            facts.phase,
                         ),
-                        None => (false, String::new()),
+                        None => (false, String::new(), String::new()),
                     };
+                    // and serving: a node answers while it is still starting
+                    // or joining, before it holds the network's height or can
+                    // mint an invitation, so the wait names its phase as the
+                    // launch row does and polls on.
+                    if up && super::node::before_serving(&phase) {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        return Some((
+                            ProvisionStep {
+                                index: 4,
+                                label: format!("Waiting for your node · {phase}"),
+                                state: "waiting".into(),
+                                settled: false,
+                                hint: String::new(),
+                                command: String::new(),
+                            },
+                            state,
+                        ));
+                    }
                     if up {
                         state.step = 4;
                         return Some((registered_step(4, "Your node answered", true), state));

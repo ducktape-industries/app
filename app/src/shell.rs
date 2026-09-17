@@ -828,6 +828,7 @@ impl DesktopWindow {
         let step = state.hub_step;
         let busy = state.mutation_phase != crate::MutationPhase::Idle;
         let error = state.onboarding_error.clone();
+        let invite_refusal = state.invite_refusal.clone();
         let step_changed = self.input_step != Some(step);
         if step_changed {
             for (_, input) in std::mem::take(&mut self.inputs) {
@@ -1339,9 +1340,11 @@ impl DesktopWindow {
                     "This takes a moment on first launch.",
                 ));
                 let mut steps = panel().flex().flex_col().p_3().gap_2();
-                let mut blocked = false;
+                // a node that answers before it serves can wait for minutes:
+                // the way back is offered for as long as the wait is open
+                let mut waiting = false;
                 for step in &self.model.read(cx).state.provision_steps {
-                    blocked |= step.state == "blocked";
+                    waiting |= !step.settled;
                     steps = steps
                         .child(
                             div()
@@ -1371,7 +1374,7 @@ impl DesktopWindow {
                         });
                 }
                 // the wait keeps polling on this screen; leaving it drops the poll.
-                body.child(steps).when(blocked, |body| {
+                body.child(steps).when(waiting, |body| {
                     body.child(
                         self.action("provision-back", "Back to networks", Message::GoNetworks, busy)
                             .ghost()
@@ -1395,6 +1398,9 @@ impl DesktopWindow {
                     .w_full()
                     .h_8(),
                 )
+                .when(!invite_refusal.is_empty(), |body| {
+                    body.child(hint(invite_refusal))
+                })
                 .child(
                     self.action("enter-console", "Open Ducktape", Message::EnterConsole, busy)
                         .primary()
