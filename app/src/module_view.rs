@@ -1992,7 +1992,7 @@ pub(crate) mod canary {
 /// Where the staged views are: `$DUCKTAPE_VIEWS_DIR`, else the workspace's
 /// `target/views`, `views/` beside the binary, or beside its profile directory — the shape
 /// `workspace_config::staged_modules_dir` gives the founding set.
-fn views_dir() -> Result<PathBuf, String> {
+pub(crate) fn views_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("DUCKTAPE_VIEWS_DIR") {
         return Ok(PathBuf::from(dir));
     }
