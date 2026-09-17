@@ -255,6 +255,7 @@ fn a_network_row_refuses_only_a_live_node_with_another_contract() {
         live,
         height: 7,
         contract,
+        another_network: false,
     };
     let expected = EXPECTED_NODE_CONTRACT;
 

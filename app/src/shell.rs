@@ -1168,7 +1168,8 @@ impl DesktopWindow {
                             ),
                     );
                 }
-                // a measured contract mismatch disables the open the way no
+                // a measured contract mismatch, or another network answering
+                // at the row's address, disables the open the way no
                 // selection does: the row's own line says why.
                 let no_selection = busy || selected.is_empty() || refused;
                 if !empty {
