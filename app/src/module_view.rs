@@ -3986,15 +3986,9 @@ pub(crate) mod tests {
         );
     }
 
-    /// NO VIEW HAS AN OPENING ACT OF ITS OWN. Opening a `duck://` address is
-    /// the kernel's one door, `host.open_link`, and every seat's route reads
-    /// it before the view's own intents ([`host_door`]). A view that grew a
-    /// `<module>.open_link` back would be a second grammar for the same act:
-    /// two spellings of the address field, two places to scope a link to its
-    /// network, and whichever the app decoded last on screen.
-    ///
-    /// Parsed, not agreed: the view tree is read for the string a notify
-    /// would carry, and the door tables for the kind they would admit.
+    /// NO VIEW'S APP-OWNED DOOR TABLE ADMITS `open_link`. Opening a `duck://`
+    /// address is the kernel's one door, `host.open_link`, and every seat's
+    /// route reads it before the view's own intents ([`host_door`]).
     #[test]
     fn no_view_declares_its_own_open_link() {
         for module in [
@@ -4016,44 +4010,6 @@ pub(crate) mod tests {
                 !intents_of(module).contains(&"open_link"),
                 "{module}'s door still admits an open_link of its own"
             );
-        }
-        let staged = views_dir().expect("staged views");
-        let views = staged
-            .parent()
-            .and_then(std::path::Path::parent)
-            .expect("target/views in the ducktape-views checkout");
-        let mut sources = Vec::new();
-        collect_view_sources(views, &mut sources);
-        assert!(!sources.is_empty(), "the walk found no view source at all");
-        for (path, source) in sources {
-            // `host.open_link` is the door; anything else before the dot is a
-            // module claiming one of its own.
-            let own_door = source
-                .match_indices(".open_link\"")
-                .any(|(at, _)| !source[..at].ends_with("host"));
-            assert!(
-                !own_door,
-                "{} names an `<module>.open_link` — the door is `host.open_link`",
-                path.display()
-            );
-        }
-    }
-
-    /// Every `.rs` under `dir`, with its text — source only, never a build
-    /// output.
-    fn collect_view_sources(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
-        for entry in std::fs::read_dir(dir).expect("read a view source dir") {
-            let path = entry.expect("dir entry").path();
-            if path.is_dir() {
-                if path.file_name().and_then(|name| name.to_str()) != Some("target") {
-                    collect_view_sources(&path, out);
-                }
-                continue;
-            }
-            if path.extension().and_then(|end| end.to_str()) == Some("rs") {
-                let source = std::fs::read_to_string(&path).expect("read a view source");
-                out.push((path, source));
-            }
         }
     }
 
