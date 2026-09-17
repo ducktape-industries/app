@@ -5238,6 +5238,29 @@ pub(crate) mod tests {
         assert!(guest.fault.is_none());
     }
 
+    /// Every staged view reads a refusal the way the host sends one. A view
+    /// can run for a whole session without being refused anything, until a
+    /// reconnect refuses its in-flight work. A view built on a wire that lays
+    /// `Event::Response` out differently under the same `WIRE_EPOCH` passes
+    /// the load check and then stops on that first refusal (#23). Point
+    /// `DUCKTAPE_VIEWS_DIR` at the views a node deploys to check them too.
+    #[test]
+    fn every_staged_view_reads_a_refusal_the_host_sends() {
+        use crate::backend::view_source::{DESKTOP_OWNED, MODULE_OWNED};
+        let _turn = blocking_connection_turn();
+        for module in MODULE_OWNED.into_iter().chain(DESKTOP_OWNED) {
+            let Some(staged) = staged(module) else {
+                continue;
+            };
+            let mut guest = Guest::load_from(module, &staged).expect("the view loads");
+            guest.redraw(&None);
+            assert!(guest.fault.is_none(), "{module}: {:?}", guest.fault);
+            guest.refuse(u64::MAX, "stale_connection", "network connection changed");
+            guest.redraw(&None);
+            assert!(guest.fault.is_none(), "{module}: {:?}", guest.fault);
+        }
+    }
+
     /// The bundled Files view through the host, on the KERNEL CONTRACT: it
     /// boots on the offline plate, and once the session says connected it
     /// lists the directory itself — an `rpc.live` subscription the kernel
