@@ -5,7 +5,7 @@ use gpui_kit::{self as gpui, Entity, TestAppContext, VisualTestContext};
 
 fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
     tests::can_the_chat_room();
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/chat_view.wasm");
+    let path = tests::staged("chat").expect("build current chat view first");
     let mut guest = Guest::load_from("chat", &path).expect("build current chat view first");
     let props = tests::chat_facts();
     guest.redraw(&None);
@@ -563,7 +563,7 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
         ("op.submit", serde_json::json!(1)),
     ]);
     let props = tests::pages_facts();
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/pages_view.wasm");
+    let path = tests::staged("pages").expect("build current Pages view first");
     let mut guest = Guest::load_from("pages", &path).expect("build current Pages view first");
     tests::settle_documents(&mut guest, &props);
     let seat = Arc::new(Mutex::new(Mounted {
@@ -725,7 +725,7 @@ fn settle_native_documents(native: &mut VisualTestContext, seat: &Arc<Mutex<Moun
 #[gpui_kit::test]
 fn call_panel_renders_staged_wasm_and_routes_native_control_clicks(cx: &mut TestAppContext) {
     let _turn = tests::blocking_connection_turn();
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/call_view.wasm");
+    let path = tests::staged("call").expect("build current Call view first");
     let mut guest = Guest::load_from("call", &path).expect("build current Call view first");
     let props = Some(br#"{"panel":{"status":"live","muted":false}}"#.to_vec());
     guest.redraw(&None);
@@ -851,7 +851,7 @@ fn forge_wasm_merges_through_the_real_service(cx: &mut TestAppContext) {
     else {
         panic!("Forge fixture must deploy its view");
     };
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/forge_view.wasm");
+    let path = tests::staged("forge").expect("build current Forge view first");
     assert_eq!(
         component,
         std::fs::read(path).unwrap(),
