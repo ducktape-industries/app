@@ -249,6 +249,9 @@ async fn run(
             let state = source.lock().expect("session source");
             match &state.slot {
                 Slot::Loading => Ok(None),
+                // an empty slot a load is on its way for may be a previous
+                // connection's: only the verdict of this one is the answer
+                Slot::Empty if state.in_flight => Ok(None),
                 Slot::Empty => Err(wire::Refusal::new(
                     "session_view_removed",
                     "session view was removed",

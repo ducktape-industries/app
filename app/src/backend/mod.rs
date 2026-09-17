@@ -37,7 +37,7 @@ const DEFAULT_RPC: &str = "http://127.0.0.1:8844";
 /// node is not running and names the command that starts it.
 const PROVISION_PATIENCE: u32 = 8;
 
-#[derive(Clone, Debug, Hash, PartialEq, serde::Deserialize)]
+#[derive(Clone, Debug, Default, Hash, PartialEq, serde::Deserialize)]
 pub struct ChatData {
     /// The switch this window answers for. Every route that moves the reader
     /// bumps `chat_generation` and stamps it here, so a room she has already
