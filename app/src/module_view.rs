@@ -1619,6 +1619,16 @@ fn mounted(module: &'static str) -> Arc<Mutex<Mounted>> {
         .clone()
 }
 
+/// Whether `module`'s active deployment verified and ships no view: the
+/// seat's empty slot, the network's fact rather than a load to wait out.
+pub(crate) fn ships_no_view(module: &str) -> bool {
+    registry()
+        .lock()
+        .expect("module views")
+        .get(module)
+        .is_some_and(|seat| matches!(seat.lock().expect("module view lock").slot, Slot::Empty))
+}
+
 /// Loads the view on its own thread — a cold cranelift compile is a second
 /// or more; the window thread shows "Loading" instead of freezing for it —
 /// and installs it only if `mounted` still waits for this very load AND,
