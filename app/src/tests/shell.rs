@@ -720,3 +720,16 @@ fn call_status_is_the_deployed_views_text() {
     }));
     assert_eq!(app.call_status, "Custom session status");
 }
+
+/// THE FOUNDING HINT IS A COMMAND (#20). The empty network list is the one
+/// place the app says how to found a network; a `<name>` placeholder wrapped
+/// inside its own token and read as punctuation beside a sentence period.
+#[test]
+fn the_founding_command_is_typed_as_shown() {
+    let command = crate::shell::FOUNDING_COMMAND;
+    assert!(command.starts_with("ducktape node init --name "));
+    assert!(
+        !command.contains(['<', '>', '.']),
+        "{command} carries no placeholder brackets or sentence punctuation"
+    );
+}

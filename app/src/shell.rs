@@ -1127,10 +1127,18 @@ impl DesktopWindow {
                                     .font_weight(FontWeight::MEDIUM)
                                     .child("No networks yet"),
                             )
-                            .child(hint(
-                                "In a terminal, found a network with ducktape node init --name <name>."
-                                    .into(),
-                            ))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_x_1()
+                                    .child(hint("In a terminal, found a network with".into()))
+                                    .child(
+                                        hint(FOUNDING_COMMAND.into())
+                                            .map(mono_family)
+                                            .whitespace_nowrap(),
+                                    ),
+                            )
                             .child(hint(
                                 "Join a network or connect to a node below.".into(),
                             )),
@@ -2684,6 +2692,11 @@ fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
 /// The registry id of the dashboard view: the one registered view that
 /// leads the rail instead of following the built-in tabs.
 const HOME_VIEW: &str = "home";
+
+/// The command the empty network list tells a stranger to type: the CLI's
+/// own getting-started example, drawn as one unbroken code run. A concrete
+/// name, not a `<name>` placeholder a reader could take for punctuation.
+pub(crate) const FOUNDING_COMMAND: &str = "ducktape node init --name mynet";
 
 /// The ink rail's width. The bell's popover hangs off it, so the two share
 /// one number rather than agreeing by coincidence.
