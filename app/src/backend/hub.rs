@@ -35,6 +35,11 @@ pub struct HubNetwork {
     /// `0` until a live node has answered. Read only through
     /// [`contract_refuses`] — a dead or unprobed row has no number to judge.
     pub contract: u32,
+    /// The probe measured a node at `endpoint` that serves ANOTHER chain id:
+    /// two workspaces on one device can bind the same port, and the node that
+    /// answers is then a sibling's. Its reading is not this row's — `live`
+    /// stays false and no height or contract is taken from it.
+    pub another_network: bool,
 }
 
 /// One probe answer. Never an error: a node that does not answer IS the
@@ -45,6 +50,8 @@ pub struct HubProbe {
     pub live: bool,
     pub height: i64,
     pub contract: u32,
+    /// the chain id the answering node serves; empty when none answered.
+    pub chain_id: String,
 }
 
 /// One wallet row the launch window lists, straight off `keystore::wallet`.
@@ -101,7 +108,8 @@ pub(crate) fn key_state_of(path: &Path) -> String {
 }
 
 /// A network's display name is the human half of its chain id: `demo#a1b2`
-/// reads `demo`. A remote row falls back to its endpoint sans scheme.
+/// reads `demo`. A remote row falls back to its endpoint sans scheme. A human
+/// name more than one row shares is not a name ([`distinct_names`]).
 fn display_name(chain_id: &str, fallback: &str) -> String {
     let named = chain_id.split('#').next().unwrap_or_default();
     if !named.is_empty() {
@@ -111,6 +119,21 @@ fn display_name(chain_id: &str, fallback: &str) -> String {
         .trim_start_matches("http://")
         .trim_start_matches("https://")
         .to_string()
+}
+
+/// A human name two rows share tells neither apart — `node init --name walk`
+/// twice is two networks, `walk#37589218` and `walk#0e1b62f1`. Those rows read
+/// their whole chain id, the salt being what keeps them distinct; a row with no
+/// chain id (a saved remote) keeps its endpoint.
+fn distinct_names(mut rows: Vec<HubNetwork>) -> Vec<HubNetwork> {
+    let names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
+    for row in &mut rows {
+        let shared = names.iter().filter(|name| **name == row.name).count() > 1;
+        if shared && !row.chain_id.is_empty() {
+            row.name = row.chain_id.clone();
+        }
+    }
+    rows
 }
 
 /// The known-network list: every workspace directory under the ducktape home
@@ -135,6 +158,7 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
                 live: false,
                 height: -1,
                 contract: 0,
+                another_network: false,
             }
         })
         .collect();
@@ -161,10 +185,11 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
             live: false,
             height: -1,
             contract: 0,
+            another_network: false,
         });
     }
     rows.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.id.cmp(&b.id)));
-    rows
+    distinct_names(rows)
 }
 
 /// The row the list preselects: the most recently used (the list is sorted
@@ -493,16 +518,23 @@ async fn name_remote_keystore(rpc: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Merge one probe answer into the list by row id.
+/// Merge one probe answer into the list by row id. The answer counts for the
+/// row only when the node serves the row's chain id — an endpoint names a port,
+/// not a network, and a sibling workspace's node can be the one listening on
+/// it ([`HubNetwork::another_network`]). A row with no chain id (a saved remote)
+/// has nothing to hold the answer to and takes it as it comes.
 pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<HubNetwork> {
     networks
         .into_iter()
         .map(|mut row| {
             if row.id == probe.id {
+                let another =
+                    probe.live && !row.chain_id.is_empty() && probe.chain_id != row.chain_id;
                 row.probed = true;
-                row.live = probe.live;
-                row.height = probe.height;
-                row.contract = probe.contract;
+                row.another_network = another;
+                row.live = probe.live && !another;
+                row.height = if another { -1 } else { probe.height };
+                row.contract = if another { 0 } else { probe.contract };
             }
             row
         })
@@ -516,6 +548,9 @@ pub fn network_row_label(row: &HubNetwork) -> String {
     let unprobed = !row.probed;
     if unprobed {
         return format!("{} · checking", row.name);
+    }
+    if row.another_network {
+        return format!("{} · another network at this address", row.name);
     }
     if !row.live {
         return format!("{} · offline", row.name);
@@ -533,13 +568,15 @@ pub fn network_row_label(row: &HubNetwork) -> String {
 }
 
 /// Whether the console must NOT open on this row: the probe measured a live
-/// node and its contract number is not [`EXPECTED_NODE_CONTRACT`]. A row the
-/// probe has not answered for, or a dead one, has no number to refuse on —
-/// opening those is the same as before, and the console says offline itself.
+/// node and its contract number is not [`EXPECTED_NODE_CONTRACT`], or the node
+/// at the row's endpoint serves another network — opening that would put the
+/// other network's console under this row's name. A row the probe has not
+/// answered for, or a dead one, has no number to refuse on — opening those is
+/// the same as before, and the console says offline itself.
 pub fn contract_refuses(row: &HubNetwork) -> bool {
     let measured_live = row.probed && row.live;
     let mismatched = super::node::contract_match(row.contract) != super::node::ContractMatch::Match;
-    measured_live && mismatched
+    row.another_network || (measured_live && mismatched)
 }
 
 /// Whether the selected row refuses ([`contract_refuses`]); a selection that
@@ -557,6 +594,7 @@ pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
     use futures::StreamExt;
     let probes = known_networks().into_iter().map(move |row| async move {
         let status = probe_endpoint(&row.endpoint).await;
+        let facts = status.as_ref().map(super::node::node_facts);
         HubProbe {
             id: row.id,
             live: status.is_some(),
@@ -566,9 +604,8 @@ pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
                 .as_ref()
                 .and_then(|status| status["height"].as_i64())
                 .unwrap_or(-1),
-            contract: status
-                .as_ref()
-                .map_or(0, |status| super::node::node_facts(status).contract),
+            contract: facts.as_ref().map_or(0, |facts| facts.contract),
+            chain_id: facts.map(|facts| facts.chain_id).unwrap_or_default(),
         }
     });
     futures::stream::iter(probes).buffer_unordered(8).boxed()
@@ -1032,12 +1069,104 @@ mod tests {
             live: false,
             height: -1,
             contract: 0,
+            another_network: false,
         }];
         assert_eq!(
             selected_network_name(rows.clone(), "demo#a1b2".into()),
             "demo"
         );
         assert_eq!(selected_network_name(rows, "gone".into()), "");
+    }
+
+    /// a local workspace row, unprobed, on the port every workspace defaults to.
+    fn workspace_row(chain_id: &str) -> HubNetwork {
+        HubNetwork {
+            id: chain_id.into(),
+            chain_id: chain_id.into(),
+            name: display_name(chain_id, chain_id),
+            endpoint: "http://127.0.0.1:8844".into(),
+            kind: "local".into(),
+            last_used: 0,
+            probed: false,
+            live: false,
+            height: -1,
+            contract: 0,
+            another_network: false,
+        }
+    }
+
+    fn answer(id: &str, chain_id: &str) -> HubProbe {
+        HubProbe {
+            id: id.into(),
+            live: true,
+            height: 2033,
+            contract: EXPECTED_NODE_CONTRACT,
+            chain_id: chain_id.into(),
+        }
+    }
+
+    /// AN ENDPOINT IS A PORT, NOT A NETWORK (#11). A workspace whose node died
+    /// shares its port with a sibling's healthy node; the sibling's answer is
+    /// not this row's reading — no height, not live, and no console opens on it.
+    #[test]
+    fn a_probe_from_another_network_is_not_the_rows_reading() {
+        let rows = vec![workspace_row("walk#37589218")];
+        let rows = apply_network_probe(rows, answer("walk#37589218", "walk#0e1b62f1"));
+        let row = &rows[0];
+        assert!(row.probed && !row.live && row.another_network);
+        assert_eq!((row.height, row.contract), (-1, 0));
+        assert_eq!(
+            network_row_label(row),
+            "walk · another network at this address"
+        );
+        assert!(contract_refuses(row));
+        assert!(selected_network_refuses(&rows, "walk#37589218"));
+        // a node serving no chain is not this row's node either.
+        let rows = apply_network_probe(rows, answer("walk#37589218", ""));
+        assert!(rows[0].another_network && !rows[0].live);
+    }
+
+    /// The row's own node answering sets its reading; a saved remote has no
+    /// chain id to hold the answer to and takes it as it comes.
+    #[test]
+    fn a_probe_from_the_rows_own_network_sets_its_height() {
+        let rows = vec![workspace_row("walk#0e1b62f1")];
+        let rows = apply_network_probe(rows, answer("walk#0e1b62f1", "walk#0e1b62f1"));
+        let row = &rows[0];
+        assert!(row.probed && row.live && !row.another_network);
+        assert_eq!(row.height, 2033);
+        assert_eq!(network_row_label(row), "walk · block 2033");
+        assert!(!contract_refuses(row));
+
+        let remote = HubNetwork {
+            id: "http://203.0.113.9:18844".into(),
+            chain_id: String::new(),
+            kind: "remote".into(),
+            ..workspace_row("")
+        };
+        let rows = apply_network_probe(vec![remote], answer("http://203.0.113.9:18844", "team#1"));
+        assert!(rows[0].live && !rows[0].another_network);
+        assert_eq!(rows[0].height, 2033);
+    }
+
+    /// `node init --name walk` twice is two networks: rows that share a human
+    /// name read their whole chain id, and a name no other row holds stays short.
+    #[test]
+    fn rows_sharing_a_human_name_read_their_chain_id() {
+        let rows = distinct_names(vec![
+            workspace_row("walk#37589218"),
+            workspace_row("walk#0e1b62f1"),
+            workspace_row("demo#a1b2"),
+        ]);
+        let labels: Vec<String> = rows.iter().map(network_row_label).collect();
+        assert_eq!(
+            labels,
+            [
+                "walk#37589218 · checking",
+                "walk#0e1b62f1 · checking",
+                "demo · checking"
+            ]
+        );
     }
 
     /// A picked network's keystore decides the next step: rows unlock, an
