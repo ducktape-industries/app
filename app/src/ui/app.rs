@@ -320,6 +320,9 @@ pub struct Ducktape {
     pub(crate) provision_index: i64,
     pub(crate) hub_chain_id: String,
     pub(crate) welcome_name_draft: String,
+    /// The account screen was opened from the workspace, not from a wallet
+    /// step: its Cancel goes back there.
+    pub(crate) welcome_from_console: bool,
     pub(crate) ceremony_phase: String,
     pub(crate) ceremony_qr: String,
     pub(crate) ceremony_detail: String,
@@ -728,6 +731,7 @@ impl Ducktape {
             provision_index: 0,
             hub_chain_id: "".to_owned(),
             welcome_name_draft: "".to_owned(),
+            welcome_from_console: false,
             ceremony_phase: "".to_owned(),
             ceremony_qr: "".to_owned(),
             ceremony_detail: "".to_owned(),
