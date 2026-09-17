@@ -2,8 +2,9 @@
 //! loaded either from the deployed artifact of the module it belongs to
 //! (`backend::view_source`: the registry's ACTIVE code hash, fetched and
 //! verified, never a desktop substitute) or, for the desktop's own views,
-//! FROM A FILE beside the binary (`make views` stages
-//! `target/views/<module>_view.wasm`; `DUCKTAPE_VIEWS_DIR` overrides); it is
+//! FROM A FILE beside the binary (run `ops/build-views.sh` in
+//! `ducktape-industries/ducktape-views` and point `DUCKTAPE_VIEWS_DIR` at its
+//! `target/views`, or stage that directory beside the binary); it is
 //! ticked inside a fuel and time budget, and presented through native
 //! gpui-kit controls in its tab.
 //!
@@ -1904,8 +1905,9 @@ pub(crate) mod canary {
             connection.client = Some(client.clone());
             connection.rev += 1;
         }
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/views/chat_view.wasm");
+        let path = super::views_dir()
+            .expect("staged views")
+            .join("chat_view.wasm");
         let guest = super::Guest::load_from("chat", &path).expect("build the current Chat view");
         let source = super::mounted("chat");
         let mut source = source.lock().unwrap();
@@ -1987,12 +1989,16 @@ pub(crate) mod canary {
     }
 }
 
-/// Where the staged views are: `$DUCKTAPE_VIEWS_DIR`, else `views/` beside
-/// the binary or beside its profile directory — the shape
+/// Where the staged views are: `$DUCKTAPE_VIEWS_DIR`, else the workspace's
+/// `target/views`, `views/` beside the binary, or beside its profile directory — the shape
 /// `workspace_config::staged_modules_dir` gives the founding set.
 fn views_dir() -> Result<PathBuf, String> {
     if let Some(dir) = std::env::var_os("DUCKTAPE_VIEWS_DIR") {
         return Ok(PathBuf::from(dir));
+    }
+    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views");
+    if workspace.is_dir() {
+        return Ok(workspace);
     }
     let exe = std::env::current_exe().map_err(|error| format!("current executable: {error}"))?;
     let exe_dir = exe.parent().ok_or("the executable has no directory")?;
@@ -2003,7 +2009,7 @@ fn views_dir() -> Result<PathBuf, String> {
         .find(|dir| dir.is_dir())
         .ok_or_else(|| {
             format!(
-                "no views beside {} — `make views` stages them under target/views, or set $DUCKTAPE_VIEWS_DIR",
+                "no views beside {} — run ops/build-views.sh in ducktape-industries/ducktape-views and point DUCKTAPE_VIEWS_DIR at its target/views",
                 exe.display()
             )
         })
@@ -3642,8 +3648,9 @@ pub(crate) mod tests {
     use gpui_kit::{self as gpui, Entity, TestAppContext, VisualTestContext};
 
     pub(crate) fn close_observer_fixture() -> NativeModuleView {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../target/views/governance_view.wasm");
+        let path = views_dir()
+            .expect("staged views")
+            .join("governance_view.wasm");
         assert!(
             path.is_file(),
             "close regression requires the staged governance view"
@@ -4010,9 +4017,13 @@ pub(crate) mod tests {
                 "{module}'s door still admits an open_link of its own"
             );
         }
-        let views = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../crates/views");
+        let staged = views_dir().expect("staged views");
+        let views = staged
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("target/views in the ducktape-views checkout");
         let mut sources = Vec::new();
-        collect_view_sources(&views, &mut sources);
+        collect_view_sources(views, &mut sources);
         assert!(!sources.is_empty(), "the walk found no view source at all");
         for (path, source) in sources {
             // `host.open_link` is the door; anything else before the dot is a
@@ -4316,7 +4327,7 @@ pub(crate) mod tests {
     #[test]
     fn visibility_subscription_is_generic_and_reports_initial_hidden_state() {
         let _turn = blocking_connection_turn();
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/chat_view.wasm");
+        let path = views_dir().expect("staged views").join("chat_view.wasm");
         let mut guest = Guest::load_from("unfamiliar-view", &path).expect("staged view");
         assert!(kernel::answer(&mut guest, "host", "visible", 41, b""));
         assert!(matches!(guest.pending.last(), Some(wire::Event::Response {
@@ -4469,16 +4480,14 @@ pub(crate) mod tests {
     /// connected it reads its own register — an `rpc.live` subscription
     /// the kernel keeps, and an `rpc.query` the kernel refuses here (no
     /// node) — so the refusal is what the screen shows, and a block on the
-    /// governance plane makes it ask again. Needs `make views`; without the
-    /// staged component the test says so and does nothing.
+    /// governance plane makes it ask again. Build the views with
+    /// `ops/build-views.sh` in `ducktape-views` and point `DUCKTAPE_VIEWS_DIR`
+    /// at its `target/views`; without the staged component the test does nothing.
     #[test]
     fn the_staged_governance_view_boots_and_reads_its_register_through_the_kernel() {
-        let staged = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../target/views/governance_view.wasm");
-        if !staged.is_file() {
-            eprintln!("skipped: no {} — run `make views`", staged.display());
+        let Some(staged) = staged("governance") else {
             return;
-        }
+        };
         // the kernel answers off the app's connection: none here
         let _turn = blocking_connection_turn();
         let mut guest = Guest::load_from("governance", &staged).expect("the view loads");
@@ -4548,8 +4557,9 @@ pub(crate) mod tests {
     /// offline plate, and once the session says connected it opens one
     /// `rpc.live` subscription per plane it draws and reads every card
     /// through the kernel doors (`rpc.status`, `rpc.query`, `rpc.view`,
-    /// `files.get`), canned here. Needs `make views`; without the staged
-    /// component the test says so and does nothing.
+    /// `files.get`), canned here. Build the views with `ops/build-views.sh` in
+    /// `ducktape-views` and point `DUCKTAPE_VIEWS_DIR` at its `target/views`;
+    /// without the staged component the test does nothing.
     #[test]
     fn the_staged_home_view_boots_and_reads_status_through_the_kernel() {
         let Some(staged) = staged("home") else {
@@ -4738,8 +4748,8 @@ pub(crate) mod tests {
         );
     }
 
-    /// The staged path for `module`, or None with a note when `make views`
-    /// has not run.
+    /// The staged path for `module`, or None with a note explaining how to
+    /// build the views in `ducktape-views` and point `DUCKTAPE_VIEWS_DIR` at them.
     /// Redraw until the view is quiet and every editor document it draws
     /// has crossed the transfer: an editor node carries a document
     /// reference, and its bytes arrive over frames, so a test that reads
@@ -4808,13 +4818,20 @@ pub(crate) mod tests {
         assert!(guest.fault.is_none(), "{:?}", guest.fault);
     }
 
-    fn staged(module: &str) -> Option<std::path::PathBuf> {
-        let staged = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join(format!("../target/views/{module}_view.wasm"));
+    pub(super) fn staged(module: &str) -> Option<std::path::PathBuf> {
+        let views = std::env::var_os("DUCKTAPE_VIEWS_DIR")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/views")
+            });
+        let staged = views.join(format!("{module}_view.wasm"));
         if staged.is_file() {
             return Some(staged);
         }
-        eprintln!("skipped: no {} — run `make views`", staged.display());
+        eprintln!(
+            "skipped: no {} — run ops/build-views.sh in ducktape-industries/ducktape-views and point DUCKTAPE_VIEWS_DIR at its target/views",
+            staged.display()
+        );
         None
     }
 
@@ -5270,8 +5287,9 @@ pub(crate) mod tests {
     /// lists the directory itself — an `rpc.live` subscription the kernel
     /// keeps, and a `files.get` the kernel refuses here (no node) — so the
     /// refusal is what the screen shows, and a block on the files plane makes
-    /// it ask again. Needs `make views`; without the staged component the test
-    /// says so and does nothing.
+    /// it ask again. Build the views with `ops/build-views.sh` in
+    /// `ducktape-views` and point `DUCKTAPE_VIEWS_DIR` at its `target/views`;
+    /// without the staged component the test does nothing.
     #[test]
     fn the_staged_files_view_boots_and_reads_duckfs_through_the_kernel() {
         let Some(staged) = staged("files") else {
@@ -5352,10 +5370,6 @@ pub(crate) mod tests {
             std::fs::write(staged.path().join(format!("{module}_view.wasm")), b"\0asm")
                 .expect("staged");
         }
-        // SAFETY: set under the connection turn, the only one a desktop
-        // view — the one reader of this variable — is loaded under;
-        // `every_desktop_view_is_asked_at_boot` sets it too, under its own.
-        unsafe { std::env::set_var("DUCKTAPE_VIEWS_DIR", staged.path()) };
         for module in node_owned {
             let mounted = Mounted::seat();
             assert_eq!(
@@ -5433,7 +5447,8 @@ pub(crate) mod tests {
     /// reads the repo namespace ITSELF — an `rpc.live` subscription the
     /// kernel keeps, and an `rpc.query` the kernel refuses here (no node),
     /// so the refusal is what the screen shows. Its four reader surfaces
-    /// stay the host's to paint. Needs `make views`.
+    /// stay the host's to paint. Build the views with `ops/build-views.sh` in
+    /// `ducktape-views` and point `DUCKTAPE_VIEWS_DIR` at its `target/views`.
     #[test]
     fn the_staged_forge_view_boots_and_reads_its_repos_through_the_kernel() {
         let Some(staged) = staged("forge") else {
@@ -5512,8 +5527,10 @@ pub(crate) mod tests {
     /// the host hands the guest a token and the module's own words, and the
     /// words go on the screen as they were written.
     ///
-    /// The staged Forge guest, the real native renderer, one window. Needs
-    /// `make views`. `DUCKTAPE_CANARY_PIXELS=1` writes the picture too, on
+    /// The staged Forge guest, the real native renderer, one window. Build the
+    /// views with `ops/build-views.sh` in `ducktape-views` and point
+    /// `DUCKTAPE_VIEWS_DIR` at its `target/views`. `DUCKTAPE_CANARY_PIXELS=1`
+    /// writes the picture too, on
     /// the one lane that can: gpui's headless renderer is macOS-only, so the
     /// drawn text is the whole of the evidence everywhere else — same rule as
     /// the canary captures.
@@ -6005,13 +6022,9 @@ pub(crate) mod tests {
     fn every_desktop_view_is_asked_at_boot() {
         let _turn = blocking_connection_turn();
         use crate::backend::view_source::DESKTOP_OWNED;
-        let Some(staged) = staged("members") else {
+        let Some(_staged) = staged("members") else {
             return;
         };
-        // SAFETY: set under the connection turn, the only one a desktop
-        // view is loaded under; `a_module_owned_view_never_comes_from_the_
-        // staged_file` sets it too, under its own turn.
-        unsafe { std::env::set_var("DUCKTAPE_VIEWS_DIR", staged.parent().expect("staging dir")) };
         let loads = booted();
         assert_eq!(
             loads.started(),

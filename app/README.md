@@ -57,9 +57,9 @@ of the `ducktape-industries/ducktape-views` repo
 (`governance`, `members`, `agents`, `node`, `explorer`, `settings`, `chat`, `files`,
 `pages`, `forge`). Rust cdylibs compile to `wasm32-unknown-unknown`; wasm-tools wraps their embedded WIT exports as components that the app
 loads from a file at runtime (`src/module_view.rs`).
-Building that repo stages each view as
-`target/views/<module>_view.wasm`, where a built binary looks for it
-(`DUCKTAPE_VIEWS_DIR` overrides; the native packaging script carries the
+Run `ops/build-views.sh` in that repo to stage each view as
+`target/views/<module>_view.wasm`, then point `DUCKTAPE_VIEWS_DIR` at that
+`target/views` directory. The native packaging script carries the
 directory into `Ducktape.app` as resources linked beside the executable, and
 the Linux install path stages it beside the binary in the release it seeds).
 A tab whose view is not staged says so in its place.
@@ -226,7 +226,7 @@ and staples a bundle inside the enclave. `make release-app` takes it with
 `DUCKTAPE_SIGN_VIA=airlock`; there is exactly ONE path per environment, and
 `DUCKTAPE_SIGN_VIA=airlock` set together with `DUCKTAPE_CODESIGN_IDENTITY` or
 any `DUCKTAPE_NOTARY_*` is refused as `sign_path_conflict` before anything
-builds (the Makefile and `ops/bundle-app-macos.sh` both check).
+builds (`ops/bundle-app-macos.sh` checks before building).
 
 1. **Enrol the identity** into the gateway, once, from any machine that holds
    the material. Only the TEE gateway mounts the signing route (the

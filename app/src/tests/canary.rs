@@ -5,10 +5,16 @@ use crate::module_view::canary::{frame, seated_hash, tap, texts};
 use gpui_kit::{AppContext, px, size};
 use std::path::{Path, PathBuf};
 fn component(module: &str) -> Vec<u8> {
-    let path =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("../target/views/{module}_view.wasm"));
-    std::fs::read(&path)
-        .unwrap_or_else(|error| panic!("{}: {error}; run make views", path.display()))
+    let views = std::env::var_os("DUCKTAPE_VIEWS_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views"));
+    let path = views.join(format!("{module}_view.wasm"));
+    std::fs::read(&path).unwrap_or_else(|error| {
+        panic!(
+            "{}: {error}; run ops/build-views.sh in ducktape-industries/ducktape-views and point DUCKTAPE_VIEWS_DIR at its target/views",
+            path.display()
+        )
+    })
 }
 fn runtime() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_multi_thread()

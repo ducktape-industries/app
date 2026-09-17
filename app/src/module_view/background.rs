@@ -386,8 +386,9 @@ mod tests {
     use super::*;
 
     fn call_guest() -> Guest {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/views/call_view.wasm");
+        let path = super::super::views_dir()
+            .expect("staged views")
+            .join("call_view.wasm");
         Guest::load_from("call", &path)
             .expect("stage the call guest with ops/build-views.sh -p call-view")
     }
