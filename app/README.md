@@ -3,8 +3,10 @@
 Native GPUI desktop shell with dynamically loaded, Rust-authored WASM views.
 
 ```bash
-cargo build -p node-bin
-make views                  # the tabs: wasm views staged under target/views
+# a node (ducktape-industries/ducktape) and the module views
+# (ducktape-industries/ducktape-views) are separate repos this app
+# consumes over RPC and DUCKTAPE_VIEWS_DIR; run a node and stage its
+# views first, then:
 cargo run -p ducktape-app
 ```
 
@@ -50,17 +52,17 @@ reconnect action; an empty buffer is distinct from a refused connection.
 ## Module-owned views
 
 The Approvals, Members, Agents, Node, Explorer, Settings, Chat, Files,
-Pages and Forge tabs keep their state and behavior in WASM views under `crates/views`
+Pages and Forge tabs keep their state and behavior in WASM views built out
+of the `ducktape-industries/ducktape-views` repo
 (`governance`, `members`, `agents`, `node`, `explorer`, `settings`, `chat`, `files`,
 `pages`, `forge`). Rust cdylibs compile to `wasm32-unknown-unknown`; wasm-tools wraps their embedded WIT exports as components that the app
 loads from a file at runtime (`src/module_view.rs`).
-`make views` builds every view under `crates/views` and stages it as
+Building that repo stages each view as
 `target/views/<module>_view.wasm`, where a built binary looks for it
 (`DUCKTAPE_VIEWS_DIR` overrides; the native packaging script carries the
-directory into `Ducktape.app` as resources linked beside the executable, and the Linux
-`make install-app` stages it beside the binary in the release it seeds); `make dev`
-and `make app` run it first. A tab whose view is not
-staged says so in its place.
+directory into `Ducktape.app` as resources linked beside the executable, and
+the Linux install path stages it beside the binary in the release it seeds).
+A tab whose view is not staged says so in its place.
 
 Deployed views follow the module registry's active deployment hash on block
 events. The host fetches and verifies a candidate, compiles it away from the
@@ -74,8 +76,9 @@ selections and focus can survive installation without retaining old callbacks.
 `ducktape module update` accepts `--view` and `--assets` alongside the module
 component and optional index. A deployment is a complete set: omitting its
 view or index removes that part on activation, rather than keeping an older
-copy. See [`../docs/records/architecture/wasm-module-authoring.md`](../docs/records/architecture/wasm-module-authoring.md)
-for module packaging and registry operations.
+copy. See the `ducktape-industries/ducktape` repo's
+`docs/records/architecture/wasm-module-authoring.md` for module packaging
+and registry operations.
 
 A view owns its state, receives session and domain props (`<module>.props`,
 one JSON item per change), and emits a wire tree rendered by native gpui-kit
@@ -131,13 +134,13 @@ their shared wire vocabulary.
 
 ## Release build (macOS: signed and notarized)
 
-`make app` builds `Ducktape.app` and `Ducktape-<version>-<arch>.dmg` under
+`cargo build --release -p ducktape-app -p app-launcher && ops/bundle-app-macos.sh`
+builds `Ducktape.app` and `Ducktape-<version>-<arch>.dmg` under
 `target/app-bundle/` and signs both **ad-hoc**, which runs on the machine that
 built it and nowhere else — Gatekeeper refuses an ad-hoc bundle that arrived
 over the network. A bundle that leaves this Mac is signed with a Developer ID
 identity and notarized by Apple. `ops/bundle-app-macos.sh` does both itself, off four
-environment variables; `make app` inherits the environment, so exporting them
-is the whole configuration.
+environment variables exported into the shell before the build.
 
 The bundle carries two executables in `Contents/MacOS`: `ducktape-launcher`,
 its `CFBundleExecutable` (`app/packaging/Info.plist`), reads the update state
@@ -147,9 +150,8 @@ sit under `Contents/Resources/views` with a `MacOS/views` link, where
 `views_dir()` finds them beside the executable. The helper is nested code and
 is signed first, then the bundle, so `codesign --verify --deep --strict` — what
 `ducktape-launcher --qualify` runs on a staged release — passes on the bundle
-as built. `make install-app` hands that bundle to `ducktape-launcher install
---from target/app-bundle/Ducktape.app` unchanged: nothing is copied in, nothing
-is re-sealed.
+as built. `ducktape-launcher install --from target/app-bundle/Ducktape.app`
+takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
 
 1. **The signing identity.** A "Developer ID Application" certificate from the
    Apple Developer Program, in the login keychain. The exact string is what
@@ -176,7 +178,8 @@ is re-sealed.
    export DUCKTAPE_NOTARY_KEY="$HOME/.appstoreconnect/AuthKey_XXXXXXXXXX.p8"
    export DUCKTAPE_NOTARY_KEY_ID=XXXXXXXXXX
    export DUCKTAPE_NOTARY_ISSUER=00000000-0000-0000-0000-000000000000
-   make app-release          # refuses if DUCKTAPE_CODESIGN_IDENTITY is unset
+   cargo build --release -p ducktape-app -p app-launcher
+   ops/bundle-app-macos.sh   # refuses if DUCKTAPE_CODESIGN_IDENTITY is unset
    ```
 
    The three `DUCKTAPE_NOTARY_*` go together: all three set adds `xcrun notarytool

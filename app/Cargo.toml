@@ -149,5 +149,5 @@ quote = "1"
 # asserted about from memory: `the_app_links_only_what_it_still_speaks_for`
 toml = "0.8"
 commonware-cryptography.workspace = true
-simnode = { path = "../bin/simnode" }
+simnode.workspace = true
 tempfile.workspace = true
