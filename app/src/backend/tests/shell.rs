@@ -267,3 +267,72 @@ checkpoint_blocks = 32
         Some("http://127.0.0.1:8844")
     );
 }
+
+/// TWO WORKSPACES, ONE PORT (#15). `node init` twice on a device registers
+/// both on the default endpoint, so the endpoint names neither. Opening a row
+/// records its chain id, and from then on that endpoint resolves to that
+/// chain's workspace — its keystore root and data dir — never the sibling
+/// registered first.
+#[test]
+fn a_picked_chain_opens_its_own_workspace_on_a_shared_endpoint() {
+    let root = tempfile::tempdir().unwrap();
+    let register = |dir_name: &str, chain_id: &str| {
+        let dir = root.path().join(dir_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        workspace_config::NetworkDescriptor {
+            chain_id: chain_id.into(),
+            validators: vec!["aa".repeat(32)],
+            bootstrap: vec![],
+            reach: vec![],
+            coordination: None,
+            block_time_ms: workspace_config::DEFAULT_BLOCK_TIME_MS,
+            modules: vec![],
+            genesis: String::new(),
+        }
+        .save(&dir.join("network.toml"))
+        .unwrap();
+        std::fs::write(
+            dir.join("node.toml"),
+            r#"network = "network.toml"
+key_file = "node.key"
+listen = "0.0.0.0:52200"
+advertised = "overlay"
+storage_dir = "data"
+http_listen = "0.0.0.0:18519"
+gateway_listen = "127.0.0.1:0"
+rpc_listen = "127.0.0.1:18520"
+wireguard_listen = "0.0.0.0:51820"
+invite_listen = "0.0.0.0:51821"
+wireguard_advertised = "auto"
+primary_coordinator = "none"
+coordinator_relay = "none"
+checkpoint_blocks = 32
+"#,
+        )
+        .unwrap();
+        dir
+    };
+    let dead = register("walk", "walk#37589218");
+    let healthy = register("walk-2", "walk#0e1b62f1");
+    let endpoint = workspace_endpoint(&healthy).unwrap();
+    assert_eq!(
+        workspace_endpoint(&dead).as_deref(),
+        Some(endpoint.as_str())
+    );
+
+    for (chain_id, dir) in [
+        ("walk#0e1b62f1", &healthy),
+        ("walk#37589218", &dead),
+        ("walk#0e1b62f1", &healthy),
+    ] {
+        note_served_chain(&endpoint, chain_id);
+        assert_eq!(
+            workspace_serving(root.path(), &endpoint),
+            Some((chain_id.to_string(), dir.clone())),
+            "opening {chain_id} resolves its own workspace"
+        );
+    }
+    // a chain no workspace on this endpoint holds is a remote, not a sibling.
+    note_served_chain(&endpoint, "team#c0ffee");
+    assert_eq!(workspace_serving(root.path(), &endpoint), None);
+}

@@ -164,9 +164,8 @@ pub(crate) fn rpc_client(input: &str) -> Result<RpcClient, String> {
 /// [`rpc_client`], which is where this runs, holding its cache lock. The
 /// bug that shape produced was not a slow test but a dead process.
 fn operator_token_for(origin: &str) -> Option<String> {
-    let (_, workspace) = super::shell::workspaces()
-        .into_iter()
-        .find(|(_, dir)| super::shell::workspace_endpoint(dir).as_deref() == Some(origin))?;
+    let home = super::shell::ducktape_home()?;
+    let (_, workspace) = super::shell::workspace_serving(&home, origin)?;
     let token = std::fs::read_to_string(workspace.join("admin.token")).ok()?;
     let token = token.trim().to_string();
     (!token.is_empty()).then_some(token)

@@ -605,7 +605,7 @@ pub(crate) fn network_key(rpc: &str) -> String {
 /// launch window's key screens now open for a remote exactly as for a local
 /// network.
 ///
-/// A remote's chain id is what its `/v1/status` says; [`note_remote_chain`]
+/// A remote's chain id is what its `/v1/status` says; [`note_served_chain`]
 /// records it when the launch window loads the keystore, and until it has,
 /// the root is a refusal — "not yet reached", never a guess.
 pub(crate) fn keystore_root(rpc: &str) -> Result<PathBuf, String> {
@@ -613,9 +613,7 @@ pub(crate) fn keystore_root(rpc: &str) -> Result<PathBuf, String> {
         return Ok(workspace);
     }
     let endpoint = canonical_endpoint(rpc.to_string());
-    let chain_id = remote_chains()
-        .get(&endpoint)
-        .cloned()
+    let chain_id = served_chain(&endpoint)
         .ok_or_else(|| "this node has not answered which network it serves yet".to_string())?;
     remote_keystore_root(&workspace_config::ducktape_home()?, &chain_id)
 }
@@ -631,23 +629,37 @@ pub(crate) fn remote_keystore_root(home: &Path, chain_id: &str) -> Result<PathBu
     Ok(home.join("remotes").join(name))
 }
 
-/// Endpoint → chain id, for the remotes this session has reached. Learned
-/// once per endpoint from the node's own status, at the keystore load.
-static REMOTE_CHAINS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+/// Canonical endpoint → the chain id this session opens it as, learned at the
+/// keystore load: the picked row's chain id for a workspace on this device
+/// (two workspaces can be registered on one port, so the endpoint alone names
+/// neither), else what a remote node's own status says.
+static SERVED_CHAINS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
-fn remote_chains() -> std::sync::MutexGuard<'static, BTreeMap<String, String>> {
-    REMOTE_CHAINS
+fn served_chains() -> std::sync::MutexGuard<'static, BTreeMap<String, String>> {
+    SERVED_CHAINS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Record which network `rpc` serves, so [`keystore_root`] can name its
-/// keystore. An empty chain id (a node serving no chain yet) records nothing.
-pub(crate) fn note_remote_chain(rpc: &str, chain_id: &str) {
+/// The chain id recorded for an ALREADY-CANONICAL endpoint. Takes no
+/// [`canonical_endpoint`] of its own: it runs under the rpc client cache lock
+/// (`operator_token_for`).
+pub(crate) fn served_chain(endpoint: &str) -> Option<String> {
+    served_chains().get(endpoint).cloned()
+}
+
+/// Record which network `rpc` serves, so [`workspace_at`] and
+/// [`keystore_root`] resolve that network rather than whichever workspace
+/// shares its port. An empty chain id (a remote row nobody has asked, a node
+/// serving no chain yet) records nothing.
+pub(crate) fn note_served_chain(rpc: &str, chain_id: &str) {
     if chain_id.is_empty() {
         return;
     }
-    remote_chains().insert(canonical_endpoint(rpc.to_string()), chain_id.to_string());
+    // canonicalised BEFORE the table lock: canonicalising takes the client
+    // cache lock, which `operator_token_for` holds while it reads this table.
+    let endpoint = canonical_endpoint(rpc.to_string());
+    served_chains().insert(endpoint, chain_id.to_string());
 }
 
 /// One named wallet's key file inside a workspace's keystore — THE join, so

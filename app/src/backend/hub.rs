@@ -268,6 +268,17 @@ pub fn selected_network_name(networks: Vec<HubNetwork>, id: String) -> String {
         .unwrap_or_default()
 }
 
+/// The selected row's chain id — what its keystore is opened as
+/// ([`load_wallets`]) — or empty for a saved remote, which has none until its
+/// node answers, and for a selection that no longer names a row.
+pub fn selected_network_chain_id(networks: Vec<HubNetwork>, id: String) -> String {
+    networks
+        .into_iter()
+        .find(|row| row.id == id)
+        .map(|row| row.chain_id)
+        .unwrap_or_default()
+}
+
 /// The create ceremony's refusal, or empty when the pair is acceptable —
 /// the same floor the CLI enforces (8 scalar chars).
 pub fn password_problem(password: &str, confirm: &str) -> String {
@@ -448,12 +459,15 @@ pub async fn hub_state() -> HubState {
 /// is an identity of nobody. The read is a directory listing, never a
 /// subprocess: nothing on the key path execs anything.
 ///
-/// A REMOTE's keystore is named by the network it serves, so its node is
-/// asked first (`/v1/status`); a node that cannot be reached, or serves no
-/// chain yet, has no keystore to open and the launch window stays on the pick
-/// with that error. A workspace on this device names its own keystore and is
-/// not asked.
-pub async fn load_wallets(rpc: String) -> WalletList {
+/// `chain_id` is the picked network's, when the pick names one: a workspace
+/// on this device is opened as ITS chain, not as whichever workspace shares its
+/// endpoint ([`note_served_chain`]). A REMOTE's keystore is named by the
+/// network it serves, so its node is asked first (`/v1/status`); a node that
+/// cannot be reached, or serves no chain yet, has no keystore to open and the
+/// launch window stays on the pick with that error. A workspace on this device
+/// names its own keystore and is not asked.
+pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
+    note_served_chain(&rpc, &chain_id);
     if let Err(cause) = name_remote_keystore(&rpc).await {
         set_local_user_key(None).await;
         return WalletList {
@@ -514,7 +528,7 @@ async fn name_remote_keystore(rpc: &str) -> Result<(), String> {
             "this node serves no network yet, so there is no identity to hold for it".into(),
         );
     }
-    note_remote_chain(rpc, &chain_id);
+    note_served_chain(rpc, &chain_id);
     Ok(())
 }
 
@@ -1213,7 +1227,7 @@ mod tests {
             keystore_root(rpc).is_err(),
             "an unreached remote names no keystore"
         );
-        note_remote_chain(rpc, "team#c0ffee");
+        note_served_chain(rpc, "team#c0ffee");
         let home = tempfile::tempdir().unwrap();
         let root = remote_keystore_root(home.path(), "team#c0ffee").unwrap();
         assert_eq!(root, home.path().join("remotes").join("team#c0ffee"));
@@ -1228,7 +1242,7 @@ mod tests {
         assert_eq!(root.file_name().unwrap(), "a-b#1");
         assert!(remote_keystore_root(home.path(), "..").is_err());
         // a node serving no chain records nothing.
-        note_remote_chain("http://203.0.113.11:1", "");
+        note_served_chain("http://203.0.113.11:1", "");
         assert!(keystore_root("http://203.0.113.11:1").is_err());
     }
 

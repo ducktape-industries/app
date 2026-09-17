@@ -74,10 +74,21 @@ pub(crate) fn lone_workspace_endpoint() -> Option<String> {
 /// The workspace on this device that serves an endpoint, matched on the
 /// endpoint the app is actually connected to. `None` is a remote.
 pub(crate) fn workspace_at(rpc: &str) -> Option<(String, PathBuf)> {
-    let endpoint = canonical_endpoint(rpc.to_string());
-    workspaces()
-        .into_iter()
-        .find(|(_, dir)| workspace_endpoint(dir).as_deref() == Some(endpoint.as_str()))
+    workspace_serving(&ducktape_home()?, &canonical_endpoint(rpc.to_string()))
+}
+
+/// [`workspace_at`] under `root`, for an ALREADY-CANONICAL endpoint. Two
+/// workspaces can be registered on one port, so once the session knows which
+/// chain the endpoint is opened as ([`note_served_chain`]) only that chain's
+/// workspace answers — never its sibling's keystore, data dir or tokens. An
+/// endpoint nobody has named a chain for (`DUCKTAPE_NODE`, a typed address)
+/// takes the first workspace registered on it.
+pub(crate) fn workspace_serving(root: &Path, endpoint: &str) -> Option<(String, PathBuf)> {
+    let served = served_chain(endpoint);
+    workspaces_in(root).into_iter().find(|(chain_id, dir)| {
+        workspace_endpoint(dir).as_deref() == Some(endpoint)
+            && served.as_ref().is_none_or(|served| served == chain_id)
+    })
 }
 
 /// What a join hands back: the network's id, where it materialized, and the

@@ -3364,14 +3364,18 @@ impl Ducktape {
             self.hub_networks.clone(),
             self.hub_selected.to_owned(),
         );
+        let chain_id = crate::backend::selected_network_chain_id(
+            self.hub_networks.clone(),
+            self.hub_selected.to_owned(),
+        );
         self.onboarding_error = "".to_owned();
         self.password = "".to_owned();
         self.hub_wallet_selected = "".to_owned();
         self.mutation_phase = MutationPhase::Onboarding;
-        let pending_task =
-            Task::perform(crate::backend::load_wallets(self.rpc.to_owned()), |value| {
-                AppMessage::WalletsLoaded(value)
-            });
+        let pending_task = Task::perform(
+            crate::backend::load_wallets(self.rpc.to_owned(), chain_id),
+            AppMessage::WalletsLoaded,
+        );
         self.wallets_load_generation = self.wallets_load_generation.wrapping_add(1);
         let request_generation = self.wallets_load_generation;
         let (pending_task, request_handle) = pending_task.abortable();
@@ -3396,10 +3400,10 @@ impl Ducktape {
         self.password = "".to_owned();
         self.hub_wallet_selected = "".to_owned();
         self.mutation_phase = MutationPhase::Onboarding;
-        let pending_task =
-            Task::perform(crate::backend::load_wallets(self.rpc.to_owned()), |value| {
-                AppMessage::WalletsLoaded(value)
-            });
+        let pending_task = Task::perform(
+            crate::backend::load_wallets(self.rpc.to_owned(), String::new()),
+            AppMessage::WalletsLoaded,
+        );
         self.wallets_load_generation = self.wallets_load_generation.wrapping_add(1);
         let request_generation = self.wallets_load_generation;
         let (pending_task, request_handle) = pending_task.abortable();
@@ -3967,10 +3971,11 @@ impl Ducktape {
         self.password = "".to_owned();
         self.hub_wallet_selected = "".to_owned();
         self.mutation_phase = MutationPhase::Onboarding;
-        let pending_task =
-            Task::perform(crate::backend::load_wallets(self.rpc.to_owned()), |value| {
-                AppMessage::WalletsLoaded(value)
-            });
+        // the workspace just joined names its own chain.
+        let pending_task = Task::perform(
+            crate::backend::load_wallets(self.rpc.to_owned(), self.onboarding_name.to_owned()),
+            AppMessage::WalletsLoaded,
+        );
         self.wallets_load_generation = self.wallets_load_generation.wrapping_add(1);
         let request_generation = self.wallets_load_generation;
         let (pending_task, request_handle) = pending_task.abortable();
