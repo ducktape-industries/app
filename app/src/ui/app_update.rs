@@ -185,6 +185,7 @@ impl Ducktape {
             AppMessage::PhraseConfirmed(pubkey) => self.on_phrase_confirmed(pubkey),
             AppMessage::PhraseConfirmFailed(cause) => self.on_phrase_confirm_failed(cause),
             AppMessage::GoRestore => self.on_go_restore(),
+            AppMessage::GoCreateWallet => self.on_go_create_wallet(),
             AppMessage::GoLogin => self.on_go_login(),
             AppMessage::RestoreSubmit(name, pw) => self.on_restore_submit(name, pw),
             AppMessage::KeyRestored(pubkey) => self.on_key_restored(pubkey),
@@ -3243,6 +3244,15 @@ impl Ducktape {
         self.secrets.clear("restore_words");
         self.onboarding_error = "".to_owned();
         self.hub_step = HubStep::Restore;
+        Task::none()
+    }
+    fn on_go_create_wallet(&mut self) -> Task<AppMessage> {
+        if self.mutation_phase != MutationPhase::Idle {
+            return Task::none();
+        }
+        self.password = "".to_owned();
+        self.onboarding_error = "".to_owned();
+        self.hub_step = HubStep::Password;
         Task::none()
     }
     fn on_go_login(&mut self) -> Task<AppMessage> {

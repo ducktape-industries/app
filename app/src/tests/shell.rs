@@ -883,3 +883,41 @@ async fn an_offline_network_says_so_before_any_wallet_step() {
     );
     assert_eq!(app.mutation_phase, MutationPhase::Idle);
 }
+
+/// CREATE A WALLET ON WELCOME BACK MAKES A WALLET (#24). The button sent the
+/// skip, so a keystore holding any wallet — one whose password is gone, say —
+/// could never reach the ceremony again: the workspace opened unsigned. It
+/// opens the same password step an empty keystore lands on, and the skip is
+/// its own button.
+#[test]
+fn create_a_wallet_on_welcome_back_opens_the_wallet_ceremony() {
+    use futures::StreamExt as _;
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(AppMessage::WalletsLoaded(backend::WalletList {
+        wallets: vec![backend::WalletInfo {
+            name: "zk-dev".into(),
+            pubkey: "07".repeat(32),
+            state: "encrypted".into(),
+            active: true,
+        }],
+        error: String::new(),
+        keystore: true,
+        offline: false,
+    }));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+
+    let create = app.update(AppMessage::GoCreateWallet);
+    let queued = futures::executor::block_on(create.into_stream().collect::<Vec<_>>());
+    assert!(queued.is_empty(), "creating never enters the workspace");
+    assert_eq!(app.hub_step, HubStep::Password);
+
+    let _ = app.update(AppMessage::GoLogin);
+    assert_eq!(app.hub_step, HubStep::Wallets, "Back returns to the list");
+    let skip = app.update(AppMessage::LoginSkip);
+    let queued = futures::executor::block_on(skip.into_stream().collect::<Vec<_>>());
+    assert!(
+        matches!(queued.as_slice(), [AppMessage::NetworkEntered]),
+        "the skip still enters the workspace"
+    );
+}

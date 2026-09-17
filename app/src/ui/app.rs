@@ -493,6 +493,9 @@ pub(crate) enum AppMessage {
     PhraseConfirmed(String),
     PhraseConfirmFailed(crate::backend::AppError),
     GoRestore,
+    /// A new wallet from the wallet list: the same ceremony an empty
+    /// keystore opens on.
+    GoCreateWallet,
     GoLogin,
     RestoreSubmit(String, String),
     KeyRestored(String),

@@ -930,10 +930,19 @@ impl DesktopWindow {
                             self.action(
                                 "wallet-create",
                                 "Create a wallet",
-                                Message::LoginSkip,
+                                Message::GoCreateWallet,
                                 busy,
                             )
                             .outline(),
+                        )
+                        .child(
+                            self.action(
+                                "wallet-skip",
+                                "Continue without a wallet",
+                                Message::LoginSkip,
+                                busy,
+                            )
+                            .ghost(),
                         )
                         .child(
                             self.action(
