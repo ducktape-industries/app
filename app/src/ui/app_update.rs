@@ -217,6 +217,7 @@ impl Ducktape {
             AppMessage::WorkspaceMaterialized(init) => self.on_workspace_materialized(init),
             AppMessage::ProvisionStepped(step) => self.on_provision_stepped(step),
             AppMessage::OnboardingInviteMinted(blob) => self.on_onboarding_invite_minted(blob),
+            AppMessage::OnboardingInviteRefused(cause) => self.on_onboarding_invite_refused(cause),
             AppMessage::CopyOnboardingInvite => self.on_copy_onboarding_invite(),
             AppMessage::EnterConsole => self.on_enter_console(),
             AppMessage::OnboardingFailed(cause) => self.on_onboarding_failed(cause),
@@ -3958,6 +3959,7 @@ impl Ducktape {
         self.onboarding_name = init.chain_id.to_owned();
         self.rpc = init.rpc.to_owned();
         self.invite_link = "".to_owned();
+        self.invite_refusal = "".to_owned();
         self.provision_steps = Vec::new();
         self.provision_index = 0;
         self.onboarding_error = "".to_owned();
@@ -3995,23 +3997,32 @@ impl Ducktape {
         if (self.provision_index != 5) || (!settled) {
             return Task::none();
         }
+        // nothing is minted until the person asks for an invitation
         self.hub_step = HubStep::Live;
-        Task::perform(
-            crate::backend::mint_invite(self.onboarding_name.to_owned()),
-            |result| match result {
-                Ok(value) => AppMessage::OnboardingInviteMinted(value),
-                Err(error) => AppMessage::OnboardingFailed(error),
-            },
-        )
+        Task::none()
     }
     fn on_onboarding_invite_minted(&mut self, blob: String) -> Task<AppMessage> {
         self.invite_link = blob.to_owned();
-        self.onboarding_error = "".to_owned();
+        self.invite_refusal = "".to_owned();
+        self.on_copy_onboarding_invite()
+    }
+    fn on_onboarding_invite_refused(
+        &mut self,
+        cause: crate::backend::AppError,
+    ) -> Task<AppMessage> {
+        self.invite_refusal = format!("Your node did not make an invitation: {}", cause.message);
         Task::none()
     }
     fn on_copy_onboarding_invite(&mut self) -> Task<AppMessage> {
+        // the first press mints; a refused one is asked again by the next
         if (self.invite_link).is_empty() {
-            return Task::none();
+            return Task::perform(
+                crate::backend::mint_invite(self.onboarding_name.to_owned()),
+                |result| match result {
+                    Ok(value) => AppMessage::OnboardingInviteMinted(value),
+                    Err(error) => AppMessage::OnboardingInviteRefused(error),
+                },
+            );
         }
         self.toast = "Invite copied".to_owned();
         self.toast_age = 0;

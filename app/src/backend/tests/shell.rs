@@ -395,6 +395,42 @@ async fn a_node_whose_netstack_plane_failed_holds_the_wait_with_its_sentence() {
     assert_eq!(step.hint, "no founding set beside the binary");
 }
 
+/// A NODE THAT ANSWERS BEFORE IT SERVES IS NOT READY (#9). Its HTTP surface is
+/// up while it is still `starting`, before it is admitted and before it wires
+/// the invite minter the ready screen offers: the wait does not settle on
+/// "Your node answered" on that first answer, it names the node's phase, as
+/// the launch row does, and polls on. A serving node settles it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_node_before_serving_holds_the_wait_on_its_phase() {
+    for (status, phase) in [
+        (
+            r#"{"height":0,"operations":{"phase":"starting"}}"#,
+            "starting",
+        ),
+        (
+            r#"{"height":0,"operations":{"phase":"joining"}}"#,
+            "joining",
+        ),
+    ] {
+        let rpc = super::node_that_serves_its_status_once(status).await;
+        let mut steps = provision_progress("no-such-workspace#9".into(), rpc).skip(3);
+        let step = steps.next().await.expect("the wait reports");
+        assert_eq!(step.index, 4);
+        assert_eq!(
+            (step.state.as_str(), step.settled),
+            ("waiting", false),
+            "{step:?}"
+        );
+        assert_eq!(step.label, format!("Waiting for your node · {phase}"));
+    }
+    let rpc =
+        super::node_that_serves_its_status_once(r#"{"height":3,"operations":{"phase":"serving"}}"#)
+            .await;
+    let mut steps = provision_progress("no-such-workspace#9".into(), rpc).skip(3);
+    let step = steps.next().await.expect("the wait reports");
+    assert_eq!((step.index, step.settled), (4, true), "{step:?}");
+}
+
 /// THE HTTP CLIENT'S SENTENCE IS EVIDENCE, NOT COPY (#19). A node nothing
 /// listened for reached the launch window as "identity query failed: error
 /// sending request for url (…/v1/query)". The open path says it in the app's
