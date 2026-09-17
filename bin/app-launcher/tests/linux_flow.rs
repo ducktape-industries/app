@@ -116,6 +116,14 @@ impl Rig {
         fs::write(self.state_path(), state::encode(phase)).unwrap();
     }
 
+    fn release_key_path(&self) -> PathBuf {
+        self.config
+            .join("ducktape")
+            .join("updates")
+            .join("keys")
+            .join("release.pub")
+    }
+
     fn link(&self, name: &str) -> Option<PathBuf> {
         fs::read_link(self.install_dir().join(name)).ok()
     }
@@ -472,5 +480,57 @@ fn a_release_installs_under_the_launcher_it_ships() {
         stdout(&booted).contains(&format!("release={sha}")),
         "{}",
         stdout(&booted)
+    );
+}
+
+/// `install --release-key` pins the key the app's release channel verifies
+/// under, at `<updates>/keys/release.pub` where the app reads it. A malformed
+/// key, or one that differs from the key already pinned, is refused by name
+/// before the install touches anything; the same key again installs.
+#[test]
+fn install_pins_the_release_key_and_never_replaces_a_different_one() {
+    let rig = Rig::new();
+    let (source_a, sha_a) = rig.build("A");
+    let key = "ab".repeat(32);
+    let installed = rig.launcher(&[
+        "install",
+        "--from",
+        source_a.to_str().unwrap(),
+        "--release-key",
+        &key,
+    ]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert_eq!(
+        fs::read_to_string(rig.release_key_path()).unwrap(),
+        format!("{key}\n")
+    );
+
+    let (source_b, sha_b) = rig.build("B");
+    let source_b = source_b.to_str().unwrap();
+    let malformed = rig.launcher(&["install", "--from", source_b, "--release-key", "abc"]);
+    assert!(!malformed.status.success());
+    let err = stderr(&malformed);
+    assert!(err.contains("release_key_invalid"), "{err}");
+
+    let other = "cd".repeat(32);
+    let different = rig.launcher(&["install", "--from", source_b, "--release-key", &other]);
+    assert!(!different.status.success());
+    let err = stderr(&different);
+    assert!(err.contains("release_key_pinned"), "{err}");
+
+    // neither refusal installed B or touched the pin
+    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
+    assert!(!rig.release_dir(sha_b).exists());
+    assert_eq!(
+        fs::read_to_string(rig.release_key_path()).unwrap(),
+        format!("{key}\n")
+    );
+
+    let same = rig.launcher(&["install", "--release-key", &key, "--from", source_b]);
+    assert!(same.status.success(), "{}", stderr(&same));
+    assert_eq!(rig.link("current"), Some(link_target(sha_b)));
+    assert_eq!(
+        fs::read_to_string(rig.release_key_path()).unwrap(),
+        format!("{key}\n")
     );
 }

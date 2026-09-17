@@ -5,8 +5,11 @@
 //! The launcher hands a running app two env vars — `DUCKTAPE_RELEASE` (the
 //! sha of the release that is running) and `DUCKTAPE_UPDATE_STATE` (the
 //! `state.json` path, whose directory is the updates dir) — and the pinned
-//! release key sits at `<updates>/keys/release.pub`. Without them there is no
-//! updater (`make dev` runs the binary bare) and this module does nothing.
+//! release key sits at `<updates>/keys/release.pub`. Without the env there is
+//! no updater (`make dev` runs the binary bare) and this module does nothing.
+//! Without the key the launcher's contract still holds — the first window
+//! reports `Rendered` — but the release channel (fetch, download, verify)
+//! stays off.
 //!
 //! What runs here:
 //! - `Fetch`: read `/shared/releases/stable.json` and `.sig` through the
@@ -114,7 +117,8 @@ impl UpdatePaths {
 #[derive(Debug, Clone)]
 pub struct Updater {
     phase: Phase,
-    keys: TrustedKeys,
+    /// `None`: no pinned key, so the channel never checks.
+    keys: Option<TrustedKeys>,
     paths: UpdatePaths,
     last_check: Option<i64>,
     activity: Activity,
@@ -132,6 +136,8 @@ pub struct UpdateReading {
     pub banner: Option<UpdateBanner>,
     pub last_check: Option<i64>,
     pub busy: bool,
+    /// A release key is pinned, so the channel checks.
+    pub armed: bool,
 }
 
 /// What performing one command asks of the caller.
@@ -146,7 +152,8 @@ enum Effect {
 
 impl Updater {
     /// The updater a launcher-started app runs, or `None` when the process
-    /// was started bare (no env) or the install has no pinned key.
+    /// was started bare (no env). An install with no pinned key still gets
+    /// one: its channel is off, its healthy signal is not.
     pub fn from_env() -> Option<Self> {
         let release = std::env::var(RELEASE_ENV).ok()?;
         let state_path = PathBuf::from(std::env::var_os(STATE_ENV)?);
@@ -155,10 +162,10 @@ impl Updater {
             return None;
         };
         let updates_dir = state_path.parent()?.to_path_buf();
-        let Some(keys) = load_keys(&updates_dir) else {
+        let keys = load_keys(&updates_dir);
+        if keys.is_none() {
             warn!(target: "ducktape::update", event = "app_update_disabled", reason = "no_pinned_key");
-            return None;
-        };
+        }
         let Some(releases_dir) = host_releases_dir(&updates_dir) else {
             warn!(target: "ducktape::update", event = "app_update_disabled", reason = "no_data_dir");
             return None;
@@ -176,13 +183,15 @@ impl Updater {
         Some(Self::new(phase, keys, paths))
     }
 
-    pub fn new(phase: Phase, keys: TrustedKeys, paths: UpdatePaths) -> Self {
-        info!(
-            target: "ducktape::update",
-            event = "app_update_armed",
-            current = %phase.current(),
-            pinned_sequence = phase.pinned_sequence(),
-        );
+    pub fn new(phase: Phase, keys: Option<TrustedKeys>, paths: UpdatePaths) -> Self {
+        if keys.is_some() {
+            info!(
+                target: "ducktape::update",
+                event = "app_update_armed",
+                current = %phase.current(),
+                pinned_sequence = phase.pinned_sequence(),
+            );
+        }
         Updater {
             phase,
             keys,
@@ -207,11 +216,12 @@ impl Updater {
             banner: self.banner.clone(),
             last_check: self.last_check,
             busy: self.activity != Activity::Quiet,
+            armed: self.keys.is_some(),
         }
     }
 
-    pub fn keys(&self) -> &TrustedKeys {
-        &self.keys
+    pub fn keys(&self) -> Option<&TrustedKeys> {
+        self.keys.as_ref()
     }
 
     pub fn paths(&self) -> &UpdatePaths {
@@ -239,7 +249,8 @@ impl Updater {
 
     fn check(&mut self, now: i64) -> Option<Job> {
         let quiet = self.activity == Activity::Quiet;
-        if !quiet {
+        let armed = self.keys.is_some();
+        if !(quiet && armed) {
             return None;
         }
         self.last_check = Some(now);
@@ -307,7 +318,9 @@ impl Updater {
             }
             Command::PinSuccessor(successor) => {
                 pin_successor(&self.paths.updates_dir, &successor);
-                self.keys.successor = Some(successor);
+                if let Some(keys) = &mut self.keys {
+                    keys.successor = Some(successor);
+                }
                 Effect::Nothing
             }
             Command::Banner(banner) => {
@@ -477,7 +490,10 @@ pub fn facts_of(reading: Option<&UpdateReading>, now: i64) -> UpdateFacts {
         staged_display,
         channel: layout::CHANNEL.into(),
         checked: checked_words(reading.last_check, now),
-        note: banner_words(reading.banner.as_ref()),
+        note: match reading.armed {
+            true => banner_words(reading.banner.as_ref()),
+            false => "Updates are off: no release key is pinned.".into(),
+        },
         busy: reading.busy,
     }
 }

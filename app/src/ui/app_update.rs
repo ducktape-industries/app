@@ -1311,10 +1311,13 @@ impl Ducktape {
         let Some(updater) = self.updater.as_ref() else {
             return Task::none();
         };
+        let Some(keys) = updater.keys() else {
+            return Task::none();
+        };
         Task::perform(
             crate::backend::update::run_job(
                 self.connected_rpc.to_owned(),
-                updater.keys().clone(),
+                keys.clone(),
                 updater.paths().clone(),
                 job,
             ),

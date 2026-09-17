@@ -2,6 +2,8 @@
 //! path to it, write `state.json` as `Idle`, and on Linux register the
 //! desktop entry that points the session at the launcher. What `make
 //! install-app` runs; also how a dev puts a local build under the launcher.
+//! `--release-key HEX` also pins the key the app's release channel verifies
+//! under; without a pinned key the app fetches no update.
 //!
 //! A locally built release has no archive, so its identity is the sha256 of
 //! its `ducktape-app` executable. A release already seeded under that sha
@@ -11,7 +13,7 @@
 use std::fs as std_fs;
 use std::path::{Path, PathBuf};
 
-use app_update::{Idle, Phase, Sha, state};
+use app_update::{Idle, Phase, PublicKey, Sha, state};
 use tracing::info;
 
 use crate::flip;
@@ -23,10 +25,41 @@ use crate::refusal::Refusal;
 const TARGET: &str = "ducktape::update";
 const DESKTOP_TEMPLATE: &str = include_str!("../../../app/packaging/dev.ducktape.app.desktop");
 
-pub fn install(layout: &Layout, from: &Path) -> Result<Sha, Refusal> {
-    match layout.platform {
+pub fn install(layout: &Layout, from: &Path, release_key: Option<&str>) -> Result<Sha, Refusal> {
+    let pin = release_key
+        .map(|hex| pinnable_key(layout, hex))
+        .transpose()?;
+    let sha = match layout.platform {
         Platform::Linux => install_linux(layout, from),
         Platform::MacOs => install_macos(layout, from),
+    }?;
+    if let Some(key) = pin {
+        fs::persist(&layout.release_key_path(), &format!("{key}\n"))?;
+    }
+    Ok(sha)
+}
+
+/// `--release-key`, checked before the install touches anything: 64 hex
+/// characters, and the key already pinned if there is one. A different pin
+/// (or a file that is not this key) is refused, never replaced — the
+/// channel rotates a key through a signed successor, not an install.
+fn pinnable_key(layout: &Layout, hex: &str) -> Result<PublicKey, Refusal> {
+    let key: PublicKey = hex.parse().map_err(|_| {
+        Refusal::new(
+            "release_key_invalid",
+            "--release-key takes 64 hex characters",
+        )
+    })?;
+    let path = layout.release_key_path();
+    fs::refuse_symlink(&path)?;
+    match std_fs::read_to_string(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(key),
+        Err(error) => Err(Refusal::io("release_key_unreadable", &path, &error)),
+        Ok(pinned) if pinned.parse::<PublicKey>().ok() == Some(key) => Ok(key),
+        Ok(_) => Err(Refusal::new(
+            "release_key_pinned",
+            format!("{} pins a different release key", path.display()),
+        )),
     }
 }
 

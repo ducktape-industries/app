@@ -242,7 +242,11 @@ async fn tick_drives_fetch_then_download_while_connected() {
         previous: None,
         pinned_sequence: 0,
     });
-    let mut updater = Updater::new(idle.clone(), keys(), UpdatePaths::under(updates.path()));
+    let mut updater = Updater::new(
+        idle.clone(),
+        Some(keys()),
+        UpdatePaths::under(updates.path()),
+    );
 
     assert_eq!(updater.tick(1_000, false), None, "not connected: no check");
     assert_eq!(updater.tick(1_000, true), Some(Job::Fetch));
@@ -364,7 +368,7 @@ async fn a_bad_archive_is_refused_at_verify_and_the_pin_stays() {
         node_contract: 1,
         successor_key: None,
     });
-    let mut updater = Updater::new(downloading, keys(), paths.clone());
+    let mut updater = Updater::new(downloading, Some(keys()), paths.clone());
 
     let reply = run_job(String::new(), keys(), paths.clone(), Job::Verify { sha }).await;
     assert_eq!(
@@ -415,7 +419,7 @@ fn rendered_clears_pending_healthy_and_collects() {
         boots: 1,
         pinned_sequence: 5,
     });
-    let mut updater = Updater::new(pending, keys(), paths.clone());
+    let mut updater = Updater::new(pending, Some(keys()), paths.clone());
 
     assert_eq!(updater.apply(Event::Rendered), None);
     let reading = updater.reading();
@@ -458,7 +462,7 @@ fn the_rollback_notice_is_dismissed_into_idle() {
         reason: app_update::RollbackReason::NeverRendered,
         pinned_sequence: 5,
     });
-    let mut updater = Updater::new(rolled_back, keys(), paths);
+    let mut updater = Updater::new(rolled_back, Some(keys()), paths);
     assert_eq!(
         strip_of(Some(&updater.reading())),
         Some(UpdateStrip::RolledBack {
@@ -493,7 +497,7 @@ fn facts_without_a_launcher_are_unavailable_and_the_clock_reads_in_words() {
         previous: None,
         pinned_sequence: 0,
     });
-    let mut updater = Updater::new(idle, keys(), UpdatePaths::under(updates.path()));
+    let mut updater = Updater::new(idle, Some(keys()), UpdatePaths::under(updates.path()));
     assert_eq!(facts_of(Some(&updater.reading()), 100).checked, "never");
     assert_eq!(updater.check_now(1_000), Some(Job::Fetch));
     assert_eq!(updater.check_now(1_001), None, "a fetch is in flight");
@@ -528,7 +532,7 @@ async fn tick_reports_up_to_date_and_waits_out_the_interval() {
         previous: None,
         pinned_sequence: 0,
     });
-    let mut updater = Updater::new(idle, keys(), UpdatePaths::under(updates.path()));
+    let mut updater = Updater::new(idle, Some(keys()), UpdatePaths::under(updates.path()));
 
     assert_eq!(updater.tick(5_000, true), Some(Job::Fetch));
     let reply = run_job(rpc, keys(), UpdatePaths::under(updates.path()), Job::Fetch).await;
@@ -555,7 +559,11 @@ async fn an_unpublished_network_leaves_the_machine_untouched() {
         previous: None,
         pinned_sequence: 0,
     });
-    let mut updater = Updater::new(idle.clone(), keys(), UpdatePaths::under(updates.path()));
+    let mut updater = Updater::new(
+        idle.clone(),
+        Some(keys()),
+        UpdatePaths::under(updates.path()),
+    );
     assert_eq!(updater.tick(0, true), Some(Job::Fetch));
     let reply = run_job(rpc, keys(), UpdatePaths::under(updates.path()), Job::Fetch).await;
     assert_eq!(reply, None);
