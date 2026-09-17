@@ -1135,6 +1135,10 @@ impl DesktopWindow {
                                     .child("No networks yet"),
                             )
                             .child(hint(
+                                "In a terminal, found a network with ducktape node init --name <name>."
+                                    .into(),
+                            ))
+                            .child(hint(
                                 "Join a network or connect to a node below.".into(),
                             )),
                     );
