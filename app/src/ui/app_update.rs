@@ -192,6 +192,7 @@ impl Ducktape {
             AppMessage::PickNetwork(id) => self.on_pick_network(id),
             AppMessage::OpenNetworkSubmit => self.on_open_network_submit(),
             AppMessage::ConnectRemoteSubmit(endpoint) => self.on_connect_remote_submit(endpoint),
+            AppMessage::RetryNetwork => self.on_retry_network(),
             AppMessage::WalletsLoaded(list) => self.on_wallets_loaded(list),
             AppMessage::ChainNamed(id) => self.on_chain_named(id),
             AppMessage::ChainProbeFailed(_cause) => self.on_chain_probe_failed(_cause),
@@ -3371,23 +3372,7 @@ impl Ducktape {
         self.onboarding_error = "".to_owned();
         self.password = "".to_owned();
         self.hub_wallet_selected = "".to_owned();
-        self.mutation_phase = MutationPhase::Onboarding;
-        let pending_task = Task::perform(
-            crate::backend::load_wallets(self.rpc.to_owned(), chain_id),
-            AppMessage::WalletsLoaded,
-        );
-        self.wallets_load_generation = self.wallets_load_generation.wrapping_add(1);
-        let request_generation = self.wallets_load_generation;
-        let (pending_task, request_handle) = pending_task.abortable();
-        if let Some(previous_handle) = self
-            .wallets_load_task
-            .replace(request_handle.abort_on_drop())
-        {
-            previous_handle.abort();
-        }
-        pending_task.map(move |reply_message| {
-            AppMessage::WalletsLoadReply(request_generation, Box::new(reply_message))
-        })
+        self.load_wallets(chain_id)
     }
     fn on_connect_remote_submit(&mut self, endpoint: String) -> Task<AppMessage> {
         if (self.mutation_phase != MutationPhase::Idle) || ((endpoint).trim().to_owned()).is_empty()
@@ -3399,9 +3384,24 @@ impl Ducktape {
         self.onboarding_error = "".to_owned();
         self.password = "".to_owned();
         self.hub_wallet_selected = "".to_owned();
+        self.load_wallets(String::new())
+    }
+    /// The same open again, on the endpoint it was made on. An empty chain id
+    /// records nothing, so the chain the first open noted for this endpoint
+    /// still names its keystore ([`crate::backend::load_wallets`]).
+    fn on_retry_network(&mut self) -> Task<AppMessage> {
+        if (self.mutation_phase != MutationPhase::Idle) || (self.rpc).is_empty() {
+            return Task::none();
+        }
+        self.onboarding_error = "".to_owned();
+        self.password = "".to_owned();
+        self.hub_wallet_selected = "".to_owned();
+        self.load_wallets(String::new())
+    }
+    fn load_wallets(&mut self, chain_id: String) -> Task<AppMessage> {
         self.mutation_phase = MutationPhase::Onboarding;
         let pending_task = Task::perform(
-            crate::backend::load_wallets(self.rpc.to_owned(), String::new()),
+            crate::backend::load_wallets(self.rpc.to_owned(), chain_id),
             AppMessage::WalletsLoaded,
         );
         self.wallets_load_generation = self.wallets_load_generation.wrapping_add(1);
@@ -3433,6 +3433,10 @@ impl Ducktape {
                 Task::none()
             }
             WalletDoor::Unreached => Task::none(),
+            WalletDoor::Offline => {
+                self.hub_step = HubStep::Offline;
+                Task::none()
+            }
         }
     }
     fn on_chain_named(&mut self, id: String) -> Task<AppMessage> {
@@ -3464,6 +3468,15 @@ impl Ducktape {
         cause: crate::backend::HydrationError,
     ) -> Task<AppMessage> {
         self.mutation_phase = MutationPhase::Idle;
+        // a confirmed phrase or a restore has already written the key: that
+        // screen has nothing left to confirm or restore, so the failure is
+        // said where the open can be retried or left.
+        let ceremony_over = matches!(self.hub_step, HubStep::Confirm | HubStep::Restore);
+        if ceremony_over {
+            self.hub_step = HubStep::Offline;
+            self.onboarding_error = format!("Your wallet is saved. {}", cause.message);
+            return Task::none();
+        }
         self.onboarding_error = cause.message.to_owned();
         Task::none()
     }

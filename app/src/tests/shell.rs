@@ -763,3 +763,123 @@ fn leaving_a_joins_wait_drops_its_poll() {
     ));
     assert_eq!(app.hub_step, crate::HubStep::Networks);
 }
+
+/// AN OFFLINE NETWORK SAYS SO FIRST (#19). A saved row reading `offline` still
+/// opened — by design — and the open then ran the whole wallet ceremony:
+/// password, 24 words, the confirm. Only the account lookup after it failed,
+/// in the HTTP client's words, under a Confirm heading whose instructions were
+/// gone and with no way back. The open asks the node before any wallet screen,
+/// and a node that does not answer is the offline step, with a retry and the
+/// way back; a lookup that fails after a ceremony wrote the key says the
+/// wallet is saved, on that step, never on the spent screen.
+#[tokio::test(flavor = "current_thread")]
+async fn an_offline_network_says_so_before_any_wallet_step() {
+    use futures::StreamExt as _;
+    /// Run a task's messages back through the app, as the runtime does, and
+    /// note every step the launch window passed through.
+    async fn settle(app: &mut Ducktape, task: view_wire::Task<AppMessage>) -> Vec<HubStep> {
+        let mut steps = Vec::new();
+        let mut pending = vec![task];
+        while let Some(task) = pending.pop() {
+            let mut messages = task.into_stream();
+            while let Some(message) = messages.next().await {
+                pending.push(app.update(message));
+                steps.push(app.hub_step);
+            }
+        }
+        steps
+    }
+    let wallet_screens = [
+        HubStep::Password,
+        HubStep::Phrase,
+        HubStep::Confirm,
+        HubStep::Wallets,
+        HubStep::Restore,
+        HubStep::Account,
+    ];
+    let dead = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        format!("http://{}", listener.local_addr().expect("its address"))
+    };
+    let unreachable = format!("Can't reach this network's node at {dead}.");
+    let (mut app, _) = Ducktape::boot();
+    app.hub_step = HubStep::Networks;
+    app.hub_networks = vec![backend::HubNetwork {
+        id: "dognet#d2a0ec8f".into(),
+        chain_id: "dognet#d2a0ec8f".into(),
+        name: "dognet".into(),
+        endpoint: dead.clone(),
+        kind: "local".into(),
+        last_used: 0,
+        probed: true,
+        live: false,
+        height: -1,
+        contract: 0,
+        another_network: false,
+        phase: String::new(),
+        behind_by: -1,
+    }];
+    app.hub_selected = "dognet#d2a0ec8f".into();
+    assert_eq!(
+        backend::network_row_label(&app.hub_networks[0]),
+        "dognet · offline"
+    );
+
+    let open = app.update(AppMessage::OpenNetworkSubmit);
+    assert_eq!(
+        app.mutation_phase,
+        MutationPhase::Onboarding,
+        "a dead row still opens"
+    );
+    let steps = settle(&mut app, open).await;
+    assert!(
+        !steps.iter().any(|step| wallet_screens.contains(step)),
+        "{steps:?}"
+    );
+    assert_eq!(app.hub_step, HubStep::Offline);
+    assert_eq!(app.onboarding_error, unreachable);
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+
+    // Retry asks the same node again; still down, still offline.
+    let retry = app.update(AppMessage::RetryNetwork);
+    assert_eq!(app.mutation_phase, MutationPhase::Onboarding);
+    let steps = settle(&mut app, retry).await;
+    assert!(
+        !steps.iter().any(|step| wallet_screens.contains(step)),
+        "{steps:?}"
+    );
+    assert_eq!(app.hub_step, HubStep::Offline);
+    assert_eq!(app.onboarding_error, unreachable);
+
+    let _ = app.update(AppMessage::GoNetworks);
+    assert_eq!(app.hub_step, HubStep::Networks);
+    assert!(app.onboarding_error.is_empty());
+
+    // A CEREMONY THAT FINISHED, against a node that is gone by the lookup: the
+    // confirm sealed the key and seated it before the account was asked for
+    // (`confirm_recovery_phrase`), which is what these two lines stand in for —
+    // the seal itself writes into the real home, which is not a test's to touch.
+    app.rpc = dead.clone();
+    app.hub_step = HubStep::Confirm;
+    app.mutation_phase = MutationPhase::Onboarding;
+    backend::set_local_user_key(Some(vec![7; 32])).await;
+    let confirmed = app.update(AppMessage::PhraseConfirmed("07".repeat(32)));
+    let steps = settle(&mut app, confirmed).await;
+    backend::set_local_user_key(None).await;
+    assert!(!steps.contains(&HubStep::Account), "{steps:?}");
+    assert_eq!(
+        app.hub_step,
+        HubStep::Offline,
+        "the spent Confirm screen is left"
+    );
+    assert_eq!(
+        app.onboarding_error,
+        format!("Your wallet is saved. {unreachable}")
+    );
+    assert_eq!(
+        app.signer_key,
+        "07".repeat(32),
+        "the saved wallet is still the seat"
+    );
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+}
