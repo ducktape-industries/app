@@ -257,7 +257,17 @@ fn install_boot_update_crash_and_rollback() {
     let manual = rig.installed_launcher(&["--rollback"]);
     assert!(manual.status.success(), "{}", stderr(&manual));
     assert!(stdout(&manual).contains("build=B"), "{}", stdout(&manual));
-    assert!(stderr(&manual).contains("app_update_rolled_back"));
+    // the event names both sides: rolled back FROM a, TO b.
+    let rolled_back_line = stderr(&manual)
+        .lines()
+        .find(|line| line.contains("app_update_rolled_back"))
+        .map(str::to_string)
+        .unwrap_or_else(|| panic!("{}", stderr(&manual)));
+    assert!(
+        rolled_back_line.contains(&sha_a.to_string())
+            && rolled_back_line.contains(&sha_b.to_string()),
+        "{rolled_back_line}"
+    );
     assert_eq!(rig.link("current"), Some(link_target(sha_b)));
     let Phase::PendingHealthy(pending) = rig.read_state() else {
         panic!("{:?}", rig.read_state());
