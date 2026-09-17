@@ -35,10 +35,10 @@ identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch
 node = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "node" }
 media-service = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "media-service" }
 ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "ducktape-rpc" }
-module-artifact = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "module-artifact" }
+module-artifact = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "module-artifact" }
 keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "keystore" }
 authpage = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "authpage" }
-run-envelope = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "run-envelope" }
+run-envelope = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "run-envelope" }
 workspace-config = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "workspace-config" }
 app-update = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "app-update" }
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "ducktape-home" }

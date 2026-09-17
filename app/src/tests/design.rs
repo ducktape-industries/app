@@ -201,15 +201,6 @@ fn persistent_split_panes_have_native_resize_handles_and_cursor_feedback() {
     );
 }
 #[test]
-fn compact_controls_share_a_single_geometry_and_type_scale() {
-    let design = include_str!("../../../crates/design/src/lib.rs");
-    assert!(design.contains("Inter"));
-    assert!(design.contains("13.5"));
-    let shell = rust_tokens(include_str!("../shell.rs"));
-    assert!(shell.contains("fn action") || shell.contains("fnaction("));
-    assert!(shell.contains("Button::new"));
-}
-#[test]
 fn semantic_recipes_own_action_focus_and_status_colors() {
     let renderer = rust_tokens(include_str!("../view_tree.rs"));
     for rule in ["hovered", "pressed", "disabled", "focused"] {
@@ -256,10 +247,9 @@ fn native_sources_hold_to_the_design_system() {
 }
 #[test]
 fn app_and_wasm_guests_do_not_resolve_the_ice_toolchain_or_iced_runtime() {
-    for lockfile in [
-        include_str!("../../../Cargo.lock"),
-        include_str!("../../../crates/views/Cargo.lock"),
-    ] {
+    // crates/views (the wasm guest workspace) lives in ducktape-views since
+    // the split; its own lockfile carries this same check there.
+    for lockfile in [include_str!("../../../Cargo.lock")] {
         for line in lockfile.lines() {
             let Some(name) = line
                 .strip_prefix("name = \"")

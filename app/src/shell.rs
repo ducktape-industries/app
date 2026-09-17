@@ -2967,7 +2967,7 @@ fn nav_icon(view: &'static str) -> gpui_kit::component::Icon {
 }
 
 /// The faces the app registers: ONE FILE PER FACE, each the vendor's own
-/// released static (`crates/design/assets/fonts/SOURCES`), never
+/// released static (`app/assets/fonts/SOURCES`), never
 /// a variable font. The text system keeps the requested weight only long
 /// enough to match a face — `gpui-pre-wgpu`'s `cosmic_text_system.rs` then
 /// shapes with the matched face's own `usWeightClass` and rasterizes from a
@@ -2992,25 +2992,30 @@ fn nav_icon(view: &'static str) -> gpui_kit::component::Icon {
 /// entry no box can resolve is dropped, and neither Latin family draws 한글.
 /// Both are upright only — no open Hangul font has an italic — so an italic
 /// run slants its Latin and leaves its Korean standing.
+// Bundled locally under app/assets/fonts/ rather than reached across the
+// design crate's path: design now arrives as a git dependency (the split
+// out of the monorepo), and a compile-time include_bytes! path cannot cross
+// a cargo git-dependency boundary. The app ships its own copy, matching the
+// "fonts ship with the widget" rule the terminal already follows.
 pub(crate) const BUNDLED_FACES: [&[u8]; 12] = [
-    include_bytes!("../../crates/design/assets/fonts/Inter-Regular.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/Inter-Bold.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/Inter-Italic.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/Inter-BoldItalic.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/JetBrainsMono-Regular.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/JetBrainsMono-Bold.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/JetBrainsMono-Italic.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/JetBrainsMono-BoldItalic.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/Pretendard-Regular.otf"),
-    include_bytes!("../../crates/design/assets/fonts/Pretendard-Bold.otf"),
-    include_bytes!("../../crates/design/assets/fonts/D2Coding-Regular.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/D2Coding-Bold.ttf"),
+    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Bold.ttf"),
+    include_bytes!("../assets/fonts/Inter-Italic.ttf"),
+    include_bytes!("../assets/fonts/Inter-BoldItalic.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-BoldItalic.ttf"),
+    include_bytes!("../assets/fonts/Pretendard-Regular.otf"),
+    include_bytes!("../assets/fonts/Pretendard-Bold.otf"),
+    include_bytes!("../assets/fonts/D2Coding-Regular.ttf"),
+    include_bytes!("../assets/fonts/D2Coding-Bold.ttf"),
 ];
 
 /// The emoji face, kept apart from [`BUNDLED_FACES`] because the two
 /// platforms differ on it (see the registration below).
 pub(crate) const EMOJI_FACE: &[u8] =
-    include_bytes!("../../crates/design/assets/fonts/NotoColorEmoji.ttf");
+    include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 
 /// The families a run falls back to when the primary face has no glyph, after
 /// the bundled Hangul face each chain leads with. WITHOUT this list a Korean
