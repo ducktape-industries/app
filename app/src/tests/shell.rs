@@ -995,3 +995,69 @@ fn cancel_on_an_idle_account_screen_goes_back() {
     ));
     assert_eq!(app.hub_step, HubStep::Wallets);
 }
+
+/// ENTERING WITHOUT A WALLET DROPS AN UNLOCKED KEY (#38). A key unlocked on
+/// the wallet step stayed seated after the account screen was left, so
+/// "Continue without a wallet" on the list it went back to opened a signed
+/// workspace. An entry with no password is unsigned, whichever way it came
+/// in; picking the wallet still enters signed.
+#[test]
+fn entering_without_a_wallet_drops_an_unlocked_key() {
+    use futures::StreamExt as _;
+    let key = "07".repeat(32);
+    let listed = || {
+        AppMessage::WalletsLoaded(backend::WalletList {
+            wallets: vec![backend::WalletInfo {
+                name: "zk-dev".into(),
+                pubkey: "07".repeat(32),
+                state: "encrypted".into(),
+                active: true,
+            }],
+            error: String::new(),
+            keystore: true,
+            offline: false,
+        })
+    };
+    let account = |exists| {
+        AppMessage::AccountProbed(backend::AccountData {
+            generation: 0,
+            exists,
+            number: String::new(),
+            name: String::new(),
+            bio: String::new(),
+        })
+    };
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(listed());
+    let _ = app.update(AppMessage::UnlockSubmit("a password".into()));
+    let _ = app.update(AppMessage::KeyUnlocked(key.clone()));
+    let _ = app.update(account(false));
+    assert_eq!(app.hub_step, HubStep::Account);
+    let _ = app.update(AppMessage::WelcomeCancel);
+    let _ = app.update(AppMessage::WalletsLoadReply(
+        app.wallets_load_generation,
+        Box::new(listed()),
+    ));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+    let skip = app.update(AppMessage::LoginSkip);
+    let queued = futures::executor::block_on(skip.into_stream().collect::<Vec<_>>());
+    assert!(matches!(queued.as_slice(), [AppMessage::NetworkEntered]));
+    let _ = app.update(AppMessage::NetworkEntered);
+    assert_eq!(
+        backend::rail_identity(false, "", "", &app.signer_key).1,
+        "No signing key",
+        "the skip enters unsigned"
+    );
+
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(listed());
+    let _ = app.update(AppMessage::UnlockSubmit("a password".into()));
+    let _ = app.update(AppMessage::KeyUnlocked(key.clone()));
+    let found = app.update(account(true));
+    let queued = futures::executor::block_on(found.into_stream().collect::<Vec<_>>());
+    assert!(matches!(queued.as_slice(), [AppMessage::NetworkEntered]));
+    let _ = app.update(AppMessage::NetworkEntered);
+    assert_eq!(app.signer_key, key, "the picked wallet enters signed");
+}

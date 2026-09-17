@@ -3789,9 +3789,22 @@ impl Ducktape {
         if (self.connected_rpc).is_empty() {
             return Task::none();
         }
+        // an entry with no password is an unsigned one — the locked state
+        // (`require_password`). A key an earlier unlock seated, a wallet
+        // opened and then left for "Continue without a wallet", is dropped
+        // here on every way in, not kept signing under the skip.
+        let unsigned = (self.password).is_empty();
+        if unsigned {
+            self.signer_key = "".to_owned();
+        }
         self.console_entry = ConsoleEntry::Entering;
         self.connection_progress = "Loading chat and workspace…".to_owned();
         Task::batch([
+            match unsigned {
+                true => (Task::perform(crate::backend::lock_signer(), |value| value))
+                    .discard::<AppMessage>(),
+                false => Task::none(),
+            },
             (Task::perform(
                 crate::backend::remember_network(self.connected_rpc.to_owned()),
                 |value| value,
