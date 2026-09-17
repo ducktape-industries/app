@@ -1472,7 +1472,13 @@ impl DesktopWindow {
                         .items_center()
                         .gap_2()
                         .child(gpui_kit::component::spinner::Spinner::new())
-                        .child(hint(self.model.read(cx).state.connection_progress.clone())),
+                        .child(hint({
+                            let state = &self.model.read(cx).state;
+                            crate::backend::opening_progress(
+                                &state.node_phase,
+                                &state.connection_progress,
+                            )
+                        })),
                 )
                 .child(
                     self.action("connection-cancel", "Cancel", Message::GoNetworks, false)

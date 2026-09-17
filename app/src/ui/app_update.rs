@@ -3721,6 +3721,7 @@ impl Ducktape {
         self.network_chain_id = "".to_owned();
         self.network_name =
             crate::backend::network_label(&self.network_chain_id, &self.connected_rpc);
+        self.node_phase.clear();
         self.hydration_generation += 1;
         self.connect_generation += 1;
         self.hydration_retry_attempt = 0;

@@ -757,6 +757,11 @@ impl Ducktape {
                 })
                 .map(AppMessage::LiveUpdated),
             );
+        }
+        // the open wait reads the node's phase off the same push the console
+        // holds, so a joining or syncing node says so before the console opens.
+        let entering = self.console_entry == ConsoleEntry::Entering;
+        if self.connected || entering {
             subscriptions.push(
                 Subscription::run_with(self.connected_rpc.clone(), |rpc: &String| {
                     crate::backend::node_status_live(rpc.clone())
