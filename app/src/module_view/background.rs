@@ -253,7 +253,9 @@ async fn run(
                     "session_view_removed",
                     "session view was removed",
                 )),
-                Slot::Failed(error) => Err(wire::Refusal::new("session_load_failed", error.clone())),
+                Slot::Failed(error) => {
+                    Err(wire::Refusal::new("session_load_failed", error.clone()))
+                }
                 Slot::Ready(guest) => {
                     let current = guest.connection_rev == revision;
                     if current {
@@ -408,7 +410,8 @@ mod tests {
             .expect("queued stale session refused before mounting");
         assert_eq!(
             source_error.reason, "stale_connection",
-            "{}", source_error.sentence
+            "{}",
+            source_error.sentence
         );
         assert!(
             !super::super::registry()

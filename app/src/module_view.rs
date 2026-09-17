@@ -15,12 +15,12 @@
 //! A view that traps shows why in its place instead of taking the window with it.
 
 pub(crate) mod background;
-mod kernel;
 mod filesystem;
+mod kernel;
 mod taste;
 
-pub use kernel::{block_hit as view_block_hit, live_hit as view_live_hit};
 pub(crate) use kernel::chord_of;
+pub use kernel::{block_hit as view_block_hit, live_hit as view_live_hit};
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
 /// threads can compile or join child loads between requests; their own parked
@@ -640,7 +640,10 @@ fn surface_bool(args: &[wire::SurfaceValue], index: usize) -> bool {
 }
 
 fn surface_allowed(surface: &str) -> bool {
-    matches!(surface, "artifact_svg" | "artifact_image" | "picture" | "code" | "markdown")
+    matches!(
+        surface,
+        "artifact_svg" | "artifact_image" | "picture" | "code" | "markdown"
+    )
 }
 
 /// The operations a view may ask of the app, by module. An intent outside
@@ -864,7 +867,10 @@ fn registered_modules() -> &'static Mutex<Vec<String>> {
 }
 
 pub fn registered_module_ids() -> Vec<String> {
-    registered_modules().lock().expect("registered modules").clone()
+    registered_modules()
+        .lock()
+        .expect("registered modules")
+        .clone()
 }
 
 /// The name a registered view's tab shows: its manifest's, once the view is
@@ -1172,7 +1178,10 @@ pub fn connected(client: &ducktape_rpc::Client) -> Loads {
             retired.changes.send_replace(());
         }
     }
-    registered_modules().lock().expect("registered modules").clear();
+    registered_modules()
+        .lock()
+        .expect("registered modules")
+        .clear();
     let mut loads: Vec<std::thread::JoinHandle<()>> = registry
         .iter()
         .filter_map(|(module, mounted)| {
@@ -3901,7 +3910,13 @@ pub(crate) mod tests {
         // A second seat asking is refused BY NAME, so a swap that wanted a
         // taken chord says so instead of going quiet.
         let mut node = Guest::load_from("node", &second).expect("the view loads");
-        assert!(kernel::answer(&mut node, "host", "chord", 7, chord.as_bytes()));
+        assert!(kernel::answer(
+            &mut node,
+            "host",
+            "chord",
+            7,
+            chord.as_bytes()
+        ));
         assert_eq!(
             refusal(&mut node, 7),
             Some(wire::Refusal::new(
@@ -3913,10 +3928,19 @@ pub(crate) mod tests {
 
         drop(members);
         assert_eq!(chord_holder(chord), None, "the key went with the guest");
-        assert!(kernel::answer(&mut node, "host", "chord", 8, chord.as_bytes()));
+        assert!(kernel::answer(
+            &mut node,
+            "host",
+            "chord",
+            8,
+            chord.as_bytes()
+        ));
         assert_eq!(refusal(&mut node, 8), None);
         assert_eq!(chord_holder(chord), Some("node"));
-        assert!(node.chord_pressed(chord), "the press reaches the new holder");
+        assert!(
+            node.chord_pressed(chord),
+            "the press reaches the new holder"
+        );
         drop(node);
         assert_eq!(chord_holder(chord), None);
     }
@@ -3967,8 +3991,19 @@ pub(crate) mod tests {
     #[test]
     fn no_view_declares_its_own_open_link() {
         for module in [
-            "governance", "members", "agents", "node", "explorer", "call", "chat", "forge",
-            "files", "settings", "pages", "home", "inbox",
+            "governance",
+            "members",
+            "agents",
+            "node",
+            "explorer",
+            "call",
+            "chat",
+            "forge",
+            "files",
+            "settings",
+            "pages",
+            "home",
+            "inbox",
         ] {
             assert!(
                 !intents_of(module).contains(&"open_link"),
@@ -3995,10 +4030,7 @@ pub(crate) mod tests {
 
     /// Every `.rs` under `dir`, with its text — source only, never a build
     /// output.
-    fn collect_view_sources(
-        dir: &std::path::Path,
-        out: &mut Vec<(std::path::PathBuf, String)>,
-    ) {
+    fn collect_view_sources(dir: &std::path::Path, out: &mut Vec<(std::path::PathBuf, String)>) {
         for entry in std::fs::read_dir(dir).expect("read a view source dir") {
             let path = entry.expect("dir entry").path();
             if path.is_dir() {
@@ -4192,7 +4224,10 @@ pub(crate) mod tests {
             let refusal = answered(&mut guest, 3, payload)
                 .expect_err("a prefix that is not one word is refused");
             assert_eq!(refusal.reason, "malformed_request", "for {payload:?}");
-            assert_eq!(refusal.sentence, "`host.id` names no prefix", "for {payload:?}");
+            assert_eq!(
+                refusal.sentence, "`host.id` names no prefix",
+                "for {payload:?}"
+            );
         }
     }
 
@@ -4814,7 +4849,9 @@ pub(crate) mod tests {
         while guest.redraw(&picking) {}
         let shown = texts(&guest);
         assert!(
-            shown.iter().any(|text| text == "Share a screen or a window"),
+            shown
+                .iter()
+                .any(|text| text == "Share a screen or a window"),
             "{shown:?}"
         );
         assert!(
@@ -5540,9 +5577,10 @@ pub(crate) mod tests {
         }
         // The diff is the FILES tab's panel, so the reader has to be there to
         // be told anything: the conversation tab never mentions the patch.
-        guest
-            .pending
-            .push(wire::Event::Message(button_message(&guest, "Files changed")));
+        guest.pending.push(wire::Event::Message(button_message(
+            &guest,
+            "Files changed",
+        )));
         while guest.redraw(&session) {
             guest.replies.wait_idle();
         }
@@ -5771,10 +5809,9 @@ pub(crate) mod tests {
     /// with no node behind it.
     pub(super) fn can_refusal(named: &'static str, reason: &str, sentence: &str) {
         CANNED_READS.with(|canned| {
-            canned.borrow_mut().insert(
-                named.to_owned(),
-                Err(wire::Refusal::new(reason, sentence)),
-            );
+            canned
+                .borrow_mut()
+                .insert(named.to_owned(), Err(wire::Refusal::new(reason, sentence)));
         });
     }
 
@@ -5955,7 +5992,10 @@ pub(crate) mod tests {
             registry().lock().expect("module views").remove(module);
         }
         registered().lock().expect("registered views").clear();
-        registered_modules().lock().expect("registered modules").clear();
+        registered_modules()
+            .lock()
+            .expect("registered modules")
+            .clear();
     }
 
     /// The desktop's own views are all asked for at boot and joined before

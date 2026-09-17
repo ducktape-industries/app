@@ -140,10 +140,14 @@ fn no_shell_tab_arm_names_a_view() {
         body.contains("View(&'staticstr)"),
         "a tab carries its view's id: {body}"
     );
-    for view in crate::backend::view_source::DESKTOP_OWNED
-        .iter()
-        .chain(&["chat", "pages", "forge", "files", "governance", "home"])
-    {
+    for view in crate::backend::view_source::DESKTOP_OWNED.iter().chain(&[
+        "chat",
+        "pages",
+        "forge",
+        "files",
+        "governance",
+        "home",
+    ]) {
         let arm = format!("{}{}", view[..1].to_uppercase(), &view[1..]);
         assert!(
             !body.contains(&arm),

@@ -39,9 +39,7 @@ pub(crate) fn refused(error: ducktape_rpc::Error) -> view_wire::Refusal {
 /// exists, so it is the token.
 fn submit_refused(failure: ducktape_rpc::SubmitFailure) -> view_wire::Refusal {
     match failure {
-        ducktape_rpc::SubmitFailure::Refused(detail) => {
-            view_wire::Refusal::new("rejected", detail)
-        }
+        ducktape_rpc::SubmitFailure::Refused(detail) => view_wire::Refusal::new("rejected", detail),
         ducktape_rpc::SubmitFailure::Unresolved(detail) => {
             view_wire::Refusal::new("unresolved", detail)
         }

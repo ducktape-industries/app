@@ -105,7 +105,11 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("up", input::MoveUp, Some(CONTEXT)),
         KeyBinding::new("down", input::MoveDown, Some(CONTEXT)),
         KeyBinding::new("shift-up", gpui_kit::base::actions::SelectUp, Some(CONTEXT)),
-        KeyBinding::new("shift-down", gpui_kit::base::actions::SelectDown, Some(CONTEXT)),
+        KeyBinding::new(
+            "shift-down",
+            gpui_kit::base::actions::SelectDown,
+            Some(CONTEXT),
+        ),
         // The inputs bind redo per platform; the editor accepts both spellings.
         KeyBinding::new("secondary-shift-z", input::Redo, Some(CONTEXT)),
         KeyBinding::new("secondary-y", input::Redo, Some(CONTEXT)),

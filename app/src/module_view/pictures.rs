@@ -39,10 +39,13 @@ impl Pictures {
     pub(super) fn hydrate(&self, root: &mut wire::Node) {
         root.for_each_mut(&mut |node| match node {
             wire::Node::Image { hash, data, .. } | wire::Node::ImageViewer { hash, data, .. } => {
-                if data.is_none() { *data = self.raster.get(hash).cloned(); }
+                if data.is_none() {
+                    *data = self.raster.get(hash).cloned();
+                }
             }
-            wire::Node::Svg { hash, bytes, .. }
-                if bytes.is_none() => { *bytes = self.vector.get(hash).cloned(); }
+            wire::Node::Svg { hash, bytes, .. } if bytes.is_none() => {
+                *bytes = self.vector.get(hash).cloned();
+            }
             _ => {}
         });
     }
@@ -54,9 +57,17 @@ mod tests {
 
     fn vector(hash: u64, bytes: Option<Vec<u8>>) -> wire::Node {
         wire::Node::Svg {
-            key: format!("picture-{hash}"), hash, bytes,
-            inherit_button_ink: false, label: None, color: None, hover: None,
-            fit: None, opacity: None, width: None, height: None,
+            key: format!("picture-{hash}"),
+            hash,
+            bytes,
+            inherit_button_ink: false,
+            label: None,
+            color: None,
+            hover: None,
+            fit: None,
+            opacity: None,
+            width: None,
+            height: None,
         }
     }
 
@@ -68,7 +79,9 @@ mod tests {
         pictures.adopt(&mut vector(7, Some(b"conflicting".to_vec())));
         let mut remounted = vector(7, None);
         pictures.hydrate(&mut remounted);
-        assert!(matches!(remounted, wire::Node::Svg { bytes: Some(bytes), .. } if bytes == b"first"));
+        assert!(
+            matches!(remounted, wire::Node::Svg { bytes: Some(bytes), .. } if bytes == b"first")
+        );
     }
 
     #[test]

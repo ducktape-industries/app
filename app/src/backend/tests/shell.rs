@@ -192,7 +192,10 @@ fn a_tab_move_only_refetches_what_its_destination_draws() {
         ("members", &[][..]),
         ("governance", &[ShellTab::View("governance")][..]),
         ("agents", &[ShellTab::View("agents")][..]),
-        ("account", &[ShellTab::View("forge"), ShellTab::View("settings")][..]),
+        (
+            "account",
+            &[ShellTab::View("forge"), ShellTab::View("settings")][..],
+        ),
         // an unknown plane name is nobody's — a typo must not silently reopen
         // the storm by answering true.
         ("explorer", &[][..]),
@@ -264,4 +267,3 @@ checkpoint_blocks = 32
         Some("http://127.0.0.1:8844")
     );
 }
-

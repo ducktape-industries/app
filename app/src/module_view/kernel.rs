@@ -242,7 +242,9 @@ impl Replies {
 
     pub(super) fn drain_into(&self, pending: &mut Vec<wire::Event>) -> Result<(), String> {
         let mut events = self.events.lock().expect("kernel replies");
-        if let Some(fault) = self.fault() { return Err(fault); }
+        if let Some(fault) = self.fault() {
+            return Err(fault);
+        }
         pending.append(&mut events);
         self.drained.send_replace(());
         Ok(())
@@ -288,9 +290,14 @@ impl Replies {
     }
 
     fn admit(self: &std::sync::Arc<Self>) -> Option<InFlight> {
-        if self.fault().is_some() { return None; }
-        self.in_flight.fetch_update(Ordering::SeqCst, Ordering::SeqCst,
-            |count| (count < MAX_IN_FLIGHT).then_some(count + 1)).ok()?;
+        if self.fault().is_some() {
+            return None;
+        }
+        self.in_flight
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |count| {
+                (count < MAX_IN_FLIGHT).then_some(count + 1)
+            })
+            .ok()?;
         Some(InFlight(self.clone()))
     }
 
@@ -331,12 +338,15 @@ impl Replies {
     /// a subscription's last item and its count are not the same moment.
     fn item(&self, id: u64, result: Answer, done: bool) {
         let mut events = self.events.lock().expect("kernel replies");
-        if self.fault().is_some() { return; }
+        if self.fault().is_some() {
+            return;
+        }
         let queued = queued_bytes(&events);
         let exceeds_budget = events.len() >= MAX_REPLY_EVENTS
             || result_bytes(&result) > MAX_REPLY_BYTES.saturating_sub(queued);
         if exceeds_budget {
-            *self.fault.lock().expect("kernel reply fault") = Some("view reply backlog limit exceeded; view stopped".into());
+            *self.fault.lock().expect("kernel reply fault") =
+                Some("view reply backlog limit exceeded; view stopped".into());
             self.landed.notify_all();
             self.changed.send_replace(());
             return;
@@ -392,7 +402,9 @@ fn reply_notifications_wake_each_presenter_and_keep_the_answer() {
     });
     let mut pending = Vec::new();
     replies.drain_into(&mut pending).expect("reply budget");
-    assert!(matches!(pending.as_slice(), [wire::Event::Response { id: 7, result: Ok(bytes), done: true }] if bytes == &[1, 2]));
+    assert!(
+        matches!(pending.as_slice(), [wire::Event::Response { id: 7, result: Ok(bytes), done: true }] if bytes == &[1, 2])
+    );
     assert!(!replies.answer_owed());
 }
 
@@ -401,7 +413,8 @@ fn reply_notifications_wake_each_presenter_and_keep_the_answer() {
 fn request_admission_is_bounded_and_drop_returns_capacity() {
     let replies = std::sync::Arc::new(Replies::default());
     let mut admitted: Vec<_> = (0..MAX_IN_FLIGHT)
-        .map(|_| replies.admit().expect("within budget")).collect();
+        .map(|_| replies.admit().expect("within budget"))
+        .collect();
     assert!(replies.admit().is_none());
     admitted.pop();
     let replacement = replies.admit().expect("dropped request returns capacity");
@@ -414,7 +427,9 @@ fn request_admission_is_bounded_and_drop_returns_capacity() {
 #[test]
 fn reply_overflow_stops_the_view_instead_of_losing_an_answer_silently() {
     let replies = std::sync::Arc::new(Replies::default());
-    for id in 0..MAX_REPLY_EVENTS { replies.item(id as u64, Ok(Vec::new()), false); }
+    for id in 0..MAX_REPLY_EVENTS {
+        replies.item(id as u64, Ok(Vec::new()), false);
+    }
     assert!(replies.fault().is_none());
     replies.item(MAX_REPLY_EVENTS as u64, Ok(Vec::new()), true);
     assert!(replies.fault().is_some());
@@ -513,7 +528,10 @@ pub(super) fn answer(
             let plane = std::str::from_utf8(payload).unwrap_or_default().trim();
             let named = plane == BLOCK_PLANE || workspace_config::validate_module_id(plane).is_ok();
             let capacity = guest.live_subscriptions.len() < MAX_SUBSCRIPTIONS;
-            if !capacity { guest.refuse(id, "subscription_limit", "too many live subscriptions"); return true; }
+            if !capacity {
+                guest.refuse(id, "subscription_limit", "too many live subscriptions");
+                return true;
+            }
             match named {
                 true => guest.live_subscriptions.push((id, plane.to_owned())),
                 false => guest.refuse(id, "malformed_request", "`rpc.live` names no plane"),
@@ -590,14 +608,21 @@ pub(super) fn answer(
                         holder = %holder,
                         "chord already claimed"
                     );
-                    guest.refuse(id, "chord_taken", format!("`{chord}` is already {holder}'s"));
+                    guest.refuse(
+                        id,
+                        "chord_taken",
+                        format!("`{chord}` is already {holder}'s"),
+                    );
                 }
             }
         }
         ("clock", "ticks") => {
             let period = tick_period(payload);
             let capacity = guest.clocks.len() < MAX_SUBSCRIPTIONS;
-            if !capacity { guest.refuse(id, "subscription_limit", "too many clock subscriptions"); return true; }
+            if !capacity {
+                guest.refuse(id, "subscription_limit", "too many clock subscriptions");
+                return true;
+            }
             match period {
                 Some(period) => guest.clocks.push(Clock {
                     id,
@@ -613,10 +638,7 @@ pub(super) fn answer(
                 && prefix.len() <= MAX_ID_PREFIX
                 && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
             match named {
-                true => guest.reply(
-                    id,
-                    Ok(crate::backend::fresh_id(prefix).into_bytes()),
-                ),
+                true => guest.reply(id, Ok(crate::backend::fresh_id(prefix).into_bytes())),
                 false => guest.refuse(id, "malformed_request", "`host.id` names no prefix"),
             }
         }
@@ -625,10 +647,7 @@ pub(super) fn answer(
     true
 }
 
-type Call = fn(
-    ducktape_rpc::Client,
-    serde_json::Value,
-) -> Answered;
+type Call = fn(ducktape_rpc::Client, serde_json::Value) -> Answered;
 
 /// Runs one node call for a request: decoded here, answered on the kernel
 /// runtime, delivered at the guest's next redraw.
@@ -658,7 +677,11 @@ fn spawn(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
     let ask: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(ask) => ask,
         Err(error) => {
-            guest.refuse(id, "malformed_request", format!("request is not JSON: {error}"));
+            guest.refuse(
+                id,
+                "malformed_request",
+                format!("request is not JSON: {error}"),
+            );
             return;
         }
     };
@@ -817,9 +840,7 @@ pub(super) fn spawn_device(
     ));
 }
 
-type HostCall = fn(
-    serde_json::Value,
-) -> Answered;
+type HostCall = fn(serde_json::Value) -> Answered;
 
 /// [`spawn`] for a door the NODE is not part of — the app's own picture
 /// store. It takes no client, so it answers whether or not the app has a
@@ -829,7 +850,11 @@ fn spawn_host(guest: &mut Guest, id: u64, payload: &[u8], call: HostCall) {
     let ask: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(ask) => ask,
         Err(error) => {
-            guest.refuse(id, "malformed_request", format!("request is not JSON: {error}"));
+            guest.refuse(
+                id,
+                "malformed_request",
+                format!("request is not JSON: {error}"),
+            );
             return;
         }
     };
@@ -880,15 +905,13 @@ fn client_for_revision(revision: u64) -> Result<ducktape_rpc::Client, wire::Refu
             "view belongs to a previous network connection",
         ));
     }
-    connection.client.clone().ok_or_else(|| {
-        wire::Refusal::new("not_connected", "not connected to a node")
-    })
+    connection
+        .client
+        .clone()
+        .ok_or_else(|| wire::Refusal::new("not_connected", "not connected to a node"))
 }
 
-type RawCall = fn(
-    ducktape_rpc::Client,
-    Vec<u8>,
-) -> Answered;
+type RawCall = fn(ducktape_rpc::Client, Vec<u8>) -> Answered;
 
 /// [`spawn`] for a request whose payload is the bytes themselves.
 fn spawn_raw(guest: &mut Guest, id: u64, payload: &[u8], call: RawCall) {
@@ -944,7 +967,9 @@ pub(crate) fn chord_of(key: &str, modifiers: gpui_kit::Modifiers) -> Option<Stri
     let key = key.trim().to_ascii_lowercase();
     let claimable = !key.is_empty()
         && key.len() <= MAX_CHORD_KEY
-        && key.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+        && key
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
     if !claimable {
         return None;
     }
@@ -1193,7 +1218,11 @@ fn stream_open(guest: &mut Guest, id: u64, payload: &[u8]) {
     let ask: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(ask) => ask,
         Err(error) => {
-            guest.refuse(id, "malformed_request", format!("request is not JSON: {error}"));
+            guest.refuse(
+                id,
+                "malformed_request",
+                format!("request is not JSON: {error}"),
+            );
             return;
         }
     };
@@ -1507,10 +1536,7 @@ where
     replies.item(id, Ok(Vec::new()), true);
 }
 
-fn query_as_reader(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn query_as_reader(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let target = target_of(&ask)?;
         let signer = crate::backend::seated_data_plane_signer(&client).await?;
@@ -1544,14 +1570,11 @@ fn picture_surface(ask: &serde_json::Value) -> Option<&'static str> {
     }
 }
 
-fn picture_load(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn picture_load(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     use crate::backend::{MAX_PICTURE_BYTES, store_picture};
     Box::pin(async move {
-        let surface = picture_surface(&ask)
-            .ok_or_else(|| malformed("`picture.load` names no surface"))?;
+        let surface =
+            picture_surface(&ask).ok_or_else(|| malformed("`picture.load` names no surface"))?;
         let path = ask["path"].as_str().unwrap_or_default().to_owned();
         let read = crate::backend::files_read_all(&client, &path)
             .await
@@ -1566,21 +1589,20 @@ fn picture_load(
             ));
         };
         let size = bytes.len();
-        let (width, height) = store_picture(surface, path, bytes).await.map_err(|reason| {
-            wire::Refusal::new(
-                "undecodable",
-                format!("{size} binary bytes · did not decode: {reason}"),
-            )
-        })?;
+        let (width, height) = store_picture(surface, path, bytes)
+            .await
+            .map_err(|reason| {
+                wire::Refusal::new(
+                    "undecodable",
+                    format!("{size} binary bytes · did not decode: {reason}"),
+                )
+            })?;
         serde_json::to_vec(&serde_json::json!({ "width": width, "height": height }))
             .map_err(host_fault)
     })
 }
 
-fn blob_put(
-    client: ducktape_rpc::Client,
-    bytes: Vec<u8>,
-) -> Answered {
+fn blob_put(client: ducktape_rpc::Client, bytes: Vec<u8>) -> Answered {
     Box::pin(async move {
         let signer = crate::backend::seated_data_plane_signer(&client).await?;
         let digest = client
@@ -1592,10 +1614,7 @@ fn blob_put(
     })
 }
 
-fn blob_get(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn blob_get(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let digest = crate::backend::hex_decode(ask["digest"].as_str().unwrap_or_default())
             .map_err(malformed)?;
@@ -1705,10 +1724,7 @@ async fn application_head(
     Ok(head)
 }
 
-fn application_call(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn application_call(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         use base64::Engine as _;
         let request = application_request(ask).map_err(malformed)?;
@@ -1757,10 +1773,7 @@ fn application_call(
     })
 }
 
-fn query(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn query(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let target = target_of(&ask)?;
         let reply: serde_json::Value = client
@@ -1783,48 +1796,31 @@ fn query(
 /// remember it. `crate::backend::await_seen_fold` waits for nothing when
 /// nothing is outstanding, which is every read a view makes that did not
 /// just write.
-fn view(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn view(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let target = target_of(&ask)?;
         crate::backend::await_seen_fold(&client, &target, &ask["query"]).await;
-        let reply: serde_json::Value = client
-            .view(&target, &ask["query"])
-            .await
-            .map_err(refused)?;
+        let reply: serde_json::Value =
+            client.view(&target, &ask["query"]).await.map_err(refused)?;
         serde_json::to_vec(&reply).map_err(host_fault)
     })
 }
 
-fn status(
-    client: ducktape_rpc::Client,
-    _ask: serde_json::Value,
-) -> Answered {
+fn status(client: ducktape_rpc::Client, _ask: serde_json::Value) -> Answered {
     Box::pin(async move {
-        let reply = client
-            .status_json()
-            .await
-            .map_err(refused)?;
+        let reply = client.status_json().await.map_err(refused)?;
         serde_json::to_vec(&reply).map_err(host_fault)
     })
 }
 
-fn peers(
-    client: ducktape_rpc::Client,
-    _ask: serde_json::Value,
-) -> Answered {
+fn peers(client: ducktape_rpc::Client, _ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let reply = client.peers().await.map_err(refused)?;
         serde_json::to_vec(&reply).map_err(host_fault)
     })
 }
 
-fn blocks(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn blocks(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let limit = ask["limit"].as_u64().unwrap_or(0) as usize;
         let blocks = client
@@ -1859,10 +1855,7 @@ fn required_blob_of(ask: &serde_json::Value) -> Result<Option<[u8; 32]>, String>
 
 /// The envelope names only a module and exact bytes; the seated signer owns
 /// identity and sequence, just as it does for JSON operations.
-fn submit_bytes(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn submit_bytes(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let target = target_of(&ask)?;
         let encoded = ask["body_b64"]
@@ -1876,10 +1869,7 @@ fn submit_bytes(
     })
 }
 
-fn submit(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn submit(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let target = target_of(&ask)?;
         let payload = serde_json::to_vec(&ask["payload"]).map_err(malformed)?;
@@ -1919,10 +1909,7 @@ fn admin_ask(ask: &serde_json::Value) -> Result<(String, Vec<u8>), String> {
 /// the app's own [`crate::backend::seated_request_headers`], so nothing here
 /// signs anything itself. The node's operator gate is the decider: a key it
 /// does not admit gets the node's refusal, not the kernel's.
-fn admin(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn admin(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let (route, body) = admin_ask(&ask).map_err(malformed)?;
         let node_key = crate::backend::node_public_key(client.origin())
@@ -1958,9 +1945,7 @@ fn admin(
     })
 }
 
-fn picture_put(
-    ask: serde_json::Value,
-) -> Answered {
+fn picture_put(ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let surface =
             picture_surface(&ask).ok_or_else(|| malformed("`picture.put` names no surface"))?;
@@ -1985,10 +1970,7 @@ fn picture_put(
     })
 }
 
-fn picture_inline(
-    client: ducktape_rpc::Client,
-    ask: serde_json::Value,
-) -> Answered {
+fn picture_inline(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let doc = ask["doc"].as_str().unwrap_or_default().to_owned();
         let source = ask["source"].as_str().unwrap_or_default().to_owned();
@@ -2357,7 +2339,8 @@ mod tests {
     /// `/v1/log-filter` takes a bare filter, not JSON.
     #[test]
     fn an_admin_ask_becomes_one_route_and_one_body_or_a_refusal() {
-        let ask = serde_json::json!({"route": "/v1/log-filter", "payload": "info,ducktape::join=debug"});
+        let ask =
+            serde_json::json!({"route": "/v1/log-filter", "payload": "info,ducktape::join=debug"});
         assert_eq!(
             admin_ask(&ask).expect("a plain ask"),
             (

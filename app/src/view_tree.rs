@@ -29,8 +29,8 @@ use gpui_kit::{
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use view_wire as wire;
 use unicode_segmentation::UnicodeSegmentation;
+use view_wire as wire;
 
 struct RichSelection {
     handle: gpui_kit::base::TextSelectionHandle,
@@ -837,7 +837,10 @@ impl ViewTree {
         // tag means.
         if let C::EditorAction { tag, .. } = command {
             let editor_mounted = self.editors.contains_key(target);
-            let Some(store) = editor_mounted.then_some(self.editor_store.as_ref()).flatten() else {
+            let Some(store) = editor_mounted
+                .then_some(self.editor_store.as_ref())
+                .flatten()
+            else {
                 return Err("editor action target is not a mounted editor".into());
             };
             store.act(target, tag.clone());
@@ -5096,8 +5099,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::TestAppContext) {
-        use view_wire::kit;
         use gpui_kit::InputEvent as _;
+        use view_wire::kit;
         cx.update(gpui_kit::init);
         let columns = kit::sized(
             kit::row(
@@ -5418,14 +5421,23 @@ mod tests {
             "old hide ID 11 must not invoke the replacement action 11"
         );
         tree.update(&mut native, |tree, _| {
-            assert!(tree.take_user_activation(&wire::Event::Message(11)).is_none(),
-                "a generated event cannot grant device authority");
+            assert!(
+                tree.take_user_activation(&wire::Event::Message(11))
+                    .is_none(),
+                "a generated event cannot grant device authority"
+            );
         });
         native.update(|window, cx| window.click("watched", cx));
         tree.update(&mut native, |tree, _| {
-            assert!(tree.take_user_activation(&wire::Event::Message(11)).is_some());
-            assert!(tree.take_user_activation(&wire::Event::Message(11)).is_none(),
-                "one native click authorizes at most one session");
+            assert!(
+                tree.take_user_activation(&wire::Event::Message(11))
+                    .is_some()
+            );
+            assert!(
+                tree.take_user_activation(&wire::Event::Message(11))
+                    .is_none(),
+                "one native click authorizes at most one session"
+            );
         });
         assert_eq!(
             &*events.borrow(),

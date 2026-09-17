@@ -6,20 +6,21 @@ use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::sync::Arc;
 
-use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::DragMoveEvent;
+use gpui_kit::component::input::{Editor, EditorState, InputEvent};
 use gpui_kit::component::{ActiveTheme, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    Font, FontStyle, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement, LineFragment,
-    ParentElement as _, Pixels, Render, SharedString, StatefulInteractiveElement as _,
-    StrikethroughStyle, Styled as _, UnderlineStyle, Window, canvas, div, px, relative,
+    AnyElement, App, AppContext as _, Bounds, Context, Entity, EventEmitter, FocusHandle,
+    Focusable, Font, FontStyle, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement,
+    LineFragment, ParentElement as _, Pixels, Render, SharedString,
+    StatefulInteractiveElement as _, StrikethroughStyle, Styled as _, UnderlineStyle, Window,
+    canvas, div, px, relative,
 };
 
 use super::actions;
 use super::block::{
-    Block, BlockAttrs, BlockContext, BlockContent, BlockId, BlockLayout, BlockRegistry, BlockSpec,
+    Block, BlockAttrs, BlockContent, BlockContext, BlockId, BlockLayout, BlockRegistry, BlockSpec,
     BlockType, types,
 };
 use gpui_kit::TestSupportExt as _;
@@ -121,9 +122,10 @@ impl NotionEditor {
         };
         // Mark colours are baked into the decoration layer when they are
         // applied, so a theme change has to repaint them.
-        this.theme = vec![cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
-            this.reapply_decorations(cx)
-        })];
+        this.theme =
+            vec![cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
+                this.reapply_decorations(cx)
+            })];
         this.insert_block(0, BlockContent::paragraph(""), window, cx);
         this
     }
@@ -532,7 +534,11 @@ impl NotionEditor {
 
         let ix = ix.min(self.blocks.len());
         self.blocks.insert(ix, block);
-        if BlockRegistry::global(cx).get(&self.blocks[ix].ty).caps().grid {
+        if BlockRegistry::global(cx)
+            .get(&self.blocks[ix].ty)
+            .caps()
+            .grid
+        {
             self.restore_grid(id, window, cx);
         }
         self.remeasure(id, cx);
@@ -610,9 +616,9 @@ impl NotionEditor {
             self.blocks[ix].decorations = None;
         } else {
             let placeholder = spec.placeholder(&self.blocks[ix].attrs);
-            self.blocks[ix]
-                .state
-                .update(cx, |state, cx| state.set_placeholder(placeholder, window, cx));
+            self.blocks[ix].state.update(cx, |state, cx| {
+                state.set_placeholder(placeholder, window, cx)
+            });
         }
 
         self.remeasure(id, cx);
@@ -651,10 +657,7 @@ impl NotionEditor {
                 .into_iter()
                 .filter(MarkKind::is_inclusive)
                 .collect();
-            let applied: Vec<MarkKind> = self.blocks[ix]
-                .stored_marks
-                .take()
-                .unwrap_or(inherited);
+            let applied: Vec<MarkKind> = self.blocks[ix].stored_marks.take().unwrap_or(inherited);
 
             self.blocks[ix].marks.remap(&edit);
             if edit.new_len > 0 {
@@ -1121,9 +1124,11 @@ impl NotionEditor {
                     .child(wrapped),
             )
             .children(indicator)
-            .on_drag_move(cx.listener(move |this, event: &DragMoveEvent<DraggedBlock>, _, cx| {
-                this.on_drag_over(ix, event, cx)
-            }))
+            .on_drag_move(
+                cx.listener(move |this, event: &DragMoveEvent<DraggedBlock>, _, cx| {
+                    this.on_drag_over(ix, event, cx)
+                }),
+            )
             .on_drop(cx.listener(move |this, dragged: &DraggedBlock, _, cx| {
                 this.on_drop_block(dragged, cx)
             }))

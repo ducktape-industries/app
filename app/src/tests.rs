@@ -74,7 +74,6 @@ fn chat_data(active_channel: &str) -> backend::ChatData {
     }
 }
 
-
 fn workspace(active_channel: &str) -> backend::WorkspaceData {
     backend::WorkspaceData {
         generation: 0,

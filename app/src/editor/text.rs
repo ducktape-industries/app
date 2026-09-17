@@ -18,8 +18,8 @@ use gpui_kit::{
 };
 use std::ops::Range;
 use std::sync::Arc;
-use view_wire as wire;
 use unicode_segmentation::UnicodeSegmentation;
+use view_wire as wire;
 
 /// The key context a guest editor sits in. The shell's keystroke interceptor
 /// runs before this editor's and cannot be stopped by it, so it reads this off

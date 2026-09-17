@@ -26,7 +26,11 @@ fn spawn(
     id: u64,
     future: impl std::future::Future<Output = Result<Vec<u8>, String>> + Send + 'static,
 ) {
-    spawn_device(guest, id, async move { future.await.map_err(device_failed) });
+    spawn_device(
+        guest,
+        id,
+        async move { future.await.map_err(device_failed) },
+    );
 }
 
 #[derive(serde::Serialize)]

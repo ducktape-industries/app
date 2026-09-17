@@ -17,7 +17,10 @@ fn marked_paragraph() -> BlockContent {
         Mark::new(MarkKind::Underline, span("underline")),
         Mark::new(MarkKind::Strike, span("strike")),
         Mark::new(MarkKind::Code, span("code")),
-        Mark::new(MarkKind::Highlight(Some(HighlightColor::Yellow)), span("and")),
+        Mark::new(
+            MarkKind::Highlight(Some(HighlightColor::Yellow)),
+            span("and"),
+        ),
         Mark::new(MarkKind::Link("https://tiptap.dev".into()), span("a link")),
     ]))
 }

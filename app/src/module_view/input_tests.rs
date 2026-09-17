@@ -148,7 +148,10 @@ fn shell_tab_switches_hide_and_restore_the_retained_guest() {
         "the previous tab remains hidden while another tab is rendered"
     );
     presenter.update(&mut cx, |view, cx| {
-        view.test_dispatch(crate::AppMessage::SelectShellTab(crate::ShellTab::View("chat")), cx)
+        view.test_dispatch(
+            crate::AppMessage::SelectShellTab(crate::ShellTab::View("chat")),
+            cx,
+        )
     });
     cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();

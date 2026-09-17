@@ -6,7 +6,9 @@
 //! cell is not a block.
 
 use gpui_kit::component::input::{EditorState, InputEvent};
-use gpui_kit::{App, AppContext as _, Context, Entity, Focusable as _, Pixels, Subscription, Window, px};
+use gpui_kit::{
+    App, AppContext as _, Context, Entity, Focusable as _, Pixels, Subscription, Window, px,
+};
 
 use super::fit::InputFit;
 use super::theme::ActiveEditorTheme;
@@ -229,12 +231,16 @@ impl NotionEditor {
         cx: &mut Context<Self>,
     ) -> Cell {
         let state = cx.new(|cx| super::fit::document_text_state(window, cx));
-        let subscription = cx.subscribe_in(&state, window, move |this: &mut Self, state, event, _window, cx| {
-            if matches!(event, InputEvent::Change) {
-                let text = state.read(cx).value().to_string();
-                this.set_cell_mirror(block, at, text, cx);
-            }
-        });
+        let subscription = cx.subscribe_in(
+            &state,
+            window,
+            move |this: &mut Self, state, event, _window, cx| {
+                if matches!(event, InputEvent::Change) {
+                    let text = state.read(cx).value().to_string();
+                    this.set_cell_mirror(block, at, text, cx);
+                }
+            },
+        );
         Cell {
             state,
             text: String::new(),
@@ -341,11 +347,21 @@ impl NotionEditor {
         Some(f32::from(cell.state.read(cx).scroll_offset().y))
     }
 
-    fn set_cell_mirror(&mut self, block: BlockId, at: CellPosition, text: String, cx: &mut Context<Self>) {
+    fn set_cell_mirror(
+        &mut self,
+        block: BlockId,
+        at: CellPosition,
+        text: String,
+        cx: &mut Context<Self>,
+    ) {
         let Some(grid) = self.grids.get_mut(&block) else {
             return;
         };
-        let Some(cell) = grid.rows.get_mut(at.row).and_then(|row| row.get_mut(at.column)) else {
+        let Some(cell) = grid
+            .rows
+            .get_mut(at.row)
+            .and_then(|row| row.get_mut(at.column))
+        else {
             return;
         };
         cell.text = text;
@@ -616,7 +632,11 @@ impl NotionEditor {
         let Some((block, at)) = self.focused_cell else {
             return;
         };
-        let row = if below { at.row } else { at.row.saturating_sub(1) };
+        let row = if below {
+            at.row
+        } else {
+            at.row.saturating_sub(1)
+        };
         // Inserting "above" the header row still lands under it: the header
         // is part of the table's shape, not a row to push down.
         self.insert_row(block, row, window, cx);
@@ -691,11 +711,7 @@ fn encode_cells(grid: &CellGrid) -> String {
 fn decode_cells(stored: &str) -> Vec<Vec<String>> {
     let rows: Vec<Vec<String>> = stored
         .split(ROW_SEPARATOR)
-        .map(|row| {
-            row.split(CELL_SEPARATOR)
-                .map(ToString::to_string)
-                .collect()
-        })
+        .map(|row| row.split(CELL_SEPARATOR).map(ToString::to_string).collect())
         .collect();
     if rows.is_empty() || rows.iter().all(Vec::is_empty) {
         return vec![vec![String::new(); DEFAULT_COLUMNS]; DEFAULT_ROWS];

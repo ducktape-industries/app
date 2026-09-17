@@ -10,9 +10,8 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::{ActiveTheme, Disableable as _, Sizable as _, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    Anchor, AnyElement, App, AppContext as _, Context, Entity,
-    IntoElement, ParentElement as _, Point, SharedString, Styled as _,
-    Subscription, Window, deferred, div, px,
+    Anchor, AnyElement, App, AppContext as _, Context, Entity, IntoElement, ParentElement as _,
+    Point, SharedString, Styled as _, Subscription, Window, deferred, div, px,
 };
 
 use super::block::BlockId;
@@ -150,7 +149,9 @@ impl NotionEditor {
         if range.is_empty() {
             return;
         }
-        let Some(ix) = self.index_of(block) else { return };
+        let Some(ix) = self.index_of(block) else {
+            return;
+        };
 
         if self.annotation_mode == AnnotationMode::External {
             cx.emit(AnnotationRequested { block, range });
@@ -167,7 +168,9 @@ impl NotionEditor {
             resolved: false,
         });
 
-        self.blocks[ix].marks.add(MarkKind::Comment(id), range.clone());
+        self.blocks[ix]
+            .marks
+            .add(MarkKind::Comment(id), range.clone());
         self.apply_decorations(block, cx);
         self.open_comment_draft(id, window, cx);
         if let Some(draft) = self.comment_draft.as_mut() {
@@ -189,7 +192,12 @@ impl NotionEditor {
     }
 
     /// Show a thread and put the caret in its reply box.
-    pub fn open_comment_thread(&mut self, id: ThreadId, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn open_comment_thread(
+        &mut self,
+        id: ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if self.comment_thread(id).is_none() {
             return;
         }
@@ -198,7 +206,12 @@ impl NotionEditor {
         cx.notify();
     }
 
-    fn open_comment_draft(&mut self, thread: ThreadId, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_comment_draft(
+        &mut self,
+        thread: ThreadId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let input = cx.new(|cx| {
             InputState::new(window, cx).placeholder(match self.comment_thread(thread) {
                 Some(thread) if !thread.comments.is_empty() => "Reply…",
@@ -337,7 +350,9 @@ impl NotionEditor {
         let kind = MarkKind::Comment(thread);
         let blocks: Vec<BlockId> = self.blocks.iter().map(|block| block.id).collect();
         for id in blocks {
-            let Some(ix) = self.index_of(id) else { continue };
+            let Some(ix) = self.index_of(id) else {
+                continue;
+            };
             let ranges: Vec<std::ops::Range<usize>> = self.blocks[ix]
                 .marks
                 .iter()
@@ -388,7 +403,9 @@ impl NotionEditor {
         };
         let editor = cx.entity();
         window.defer(cx, move |window, cx| {
-            editor.update(cx, |this, cx| this.settle_thread_under_caret(block, window, cx));
+            editor.update(cx, |this, cx| {
+                this.settle_thread_under_caret(block, window, cx)
+            });
         });
     }
 

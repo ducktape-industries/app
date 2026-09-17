@@ -5,11 +5,11 @@
 //! type the same way: implement [`BlockSpec`], call
 //! [`BlockRegistry::register`].
 
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Editor;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{ActiveTheme, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, img, px, relative,
@@ -191,7 +191,12 @@ impl BlockSpec for BulletList {
         (types::BULLET_LIST.into(), BlockAttrs::default())
     }
 
-    fn render_leading(&self, ctx: &BlockContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_leading(
+        &self,
+        ctx: &BlockContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         // disc → circle → square, cycling every three levels.
         let glyph = match ctx.indent % 3 {
             0 => "•",
@@ -254,7 +259,12 @@ impl BlockSpec for OrderedList {
         (types::ORDERED_LIST.into(), BlockAttrs::default())
     }
 
-    fn render_leading(&self, ctx: &BlockContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_leading(
+        &self,
+        ctx: &BlockContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         // decimal → lower-alpha → lower-roman, cycling every three levels.
         let n = ctx.ordinal.max(1);
         let label = match ctx.indent % 3 {
@@ -370,7 +380,12 @@ impl BlockSpec for TaskList {
         (types::TASK_LIST.into(), BlockAttrs::default())
     }
 
-    fn render_leading(&self, ctx: &BlockContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_leading(
+        &self,
+        ctx: &BlockContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         let checked = ctx.attrs.checked;
         let id = ctx.id;
         let editor = ctx.editor.clone();
@@ -549,7 +564,13 @@ impl BlockSpec for CodeBlock {
         }
     }
 
-    fn wrap(&self, ctx: &BlockContext, content: AnyElement, _: &mut Window, cx: &mut App) -> AnyElement {
+    fn wrap(
+        &self,
+        ctx: &BlockContext,
+        content: AnyElement,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
         let language = ctx
             .attrs
             .language
@@ -599,7 +620,9 @@ impl BlockSpec for CodeBlock {
             BlockInputRule {
                 pattern: r"^```([a-zA-Z0-9+#-]+)?[\s]$",
                 build: |caps| {
-                    let language = caps.get(1).map(|m| SharedString::from(m.as_str().to_string()));
+                    let language = caps
+                        .get(1)
+                        .map(|m| SharedString::from(m.as_str().to_string()));
                     Some((
                         types::CODE_BLOCK.into(),
                         BlockAttrs {
@@ -612,7 +635,9 @@ impl BlockSpec for CodeBlock {
             BlockInputRule {
                 pattern: r"^~~~([a-zA-Z0-9+#-]+)?[\s]$",
                 build: |caps| {
-                    let language = caps.get(1).map(|m| SharedString::from(m.as_str().to_string()));
+                    let language = caps
+                        .get(1)
+                        .map(|m| SharedString::from(m.as_str().to_string()));
                     Some((
                         types::CODE_BLOCK.into(),
                         BlockAttrs {
@@ -810,7 +835,13 @@ impl BlockSpec for Callout {
         "Callout".into()
     }
 
-    fn wrap(&self, ctx: &BlockContext, content: AnyElement, _: &mut Window, cx: &mut App) -> AnyElement {
+    fn wrap(
+        &self,
+        ctx: &BlockContext,
+        content: AnyElement,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
         // A document may carry its own emoji; without one the callout uses an
         // icon, which renders on every platform whether or not a color emoji
         // font is installed.
@@ -880,7 +911,12 @@ impl BlockSpec for Toggle {
         "Toggle".into()
     }
 
-    fn render_leading(&self, ctx: &BlockContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_leading(
+        &self,
+        ctx: &BlockContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         let id = ctx.id;
         let collapsed = ctx.attrs.collapsed;
         let editor = ctx.editor.clone();
@@ -911,7 +947,9 @@ impl BlockSpec for Toggle {
             keywords: &["toggle", "details", "collapse"],
             group: "Style",
             icon: "chevron-right",
-            run: |editor, window, cx| editor.toggle_node(types::TOGGLE, BlockAttrs::default(), window, cx),
+            run: |editor, window, cx| {
+                editor.toggle_node(types::TOGGLE, BlockAttrs::default(), window, cx)
+            },
         }]
     }
 }
@@ -919,9 +957,30 @@ impl BlockSpec for Toggle {
 /// Languages offered by a code block's language menu. The set a build can
 /// actually highlight comes from the `tree-sitter-*` features it enables.
 pub const CODE_LANGUAGES: &[&str] = &[
-    "bash", "c", "cpp", "css", "diff", "go", "html", "java", "javascript", "json", "kotlin", "lua",
-    "markdown", "php", "plain text", "python", "ruby", "rust", "sql", "swift", "toml", "tsx",
-    "typescript", "yaml",
+    "bash",
+    "c",
+    "cpp",
+    "css",
+    "diff",
+    "go",
+    "html",
+    "java",
+    "javascript",
+    "json",
+    "kotlin",
+    "lua",
+    "markdown",
+    "php",
+    "plain text",
+    "python",
+    "ruby",
+    "rust",
+    "sql",
+    "swift",
+    "toml",
+    "tsx",
+    "typescript",
+    "yaml",
 ];
 
 /// Line height helper shared by specs that size their own children.
@@ -933,7 +992,6 @@ pub fn line_height(layout: &BlockLayout) -> gpui_kit::Pixels {
 pub fn relative_line_height(layout: &BlockLayout) -> gpui_kit::DefiniteLength {
     relative(layout.line_height)
 }
-
 
 // ---------------------------------------------------------------------- table
 
