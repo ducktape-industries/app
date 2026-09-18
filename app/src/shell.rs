@@ -1558,7 +1558,6 @@ impl DesktopWindow {
                 );
         }
         div()
-            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1610,27 +1609,38 @@ impl DesktopWindow {
                             .h_8(),
                     ),
             )
+            // the toast floats in the body's corner, as it does in the
+            // workspace's content box, never across the footer's hairline.
             .child(
                 div()
-                    .id("onboarding-body")
+                    .relative()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .p_5()
-                    .child(body)
-                    .when(!error.is_empty(), |element| {
-                        element.child(
-                            div()
-                                .mt_4()
-                                .p_3()
-                                .border_1()
-                                .rounded(px(design::radius::CONTROL as f32))
-                                .border_color(colors.destructive)
-                                .text_color(colors.destructive)
-                                .text_size(px(12.5))
-                                .child(error),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .id("onboarding-body")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .p_5()
+                            .child(body)
+                            .when(!error.is_empty(), |element| {
+                                element.child(
+                                    div()
+                                        .mt_4()
+                                        .p_3()
+                                        .border_1()
+                                        .rounded(px(design::radius::CONTROL as f32))
+                                        .border_color(colors.destructive)
+                                        .text_color(colors.destructive)
+                                        .text_size(px(12.5))
+                                        .child(error),
+                                )
+                            }),
+                    )
+                    .children(self.toast(cx)),
             )
             .child(
                 div()
@@ -1648,7 +1658,6 @@ impl DesktopWindow {
                             .child("A workspace your team runs."),
                     ),
             )
-            .children(self.toast(cx))
             .into_any_element()
     }
 
@@ -2139,17 +2148,21 @@ impl DesktopWindow {
         colors: &gpui_kit::component::ColorTokens,
         palette: &design::Palette,
     ) -> gpui_kit::AnyElement {
+        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let (words, tone, action) = match strip {
             crate::backend::update::UpdateStrip::Ready { display } => (
                 format!("Ducktape {display} is ready"),
                 hsla_of(palette.accent_soft),
-                Some(self.action(
-                    "update-restart",
-                    "Restart to update",
-                    Message::UpdateAction(crate::UpdateAction::RestartToUpdate),
-                    false,
-                )),
+                Some(
+                    self.action(
+                        "update-restart",
+                        "Restart to update",
+                        Message::UpdateAction(crate::UpdateAction::RestartToUpdate),
+                        false,
+                    )
+                    .outline(),
+                ),
             ),
             crate::backend::update::UpdateStrip::Refused { display, reason } => (
                 format!("Ducktape {display} was refused ({reason})"),
@@ -2159,12 +2172,17 @@ impl DesktopWindow {
             crate::backend::update::UpdateStrip::RolledBack { failed, reason } => (
                 format!("Update {failed} was rolled back ({reason})"),
                 hsla_of(palette.warning_soft),
-                Some(self.action(
-                    "update-rollback-dismiss",
-                    "Dismiss",
-                    Message::UpdateAction(crate::UpdateAction::DismissRollbackNotice),
-                    false,
-                )),
+                // a dismissal, ghost like every other band's Dismiss; on a
+                // tinted band in the body colour, as the error band's is.
+                Some(
+                    self.action(
+                        "update-rollback-dismiss",
+                        "Dismiss",
+                        Message::UpdateAction(crate::UpdateAction::DismissRollbackNotice),
+                        false,
+                    )
+                    .ghost(),
+                ),
             ),
         };
         div()
@@ -2185,7 +2203,7 @@ impl DesktopWindow {
                     .text_color(colors.foreground)
                     .child(words),
             )
-            .children(action.map(|action| action.outline().h_6().text_size(px(12.))))
+            .children(action.map(|action| action.h_6().text_size(px(12.))))
             .into_any_element()
     }
 
