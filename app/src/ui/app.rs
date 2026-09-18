@@ -320,6 +320,8 @@ pub struct Ducktape {
     pub(crate) invite_link: String,
     /// Why the node did not mint the invitation asked for; said beside the button.
     pub(crate) invite_refusal: String,
+    /// What the node said the minted invitation cannot do; said beside the button.
+    pub(crate) invite_notes: Vec<String>,
     pub(crate) provision_steps: Vec<crate::backend::ProvisionStep>,
     pub(crate) provision_index: i64,
     pub(crate) hub_chain_id: String,
@@ -534,7 +536,7 @@ pub(crate) enum AppMessage {
     JoinNetworkSubmit,
     WorkspaceMaterialized(crate::backend::WorkspaceInit),
     ProvisionStepped(crate::backend::ProvisionStep),
-    OnboardingInviteMinted(String),
+    OnboardingInviteMinted(crate::backend::Invitation),
     OnboardingInviteRefused(crate::backend::AppError),
     CopyOnboardingInvite,
     EnterConsole,
@@ -734,6 +736,7 @@ impl Ducktape {
             connection_progress: String::new(),
             invite_link: "".to_owned(),
             invite_refusal: "".to_owned(),
+            invite_notes: Vec::new(),
             provision_steps: Vec::new(),
             provision_index: 0,
             hub_chain_id: "".to_owned(),

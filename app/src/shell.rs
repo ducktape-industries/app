@@ -829,6 +829,7 @@ impl DesktopWindow {
         let busy = state.mutation_phase != crate::MutationPhase::Idle;
         let error = state.onboarding_error.clone();
         let invite_refusal = state.invite_refusal.clone();
+        let invite_notes = state.invite_notes.clone();
         let step_changed = self.input_step != Some(step);
         if step_changed {
             for (_, input) in std::mem::take(&mut self.inputs) {
@@ -1401,6 +1402,7 @@ impl DesktopWindow {
                 .when(!invite_refusal.is_empty(), |body| {
                     body.child(hint(invite_refusal))
                 })
+                .children(invite_notes.into_iter().map(hint))
                 .child(
                     self.action("enter-console", "Open Ducktape", Message::EnterConsole, busy)
                         .primary()

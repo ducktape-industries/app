@@ -870,7 +870,9 @@ fn leaving_a_joins_wait_drops_its_poll() {
 /// it opened, and the node's refusal stayed under "Your network is ready" in
 /// red for an invitation nobody had asked for. Nothing is minted until Copy
 /// invitation is pressed; a refusal is a sentence beside the button, not the
-/// screen's error, and the next press asks again; a minted one is copied.
+/// screen's error, and the next press asks again; a minted one is copied, and
+/// the node's notes on it (#69 — reachable on this machine only, …) are
+/// sentences beside the button too, never the screen's error.
 #[tokio::test(flavor = "current_thread")]
 async fn the_ready_screen_mints_an_invitation_only_when_asked() {
     use futures::StreamExt as _;
@@ -918,10 +920,25 @@ async fn the_ready_screen_mints_an_invitation_only_when_asked() {
         assert_eq!(app.hub_step, crate::HubStep::Live);
     }
 
-    let _ = app.update(AppMessage::OnboardingInviteMinted("minted-blob".into()));
+    // what the mint could not do rides beside the blob, in the node's words.
+    let reachable_here = "this invite is reachable on this machine only";
+    let _ = app.update(AppMessage::OnboardingInviteMinted(backend::Invitation {
+        blob: "minted-blob".into(),
+        notes: vec![reachable_here.into()],
+    }));
     assert_eq!(app.invite_link, "minted-blob");
+    assert_eq!(app.invite_notes, [reachable_here]);
     assert!(app.invite_refusal.is_empty());
+    assert!(app.onboarding_error.is_empty(), "{}", app.onboarding_error);
     assert_eq!(app.toast, "Invite copied");
+
+    // the next network's ready screen starts with no notes of its own.
+    let _ = app.update(AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
+        chain_id: "nowhere#0000000a".into(),
+        workspace: "/nowhere/nowhere#0000000a".into(),
+        rpc: "http://127.0.0.1:1".into(),
+    }));
+    assert!(app.invite_notes.is_empty());
 }
 
 /// AN OFFLINE NETWORK SAYS SO FIRST (#19). A saved row reading `offline` still

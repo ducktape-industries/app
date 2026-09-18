@@ -609,10 +609,11 @@ pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<Hu
 /// and — for a live node whose contract number is not this app's — the
 /// refusal, in the same voice as provisioning's `blocked` step. A node whose
 /// own phase is `behind` says so, by its gap when it published one, and a node
-/// that has not served yet ([`super::node::before_serving`]) names its phase,
-/// instead of a block number that reads as healthy. A node whose netstack plane
-/// failed names that failure ahead of either: its mesh stays down for the rest
-/// of its boot, while a lag or a sync passes.
+/// that has not served yet ([`super::node::before_serving`]) or serves with no
+/// overlay (`isolated`) names its phase, instead of a block number that reads
+/// as healthy. A node whose netstack plane failed names that failure ahead of
+/// any of them: its mesh stays down for the rest of its boot, while a lag or a
+/// sync passes.
 pub fn network_row_label(row: &HubNetwork) -> String {
     let unprobed = !row.probed;
     if unprobed {
@@ -634,7 +635,9 @@ pub fn network_row_label(row: &HubNetwork) -> String {
         super::node::ContractMatch::Match if row.phase == "behind" => {
             format!("{} · behind", row.name)
         }
-        super::node::ContractMatch::Match if super::node::before_serving(&row.phase) => {
+        super::node::ContractMatch::Match
+            if row.phase == "isolated" || super::node::before_serving(&row.phase) =>
+        {
             format!("{} · {}", row.name, row.phase)
         }
         super::node::ContractMatch::Match => format!("{} · block {}", row.name, row.height),
@@ -1351,6 +1354,30 @@ mod tests {
         };
         let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], sibling);
         assert_eq!(rows[0].netstack_failure, "");
+    }
+
+    /// A NODE WITH NO OVERLAY IS NOT `block N` (#69). Core reads `isolated`
+    /// for a serving node whose netstack plane is gone: the failure published
+    /// beside it names it, a bare `isolated` reads as the phase, and either
+    /// still opens — the node answers from its copy.
+    #[test]
+    fn an_isolated_node_reads_as_its_failure_or_its_phase() {
+        let isolated = HubProbe {
+            phase: "isolated".into(),
+            ..answer("walk#0e1b62f1", "walk#0e1b62f1")
+        };
+        let failed = HubProbe {
+            netstack_failure: "netstack_guest_unreadable".into(),
+            ..isolated.clone()
+        };
+        for (probe, label) in [
+            (failed, "walk · netstack guest unreadable"),
+            (isolated, "walk · isolated"),
+        ] {
+            let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], probe);
+            assert_eq!(network_row_label(&rows[0]), label);
+            assert!(!contract_refuses(&rows[0]));
+        }
     }
 
     /// A NODE THAT HAS NOT SERVED YET IS NOT `block 0` (#27). A joining or
