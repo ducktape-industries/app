@@ -3090,6 +3090,7 @@ dependencies = [
 name = "ducktape-app"
 version = "0.1.0"
 dependencies = [
+ "accesskit_consumer",
  "app-update",
  "authpage",
  "base64 0.22.1",
@@ -4472,8 +4473,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2a9ca98fdcad06276de623c2f48ebd710f1e7724eebef2f2673c583e85dc8335"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=9ab1a74f8adc5f274d68a9e2e02209cc9a95e852#9ab1a74f8adc5f274d68a9e2e02209cc9a95e852"
 dependencies = [
  "accesskit",
  "anyhow",

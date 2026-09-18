@@ -122,7 +122,7 @@ fn probe_huddle_participant(index: usize) -> backend::HuddleParticipant {
     }
 }
 
-fn console_in_huddle() -> (Ducktape, crate::shell::WindowKey) {
+pub(crate) fn console_in_huddle() -> (Ducktape, crate::shell::WindowKey) {
     let (mut app, _) = Ducktape::boot();
     app.connected = true;
     app.connected_rpc = "http://node".into();

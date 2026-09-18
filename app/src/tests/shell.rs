@@ -723,7 +723,7 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
 
 /// A launch-window row on this device whose live node speaks a contract the
 /// app refuses (#101).
-fn refused_workspace_row(id: &str, endpoint: &str) -> backend::HubNetwork {
+pub(super) fn refused_workspace_row(id: &str, endpoint: &str) -> backend::HubNetwork {
     backend::HubNetwork {
         id: id.into(),
         chain_id: id.into(),
@@ -744,7 +744,7 @@ fn refused_workspace_row(id: &str, endpoint: &str) -> backend::HubNetwork {
 }
 
 /// An armed updater in `phase`, its files under `dir`.
-fn armed_updater(
+pub(super) fn armed_updater(
     phase: app_update::Phase,
     dir: &std::path::Path,
 ) -> crate::backend::update::Updater {
