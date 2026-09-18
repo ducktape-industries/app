@@ -681,23 +681,10 @@ static PIN_DIFFERS: AtomicBool = AtomicBool::new(false);
 /// by chain id ([`release_key_for`]).
 static NETWORK_KEYS: Mutex<BTreeMap<String, PublicKey>> = Mutex::new(BTreeMap::new());
 
-/// `GET /v1/release` as core #2646 serves it; only the app's signer is read
-/// and every other field is ignored.
-// ponytail: mirrors core's wire shape until rpc-client ships a typed reader;
-// then this moves there.
-#[derive(serde::Deserialize)]
-struct ReleaseDoc {
-    release_keys: ReleaseKeys,
-}
-
-#[derive(serde::Deserialize)]
-struct ReleaseKeys {
-    app: PublicKey,
-}
-
 /// The app release key the node at `endpoint` says its chain's governance
-/// names, or `None`: no endpoint, a node that serves no `/v1/release`, no
-/// key in it, anything not 64 hex. Never an error — an open goes on without.
+/// names, read off `GET /v1/release` as core's [`app_update::ReleaseStatus`],
+/// or `None`: no endpoint, a node that serves no `/v1/release`, no key in it,
+/// anything not 64 hex. Never an error — an open goes on without.
 async fn network_release_key(endpoint: &str) -> Option<PublicKey> {
     let url = reqwest::Url::parse(endpoint.trim())
         .ok()?
@@ -713,7 +700,12 @@ async fn network_release_key(endpoint: &str) -> Option<PublicKey> {
         .ok()?
         .error_for_status()
         .ok()?;
-    Some(reply.json::<ReleaseDoc>().await.ok()?.release_keys.app)
+    reply
+        .json::<app_update::ReleaseStatus>()
+        .await
+        .ok()?
+        .release_keys
+        .app
 }
 
 /// A workspace open, once its own node answered: the network's release key

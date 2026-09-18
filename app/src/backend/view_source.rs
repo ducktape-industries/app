@@ -508,6 +508,7 @@ pub(crate) mod tests {
             file_reads: Mutex::new(Vec::new()),
             index_views: Mutex::new(BTreeMap::new()),
             release: Mutex::new(None),
+            invite: Mutex::new(None),
             chain: Mutex::new(chain_status(7)),
         };
         fake_node(Arc::new(deployment)).await
@@ -553,6 +554,8 @@ pub(crate) mod tests {
         pub chain: Mutex<serde_json::Value>,
         /// What `/v1/release` answers; `None` is a node that predates it (404).
         pub release: Mutex<Option<serde_json::Value>>,
+        /// What `POST /v1/invite` answers; `None` is a node that mints none (404).
+        pub invite: Mutex<Option<serde_json::Value>>,
     }
 
     /// A `/v1/status` document at `height` on the fake chain.
@@ -575,6 +578,7 @@ pub(crate) mod tests {
                 file_reads: Mutex::new(Vec::new()),
                 index_views: Mutex::new(BTreeMap::new()),
                 release: Mutex::new(None),
+                invite: Mutex::new(None),
                 chain: Mutex::new(chain_status(7)),
             })
         }
@@ -699,6 +703,11 @@ pub(crate) mod tests {
                         } else if route == "/v1/release" {
                             match deployment.release.lock().unwrap().clone() {
                                 Some(doc) => ("200 OK", doc.to_string().into_bytes()),
+                                None => ("404 Not Found", Vec::new()),
+                            }
+                        } else if route == "/v1/invite" {
+                            match deployment.invite.lock().unwrap().clone() {
+                                Some(minted) => ("200 OK", minted.to_string().into_bytes()),
                                 None => ("404 Not Found", Vec::new()),
                             }
                         } else if route == "/v1/query" {
