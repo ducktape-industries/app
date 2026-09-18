@@ -233,13 +233,17 @@ fn host_layout() -> Result<Layout, Refusal> {
 }
 
 /// stderr only; `RUST_LOG` filters, default `info`. The launcher lives for
-/// milliseconds and the app's own log starts after `exec`.
+/// milliseconds and the app's own log starts after `exec`. An in-app
+/// restart points that stderr at `app.log`, so colour is for a terminal
+/// only: escapes in the file would break a grep for `event=`.
 fn init_logging() {
+    use std::io::IsTerminal as _;
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .with_target(true)
         .init();
 }

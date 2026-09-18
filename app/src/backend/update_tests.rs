@@ -448,6 +448,64 @@ fn rendered_clears_pending_healthy_and_collects() {
     assert_eq!(updater.reading().phase, reading.phase);
 }
 
+/// The settle says so, once: `Rendered` in `PendingHealthy` logs
+/// `app_update_settled` with the release and its sequence; a second
+/// `Rendered`, in `Idle`, logs nothing.
+#[test]
+fn the_settle_logs_one_event() {
+    let updates = tempfile::tempdir().unwrap();
+    let paths = UpdatePaths::under(updates.path());
+    let current = Sha::digest(b"new");
+    let pending = Phase::PendingHealthy(app_update::PendingHealthy {
+        current,
+        previous: Sha::digest(b"old"),
+        boots: 1,
+        pinned_sequence: 5,
+    });
+    let log = logged(|| {
+        let mut updater = Updater::new(pending, Some(keys()), paths);
+        updater.apply(Event::Rendered);
+        updater.apply(Event::Rendered);
+    });
+    let settled: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("app_update_settled"))
+        .collect();
+    assert_eq!(settled.len(), 1, "{log}");
+    assert!(settled[0].contains(&format!("release={current}")), "{log}");
+    assert!(settled[0].contains("pinned_sequence=5"), "{log}");
+}
+
+/// The relaunch's launcher appends its stderr to the app's log, after what
+/// is there; a log that does not open leaves it null and the launcher still
+/// starts. `sh` stands in for the launcher.
+#[test]
+fn the_launcher_logs_into_the_app_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("app.log");
+    std::fs::write(&log, "app_update_relaunch\n").unwrap();
+    let script = || ["-c".into(), "echo app_update_flipped >&2".into()];
+
+    let status = launcher_command(Path::new("/bin/sh"), script(), Ok(log.clone()))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "app_update_relaunch\napp_update_flipped\n"
+    );
+
+    let unopenable = log.join("app.log");
+    let status = launcher_command(Path::new("/bin/sh"), script(), Ok(unopenable))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = launcher_command(Path::new("/bin/sh"), script(), Err("no home".into()))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
 /// A staged release its own qualify refused (#57): the strip and the
 /// Settings facts say why instead of offering the restart, the channel still
 /// checks, and the Settings rollback discards it (sealed directory and all)

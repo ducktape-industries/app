@@ -297,6 +297,10 @@ impl Updater {
     /// the phase held here is what `state.json` holds, not what `step`
     /// returned — the flip did not happen.
     pub fn apply(&mut self, event: Event) -> Option<Job> {
+        let settles = matches!(
+            (&self.phase, &event),
+            (Phase::PendingHealthy(_), Event::Rendered)
+        );
         let (phase, commands) = step(self.phase.clone(), event);
         let mut persisted = None;
         let mut job = None;
@@ -315,6 +319,14 @@ impl Updater {
                     return None;
                 }
             }
+        }
+        if settles && matches!(phase, Phase::Idle(_)) {
+            info!(
+                target: "ducktape::update",
+                event = "app_update_settled",
+                release = %phase.current(),
+                pinned_sequence = phase.pinned_sequence(),
+            );
         }
         self.phase = phase;
         if let Some(job) = &job {
@@ -395,14 +407,13 @@ fn relaunch_through_launcher() -> bool {
         }
     };
     let launcher = own.with_file_name(stage::LAUNCHER_EXE);
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let spawned = std::process::Command::new(&launcher)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .spawn();
+    let spawned = launcher_command(
+        &launcher,
+        std::env::args_os().skip(1),
+        super::app_log_path(),
+    )
+    .process_group(0)
+    .spawn();
     match spawned {
         Ok(_child) => {
             info!(target: "ducktape::update", event = "app_update_relaunch");
@@ -413,6 +424,39 @@ fn relaunch_through_launcher() -> bool {
             false
         }
     }
+}
+
+/// The launcher's command: `args` passed through, stdin and stdout null.
+/// Its stderr — the launcher's only log, so its flip, exec, refusal or
+/// rollback — appends to `log`, the app's own, so a relaunch that fails
+/// after the app quit still says why; a log that does not open leaves it
+/// null.
+fn launcher_command(
+    launcher: &Path,
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    log: Result<PathBuf, String>,
+) -> std::process::Command {
+    let appended = log.and_then(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| error.to_string())
+    });
+    let stderr = match appended {
+        Ok(file) => std::process::Stdio::from(file),
+        Err(error) => {
+            warn!(target: "ducktape::update", event = "app_update_relaunch_unlogged", error = %error);
+            std::process::Stdio::null()
+        }
+    };
+    let mut command = std::process::Command::new(launcher);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(stderr);
+    command
 }
 
 fn seal_release(paths: &UpdatePaths, sha: &Sha) {
