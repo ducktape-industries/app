@@ -445,7 +445,8 @@ async fn a_node_whose_netstack_plane_failed_holds_the_wait_with_its_sentence() {
 /// up while it is still `starting`, before it is admitted and before it wires
 /// the invite minter the ready screen offers: the wait does not settle on
 /// "Your node answered" on that first answer, it names the node's phase, as
-/// the launch row does, and polls on. A serving node settles it.
+/// the launch row does, and polls on. The workspace's own node, serving,
+/// settles it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_node_before_serving_holds_the_wait_on_its_phase() {
     for (status, phase) in [
@@ -469,10 +470,110 @@ async fn a_node_before_serving_holds_the_wait_on_its_phase() {
         );
         assert_eq!(step.label, format!("Waiting for your node · {phase}"));
     }
-    let rpc =
-        super::node_that_serves_its_status_once(r#"{"height":3,"operations":{"phase":"serving"}}"#)
-            .await;
-    let mut steps = provision_progress("no-such-workspace#9".into(), rpc).skip(3);
+    let (home, key) = joined_workspace("dognet#9");
+    let rpc = super::node_that_serves_its_status_once(serving_status("dognet#9", &key)).await;
+    let mut steps = provision_progress_in(Some(home.path().into()), "dognet#9".into(), rpc).skip(3);
+    let step = steps.next().await.expect("the wait reports");
+    assert_eq!((step.index, step.settled), (4, true), "{step:?}");
+}
+
+/// A home holding the one workspace a join of `chain_id` wrote — its
+/// `network.toml`, `node.toml` and `identity.key` — and the key its node
+/// publishes.
+fn joined_workspace(chain_id: &str) -> (tempfile::TempDir, String) {
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(chain_id);
+    std::fs::create_dir_all(&dir).unwrap();
+    workspace_config::NetworkDescriptor {
+        chain_id: chain_id.into(),
+        validators: vec!["aa".repeat(32)],
+        bootstrap: vec![],
+        reach: vec![],
+        coordination: None,
+        block_time_ms: workspace_config::DEFAULT_BLOCK_TIME_MS,
+        modules: vec![],
+        genesis: String::new(),
+    }
+    .save(&dir.join("network.toml"))
+    .unwrap();
+    std::fs::write(
+        dir.join("node.toml"),
+        r#"network = "network.toml"
+key_file = "identity.key"
+listen = "0.0.0.0:52200"
+advertised = "overlay"
+storage_dir = "data"
+http_listen = "0.0.0.0:18619"
+gateway_listen = "127.0.0.1:0"
+rpc_listen = "127.0.0.1:18620"
+wireguard_listen = "0.0.0.0:51820"
+invite_listen = "0.0.0.0:51821"
+wireguard_advertised = "auto"
+primary_coordinator = "none"
+coordinator_relay = "none"
+checkpoint_blocks = 32
+"#,
+    )
+    .unwrap();
+    let secret = ed25519::PrivateKey::from_seed(70);
+    workspace_config::write_identity(&dir.join("identity.key"), &secret).unwrap();
+    (
+        home,
+        workspace_config::hex_bytes(secret.public_key().as_ref()),
+    )
+}
+
+/// A serving node's status, naming its chain and key.
+fn serving_status(chain_id: &str, key: &str) -> &'static str {
+    let status = serde_json::json!({
+        "height": 3,
+        "chain_id": chain_id,
+        "public_key": key,
+        "operations": {"phase": "serving"},
+    });
+    Box::leak(status.to_string().into_boxed_str())
+}
+
+/// A PORT IS NOT AN IDENTITY (#70). Step 4 polls the endpoint the join wrote,
+/// and another network's node, or another node of this one, can be the one
+/// answering there. The wait settles only on the workspace's own node — its
+/// chain id and the key its `identity.key` holds — and otherwise stays
+/// waiting, saying what answered instead.
+#[tokio::test(flavor = "current_thread")]
+async fn only_the_workspaces_own_node_settles_the_wait() {
+    let (home, key) = joined_workspace("dognet#70");
+    for (status, said) in [
+        (
+            serving_status("catnet#70", &key),
+            "another network's node (catnet#70) answers on this port",
+        ),
+        (
+            serving_status("dognet#70", &"bb".repeat(32)),
+            "a node with another key answers on this port",
+        ),
+    ] {
+        let rpc = super::node_that_serves_its_status_once(status).await;
+        let mut steps =
+            provision_progress_in(Some(home.path().into()), "dognet#70".into(), rpc).skip(3);
+        let step = steps.next().await.expect("the wait reports");
+        assert_eq!(step.index, 4);
+        assert_eq!(
+            (step.state.as_str(), step.settled),
+            ("waiting", false),
+            "{step:?}"
+        );
+        assert_eq!(step.hint, said);
+    }
+    // an answerer that has published neither is not yet anyone: the open
+    // refuses it ([`own_node`] `Ok(false)`), never takes it as a match.
+    let dir = home.path().join("dognet#70");
+    assert_eq!(
+        own_node(&dir, "dognet#70", &NodeFacts::default()),
+        Ok(false)
+    );
+    let rpc = super::node_that_serves_its_status_once(serving_status("dognet#70", &key)).await;
+    let mut steps =
+        provision_progress_in(Some(home.path().into()), "dognet#70".into(), rpc).skip(3);
     let step = steps.next().await.expect("the wait reports");
     assert_eq!((step.index, step.settled), (4, true), "{step:?}");
 }

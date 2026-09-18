@@ -219,24 +219,43 @@ pub fn provision_progress(
     workspace: String,
     rpc: String,
 ) -> futures::stream::BoxStream<'static, ProvisionStep> {
+    provision_progress_in(ducktape_home(), workspace, rpc)
+}
+
+/// [`provision_progress`] for the workspaces under `home`.
+pub(crate) fn provision_progress_in(
+    home: Option<PathBuf>,
+    workspace: String,
+    rpc: String,
+) -> futures::stream::BoxStream<'static, ProvisionStep> {
     struct State {
+        home: String,
         dir: Option<PathBuf>,
+        /// The network the join wrote: the found workspace's, else the selector.
+        chain_id: String,
         /// What the launcher is pointed at: the found directory, else the selector.
         workspace: String,
         rpc: String,
         step: usize,
         attempts: u32,
     }
-    let found = workspaces()
+    let found = home
+        .as_deref()
+        .map(workspaces_in)
+        .unwrap_or_default()
         .into_iter()
         .find(|(chain_id, dir)| *chain_id == workspace || dir.display().to_string() == workspace);
-    let (workspace, dir) = match found {
-        Some((_, dir)) => (dir.display().to_string(), Some(dir)),
-        None => (workspace, None),
+    let (chain_id, workspace, dir) = match found {
+        Some((chain_id, dir)) => (chain_id, dir.display().to_string(), Some(dir)),
+        None => (workspace.clone(), workspace, None),
     };
     Box::pin(futures::stream::unfold(
         State {
+            home: home
+                .map(|home| home.display().to_string())
+                .unwrap_or_else(|| "~/.ducktape".into()),
             dir,
+            chain_id,
             workspace,
             rpc,
             step: 0,
@@ -247,9 +266,7 @@ pub fn provision_progress(
             match state.step {
                 0 => {
                     state.step = 1;
-                    let home = ducktape_home()
-                        .map(|home| home.display().to_string())
-                        .unwrap_or_else(|| "~/.ducktape".into());
+                    let home = &state.home;
                     Some((
                         registered_step(
                             1,
@@ -297,6 +314,28 @@ pub fn provision_progress(
                             .map(|status| node_facts(&status)),
                         Err(_) => None,
                     };
+                    // and the workspace's OWN node: a port is not an identity.
+                    let own = match (&facts, state.dir.as_deref()) {
+                        (Some(facts), Some(dir)) => own_node(dir, &state.chain_id, facts),
+                        _ => Ok(false),
+                    };
+                    if let Err(answered) = own {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        let waiting = node_wait_step(
+                            &state.workspace,
+                            super::update::pinned_release_key().as_deref(),
+                            state.attempts,
+                            "",
+                        );
+                        return Some((
+                            ProvisionStep {
+                                state: "waiting".into(),
+                                hint: answered,
+                                ..waiting
+                            },
+                            state,
+                        ));
+                    }
                     let (up, plane_failure, phase) = match facts {
                         Some(facts) => (
                             facts.netstack_failure_reason.is_empty(),
@@ -323,7 +362,7 @@ pub fn provision_progress(
                             state,
                         ));
                     }
-                    if up {
+                    if up && own == Ok(true) {
                         state.step = 4;
                         return Some((registered_step(4, "Your node answered", true), state));
                     }
@@ -424,6 +463,36 @@ fn registered_step(index: i64, label: &str, established: bool) -> ProvisionStep 
         hint: String::new(),
         command: String::new(),
     }
+}
+
+/// The key a workspace's own node publishes as `/v1/status` `public_key`: the
+/// hex public half of the secret its `node.toml` `key_file` names
+/// (`identity.key`, as a join writes it).
+pub(crate) fn workspace_node_key(dir: &Path) -> Option<String> {
+    let (config, base) = workspace_config::load_node_toml(&dir.join("node.toml")).ok()?;
+    let secret = workspace_config::load_identity(&base.join(config.key_file)).ok()?;
+    Some(workspace_config::hex_bytes(secret.public_key().as_ref()))
+}
+
+/// Whether the node answering on a workspace's endpoint is that workspace's
+/// OWN: it serves `chain_id` and publishes the key [`workspace_node_key`]
+/// derives. The endpoint names a port, and another network's node — or
+/// another node of this one — can hold it, so every door that hands a session
+/// to the answerer asks this. `Ok(false)` is an answerer that has not
+/// published both yet; `Err` says what answered instead, naming nothing
+/// beyond its own public chain id.
+pub(crate) fn own_node(dir: &Path, chain_id: &str, facts: &NodeFacts) -> Result<bool, String> {
+    let key = workspace_node_key(dir).unwrap_or_default();
+    if !facts.chain_id.is_empty() && facts.chain_id != chain_id {
+        return Err(format!(
+            "another network's node ({}) answers on this port",
+            facts.chain_id
+        ));
+    }
+    if !facts.public_key.is_empty() && !facts.public_key.eq_ignore_ascii_case(&key) {
+        return Err("a node with another key answers on this port".into());
+    }
+    Ok(!facts.chain_id.is_empty() && !facts.public_key.is_empty())
 }
 
 /// The workspace's own node identity, short — `network.toml` seats it as the

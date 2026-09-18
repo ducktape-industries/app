@@ -508,7 +508,9 @@ pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
             };
         }
     };
-    if let Err(cause) = name_remote_keystore(&rpc, &status) {
+    if let Err(cause) =
+        own_workspace_node(&rpc, &status).and_then(|()| name_remote_keystore(&rpc, &status))
+    {
         set_local_user_key(None).await;
         return WalletList {
             wallets: Vec::new(),
@@ -540,6 +542,22 @@ pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
         .and_then(|path| pubkey_of_key_file(&path));
     set_local_user_key(identity).await;
     list
+}
+
+/// An endpoint a workspace on this device serves opens only onto that
+/// workspace's own node ([`own_node`]) — the check provisioning's wait makes,
+/// made again on the status this open read. A remote has no workspace to
+/// hold the answer to.
+fn own_workspace_node(rpc: &str, status: &serde_json::Value) -> Result<(), String> {
+    let Some((chain_id, dir)) = workspace_at(rpc) else {
+        return Ok(());
+    };
+    match own_node(&dir, &chain_id, &super::node::node_facts(status))? {
+        true => Ok(()),
+        false => {
+            Err("the node on this port has not yet said which network and key it serves".into())
+        }
+    }
 }
 
 /// Learn which network a remote endpoint serves, so its keystore has a name
