@@ -361,7 +361,7 @@ fn a_node_that_never_answers_is_waited_for_by_its_launcher_command() {
         .collect();
     for step in &steps {
         assert_eq!(step.index, 4);
-        assert_eq!(step.label, format!("Waiting for your node · {command}"));
+        assert_eq!(step.label, "Waiting for your node");
         assert_eq!(step.command, command);
         assert!(!step.settled, "the wait keeps polling: {step:?}");
         assert!(!format!("{step:?}").contains("starting"), "{step:?}");

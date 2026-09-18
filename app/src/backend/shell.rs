@@ -435,7 +435,7 @@ pub(crate) fn node_wait_step(
     let blocked = attempts >= PROVISION_PATIENCE || !plane_failure.is_empty();
     ProvisionStep {
         index: 4,
-        label: format!("Waiting for your node · {command}"),
+        label: "Waiting for your node".into(),
         state: match blocked {
             true => "blocked".into(),
             false => "waiting".into(),

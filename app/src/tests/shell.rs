@@ -1021,6 +1021,42 @@ fn the_waiting_steps_copy_command_confirms_itself() {
         .unwrap();
 }
 
+/// THE WAIT'S COMMAND IS NOT ITS LABEL (#87). The node's two-line command was
+/// the step's label, set in the UI face beside the state word: it wrapped to
+/// some 25 lines, so the state, Copy command and the hint saying why the step
+/// is blocked fell below the fold of the join window, and Back to networks
+/// with them. The label stays a label; the command is its own block under it.
+#[test]
+fn the_waiting_steps_command_leaves_the_step_in_view() {
+    use gpui_kit::test::TestWindowExt as _;
+    let key = "ab".repeat(32);
+    for release_key in [Some(key.as_str()), None] {
+        let mut app = Ducktape::initial_state();
+        app.hub_step = HubStep::Provisioning;
+        // long past its patience: blocked, with the longest hint.
+        app.provision_steps = vec![backend::node_wait_step(
+            "/home/member/.ducktape/dognet#d2a0ec8f",
+            release_key,
+            u32::MAX,
+            "",
+        )];
+        let (mut native, window, _) = onboarding_window(app);
+        window
+            .update(&mut native, |_, window, cx| {
+                window.render_frame(cx);
+                let footer_top = window.viewport_size().height - gpui_kit::px(36.);
+                for id in ["copy-node-command", "provision-back"] {
+                    let bounds = window.find(id).bounds();
+                    assert!(
+                        bounds.bottom() <= footer_top,
+                        "{id} {bounds:?} is below the fold"
+                    );
+                }
+            })
+            .unwrap();
+    }
+}
+
 /// AN OFFLINE NETWORK SAYS SO FIRST (#19). A saved row reading `offline` still
 /// opened — by design — and the open then ran the whole wallet ceremony:
 /// password, 24 words, the confirm. Only the account lookup after it failed,

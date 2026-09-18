@@ -1408,6 +1408,9 @@ impl DesktopWindow {
                         )
                         .when(!step.hint.is_empty(), |steps| {
                             steps.child(hint(step.hint.clone()))
+                        })
+                        .when(!step.command.is_empty(), |steps| {
+                            steps.child(hint(step.command.clone()).map(mono_family))
                         });
                 }
                 // the wait keeps polling on this screen; leaving it drops the poll.
