@@ -156,6 +156,29 @@ struct Desktop {
 }
 
 impl Desktop {
+    /// The windows the test door serves, named by kind; a second window of
+    /// one kind is `console2`.
+    fn ax_windows(&self, cx: &gpui_kit::App) -> Vec<(String, gpui_kit::AnyWindowHandle)> {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        self.windows
+            .iter()
+            .filter_map(|(key, handle)| {
+                let name = match self.views.get(key)?.upgrade()?.read(cx).kind {
+                    WindowKind::Onboarding => "onboarding",
+                    WindowKind::Console => "console",
+                    WindowKind::Huddle => "huddle",
+                };
+                let count = seen.entry(name).or_default();
+                *count += 1;
+                let name = match *count {
+                    1 => name.to_owned(),
+                    count => format!("{name}{count}"),
+                };
+                Some((name, *handle))
+            })
+            .collect()
+    }
+
     fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         // Native callbacks run on GPUI's thread, not a Tokio worker. Reducers
         // may construct effects which spawn immediately, before their first poll.
@@ -1090,12 +1113,14 @@ impl DesktopWindow {
                                     )),
                             )
                             .child(
-                                div()
-                                    .map(mono_family)
-                                    .child(Text::new(
-                                        ElementId::Name(format!("phrase-word/{number}").into()),
-                                        text.into(),
-                                    )),
+                                // private: the test door masks it (#114)
+                                div().map(mono_family).child(gpui_notion::editor::ui::ax_private(
+                                    div()
+                                        .id(ElementId::Name(format!("phrase-word/{number}").into()))
+                                        .role(gpui_kit::Role::Label)
+                                        .aria_value(text.clone())
+                                        .child(text),
+                                )),
                             )
                     };
                     words = words.child(
@@ -3433,6 +3458,20 @@ pub(crate) fn run() {
             desktop.start(initial, cx).detach();
             desktop.subscriptions(cx);
         });
+        // the test door (#114), only when the launch asked for it
+        if let Some(calls) = crate::ax_door::open() {
+            let door_desktop = desktop.downgrade();
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let windows = move |cx: &gpui_kit::App| {
+                    door_desktop
+                        .upgrade()
+                        .map(|desktop| desktop.read(cx).ax_windows(cx))
+                        .unwrap_or_default()
+                };
+                crate::ax_door::serve(calls, windows, cx).await;
+            })
+            .detach();
+        }
         let command_desktop = desktop.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(pending) = commands.next().await {

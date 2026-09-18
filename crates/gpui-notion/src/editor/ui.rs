@@ -128,6 +128,18 @@ pub fn text_field(
         .child(field)
 }
 
+/// The class of a node whose name and value are private: the app's test
+/// door (#114) masks them before they leave the process. Assistive
+/// technology still reads them — they are on the screen.
+pub const AX_PRIVATE: &str = "ax_private";
+
+/// Marks `element`'s node [`AX_PRIVATE`].
+pub fn ax_private(element: Stateful<Div>) -> Stateful<Div> {
+    element.a11y_synthetic_children(|builder| {
+        builder.parent_node().set_class_name(AX_PRIVATE);
+    })
+}
+
 /// A row in a menu: fixed height, hover fill, rounded. In the tree as an
 /// option called `name`, reporting whether it is the selected one; `id`
 /// must come from the item itself, never its position.

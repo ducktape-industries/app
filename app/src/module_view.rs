@@ -3391,6 +3391,11 @@ pub(crate) struct NativeModuleView {
 impl gpui_kit::EventEmitter<ModuleViewEvent> for NativeModuleView {}
 
 impl NativeModuleView {
+    /// The id around the view's tree: the test door reads the module off it.
+    fn ax_mark(&self) -> gpui_kit::ElementId {
+        gpui_kit::ElementId::Name(format!("{}{}", crate::ax_door::VIEW_MARK, self.module).into())
+    }
+
     pub(crate) fn new(module: &'static str) -> Self {
         Self {
             module,
@@ -3695,6 +3700,7 @@ impl gpui_kit::Render for NativeModuleView {
                     );
                     // A view owns its own inset: a split pane runs to the edges.
                     gpui_kit::div()
+                        .id(self.ax_mark())
                         .key_context(context)
                         .size_full()
                         .child(input::Observe::new(
@@ -3724,6 +3730,7 @@ impl gpui_kit::Render for NativeModuleView {
                     reason.test_support()
                 };
                 gpui_kit::div()
+                    .id(self.ax_mark())
                     .size_full()
                     .flex()
                     .items_center()
