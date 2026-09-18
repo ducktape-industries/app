@@ -208,6 +208,9 @@ pub(crate) const NODE_WAIT_HINT: &str = "This app does not run nodes. Run both l
 /// Said too when this app pinned no release key to print in the command.
 pub(crate) const NODE_KEY_HINT: &str =
     "<release key> is the release key your network's operator published.";
+/// What the command's `--release-key` pins, said with a key or without one: an
+/// install that pins no key trusts no signer, so its launcher never updates it.
+pub(crate) const NODE_PIN_HINT: &str = "--release-key pins which release signer this node trusts; installed without it, the node trusts no signer and does not update itself.";
 // core #2610: release 2's launcher predates modules seeding; drop this line once the next node release ships.
 pub(crate) const NODE_MODULES_HINT: &str = "If your archive's launcher is release 2, run with DUCKTAPE_MODULES_DIR='<archive>/modules' set.";
 
@@ -441,9 +444,11 @@ pub(crate) fn node_wait_step(
         hint: match (blocked, plane_failure.is_empty()) {
             (true, false) => plane_failure.into(),
             (true, true) if release_key.is_some() => {
-                format!("{NODE_WAIT_HINT}\n{NODE_MODULES_HINT}")
+                format!("{NODE_WAIT_HINT} {NODE_PIN_HINT}\n{NODE_MODULES_HINT}")
             }
-            (true, true) => format!("{NODE_WAIT_HINT} {NODE_KEY_HINT}\n{NODE_MODULES_HINT}"),
+            (true, true) => {
+                format!("{NODE_WAIT_HINT} {NODE_PIN_HINT} {NODE_KEY_HINT}\n{NODE_MODULES_HINT}")
+            }
             (false, _) => String::new(),
         },
         command,

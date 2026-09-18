@@ -374,7 +374,7 @@ fn a_node_that_never_answers_is_waited_for_by_its_launcher_command() {
         assert_eq!(step.state, "blocked");
         assert_eq!(
             step.hint,
-            "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into.\n\
+            "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into. --release-key pins which release signer this node trusts; installed without it, the node trusts no signer and does not update itself.\n\
              If your archive's launcher is release 2, run with DUCKTAPE_MODULES_DIR='<archive>/modules' set."
         );
     }
@@ -415,7 +415,7 @@ fn a_fresh_join_is_installed_from_the_archive_before_it_runs() {
     assert_eq!(step.state, "blocked");
     assert_eq!(
         step.hint,
-        "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into. <release key> is the release key your network's operator published.\n\
+        "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into. --release-key pins which release signer this node trusts; installed without it, the node trusts no signer and does not update itself. <release key> is the release key your network's operator published.\n\
          If your archive's launcher is release 2, run with DUCKTAPE_MODULES_DIR='<archive>/modules' set."
     );
 }
