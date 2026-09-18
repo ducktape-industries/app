@@ -539,6 +539,7 @@ pub(crate) enum AppMessage {
     NetworkEntered,
     ConsoleOpened(crate::shell::WindowKey),
     ForgetNetworkSubmit(String),
+    ClearNetworkEndpoint(String),
     NetworkForgotten(bool),
     GoJoin,
     GoNetworks,

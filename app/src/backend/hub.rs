@@ -23,6 +23,11 @@ pub struct HubNetwork {
     pub chain_id: String,
     pub name: String,
     pub endpoint: String,
+    /// The node RPC URL Settings stored for a local row's chain
+    /// ([`endpoint_override`]) — what `endpoint` then is — empty for none and
+    /// for every saved remote. The row says so ([`network_row_label`]) and
+    /// offers the way back to `node.toml` ([`offers_node_toml`]).
+    pub endpoint_override: String,
     pub kind: String,
     pub last_used: i64,
     /// The liveness reading, merged in by `probe_known_networks`. `probed`
@@ -168,6 +173,7 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
             HubNetwork {
                 name: display_name(&chain_id, &chain_id),
                 endpoint,
+                endpoint_override: endpoint_override(&prefs, &chain_id).unwrap_or_default(),
                 kind: "local".into(),
                 last_used: stamps[&chain_id]["last_used"].as_i64().unwrap_or(0),
                 id: chain_id.clone(),
@@ -200,6 +206,7 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
             chain_id: String::new(),
             name: display_name("", endpoint),
             endpoint: endpoint.to_string(),
+            endpoint_override: String::new(),
             kind: "remote".into(),
             last_used: stamps[endpoint]["last_used"].as_i64().unwrap_or(0),
             probed: false,
@@ -569,15 +576,29 @@ pub(crate) fn own_workspace_node(
     }
 }
 
-/// Point the workspace the session at `rpc` is at the node RPC URL Settings
-/// typed (`url`; empty clears it back to `node.toml`), and answer the facts it
-/// now resolves to — the endpoint the session reconnects to next.
-pub async fn set_workspace_endpoint(rpc: String, url: String) -> Result<EndpointFacts, AppError> {
+/// What a re-point asks of the node. Settings `Set`s the URL it typed (empty
+/// clears) under a live session whose reconnect checks nothing, so the set
+/// makes the open's own-node check first. The launch window `Clear`s a row's
+/// override with no session on it (#94) — its node may well be down, and
+/// `node.toml`'s with it — and the next open makes that check itself (#70).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Repoint {
+    Set(String),
+    Clear,
+}
+
+/// Point the workspace at `rpc` at a node RPC URL, or back to `node.toml`
+/// ([`Repoint`]), and answer the facts it now resolves to — the endpoint the
+/// session reconnects to next.
+pub async fn set_workspace_endpoint(
+    rpc: String,
+    repoint: Repoint,
+) -> Result<EndpointFacts, AppError> {
     let (chain_id, dir) = workspace_at(&rpc).ok_or_else(|| {
         app_error("Only a workspace on this device has a node RPC URL to set.".to_string())
     })?;
     let mut prefs = read_prefs();
-    let facts = repoint_workspace(&mut prefs, (chain_id.clone(), dir), &url)
+    let facts = repoint_workspace(&mut prefs, (chain_id.clone(), dir), &repoint)
         .await
         .map_err(|cause| app_error(user_error(cause)))?;
     if !write_prefs(&prefs) {
@@ -590,28 +611,33 @@ pub async fn set_workspace_endpoint(rpc: String, url: String) -> Result<Endpoint
     Ok(facts)
 }
 
-/// [`set_workspace_endpoint`] on `prefs`: `url` must be a node RPC URL
+/// [`set_workspace_endpoint`] on `prefs`: a set's `url` must be a node RPC URL
 /// ([`endpoint_origin`]), and the node answering where the workspace then
 /// resolves must be its own ([`own_workspace_node`]) — the check an open makes,
-/// made here because the reconnect that follows makes none. Refused, `prefs`
-/// is left as it was.
+/// made here because the reconnect that follows makes none. A clear asks no
+/// node. Refused, `prefs` is left as it was.
 pub(crate) async fn repoint_workspace(
     prefs: &mut serde_json::Value,
     (chain_id, dir): (String, PathBuf),
-    url: &str,
+    repoint: &Repoint,
 ) -> Result<EndpointFacts, String> {
-    let endpoint = match endpoint_origin(url) {
-        Some(endpoint) => endpoint,
-        None if url.trim().is_empty() => String::new(),
-        None => return Err(ENDPOINT_REFUSAL.into()),
+    let endpoint = match repoint {
+        Repoint::Clear => String::new(),
+        Repoint::Set(url) => match endpoint_origin(url) {
+            Some(endpoint) => endpoint,
+            None if url.trim().is_empty() => String::new(),
+            None => return Err(ENDPOINT_REFUSAL.into()),
+        },
     };
     let mut next = prefs.clone();
     store_endpoint_override(&mut next, &chain_id, &endpoint);
     let facts = endpoint_facts_in(&next, &chain_id, &dir);
-    let status = probe_endpoint(&facts.endpoint)
-        .await
-        .map_err(|cause| unreachable_node(&facts.endpoint, &cause))?;
-    own_workspace_node(Some((chain_id, dir)), &status)?;
+    if let Repoint::Set(_) = repoint {
+        let status = probe_endpoint(&facts.endpoint)
+            .await
+            .map_err(|cause| unreachable_node(&facts.endpoint, &cause))?;
+        own_workspace_node(Some((chain_id, dir)), &status)?;
+    }
     *prefs = next;
     Ok(facts)
 }
@@ -687,42 +713,50 @@ pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<Hu
 /// overlay (`isolated`) names its phase, instead of a block number that reads
 /// as healthy. A node whose netstack plane failed names that failure ahead of
 /// any of them: its mesh stays down for the rest of its boot, while a lag or a
-/// sync passes.
+/// sync passes. A row whose node RPC URL Settings overrode says where it
+/// reads first, `via` the override's address.
 pub fn network_row_label(row: &HubNetwork) -> String {
+    let name = match row.endpoint_override.as_str() {
+        "" => row.name.clone(),
+        url => format!("{} · via {}", row.name, display_name("", url)),
+    };
     let unprobed = !row.probed;
     if unprobed {
-        return format!("{} · checking", row.name);
+        return format!("{name} · checking");
     }
     if row.another_network {
-        return format!("{} · another network at this address", row.name);
+        return format!("{name} · another network at this address");
     }
     if !row.live {
-        return format!("{} · offline", row.name);
+        return format!("{name} · offline");
     }
     match super::node::contract_match(row.contract) {
         super::node::ContractMatch::Match if !row.netstack_failure.is_empty() => {
-            format!("{} · {}", row.name, row.netstack_failure.replace('_', " "))
+            format!("{name} · {}", row.netstack_failure.replace('_', " "))
         }
         super::node::ContractMatch::Match if row.phase == "behind" && row.behind_by >= 0 => {
-            format!("{} · behind by {}", row.name, row.behind_by)
+            format!("{name} · behind by {}", row.behind_by)
         }
         super::node::ContractMatch::Match if row.phase == "behind" => {
-            format!("{} · behind", row.name)
+            format!("{name} · behind")
         }
         super::node::ContractMatch::Match
             if row.phase == "isolated" || super::node::before_serving(&row.phase) =>
         {
-            format!("{} · {}", row.name, row.phase)
+            format!("{name} · {}", row.phase)
         }
-        super::node::ContractMatch::Match => format!("{} · block {}", row.name, row.height),
+        super::node::ContractMatch::Match => format!("{name} · block {}", row.height),
         super::node::ContractMatch::NodeBehind | super::node::ContractMatch::NodeAhead => {
-            format!(
-                "{} · {}",
-                row.name,
-                super::node::contract_hint(row.contract)
-            )
+            format!("{name} · {}", super::node::contract_hint(row.contract))
         }
     }
+}
+
+/// Whether a row offers **Use node.toml**: a workspace on this device whose
+/// node RPC URL Settings overrode. Settings lives in the console, which does
+/// not open while the override's node is down (#94).
+pub fn offers_node_toml(row: &HubNetwork) -> bool {
+    row.kind == "local" && !row.endpoint_override.is_empty()
 }
 
 /// Whether the console must NOT open on this row: the probe measured a live
@@ -1261,6 +1295,7 @@ mod tests {
             chain_id: "demo#a1b2".into(),
             name: "demo".into(),
             endpoint: "http://127.0.0.1:1".into(),
+            endpoint_override: String::new(),
             kind: "local".into(),
             last_used: 0,
             probed: false,
@@ -1286,6 +1321,7 @@ mod tests {
             chain_id: chain_id.into(),
             name: display_name(chain_id, chain_id),
             endpoint: "http://127.0.0.1:8844".into(),
+            endpoint_override: String::new(),
             kind: "local".into(),
             last_used: 0,
             probed: false,
@@ -1354,6 +1390,50 @@ mod tests {
         let rows = apply_network_probe(vec![remote], answer("http://203.0.113.9:18844", "team#1"));
         assert!(rows[0].live && !rows[0].another_network);
         assert_eq!(rows[0].height, 2033);
+    }
+
+    /// A ROW ON A NODE RPC URL SETTINGS STORED SAYS SO (#94): the override's
+    /// address comes ahead of the reading, and only such a local row offers
+    /// the way back to `node.toml` — Settings is inside the console, which does
+    /// not open while that node is down.
+    #[test]
+    fn an_overridden_row_says_where_it_reads_and_offers_node_toml() {
+        let plain = workspace_row("walk#0e1b62f1");
+        let overridden = HubNetwork {
+            endpoint: "http://100.92.85.92:28990".into(),
+            endpoint_override: "http://100.92.85.92:28990".into(),
+            ..plain.clone()
+        };
+        assert_eq!(network_row_label(&plain), "walk · checking");
+        assert_eq!(
+            network_row_label(&overridden),
+            "walk · via 100.92.85.92:28990 · checking"
+        );
+        let dead = HubNetwork {
+            probed: true,
+            ..overridden.clone()
+        };
+        assert_eq!(
+            network_row_label(&dead),
+            "walk · via 100.92.85.92:28990 · offline"
+        );
+        let rows = apply_network_probe(
+            vec![overridden.clone()],
+            answer("walk#0e1b62f1", "walk#0e1b62f1"),
+        );
+        assert_eq!(
+            network_row_label(&rows[0]),
+            "walk · via 100.92.85.92:28990 · block 2033"
+        );
+
+        assert!(!offers_node_toml(&plain));
+        assert!(offers_node_toml(&overridden));
+        let remote = HubNetwork {
+            chain_id: String::new(),
+            kind: "remote".into(),
+            ..overridden
+        };
+        assert!(!offers_node_toml(&remote));
     }
 
     /// A NODE THAT STOPPED FOLLOWING IS NOT `block N` (#16). The node's own

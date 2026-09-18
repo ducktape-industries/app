@@ -343,6 +343,7 @@ fn a_network_row_refuses_only_a_live_node_with_another_contract() {
         chain_id: "demo#a1b2".into(),
         name: "demo".into(),
         endpoint: "http://127.0.0.1:1".into(),
+        endpoint_override: String::new(),
         kind: "local".into(),
         last_used: 0,
         probed,

@@ -212,6 +212,7 @@ impl Ducktape {
             AppMessage::NetworkEntered => self.on_network_entered(),
             AppMessage::ConsoleOpened(id) => self.on_console_opened(id),
             AppMessage::ForgetNetworkSubmit(id) => self.on_forget_network_submit(id),
+            AppMessage::ClearNetworkEndpoint(id) => self.on_clear_network_endpoint(id),
             AppMessage::NetworkForgotten(_written) => self.on_network_forgotten(_written),
             AppMessage::GoJoin => self.on_go_join(),
             AppMessage::GoNetworks => self.on_go_networks(),
@@ -2272,7 +2273,7 @@ impl Ducktape {
             SettingsIntent::Endpoint => Task::perform(
                 crate::backend::set_workspace_endpoint(
                     self.connected_rpc.to_owned(),
-                    crate::module_view::event_text(&(event), "url"),
+                    crate::backend::Repoint::Set(crate::module_view::event_text(&(event), "url")),
                 ),
                 |result| match result {
                     Ok(value) => AppMessage::SettingsEndpointSaved(value),
@@ -3903,6 +3904,19 @@ impl Ducktape {
         Task::perform(crate::backend::forget_network(id.to_owned()), |value| {
             AppMessage::NetworkForgotten(value)
         })
+    }
+    /// **Use node.toml** on a row: the way back from a node RPC URL whose node
+    /// is down, when Settings is inside the console that will not open (#94).
+    /// The list then reloads and re-probes, as after a forget.
+    fn on_clear_network_endpoint(&mut self, id: String) -> Task<AppMessage> {
+        if self.mutation_phase != MutationPhase::Idle {
+            return Task::none();
+        }
+        let rpc = crate::backend::selected_network_endpoint(self.hub_networks.clone(), id);
+        Task::perform(
+            crate::backend::set_workspace_endpoint(rpc, crate::backend::Repoint::Clear),
+            |result| AppMessage::NetworkForgotten(result.is_ok()),
+        )
     }
     fn on_network_forgotten(&mut self, _written: bool) -> Task<AppMessage> {
         let pending_task = Task::perform(crate::backend::hub_state(), |value| {
