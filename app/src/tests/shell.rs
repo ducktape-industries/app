@@ -721,6 +721,163 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
     assert!(shell.contains("Message::UpdateAction(crate::UpdateAction::DismissRollbackNotice)"));
 }
 
+/// A launch-window row on this device whose live node speaks a contract the
+/// app refuses (#101).
+fn refused_workspace_row(id: &str, endpoint: &str) -> backend::HubNetwork {
+    backend::HubNetwork {
+        id: id.into(),
+        chain_id: id.into(),
+        name: "walk".into(),
+        endpoint: endpoint.into(),
+        endpoint_override: String::new(),
+        kind: "local".into(),
+        last_used: 0,
+        probed: true,
+        live: true,
+        height: 2033,
+        contract: backend::EXPECTED_NODE_CONTRACT + 1,
+        another_network: false,
+        phase: "serving".into(),
+        behind_by: 0,
+        netstack_failure: String::new(),
+    }
+}
+
+/// An armed updater in `phase`, its files under `dir`.
+fn armed_updater(
+    phase: app_update::Phase,
+    dir: &std::path::Path,
+) -> crate::backend::update::Updater {
+    use commonware_cryptography::{Signer as _, ed25519};
+    let keys = app_update::TrustedKeys {
+        pinned: app_update::PublicKey::of(&ed25519::PrivateKey::from_seed(1)),
+        successor: None,
+    };
+    crate::backend::update::Updater::new(
+        phase,
+        Some(keys),
+        crate::backend::update::UpdatePaths::under(dir),
+    )
+}
+
+/// THE UPDATE CHECK NEEDS NO CONSOLE (#101). With no console open the wall
+/// tick checks through the selected workspace row's own node even when its
+/// contract refuses the console — that refusal is what a newer release
+/// lifts. No selection, or a row another network answers for, carries
+/// nothing and nothing is checked.
+#[test]
+fn the_wall_tick_checks_through_a_refused_rows_node_without_a_console() {
+    let updates = tempfile::tempdir().unwrap();
+    let id = "walk#0e1b62f1";
+    let endpoint = "http://127.0.0.1:1";
+    let mut app = Ducktape::initial_state();
+    app.updater = Some(armed_updater(
+        app_update::Phase::Idle(app_update::Idle {
+            current: app_update::Sha::digest(b"installed"),
+            previous: None,
+            pinned_sequence: 2,
+        }),
+        updates.path(),
+    ));
+    assert!(!app.connected && app.console_win.is_none());
+    app.hub_networks = vec![refused_workspace_row(id, endpoint)];
+
+    // neither a console nor a selection: no carrier, no check
+    let _ = app.update(AppMessage::WallTick);
+    assert_eq!(app.update_carrier(), None);
+    assert!(!app.update_reading().unwrap().busy);
+
+    // a row where another network answers is never the carrier
+    app.hub_networks[0].another_network = true;
+    app.hub_networks[0].live = false;
+    app.hub_selected = id.into();
+    assert!(backend::selected_network_refuses(&app.hub_networks, id));
+    let _ = app.update(AppMessage::WallTick);
+    assert_eq!(app.update_carrier(), None);
+    assert!(!app.update_reading().unwrap().busy);
+
+    // the refused row's own node is: the tick starts the fetch through it
+    app.hub_networks = vec![refused_workspace_row(id, endpoint)];
+    assert!(backend::selected_network_refuses(&app.hub_networks, id));
+    assert_eq!(app.update_carrier().as_deref(), Some(endpoint));
+    let _ = app.update(AppMessage::WallTick);
+    assert!(app.update_reading().unwrap().busy, "a fetch is in flight");
+
+    // every job runs through the carrier, not the console's session alone
+    let jobs = rust_tokens(include_str!("../ui/app_update.rs"));
+    assert!(jobs.contains("run_job(self.update_carrier().unwrap_or_default(),"));
+    assert!(jobs.contains("updater.tick(self.wall_now,carrier)"));
+}
+
+/// A REFUSED ROW CARRIES THE OFFER (#101). The launch window draws the
+/// console's update strip under a row whose contract refuses the console: a
+/// staged release offers Restart to update there, and with nothing staged
+/// the strip offers the check itself. A row that opens draws no strip.
+#[test]
+fn a_refused_row_offers_the_update_on_the_launch_window() {
+    use gpui_kit::test::TestWindowExt as _;
+    let updates = tempfile::tempdir().unwrap();
+    let id = "walk#0e1b62f1";
+    let current = app_update::Sha::digest(b"installed");
+    let launch_window = |phase: app_update::Phase, contract: u32| {
+        let mut app = Ducktape::initial_state();
+        app.hub_step = HubStep::Networks;
+        app.hub_networks = vec![backend::HubNetwork {
+            contract,
+            ..refused_workspace_row(id, "http://127.0.0.1:1")
+        }];
+        app.hub_selected = id.into();
+        app.updater = Some(armed_updater(phase, updates.path()));
+        onboarding_window(app)
+    };
+    let staged = app_update::Phase::Staged(app_update::Staged {
+        current,
+        previous: None,
+        pinned_sequence: 2,
+        staged: app_update::Sha::digest(b"next"),
+        sequence: 3,
+        display: "2026.09.3+abcdef0".into(),
+        node_contract: backend::EXPECTED_NODE_CONTRACT + 1,
+        refused: None,
+    });
+    let idle = app_update::Phase::Idle(app_update::Idle {
+        current,
+        previous: None,
+        pinned_sequence: 2,
+    });
+    let refusing = backend::EXPECTED_NODE_CONTRACT + 1;
+
+    let (mut native, window, _) = launch_window(staged.clone(), refusing);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            let strip = window.within("update-strip");
+            assert!(strip.find("update-restart").visible());
+            assert!(strip.try_find("update-check").is_none());
+        })
+        .unwrap();
+
+    let (mut native, window, view) = launch_window(idle, refusing);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("update-restart").is_none());
+            assert!(window.within("update-strip").find("update-check").visible());
+            window.click("update-check", cx);
+            let reading = view.read(cx).test_state(cx).update_reading().unwrap();
+            assert!(reading.last_check.is_some(), "Check for updates checks");
+        })
+        .unwrap();
+
+    let (mut native, window, _) = launch_window(staged, backend::EXPECTED_NODE_CONTRACT);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("update-strip").is_none());
+        })
+        .unwrap();
+}
+
 /// `Rendered` is the launcher's contract, not the release channel's: an app
 /// the launcher started (`DUCKTAPE_RELEASE` + `DUCKTAPE_UPDATE_STATE`) on an
 /// install that pins no release key still settles a flipped release when

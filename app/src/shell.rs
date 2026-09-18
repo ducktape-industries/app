@@ -1211,6 +1211,10 @@ impl DesktopWindow {
                     );
                 }
                 let refused = crate::backend::selected_network_refuses(&networks, &selected);
+                // a refused row still carries the release channel (#101): the
+                // console's update strip, or the check itself, under the rows.
+                let update_strip = refused.then(|| state.launch_update_strip()).flatten();
+                let palette = design::palette(state.is_dark());
                 for network in networks {
                     let label = crate::backend::network_row_label(&network);
                     let picked = network.id == selected;
@@ -1258,6 +1262,13 @@ impl DesktopWindow {
                 // at the row's address, disables the open the way no
                 // selection does: the row's own line says why.
                 let no_selection = busy || selected.is_empty() || refused;
+                if let Some(strip) = update_strip {
+                    recent = recent.child(
+                        self.update_strip(strip, &colors, palette)
+                            .border_t_1()
+                            .border_color(colors.border),
+                    );
+                }
                 if !empty {
                     recent = recent.child(
                         div()
@@ -2089,7 +2100,11 @@ impl DesktopWindow {
             );
         }
         if let Some(strip) = update_strip {
-            content = content.child(self.update_strip(strip, &colors, palette));
+            content = content.child(
+                self.update_strip(strip, &colors, palette)
+                    .border_b_1()
+                    .border_color(colors.border),
+            );
         }
         if !error.is_empty() {
             content = content.child(
@@ -2156,13 +2171,15 @@ impl DesktopWindow {
     /// one-line band as the account notice. A staged release offers the
     /// restart; one its own qualify refused says why and offers nothing (a
     /// newer release supersedes it; Settings discards it); a rollback says
-    /// so until dismissed.
+    /// so until dismissed. The launch window draws this one band under a
+    /// contract-refused row, where `Check` offers the check. The caller
+    /// draws the hairline on the side the band meets its neighbour.
     fn update_strip(
         &self,
         strip: crate::backend::update::UpdateStrip,
         colors: &gpui_kit::component::ColorTokens,
         palette: &design::Palette,
-    ) -> gpui_kit::AnyElement {
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let (words, tone, action) = match strip {
@@ -2199,6 +2216,19 @@ impl DesktopWindow {
                     .ghost(),
                 ),
             ),
+            crate::backend::update::UpdateStrip::Check { words, busy } => (
+                words,
+                hsla_of(palette.surface_raised),
+                Some(
+                    self.action(
+                        "update-check",
+                        "Check for updates",
+                        Message::UpdateAction(crate::UpdateAction::CheckNow),
+                        busy,
+                    )
+                    .ghost(),
+                ),
+            ),
         };
         div()
             .id("update-strip")
@@ -2208,8 +2238,6 @@ impl DesktopWindow {
             .px_3()
             .h(px(32.))
             .flex_shrink_0()
-            .border_b_1()
-            .border_color(colors.border)
             .bg(tone)
             .child(
                 div()
@@ -2219,7 +2247,6 @@ impl DesktopWindow {
                     .child(words),
             )
             .children(action.map(|action| action.h_6().text_size(px(12.))))
-            .into_any_element()
     }
 
     /// The bell's popover: a card beside the rail, at the bell row it hangs
