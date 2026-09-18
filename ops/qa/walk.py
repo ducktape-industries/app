@@ -5,11 +5,14 @@ usage: walk.py <scenario.json> --out <dir> [--param k=v ...] [--keep-going]
 
 A scenario is {name, params?, rig, steps}. A `ui` step asks Jev (TypeSafe System
 One) a `choice` over the door's closed action list, acts, then asks a `noul` on
-the delta and the tree. `wait`, `shell`, `launch` and `stop` steps make no model
-call. Plain Python 3 stdlib; see README "QA walk" for the format and the rules.
+the delta and the tree. `wait`, `shell`, `launch`, `stop` and the `private_*`
+steps make no model call. Plain Python 3 stdlib; see README "QA walk" for the
+format and the rules.
 
 The Jev key comes from env JEV_API_KEY and goes nowhere but the request header.
 Rig secrets are resolved at run time and are written only as `{secret:<name>}`.
+Private text the door reveals (rig.private only) is held in memory and goes
+nowhere but back into a secure input of the app: no file, no request to Jev.
 Every child runs in its own session; teardown signals only the process groups
 this run recorded, and only while /proc/<pid>/exe still says they are ours.
 
@@ -32,7 +35,7 @@ from pathlib import Path
 JEV_URL = 'https://api.typesafe.ai/v1/systemone'
 PRICE = 0.042 / 1e6  # USD per Jev input token
 PASS_AT = 0.7
-KINDS = ('ui', 'wait', 'shell', 'launch', 'stop')
+KINDS = ('ui', 'wait', 'shell', 'launch', 'stop', 'private_remember', 'private_copy')
 # How the door writes a tree (PR #120), so the judge reads state by the door's rule.
 TREE = ('`screen` is the app\'s accessibility tree as a flat list of nodes {id, role, name, value?, state[], '
         'actions[], in}. `state` lists flags such as disabled, focused, selected, checked, expanded: a control '
@@ -60,6 +63,23 @@ def diff(before, after):
 def summary(delta):
     ids = lambda nodes: [n['id'] if isinstance(n, dict) else n for n in nodes][:8]
     return {k: {'n': len(v), 'ids': ids(v)} for k, v in delta.items()}
+
+
+def matches(spec, node):
+    """A {role, name, in, ids_prefix} matcher, by the door's wait rule: role exact
+    (any case), name a substring (any case), `in` a window or its view."""
+    scope = spec.get('in')
+    return ((not spec.get('role') or spec['role'].lower() == node['role'].lower())
+            and spec.get('name', '').lower() in node['name'].lower()
+            and (not scope or node['in'] == scope or node['in'].startswith(scope + '/'))
+            and node['id'].startswith(spec.get('ids_prefix', '')))
+
+
+def find(spec, tree):
+    """The id `spec` names: an id as is, else the first matching node's; None if none."""
+    if isinstance(spec, str):
+        return spec
+    return next((node['id'] for node in tree if matches(spec, node)), None)
 
 
 def start_time(pid):
@@ -98,6 +118,8 @@ class Rig:
             'XDG_RUNTIME_DIR': str(self.paths['run']), 'DUCKTAPE_HOME': str(self.paths['ducktape_home']),
             'DUCKTAPE_AX_DOOR': '0', 'XMODIFIERS': '@im=none',
             'DBUS_SESSION_BUS_ADDRESS': f"unix:path={self.paths['run']}/no-bus"}
+        if spec.get('private'):  # the door's `reveal`, for the private_* steps
+            self.env['DUCKTAPE_AX_DOOR_PRIVATE'] = '1'
         self.env.update({k: self.fill(v) for k, v in (spec.get('env') or {}).items()})
         if spec.get('display', True):
             self.start_display()
@@ -228,6 +250,11 @@ class Door:
     def act(self, node, action, value=None):
         return self.must('POST', '/act', {'id': node, 'action': action, 'value': value})
 
+    def reveal(self, node):
+        """The on-screen text of one private node. The caller keeps it in memory only."""
+        value = self.must('POST', '/reveal', {'id': node})
+        return value.get('value') or value.get('name') or ''
+
     def wait(self, spec, deadline_ms):
         body = {k: spec[k] for k in ('role', 'name', 'state', 'in', 'gone') if k in spec}
         return self.call('POST', '/wait', dict(body, deadline_ms=deadline_ms), timeout=deadline_ms / 1000 + 10)
@@ -278,6 +305,10 @@ class Walk:
         for n, step in enumerate(scenario['steps'], 1):
             if step.get('kind', 'ui') not in KINDS:
                 raise Refused(f'step {n}: kind must be one of {KINDS}')
+            if step.get('kind', '').startswith('private_') and not (scenario.get('rig') or {}).get('private'):
+                raise Refused(f'step {n}: a private step needs "rig": {{"private": true}}')
+            if step.get('kind') == 'private_copy' and step.get('how', 'type') not in ('type', 'set_value'):
+                raise Refused(f'step {n}: how must be "type" or "set_value"')
         self.out.mkdir(parents=True, exist_ok=True)
         for name in ('transcript.jsonl', 'ledger.jsonl', 'failing-tree.json', 'result.json'):
             (self.out / name).unlink(missing_ok=True)
@@ -291,6 +322,7 @@ class Walk:
         self.door = Door(self.rig.door_file())
         self.jev = Jev(self.out / 'ledger.jsonl', self.rig.redact)
         self.last_tree = None
+        self.memory = {}  # private_remember: never written, never sent
 
     def write(self, name, value, mode='w'):
         with open(self.out / name, mode) as handle:
@@ -456,6 +488,56 @@ class Walk:
             time.sleep(0.25)
         line['reason'] = 'the door did not answer by the deadline'
         return 'fail'
+
+    def step_private_remember(self, step, line):
+        """Reveals every node `match` names and holds its text under `as`, keyed by
+        the number that ends its id (`phrase-word/7` → 7)."""
+        tree = self.last_tree = self.door.tree()
+        held = {}
+        for node in (n for n in tree if matches(step['match'], n)):
+            number = re.search(r'(\d+)$', node['id'])
+            if not number:
+                raise Unjudged(f"{node['id']}: no number ends the id to remember it by")
+            held[int(number.group(1))] = self.door.reveal(node['id'])
+        self.memory[step['as']] = held
+        line['remembered'] = f"{step['as']}: {len(held)} items"
+        if not held:
+            line['reason'] = 'no node matched'
+            return 'fail'
+        return 'pass'
+
+    def step_private_copy(self, step, line):
+        """Puts private text into a secure input: revealed from `from` (ids or
+        matchers), or with `from_indexed` the remembered items whose numbers the
+        visible prompt asks for, in its order. Only how much is recorded."""
+        tree = self.last_tree = self.door.tree()
+        into = find(step['into'], tree)
+        target = next((n for n in tree if n['id'] == into), None)
+        if target is None or target['role'] != 'PasswordInput':
+            # anywhere else the door would show the text, and the judge would read it
+            line['reason'] = f'into {into}: not a showing secure input'
+            return 'fail'
+        if 'from_indexed' in step:
+            spec = step['from_indexed']
+            prompt = ' '.join(n['name'] for n in tree if matches(spec['prompt'], n))
+            asked = [int(k) for m in re.finditer(spec['regex'], prompt)
+                     for k in re.findall(r'\d+', m.group(1 if m.re.groups else 0))]
+            held = self.memory.get(spec['memory'], {})
+            missing = [k for k in asked if k not in held]
+            if not asked or missing:
+                line['reason'] = f"asked {asked}; not remembered in {spec['memory']}: {missing}"
+                return 'fail'
+            texts, source = [held[k] for k in asked], f"{spec['memory']} #{','.join(map(str, asked))}"
+        else:
+            ids = [find(s, tree) for s in (step['from'] if isinstance(step['from'], list) else [step['from']])]
+            if None in ids:
+                line['reason'] = 'from: a matcher found no node'
+                return 'fail'
+            texts, source = [self.door.reveal(i) for i in ids], ','.join(ids)
+        text = ' '.join(texts)
+        self.door.act(into, step.get('how', 'type'), text)
+        line['copied'] = f'private_copy from {source} into {into}: {len(text)} chars'
+        return 'pass'
 
     def step_stop(self, step, line):
         if self.rig.app is None:
