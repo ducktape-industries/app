@@ -18,11 +18,14 @@ use gpui_kit::{
     canvas, div, px, relative,
 };
 
+use gpui_kit::Role;
+
 use super::actions;
 use super::block::{
     Block, BlockAttrs, BlockContent, BlockContext, BlockId, BlockLayout, BlockRegistry, BlockSpec,
     BlockType, types,
 };
+use super::ui::Control as _;
 use gpui_kit::TestSupportExt as _;
 
 use super::gutter::DraggedBlock;
@@ -1376,6 +1379,7 @@ impl Render for NotionEditor {
                                 // the caret in a trailing paragraph.
                                 div()
                                     .id("trailing-space")
+                                    .control(Role::Button, "Add a block at the end")
                                     .test_support()
                                     .w_full()
                                     .h(cx.editor_theme().page_bottom)

@@ -11,8 +11,9 @@ use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{ActiveTheme, Sizable as _, h_flex, v_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, img, px, relative,
+    AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Toggled, Window, div, img, px,
+    relative,
 };
 
 use gpui_kit::TestSupportExt as _;
@@ -22,6 +23,7 @@ use super::block::{
     BlockType, SlashItem, leading_slot, types,
 };
 use super::theme::EditorTheme;
+use super::ui::Control as _;
 
 /// Register the node types the Notion-like editor ships with.
 pub fn init(cx: &mut App) {
@@ -400,6 +402,12 @@ impl BlockSpec for TaskList {
             ctx,
             div()
                 .id(("check", id.0 as usize))
+                .control(Role::CheckBox, "Done")
+                .aria_toggled(if checked {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
                 .size(ctx.theme.text_size)
                 .rounded(ctx.theme.radius_sm)
                 .border_1()
@@ -751,6 +759,7 @@ impl BlockSpec for Image {
             return Some(
                 div()
                     .id(("image-drop", id.0 as usize))
+                    .control(Role::Button, "Add image")
                     .w_full()
                     .h(ctx.theme.rems(7.5))
                     .rounded(ctx.theme.radius)
@@ -924,6 +933,8 @@ impl BlockSpec for Toggle {
             ctx,
             div()
                 .id(("toggle", id.0 as usize))
+                .control(Role::Button, if collapsed { "Expand" } else { "Collapse" })
+                .aria_expanded(!collapsed)
                 .size(ctx.theme.rems(1.25))
                 .flex()
                 .items_center()
@@ -1150,11 +1161,9 @@ fn row_control(
                 .group_hover(super::view::group_name(id), |this| this.visible())
         })
         .child(
-            Button::new(("drop-row", row))
+            super::ui::icon_button(("drop-row", row), "x", "Delete row")
                 .ghost()
                 .xsmall()
-                .icon(super::ui::Lucide("x"))
-                .tooltip("Delete row")
                 .on_click(move |_, window, cx| {
                     let _ = editor.update(cx, |editor, cx| editor.remove_row(id, row, window, cx));
                 }),
@@ -1185,6 +1194,7 @@ fn add_row_button(ctx: &BlockContext, cx: &mut App) -> AnyElement {
             cx.theme().muted_foreground,
         ))
         .id(("add-row", id.0 as usize))
+        .control(Role::Button, "Add row")
         .test_support()
         .on_click(move |_, window, cx| {
             let _ = editor.update(cx, |editor, cx| {
@@ -1223,6 +1233,7 @@ fn add_column_button(ctx: &BlockContext, cx: &mut App) -> AnyElement {
             cx.theme().muted_foreground,
         ))
         .id(("add-column", id.0 as usize))
+        .control(Role::Button, "Add column")
         .test_support()
         .on_click(move |_, window, cx| {
             let _ = editor.update(cx, |editor, cx| {

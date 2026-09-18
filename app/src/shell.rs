@@ -143,6 +143,7 @@ use gpui_kit::{
     AppContext as _, AsyncApp, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, Window,
 };
+use gpui_notion::editor::ui::Control as _;
 use std::collections::{BTreeMap, HashMap};
 
 struct Desktop {
@@ -747,7 +748,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::input::{Input, InputEvent, InputState};
+        use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
         if !self.inputs.contains_key(key) {
             let state = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -776,9 +777,17 @@ impl DesktopWindow {
                 },
             );
         }
-        Input::new(&self.inputs[key].state)
-            .aria_label(placeholder)
-            .into_any_element()
+        // A masked field is a password to assistive technology too, which
+        // keeps its value out of the accessibility tree.
+        let input = Input::new(&self.inputs[key].state)
+            .id(key)
+            .aria_label(placeholder);
+        if masked {
+            input.content_type(InputContentType::Password)
+        } else {
+            input
+        }
+        .into_any_element()
     }
 
     fn action(
@@ -790,13 +799,14 @@ impl DesktopWindow {
     ) -> gpui_kit::component::button::Button {
         use gpui_kit::component::Disableable as _;
         let model = self.model.clone();
-        gpui_kit::component::button::Button::new(key)
+        let button = gpui_kit::component::button::Button::new(key)
             .label(label)
             .disabled(disabled)
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 model.update(cx, |model, cx| model.dispatch(message.clone(), cx))
-            })
+            });
+        gpui_notion::editor::ui::disabled(button, disabled)
     }
 
     fn submit(
@@ -808,7 +818,7 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::component::button::Button {
         use gpui_kit::component::Disableable as _;
-        gpui_kit::component::button::Button::new(key)
+        let button = gpui_kit::component::button::Button::new(key)
             .label(label)
             .disabled(disabled)
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -816,7 +826,8 @@ impl DesktopWindow {
                 let message = message(this, cx);
                 this.model
                     .update(cx, |model, cx| model.dispatch(message, cx));
-            }))
+            }));
+        gpui_notion::editor::ui::disabled(button, disabled)
     }
 
     /// The toast, floating in the corner of its layout's positioned box until
@@ -846,7 +857,12 @@ impl DesktopWindow {
                 .border_color(theme.color_tokens().border)
                 .bg(theme.popover)
                 .shadow_md()
-                .child(div().flex_1().text_size(px(12.5)).child(toast))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.5))
+                        .child(Text::new("toast-message".into(), toast.into())),
+                )
                 .child(
                     self.action("toast-dismiss", "Dismiss", Message::DismissToast, false)
                         .ghost()
@@ -902,11 +918,13 @@ impl DesktopWindow {
                 .rounded(px(design::radius::CARD as f32))
                 .overflow_hidden()
         };
+        // A hint says where the step stands, so a screen reader reads it
+        // too: the sentence is its own identity.
         let hint = |text: String| {
             div()
                 .text_size(px(12.5))
                 .text_color(colors.muted_foreground)
-                .child(text)
+                .child(Text::new(ElementId::Name(text.clone().into()), text.into()))
         };
         let mut body = div().flex().flex_col().gap_4().w_full();
         body = match step {
@@ -1035,6 +1053,7 @@ impl DesktopWindow {
                 ));
                 let mut words = panel().flex().flex_col().p_3().gap_1();
                 for row in crate::backend::phrase_rows() {
+                    // shown on screen, so read aloud too: each word after its number
                     let word = |number: String, text: String| {
                         div()
                             .flex_1()
@@ -1046,9 +1065,19 @@ impl DesktopWindow {
                                     .text_size(px(12.))
                                     .map(mono_family)
                                     .text_color(colors.muted_foreground)
-                                    .child(number),
+                                    .child(Text::new(
+                                        ElementId::Name(format!("phrase-number/{number}").into()),
+                                        number.clone().into(),
+                                    )),
                             )
-                            .child(div().map(mono_family).child(text))
+                            .child(
+                                div()
+                                    .map(mono_family)
+                                    .child(Text::new(
+                                        ElementId::Name(format!("phrase-word/{number}").into()),
+                                        text.into(),
+                                    )),
+                            )
                     };
                     words = words.child(
                         div()
@@ -1850,7 +1879,7 @@ impl DesktopWindow {
             gpui_kit::component::Icon::new(gpui_kit::component::IconName::Search),
             "Search",
             ink,
-            false,
+            None,
             live,
         )
         .child(
@@ -1882,7 +1911,7 @@ impl DesktopWindow {
             gpui_kit::component::Icon::new(gpui_kit::component::IconName::Bell),
             bell_label,
             ink,
-            false,
+            None,
             live,
         )
         .when(bell_unread > 0, |row| {
@@ -1950,7 +1979,7 @@ impl DesktopWindow {
                     nav_icon(view),
                     label,
                     ink,
-                    selected,
+                    Some(selected),
                     true,
                 )
                 .when(bytes == TabBytes::Desktop, |row| {
@@ -1986,6 +2015,9 @@ impl DesktopWindow {
         // decides which (`on_open_account`); the row itself does not know.
         let account = div()
             .id("rail-account")
+            .control(Role::Button, format!("Account: {who}"))
+            .focusable()
+            .tab_stop(true)
             .flex()
             .items_center()
             .gap_2()
@@ -2129,7 +2161,12 @@ impl DesktopWindow {
                         )
                         .xsmall(),
                     )
-                    .child(div().flex_1().text_size(px(12.5)).child(error))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .child(Text::new("error-message".into(), error.into())),
+                    )
                     .child(
                         self.action("error-dismiss", "Dismiss", Message::DismissError, false)
                             .ghost()
@@ -2248,7 +2285,7 @@ impl DesktopWindow {
                     .flex_1()
                     .text_size(px(12.))
                     .text_color(colors.foreground)
-                    .child(words),
+                    .child(Text::new("update-words".into(), words.into())),
             )
             .children(action.map(|action| action.h_6().text_size(px(12.))))
     }
@@ -3065,19 +3102,37 @@ fn navigation_rows(label: &dyn Fn(&'static str) -> String) -> Vec<NavSection> {
     ]
 }
 
+/// One row of the rail, a control a keyboard reaches with Tab and presses
+/// with Enter or Space. `selected` is `Some` for a row that seats a view: a
+/// tab, reporting whether it is the open one. `None` is a row that acts: a
+/// button. Its label is its accessible name.
 fn rail_row(
     id: impl Into<gpui_kit::ElementId>,
     icon: gpui_kit::component::Icon,
     label: impl Into<gpui_kit::SharedString>,
     ink: RailInk,
-    selected: bool,
+    selected: Option<bool>,
     enabled: bool,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     use gpui_kit::component::Sizable as _;
     use gpui_kit::*;
     let RailInk { fg, muted, raised } = ink;
-    div()
+    let label = label.into();
+    let row = div()
         .id(id)
+        .control(
+            if selected.is_some() {
+                Role::Tab
+            } else {
+                Role::Button
+            },
+            label.clone(),
+        )
+        .when_some(selected, |row, selected| row.aria_selected(selected))
+        .focusable()
+        .tab_stop(true);
+    let selected = selected.unwrap_or(false);
+    gpui_notion::editor::ui::disabled(row, !enabled)
         .flex()
         .items_center()
         .gap_2()
@@ -3097,7 +3152,7 @@ fn rail_row(
         .when(!enabled, |row| row.opacity(0.5))
         .hover(move |style| style.bg(raised).text_color(fg))
         .child(icon.small())
-        .child(div().flex_1().min_w_0().truncate().child(label.into()))
+        .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
 /// A row's icon: the view's OWN `icons/tab.svg` once it is seated, else the
