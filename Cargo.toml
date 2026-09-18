@@ -63,6 +63,14 @@ zeroize = "1"
 wasmtime = "=46.0.3"
 libc = "0.2"
 
+# gpui-pre 0.3.5 + the headless accessibility tree, rev 9ab1a74f8adc5f274d68a9e2e02209cc9a95e852
+# of the private ducktape-industries/gpui-pre: the test window keeps the tree
+# it is sent and a window can be switched to build one with no assistive tech
+# attached, which the #114 `ax_contract` gate needs. Dies when the upstream
+# PR (pending; described in that repo's README) lands and gpui-kit takes it.
+[patch.crates-io]
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "9ab1a74f8adc5f274d68a9e2e02209cc9a95e852" }
+
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
 # itself is always built optimized. build-time only.

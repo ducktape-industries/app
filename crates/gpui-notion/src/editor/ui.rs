@@ -4,8 +4,9 @@
 use gpui_kit::component::button::Button;
 use gpui_kit::component::{ActiveTheme, ThemeStyled as _};
 use gpui_kit::{
-    App, Div, ElementId, InteractiveElement, Interactivity, IntoElement, Role, SharedString,
-    Stateful, StatefulInteractiveElement, Styled as _, div,
+    AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement, Interactivity,
+    IntoElement, ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement,
+    Styled as _, Window, div,
 };
 
 use super::theme::ActiveEditorTheme;
@@ -97,6 +98,34 @@ pub fn disabled<E: InteractiveElement>(element: E, disabled: bool) -> E {
     aria(element, |node| {
         node.a11y_synthetic_children(|tree| tree.parent_node().set_disabled())
     })
+}
+
+/// A text field as assistive technology meets it: one node, `id`, that Tab
+/// and the Focus action both land on. The kit's text inputs keep their tab
+/// stop on an inner element with no role, so Tab put focus where no node was
+/// and a screen reader read out the whole window, while their own node
+/// tracked a frame handle Tab never reaches. This node tracks the text's own
+/// `focus` handle, so the field stays one tab stop and focus on it is focus
+/// here, and hands SetValue to `set_value`. The caller draws `field` with no
+/// node of its own (`RoleOverride::Presentational`) and sets the role, the
+/// name and the states here.
+pub fn text_field(
+    id: impl Into<ElementId>,
+    focus: &FocusHandle,
+    set_value: impl Fn(String, &mut Window, &mut App) + 'static,
+    field: impl IntoElement,
+) -> Stateful<Div> {
+    // full width, as the kit draws the field it holds
+    div()
+        .id(id)
+        .w_full()
+        .track_focus(focus)
+        .on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
+            if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
+                set_value(value.to_string(), window, cx);
+            }
+        })
+        .child(field)
 }
 
 /// A row in a menu: fixed height, hover fill, rounded. In the tree as an

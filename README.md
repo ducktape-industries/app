@@ -41,3 +41,12 @@ dependency in the workspace root `Cargo.toml`:
 
 A build resolves those over the git protocol at the pinned branch; there is
 no vendoring and no submodule.
+
+## Gates
+
+Before a merge to `dev`:
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets -- -D warnings`
+- `cargo test --workspace`, with `DUCKTAPE_VIEWS_DIR` at the staged views and `DUCKTAPE_MODULES_DIR` at the pinned core's sim-modules set
+- `cargo test ax_contract`: every screen's accessibility tree, read headless (#114). `ax_contract_native` must pass; `ax_contract_views` (every staged view) runs with `-- --ignored` until wire epoch 9 gives editors a label.

@@ -14,7 +14,8 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Edges, Entity, EntityInputHandler as _, EventEmitter,
     Focusable as _, Hsla, InteractiveElement as _, IntoElement, Keystroke, MouseButton,
-    ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
+    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, div, px,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -438,7 +439,22 @@ impl Render for TextEditor {
             .when_some(family, |element, family| {
                 crate::shell::with_family(element, family)
             })
-            .child(Textarea::new(&self.input))
+            .child(
+                gpui_notion::editor::ui::text_field(
+                    SharedString::from(format!("{}/field", self.key)),
+                    &self.input.read(cx).focus_handle(cx),
+                    {
+                        let state = self.input.clone();
+                        move |value, window, cx| {
+                            state.update(cx, |state, cx| state.replace_all(value, window, cx))
+                        }
+                    },
+                    // the base Textarea draws no node of its own
+                    Textarea::new(&self.input),
+                )
+                .role(gpui_kit::Role::MultilineTextInput)
+                .when(self.fills, |field| field.h_full()),
+            )
     }
 }
 

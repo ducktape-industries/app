@@ -1371,15 +1371,13 @@ impl ViewTree {
                 .state
                 .update(cx, |state, cx| state.set_masked(*secure, window, cx));
         }
-        // An empty label is no name: leave it unset so it reads as missing.
-        // A secure field is a password, which keeps its value out of the tree.
+        // The field's one node is `ui::text_field`, carrying the mapping: an
+        // empty label is no name, left unset so it reads as missing; a secure
+        // field is a password, which keeps its value out of the tree.
         let accessible = accessible(node);
         let mut input = Input::new(&field.state)
             .id(key.clone())
             .disabled(options.disabled);
-        if let Some(name) = accessible.name {
-            input = input.aria_label(name);
-        }
         if accessible.role == Some(gpui_kit::Role::PasswordInput) {
             input = input.content_type(InputContentType::Password);
         }
@@ -1388,7 +1386,7 @@ impl ViewTree {
             false => style.active,
         };
         let mut input = decoration(
-            pad(dimensions(input, *width, None), options.padding),
+            pad(input, options.padding),
             style.utility.background.or(face.background),
             style.utility.border.or(face.border),
         );
@@ -1404,7 +1402,18 @@ impl ViewTree {
         if let Some(font) = &options.font {
             input = input.font_weight(font_weight(font.weight));
         }
-        input.into_any_element()
+        let field = gpui_notion::editor::ui::text_field(
+            SharedString::from(format!("{key}/field")),
+            &field.state.read(cx).focus_handle(cx),
+            {
+                let state = field.state.clone();
+                move |value, window, cx| {
+                    state.update(cx, |state, cx| state.replace_all(value, window, cx))
+                }
+            },
+            input.role(gpui_kit::component::RoleOverride::Presentational),
+        );
+        announce(dimensions(field, *width, None), accessible).into_any_element()
     }
 
     fn node(

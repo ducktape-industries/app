@@ -777,15 +777,34 @@ impl DesktopWindow {
                 },
             );
         }
-        // A masked field is a password to assistive technology too, which
-        // keeps its value out of the accessibility tree.
-        let input = Input::new(&self.inputs[key].state)
-            .id(key)
-            .aria_label(placeholder);
-        if masked {
-            input.content_type(InputContentType::Password)
-        } else {
-            input
+        use gpui_kit::{Focusable as _, StatefulInteractiveElement as _};
+        // One node for the field (`ui::text_field`). A masked field is a
+        // password to assistive technology too, which keeps its value out of
+        // the accessibility tree.
+        let state = &self.inputs[key].state;
+        let input = Input::new(state).id(key);
+        let input = match masked {
+            true => input.content_type(InputContentType::Password),
+            false => input,
+        };
+        let field = gpui_notion::editor::ui::text_field(
+            gpui_kit::SharedString::from(format!("{key}/field")),
+            &state.read(cx).focus_handle(cx),
+            {
+                let state = state.clone();
+                move |value, window, cx| {
+                    state.update(cx, |state, cx| state.replace_all(value, window, cx))
+                }
+            },
+            input.role(gpui_kit::component::RoleOverride::Presentational),
+        )
+        .aria_label(placeholder);
+        match masked {
+            true => field.role(gpui_kit::Role::PasswordInput),
+            false if window.is_a11y_active() => field
+                .role(gpui_kit::Role::TextInput)
+                .aria_value(state.read(cx).value().to_string()),
+            false => field.role(gpui_kit::Role::TextInput),
         }
         .into_any_element()
     }
