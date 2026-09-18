@@ -833,10 +833,11 @@ impl Ducktape {
                     (
                         self.connected_rpc.clone(),
                         self.huddle_channel.clone(),
+                        self.network_chain_id.clone(),
                         self.connect_generation,
                     ),
-                    |data: &(String, String, i64)| {
-                        crate::call::call_session(data.0.clone(), data.1.clone())
+                    |data: &(String, String, String, i64)| {
+                        crate::call::call_session(data.0.clone(), data.1.clone(), data.2.clone())
                     },
                 )
                 .map(AppMessage::CallEvent),

@@ -77,6 +77,7 @@ impl Ducktape {
                 crate::module_view::agents_view(
                     self.is_dark(),
                     self.connected,
+                    &self.network_chain_id,
                     &self.account_number,
                     &self.agents_open_run,
                     self.agents_opened,
@@ -98,6 +99,7 @@ impl Ducktape {
                 crate::module_view::explorer_view(
                     self.is_dark(),
                     self.connected,
+                    &self.network_chain_id,
                     self.block_height,
                     &crate::backend::sync_label(
                         &self.node_phase,
@@ -111,6 +113,7 @@ impl Ducktape {
                 crate::module_view::node_view(
                     self.is_dark(),
                     self.connected,
+                    &self.network_chain_id,
                     &self.status,
                     &self.node_data_dir,
                     self.wall_now,
@@ -118,17 +121,26 @@ impl Ducktape {
                 AppMessage::NodeViewEvent,
             ),
             "members" => (
-                crate::module_view::members_view(self.is_dark(), self.connected),
+                crate::module_view::members_view(
+                    self.is_dark(),
+                    self.connected,
+                    &self.network_chain_id,
+                ),
                 AppMessage::MembersViewEvent,
             ),
             "governance" => (
-                crate::module_view::governance_view(self.is_dark(), self.connected),
+                crate::module_view::governance_view(
+                    self.is_dark(),
+                    self.connected,
+                    &self.network_chain_id,
+                ),
                 AppMessage::GovernanceViewEvent,
             ),
             "settings" => (
                 crate::module_view::settings_view(
                     self.is_dark(),
                     self.connected,
+                    &self.network_chain_id,
                     self.loading,
                     &self.status,
                     self.mutation_phase,

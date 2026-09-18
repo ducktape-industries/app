@@ -62,7 +62,20 @@ pub struct SettingsFacts {
     pub endpoint: EndpointFacts,
 }
 
-/// The NETWORK card's Data dir row.
+/// The Node overview's data directory: the directory of the workspace on this
+/// device that serves `endpoint` under `home`, else none. A remote node keeps
+/// its data on its own machine, and the ducktape home is no node's directory —
+/// naming it would tell the reader a path on this device is the node's.
+pub(crate) fn data_dir_serving(
+    prefs: &serde_json::Value,
+    home: Option<&std::path::Path>,
+    endpoint: &str,
+) -> String {
+    home.and_then(|home| workspace_serving(prefs, home, endpoint))
+        .map(|(_, dir)| dir.display().to_string())
+        .unwrap_or_default()
+}
+
 /// Load the settings facts: the local user key's location and state, and the
 /// workspace directory.
 pub async fn load_settings_facts(
@@ -76,10 +89,11 @@ pub async fn load_settings_facts(
             Err(_) => ("(unset)".to_string(), "unlocatable".to_string()),
             Ok(path) => (path.display().to_string(), key_state_of(&path)),
         };
-        let data_dir = workspace_at(&rpc)
-            .map(|(_, dir)| dir.display().to_string())
-            .or_else(|| ducktape_home().map(|home| home.display().to_string()))
-            .unwrap_or_default();
+        let data_dir = data_dir_serving(
+            &read_prefs(),
+            ducktape_home().as_deref(),
+            &canonical_endpoint(rpc.clone()),
+        );
         Ok::<_, String>(SettingsFacts {
             generation,
             key_path,

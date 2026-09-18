@@ -76,13 +76,23 @@ pub(crate) fn set_video_source(source: &str) {
     control("source", source.into());
 }
 
+/// The call view's session facts: the room, the connected chain, and the
+/// two controls the shell moves (`muted`, `source`) from their resting values.
+pub(crate) fn call_props(channel_id: &str, chain: &str) -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "channel": channel_id, "chain": chain, "muted": false, "source": "off"
+    }))
+    .expect("call properties")
+}
+
 /// The shell's explicit join action selects its deployed companion view.
 /// The same background runtime is available to arbitrary deployed views.
-pub fn call_session(rpc: String, channel_id: String) -> BoxStream<'static, CallEvent> {
-    let props = serde_json::to_vec(
-        &serde_json::json!({"channel": channel_id, "muted": false, "source": "off"}),
-    )
-    .expect("call properties");
+pub fn call_session(
+    rpc: String,
+    channel_id: String,
+    chain: String,
+) -> BoxStream<'static, CallEvent> {
+    let props = call_props(&channel_id, &chain);
     match crate::module_view::background::start("call", props, &rpc) {
         Ok(session) => {
             *controls().lock().expect("session controls") = Some(session.input.clone());
