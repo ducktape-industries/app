@@ -248,7 +248,7 @@ async fn tick_drives_fetch_then_download_while_connected() {
         UpdatePaths::under(updates.path()),
     );
 
-    assert_eq!(updater.tick(1_000, false), None, "not connected: no check");
+    assert_eq!(updater.tick(1_000, false), None, "no carrier: no check");
     assert_eq!(updater.tick(1_000, true), Some(Job::Fetch));
     assert_eq!(updater.tick(1_001, true), None, "a fetch is in flight");
 

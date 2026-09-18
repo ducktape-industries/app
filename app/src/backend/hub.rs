@@ -780,6 +780,21 @@ pub fn selected_network_refuses(networks: &[HubNetwork], id: &str) -> bool {
         .is_some_and(contract_refuses)
 }
 
+/// The endpoint the release channel is read through while no console is
+/// open: the selected row's, when it is a workspace on this device whose own
+/// node answered — contract refused or not. No own-node check is needed for
+/// the carrier: every byte it serves is verified under the pinned release key
+/// ([`super::update::run_job`]), so a node the console refuses still carries
+/// the release that fixes the refusal. A remote row, a dead or unprobed one
+/// and one where another network answers carry nothing.
+pub fn update_carrier(networks: &[HubNetwork], id: &str) -> Option<String> {
+    networks
+        .iter()
+        .find(|row| row.id == id)
+        .filter(|row| row.kind == "local" && row.probed && row.live && !row.another_network)
+        .map(|row| row.endpoint.clone())
+}
+
 /// Probe every known network's endpoint, emitting one reading per row as it
 /// answers. Bounded: one `/v1/status` with a short timeout per endpoint.
 pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
@@ -1367,6 +1382,47 @@ mod tests {
         // a node serving no chain is not this row's node either.
         let rows = apply_network_probe(rows, answer("walk#37589218", ""));
         assert!(rows[0].another_network && !rows[0].live);
+        assert_eq!(update_carrier(&rows, "walk#37589218"), None);
+    }
+
+    /// THE UPDATE CHECK NEEDS NO CONSOLE (#101). The selected workspace row
+    /// whose own node answers carries the release channel even when its
+    /// contract refuses the console; a remote, a dead, an unprobed row and one
+    /// where another network answers carry nothing, nor does no selection.
+    #[test]
+    fn only_a_live_selected_workspace_row_carries_the_update_check() {
+        let id = "walk#0e1b62f1";
+        let unprobed = vec![workspace_row(id)];
+        assert_eq!(update_carrier(&unprobed, id), None);
+        let refused = apply_network_probe(
+            unprobed,
+            HubProbe {
+                contract: EXPECTED_NODE_CONTRACT + 1,
+                ..answer(id, id)
+            },
+        );
+        assert!(selected_network_refuses(&refused, id));
+        assert_eq!(
+            update_carrier(&refused, id).as_deref(),
+            Some("http://127.0.0.1:8844")
+        );
+        assert_eq!(update_carrier(&refused, ""), None);
+        let dead = apply_network_probe(
+            refused.clone(),
+            HubProbe {
+                live: false,
+                ..answer(id, "")
+            },
+        );
+        assert_eq!(update_carrier(&dead, id), None);
+        let sibling = apply_network_probe(refused.clone(), answer(id, "walk#37589218"));
+        assert!(sibling[0].another_network);
+        assert_eq!(update_carrier(&sibling, id), None);
+        let remote = vec![HubNetwork {
+            kind: "remote".into(),
+            ..refused[0].clone()
+        }];
+        assert_eq!(update_carrier(&remote, id), None);
     }
 
     /// The row's own node answering sets its reading; a saved remote has no

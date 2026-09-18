@@ -591,9 +591,29 @@ impl Ducktape {
     pub(crate) fn update_reading(&self) -> Option<crate::backend::update::UpdateReading> {
         self.updater.as_ref().map(|updater| updater.reading())
     }
+    /// The node the release channel is read through: the console's session
+    /// while one is connected, else the launch window's selected workspace
+    /// row whose own node answers, contract refused or not
+    /// ([`crate::backend::update_carrier`]). `None`: nothing to check through.
+    pub(crate) fn update_carrier(&self) -> Option<String> {
+        if self.connected {
+            return Some(self.connected_rpc.clone());
+        }
+        crate::backend::update_carrier(&self.hub_networks, &self.hub_selected)
+    }
     /// The console's update strip, if a phase draws one.
     pub(crate) fn update_strip(&self) -> Option<crate::backend::update::UpdateStrip> {
         crate::backend::update::strip_of(self.update_reading().as_ref())
+    }
+    /// The launch window's update strip, drawn under a refused row. The check
+    /// is offered only where it can run: a row another network answers for
+    /// carries nothing, so it gets the console's strip alone.
+    pub(crate) fn launch_update_strip(&self) -> Option<crate::backend::update::UpdateStrip> {
+        let reading = self.update_reading();
+        match self.update_carrier() {
+            Some(_) => crate::backend::update::launch_strip_of(reading.as_ref(), self.wall_now),
+            None => crate::backend::update::strip_of(reading.as_ref()),
+        }
     }
     /// The Settings "Updates" section's facts.
     pub(crate) fn update_facts(&self) -> crate::backend::update::UpdateFacts {
@@ -825,7 +845,9 @@ impl Ducktape {
         if self.huddle_joined {
             subscriptions.push(Subscription::run(crate::shell::seconds).map(|()| AppMessage::Tick));
         }
-        if self.console_win.is_some() {
+        // the launch window keeps the wall tick too: its selected row can
+        // carry the update check a refused contract keeps the console from.
+        if self.console_win.is_some() || self.onboarding_win.is_some() {
             subscriptions
                 .push(Subscription::run(crate::shell::seconds).map(|()| AppMessage::WallTick));
         }

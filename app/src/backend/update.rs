@@ -55,7 +55,7 @@ use super::{RpcClient, base64_decode, rpc_client};
 #[path = "update_stage.rs"]
 mod stage;
 
-/// How often a connected app asks the network for the manifest.
+/// How often the app asks the network for the manifest.
 pub(crate) const CHECK_INTERVAL_SECS: i64 = 60 * 60;
 /// The `read` lane's page cap (duckfs `MAX_READ_BYTES`).
 const PAGE_LEN: u64 = 1024 * 1024;
@@ -237,13 +237,16 @@ impl Updater {
         &self.paths
     }
 
-    /// The wall tick: a connected app checks once per [`CHECK_INTERVAL_SECS`]
-    /// and never while a job is running. Returns the job to start, if any.
-    pub fn tick(&mut self, now: i64, connected: bool) -> Option<Job> {
+    /// The wall tick: while some node can carry the channel — the console's,
+    /// or the launch window's selected workspace row's, whether or not its
+    /// contract refuses the console ([`super::update_carrier`]) — the app
+    /// checks once per [`CHECK_INTERVAL_SECS`] and never while a job is
+    /// running. Returns the job to start, if any.
+    pub fn tick(&mut self, now: i64, carrier: bool) -> Option<Job> {
         let due = self
             .last_check
             .is_none_or(|last| now - last >= CHECK_INTERVAL_SECS);
-        let checks_now = connected && due;
+        let checks_now = carrier && due;
         if !checks_now {
             return None;
         }
@@ -484,12 +487,15 @@ fn host_releases_dir(updates_dir: &Path) -> Option<PathBuf> {
 
 /// The strip across the top of the console: an update ready to restart
 /// into, a staged one its own qualify refused, or a rollback the reader has
-/// not dismissed.
+/// not dismissed. The launch window draws the same strip under a row whose
+/// contract refuses the console, and `Check` — the channel's last word and
+/// the check itself — when nothing else ([`launch_strip_of`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateStrip {
     Ready { display: String },
     Refused { display: String, reason: String },
     RolledBack { failed: String, reason: String },
+    Check { words: String, busy: bool },
 }
 
 /// The strip a phase draws, if any.
@@ -513,6 +519,32 @@ pub fn strip_of(reading: Option<&UpdateReading>) -> Option<UpdateStrip> {
             None
         }
     }
+}
+
+/// The strip under a launch-window row whose contract refuses the console:
+/// the console's own strip when a phase draws one, else the check — Settings'
+/// Check now is inside that console, and a newer release is what lifts the
+/// refusal.
+pub fn launch_strip_of(reading: Option<&UpdateReading>, now: i64) -> Option<UpdateStrip> {
+    let reading = reading?;
+    if let Some(strip) = strip_of(Some(reading)) {
+        return Some(strip);
+    }
+    let words = match (&reading.phase, reading.busy) {
+        (Phase::Downloading(downloading), true) => {
+            format!("Downloading Ducktape {}…", downloading.display)
+        }
+        (_, true) => "Checking for updates…".into(),
+        (_, false) => match (note_words(reading), reading.last_check) {
+            (note, _) if !note.is_empty() => note,
+            (_, None) => "Not checked for updates yet".into(),
+            (_, last) => format!("Checked for updates {}", checked_words(last, now)),
+        },
+    };
+    Some(UpdateStrip::Check {
+        words,
+        busy: reading.busy,
+    })
 }
 
 fn rollback_words(reason: RollbackReason) -> &'static str {

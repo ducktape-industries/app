@@ -1263,10 +1263,11 @@ impl Ducktape {
     }
     fn on_wall_tick(&mut self) -> Task<AppMessage> {
         self.wall_now = crate::backend::current_wall_seconds();
+        let carrier = self.update_carrier().is_some();
         let Some(updater) = self.updater.as_mut() else {
             return Task::none();
         };
-        let Some(job) = updater.tick(self.wall_now, self.connected) else {
+        let Some(job) = updater.tick(self.wall_now, carrier) else {
             return Task::none();
         };
         self.run_update_job(job)
@@ -1315,8 +1316,9 @@ impl Ducktape {
         };
         self.run_update_job(job)
     }
-    /// One update job against the connected node; its answer comes back as
-    /// `UpdateJobReplied`.
+    /// One update job against the carrier ([`Self::update_carrier`]); its
+    /// answer comes back as `UpdateJobReplied`. With none, a job that needs a
+    /// node answers nothing and the next check is an interval away.
     fn run_update_job(&self, job: crate::backend::update::Job) -> Task<AppMessage> {
         let Some(updater) = self.updater.as_ref() else {
             return Task::none();
@@ -1326,7 +1328,7 @@ impl Ducktape {
         };
         Task::perform(
             crate::backend::update::run_job(
-                self.connected_rpc.to_owned(),
+                self.update_carrier().unwrap_or_default(),
                 keys.clone(),
                 updater.paths().clone(),
                 job,
