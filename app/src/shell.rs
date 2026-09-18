@@ -934,16 +934,26 @@ impl DesktopWindow {
             }
             self.input_step = Some(step);
         }
+        // A heading is a node of its own, named by its words, so a screen
+        // reader and the test door find what a screen is (#114). The id is
+        // the heading's place, not its words.
+        let heading = |id: &'static str, level: usize, text: &'static str| {
+            div()
+                .id(id)
+                .role(gpui_kit::Role::Heading)
+                .aria_level(level)
+                .aria_label(text)
+                .child(text)
+        };
         let hero = |title: &'static str, subtitle: &'static str| {
             div()
                 .flex()
                 .flex_col()
                 .gap_1()
                 .child(
-                    div()
+                    heading("hero-title", 1, title)
                         .text_size(px(design::type_scale::TITLE as f32))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
+                        .font_weight(FontWeight::SEMIBOLD),
                 )
                 .child(
                     div()
@@ -1239,10 +1249,9 @@ impl DesktopWindow {
                         .flex()
                         .justify_between()
                         .child(
-                            div()
+                            heading("networks-saved", 2, "Saved networks")
                                 .text_size(px(12.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Saved networks"),
+                                .font_weight(FontWeight::MEDIUM),
                         )
                         .child(
                             div()
@@ -1261,10 +1270,9 @@ impl DesktopWindow {
                             .flex_col()
                             .gap_1()
                             .child(
-                                div()
+                                heading("networks-empty", 2, "No networks yet")
                                     .text_size(px(15.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("No networks yet"),
+                                    .font_weight(FontWeight::MEDIUM),
                             )
                             .child(
                                 div()
@@ -1695,10 +1703,9 @@ impl DesktopWindow {
                                     .child("D"),
                             )
                             .child(
-                                div()
+                                heading("launch-title", 1, "Ducktape")
                                     .text_size(px(13.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Ducktape"),
+                                    .font_weight(FontWeight::SEMIBOLD),
                             )
                             .on_mouse_down(gpui_kit::MouseButton::Left, |_, window, _| {
                                 window.start_window_move()
