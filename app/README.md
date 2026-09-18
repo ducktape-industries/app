@@ -179,15 +179,15 @@ takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
    export DUCKTAPE_NOTARY_KEY_ID=XXXXXXXXXX
    export DUCKTAPE_NOTARY_ISSUER=00000000-0000-0000-0000-000000000000
    cargo build --release -p ducktape-app -p app-launcher
-   ops/bundle-app-macos.sh   # refuses if DUCKTAPE_CODESIGN_IDENTITY is unset
+   ops/bundle-app-macos.sh
    ```
 
    The three `DUCKTAPE_NOTARY_*` go together: all three set adds `xcrun notarytool
    submit --wait` on the DMG followed by `xcrun stapler staple`, so the ticket
    travels inside the image and a first launch with no network still passes.
    Set without `DUCKTAPE_CODESIGN_IDENTITY`, the packaging script refuses before the upload
-   rather than after Apple's wait. Set none and the build prints the identity
-   it used and says what to export to notarize.
+   rather than after Apple's wait. Set none and nothing is notarized: the
+   bundle and the DMG are signed with the identity, ad-hoc when it is unset.
 
 4. **Verify** — on the built artifacts, before shipping them:
 
