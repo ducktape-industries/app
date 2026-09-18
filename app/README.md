@@ -59,8 +59,10 @@ of the `ducktape-industries/ducktape-views` repo
 loads from a file at runtime (`src/module_view.rs`).
 Run `ops/build-views.sh` in that repo to stage each view as
 `target/views/<module>_view.wasm`, then point `DUCKTAPE_VIEWS_DIR` at that
-`target/views` directory. The native packaging script carries the
-directory into `Ducktape.app` as resources linked beside the executable, and
+`target/views` directory. The native packaging script
+(`ops/bundle-app-macos.sh`) reads the same variable, falls back to this
+repo's `target/views` when it is unset, and carries the directory into
+`Ducktape.app` as resources linked beside the executable, and
 the Linux install path stages it beside the binary in the release it seeds).
 A tab whose view is not staged says so in its place.
 
@@ -136,9 +138,9 @@ their shared wire vocabulary.
 
 `cargo build --release -p ducktape-app -p app-launcher && ops/bundle-app-macos.sh`
 builds `Ducktape.app` and `Ducktape-<version>-<arch>.dmg` under
-`target/app-bundle/` and signs both **ad-hoc**, which runs on the machine that
-built it and nowhere else — Gatekeeper refuses an ad-hoc bundle that arrived
-over the network. A bundle that leaves this Mac is signed with a Developer ID
+`target/app-bundle/`, carrying the views `DUCKTAPE_VIEWS_DIR` stages, and
+signs both **ad-hoc**, which runs on the machine that built it and nowhere
+else — Gatekeeper refuses an ad-hoc bundle that arrived over the network. A bundle that leaves this Mac is signed with a Developer ID
 identity and notarized by Apple. `ops/bundle-app-macos.sh` does both itself, off four
 environment variables exported into the shell before the build.
 
@@ -178,6 +180,7 @@ takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
    export DUCKTAPE_NOTARY_KEY="$HOME/.appstoreconnect/AuthKey_XXXXXXXXXX.p8"
    export DUCKTAPE_NOTARY_KEY_ID=XXXXXXXXXX
    export DUCKTAPE_NOTARY_ISSUER=00000000-0000-0000-0000-000000000000
+   export DUCKTAPE_VIEWS_DIR=../ducktape-views/target/views
    cargo build --release -p ducktape-app -p app-launcher
    ops/bundle-app-macos.sh
    ```
@@ -197,7 +200,14 @@ takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
    codesign -dv --verbose=4 target/app-bundle/Ducktape.app   # Authority + TeamIdentifier
    ```
 
-5. **Package and publish.** `make release-app` is `app-release` with all
+5. **Package and publish.** This step lives in the ducktape core repo
+   (`ducktape-industries/ducktape`): `ops/release/archive.sh` and
+   `ops/release/publish.sh` are its
+   [`ops/release/`](https://github.com/ducktape-industries/ducktape/tree/main/ops/release)
+   scripts, run from a core checkout. `make release-app` and
+   `make publish-app` were core Makefile targets the split removed: until they
+   return, run the two scripts directly; what follows is what each target
+   wrapped. `make release-app` is `app-release` with all
    three `DUCKTAPE_NOTARY_*` required (every release a network offers is
    notarized), the ticket stapled to the bundle, and `ops/release/archive.sh`
    packing it into `target/release-archive/Ducktape-<sha7>-macos-<arch>.tar.zst`
@@ -222,7 +232,8 @@ The other signing path keeps the Developer ID off this Mac entirely: an
 airlock gateway (`bin/airlock-gateway`, in a confidential VM) holds the
 certificate, the PKCS#12 password and the App Store Connect key as an
 `apple-codesign` credential, and `POST /sign/macos-bundle` signs, notarizes
-and staples a bundle inside the enclave. `make release-app` takes it with
+and staples a bundle inside the enclave. `make release-app` (core's, step 5
+above) takes it with
 `DUCKTAPE_SIGN_VIA=airlock`; there is exactly ONE path per environment, and
 `DUCKTAPE_SIGN_VIA=airlock` set together with `DUCKTAPE_CODESIGN_IDENTITY` or
 any `DUCKTAPE_NOTARY_*` is refused as `sign_path_conflict` before anything
