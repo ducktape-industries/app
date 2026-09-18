@@ -174,6 +174,76 @@ class WalkTest(unittest.TestCase):
         self.assertAlmostEqual(result['usd'], 0.063)
         self.assertEqual(json.loads((self.out / 'result.json').read_text())['usd'], result['usd'])
 
+    def test_private_text_fills_the_asked_words_and_goes_nowhere_else(self):
+        words = {n: f'SECRETword{n}x' for n in range(1, 7)}
+        phrase = [{'id': f'onboarding:phrase-word/{n}', 'role': 'Label', 'name': '•••', 'value': '•••',
+                   'state': [], 'actions': [], 'in': 'onboarding'} for n in (1, 4, 2, 5, 3, 6)]  # two columns
+        saved = {'id': 'onboarding:phrase-saved', 'role': 'Button', 'name': 'I wrote it down',
+                 'state': [], 'actions': ['press'], 'in': 'onboarding'}
+        prompt = {'id': 'onboarding:Type words 5, 2 and 3', 'role': 'Label',
+                  'name': 'Type words 5, 2 and 3 — in that order, separated by spaces.',
+                  'state': [], 'actions': [], 'in': 'onboarding'}
+        answer = {'id': 'onboarding:phrase-answer', 'role': 'PasswordInput', 'name': 'Requested words',
+                  'value': '•••', 'state': [], 'actions': ['type', 'set_value'], 'in': 'onboarding'}
+        screen = {'nodes': phrase + [saved]}
+
+        def route(method, path, headers, body):
+            if path.startswith('/tree'):
+                return 200, screen['nodes']
+            if path.startswith('/actions'):
+                return 200, [{'id': n['id'], 'action': a, 'label': f"{n['role']} {n['name']}"}
+                             for n in screen['nodes'] for a in n['actions']]
+            request = json.loads(body)
+            if path == '/reveal':
+                node = next(n for n in screen['nodes'] if n['id'] == request['id'])
+                if node['role'] == 'PasswordInput':
+                    return 403, {'error': 'secure input'}
+                return 200, dict(node, value=words[int(node['id'].rsplit('/', 1)[1])])
+            if request['id'] == saved['id']:
+                screen['nodes'] = [prompt, answer]
+            return 200, {'appeared': [], 'disappeared': [], 'changed': []}
+
+        door = Server(route)
+        steps = [{'kind': 'private_remember', 'say': 'remember the phrase',
+                  'match': {'ids_prefix': 'onboarding:phrase-word/'}, 'as': 'phrase'},
+                 {'say': 'press I wrote it down', 'expect': 'the confirm step asks for words'},
+                 {'kind': 'private_copy', 'say': 'type the asked words', 'how': 'type',
+                  'from_indexed': {'memory': 'phrase', 'prompt': {'name': 'Type words', 'in': 'onboarding'},
+                                   'regex': r'Type words ([0-9, and]+)'},
+                  'into': {'role': 'PasswordInput', 'ids_prefix': 'onboarding:phrase-answer'}},
+                 {'kind': 'private_copy', 'say': 'a secure input is never revealed',
+                  'from': 'onboarding:phrase-answer', 'into': 'onboarding:phrase-answer'},
+                 {'kind': 'private_copy', 'say': 'never into a field the door shows',
+                  'from': 'onboarding:phrase-word/1', 'into': prompt['id']}]
+        judge = fake_jev([jev('choice', {'choice': 'o0'}), jev('noul', {'noul': 0.9})])
+        with self.assertRaises(walk.Refused):  # a private step needs the rig to ask for reveal
+            walk.Walk({'name': 't', 'rig': {'display': False}, 'steps': steps}, self.out, {})
+        with mock.patch.object(walk, 'JEV_URL', judge.url('/v1/systemone')), \
+                mock.patch.dict(os.environ, {'JEV_API_KEY': 'test-key'}):
+            run = walk.Walk({'name': 't', 'rig': {'display': False, 'private': True}, 'steps': steps},
+                            self.out, {}, keep_going=True)
+            self.assertEqual(run.rig.env['DUCKTAPE_AX_DOOR_PRIVATE'], '1')
+            run.rig.door_file().parent.mkdir(parents=True, exist_ok=True)
+            run.rig.door_file().write_text(json.dumps({'port': door.server_address[1], 'token': TOKEN}))
+            run.run()
+        for server in (door, judge):
+            server.shutdown()
+            server.server_close()
+        acts = [json.loads(c[2]) for c in door.calls if c[1] == '/act']
+        self.assertEqual(acts[-1], {'id': answer['id'], 'action': 'type',
+                                    'value': 'SECRETword5x SECRETword2x SECRETword3x'})
+        lines = self.lines('transcript.jsonl')
+        self.assertEqual([l['verdict'] for l in lines], ['pass', 'pass', 'pass', 'unjudged', 'fail'])
+        self.assertEqual(lines[2]['copied'], f"private_copy from phrase #5,2,3 into {answer['id']}: 38 chars")
+        self.assertIn('403', lines[3]['reason'])
+        self.assertIn('not a showing secure input', lines[4]['reason'])
+        self.assertTrue(judge.calls, 'the judge was asked while the phrase was held')
+        for method, path, body in judge.calls:
+            self.assertNotIn('SECRET', body, 'a Jev request carried private text')
+        for path in self.out.rglob('*'):
+            if path.is_file():
+                self.assertNotIn('SECRET', path.read_text(errors='replace'), path)
+
     def test_teardown_signals_only_recorded_processes_of_its_own(self):
         rig = walk.Rig(self.out / 'rig', {'display': False}, {})
         sleeper = rig.paths['bin'] / 'sleep'

@@ -14,7 +14,8 @@
 //! focus-handle and the kit's type-path segments never count: they change per
 //! run or say nothing. Never an AccessKit NodeId, never a position. A password field's value and a node marked
 //! [`gpui_notion::editor::ui::AX_PRIVATE`] (the recovery-phrase words) are
-//! masked here, before anything leaves the process.
+//! masked here, before anything leaves the process. Only a rig that also sets
+//! `DUCKTAPE_AX_DOOR_PRIVATE=1` may ask for one private node's text ([`reveal`]).
 use futures::StreamExt as _;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, NodeId, Role, Toggled, TreeId};
 use gpui_kit::{AnyWindowHandle, App, AsyncApp, ElementId, Window};
@@ -467,6 +468,45 @@ pub(crate) enum Request {
     Actions(Filter),
     Act(Act),
     Wait(Wait),
+    Reveal(Reveal),
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub(crate) struct Reveal {
+    id: String,
+}
+
+/// `POST /reveal`, served only with `DUCKTAPE_AX_DOOR_PRIVATE=1`: the text a
+/// person reads on the showing node `id` of window `name`, which must be
+/// marked [`gpui_notion::editor::ui::AX_PRIVATE`]. A secure input is refused:
+/// dots are all a person ever sees of it.
+pub(crate) fn reveal(name: &str, window: &Window, id: &str) -> Reply {
+    let shown = snapshot(name, window, false);
+    let Some(found) = shown.iter().find(|node| node.id == id) else {
+        return Reply::new(
+            404,
+            json!({ "error": "no such node", "nearest": nearest(id, &shown) }),
+        );
+    };
+    let node = window
+        .a11y_tree()
+        .and_then(|update| update.nodes.iter().find(|(node, _)| *node == found.node))
+        .map(|(_, node)| node);
+    match node {
+        Some(node) if node.role() == Role::PasswordInput => Reply::new(
+            403,
+            json!({ "error": "a secure input is never shown on screen" }),
+        ),
+        Some(node) if node.class_name() == Some(gpui_notion::editor::ui::AX_PRIVATE) => {
+            Reply::ok(json!({
+                "id": id,
+                "role": found.role,
+                "name": node.label().unwrap_or_default(),
+                "value": node.value(),
+            }))
+        }
+        _ => Reply::new(400, json!({ "error": "not private: the tree shows it" })),
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -590,6 +630,20 @@ async fn answer(
                 }
                 cx.background_executor().timer(POLL).await;
             }
+        }
+        Request::Reveal(Reveal { id }) => {
+            // a window's tree is switched on by the read
+            let _ = read(windows, &all, false, cx).await;
+            let name = id.split_once(':').map_or("", |(name, _)| name).to_owned();
+            cx.update(|cx| windows(cx))
+                .into_iter()
+                .find_map(|(window, handle)| (window == name).then_some(handle))
+                .and_then(|handle| {
+                    handle
+                        .update(cx, |_, window, _| reveal(&name, window, &id))
+                        .ok()
+                })
+                .unwrap_or_else(|| Reply::new(404, json!({ "error": "no such window" })))
         }
     }
 }
@@ -741,12 +795,18 @@ pub(crate) fn write_door_file(path: &Path, door: &DoorFile) -> std::io::Result<(
 /// Opens the door when `DUCKTAPE_AX_DOOR` asks for it; the calls it takes
 /// arrive on the returned channel for [`serve`].
 pub(crate) fn open() -> Option<futures::channel::mpsc::UnboundedReceiver<Call>> {
-    open_env(std::env::var("DUCKTAPE_AX_DOOR").ok().as_deref())
+    open_env(
+        std::env::var("DUCKTAPE_AX_DOOR").ok().as_deref(),
+        std::env::var("DUCKTAPE_AX_DOOR_PRIVATE").ok().as_deref(),
+    )
 }
 
+/// `private`: `DUCKTAPE_AX_DOOR_PRIVATE`; exactly `1` adds [`reveal`].
 pub(crate) fn open_env(
     value: Option<&str>,
+    private: Option<&str>,
 ) -> Option<futures::channel::mpsc::UnboundedReceiver<Call>> {
+    let private = private.map(str::trim) == Some("1");
     let port = match door_port(value) {
         Ok(port) => port?,
         Err(error) => {
@@ -773,7 +833,7 @@ pub(crate) fn open_env(
     std::thread::Builder::new()
         .name("ax-door".into())
         .spawn(move || {
-            accept(listener, &token, |request| {
+            accept(listener, &token, private, |request| {
                 let (reply, answer) = std::sync::mpsc::channel();
                 sender.unbounded_send((request, reply)).ok()?;
                 answer.recv().ok()
@@ -781,15 +841,20 @@ pub(crate) fn open_env(
         })
         .ok()?;
     tracing::info!(target: "ducktape::app", port, "ax_door_open");
+    if private {
+        tracing::info!(target: "ducktape::app", "ax_door_private=on");
+    }
     Some(calls)
 }
 
-/// The door's HTTP/1.1 loop: one request per connection, answered in turn.
+/// The door's HTTP/1.1 loop: one request per connection, answered in turn;
+/// `/reveal` exists only when `private`.
 /// ponytail: one at a time, so a long `wait` holds the next caller; the one
 /// consumer is a sequential runner.
 pub(crate) fn accept(
     listener: TcpListener,
     token: &str,
+    private: bool,
     answer: impl Fn(Request) -> Option<Reply>,
 ) {
     for stream in listener.incoming().flatten() {
@@ -799,7 +864,7 @@ pub(crate) fn accept(
             Ok((_, _, auth, _)) if !same(auth.as_deref().unwrap_or_default(), token) => {
                 Reply::new(401, json!({ "error": "the door's token is required" }))
             }
-            Ok((method, target, _, body)) => match route(&method, &target, &body) {
+            Ok((method, target, _, body)) => match route(&method, &target, &body, private) {
                 Ok(request) => answer(request)
                     .unwrap_or_else(|| Reply::new(503, json!({ "error": "the app is closing" }))),
                 Err(reply) => reply,
@@ -809,6 +874,7 @@ pub(crate) fn accept(
             200 => "OK",
             400 => "Bad Request",
             401 => "Unauthorized",
+            403 => "Forbidden",
             404 => "Not Found",
             408 => "Request Timeout",
             _ => "Service Unavailable",
@@ -871,7 +937,7 @@ fn read_request(stream: &TcpStream) -> std::io::Result<(String, String, Option<S
     Ok((method, target, auth, body))
 }
 
-fn route(method: &str, target: &str, body: &[u8]) -> Result<Request, Reply> {
+fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Request, Reply> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     let params: HashMap<&str, &str> = query
         .split('&')
@@ -891,10 +957,17 @@ fn route(method: &str, target: &str, body: &[u8]) -> Result<Request, Reply> {
         ("GET", "actions") => Ok(Request::Actions(filter)),
         ("POST", "act") => parse(body).map(Request::Act),
         ("POST", "wait") => parse(body).map(Request::Wait),
-        _ => Err(Reply::new(
-            404,
-            json!({ "error": "no such endpoint", "endpoints": ["GET /tree", "GET /actions", "POST /act", "POST /wait"] }),
-        )),
+        ("POST", "reveal") if private => parse(body).map(Request::Reveal),
+        _ => {
+            let mut endpoints = vec!["GET /tree", "GET /actions", "POST /act", "POST /wait"];
+            if private {
+                endpoints.push("POST /reveal");
+            }
+            Err(Reply::new(
+                404,
+                json!({ "error": "no such endpoint", "endpoints": endpoints }),
+            ))
+        }
     }
 }
 
@@ -931,7 +1004,8 @@ pub(crate) fn call(
 const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--compact] [--bounds]
        ducktape-app ax actions [--window W] [--view V]
        ducktape-app ax act <id> <press|focus|set_value|type|scroll_into_view> [value]
-       ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]";
+       ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]
+       ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)";
 
 /// `ducktape-app ax …`: prints the door's JSON. Exit 0 answered, 1 not
 /// found, refused or timed out, 2 the door is not open.
@@ -965,6 +1039,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             "/act".to_owned(),
             json!({ "id": id, "action": action, "value": value.first() }).to_string(),
         ),
+        (Some("reveal"), [id]) => ("POST", "/reveal".to_owned(), json!({ "id": id }).to_string()),
         (Some("wait"), []) => (
             "POST",
             "/wait".to_owned(),

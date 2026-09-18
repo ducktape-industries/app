@@ -208,6 +208,26 @@ fn door_masks_secure_input_and_private_text() {
     let nodes = read(&mut cx, window, "onboarding");
     let whole = serde_json::to_string(&nodes).unwrap();
     assert!(!whole.contains(secret), "{whole}");
+    // a person sees dots in a password field, so reveal refuses it
+    let refused = cx
+        .update_window(window, |_, window, _| {
+            ax_door::reveal("onboarding", window, &field)
+        })
+        .unwrap();
+    assert_eq!(refused.status(), 403, "{}", refused.body());
+    assert!(!refused.body().contains(secret), "{}", refused.body());
+    let button = nodes
+        .iter()
+        .find(|node| node.role == "Button")
+        .unwrap_or_else(|| panic!("a button: {}", json(&nodes)))
+        .id
+        .clone();
+    let plain = cx
+        .update_window(window, |_, window, _| {
+            ax_door::reveal("onboarding", window, &button)
+        })
+        .unwrap();
+    assert_eq!(plain.status(), 400, "not private: {}", plain.body());
 
     // the recovery-phrase word's marker, as the phrase step sets it
     struct Phrase;
@@ -245,6 +265,24 @@ fn door_masks_secure_input_and_private_text() {
     assert!(whole.contains("onboarding:phrase-word/1"), "{whole}");
     assert!(!whole.contains("abandon"), "{whole}");
     assert!(whole.contains("•••"), "{whole}");
+    // the word is drawn on screen: reveal hands it over, and only it
+    let shown = cx
+        .update_window(window, |_, window, _| {
+            ax_door::reveal("onboarding", window, "onboarding:phrase-word/1")
+        })
+        .unwrap();
+    assert_eq!(shown.status(), 200, "{}", shown.body());
+    let shown: serde_json::Value = serde_json::from_str(shown.body()).unwrap();
+    assert_eq!(shown["value"], "abandon", "{shown}");
+    let missing = cx
+        .update_window(window, |_, window, _| {
+            ax_door::reveal("onboarding", window, "onboarding:phrase-word/2")
+        })
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+    // and the tree stays masked after a reveal
+    let whole = serde_json::to_string(&read(&mut cx, window, "onboarding")).unwrap();
+    assert!(!whole.contains("abandon"), "{whole}");
 }
 
 #[test]
@@ -272,9 +310,20 @@ fn door_binds_loopback_only_and_is_absent_without_the_env() {
     for address in ["0.0.0.0:4000", "127.0.0.1:4000", "[::]:4000", "localhost"] {
         assert!(ax_door::door_port(Some(address)).is_err(), "{address}");
     }
-    assert!(ax_door::open_env(None).is_none());
+    assert!(ax_door::open_env(None, None).is_none());
+    assert!(
+        ax_door::open_env(None, Some("1")).is_none(),
+        "the private switch alone opens nothing"
+    );
     let listener = ax_door::bind(0).unwrap();
     assert!(listener.local_addr().unwrap().ip().is_loopback());
+}
+
+fn stranger_to(door: &DoorFile) -> DoorFile {
+    DoorFile {
+        port: door.port,
+        token: "guess".into(),
+    }
 }
 
 #[test]
@@ -282,7 +331,7 @@ fn door_round_trip_over_loopback() {
     let listener = ax_door::bind(0).unwrap();
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
-        ax_door::accept(listener, "t0ken", |request| {
+        ax_door::accept(listener, "t0ken", false, |request| {
             Some(Reply::new(200, serde_json::json!(format!("{request:?}"))))
         })
     });
@@ -305,11 +354,40 @@ fn door_round_trip_over_loopback() {
     );
     assert_eq!(ax_door::call(&door, "POST", "/act", "{").unwrap().0, 400);
     assert_eq!(ax_door::call(&door, "GET", "/nowhere", "").unwrap().0, 404);
+    // without DUCKTAPE_AX_DOOR_PRIVATE=1 there is no reveal at all
+    let ask = r#"{"id":"onboarding:phrase-word/1"}"#;
+    let (status, body) = ax_door::call(&door, "POST", "/reveal", ask).unwrap();
+    assert_eq!(status, 404, "{body}");
+    assert!(!body.contains("reveal"), "not even named: {body}");
     let stranger = DoorFile {
         port,
         token: "guess".into(),
     };
     assert_eq!(ax_door::call(&stranger, "GET", "/tree", "").unwrap().0, 401);
+
+    let listener = ax_door::bind(0).unwrap();
+    let private = DoorFile {
+        port: listener.local_addr().unwrap().port(),
+        token: "t0ken".into(),
+    };
+    std::thread::spawn(move || {
+        ax_door::accept(listener, "t0ken", true, |request| {
+            Some(Reply::new(200, serde_json::json!(format!("{request:?}"))))
+        })
+    });
+    let (status, body) = ax_door::call(&private, "POST", "/reveal", ask).unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.contains("Reveal") && body.contains("phrase-word/1"),
+        "{body}"
+    );
+    assert_eq!(
+        ax_door::call(&stranger_to(&private), "POST", "/reveal", ask)
+            .unwrap()
+            .0,
+        401,
+        "the private door still takes the token"
+    );
 
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ducktape").join("ax-door.json");

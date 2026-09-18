@@ -27,7 +27,8 @@
    "wallet_password": {
     "generate": "password"
    }
-  }
+  },
+  "private": true
  },
  "steps": [
   {
@@ -223,17 +224,47 @@
    "expect": "the recovery phrase step shows (Write down your recovery phrase) with its words hidden"
   },
   {
+   "kind": "private_remember",
+   "say": "remember the recovery phrase words the screen shows (the door reveals them to this rig only; held in memory, never written or sent)",
+   "match": {
+    "ids_prefix": "onboarding:phrase-word/"
+   },
+   "as": "phrase"
+  },
+  {
    "say": "press I wrote it down",
    "expect": "the confirm step asks for the requested recovery words"
   },
   {
+   "kind": "private_copy",
+   "say": "type the words the confirm step asks for (its prompt names their numbers) into the answer field",
+   "from_indexed": {
+    "memory": "phrase",
+    "prompt": {
+     "name": "Type words",
+     "in": "onboarding"
+    },
+    "regex": "Type words ([0-9, and]+)"
+   },
+   "into": {
+    "role": "PasswordInput",
+    "ids_prefix": "onboarding:phrase-answer"
+   },
+   "how": "type"
+  },
+  {
+   "say": "press Confirm recovery phrase",
+   "settle_ms": 5000,
+   "expect": "the account step shows (Your account); no error sentence"
+  },
+  {
    "kind": "wait",
-   "say": "BY HAND: a person types the requested words on the rig display (the door masks the phrase, so the runner cannot)",
+   "say": "the account step shows: Your account",
    "wait": {
     "role": "Heading",
     "name": "Your account"
    },
-   "deadline_ms": 900000
+   "deadline_ms": 60000
   },
   {
    "say": "continue without an account",
