@@ -593,6 +593,14 @@ fn load_keys(updates_dir: &Path) -> Option<TrustedKeys> {
     Some(TrustedKeys { pinned, successor })
 }
 
+/// The release key this install pinned, as hex, read without arming the
+/// updater — the network's release signer, the key a node's launcher pins
+/// too. `None` for a bare run (no `DUCKTAPE_UPDATE_STATE`) or no pinned key.
+pub(crate) fn pinned_release_key() -> Option<String> {
+    let state_path = PathBuf::from(std::env::var_os(STATE_ENV)?);
+    Some(load_keys(state_path.parent()?)?.pinned.to_string())
+}
+
 fn pin_successor(updates_dir: &Path, successor: &SuccessorKey) {
     let text = serde_json::to_string_pretty(successor).expect("a SuccessorKey serializes");
     let path = keys_dir(updates_dir).join("successor.json");

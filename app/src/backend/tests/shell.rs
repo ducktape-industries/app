@@ -339,14 +339,25 @@ checkpoint_blocks = 32
 
 /// THE JOIN WAITS HONESTLY (#18). The app attaches to a node it does not
 /// supervise, so step 4 never says "starting": every second it names the
-/// launcher command for the workspace, and once patience runs out it goes
+/// launcher commands for the workspace, and once patience runs out it goes
 /// `blocked` with a line saying the app runs no nodes, still unsettled so
 /// the poll goes on.
 #[test]
 fn a_node_that_never_answers_is_waited_for_by_its_launcher_command() {
-    let command = "ducktape-node-launcher run --workspace '/home/member/.ducktape/dognet#d2a0ec8f'";
+    let key = "ab".repeat(32);
+    let command = format!(
+        "<archive>/ducktape-node-launcher install --workspace '/home/member/.ducktape/dognet#d2a0ec8f' --config '/home/member/.ducktape/dognet#d2a0ec8f/node.toml' --from '<archive>/ducktape' --release-key {key}\n\
+         <archive>/ducktape-node-launcher run --workspace '/home/member/.ducktape/dognet#d2a0ec8f' --config '/home/member/.ducktape/dognet#d2a0ec8f/node.toml'"
+    );
     let steps: Vec<ProvisionStep> = (1..=PROVISION_PATIENCE + 2)
-        .map(|attempts| node_wait_step("/home/member/.ducktape/dognet#d2a0ec8f", attempts, ""))
+        .map(|attempts| {
+            node_wait_step(
+                "/home/member/.ducktape/dognet#d2a0ec8f",
+                Some(&key),
+                attempts,
+                "",
+            )
+        })
         .collect();
     for step in &steps {
         assert_eq!(step.index, 4);
@@ -363,14 +374,49 @@ fn a_node_that_never_answers_is_waited_for_by_its_launcher_command() {
         assert_eq!(step.state, "blocked");
         assert_eq!(
             step.hint,
-            "This app does not run nodes. Run that command in a terminal; this step continues when the node answers."
+            "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into.\n\
+             If your archive's launcher is release 2, run with DUCKTAPE_MODULES_DIR='<archive>/modules' set."
         );
     }
 
     // a quote in the directory cannot end the quoted argument early.
     assert_eq!(
-        node_wait_step("/home/o'neil/.ducktape/w#1", 1, "").command,
-        r"ducktape-node-launcher run --workspace '/home/o'\''neil/.ducktape/w#1'"
+        node_wait_step("/home/o'neil/.ducktape/w#1", Some(&key), 1, "")
+            .command
+            .lines()
+            .nth(1),
+        Some(
+            r"<archive>/ducktape-node-launcher run --workspace '/home/o'\''neil/.ducktape/w#1' --config '/home/o'\''neil/.ducktape/w#1/node.toml'"
+        )
+    );
+}
+
+/// A FRESH JOIN IS INSTALLED BEFORE IT RUNS, FROM THE ARCHIVE (#46, #33). A join
+/// writes no `updates/` tree, and the launcher's `run` refuses a workspace
+/// without one (`state_missing`); the launcher is not on `PATH` either, it
+/// sits in the node release archive beside `ducktape`. So the step names the
+/// launcher's `install` from `<archive>` before its `run`, and the hint says
+/// where the launcher comes from. With no key pinned (a bare run) the command
+/// cannot print the network's release key, so it names `<release key>` and
+/// the hint says whose key that is.
+#[test]
+fn a_fresh_join_is_installed_from_the_archive_before_it_runs() {
+    let step = node_wait_step(
+        "/home/member/.ducktape/dognet#d2a0ec8f",
+        None,
+        PROVISION_PATIENCE,
+        "",
+    );
+    assert_eq!(
+        step.command,
+        "<archive>/ducktape-node-launcher install --workspace '/home/member/.ducktape/dognet#d2a0ec8f' --config '/home/member/.ducktape/dognet#d2a0ec8f/node.toml' --from '<archive>/ducktape' --release-key <release key>\n\
+         <archive>/ducktape-node-launcher run --workspace '/home/member/.ducktape/dognet#d2a0ec8f' --config '/home/member/.ducktape/dognet#d2a0ec8f/node.toml'"
+    );
+    assert_eq!(step.state, "blocked");
+    assert_eq!(
+        step.hint,
+        "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into. <release key> is the release key your network's operator published.\n\
+         If your archive's launcher is release 2, run with DUCKTAPE_MODULES_DIR='<archive>/modules' set."
     );
 }
 

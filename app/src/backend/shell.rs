@@ -189,9 +189,14 @@ pub struct ProvisionStep {
     pub command: String,
 }
 
-/// What the blocked wait says once patience runs out. It names no origin for
-/// the launcher: this release ships only `ducktape` until core #2565 adds it.
-pub(crate) const NODE_WAIT_HINT: &str = "This app does not run nodes. Run that command in a terminal; this step continues when the node answers.";
+/// What the blocked wait says once patience runs out: what to run, and where
+/// the launcher and `<archive>` come from.
+pub(crate) const NODE_WAIT_HINT: &str = "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into.";
+/// Said too when this app pinned no release key to print in the command.
+pub(crate) const NODE_KEY_HINT: &str =
+    "<release key> is the release key your network's operator published.";
+// core #2610: release 2's launcher predates modules seeding; drop this line once the next node release ships.
+pub(crate) const NODE_MODULES_HINT: &str = "If your archive's launcher is release 2, run with DUCKTAPE_MODULES_DIR='<archive>/modules' set.";
 
 /// The five provisioning steps. Steps 1-3 are facts of the materialized
 /// workspace; steps 4-5 are a REAL `/v1/status` poll, because the app attaches
@@ -312,7 +317,12 @@ pub fn provision_progress(
                     state.attempts += 1;
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     Some((
-                        node_wait_step(&state.workspace, state.attempts, &plane_failure),
+                        node_wait_step(
+                            &state.workspace,
+                            super::update::pinned_release_key().as_deref(),
+                            state.attempts,
+                            &plane_failure,
+                        ),
                         state,
                     ))
                 }
@@ -343,17 +353,29 @@ pub fn provision_progress(
 }
 
 /// Step 4 until the node answers. The app runs no nodes: `ducktape-node-launcher`
-/// does, because node releases flip through it. So the step names that command
-/// for this workspace from the first second, never "starting", and after
-/// `PROVISION_PATIENCE` attempts goes `blocked` with [`NODE_WAIT_HINT`] while
-/// the poll goes on. A node that answered with its netstack plane failed
+/// does, because node releases flip through it. A join writes no `updates/`
+/// tree, so the step names two lines for this workspace from the first second,
+/// never "starting": the launcher's `install` from the unpacked archive (the
+/// app cannot know where that is, so `<archive>` is the member's to fill),
+/// then its `run`. `release_key` is the key this app pinned, the same network
+/// signer; without one the command says `<release key>`. After
+/// `PROVISION_PATIENCE` attempts the step goes `blocked` with [`NODE_WAIT_HINT`]
+/// while the poll goes on. A node that answered with its netstack plane failed
 /// (`plane_failure`, core's sentence; empty otherwise) is blocked at once with
-/// that sentence as the hint. The directory is single-quoted: a workspace
-/// directory carries the chain id's `#`, and a home may carry spaces.
-pub(crate) fn node_wait_step(workspace: &str, attempts: u32, plane_failure: &str) -> ProvisionStep {
+/// that sentence as the hint. Paths are single-quoted: a workspace directory
+/// carries the chain id's `#`, and a home may carry spaces.
+pub(crate) fn node_wait_step(
+    workspace: &str,
+    release_key: Option<&str>,
+    attempts: u32,
+    plane_failure: &str,
+) -> ProvisionStep {
+    let quote = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
+    let (dir, config) = (quote(workspace), quote(&format!("{workspace}/node.toml")));
+    let key = release_key.unwrap_or("<release key>");
     let command = format!(
-        "ducktape-node-launcher run --workspace '{}'",
-        workspace.replace('\'', r"'\''")
+        "<archive>/ducktape-node-launcher install --workspace {dir} --config {config} --from '<archive>/ducktape' --release-key {key}\n\
+         <archive>/ducktape-node-launcher run --workspace {dir} --config {config}"
     );
     let blocked = attempts >= PROVISION_PATIENCE || !plane_failure.is_empty();
     ProvisionStep {
@@ -366,7 +388,10 @@ pub(crate) fn node_wait_step(workspace: &str, attempts: u32, plane_failure: &str
         settled: false,
         hint: match (blocked, plane_failure.is_empty()) {
             (true, false) => plane_failure.into(),
-            (true, true) => NODE_WAIT_HINT.into(),
+            (true, true) if release_key.is_some() => {
+                format!("{NODE_WAIT_HINT}\n{NODE_MODULES_HINT}")
+            }
+            (true, true) => format!("{NODE_WAIT_HINT} {NODE_KEY_HINT}\n{NODE_MODULES_HINT}"),
             (false, _) => String::new(),
         },
         command,
