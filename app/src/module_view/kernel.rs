@@ -1374,10 +1374,19 @@ async fn open_topic(
     // hold different credentials, and neither can present the other's. The
     // token is read and attached HERE — no view ever sees it, and nothing
     // below logs the url or the token.
-    let workspace_token = crate::backend::workspace_at(rpc)
-        .and_then(|(_, workspace)| crate::backend::read_link_token(&workspace).ok());
+    //
+    // The node's OPERATOR topics (`logs`) are decided at the upgrade, never on
+    // the frame: here by the node's own `admin.token` when this device holds
+    // it, below by the seated signature when that key is the operator's.
+    let workspace = crate::backend::workspace_at(rpc).map(|(_, workspace)| workspace);
+    let workspace_token = workspace
+        .as_deref()
+        .and_then(|workspace| crate::backend::read_link_token(workspace).ok());
     if let Some(token) = workspace_token {
-        return open_with_token(rpc, topic, &token).await;
+        let operator = workspace
+            .as_deref()
+            .and_then(crate::backend::operator_token_in);
+        return open_with_token(rpc, topic, &token, operator.as_deref()).await;
     }
     let node_key = crate::backend::node_public_key(rpc)
         .await
@@ -1425,24 +1434,39 @@ async fn open_topic(
 /// the token rides the subscribe frame instead — and so does the topic, which
 /// is why this arm has no query string to carry. A device holding the node's
 /// own 0600 token is the node's operator, so this path does not need — and
-/// must not wait for — an unlocked wallet.
+/// must not wait for — an unlocked wallet. `operator`, the node's
+/// `admin.token`, rides the upgrade itself (`x-ducktape-admin-token`): the
+/// node decides its operator topics there, before any frame.
 async fn open_with_token(
     rpc: &str,
     topic: &str,
     token: &str,
+    operator: Option<&str>,
 ) -> Result<
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
     wire::Refusal,
 > {
     use futures::SinkExt as _;
     use tokio_tungstenite::tungstenite::Message;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    use tokio_tungstenite::tungstenite::http::HeaderValue;
+    let mut request = crate::backend::agent_ws_url(rpc)
+        .into_client_request()
+        .map_err(|error| host_fault(format!("could not address the node: {error}")))?;
+    if let Some(operator) = operator {
+        let value = HeaderValue::from_str(operator)
+            .map_err(|_| host_fault("the node's admin.token is not a header value".to_string()))?;
+        request
+            .headers_mut()
+            .insert("x-ducktape-admin-token", value);
+    }
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
         max_message_size: Some(MAX_STREAM_FRAME_BYTES),
         max_frame_size: Some(MAX_STREAM_FRAME_BYTES),
         ..Default::default()
     };
     let (mut socket, _) = tokio_tungstenite::connect_async_with_config(
-        crate::backend::agent_ws_url(rpc),
+        request,
         Some(config),
         // Nagle off, for the reason `open_topic` states: one committed event
         // per frame, never coalesced.
@@ -1464,9 +1488,11 @@ async fn open_with_token(
 }
 
 /// Every frame an open node socket sends, as one item each, verbatim: the
-/// kernel never reads a frame, so a topic it has never heard of needs no
-/// code here. The node ending the socket is the `done` that ends the
-/// subscription.
+/// kernel reads no frame but the node's verdict on the subscribe, so a topic
+/// it has never heard of needs no code here. The node ending the socket is
+/// the `done` that ends the subscription — and so is a node topic's
+/// refusal ([`subscribe_verdict`]), which the node sends in place of any
+/// frame and then leaves the socket open with nothing coming.
 #[derive(Clone, Copy)]
 enum StreamEncoding {
     Bytes,
@@ -1485,6 +1511,7 @@ where
     use futures::StreamExt as _;
     use tokio_tungstenite::tungstenite::Message;
     let mut drained = replies.drains();
+    let mut subscribed = matches!(encoding, StreamEncoding::Frames);
     while let Some(message) = socket.next().await {
         let frame = match message {
             Ok(frame @ (Message::Text(_) | Message::Binary(_))) => frame,
@@ -1513,6 +1540,16 @@ where
             );
             return;
         }
+        if let (false, Message::Text(text)) = (subscribed, &frame) {
+            match subscribe_verdict(text) {
+                Some(Verdict::Refused(refusal)) => {
+                    replies.item(id, Err(refusal), true);
+                    return;
+                }
+                Some(Verdict::Subscribed) => subscribed = true,
+                None => {}
+            }
+        }
         let bytes = match (encoding, frame) {
             (StreamEncoding::Bytes, Message::Text(text)) => text.into_bytes(),
             (StreamEncoding::Bytes, Message::Binary(bytes)) => bytes,
@@ -1534,6 +1571,36 @@ where
         }
     }
     replies.item(id, Ok(Vec::new()), true);
+}
+
+/// The node's answer to a one-topic subscribe, read until it has given one:
+/// its refusal is an `error` frame ahead of `subscribed`, carrying the
+/// node's `code` as the reason (`forbidden` for an operator topic on an
+/// upgrade that proved no operator) and its sentence as the detail.
+enum Verdict {
+    Refused(wire::Refusal),
+    Subscribed,
+}
+
+/// `None` for any frame that is not the verdict.
+fn subscribe_verdict(text: &str) -> Option<Verdict> {
+    #[derive(serde::Deserialize)]
+    struct Head {
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(default)]
+        code: String,
+        #[serde(default)]
+        detail: String,
+    }
+    let head: Head = serde_json::from_str(text).ok()?;
+    match head.kind.as_str() {
+        "error" if !head.code.is_empty() => {
+            Some(Verdict::Refused(wire::Refusal::new(head.code, head.detail)))
+        }
+        "subscribed" => Some(Verdict::Subscribed),
+        _ => None,
+    }
 }
 
 fn query_as_reader(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
@@ -2455,5 +2522,88 @@ mod tests {
         let mut landed = Vec::new();
         replies.drain_into(&mut landed).expect("reply budget");
         assert!(landed.is_empty(), "an abort delivers nothing: {landed:?}");
+    }
+
+    /// The node decides its operator topics at the upgrade: a device that
+    /// holds the node's `admin.token` presents it on the upgrade request
+    /// itself, beside the workspace token the subscribe frame carries.
+    #[test]
+    // the handshake callback's `Err` is tungstenite's own response type.
+    #[allow(clippy::result_large_err)]
+    fn the_on_box_upgrade_carries_the_operator_credential() {
+        use futures::StreamExt as _;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let rpc = format!("http://{}", listener.local_addr().expect("its address"));
+        listener.set_nonblocking(true).expect("nonblocking");
+        let node = runtime().spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
+            let (stream, _) = listener.accept().await.expect("the upgrade");
+            let mut presented = None;
+            let mut socket = tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    presented = request
+                        .headers()
+                        .get("x-ducktape-admin-token")
+                        .map(|value| value.to_str().unwrap().to_owned());
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("a ws upgrade");
+            let subscribe = socket.next().await.expect("a frame").expect("readable");
+            (presented, subscribe.into_text().expect("text"))
+        });
+        runtime()
+            .block_on(open_with_token(
+                &rpc,
+                "logs",
+                "link-token",
+                Some("op-token"),
+            ))
+            .expect("the socket opens");
+        let (presented, subscribe) = runtime().block_on(node).expect("the node answered");
+        assert_eq!(presented.as_deref(), Some("op-token"));
+        let subscribe: serde_json::Value = serde_json::from_str(&subscribe).unwrap();
+        assert_eq!(
+            subscribe,
+            serde_json::json!({"op": "subscribe", "topics": ["logs"], "token": "link-token"})
+        );
+    }
+
+    /// An operator topic on an upgrade that proved no operator: the node
+    /// sends one `error` frame ahead of `subscribed` and then nothing. The
+    /// view hears that refusal, named, as the item that ends its
+    /// subscription — not a stream left open with nothing coming.
+    #[test]
+    fn a_refused_topic_reaches_the_view_as_the_nodes_refusal() {
+        let replies = std::sync::Arc::new(Replies::default());
+        replies.in_flight.fetch_add(1, Ordering::SeqCst);
+        let detail = "this topic is the node operator's";
+        let frames = futures::stream::iter(vec![
+            Ok(Message::Text(
+                serde_json::json!({"type": "error", "topic": "logs", "code": "forbidden", "detail": detail})
+                    .to_string(),
+            )),
+            Ok(Message::Text(r#"{"type":"subscribed","topics":{}}"#.to_owned())),
+        ]);
+        let running = replies.clone();
+        let counted = InFlight(replies.clone());
+        runtime().spawn(async move {
+            let _counted = counted;
+            forward(&running, 7, frames, StreamEncoding::Bytes).await;
+        });
+
+        replies.wait_idle();
+        let mut landed = Vec::new();
+        replies.drain_into(&mut landed).expect("reply budget");
+        assert!(
+            matches!(
+                landed.as_slice(),
+                [wire::Event::Response { id: 7, result: Err(refusal), done: true }]
+                    if refusal == &wire::Refusal::new("forbidden", detail)
+            ),
+            "{landed:?}"
+        );
     }
 }
