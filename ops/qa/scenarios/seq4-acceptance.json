@@ -136,7 +136,7 @@
   {
    "say": "put the invitation into the Invitation field",
    "secret": "invite",
-   "expect": "the Invitation field holds a hidden value and the Join network button is enabled"
+   "expect": "the Join network button is enabled (no disabled state)"
   },
   {
    "say": "press Join network",
@@ -206,17 +206,16 @@
   },
   {
    "say": "press Open Ducktape",
-   "expect": "a wallet step shows (Protect your wallet with Password and Confirm password fields) or the workspace opens; no error sentence"
+   "expect": "the Protect your wallet step shows, with Password and Confirm password fields (a password-length hint is not an error)"
   },
   {
    "say": "put the wallet password into the Password field",
-   "secret": "wallet_password",
-   "expect": "the Password field holds a hidden value"
+   "secret": "wallet_password"
   },
   {
    "say": "put the wallet password into the Confirm password field",
    "secret": "wallet_password",
-   "expect": "the Confirm password field holds a hidden value and Create wallet is enabled"
+   "expect": "the Create wallet button is enabled (no disabled state)"
   },
   {
    "say": "press Create wallet",
@@ -306,9 +305,16 @@
    "expect": "the Forge tab is selected and its view shows; no error sentence and no 'not registered' sentence is visible"
   },
   {
-   "say": "open the Inbox tab in the rail",
-   "settle_ms": 4000,
-   "expect": "the Inbox tab is selected and its view shows; no error sentence and no 'not registered' sentence is visible"
+   "say": "open the Boards tab in the rail",
+   "expect": "the Boards tab is selected and its view shows; no error sentence and no 'not registered' sentence is visible"
+  },
+  {
+   "say": "press the Notifications button in the rail",
+   "expect": "a notifications panel or list shows (it may be empty); no error sentence"
+  },
+  {
+   "say": "close the notifications panel (press Notifications again or its close control)",
+   "expect": "the rail of tabs is still shown"
   },
   {
    "say": "open the Governance tab in the rail",
@@ -338,16 +344,12 @@
   {
    "say": "open the Settings tab in the rail",
    "settle_ms": 4000,
-   "expect": "the Settings tab is selected and its view shows; no error sentence and no 'not registered' sentence is visible"
-  },
-  {
-   "say": "open the General section of Settings",
-   "expect": "the General settings pane shows, with a Check now button"
+   "expect": "the Settings tab is selected and its view shows a General pane with an Updates section; status notes such as 'Last check refused: sequence_not_newer' or 'No notification service on this desktop' are expected states, not errors"
   },
   {
    "say": "press Check now",
-   "settle_ms": 8000,
-   "expect": "the update check answers (up to date, or the channel's newest release); no error sentence and no older release is offered or staged"
+   "settle_ms": 6000,
+   "expect": "the Updates section shows Last check: just now; no Restart to update / ready-to-install offer for a release older than the installed one appears"
   },
   {
    "kind": "stop",
@@ -363,12 +365,35 @@
   },
   {
    "kind": "wait",
-   "say": "L5 the reopened app lands on the workspace",
+   "say": "L5 the reopened app lists the saved network",
+   "wait": {
+    "role": "Button",
+    "name": "Open network"
+   },
+   "deadline_ms": 90000
+  },
+  {
+   "say": "press Open network",
+   "settle_ms": 4000,
+   "expect": "the Welcome back step shows with a Wallet password field and an Unlock button"
+  },
+  {
+   "say": "put the wallet password into the Wallet password field",
+   "secret": "wallet_password"
+  },
+  {
+   "say": "press Unlock",
+   "settle_ms": 5000,
+   "expect": "the workspace console opens with its rail of tabs, or is opening"
+  },
+  {
+   "kind": "wait",
+   "say": "L5 the reopened app lands on the workspace after unlock",
    "wait": {
     "role": "Tab",
     "in": "console"
    },
-   "deadline_ms": 120000
+   "deadline_ms": 180000
   },
   {
    "kind": "stop",

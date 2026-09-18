@@ -364,6 +364,10 @@ class Walk:
     def step_ui(self, step, line):
         tree, offers = self.door.tree(), self.door.actions()
         self.last_tree = tree
+        # A control that can be pressed or filled is never the answer as a bare `focus`;
+        # offering both made the judge pick focus for "select"/"open" steps.
+        acts = {o['id'] for o in offers if o['action'] != 'focus'}
+        offers = [o for o in offers if o['action'] != 'focus' or o['id'] not in acts]
         options = [f"{o['id']} {o['action']} {o['label']}" for o in offers]
         criteria = {f'o{i}': text for i, text in enumerate(options)}
         criteria['none'] = 'none of these'
@@ -392,6 +396,11 @@ class Walk:
                 raise Unjudged(f"{offer['action']} chosen but the step gives no text or secret")
         delta = self.door.act(offer['id'], offer['action'], value)
         after = self.door.tree()
+        if not step.get('expect'):
+            # Nothing observable to judge (a masked field was filled): the act landing is the verdict,
+            # and the next step's expectation (an enabled button) proves the value took.
+            self.last_tree, line['delta'] = after, summary(delta)
+            return 'pass'
         score = self.judge(step, line['chosen'], delta, after)
         if score < PASS_AT:
             settle = step.get('settle_ms', 1500)
@@ -519,7 +528,9 @@ class Walk:
             return 'fail'
         if 'from_indexed' in step:
             spec = step['from_indexed']
-            prompt = ' '.join(n['name'] for n in tree if matches(spec['prompt'], n))
+            # A plain label carries its text as the VALUE (its name is empty), so read both.
+            prompt = ' '.join(f"{n.get('name') or ''} {n.get('value') or ''}" for n in tree
+                              if n['role'] in ('Label', 'Heading') and n.get('in') == spec['prompt'].get('in', n.get('in')))
             asked = [int(k) for m in re.finditer(spec['regex'], prompt)
                      for k in re.findall(r'\d+', m.group(1 if m.re.groups else 0))]
             held = self.memory.get(spec['memory'], {})
