@@ -653,6 +653,7 @@ impl Ducktape {
         self.mutation_phase = MutationPhase::Idle;
         self.hydration_retry_attempt = 0;
         self.error = "".to_owned();
+        self.live_caught_up = false;
         let entering = self.console_entry == ConsoleEntry::Entering;
         if entering {
             self.onboarding_error.clear();
@@ -1028,10 +1029,14 @@ impl Ducktape {
 
         self.mutation_phase = crate::backend::mutation_phase_after_recovery(self.mutation_phase);
         self.error = "".to_owned();
-        crate::shell::close::<AppMessage>(crate::backend::window_target_unless(
-            self.huddle_joined,
-            self.huddle_win,
-        ))
+        self.live_caught_up = true;
+        Task::batch([
+            crate::shell::close::<AppMessage>(crate::backend::window_target_unless(
+                self.huddle_joined,
+                self.huddle_win,
+            )),
+            self.open_launch_link(),
+        ])
     }
     fn on_live_resync_failed(&mut self, cause: crate::backend::HydrationError) -> Task<AppMessage> {
         if cause.generation != self.hydration_generation {
@@ -1866,12 +1871,21 @@ impl Ducktape {
         self.node_sync_retries = next.sync_retries;
         self.node_sync_failures = next.sync_failures;
         self.node_sync_last_error = next.sync_last_error.to_owned();
-        let launch_link = self.startup_duck_link.to_owned();
-        self.startup_duck_link = "".to_owned();
-        if (launch_link).is_empty() {
+        self.open_launch_link()
+    }
+    /// The parked launch link, opened the way a clicked one is — once the
+    /// node has named its chain (a link's `net` is read against it) and the
+    /// console's first live catch-up has landed, since that landing clears
+    /// the banner and would wipe a refusal drawn before it.
+    fn open_launch_link(&mut self) -> Task<AppMessage> {
+        if self.network_chain_id.is_empty() || !self.live_caught_up {
             return Task::none();
         }
-        Task::done(AppMessage::OpenMessageLink(launch_link.to_owned()))
+        let launch_link = ::std::mem::take(&mut self.startup_duck_link);
+        if launch_link.is_empty() {
+            return Task::none();
+        }
+        Task::done(AppMessage::OpenMessageLink(launch_link))
     }
     fn on_node_facts_failed(&mut self, _cause: crate::backend::AppError) -> Task<AppMessage> {
         Task::none()

@@ -237,6 +237,8 @@ pub struct Ducktape {
     pub(crate) mutation_phase: MutationPhase,
     pub(crate) error: String,
     pub(crate) startup_duck_link: String,
+    /// The console's first live catch-up since it connected has landed.
+    pub(crate) live_caught_up: bool,
     pub(crate) channels: Vec<crate::backend::ChatChannel>,
     pub(crate) chat_generation: i64,
     pub(crate) active_channel: String,
@@ -654,6 +656,7 @@ impl Ducktape {
             mutation_phase: MutationPhase::Idle,
             error: "".to_owned(),
             startup_duck_link: crate::backend::startup_duck_url(),
+            live_caught_up: false,
             channels: Vec::new(),
             chat_generation: 0,
             active_channel: "".to_owned(),

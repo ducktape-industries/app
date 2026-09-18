@@ -314,3 +314,87 @@ fn the_open_wait_holds_the_status_push_the_console_keeps() {
     let _ = app.update(AppMessage::GoNetworks);
     assert!(!keys(&app).contains(&status));
 }
+
+/// Launch the app on `link` and enter a network, delivering the node's facts
+/// and the console's first live catch-up in the given order, each reply run
+/// back through the app as the runtime does.
+fn launched_on(link: &str, facts_first: bool) -> Ducktape {
+    use futures::{FutureExt as _, StreamExt as _};
+    fn settle(app: &mut Ducktape, task: view_wire::Task<AppMessage>) {
+        let mut pending = vec![task.into_stream()];
+        while let Some(mut messages) = pending.pop() {
+            while let Some(Some(message)) = messages.next().now_or_never() {
+                pending.push(app.update(message).into_stream());
+            }
+        }
+    }
+    let (mut app, _) = Ducktape::boot();
+    app.startup_duck_link = link.into();
+    app.rpc = "http://127.0.0.1:38259".into();
+    app.hub_step = HubStep::Wallets;
+    let _ = app.update(AppMessage::NetworkEntered);
+    let mut landed = workspace("general");
+    landed.generation = app.connect_generation;
+    let _ = app.update(AppMessage::WorkspaceConnected(landed));
+    let facts = |app: &mut Ducktape| {
+        let task = app.update(AppMessage::NodeFactsLoaded(backend::NodeFacts {
+            chain_id: "dognet#040b41aa".into(),
+            ..backend::NodeFacts::default()
+        }));
+        settle(app, task);
+    };
+    if facts_first {
+        facts(&mut app);
+    }
+    let _ = app.update(AppMessage::LiveUpdated(backend::LiveUpdate {
+        kind: LiveKind::Ready,
+        status: "Live".into(),
+        height: -1,
+        ..backend::LiveUpdate::default()
+    }));
+    let caught_up = app.update(AppMessage::LiveResynced(live_refresh(
+        app.hydration_generation,
+        "general",
+    )));
+    settle(&mut app, caught_up);
+    if !facts_first {
+        facts(&mut app);
+    }
+    app
+}
+
+/// A LAUNCH LINK THE APP CANNOT OPEN SAYS SO IN THE CONSOLE (#56). The same
+/// address clicked in Chat draws the red banner; handed to the app at launch
+/// it was opened while the console was still catching up, and the catch-up's
+/// landing cleared the banner before anyone saw it.
+#[test]
+fn a_launch_link_the_app_cannot_open_says_so_in_the_console() {
+    for facts_first in [true, false] {
+        let mut app = launched_on(
+            "duck://files/shared/no-such-path-rehearsal-open/missing.txt",
+            facts_first,
+        );
+        assert_eq!(
+            app.error, "this link names nothing the app can open",
+            "facts first: {facts_first}"
+        );
+        assert!(app.startup_duck_link.is_empty(), "opened once");
+        let _ = app.update(AppMessage::DismissError);
+        assert!(app.error.is_empty());
+    }
+}
+
+/// And a well-formed one still lands where it points.
+#[test]
+fn a_well_formed_launch_link_still_opens_files() {
+    let app = launched_on(
+        "duck://files/shared/attachments/no-such-path-rehearsal-open/missing.txt",
+        true,
+    );
+    assert_eq!(app.shell_tab, ShellTab::View("files"));
+    assert_eq!(
+        app.fs_route,
+        "/shared/attachments/no-such-path-rehearsal-open/missing.txt"
+    );
+    assert!(app.error.is_empty());
+}
