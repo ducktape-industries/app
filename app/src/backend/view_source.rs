@@ -507,6 +507,7 @@ pub(crate) mod tests {
             files: Mutex::new(BTreeMap::new()),
             file_reads: Mutex::new(Vec::new()),
             index_views: Mutex::new(BTreeMap::new()),
+            release: Mutex::new(None),
             chain: Mutex::new(chain_status(7)),
         };
         fake_node(Arc::new(deployment)).await
@@ -550,6 +551,8 @@ pub(crate) mod tests {
         /// What `/v1/status` answers: the chain id the taste preference is
         /// keyed by and the height a scheduled swap is judged against.
         pub chain: Mutex<serde_json::Value>,
+        /// What `/v1/release` answers; `None` is a node that predates it (404).
+        pub release: Mutex<Option<serde_json::Value>>,
     }
 
     /// A `/v1/status` document at `height` on the fake chain.
@@ -571,6 +574,7 @@ pub(crate) mod tests {
                 files: Mutex::new(BTreeMap::new()),
                 file_reads: Mutex::new(Vec::new()),
                 index_views: Mutex::new(BTreeMap::new()),
+                release: Mutex::new(None),
                 chain: Mutex::new(chain_status(7)),
             })
         }
@@ -692,6 +696,11 @@ pub(crate) mod tests {
                         let (status_line, body) = if route == "/v1/status" {
                             let chain = deployment.chain.lock().unwrap().clone();
                             ("200 OK", chain.to_string().into_bytes())
+                        } else if route == "/v1/release" {
+                            match deployment.release.lock().unwrap().clone() {
+                                Some(doc) => ("200 OK", doc.to_string().into_bytes()),
+                                None => ("404 Not Found", Vec::new()),
+                            }
                         } else if route == "/v1/query" {
                             let hold = deployment.hold_status.lock().unwrap().take();
                             if let Some(hold) = hold {

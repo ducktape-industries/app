@@ -638,3 +638,133 @@ async fn an_unpublished_network_leaves_the_machine_untouched() {
         "quiet again"
     );
 }
+
+/// Logs captured while `run` runs, as text.
+fn logged(run: impl FnOnce()) -> String {
+    #[derive(Clone, Default)]
+    struct Log(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let log = Log::default();
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, run);
+    String::from_utf8(log.0.lock().unwrap().clone()).unwrap()
+}
+
+fn idle() -> Phase {
+    Phase::Idle(app_update::Idle {
+        current: Sha::digest(b"running"),
+        previous: None,
+        pinned_sequence: 0,
+    })
+}
+
+/// #81: `/v1/release` names the network's signer; anything else is no key,
+/// never an error.
+#[tokio::test(flavor = "current_thread")]
+async fn the_network_release_key_is_read_off_v1_release() {
+    let node = deployment();
+    let rpc = fake_node(node.clone()).await.origin().to_string();
+    assert_eq!(
+        network_release_key(&rpc).await,
+        None,
+        "404: a node before #2646"
+    );
+    for doc in [
+        serde_json::json!({}),
+        serde_json::json!({"release_keys": {}}),
+        serde_json::json!({"release_keys": {"app": "not hex"}}),
+    ] {
+        *node.release.lock().unwrap() = Some(doc.clone());
+        assert_eq!(network_release_key(&rpc).await, None, "{doc}");
+    }
+    let key = PublicKey::of(&release_key());
+    *node.release.lock().unwrap() = Some(serde_json::json!({
+        "release_keys": {"app": key.to_string(), "node": "ab".repeat(32)},
+        "height": 9,
+    }));
+    assert_eq!(network_release_key(&rpc).await, Some(key));
+    assert_eq!(network_release_key("").await, None, "no endpoint");
+
+    // a bare run (no launcher env here) pins nothing but remembers the key
+    // for the node command of that network, and only that network.
+    adopt_network_key("keynet#81", &rpc).await;
+    assert_eq!(release_key_for("keynet#81"), Some(key.to_string()));
+    assert_eq!(release_key_for("othernet#81"), None);
+    let step = crate::backend::shell::node_wait_step(
+        "/ws",
+        release_key_for("keynet#81").as_deref(),
+        0,
+        "",
+    );
+    assert!(
+        step.command.contains(&format!("--release-key {key}")),
+        "{}",
+        step.command
+    );
+}
+
+/// #81: an install with no pin takes the network's key as `ducktape-launcher
+/// install --release-key` writes it, and the channel arms at the next check.
+#[test]
+fn an_unpinned_install_pins_the_networks_key_and_arms() {
+    let updates = tempfile::tempdir().unwrap();
+    let key = PublicKey::of(&release_key());
+    let mut updater = Updater::new(idle(), None, UpdatePaths::under(updates.path()));
+    assert_eq!(
+        updater.tick(1_000, true),
+        None,
+        "no key: the channel is off"
+    );
+
+    assert!(!pin_network_key(Some(updates.path()), key));
+    let pinned = std::fs::read_to_string(updates.path().join("keys/release.pub")).unwrap();
+    assert_eq!(pinned, format!("{key}\n"));
+    assert_eq!(updater.tick(1_001, true), Some(Job::Fetch));
+    assert!(updater.reading().armed);
+    assert!(
+        !facts_of(Some(&updater.reading()), 1_001)
+            .note
+            .contains(KEY_DIFFERS)
+    );
+}
+
+/// #81: a pin is never replaced. The same key is nothing; another is kept,
+/// logged `release_key_pinned_differs` and said once in Settings. A bare run
+/// (no updates dir) pins nothing.
+#[test]
+fn a_pinned_key_is_kept_and_a_differing_one_is_said() {
+    let updates = tempfile::tempdir().unwrap();
+    let path = updates.path().join("keys/release.pub");
+    let key = PublicKey::of(&release_key());
+    let other = PublicKey::of(&ed25519::PrivateKey::from_seed(42));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, format!("{key}\n")).unwrap();
+    let log = logged(|| assert!(!pin_network_key(Some(updates.path()), key)));
+    assert!(!log.contains("release_key_pinned_differs"), "{log}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{key}\n"));
+
+    let log = logged(|| assert!(pin_network_key(Some(updates.path()), other)));
+    assert!(log.contains("release_key_pinned_differs"), "{log}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{key}\n"));
+    let reading = UpdateReading {
+        key_differs: true,
+        ..Updater::new(idle(), Some(keys()), UpdatePaths::under(updates.path())).reading()
+    };
+    assert_eq!(facts_of(Some(&reading), 0).note, KEY_DIFFERS);
+
+    let log = logged(|| assert!(!pin_network_key(None, other)));
+    assert!(log.is_empty(), "a bare run: {log}");
+}
