@@ -445,14 +445,18 @@ impl NotionEditor {
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                ui::menu_row(index == menu.selected, cx)
-                    .id(("application-suggestion", index))
-                    .test_support()
-                    .child(item.label.clone())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.run_suggestion_item(index, window, cx)
-                    }))
-                    .into_any_element()
+                ui::menu_row(
+                    SharedString::from(format!("application-suggestion/{}", item.tag)),
+                    item.label.clone(),
+                    index == menu.selected,
+                    cx,
+                )
+                .test_support()
+                .child(item.label.clone())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.run_suggestion_item(index, window, cx)
+                }))
+                .into_any_element()
             })
             .collect::<Vec<_>>();
         Some(
@@ -523,6 +527,10 @@ impl NotionEditor {
             }
 
             let selected = index == menu.selected;
+            let item_key = match item {
+                SuggestionItem::Mention(mention) => mention.id.clone(),
+                _ => item.title(),
+            };
             let leading = match item {
                 SuggestionItem::Block { icon, .. } => ui::icon(
                     icon,
@@ -553,14 +561,18 @@ impl NotionEditor {
             };
 
             rows.push(
-                ui::menu_row(selected, cx)
-                    .id(("suggestion", index))
-                    .child(leading)
-                    .child(item.title())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.run_suggestion_item(index, window, cx)
-                    }))
-                    .into_any_element(),
+                ui::menu_row(
+                    SharedString::from(format!("suggestion/{}/{}", item.group(), item_key)),
+                    item.title(),
+                    selected,
+                    cx,
+                )
+                .child(leading)
+                .child(item.title())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.run_suggestion_item(index, window, cx)
+                }))
+                .into_any_element(),
             );
         }
 

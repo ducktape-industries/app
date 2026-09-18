@@ -1,7 +1,12 @@
-//! Shared presentation helpers: icons, popover surfaces, toolbar buttons.
+//! Shared presentation helpers: icons, popover surfaces, toolbar buttons,
+//! and the accessibility helpers the app shares with this crate.
 
+use gpui_kit::component::button::Button;
 use gpui_kit::component::{ActiveTheme, ThemeStyled as _};
-use gpui_kit::{App, Div, InteractiveElement as _, IntoElement, SharedString, Styled as _, div};
+use gpui_kit::{
+    App, Div, ElementId, InteractiveElement, Interactivity, IntoElement, Role, SharedString,
+    Stateful, StatefulInteractiveElement, Styled as _, div,
+};
 
 use super::theme::ActiveEditorTheme;
 
@@ -39,10 +44,75 @@ pub fn popover_surface(cx: &App) -> Div {
     div().popover_style(cx).p(cx.editor_theme().rems(0.25))
 }
 
-/// A row in a menu: fixed height, hover fill, rounded.
-pub fn menu_row(selected: bool, cx: &App) -> Div {
+/// A clickable element as assistive technology meets it: in the tree as
+/// `role`, called `name`. The one way the editor and the app give a bare
+/// clickable div a role, so a role never arrives without a name.
+pub trait Control: StatefulInteractiveElement {
+    fn control(self, role: Role, name: impl Into<SharedString>) -> Self {
+        self.role(role).aria_label(name)
+    }
+}
+
+impl<E: StatefulInteractiveElement> Control for E {}
+
+/// An icon-only button. `name` is both its tooltip and its accessible name,
+/// so a tooltip is never the only thing that says what the button does.
+pub fn icon_button(
+    id: impl Into<ElementId>,
+    icon: &'static str,
+    name: impl Into<SharedString>,
+) -> Button {
+    let name = name.into();
+    Button::new(id)
+        .icon(Lucide(icon))
+        .tooltip(name.clone())
+        .accessibility_label(name)
+}
+
+/// The accessibility setters of any interactive element, kit widgets that
+/// do not expose them included. A widget still draws its own role and name
+/// over these when it renders; the states it leaves alone stay as set here.
+pub fn aria<E: InteractiveElement>(mut element: E, set: impl FnOnce(Aria<'_>) -> Aria<'_>) -> E {
+    set(Aria(element.interactivity()));
+    element
+}
+
+/// An element's accessibility properties, reached through its interactivity.
+pub struct Aria<'a>(&'a mut Interactivity);
+
+impl InteractiveElement for Aria<'_> {
+    fn interactivity(&mut self) -> &mut Interactivity {
+        self.0
+    }
+}
+
+impl StatefulInteractiveElement for Aria<'_> {}
+
+/// Reports `disabled` to assistive technology. GPUI has no setter for it:
+/// an element's own node is only reachable while its subtree is built.
+pub fn disabled<E: InteractiveElement>(element: E, disabled: bool) -> E {
+    if !disabled {
+        return element;
+    }
+    aria(element, |node| {
+        node.a11y_synthetic_children(|tree| tree.parent_node().set_disabled())
+    })
+}
+
+/// A row in a menu: fixed height, hover fill, rounded. In the tree as an
+/// option called `name`, reporting whether it is the selected one; `id`
+/// must come from the item itself, never its position.
+pub fn menu_row(
+    id: impl Into<ElementId>,
+    name: impl Into<SharedString>,
+    selected: bool,
+    cx: &App,
+) -> Stateful<Div> {
     let theme = cx.editor_theme();
     let row = div()
+        .id(id)
+        .control(Role::ListBoxOption, name)
+        .aria_selected(selected)
         .h(theme.rems(2.))
         .px(theme.rems(0.5))
         .flex()

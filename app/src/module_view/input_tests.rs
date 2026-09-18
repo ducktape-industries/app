@@ -633,11 +633,12 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
     let row = menu
         .items
         .iter()
-        .position(|item| item.label.contains("Ada Lovelace"))
+        .find(|item| item.label.contains("Ada Lovelace"))
+        .map(|item| gpui_kit::SharedString::from(format!("application-suggestion/{}", item.tag)))
         .expect("the WASM supplies the account directory");
     native.update(|window, cx| {
         window.render_frame(cx);
-        window.click(("application-suggestion", row), cx);
+        window.click(row, cx);
     });
     settle_native_documents(&mut native, &seat);
     let (rich, paint) = projection();

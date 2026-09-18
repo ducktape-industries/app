@@ -14,7 +14,7 @@ use super::actions;
 use super::block::BlockId;
 use super::block::BlockRegistry;
 use super::theme::ActiveEditorTheme;
-use super::ui::Lucide;
+use super::ui;
 use super::view::{Caret, NotionEditor, group_name};
 
 /// The payload carried while dragging a block.
@@ -106,21 +106,18 @@ impl NotionEditor {
 
         controls
             .child(
-                Button::new(("insert", id.0 as usize))
+                ui::icon_button(("insert", id.0 as usize), "plus", "Insert block")
                     .ghost()
                     .xsmall()
-                    .icon(Lucide("plus"))
-                    .tooltip("Insert block")
                     .on_click(cx.listener(move |this, _, window, cx| {
                         this.insert_block_below(id, window, cx)
                     })),
             )
             .child(
                 draggable(
-                    Button::new(("drag", id.0 as usize))
+                    ui::icon_button(("drag", id.0 as usize), "grip-vertical", "Block options")
                         .ghost()
                         .xsmall()
-                        .icon(Lucide("grip-vertical"))
                         .tooltip("Click for options, hold for drag")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.select_block_as_node(id, window, cx)

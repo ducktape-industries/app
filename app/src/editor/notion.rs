@@ -1165,15 +1165,15 @@ mod tests {
             window.render_frame(cx);
             match gesture {
                 MenuGesture::LinePick | MenuGesture::DividerPick => {
-                    let menu = window.find(("application-suggestion", 0usize)).bounds();
+                    let menu = window.find("application-suggestion/opaque-choice").bounds();
                     let block = window.find(("block", 3usize)).bounds();
                     assert!(
                         menu.top() >= block.bottom(),
                         "menu {menu:?} must follow the supplied block {block:?}"
                     );
-                    window.click(("application-suggestion", 0usize), cx);
+                    window.click("application-suggestion/opaque-choice", cx);
                 }
-                MenuGesture::Pick => window.click(("application-suggestion", 0usize), cx),
+                MenuGesture::Pick => window.click("application-suggestion/opaque-choice", cx),
                 MenuGesture::Dismiss => window.press("escape", cx),
                 MenuGesture::Move => window.press("left", cx),
             }

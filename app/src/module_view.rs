@@ -3710,10 +3710,14 @@ impl gpui_kit::Render for NativeModuleView {
             // than the pane is centred off both edges, and a reader loses
             // its start and its end — what failed, and what to do about it
             Err(reason) => {
-                let reason = gpui_kit::div()
-                    .id("view-unavailable")
-                    .max_w_full()
-                    .child(reason);
+                let reason =
+                    gpui_kit::div()
+                        .id("view-unavailable")
+                        .max_w_full()
+                        .child(gpui_kit::Text::new(
+                            "view-unavailable-reason".into(),
+                            reason.into(),
+                        ));
                 #[cfg(test)]
                 let reason = {
                     use gpui_kit::test::TestSupportExt as _;
