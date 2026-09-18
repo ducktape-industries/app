@@ -1999,23 +1999,34 @@ pub(crate) mod canary {
     }
 }
 
-/// Where the staged views are: `$DUCKTAPE_VIEWS_DIR`, else the workspace's
-/// `target/views`, `views/` beside the binary, or beside its profile directory — the shape
-/// `workspace_config::staged_modules_dir` gives the founding set.
+/// Where the staged views are: `$DUCKTAPE_VIEWS_DIR`, else `views/` beside the
+/// binary or beside its profile directory — the shape
+/// `workspace_config::staged_modules_dir` gives the founding set — and only
+/// then the build workspace's `target/views`, so a shipped install reads the
+/// views of its own release.
 pub(crate) fn views_dir() -> Result<PathBuf, String> {
-    if let Some(dir) = std::env::var_os("DUCKTAPE_VIEWS_DIR") {
+    find_views_dir(
+        std::env::var_os("DUCKTAPE_VIEWS_DIR"),
+        std::env::current_exe().map_err(|error| format!("current executable: {error}")),
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views"),
+    )
+}
+
+fn find_views_dir(
+    env: Option<std::ffi::OsString>,
+    exe: Result<PathBuf, String>,
+    workspace: &std::path::Path,
+) -> Result<PathBuf, String> {
+    if let Some(dir) = env {
         return Ok(PathBuf::from(dir));
     }
-    let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views");
-    if workspace.is_dir() {
-        return Ok(workspace);
-    }
-    let exe = std::env::current_exe().map_err(|error| format!("current executable: {error}"))?;
+    let exe = exe?;
     let exe_dir = exe.parent().ok_or("the executable has no directory")?;
     [Some(exe_dir), exe_dir.parent()]
         .into_iter()
         .flatten()
         .map(|dir| dir.join("views"))
+        .chain([workspace.to_path_buf()])
         .find(|dir| dir.is_dir())
         .ok_or_else(|| {
             format!(
@@ -4799,6 +4810,30 @@ pub(crate) mod tests {
             staged.display()
         );
         None
+    }
+
+    /// A shipped install reads the `views/` of its own release even when the
+    /// build workspace's `target/views` exists; that directory is the last
+    /// fallback, and `DUCKTAPE_VIEWS_DIR` overrides both.
+    #[test]
+    fn a_release_reads_the_views_beside_its_binary_before_the_workspace() {
+        let root = tempfile::tempdir().expect("a scratch dir");
+        let release = root.path().join("release");
+        let workspace = root.path().join("workspace/target/views");
+        std::fs::create_dir_all(release.join("views")).expect("the release views");
+        std::fs::create_dir_all(&workspace).expect("the workspace views");
+        let found = |env: Option<&str>, exe: std::path::PathBuf| {
+            find_views_dir(env.map(Into::into), Ok(exe), &workspace).expect("a views dir")
+        };
+
+        let shipped = release.join("ducktape-app");
+        assert_eq!(found(None, shipped.clone()), release.join("views"));
+        assert_eq!(
+            found(Some("/override"), shipped),
+            PathBuf::from("/override")
+        );
+        let bare = root.path().join("bare/bin/ducktape-app");
+        assert_eq!(found(None, bare), workspace);
     }
 
     /// The staged Call view through the host, on the share picker: the rows the
