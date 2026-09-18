@@ -1234,6 +1234,8 @@ impl DesktopWindow {
                                 )
                                 .ghost()
                                 .flex_1()
+                                .min_w_0()
+                                .truncate()
                                 .when(picked, |button| button.secondary()),
                             )
                             .when(node_toml, |row| {
@@ -1244,7 +1246,8 @@ impl DesktopWindow {
                                         Message::ClearNetworkEndpoint(network.id.clone()),
                                         busy,
                                     )
-                                    .ghost(),
+                                    .ghost()
+                                    .flex_shrink_0(),
                                 )
                             })
                             .child(
@@ -1254,7 +1257,8 @@ impl DesktopWindow {
                                     Message::ForgetNetworkSubmit(network.id),
                                     busy,
                                 )
-                                .ghost(),
+                                .ghost()
+                                .flex_shrink_0(),
                             ),
                     );
                 }

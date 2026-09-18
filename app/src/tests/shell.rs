@@ -878,6 +878,41 @@ fn a_refused_row_offers_the_update_on_the_launch_window() {
         .unwrap();
 }
 
+/// A LONG ROW KEEPS ITS WAY OUT (#105). The row's label never shrank below
+/// its text, so a long one pushed Use node.toml and Forget out of the launch
+/// window. That happened exactly when they were needed: on an override that
+/// another network answers, where the console does not open. The label
+/// truncates, and the actions stay inside the window.
+#[test]
+fn a_long_row_label_keeps_its_actions_in_the_launch_window() {
+    use gpui_kit::test::TestWindowExt as _;
+    let id = "c6scratch-staging-east#0e1b62f1";
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Networks;
+    app.hub_networks = vec![backend::HubNetwork {
+        name: "c6scratch-staging-east".into(),
+        endpoint_override: "http://127.0.0.1:29489".into(),
+        live: false,
+        another_network: true,
+        ..refused_workspace_row(id, "http://127.0.0.1:29489")
+    }];
+    app.hub_selected = id.into();
+    let (mut native, window, _) = onboarding_window(app);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            let width = window.viewport_size().width;
+            for action in ["node-toml", "forget"] {
+                let bounds = window.find(format!("{action}/{id}")).bounds();
+                assert!(
+                    bounds.left() >= gpui_kit::px(0.) && bounds.right() <= width,
+                    "{action} {bounds:?} leaves the {width:?} window"
+                );
+            }
+        })
+        .unwrap();
+}
+
 /// `Rendered` is the launcher's contract, not the release channel's: an app
 /// the launcher started (`DUCKTAPE_RELEASE` + `DUCKTAPE_UPDATE_STATE`) on an
 /// install that pins no release key still settles a flipped release when
