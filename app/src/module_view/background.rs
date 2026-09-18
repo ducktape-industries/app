@@ -389,9 +389,7 @@ mod tests {
     use super::*;
 
     fn call_guest() -> Guest {
-        let path = super::super::views_dir()
-            .expect("staged views")
-            .join("call_view.wasm");
+        let path = super::super::tests::staged("call").expect("staged views");
         Guest::load_from("call", &path)
             .expect("stage the call guest with ops/build-views.sh -p call-view")
     }

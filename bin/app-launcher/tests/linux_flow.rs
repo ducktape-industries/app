@@ -52,35 +52,29 @@ impl Rig {
     }
 
     /// A release source: `ducktape-app` is a script that prints its pid, env
-    /// and argv, tagged with `build`; `views/` holds one wasm.
+    /// and argv, tagged with `build`.
     fn build(&self, build: &str) -> (PathBuf, Sha) {
         let dir = self.home.join(format!("build-{build}"));
-        fs::create_dir_all(dir.join("views")).unwrap();
+        fs::create_dir_all(&dir).unwrap();
         let script = format!(
             "#!/bin/sh\necho build={build}\necho release=$DUCKTAPE_RELEASE\necho state=$DUCKTAPE_UPDATE_STATE\necho pid=$$\nfor a in \"$@\"; do echo arg=$a; done\n"
         );
         let app = dir.join("ducktape-app");
         fs::write(&app, &script).unwrap();
         fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(dir.join("views").join("x_view.wasm"), b"\0asm").unwrap();
         (dir, Sha::digest(script.as_bytes()))
     }
 
-    /// Stage a release the way the app would: a complete `releases/<sha>`.
-    fn stage(&self, build: &str, with_views: bool) -> Sha {
+    /// Stage a release the way the app would: a complete `releases/<sha>`,
+    /// or — `with_app` false — one missing its app.
+    fn stage(&self, build: &str, with_app: bool) -> Sha {
         let (source, sha) = self.build(build);
         let dir = self.release_dir(sha);
         fs::create_dir_all(&dir).unwrap();
-        fs::copy(source.join("ducktape-app"), dir.join("ducktape-app")).unwrap();
-        fs::copy(LAUNCHER, dir.join("ducktape-launcher")).unwrap();
-        if with_views {
-            fs::create_dir_all(dir.join("views")).unwrap();
-            fs::copy(
-                source.join("views").join("x_view.wasm"),
-                dir.join("views").join("x_view.wasm"),
-            )
-            .unwrap();
+        if with_app {
+            fs::copy(source.join("ducktape-app"), dir.join("ducktape-app")).unwrap();
         }
+        fs::copy(LAUNCHER, dir.join("ducktape-launcher")).unwrap();
         sha
     }
 
@@ -317,12 +311,12 @@ fn a_staged_release_that_fails_to_qualify_stays_staged_and_the_current_one_runs(
     assert!(stdout(&booted).contains(&format!("release={sha_a}")));
     let err = stderr(&booted);
     assert!(err.contains("app_update_refused"), "{err}");
-    assert!(err.contains("views_missing"), "{err}");
+    assert!(err.contains("executable_missing"), "{err}");
     // the reason is persisted, so the app that comes up can say why (#57).
     let Phase::Staged(after) = rig.read_state() else {
         panic!("{:?}", rig.read_state());
     };
-    assert_eq!(after.refused.as_deref(), Some("views_missing"));
+    assert_eq!(after.refused.as_deref(), Some("executable_missing"));
     let unrefused = Staged {
         refused: None,
         ..after
@@ -351,7 +345,7 @@ fn a_staged_release_that_fails_to_qualify_stays_staged_and_the_current_one_runs(
         .output()
         .unwrap();
     assert!(!qualify.status.success());
-    assert_eq!(stdout(&qualify).trim(), "views_missing");
+    assert_eq!(stdout(&qualify).trim(), "executable_missing");
 
     // a launcher outside the staged release may not qualify it.
     let elsewhere = rig
@@ -401,14 +395,9 @@ fn a_release_dir_that_is_a_symlink_is_refused_at_the_flip() {
     );
     let (source_b, sha_b) = rig.build("B");
     let outside = rig.home.join("outside");
-    fs::create_dir_all(outside.join("views")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
     fs::copy(source_b.join("ducktape-app"), outside.join("ducktape-app")).unwrap();
     fs::copy(LAUNCHER, outside.join("ducktape-launcher")).unwrap();
-    fs::copy(
-        source_b.join("views/x_view.wasm"),
-        outside.join("views/x_view.wasm"),
-    )
-    .unwrap();
     std::os::unix::fs::symlink(&outside, rig.release_dir(sha_b)).unwrap();
     rig.write_state(&staged(sha_a, sha_b));
     let booted = rig.installed_launcher(&[]);
@@ -468,7 +457,7 @@ fn a_reinstall_of_a_newer_build_keeps_the_old_one_as_previous() {
 }
 
 /// The release as packaging stages it: the Linux archive holds
-/// `{ducktape-launcher, ducktape-app, views/}` at its root, which is exactly
+/// `{ducktape-launcher, ducktape-app}` at its root, which is exactly
 /// the directory `install --from` takes. It installs under the launcher IT
 /// ships (byte for byte, never the one running `install`), and that launcher
 /// boots the app. Packing the archive is core's `ops/release/archive.sh` and

@@ -12,12 +12,13 @@
 //! instead of the active one. Nothing on-chain moves for it.
 //!
 //! Every reading here is strict. A registry reply of another shape, a module
-//! the registry does not list or lists twice, a hash that is not 32 bytes,
-//! a fetch that fails or a body that does not hash to what was asked for is
-//! an [`Error`], never a fallback to a desktop resource. The only quiet
-//! outcomes are the two the network itself asserts: a module admitted but
-//! not yet activated ([`ViewSource::NotActivated`]) and a verified
-//! deployment that ships no view ([`ViewSource::Missing`]).
+//! the registry lists twice, a hash that is not 32 bytes, a fetch that fails
+//! or a body that does not hash to what was asked for is an [`Error`], never
+//! a fallback to a desktop resource. The only quiet outcomes are the three
+//! the network itself asserts: an id it does not list
+//! ([`ViewSource::NotRegistered`]), a module admitted but not yet activated
+//! ([`ViewSource::NotActivated`]) and a verified deployment that ships no
+//! view ([`ViewSource::Missing`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -35,8 +36,9 @@ pub use super::view_artifact::Error as FetchError;
 /// The BUILT-IN surfaces whose view is drawn by the module's own artifact:
 /// each has a props builder of its own and is asked of the connected node at
 /// connect and again at every block that moves its deployment. Every other
-/// view off the node is a registry-listed `Kind::View` entry, seated from
-/// `module_status` alone.
+/// view is a registry-listed `Kind::View` entry, seated from `module_status`
+/// alone — the chrome's own (`members`, `settings`, `palette`, …) included:
+/// nothing the app draws ships beside its binary.
 ///
 /// Most are tabs, with a `ShellTab` arm and an intent decoder each. `inbox`
 /// is not: it is the bell overlay's body, seated in the overlay's own slot
@@ -44,16 +46,6 @@ pub use super::view_artifact::Error as FetchError;
 /// lazily, because the count beside the rail is a headless run of this same
 /// view and it is wanted at connect.
 pub const MODULE_OWNED: [&str; 6] = ["governance", "files", "pages", "chat", "forge", "inbox"];
-
-/// The desktop's own views, staged beside the binary and asked for at boot.
-/// Every view that is not one of these comes off the connected node.
-pub const DESKTOP_OWNED: [&str; 6] = [
-    "members", "agents", "node", "explorer", "settings", "palette",
-];
-
-pub fn desktop_owned(module: &str) -> bool {
-    DESKTOP_OWNED.contains(&module)
-}
 
 /// The assets a deployment ships beside its view, by canonical relative
 /// path. Shared between the guest and the host surfaces that paint them,
@@ -81,6 +73,8 @@ impl std::error::Error for Error {}
 
 #[derive(Debug, PartialEq)]
 pub enum ViewSource {
+    /// The registry does not list the id: this network has not registered it.
+    NotRegistered,
     /// Admitted, but no activation has reached its boundary yet.
     NotActivated,
     /// The active deployment verified, and it ships no view.
@@ -251,9 +245,12 @@ pub async fn resolve(
         Some(hash) => hash,
         None => {
             let started = Instant::now();
-            let active = active_hash(client, module).await;
+            let entries = active_hashes(client).await;
             asked.status = started.elapsed();
-            let Some(hash) = active? else {
+            let Some(entry) = entries?.remove(module) else {
+                return Ok(ViewSource::NotRegistered);
+            };
+            let Some(hash) = entry.hash else {
                 return Ok(ViewSource::NotActivated);
             };
             hash
@@ -1021,10 +1018,6 @@ pub(crate) mod tests {
                     {"module_id": "files", "kind": "module", "active_code_hash": vec![8u8; 32], "pending": null, "history": []}
                 ]}}),
             ),
-            (
-                "not registered",
-                serde_json::json!({"module_status": {"modules": []}}),
-            ),
         ] {
             let client = node(status, Some(with_view()), None).await;
             assert!(
@@ -1035,6 +1028,32 @@ pub(crate) mod tests {
                 "{case}"
             );
         }
+    }
+
+    /// An id the registry does not list is the network's word, not a
+    /// registry the reader fails to understand: this network has not
+    /// registered it, and nothing is fetched for it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_id_the_registry_does_not_list_is_not_registered() {
+        let client = node(status_of(&[7; 32]), None, None).await;
+        assert_eq!(
+            resolve(&client, "members", None, &mut Asked::default())
+                .await
+                .unwrap(),
+            ViewSource::NotRegistered
+        );
+        let empty = node(
+            serde_json::json!({"module_status": {"modules": []}}),
+            None,
+            None,
+        )
+        .await;
+        assert_eq!(
+            resolve(&empty, "files", None, &mut Asked::default())
+                .await
+                .unwrap(),
+            ViewSource::NotRegistered
+        );
     }
 
     /// The taste set is every `(module, hash)` an open code ballot names

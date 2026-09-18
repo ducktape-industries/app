@@ -140,14 +140,20 @@ fn no_shell_tab_arm_names_a_view() {
         body.contains("View(&'staticstr)"),
         "a tab carries its view's id: {body}"
     );
-    for view in crate::backend::view_source::DESKTOP_OWNED.iter().chain(&[
+    for view in [
+        "members",
+        "agents",
+        "node",
+        "explorer",
+        "settings",
+        "palette",
         "chat",
         "pages",
         "forge",
         "files",
         "governance",
         "home",
-    ]) {
+    ] {
         let arm = format!("{}{}", view[..1].to_uppercase(), &view[1..]);
         assert!(
             !body.contains(&arm),
@@ -160,9 +166,8 @@ fn no_shell_tab_arm_names_a_view() {
         !shell.contains("constCHAT:ShellTab") && !shell.contains("ShellTab::CHAT"),
         "a per-view constant is the same hardcoding, spelled as data"
     );
-    // the strip's rows come from the registry plus the app-served ids
+    // the strip's rows come from the registry
     assert!(shell.contains("crate::module_view::registered_views()"));
-    assert!(shell.contains("crate::backend::view_source::desktop_owned(view)"));
 }
 /// GPUI dispatches a modifier change to its OWN listener list, never to key
 /// listeners, so the guest's modifier state has to be registered with

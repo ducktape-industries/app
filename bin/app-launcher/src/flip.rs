@@ -400,8 +400,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let bundle = |dir: &Path, app: &[u8]| {
             let bin = bundle_bin_dir(dir);
-            std::fs::create_dir_all(bin.join("views")).unwrap();
-            std::fs::write(bin.join("views/home_view.wasm"), b"wasm").unwrap();
+            std::fs::create_dir_all(&bin).unwrap();
             for (name, bytes) in [("ducktape-app", app), ("ducktape-launcher", b"l")] {
                 std::fs::write(bin.join(name), bytes).unwrap();
                 std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))

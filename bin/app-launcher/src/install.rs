@@ -18,7 +18,7 @@ use tracing::info;
 
 use crate::flip;
 use crate::fs;
-use crate::layout::{APP_EXE, BUNDLE, LAUNCHER_EXE, Layout, Platform, VIEWS_DIR, bundle_bin_dir};
+use crate::layout::{APP_EXE, BUNDLE, LAUNCHER_EXE, Layout, Platform, bundle_bin_dir};
 use crate::plan::{self, Link};
 use crate::refusal::Refusal;
 
@@ -67,8 +67,6 @@ fn install_linux(layout: &Layout, from: &Path) -> Result<Sha, Refusal> {
     let source_app = from.join(APP_EXE);
     fs::require_executable(&source_app)
         .map_err(|refusal| Refusal::new("source_app_missing", refusal.detail))?;
-    fs::require_views(from)
-        .map_err(|refusal| Refusal::new("source_views_missing", refusal.detail))?;
     let sha = fs::digest_file(&source_app)?;
     std_fs::create_dir_all(&layout.install_dir)
         .map_err(|error| Refusal::io("install_root_not_writable", &layout.install_dir, &error))?;
@@ -96,8 +94,8 @@ fn install_linux(layout: &Layout, from: &Path) -> Result<Sha, Refusal> {
     Ok(sha)
 }
 
-/// `releases/<sha>/{ducktape-app, ducktape-launcher, views/*.wasm}`, built
-/// beside its final name and renamed into place.
+/// `releases/<sha>/{ducktape-app, ducktape-launcher}`, built beside its
+/// final name and renamed into place.
 fn seed_linux(layout: &Layout, from: &Path, sha: Sha) -> Result<(), Refusal> {
     let release_dir = layout.release_dir(sha);
     fs::refuse_symlink(&release_dir)?;
@@ -106,11 +104,9 @@ fn seed_linux(layout: &Layout, from: &Path, sha: Sha) -> Result<(), Refusal> {
     }
     let seed = seed_dir(&release_dir);
     let _ = std_fs::remove_dir_all(&seed);
-    std_fs::create_dir_all(seed.join(VIEWS_DIR))
-        .map_err(|error| Refusal::io("seed_failed", &seed, &error))?;
+    std_fs::create_dir_all(&seed).map_err(|error| Refusal::io("seed_failed", &seed, &error))?;
     fs::install_file(&from.join(APP_EXE), &seed.join(APP_EXE), 0o755)?;
     fs::install_file(&launcher_source(from)?, &seed.join(LAUNCHER_EXE), 0o755)?;
-    copy_views(&from.join(VIEWS_DIR), &seed.join(VIEWS_DIR))?;
     std_fs::rename(&seed, &release_dir)
         .map_err(|error| Refusal::io("seed_failed", &release_dir, &error))
 }
@@ -119,8 +115,6 @@ fn install_macos(layout: &Layout, from: &Path) -> Result<Sha, Refusal> {
     let source_bin = bundle_bin_dir(from);
     fs::require_executable(&source_bin.join(APP_EXE))
         .map_err(|refusal| Refusal::new("source_app_missing", refusal.detail))?;
-    fs::require_views(&source_bin)
-        .map_err(|refusal| Refusal::new("source_views_missing", refusal.detail))?;
     let sha = fs::digest_file(&source_bin.join(APP_EXE))?;
     std_fs::create_dir_all(layout.releases_dir())
         .map_err(|error| Refusal::io("seed_failed", &layout.releases_dir(), &error))?;
@@ -226,20 +220,6 @@ fn launcher_source(from: &Path) -> Result<PathBuf, Refusal> {
 
 fn own_exe() -> Result<PathBuf, Refusal> {
     std::env::current_exe().map_err(|error| Refusal::new("self_unknown", error.to_string()))
-}
-
-fn copy_views(from: &Path, to: &Path) -> Result<(), Refusal> {
-    let entries = std_fs::read_dir(from)
-        .map_err(|error| Refusal::io("source_views_missing", from, &error))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| Refusal::io("source_views_missing", from, &error))?;
-        let is_wasm = entry.path().extension().is_some_and(|ext| ext == "wasm");
-        if !is_wasm {
-            continue;
-        }
-        fs::install_file(&entry.path(), &to.join(entry.file_name()), 0o644)?;
-    }
-    Ok(())
 }
 
 fn seed_dir(release_dir: &Path) -> PathBuf {

@@ -267,7 +267,7 @@ async fn a_window_on_an_unseen_room_lands_instead_of_failing() {
 /// as anyone watched, on "session view was removed": the workspace load asked
 /// the deployed Chat view for its landing room, and a verified deployment
 /// without a view is not something a retry changes. The console never opened,
-/// so the desktop's own tabs were out of reach too.
+/// so every other tab was out of reach too.
 ///
 /// The sim's founding set less its `.view.wasm` files is such a set (core
 /// commits the founding views since ducktape#2629). The workspace opens on
@@ -361,9 +361,7 @@ async fn a_chat_that_ships_no_view_still_opens_the_workspace() {
             std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();
         }
     }
-    let view = crate::module_view::views_dir()
-        .expect("staged views")
-        .join("chat_view.wasm");
+    let view = crate::module_view::tests::staged("chat").expect("staged views");
     std::fs::copy(view, modules.path().join("chat.view.wasm")).unwrap();
     let (sim, origin) = founded(storage.path(), modules.path().into(), &founder).await;
     submit_test(
@@ -399,9 +397,7 @@ async fn chat_round_trips_over_signed_frames() {
             std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();
         }
     }
-    let view = crate::module_view::views_dir()
-        .expect("staged views")
-        .join("chat_view.wasm");
+    let view = crate::module_view::tests::staged("chat").expect("staged views");
     std::fs::copy(view, modules.path().join("chat.view.wasm")).unwrap();
     let artifact = workspace_config::read_module_artifact(modules.path(), "chat").unwrap();
     let signer = ed25519::PrivateKey::from_seed(7);

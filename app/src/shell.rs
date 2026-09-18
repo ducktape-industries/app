@@ -1940,7 +1940,7 @@ impl DesktopWindow {
                         .child(heading),
                 );
             }
-            for NavRow { view, label, bytes } in section.rows {
+            for NavRow { view, label } in section.rows {
                 let tab = ShellTab::View(view);
                 let selected = tab == selected_tab;
                 // a row's element id is the view's registry id, never its
@@ -1953,20 +1953,6 @@ impl DesktopWindow {
                     selected,
                     true,
                 )
-                .when(bytes == TabBytes::Desktop, |row| {
-                    // WHERE THE BYTES COME FROM, on the row. Every other tab
-                    // is served by the connected node's registry and changes
-                    // when a deployment does; these ship with this app build,
-                    // and a reader deciding whether a tab is the network's or
-                    // the app's should not have to know a list by heart.
-                    row.child(
-                        div()
-                            .flex_shrink_0()
-                            .text_size(px(9.5))
-                            .text_color(ink.muted)
-                            .child("app"),
-                    )
-                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.model.update(cx, |model, cx| {
@@ -2966,25 +2952,12 @@ impl DesktopWindow {
     }
 }
 
-/// WHO SERVES A TAB'S BYTES.
-///
-/// A tab is a seated view, and a view either comes off the connected node's
-/// registry — where a deployment changes it at a block — or ships with this
-/// app build (`backend::view_source::DESKTOP_OWNED`, which holds the
-/// credential doors and the node's own instruments). The rail says which, on
-/// the row.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TabBytes {
-    Network,
-    Desktop,
-}
-
-/// One row of the rail: the view it seats, the name it draws, and who serves
-/// it. No row names a `ShellTab` arm — there are none to name.
+/// One row of the rail: the view it seats and the name it draws. Every
+/// row's bytes are the connected node's registry entry — nothing ships with
+/// this app build. No row names a `ShellTab` arm — there are none to name.
 struct NavRow {
     view: &'static str,
     label: String,
-    bytes: TabBytes,
 }
 
 /// A run of rows under one heading. `foot` pushes the run to the bottom of
@@ -3013,10 +2986,6 @@ fn navigation_rows(label: &dyn Fn(&'static str) -> String) -> Vec<NavSection> {
     let row = |view: &'static str| NavRow {
         view,
         label: label(view),
-        bytes: match crate::backend::view_source::desktop_owned(view) {
-            true => TabBytes::Desktop,
-            false => TabBytes::Network,
-        },
     };
     // the dashboard leads the rail, above every section: it is the network at
     // a glance, not a workspace tool or a network tool
@@ -3028,17 +2997,16 @@ fn navigation_rows(label: &dyn Fn(&'static str) -> String) -> Vec<NavSection> {
         .collect();
     // the registry's other entries are workspace tools: they follow the ones
     // this build arranges, in the registry's order, named by their manifests.
-    // `call` is seated by the huddle dock, not by a tab.
+    // `call` is seated by the huddle dock, `palette` over the window and
+    // `settings` at the foot, not by a workspace row.
     let arranged = |view: &&'static str| {
-        WORKSPACE_ARRANGEMENT.contains(view) || NETWORK_ARRANGEMENT.contains(view)
+        WORKSPACE_ARRANGEMENT.contains(view)
+            || NETWORK_ARRANGEMENT.contains(view)
+            || [HOME_VIEW, "call", "palette", "settings"].contains(view)
     };
     let workspace = WORKSPACE_ARRANGEMENT
         .into_iter()
-        .chain(
-            registered
-                .into_iter()
-                .filter(|view| *view != HOME_VIEW && *view != "call" && !arranged(view)),
-        )
+        .chain(registered.into_iter().filter(|view| !arranged(view)))
         .map(row)
         .collect();
     vec![

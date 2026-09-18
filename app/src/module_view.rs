@@ -1,10 +1,10 @@
 //! Module-owned views. A Rust WASM screen built from `crates/views` is
-//! loaded either from the deployed artifact of the module it belongs to
+//! loaded from the deployed artifact of the registry entry it belongs to
 //! (`backend::view_source`: the registry's ACTIVE code hash, fetched and
-//! verified, never a desktop substitute) or, for the desktop's own views,
-//! FROM A FILE beside the binary (`make views` stages the revision
-//! `ops/views.rev` pins into `target/views`; `DUCKTAPE_VIEWS_DIR` points at
-//! another staged set); it is
+//! verified, never a desktop substitute) — the chrome's own views included:
+//! nothing wasm ships beside the binary, and with no node there is no view.
+//! A view developer's `DUCKTAPE_VIEWS_DIR` ([`override_views_from`]) is the
+//! one exception, and says so in app.log for every view it supplies. It is
 //! ticked inside a fuel and time budget, and presented through native
 //! gpui-kit controls in its tab.
 //!
@@ -32,6 +32,7 @@ pub(crate) fn runtime() -> tokio::runtime::Handle {
 
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -876,6 +877,37 @@ fn registered_modules() -> &'static Mutex<Vec<String>> {
     MODULES.get_or_init(Mutex::default)
 }
 
+/// The connection revision [`registered_modules`] was last read for (none
+/// yet: `u64::MAX`): a listing is this node's word only while the revision
+/// is still the connection's.
+static LISTED_AT: AtomicU64 = AtomicU64::new(u64::MAX);
+
+/// The sentence a seat shows for an id the connected network does not list.
+fn not_registered(module: &str) -> String {
+    format!("This network has not registered the {module} view.")
+}
+
+/// What a seat no source event has asked for (`generation` 0) shows once
+/// the connected node's registry has been read without it: the network has
+/// not registered that view. A tab first drawn after the read — the rail
+/// names the chrome's views whether the network lists them or not — has
+/// nobody left to ask for it, and must not say "Loading" for good. The
+/// registry's next listing of it seats it like any view.
+fn unlisted(module: &str, generation: u64) -> Option<String> {
+    use std::sync::atomic::Ordering;
+    if generation != 0 {
+        return None;
+    }
+    let rev = connection().lock().expect("views rpc").rev;
+    let read = LISTED_AT.load(Ordering::SeqCst) == rev;
+    let listed = registered_modules()
+        .lock()
+        .expect("registered modules")
+        .iter()
+        .any(|id| id == module);
+    (read && !listed).then(|| not_registered(module))
+}
+
 pub fn registered_module_ids() -> Vec<String> {
     registered_modules()
         .lock()
@@ -1128,9 +1160,9 @@ pub(crate) fn intern(id: &str) -> &'static str {
 
 /// The widget for one module's view, with `props` as the app has them now.
 /// Drawing never starts a load, and never finds one on its way: the view
-/// was asked for when its source was — the staged file at boot
-/// ([`booted`]), the node's deployment at connect ([`connected`]) — and
-/// both hand every view over before anything draws. A block that moves the
+/// was asked for when its source was — the node's deployment at connect
+/// ([`connected`]), or its registry listing — and the connect hands every
+/// view over before anything draws. A block that moves the
 /// deployment ([`deployments_checked`]) reloads the view in place: the tab
 /// keeps the one it has until the replacement is ready.
 pub(crate) struct ViewSpec {
@@ -1196,11 +1228,11 @@ pub fn connected(client: &ducktape_rpc::Client) -> Loads {
         .iter()
         .filter_map(|(module, mounted)| {
             let mut locked = mounted.lock().expect("module view lock");
-            let desktop_view = crate::backend::view_source::desktop_owned(module);
+            let overridden = view_override(module).is_some();
             let seated = matches!(locked.slot, Slot::Ready(_));
-            // the desktop's own view is the same on every node: one seated,
-            // or on its way from the staged file, is left alone
-            let left_alone = desktop_view && (seated || locked.in_flight);
+            // a view the developer's override supplies is the same on every
+            // node: one seated, or on its way from the file, is left alone
+            let left_alone = overridden && (seated || locked.in_flight);
             if left_alone {
                 if let Slot::Ready(guest) = &mut locked.slot {
                     guest.reconnect(snapshot.rev);
@@ -1273,8 +1305,8 @@ fn spawn_registry_read(asked_of: Connection) -> std::thread::JoinHandle<()> {
 
 /// The registry's `Kind::View` entries become the registered tab set, in
 /// registry order; one not seated yet is seated and loaded, one no longer
-/// listed is dropped with its seat (its tab disappears). The built-in and
-/// desktop seats are never touched here. Under the registry lock.
+/// listed is dropped with its seat (its tab disappears). The built-in
+/// module seats are never touched here. Under the registry lock.
 fn seat_registered_views(
     registry: &mut HashMap<&'static str, Arc<Mutex<Mounted>>>,
     entries: &std::collections::BTreeMap<String, crate::backend::view_source::Entry>,
@@ -1311,32 +1343,14 @@ fn seat_registered_views(
     }
     *registered = listed;
     *registered_modules().lock().expect("registered modules") = entries.keys().cloned().collect();
+    LISTED_AT.store(asked_of.rev, std::sync::atomic::Ordering::SeqCst);
     loads
 }
 
-/// The desktop's own views, staged beside the binary: every one is asked
-/// for at boot, on its own thread, and `main` [joins](Loads::joined) them
-/// before the window, so the first draw of any of their tabs finds the
-/// view there.
-pub fn booted() -> Loads {
-    let mut registry = registry().lock().expect("module views");
-    let snapshot = connection().lock().expect("views rpc").clone();
-    let loads = crate::backend::view_source::DESKTOP_OWNED
-        .into_iter()
-        .map(|module| {
-            let mounted = registry.entry(module).or_insert_with(Mounted::seat);
-            let generation = mounted.lock().expect("module view lock").start(None);
-            spawn_load(module, mounted, generation, snapshot.clone())
-        })
-        .collect();
-    Loads(loads)
-}
-
-/// The loads one source event started, each on its own thread. The boot
-/// and the connect hand their views over — the boot joins them before the
-/// window, the connect settles them before it answers — so a tab never
-/// draws a seat with its answer still on the way. A block's loads swap in
-/// place and are waited on by nobody but a test.
+/// The loads one source event started, each on its own thread. The connect
+/// hands its views over — it settles them before it answers — so a tab
+/// never draws a seat with its answer still on the way. A block's loads
+/// swap in place and are waited on by nobody but a test.
 pub struct Loads(Vec<std::thread::JoinHandle<()>>);
 
 impl Loads {
@@ -1423,7 +1437,7 @@ async fn deployments_check() -> Loads {
     }
     let reloads = registry
         .iter()
-        .filter(|(module, _)| !crate::backend::view_source::desktop_owned(module))
+        .filter(|(module, _)| view_override(module).is_none())
         .filter_map(|(module, mounted)| {
             let mut locked = mounted.lock().expect("module view lock");
             // a module the node does not run has no deployment to move
@@ -1641,9 +1655,9 @@ pub(crate) fn ships_no_view(module: &str) -> bool {
 /// Loads the view on its own thread — a cold cranelift compile is a second
 /// or more; the window thread shows "Loading" instead of freezing for it —
 /// and installs it only if `mounted` still waits for this very load AND,
-/// for a module's view, the app is still on the node it was asked of. The
-/// desktop's own view is the same on every node: its load lands wherever
-/// the app has moved to meanwhile.
+/// for a network's view, the app is still on the node it was asked of. A
+/// view the developer's override supplies is the same on every node: its
+/// load lands wherever the app has moved to meanwhile.
 fn spawn_load(
     module: &'static str,
     mounted: &Arc<Mutex<Mounted>>,
@@ -1663,7 +1677,7 @@ fn spawn_load(
         // seat, so the revision read here is the one the seat installs
         // against — and `connected` reconnects a seat it passed already
         let current_rev = connection().lock().expect("views rpc").rev;
-        let from_the_node = !crate::backend::view_source::desktop_owned(module);
+        let from_the_node = view_override(module).is_none();
         let node_since_left = current_rev != asked_of.rev;
         if from_the_node && node_since_left {
             return;
@@ -1924,9 +1938,7 @@ pub(crate) mod canary {
             connection.client = Some(client.clone());
             connection.rev += 1;
         }
-        let path = super::views_dir()
-            .expect("staged views")
-            .join("chat_view.wasm");
+        let path = super::tests::staged("chat").expect("staged views");
         let guest = super::Guest::load_from("chat", &path).expect("build the current Chat view");
         let source = super::mounted("chat");
         let mut source = source.lock().unwrap();
@@ -2008,41 +2020,24 @@ pub(crate) mod canary {
     }
 }
 
-/// Where the staged views are: `$DUCKTAPE_VIEWS_DIR`, else `views/` beside the
-/// binary or beside its profile directory — the shape
-/// `workspace_config::staged_modules_dir` gives the founding set — and only
-/// then the build workspace's `target/views`, so a shipped install reads the
-/// views of its own release.
-pub(crate) fn views_dir() -> Result<PathBuf, String> {
-    find_views_dir(
-        std::env::var_os("DUCKTAPE_VIEWS_DIR"),
-        std::env::current_exe().map_err(|error| format!("current executable: {error}")),
-        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views"),
-    )
+/// A VIEW DEVELOPER'S OVERRIDE, and nothing else: the directory `main`
+/// reads out of `DUCKTAPE_VIEWS_DIR`. While it is set, `<id>_view.wasm` in
+/// it is loaded for any view the app seats, in place of the network's
+/// artifact — unverified, and said so in app.log by a `view_source`
+/// `state=Overridden` line each time it is loaded. Unset, which is every
+/// release, the network's artifact is the only source a view has.
+static VIEW_OVERRIDE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// Sets (or, with `None`, clears) the developer's override directory.
+pub fn override_views_from(dir: Option<PathBuf>) {
+    *VIEW_OVERRIDE.lock().expect("view override") = dir;
 }
 
-fn find_views_dir(
-    env: Option<std::ffi::OsString>,
-    exe: Result<PathBuf, String>,
-    workspace: &std::path::Path,
-) -> Result<PathBuf, String> {
-    if let Some(dir) = env {
-        return Ok(PathBuf::from(dir));
-    }
-    let exe = exe?;
-    let exe_dir = exe.parent().ok_or("the executable has no directory")?;
-    [Some(exe_dir), exe_dir.parent()]
-        .into_iter()
-        .flatten()
-        .map(|dir| dir.join("views"))
-        .chain([workspace.to_path_buf()])
-        .find(|dir| dir.is_dir())
-        .ok_or_else(|| {
-            format!(
-                "no views beside {} — run `make views` (ops/stage-views.sh) in this checkout, or point DUCKTAPE_VIEWS_DIR at a staged set",
-                exe.display()
-            )
-        })
+/// The file the developer's override supplies for `module`, if any.
+fn view_override(module: &str) -> Option<PathBuf> {
+    let dir = VIEW_OVERRIDE.lock().expect("view override").clone()?;
+    let path = dir.join(format!("{module}_view.wasm"));
+    path.is_file().then_some(path)
 }
 
 // ---------- the guest ----------
@@ -2131,9 +2126,10 @@ struct Guest {
     fault: Option<String>,
     /// The assets the deployment shipped beside this view, for the host
     /// surfaces that paint them by canonical relative path; swapped with the
-    /// instance as one unit. Empty for a staged desktop view.
+    /// instance as one unit. Empty for a view the developer's override supplies.
     assets: Arc<crate::backend::view_source::Assets>,
-    /// The deployment this instance came from; none for a staged view.
+    /// The deployment this instance came from; none for a file the
+    /// developer's override supplies.
     hash: Option<[u8; 32]>,
     /// This instance's identity: a replacement prepared against it is
     /// installed only over it.
@@ -2290,10 +2286,10 @@ impl Guest {
         self.connection_rev = revision;
     }
 
-    /// A module-owned view comes from the module's active deployment on the
+    /// A view comes from its registry entry's active deployment on the
     /// connected node — nothing else, so with no node there is nothing to
-    /// load yet, and no staged file is ever opened for it; the desktop's own
-    /// views come from the staged file. With a view of the module already
+    /// load yet, and no file is ever opened for it unless the developer's
+    /// override ([`override_views_from`]) supplies one. With a view of the module already
     /// drawn, the deployment's view is prepared as its replacement:
     /// instantiated without `init`, restored from the drawn view's snapshot,
     /// and its first tree verified — and the active code is read again
@@ -2308,17 +2304,16 @@ impl Guest {
     ) -> Result<Loaded, Unloaded> {
         use crate::backend::view_source::{self, ViewSource};
         let before_any_candidate = |reason: String| Unloaded { hash: None, reason };
-        if view_source::desktop_owned(module) {
-            let path = views_dir()
-                .map_err(before_any_candidate)?
-                .join(format!("{module}_view.wasm"));
+        let logged = |hash: Option<&[u8; 32]>, state: &str, reason: &str| {
+            log_source(module, hash, state, generation, reason);
+        };
+        if let Some(path) = view_override(module) {
+            let reason = format!("DUCKTAPE_VIEWS_DIR developer override: {}", path.display());
+            logged(None, "Overridden", &reason);
             return Self::load_from(module, &path)
                 .map(|guest| Loaded::Fresh(Box::new(guest)))
                 .map_err(before_any_candidate);
         }
-        let logged = |hash: Option<&[u8; 32]>, state: &str, reason: &str| {
-            log_source(module, hash, state, generation, reason);
-        };
         let client = match client {
             Some(client) => client,
             None => {
@@ -2351,6 +2346,11 @@ impl Guest {
             }
         };
         let (hash, component, assets) = match source {
+            ViewSource::NotRegistered => {
+                logged(None, "NotRegistered", "");
+                timing.log(module, None, started, "NotRegistered");
+                return Err(before_any_candidate(not_registered(module)));
+            }
             ViewSource::NotActivated => {
                 logged(None, "NotActivated", "");
                 timing.log(module, None, started, "NotActivated");
@@ -3501,9 +3501,13 @@ impl NativeModuleView {
     ) -> Result<(), String> {
         let mounted = mounted(self.module);
         let mut locked = mounted.lock().expect("module view lock");
+        let unlisted = unlisted(self.module, locked.generation);
         let Mounted { slot, props, .. } = &mut *locked;
         let guest = match slot {
             Slot::Loading => {
+                if let Some(unlisted) = unlisted {
+                    return Err(unlisted);
+                }
                 window.request_animation_frame();
                 return Err("Loading the view…".into());
             }
@@ -3708,10 +3712,15 @@ pub(crate) mod tests {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{self as gpui, Entity, TestAppContext, VisualTestContext};
 
+    /// The chrome's own views: registry `Kind::View` entries like any other,
+    /// which a network lists for the app to draw its members, agents, node,
+    /// explorer, settings and palette surfaces.
+    pub(crate) const CHROME_VIEWS: [&str; 6] = [
+        "members", "agents", "node", "explorer", "settings", "palette",
+    ];
+
     pub(crate) fn close_observer_fixture() -> NativeModuleView {
-        let path = views_dir()
-            .expect("staged views")
-            .join("governance_view.wasm");
+        let path = staged("governance").expect("staged views");
         assert!(
             path.is_file(),
             "close regression requires the staged governance view"
@@ -4344,7 +4353,7 @@ pub(crate) mod tests {
     #[test]
     fn visibility_subscription_is_generic_and_reports_initial_hidden_state() {
         let _turn = blocking_connection_turn();
-        let path = views_dir().expect("staged views").join("chat_view.wasm");
+        let path = staged("chat").expect("staged views");
         let mut guest = Guest::load_from("unfamiliar-view", &path).expect("staged view");
         assert!(kernel::answer(&mut guest, "host", "visible", 41, b""));
         assert!(matches!(guest.pending.last(), Some(wire::Event::Response {
@@ -4835,62 +4844,27 @@ pub(crate) mod tests {
         assert!(guest.fault.is_none(), "{:?}", guest.fault);
     }
 
-    pub(super) fn staged(module: &str) -> Option<std::path::PathBuf> {
-        let views = std::env::var_os("DUCKTAPE_VIEWS_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/views")
-            });
-        let staged = views.join(format!("{module}_view.wasm"));
+    /// A test's fixture component for `module`: `<module>_view.wasm` in the
+    /// `DUCKTAPE_VIEWS_DIR` a test run points at ducktape-views' built
+    /// `target/views`. A test serves it off a fake node's registry, or loads
+    /// it straight into a guest; the app itself never reads this directory
+    /// unless `main` hands it over as the developer's override.
+    pub(crate) fn staged(module: &str) -> Option<std::path::PathBuf> {
+        let Some(views) = std::env::var_os("DUCKTAPE_VIEWS_DIR") else {
+            eprintln!(
+                "skipped: no {module}_view.wasm — point DUCKTAPE_VIEWS_DIR at ducktape-views' target/views"
+            );
+            return None;
+        };
+        let staged = std::path::PathBuf::from(views).join(format!("{module}_view.wasm"));
         if staged.is_file() {
             return Some(staged);
         }
         eprintln!(
-            "skipped: no {} — run `make views` (ops/stage-views.sh) in this checkout, or point DUCKTAPE_VIEWS_DIR at a staged set",
+            "skipped: no {} — point DUCKTAPE_VIEWS_DIR at ducktape-views' target/views",
             staged.display()
         );
         None
-    }
-
-    /// A shipped install reads the `views/` of its own release even when the
-    /// build workspace's `target/views` exists; that directory is the last
-    /// fallback, and `DUCKTAPE_VIEWS_DIR` overrides both.
-    #[test]
-    fn a_release_reads_the_views_beside_its_binary_before_the_workspace() {
-        let root = tempfile::tempdir().expect("a scratch dir");
-        let release = root.path().join("release");
-        let workspace = root.path().join("workspace/target/views");
-        std::fs::create_dir_all(release.join("views")).expect("the release views");
-        std::fs::create_dir_all(&workspace).expect("the workspace views");
-        let found = |env: Option<&str>, exe: std::path::PathBuf| {
-            find_views_dir(env.map(Into::into), Ok(exe), &workspace).expect("a views dir")
-        };
-
-        let shipped = release.join("ducktape-app");
-        assert_eq!(found(None, shipped.clone()), release.join("views"));
-        assert_eq!(
-            found(Some("/override"), shipped),
-            PathBuf::from("/override")
-        );
-        let bare = root.path().join("bare/bin/ducktape-app");
-        assert_eq!(found(None, bare), workspace);
-    }
-
-    /// A checkout with nothing staged names the one command that stages the
-    /// pinned views, not another repository's script.
-    #[test]
-    fn no_views_names_the_command_that_stages_them() {
-        let root = tempfile::tempdir().expect("a scratch dir");
-        let exe = root.path().join("bin/ducktape-app");
-        let error = find_views_dir(None, Ok(exe.clone()), &root.path().join("target/views"))
-            .expect_err("nothing is staged");
-        assert_eq!(
-            error,
-            format!(
-                "no views beside {} — run `make views` (ops/stage-views.sh) in this checkout, or point DUCKTAPE_VIEWS_DIR at a staged set",
-                exe.display()
-            )
-        );
     }
 
     /// The staged Call view through the host, on the share picker: the rows the
@@ -5348,9 +5322,9 @@ pub(crate) mod tests {
     /// `DUCKTAPE_VIEWS_DIR` at the views a node deploys to check them too.
     #[test]
     fn every_staged_view_reads_a_refusal_the_host_sends() {
-        use crate::backend::view_source::{DESKTOP_OWNED, MODULE_OWNED};
+        use crate::backend::view_source::MODULE_OWNED;
         let _turn = blocking_connection_turn();
-        for module in MODULE_OWNED.into_iter().chain(DESKTOP_OWNED) {
+        for module in MODULE_OWNED.into_iter().chain(CHROME_VIEWS) {
             let Some(staged) = staged(module) else {
                 continue;
             };
@@ -5434,18 +5408,19 @@ pub(crate) mod tests {
         assert!(guest.fault.is_none(), "{:?}", guest.fault);
     }
 
-    /// A node-owned view — a built-in module's, or a registry-listed one —
-    /// has one source, its deployment on the connected node: with no node
-    /// it is not there yet, and the staged file a desktop view would take
-    /// is never opened for it.
+    /// Every view — a built-in module's, a registry-listed one, the
+    /// chrome's own — has one source, its deployment on the connected node:
+    /// with no node it is not there yet, and a file of it is never opened
+    /// unless the developer's override is set.
     #[test]
     fn a_module_owned_view_never_comes_from_the_staged_file() {
-        // a staged file for every one of them, where `views_dir` would look
+        // a file for every one of them, where a build would stage one
         let _turn = blocking_connection_turn();
         let staged = tempfile::tempdir().expect("a staging dir");
         let node_owned: Vec<&'static str> = crate::backend::view_source::MODULE_OWNED
             .into_iter()
             .chain(["home"])
+            .chain(CHROME_VIEWS)
             .collect();
         for module in &node_owned {
             std::fs::write(staged.path().join(format!("{module}_view.wasm")), b"\0asm")
@@ -5462,8 +5437,6 @@ pub(crate) mod tests {
                 "{module}"
             );
         }
-        assert!(crate::backend::view_source::desktop_owned("settings"));
-        assert!(!crate::backend::view_source::desktop_owned("home"));
     }
 
     /// A load still in flight when the app moves to another node lands
@@ -6109,29 +6082,56 @@ pub(crate) mod tests {
             .clear();
     }
 
-    /// The desktop's own views are all asked for at boot and joined before
-    /// the window, so the first draw of any of their tabs finds the view
-    /// there: every one of them, once the boot's loads are in.
-    #[test]
-    fn every_desktop_view_is_asked_at_boot() {
-        let _turn = blocking_connection_turn();
-        use crate::backend::view_source::DESKTOP_OWNED;
-        let Some(_staged) = staged("members") else {
-            return;
-        };
-        let loads = booted();
-        assert_eq!(
-            loads.started(),
-            DESKTOP_OWNED.len(),
-            "one load per desktop view"
-        );
-        for module in DESKTOP_OWNED {
-            let seat = mounted(module);
-            let locked = seat.lock().expect("module view lock");
-            assert_eq!(locked.generation, 1, "{module} was not asked for at boot");
+    /// The chrome's own views are registry entries like any other: a
+    /// network that lists the six as `Kind::View` entries has every one
+    /// seated off its registry at connect — fetched and verified under its
+    /// active hash, exactly as `home` is — and the connect settles with all
+    /// six in hand. No file is opened for any of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_chrome_views_are_seated_off_the_registry_like_any_view() {
+        let _turn = connection_turn().await;
+        use crate::backend::view_source::tests::{FakeDeployment, fake_node};
+        let mut listed = Vec::new();
+        for module in CHROME_VIEWS {
+            let Some(staged) = staged(module) else {
+                return;
+            };
+            let component = std::fs::read(staged).expect("the staged view");
+            let artifact = module_artifact::Artifact::View(module_artifact::ViewArtifact {
+                component,
+                assets: std::collections::BTreeMap::new(),
+            });
+            listed.push((module, artifact));
         }
-        loads.joined();
-        for module in DESKTOP_OWNED {
+        let (first, served) = &listed[0];
+        let node = FakeDeployment::serving(first, served);
+        let modules: Vec<serde_json::Value> = listed
+            .iter()
+            .map(|(module, artifact)| {
+                serde_json::json!({
+                    "module_id": module, "kind": "view", "active_code_hash": artifact.hash(),
+                    "pending": null, "history": [{"height": 0, "code_hash": artifact.hash()}]
+                })
+            })
+            .collect();
+        *node.status.lock().unwrap() = serde_json::json!({"module_status": {"modules": modules}});
+        node.artifacts
+            .lock()
+            .unwrap()
+            .extend(listed[1..].iter().map(|(_, artifact)| artifact.clone()));
+        node.answer_query("governance", serde_json::json!({"proposals": []}));
+        let client = fake_node(node).await;
+        connected(&client).settled().await;
+        let mut ids = CHROME_VIEWS;
+        ids.sort();
+        assert_eq!(registered_views(), ids, "the six are the registry's tabs");
+        for (module, artifact) in &listed {
+            let module = *module;
+            assert_eq!(
+                canary::seated_hash(module),
+                Some(artifact.hash()),
+                "{module}"
+            );
             let seat = mounted(module);
             let locked = seat.lock().expect("module view lock");
             assert!(!locked.in_flight, "{module}");
@@ -6141,22 +6141,146 @@ pub(crate) mod tests {
                 Slot::Loading | Slot::Empty => panic!("{module}'s load never answered"),
             }
         }
-        for module in DESKTOP_OWNED {
-            registry().lock().expect("module views").remove(module);
-        }
+        registered().lock().expect("registered views").clear();
+        registered_modules()
+            .lock()
+            .expect("registered modules")
+            .clear();
     }
 
-    /// The desktop's own view is the same on every node: its load lands
-    /// though the app moved to a node meanwhile, where a module's view
-    /// asked of the node since left lands nowhere.
+    /// A view the connected network does not list says so in its own tab,
+    /// in one sentence naming it — never "Loading" for good, never blank. A
+    /// seat asked of the node takes the network's word from its load; one a
+    /// tab first draws after the registry was read, which nobody asks for,
+    /// takes it from that read. Once the network lists the view, the next
+    /// block seats it like any other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_view_the_network_does_not_list_says_so_in_its_tab() {
+        let _turn = connection_turn().await;
+        use crate::backend::view_source::tests::{FakeDeployment, fake_node};
+        let Some(staged) = staged("members") else {
+            return;
+        };
+        let members = module_artifact::Artifact::View(module_artifact::ViewArtifact {
+            component: std::fs::read(staged).expect("the staged view"),
+            assets: std::collections::BTreeMap::new(),
+        });
+        let node = FakeDeployment::serving("members", &members);
+        *node.status.lock().unwrap() = serde_json::json!({"module_status": {"modules": []}});
+        node.answer_query("governance", serde_json::json!({"proposals": []}));
+        let client = fake_node(node.clone()).await;
+        // a tab drawn before any node: its seat waits for a source event
+        drop(mounted("members"));
+        assert_eq!(unlisted("members", 0), None, "no registry read yet");
+        connected(&client).settled().await;
+        match &mounted("members").lock().expect("module view lock").slot {
+            Slot::Failed(reason) => {
+                assert_eq!(reason, "This network has not registered the members view.")
+            }
+            _ => panic!("the seat does not say the network has not registered it"),
+        }
+        // a tab first drawn after the read: nothing asks for its seat, and
+        // the read says the network does not list it
+        assert_eq!(
+            unlisted("agents", 0).as_deref(),
+            Some("This network has not registered the agents view.")
+        );
+        assert_eq!(
+            unlisted("agents", 1),
+            None,
+            "an asked seat shows its own outcome"
+        );
+        // the network registers it: the next block seats it
+        *node.status.lock().unwrap() = serde_json::json!({"module_status": {"modules": [
+            {"module_id": "members", "kind": "view", "active_code_hash": members.hash(),
+             "pending": null, "history": [{"height": 0, "code_hash": members.hash()}]}
+        ]}});
+        deployments_check().await.joined();
+        assert_eq!(registered_views(), ["members"]);
+        assert_eq!(canary::seated_hash("members"), Some(members.hash()));
+        assert!(matches!(
+            mounted("members").lock().expect("module view lock").slot,
+            Slot::Ready(_)
+        ));
+        registered().lock().expect("registered views").clear();
+        registered_modules()
+            .lock()
+            .expect("registered modules")
+            .clear();
+    }
+
+    /// `DUCKTAPE_VIEWS_DIR` is a view developer's override: while it is set,
+    /// `<id>_view.wasm` in it is seated for a view the network lists, in
+    /// place of the network's artifact — which is never fetched — and the
+    /// log says so for the view. Cleared, the network's artifact is the only
+    /// source again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_developers_override_supplies_a_view_in_place_of_the_networks_artifact() {
+        let _turn = connection_turn().await;
+        use crate::backend::view_source::tests::node;
+        let Some(staged) = staged("governance") else {
+            return;
+        };
+        let dir = tempfile::tempdir().expect("an override dir");
+        std::fs::copy(&staged, dir.path().join("override-probe_view.wasm")).expect("override");
+        // listed under a hash whose bytes the node does not hold: off the
+        // network alone the seat could only fail
+        let status = serde_json::json!({"module_status": {"modules": [
+            {"module_id": "override-probe", "kind": "view", "active_code_hash": vec![7u8; 32],
+             "pending": null, "history": []}
+        ]}});
+        let client = node(status, None, None).await;
+        let log = canary::tap();
+        override_views_from(Some(dir.path().into()));
+        connected(&client).settled().await;
+        override_views_from(None);
+        assert!(matches!(
+            mounted("override-probe")
+                .lock()
+                .expect("module view lock")
+                .slot,
+            Slot::Ready(_)
+        ));
+        assert_eq!(canary::seated_hash("override-probe"), None, "no deployment");
+        let said: Vec<String> = log
+            .try_iter()
+            .filter(|line| line.starts_with("module=override-probe "))
+            .collect();
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(
+            said[0].contains("state=Overridden") && said[0].contains("DUCKTAPE_VIEWS_DIR"),
+            "{said:?}"
+        );
+        // cleared: the same listing is the network's word alone
+        connected(&client).settled().await;
+        assert!(matches!(
+            mounted("override-probe")
+                .lock()
+                .expect("module view lock")
+                .slot,
+            Slot::Failed(_)
+        ));
+        registered().lock().expect("registered views").clear();
+        registered_modules()
+            .lock()
+            .expect("registered modules")
+            .clear();
+    }
+
+    /// A view the developer's override supplies is the same on every node:
+    /// its load lands though the app moved to a node meanwhile, where a
+    /// network's view asked of the node since left lands nowhere.
     #[test]
-    fn a_desktop_views_load_lands_after_the_app_moves_where_a_modules_does_not() {
+    fn an_overridden_views_load_lands_after_the_app_moves_where_a_networks_does_not() {
         let _turn = blocking_connection_turn();
+        let dir = tempfile::tempdir().expect("an override dir");
+        std::fs::write(dir.path().join("override-probe_view.wasm"), b"\0asm").expect("override");
+        override_views_from(Some(dir.path().into()));
         let since_left = Connection {
             client: None,
             rev: connection().lock().expect("views rpc").rev - 1,
         };
-        for (module, lands) in [("members", true), ("files", false)] {
+        for (module, lands) in [("override-probe", true), ("files", false)] {
             let seat = Mounted::seat();
             let generation = seat.lock().expect("module view lock").start(None);
             spawn_load(module, &seat, generation, since_left.clone())
@@ -6167,6 +6291,7 @@ pub(crate) mod tests {
             let landed = !matches!(locked.slot, Slot::Loading);
             assert_eq!(landed, lands, "{module}");
         }
+        override_views_from(None);
     }
 
     /// The connect answers only once every module-owned view has settled:
@@ -6258,17 +6383,17 @@ pub(crate) mod tests {
     }
 
     /// A load starts at a view's source event and never at a draw: the only
-    /// callers of `spawn_load` are the boot, the connect, the block check
-    /// (the registry-listed seats they share, `seat_registered_views`, is
-    /// called by the connect's registry read and the block check alone),
-    /// and a taste — the member's own act (`retaste`) or the connect's
-    /// registry read seating what the device remembered
-    /// (`seat_remembered_tastes`). The views the shell draws by name are
-    /// exactly the ones those ask for — a registered view is drawn by the
-    /// id the registry listed.
+    /// callers of `spawn_load` are the connect, the block check (the
+    /// registry-listed seats they share, `seat_registered_views`, is called
+    /// by the connect's registry read and the block check alone), and a
+    /// taste — the member's own act (`retaste`) or the connect's registry
+    /// read seating what the device remembered (`seat_remembered_tastes`).
+    /// The views the shell draws by name are exactly the ones those ask for
+    /// — the built-in modules' at connect, the chrome's off the registry —
+    /// and a registered view is drawn by the id the registry listed.
     #[test]
     fn a_load_starts_at_a_source_event_never_at_a_draw() {
-        use crate::backend::view_source::{DESKTOP_OWNED, MODULE_OWNED};
+        use crate::backend::view_source::MODULE_OWNED;
         use std::collections::BTreeSet;
         let (shell, _tests) = include_str!("module_view.rs")
             .split_once("\npub(crate) mod tests {")
@@ -6297,14 +6422,13 @@ pub(crate) mod tests {
         assert_eq!(
             callers,
             BTreeSet::from([
-                "booted",
                 "connected",
                 "deployments_check",
                 "retaste",
                 "seat_registered_views",
                 "seat_remembered_tastes",
             ]),
-            "a load started outside the boot, the connect, the block check and a taste"
+            "a load started outside the connect, the block check and a taste"
         );
         let registered_callers: BTreeSet<&str> = shell
             .lines()
@@ -6322,10 +6446,10 @@ pub(crate) mod tests {
             .filter_map(|after| after.trim_start().strip_prefix('"'))
             .filter_map(|name| name.split('"').next())
             .collect();
-        let asked: BTreeSet<&str> = MODULE_OWNED.into_iter().chain(DESKTOP_OWNED).collect();
+        let asked: BTreeSet<&str> = MODULE_OWNED.into_iter().chain(CHROME_VIEWS).collect();
         assert_eq!(
             drawn, asked,
-            "the views the shell draws are not the views the boot and the connect ask for"
+            "the views the shell draws are not the views the connect and the registry ask for"
         );
     }
 
