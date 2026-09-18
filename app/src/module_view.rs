@@ -2,9 +2,9 @@
 //! loaded either from the deployed artifact of the module it belongs to
 //! (`backend::view_source`: the registry's ACTIVE code hash, fetched and
 //! verified, never a desktop substitute) or, for the desktop's own views,
-//! FROM A FILE beside the binary (run `ops/build-views.sh` in
-//! `ducktape-industries/ducktape-views` and point `DUCKTAPE_VIEWS_DIR` at its
-//! `target/views`, or stage that directory beside the binary); it is
+//! FROM A FILE beside the binary (`make views` stages the revision
+//! `ops/views.rev` pins into `target/views`; `DUCKTAPE_VIEWS_DIR` points at
+//! another staged set); it is
 //! ticked inside a fuel and time budget, and presented through native
 //! gpui-kit controls in its tab.
 //!
@@ -2039,7 +2039,7 @@ fn find_views_dir(
         .find(|dir| dir.is_dir())
         .ok_or_else(|| {
             format!(
-                "no views beside {} — run ops/build-views.sh in ducktape-industries/ducktape-views and point DUCKTAPE_VIEWS_DIR at its target/views",
+                "no views beside {} — run `make views` (ops/stage-views.sh) in this checkout, or point DUCKTAPE_VIEWS_DIR at a staged set",
                 exe.display()
             )
         })
@@ -4846,7 +4846,7 @@ pub(crate) mod tests {
             return Some(staged);
         }
         eprintln!(
-            "skipped: no {} — run ops/build-views.sh in ducktape-industries/ducktape-views and point DUCKTAPE_VIEWS_DIR at its target/views",
+            "skipped: no {} — run `make views` (ops/stage-views.sh) in this checkout, or point DUCKTAPE_VIEWS_DIR at a staged set",
             staged.display()
         );
         None
@@ -4874,6 +4874,23 @@ pub(crate) mod tests {
         );
         let bare = root.path().join("bare/bin/ducktape-app");
         assert_eq!(found(None, bare), workspace);
+    }
+
+    /// A checkout with nothing staged names the one command that stages the
+    /// pinned views, not another repository's script.
+    #[test]
+    fn no_views_names_the_command_that_stages_them() {
+        let root = tempfile::tempdir().expect("a scratch dir");
+        let exe = root.path().join("bin/ducktape-app");
+        let error = find_views_dir(None, Ok(exe.clone()), &root.path().join("target/views"))
+            .expect_err("nothing is staged");
+        assert_eq!(
+            error,
+            format!(
+                "no views beside {} — run `make views` (ops/stage-views.sh) in this checkout, or point DUCKTAPE_VIEWS_DIR at a staged set",
+                exe.display()
+            )
+        );
     }
 
     /// The staged Call view through the host, on the share picker: the rows the
