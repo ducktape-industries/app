@@ -78,6 +78,7 @@ async fn a_huddles_roster_names_the_node_keys_its_media_is_admitted_by() {
         "127.0.0.1:0".parse().unwrap(),
         simnode::SimOpts {
             auto: true,
+            modules_dir: Some(sim_modules_dir()),
             ..Default::default()
         },
     )
@@ -203,6 +204,7 @@ async fn a_window_on_an_unseen_room_lands_instead_of_failing() {
         "127.0.0.1:0".parse().unwrap(),
         simnode::SimOpts {
             auto: true,
+            modules_dir: Some(sim_modules_dir()),
             ..Default::default()
         },
     )
@@ -327,7 +329,7 @@ async fn a_chat_that_ships_no_view_still_opens_the_workspace() {
     let founder = ed25519::PrivateKey::from_seed(7);
 
     let storage = tempfile::tempdir().unwrap();
-    let modules = workspace_config::sim_modules_dir().unwrap();
+    let modules = sim_modules_dir();
     let (sim, origin) = founded(storage.path(), modules, &founder).await;
     for _ in 0..2 {
         let workspace = opened(&origin).await;
@@ -344,7 +346,7 @@ async fn a_chat_that_ships_no_view_still_opens_the_workspace() {
 
     let storage = tempfile::tempdir().unwrap();
     let modules = tempfile::tempdir().unwrap();
-    for entry in std::fs::read_dir(workspace_config::sim_modules_dir().unwrap()).unwrap() {
+    for entry in std::fs::read_dir(sim_modules_dir()).unwrap() {
         let entry = entry.unwrap();
         if entry.path().is_file() {
             std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();
@@ -382,7 +384,7 @@ async fn chat_round_trips_over_signed_frames() {
     let _names = crate::backend::seed_names(crate::backend::NameDirectory::empty());
     let storage = tempfile::tempdir().unwrap();
     let modules = tempfile::tempdir().unwrap();
-    for entry in std::fs::read_dir(workspace_config::sim_modules_dir().unwrap()).unwrap() {
+    for entry in std::fs::read_dir(sim_modules_dir()).unwrap() {
         let entry = entry.unwrap();
         if entry.path().is_file() {
             std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();

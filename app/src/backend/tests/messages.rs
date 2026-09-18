@@ -117,6 +117,7 @@ async fn composer_markdown_round_trips_rich_spans() {
         "127.0.0.1:0".parse().unwrap(),
         simnode::SimOpts {
             auto: true,
+            modules_dir: Some(sim_modules_dir()),
             ..Default::default()
         },
     )
