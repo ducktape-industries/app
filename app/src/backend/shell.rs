@@ -205,7 +205,7 @@ pub struct ProvisionStep {
 /// What the blocked wait says once patience runs out: what to run, and where
 /// the launcher and `<archive>` come from.
 pub(crate) const NODE_WAIT_HINT: &str = "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into.";
-/// Said too when this app pinned no release key to print in the command.
+/// Said too when this app has no release key to print in the command.
 pub(crate) const NODE_KEY_HINT: &str =
     "<release key> is the release key your network's operator published.";
 /// What the command's `--release-key` pins, said with a key or without one: an
@@ -326,7 +326,7 @@ pub(crate) fn provision_progress_in(
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         let waiting = node_wait_step(
                             &state.workspace,
-                            super::update::pinned_release_key().as_deref(),
+                            super::update::release_key_for(&state.chain_id).as_deref(),
                             state.attempts,
                             "",
                         );
@@ -374,7 +374,7 @@ pub(crate) fn provision_progress_in(
                     Some((
                         node_wait_step(
                             &state.workspace,
-                            super::update::pinned_release_key().as_deref(),
+                            super::update::release_key_for(&state.chain_id).as_deref(),
                             state.attempts,
                             &plane_failure,
                         ),
@@ -412,10 +412,10 @@ pub(crate) fn provision_progress_in(
 /// tree, so the step names two lines for this workspace from the first second,
 /// never "starting": the launcher's `install` from the unpacked archive (the
 /// app cannot know where that is, so `<archive>` is the member's to fill),
-/// then its `run`. `release_key` is the key this app pinned, the same network
-/// signer; without one the command says `<release key>`. After
-/// `PROVISION_PATIENCE` attempts the step goes `blocked` with [`NODE_WAIT_HINT`]
-/// while the poll goes on. A node that answered with its netstack plane failed
+/// then its `run`. `release_key` is the key this app pinned, else the one the
+/// network published at an open, the same network signer; without one the
+/// command says `<release key>`. After `PROVISION_PATIENCE` attempts the step
+/// goes `blocked` with [`NODE_WAIT_HINT`] while the poll goes on. A node that answered with its netstack plane failed
 /// (`plane_failure`, core's sentence; empty otherwise) is blocked at once with
 /// that sentence as the hint. Paths are single-quoted: a workspace directory
 /// carries the chain id's `#`, and a home may carry spaces.

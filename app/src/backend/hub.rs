@@ -519,6 +519,11 @@ pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
             offline: false,
         };
     }
+    // the network's release key, off the node this open just took as the
+    // workspace's own: a remote's word is not a trust root.
+    if let Some((chain_id, _)) = workspace_at(&rpc) {
+        super::update::adopt_network_key(&chain_id, &rpc).await;
+    }
     let list = match wallet_rows(&rpc) {
         Ok(list) => list,
         Err(cause) => {

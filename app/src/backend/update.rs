@@ -5,11 +5,13 @@
 //! The launcher hands a running app two env vars — `DUCKTAPE_RELEASE` (the
 //! sha of the release that is running) and `DUCKTAPE_UPDATE_STATE` (the
 //! `state.json` path, whose directory is the updates dir) — and the pinned
-//! release key sits at `<updates>/keys/release.pub`. Without the env there is
-//! no updater (`make dev` runs the binary bare) and this module does nothing.
-//! Without the key the launcher's contract still holds — the first window
-//! reports `Rendered` — but the release channel (fetch, download, verify)
-//! stays off.
+//! release key sits at `<updates>/keys/release.pub`, written by the
+//! launcher's install or, when that pinned none, by the first workspace open
+//! whose own node names the network's key ([`adopt_network_key`]). Without
+//! the env there is no updater (`make dev` runs the binary bare) and this
+//! module does nothing. Without the key the launcher's contract still
+//! holds — the first window reports `Rendered` — but the release channel
+//! (fetch, download, verify) stays off.
 //!
 //! What runs here:
 //! - `Fetch`: read `/shared/releases/stable.json` and `.sig` through the
@@ -36,7 +38,10 @@
 //! `/shared/**` is open-write on the files module, so what the node serves
 //! is untrusted bytes until `verify_manifest` says otherwise.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use app_update::layout;
 use app_update::{
@@ -138,6 +143,9 @@ pub struct UpdateReading {
     pub busy: bool,
     /// A release key is pinned, so the channel checks.
     pub armed: bool,
+    /// A workspace open found the pin differs from the key the network
+    /// publishes ([`pin_network_key`]); the pin was kept.
+    pub key_differs: bool,
 }
 
 /// What performing one command asks of the caller.
@@ -217,6 +225,7 @@ impl Updater {
             last_check: self.last_check,
             busy: self.activity != Activity::Quiet,
             armed: self.keys.is_some(),
+            key_differs: PIN_DIFFERS.load(Ordering::Relaxed),
         }
     }
 
@@ -248,6 +257,20 @@ impl Updater {
     }
 
     fn check(&mut self, now: i64) -> Option<Job> {
+        // an install with no key reads it again: a workspace open may have
+        // pinned the network's since ([`adopt_network_key`]), and it arms
+        // as a fresh install would.
+        if self.keys.is_none() {
+            self.keys = load_keys(&self.paths.updates_dir);
+            if self.keys.is_some() {
+                info!(
+                    target: "ducktape::update",
+                    event = "app_update_armed",
+                    current = %self.phase.current(),
+                    pinned_sequence = self.phase.pinned_sequence(),
+                );
+            }
+        }
         let quiet = self.activity == Activity::Quiet;
         let armed = self.keys.is_some();
         if !(quiet && armed) {
@@ -505,11 +528,21 @@ pub fn facts_of(reading: Option<&UpdateReading>, now: i64) -> UpdateFacts {
         refused,
         channel: layout::CHANNEL.into(),
         checked: checked_words(reading.last_check, now),
-        note: match reading.armed {
-            true => banner_words(reading.banner.as_ref()),
-            false => "Updates are off: no release key is pinned.".into(),
-        },
+        note: note_words(reading),
         busy: reading.busy,
+    }
+}
+
+/// The section's note: a pin the network's key differs from, then the
+/// channel's own word.
+fn note_words(reading: &UpdateReading) -> String {
+    let channel = match reading.armed {
+        true => banner_words(reading.banner.as_ref()),
+        false => "Updates are off: no release key is pinned.".into(),
+    };
+    match reading.key_differs {
+        true => format!("{KEY_DIFFERS} {channel}").trim_end().into(),
+        false => channel,
     }
 }
 
@@ -608,12 +641,22 @@ fn load_keys(updates_dir: &Path) -> Option<TrustedKeys> {
     Some(TrustedKeys { pinned, successor })
 }
 
-/// The release key this install pinned, as hex, read without arming the
-/// updater — the network's release signer, the key a node's launcher pins
-/// too. `None` for a bare run (no `DUCKTAPE_UPDATE_STATE`) or no pinned key.
-pub(crate) fn pinned_release_key() -> Option<String> {
+/// `<updates>`, the directory of the launcher's `DUCKTAPE_UPDATE_STATE`;
+/// `None` for a bare run.
+fn updates_dir_from_env() -> Option<PathBuf> {
     let state_path = PathBuf::from(std::env::var_os(STATE_ENV)?);
-    Some(load_keys(state_path.parent()?)?.pinned.to_string())
+    Some(state_path.parent()?.to_path_buf())
+}
+
+/// The release key a node of `chain_id` pins too, as hex: the one this
+/// install pinned (read without arming the updater), else the one that
+/// network published at an open this session ([`adopt_network_key`]).
+pub(crate) fn release_key_for(chain_id: &str) -> Option<String> {
+    let pinned = updates_dir_from_env()
+        .and_then(|updates_dir| load_keys(&updates_dir))
+        .map(|keys| keys.pinned);
+    let published = || NETWORK_KEYS.lock().ok()?.get(chain_id).copied();
+    pinned.or_else(published).map(|key| key.to_string())
 }
 
 fn pin_successor(updates_dir: &Path, successor: &SuccessorKey) {
@@ -621,6 +664,108 @@ fn pin_successor(updates_dir: &Path, successor: &SuccessorKey) {
     let path = keys_dir(updates_dir).join("successor.json");
     if let Err(error) = write_atomically(&path, text.as_bytes()) {
         warn!(target: "ducktape::update", event = "app_update_persist_failed", reason = "io", error = %error);
+    }
+}
+
+// ---- the network's release key ---------------------------------------------
+
+/// Said in Settings once an open found this app's pin is not the key the
+/// network publishes.
+const KEY_DIFFERS: &str =
+    "This app's pinned release key differs from the one this network publishes; the pin is kept.";
+
+/// An open found a pin other than the network's key: said for the session.
+static PIN_DIFFERS: AtomicBool = AtomicBool::new(false);
+
+/// The release key each network published at its last open this session,
+/// by chain id ([`release_key_for`]).
+static NETWORK_KEYS: Mutex<BTreeMap<String, PublicKey>> = Mutex::new(BTreeMap::new());
+
+/// `GET /v1/release` as core #2646 serves it; only the app's signer is read
+/// and every other field is ignored.
+// ponytail: mirrors core's wire shape until rpc-client ships a typed reader;
+// then this moves there.
+#[derive(serde::Deserialize)]
+struct ReleaseDoc {
+    release_keys: ReleaseKeys,
+}
+
+#[derive(serde::Deserialize)]
+struct ReleaseKeys {
+    app: PublicKey,
+}
+
+/// The app release key the node at `endpoint` says its chain's governance
+/// names, or `None`: no endpoint, a node that serves no `/v1/release`, no
+/// key in it, anything not 64 hex. Never an error — an open goes on without.
+async fn network_release_key(endpoint: &str) -> Option<PublicKey> {
+    let url = reqwest::Url::parse(endpoint.trim())
+        .ok()?
+        .join("/v1/release")
+        .ok()?;
+    let reply = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?
+        .get(url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    Some(reply.json::<ReleaseDoc>().await.ok()?.release_keys.app)
+}
+
+/// A workspace open, once its own node answered: the network's release key
+/// is remembered for the node command ([`release_key_for`]) and, under the
+/// launcher, pinned ([`pin_network_key`]).
+pub(crate) async fn adopt_network_key(chain_id: &str, endpoint: &str) {
+    let Some(network) = network_release_key(endpoint).await else {
+        return;
+    };
+    if let Ok(mut keys) = NETWORK_KEYS.lock() {
+        keys.insert(chain_id.to_string(), network);
+    }
+    if pin_network_key(updates_dir_from_env().as_deref(), network) {
+        PIN_DIFFERS.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The network's key into `<updates>/keys/release.pub` when nothing is
+/// pinned there, the file `ducktape-launcher install --release-key` writes;
+/// the updater arms at its next check. A pin is never replaced: `true` is a
+/// pin that differs, kept and logged. A bare run (`None`) pins nothing.
+fn pin_network_key(updates_dir: Option<&Path>, network: PublicKey) -> bool {
+    let Some(updates_dir) = updates_dir else {
+        return false;
+    };
+    let path = keys_dir(updates_dir).join("release.pub");
+    match std::fs::read_to_string(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match write_atomically(&path, format!("{network}\n").as_bytes()) {
+                Ok(()) => {
+                    info!(target: "ducktape::update", event = "app_update_key_pinned", key = %network)
+                }
+                Err(error) => {
+                    warn!(target: "ducktape::update", event = "app_update_persist_failed", reason = "io", error = %error)
+                }
+            }
+            false
+        }
+        Err(error) => {
+            warn!(target: "ducktape::update", event = "app_update_key_unreadable", error = %error);
+            false
+        }
+        Ok(pinned) if pinned.parse::<PublicKey>().ok() == Some(network) => false,
+        Ok(pinned) => {
+            warn!(
+                target: "ducktape::update",
+                event = "release_key_pinned_differs",
+                pinned = %pinned.trim(),
+                network = %network,
+            );
+            true
+        }
     }
 }
 
