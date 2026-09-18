@@ -45,10 +45,11 @@ case "$sign_via" in
     ;;
   *) echo "DUCKTAPE_SIGN_VIA=$sign_via is not a signing path (unset = local, airlock = the airlock gateway)" >&2; exit 1 ;;
 esac
-# The views are built in ducktape-views and staged by path: DUCKTAPE_VIEWS_DIR
-# when set, else this repo's target/views — the rule the app's tests use.
-views=${DUCKTAPE_VIEWS_DIR:-$repo/target/views}
-compgen -G "$views/*_view.wasm" >/dev/null || { echo "no *_view.wasm in $views: build the views in ducktape-views and set DUCKTAPE_VIEWS_DIR to its target/views" >&2; exit 1; }
+# The views ops/views.rev pins, or a DUCKTAPE_VIEWS_DIR whose VIEWS_REV says
+# it holds them; settled before the app is built.
+# shellcheck source=ops/views-pin-check.sh
+source "$repo/ops/views-pin-check.sh"
+pinned_views "$repo"
 views=$(cd "$views" && pwd -P)
 [[ "$(uname -s)" == Darwin ]] || { echo "macOS bundling requires macOS" >&2; exit 1; }
 cd "$repo"
@@ -64,6 +65,7 @@ mkdir -p "$contents/MacOS" "$contents/Resources/views" "$stage/Ducktape.iconset"
 install -m 0755 "$release_bin/ducktape-launcher" "$contents/MacOS/ducktape-launcher"
 install -m 0755 "$release_bin/ducktape-app" "$contents/MacOS/ducktape-app"
 install -m 0644 "$views"/*_view.wasm "$contents/Resources/views/"
+printf '%s\n' "$views_rev" >"$contents/Resources/views/VIEWS_REV"
 # views_dir() looks for `views/` beside the executable: the link keeps the
 # payload under Resources where a bundle's resources belong.
 ln -s ../Resources/views "$contents/MacOS/views"

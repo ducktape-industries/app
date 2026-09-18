@@ -11,7 +11,7 @@ fn component(module: &str) -> Vec<u8> {
     let path = views.join(format!("{module}_view.wasm"));
     std::fs::read(&path).unwrap_or_else(|error| {
         panic!(
-            "{}: {error}; run ops/build-views.sh in ducktape-industries/ducktape-views and point DUCKTAPE_VIEWS_DIR at its target/views",
+            "{}: {error}; run `make views` (ops/stage-views.sh) in this checkout, or point DUCKTAPE_VIEWS_DIR at a staged set",
             path.display()
         )
     })
