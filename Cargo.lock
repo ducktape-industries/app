@@ -4473,7 +4473,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.5"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=9ab1a74f8adc5f274d68a9e2e02209cc9a95e852#9ab1a74f8adc5f274d68a9e2e02209cc9a95e852"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=021b436617db8bf377ad384b464cd1b34692f35e#021b436617db8bf377ad384b464cd1b34692f35e"
 dependencies = [
  "accesskit",
  "anyhow",

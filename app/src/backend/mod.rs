@@ -184,6 +184,7 @@ pub mod view_source;
 pub use agent::*;
 pub use app_dirs::app_log_path;
 pub(crate) use app_dirs::cache_dir;
+pub(crate) use app_dirs::state_dir;
 pub use chat::*;
 pub use duck_uri::*;
 pub use explorer::*;

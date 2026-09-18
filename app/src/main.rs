@@ -2,6 +2,7 @@
 mod app_state;
 pub(crate) use app_state::*;
 
+mod ax_door;
 mod backend;
 mod call;
 mod editor;
@@ -21,6 +22,11 @@ fn main() {
             let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");
             println!("ducktape-app {}+{build}", env!("CARGO_PKG_VERSION"));
             return;
+        }
+        // the test door's client (#114); talks to a running app, opens nothing
+        Some("ax") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(ax_door::cli(&args));
         }
         Some("--help" | "-h") => {
             println!("usage: ducktape-app [--version]");

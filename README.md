@@ -50,3 +50,11 @@ Before a merge to `dev`:
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`, with `DUCKTAPE_VIEWS_DIR` at the staged views and `DUCKTAPE_MODULES_DIR` at the pinned core's sim-modules set
 - `cargo test ax_contract`: every screen's accessibility tree, read headless (#114). `ax_contract_native` must pass; `ax_contract_views` (every staged view) runs with `-- --ignored` until wire epoch 9 gives editors a label.
+
+## Test door (`ax`)
+
+A QA runner reads and drives the app through its accessibility tree — the same AccessKit tree the OS gets (#114). The door is **off in every launch unless the environment asks for it**; a normal launch has no listener, no file and no way to open one.
+
+- Open: launch with `DUCKTAPE_AX_DOOR=<port>` (`0` picks a free port). It binds `127.0.0.1` only (an address in the variable is refused), writes `{port, token}` to `$XDG_RUNTIME_DIR/ducktape/ax-door.json` (else the app's state directory) mode 0600, and logs one `ax_door_open port=…` line in `app.log`. Every request carries the token.
+- Client: `ducktape-app ax tree [--window W] [--view V] [--compact] [--bounds]`, `ax actions`, `ax act <id> <press|focus|set_value|type|scroll_into_view> [value]`, `ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]`. Exit 0 answered, 1 not found / refused / timed out, 2 the door is not open.
+- Ids are `<window>:<element id>` (`console:view:chat`), a view's `<window>:<module>/<wire key>`; never an index. Password fields' values and the recovery-phrase words read `•••`.
