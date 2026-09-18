@@ -6,9 +6,10 @@
 #![cfg(target_os = "linux")]
 
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use app_update::{Idle, Phase, RollbackReason, Sha, Staged, state};
 
@@ -50,13 +51,13 @@ impl Rig {
         self.install_dir().join("releases").join(sha.to_string())
     }
 
-    /// A release source: `ducktape-app` is a script that prints its env and
-    /// argv, tagged with `build`; `views/` holds one wasm.
+    /// A release source: `ducktape-app` is a script that prints its pid, env
+    /// and argv, tagged with `build`; `views/` holds one wasm.
     fn build(&self, build: &str) -> (PathBuf, Sha) {
         let dir = self.home.join(format!("build-{build}"));
         fs::create_dir_all(dir.join("views")).unwrap();
         let script = format!(
-            "#!/bin/sh\necho build={build}\necho release=$DUCKTAPE_RELEASE\necho state=$DUCKTAPE_UPDATE_STATE\nfor a in \"$@\"; do echo arg=$a; done\n"
+            "#!/bin/sh\necho build={build}\necho release=$DUCKTAPE_RELEASE\necho state=$DUCKTAPE_UPDATE_STATE\necho pid=$$\nfor a in \"$@\"; do echo arg=$a; done\n"
         );
         let app = dir.join("ducktape-app");
         fs::write(&app, &script).unwrap();
@@ -504,6 +505,66 @@ fn a_release_installs_under_the_launcher_it_ships() {
         "{}",
         stdout(&booted)
     );
+}
+
+/// A flip moves the launcher too: the desktop entry runs
+/// `current/ducktape-launcher`, so the release a flip brings in is applied
+/// next time by its OWN launcher, never one the flip left behind (#80). B's
+/// launcher is the real binary plus a trailing line (the ELF loader ignores
+/// it and nothing hashes the launcher), so "moved" is a digest.
+#[test]
+fn a_flip_moves_the_launcher_that_applies_the_next_release() {
+    let rig = Rig::new();
+    let (source_a, sha_a) = rig.build("A");
+    assert!(
+        rig.launcher(&["install", "--from", source_a.to_str().unwrap()])
+            .status
+            .success()
+    );
+    let digest = |path: &Path| Sha::digest(&fs::read(path).unwrap());
+    let launcher_a = rig.release_dir(sha_a).join("ducktape-launcher");
+    let digest_a = digest(&launcher_a);
+
+    let sha_b = rig.stage("B", true);
+    let launcher_b = rig.release_dir(sha_b).join("ducktape-launcher");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&launcher_b)
+        .unwrap()
+        .write_all(b"\nrelease B\n")
+        .unwrap();
+    let digest_b = digest(&launcher_b);
+    assert_ne!(digest_a, digest_b);
+
+    rig.write_state(&staged(sha_a, sha_b));
+    let flipped = rig.installed_launcher(&[]);
+    assert!(flipped.status.success(), "{}", stderr(&flipped));
+    assert!(stdout(&flipped).contains("build=B"), "{}", stdout(&flipped));
+    assert_eq!(rig.link("current"), Some(link_target(sha_b)));
+    let current = rig.install_dir().join("current").join("ducktape-launcher");
+    assert_eq!(
+        current.canonicalize().unwrap(),
+        launcher_b.canonicalize().unwrap()
+    );
+    assert_eq!(digest(&current), digest_b);
+
+    // the next boot goes through B's launcher and execs B's app in its PID.
+    let boot = rig
+        .command(&current)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = boot.id();
+    let booted = boot.wait_with_output().unwrap();
+    assert!(booted.status.success(), "{}", stderr(&booted));
+    let out = stdout(&booted);
+    assert!(out.contains("build=B"), "{out}");
+    assert!(out.contains(&format!("release={sha_b}")), "{out}");
+    assert!(out.contains(&format!("pid={pid}\n")), "{out}");
+
+    // A's launcher stays where A shipped it, byte for byte.
+    assert_eq!(digest(&launcher_a), digest_a);
 }
 
 /// `install --release-key` pins the key the app's release channel verifies
