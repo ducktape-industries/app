@@ -461,7 +461,16 @@ impl Store {
         let Some(document) = self.documents.get_mut(&field.reference.document) else {
             return;
         };
-        if document.text.is_none() {
+        // Typing into a field whose document has not arrived is kept: a
+        // native edit and a key are relative to the caret, so the pump
+        // replays them onto the document once it is here. A rich edit is a
+        // snapshot of the whole document, and one taken before it arrived
+        // would write over it.
+        let relative = matches!(
+            &input,
+            Input::Native(_) | Input::Request(wire::EditorRequestInput::Key { .. })
+        );
+        if document.text.is_none() && !relative {
             return;
         }
         // A drag-selection is one caret move per pointer sample and the queue
@@ -586,7 +595,8 @@ impl Store {
             }
             return;
         }
-        if !matches!(document.phase, Phase::Ready) {
+        // Keys typed before the document arrived wait here for it.
+        if !matches!(document.phase, Phase::Ready) || document.text.is_none() {
             return;
         }
         let Some(front) = document.queue.front() else {
@@ -1274,6 +1284,83 @@ mod rich_tests {
         assert!(
             sent,
             "the press must reach the binding as a `send` interaction"
+        );
+    }
+
+    /// A field the view just opened takes focus before its document is here,
+    /// and the writer is already typing. Each key is an edit relative to the
+    /// caret, so the store keeps them and hands them to the guest in order
+    /// once the document arrives, at the caret the document names.
+    #[gpui_kit::test]
+    fn keys_typed_before_the_document_arrives_reach_the_guest_in_order(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use gpui_kit::test::TestWindowExt as _;
+        cx.update(gpui_kit::init);
+        let key = "unrelated-product/editor";
+        let mut root = node(1);
+        let wire::Node::Editor { options, .. } = &mut root else {
+            unreachable!()
+        };
+        options.rich = None;
+        let store = EditorStore::new(43);
+        store.replace(&root).unwrap();
+        let window = cx.open_window(gpui::size(gpui::px(400.), gpui::px(300.)), |_, cx| {
+            let mut tree = crate::view_tree::ViewTree::new(root.clone());
+            tree.set_editor_store(store.clone(), cx);
+            tree
+        });
+        let tree = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            tree.update(cx, |tree, cx| {
+                tree.execute_widget_command(
+                    wire::WidgetCommand::Focus { target: key.into() },
+                    window,
+                    cx,
+                )
+            })
+            .expect("the mounted editor takes focus");
+        });
+        for typed in "kiwi".chars() {
+            native.update(|window, cx| {
+                let text = typed.to_string();
+                let mut stroke = gpui::Keystroke::parse(&text).unwrap();
+                stroke.key_char = Some(text);
+                window.dispatch_keystroke(stroke, cx);
+            });
+        }
+        {
+            let mut arrived = store.lock();
+            arrived.documents.get_mut("draft").unwrap().text = Some(Arc::from("draft"));
+            arrived.incoming = None;
+        }
+        let mut written = String::new();
+        loop {
+            store.frame(&wire::Frame::default()).unwrap();
+            let committed = store.drain().into_iter().find_map(|event| match event {
+                wire::Event::EditorTransaction {
+                    event: wire::EditorTransactionEvent::Commit { after, patches, .. },
+                    ..
+                } => Some((after, patches)),
+                _ => None,
+            });
+            let Some((after, patches)) = committed else {
+                break;
+            };
+            written.extend(patches.into_iter().map(|patch| patch.replacement));
+            let mut observed = root.clone();
+            let wire::Node::Editor { document, .. } = &mut observed else {
+                unreachable!()
+            };
+            *document = after;
+            store.replace(&observed).unwrap();
+        }
+        assert_eq!(written, "kiwi");
+        assert_eq!(
+            store.projection(key).unwrap().text.as_deref(),
+            Some("kiwidraft")
         );
     }
 
