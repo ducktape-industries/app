@@ -877,6 +877,7 @@ fn leaving_a_joins_wait_drops_its_poll() {
 #[tokio::test(flavor = "current_thread")]
 async fn the_ready_screen_mints_an_invitation_only_when_asked() {
     use futures::StreamExt as _;
+    use gpui_kit::test::TestWindowExt as _;
     let (mut app, _) = Ducktape::boot();
     let _ = app.update(AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
         chain_id: "nowhere#00000009".into(),
@@ -933,13 +934,86 @@ async fn the_ready_screen_mints_an_invitation_only_when_asked() {
     assert!(app.onboarding_error.is_empty(), "{}", app.onboarding_error);
     assert_eq!(app.toast, "Invite copied");
 
-    // the next network's ready screen starts with no notes of its own.
-    let _ = app.update(AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
-        chain_id: "nowhere#0000000a".into(),
-        workspace: "/nowhere/nowhere#0000000a".into(),
-        rpc: "http://127.0.0.1:1".into(),
-    }));
-    assert!(app.invite_notes.is_empty());
+    // … and the ready screen draws that toast (#75): it was the workspace's
+    // alone, so the copy confirmed nothing where the button is.
+    let (mut native, window, view) = onboarding_window(app);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("toast-dismiss").visible());
+
+            // the next network's ready screen starts with no notes of its own.
+            view.update(cx, |view, cx| {
+                view.test_dispatch(
+                    AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
+                        chain_id: "nowhere#0000000a".into(),
+                        workspace: "/nowhere/nowhere#0000000a".into(),
+                        rpc: "http://127.0.0.1:1".into(),
+                    }),
+                    cx,
+                )
+            });
+            assert!(view.read(cx).test_state(cx).invite_notes.is_empty());
+        })
+        .unwrap();
+}
+
+/// The join screens' window, holding `state`.
+fn onboarding_window(
+    state: Ducktape,
+) -> (
+    gpui_kit::HeadlessAppContext,
+    gpui_kit::AnyWindowHandle,
+    gpui_kit::Entity<crate::shell::DesktopWindow>,
+) {
+    use gpui_kit::AppContext as _;
+    let mut native = crate::frame_probe::headless_context();
+    let mut view = None;
+    let window = native
+        .open_window(
+            gpui_kit::size(gpui_kit::px(480.), gpui_kit::px(680.)),
+            |window, cx| {
+                let desktop = crate::shell::test_window(
+                    state,
+                    crate::shell::WindowKind::Onboarding,
+                    window,
+                    cx,
+                );
+                view = Some(desktop.clone());
+                cx.new(|cx| gpui_kit::component::Root::new(desktop, window, cx))
+            },
+        )
+        .expect("the join screens open");
+    (native, window.into(), view.expect("the window's view"))
+}
+
+/// COPY COMMAND SAYS SO (#75). The waiting step's Copy command put the node's
+/// command on the clipboard and drew nothing: its toast was drawn only by the
+/// workspace. The press confirms itself on the step.
+#[test]
+fn the_waiting_steps_copy_command_confirms_itself() {
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Provisioning;
+    app.provision_steps = vec![backend::ProvisionStep {
+        index: 5,
+        label: "Node API listening".into(),
+        state: "waiting".into(),
+        settled: false,
+        hint: String::new(),
+        command: "ducktape node run".into(),
+    }];
+    let (mut native, window, view) = onboarding_window(app);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("toast-dismiss").is_none());
+            window.click("copy-node-command", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).test_state(cx).toast, "Command copied");
+            assert!(window.find("toast-dismiss").visible());
+        })
+        .unwrap();
 }
 
 /// AN OFFLINE NETWORK SAYS SO FIRST (#19). A saved row reading `offline` still
