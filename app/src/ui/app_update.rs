@@ -216,7 +216,9 @@ impl Ducktape {
             AppMessage::JoinNetworkSubmit => self.on_join_network_submit(),
             AppMessage::WorkspaceMaterialized(init) => self.on_workspace_materialized(init),
             AppMessage::ProvisionStepped(step) => self.on_provision_stepped(step),
-            AppMessage::OnboardingInviteMinted(blob) => self.on_onboarding_invite_minted(blob),
+            AppMessage::OnboardingInviteMinted(invitation) => {
+                self.on_onboarding_invite_minted(invitation)
+            }
             AppMessage::OnboardingInviteRefused(cause) => self.on_onboarding_invite_refused(cause),
             AppMessage::CopyOnboardingInvite => self.on_copy_onboarding_invite(),
             AppMessage::EnterConsole => self.on_enter_console(),
@@ -3977,6 +3979,7 @@ impl Ducktape {
         self.rpc = init.rpc.to_owned();
         self.invite_link = "".to_owned();
         self.invite_refusal = "".to_owned();
+        self.invite_notes = Vec::new();
         self.provision_steps = Vec::new();
         self.provision_index = 0;
         self.onboarding_error = "".to_owned();
@@ -4018,8 +4021,12 @@ impl Ducktape {
         self.hub_step = HubStep::Live;
         Task::none()
     }
-    fn on_onboarding_invite_minted(&mut self, blob: String) -> Task<AppMessage> {
-        self.invite_link = blob.to_owned();
+    fn on_onboarding_invite_minted(
+        &mut self,
+        invitation: crate::backend::Invitation,
+    ) -> Task<AppMessage> {
+        self.invite_link = invitation.blob;
+        self.invite_notes = invitation.notes;
         self.invite_refusal = "".to_owned();
         self.on_copy_onboarding_invite()
     }

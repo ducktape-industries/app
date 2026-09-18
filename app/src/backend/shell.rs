@@ -148,14 +148,27 @@ pub async fn join_network(blob: crate::secret::Secret) -> Result<WorkspaceInit, 
 ///
 /// The app takes no TTL: it mints the ONE default every other door mints
 /// (`workspace_config::DEFAULT_INVITE_TTL_DAYS`).
-pub async fn mint_invite(workspace: String) -> Result<String, AppError> {
-    let minted: Result<String, String> = async {
+pub async fn mint_invite(workspace: String) -> Result<Invitation, AppError> {
+    let minted: Result<Invitation, String> = async {
         let endpoint = workspace_rpc(&workspace)?;
         let ttl = workspace_config::DEFAULT_INVITE_TTL_DAYS;
-        Ok(rpc_client(&endpoint)?.mint_invite(ttl).await?)
+        let minted = rpc_client(&endpoint)?.mint_invite(ttl).await?;
+        Ok(Invitation {
+            blob: minted.invite,
+            notes: minted.notes.into_iter().map(|note| note.sentence).collect(),
+        })
     }
     .await;
     minted.map_err(app_error)
+}
+
+/// A minted invite and what the node said the mint could not do — "reachable
+/// on this machine only", … — one sentence per note. Notes are facts beside
+/// the blob, never a refusal: the blob still admits a joiner.
+#[derive(Clone, Debug, Hash, PartialEq)]
+pub struct Invitation {
+    pub blob: String,
+    pub notes: Vec<String>,
 }
 
 /// The endpoint serving a workspace named by directory OR by chain id — the
