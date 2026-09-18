@@ -174,8 +174,9 @@ impl TextEditor {
             self.reset = Some(projection.reference.reset);
             self.install(window, cx);
         }
-        let editable =
-            projection.editable && projection.fault.is_none() && projection.text.is_some();
+        // A field the view just opened takes keys before its document is
+        // here: the store holds them and replays them once it arrives.
+        let editable = projection.editable && projection.fault.is_none();
         let input = self.input.clone();
         input.update(cx, |input, cx| {
             if input.is_editable() != editable {

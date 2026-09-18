@@ -2997,6 +2997,10 @@ impl Guest {
             self.reply(id, answer);
             return;
         }
+        #[cfg(test)]
+        if tests::held(&kind) {
+            return;
+        }
         let (capability, operation) = kind.split_once('.').unwrap_or((kind.as_str(), ""));
         // the kernel contract first: what every view may ask, module-free
         if kernel::answer(self, capability, operation, id, &payload) {
@@ -3102,14 +3106,41 @@ impl Guest {
         }
     }
 
-    /// Called on this guest's mounted tree once native editor work drains.
-    /// A command whose target left the tree in the meantime is answered with
-    /// that, never performed.
+    /// How many of the queued widget commands can run now. They wait for
+    /// native editor work to drain, since a caret or a selection is placed in
+    /// the document as it stands. A Focus does not wait: a field the view
+    /// just opened has to hold the keys typed into it before its document
+    /// arrives. A rich editor's Focus still waits — it puts the caret in a
+    /// block of its document, and has none until the document is here.
+    fn runnable_widget_commands(&self) -> usize {
+        if !self.inputs.pending() {
+            return self.widget_commands.len();
+        }
+        fn rich(node: &wire::Node, target: &str) -> bool {
+            match node {
+                wire::Node::Editor { key, options, .. } if key == target => options.rich.is_some(),
+                node => node.children().iter().any(|child| rich(child, target)),
+            }
+        }
+        self.widget_commands
+            .iter()
+            .take_while(|(_, command)| {
+                matches!(command, wire::WidgetCommand::Focus { target }
+                    if !self.frame.root.as_ref().is_some_and(|root| rich(root, target)))
+            })
+            .count()
+    }
+
+    /// Called on this guest's mounted tree with the commands that can run
+    /// now. A command whose target left the tree in the meantime is answered
+    /// with that, never performed.
     fn execute_widget_commands(
         &mut self,
         mut execute: impl FnMut(wire::WidgetCommand) -> Result<Vec<u8>, String>,
     ) {
-        for (id, command) in std::mem::take(&mut self.widget_commands) {
+        let runnable = self.runnable_widget_commands();
+        let commands: Vec<_> = self.widget_commands.drain(..runnable).collect();
+        for (id, command) in commands {
             let result = match self.target_is_mounted(&command) {
                 true => execute(command)
                     .map_err(|error| wire::Refusal::new("widget_command_failed", error)),
@@ -3578,7 +3609,7 @@ impl NativeModuleView {
             if ticks != guest.ticks {
                 content.update(cx, |_, cx| cx.notify());
             }
-            let commands_ready = !guest.inputs.pending() && !guest.widget_commands.is_empty();
+            let commands_ready = guest.runnable_widget_commands() > 0;
             if commands_ready {
                 let view = cx.entity().downgrade();
                 let seat = mounted.clone();
@@ -3601,7 +3632,7 @@ impl NativeModuleView {
                         if !same_guest {
                             return;
                         }
-                        if guest.inputs.pending() {
+                        if guest.runnable_widget_commands() == 0 {
                             cx.notify();
                             return;
                         }
@@ -5822,6 +5853,8 @@ pub(crate) mod tests {
         static CANNED_READS: std::cell::RefCell<
             std::collections::BTreeMap<String, kernel::Answer>,
         > = const { std::cell::RefCell::new(std::collections::BTreeMap::new()) };
+        static HELD: std::cell::RefCell<std::collections::BTreeSet<&'static str>> =
+            const { std::cell::RefCell::new(std::collections::BTreeSet::new()) };
     }
 
     /// The canned answer for one request, looked up by the NAME OF THE QUERY
@@ -5863,6 +5896,17 @@ pub(crate) mod tests {
                 .borrow_mut()
                 .insert(named.to_owned(), Err(wire::Refusal::new(reason, sentence)));
         });
+    }
+
+    /// Holds every request of `kind` in flight for the rest of the test: the
+    /// node has it and has not answered, which is where a write sits while
+    /// the writer goes on typing.
+    pub(super) fn hold(kind: &'static str) {
+        HELD.with(|held| held.borrow_mut().insert(kind));
+    }
+
+    pub(super) fn held(kind: &str) -> bool {
+        HELD.with(|held| held.borrow().contains(kind))
     }
 
     /// The session facts a kernel-contract view is pushed: connected, in
