@@ -150,6 +150,7 @@ fn staged(current: Sha, staged: Sha) -> Phase {
         sequence: 1,
         display: "test".into(),
         node_contract: 1,
+        refused: None,
     })
 }
 
@@ -316,7 +317,29 @@ fn a_staged_release_that_fails_to_qualify_stays_staged_and_the_current_one_runs(
     let err = stderr(&booted);
     assert!(err.contains("app_update_refused"), "{err}");
     assert!(err.contains("views_missing"), "{err}");
-    assert_eq!(rig.read_state(), staged(sha_a, sha_c));
+    // the reason is persisted, so the app that comes up can say why (#57).
+    let Phase::Staged(after) = rig.read_state() else {
+        panic!("{:?}", rig.read_state());
+    };
+    assert_eq!(after.refused.as_deref(), Some("views_missing"));
+    let unrefused = Staged {
+        refused: None,
+        ..after
+    };
+    assert_eq!(Phase::Staged(unrefused), staged(sha_a, sha_c));
+    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
+
+    // --rollback does not discard it (collecting its directory is the
+    // running app's): a refusal that says where, nothing touched.
+    let before = rig.read_state();
+    let rollback = rig.installed_launcher(&["--rollback"]);
+    assert!(!rollback.status.success());
+    let err = stderr(&rollback);
+    assert!(err.contains("rollback_unavailable"), "{err}");
+    assert!(err.contains("app's Settings"), "{err}");
+    assert!(!stdout(&rollback).contains("build="));
+    assert_eq!(rig.read_state(), before);
+    assert!(rig.release_dir(sha_c).is_dir());
     assert_eq!(rig.link("current"), Some(link_target(sha_a)));
 
     // the staged launcher, asked directly, names the same reason.

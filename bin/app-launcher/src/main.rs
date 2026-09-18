@@ -34,7 +34,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use app_update::Event;
+use app_update::{Event, Phase};
 use tracing::{error, warn};
 
 use crate::executor::Outcome;
@@ -163,6 +163,17 @@ fn rollback_through_state() -> Result<Refusal, Refusal> {
             format!("{} does not exist", layout.state_path().display()),
         )
     })?;
+    // The machine discards a staged release on `UserRollback`, but that
+    // collects its directory (`Gc`), which is the running app's to do.
+    if let Phase::Staged(staged) = &phase {
+        return Err(Refusal::new(
+            "rollback_unavailable",
+            format!(
+                "{} is staged, not running: discard it from the app's Settings (Updates)",
+                staged.display
+            ),
+        ));
+    }
     let from = phase.current();
     let settled = executor::drive(&layout, phase, Event::UserRollback)?;
     let exec = match settled.outcome {

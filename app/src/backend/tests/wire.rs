@@ -269,11 +269,13 @@ async fn a_window_on_an_unseen_room_lands_instead_of_failing() {
 /// without a view is not something a retry changes. The console never opened,
 /// so the desktop's own tabs were out of reach too.
 ///
-/// The sim's founding set is such a set. The workspace opens on an empty chat
-/// plane and the Chat seat is the empty slot that says so, on the first open
-/// and on the next. The verdict is the network's, not the seat's: the next
-/// network, whose Chat ships its view, opens on its own rooms, not on the
-/// empty slot the last one left while this one's view is on its way.
+/// The sim's founding set less its `.view.wasm` files is such a set (core
+/// commits the founding views since ducktape#2629). The workspace opens on
+/// an empty chat plane and the Chat seat is the empty slot that says so, on
+/// the first open and on the next. The verdict is the network's, not the
+/// seat's: the next network, whose Chat ships its view, opens on its own
+/// rooms, not on the empty slot the last one left while this one's view is on
+/// its way.
 #[tokio::test(flavor = "current_thread")]
 async fn a_chat_that_ships_no_view_still_opens_the_workspace() {
     async fn opened(origin: &str) -> WorkspaceData {
@@ -329,8 +331,15 @@ async fn a_chat_that_ships_no_view_still_opens_the_workspace() {
     let founder = ed25519::PrivateKey::from_seed(7);
 
     let storage = tempfile::tempdir().unwrap();
-    let modules = sim_modules_dir();
-    let (sim, origin) = founded(storage.path(), modules, &founder).await;
+    let modules = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(sim_modules_dir()).unwrap() {
+        let entry = entry.unwrap();
+        let is_view = entry.file_name().to_string_lossy().ends_with(".view.wasm");
+        if entry.path().is_file() && !is_view {
+            std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();
+        }
+    }
+    let (sim, origin) = founded(storage.path(), modules.path().into(), &founder).await;
     for _ in 0..2 {
         let workspace = opened(&origin).await;
         assert!(

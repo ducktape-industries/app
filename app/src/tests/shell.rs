@@ -599,6 +599,7 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
         sequence: 5,
         display: "2026.09.3+abcdef0".into(),
         node_contract: 1,
+        refused: None,
     });
     app.updater = Some(Updater::new(
         staged,

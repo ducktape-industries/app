@@ -416,10 +416,12 @@ fn host_releases_dir(updates_dir: &Path) -> Option<PathBuf> {
 // ---- the reading the shell draws -------------------------------------------
 
 /// The strip across the top of the console: an update ready to restart
-/// into, or a rollback the reader has not dismissed.
+/// into, a staged one its own qualify refused, or a rollback the reader has
+/// not dismissed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateStrip {
     Ready { display: String },
+    Refused { display: String, reason: String },
     RolledBack { failed: String, reason: String },
 }
 
@@ -427,9 +429,15 @@ pub enum UpdateStrip {
 pub fn strip_of(reading: Option<&UpdateReading>) -> Option<UpdateStrip> {
     let reading = reading?;
     match &reading.phase {
-        Phase::Staged(staged) => Some(UpdateStrip::Ready {
-            display: staged.display.clone(),
-        }),
+        Phase::Staged(staged) => match &staged.refused {
+            None => Some(UpdateStrip::Ready {
+                display: staged.display.clone(),
+            }),
+            Some(reason) => Some(UpdateStrip::Refused {
+                display: staged.display.clone(),
+                reason: reason.clone(),
+            }),
+        },
         Phase::RolledBack(rolled_back) => Some(UpdateStrip::RolledBack {
             failed: rolled_back.failed.short(),
             reason: rollback_words(rolled_back.reason).to_string(),
@@ -448,13 +456,15 @@ fn rollback_words(reason: RollbackReason) -> &'static str {
 
 /// The Settings "Updates" section's facts. `state` is one of `unavailable`
 /// (not installed through the launcher), `idle`, `downloading`, `staged`,
-/// `swapping`, `pending_healthy`, `rolled_back`.
+/// `swapping`, `pending_healthy`, `rolled_back`. `refused` is why the staged
+/// release's own qualify refused it, empty when it did not.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UpdateFacts {
     pub state: String,
     pub current: String,
     pub previous: String,
     pub staged_display: String,
+    pub refused: String,
     pub channel: String,
     pub checked: String,
     pub note: String,
@@ -483,11 +493,16 @@ pub fn facts_of(reading: Option<&UpdateReading>, now: i64) -> UpdateFacts {
         }
         Phase::RolledBack(rolled_back) => ("rolled_back", Some(rolled_back.failed), String::new()),
     };
+    let refused = match &reading.phase {
+        Phase::Staged(staged) => staged.refused.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
     UpdateFacts {
         state: state.into(),
         current: reading.phase.current().short(),
         previous: previous.map(|sha| sha.short()).unwrap_or_default(),
         staged_display,
+        refused,
         channel: layout::CHANNEL.into(),
         checked: checked_words(reading.last_check, now),
         note: match reading.armed {

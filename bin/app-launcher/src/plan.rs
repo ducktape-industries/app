@@ -196,6 +196,7 @@ mod tests {
             sequence: 1,
             display: "x".into(),
             node_contract: 1,
+            refused: None,
         });
         let (_, commands) = step(staged, Event::Boot);
         let ops = plan(&layout(Platform::Linux), commands.clone()).unwrap();

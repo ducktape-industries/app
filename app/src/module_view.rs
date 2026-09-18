@@ -337,6 +337,7 @@ pub fn settings_view(
         "update_current": updates.current,
         "update_previous": updates.previous,
         "update_staged_display": updates.staged_display,
+        "update_refused": updates.refused,
         "update_channel": updates.channel,
         "update_checked": updates.checked,
         "update_note": updates.note,
