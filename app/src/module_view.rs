@@ -84,10 +84,11 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// register through `rpc.query` / `rpc.blocks` / `rpc.live`, and a vote or
 /// a settle comes back as `op.submit`, signed here with the seated key. The
 /// one event the app hears is the kernel's `badge` (the tab's open count).
-pub fn governance_view(dark: bool, connected: bool) -> ViewSpec {
+pub fn governance_view(dark: bool, connected: bool, chain: &str) -> ViewSpec {
     let props = serde_json::json!({
         "connected": connected,
         "dark": dark,
+        "chain": chain,
         "tasting": taste_props(),
     });
     module_view(
@@ -138,10 +139,11 @@ pub fn palette_view(dark: bool, connected: bool, chain: &str) -> ViewSpec {
 /// reads the roster itself off the node and signs its writes through
 /// `op.submit`. The one intent left is `copy` (`text`, `label`) — the
 /// clipboard is an OS door the kernel has not opened.
-pub fn members_view(dark: bool, connected: bool) -> ViewSpec {
+pub fn members_view(dark: bool, connected: bool, chain: &str) -> ViewSpec {
     let props = serde_json::json!({
         "connected": connected,
         "dark": dark,
+        "chain": chain,
     });
     module_view("members", serde_json::to_vec(&props).expect("props encode"))
 }
@@ -161,11 +163,13 @@ pub fn members_view(dark: bool, connected: bool) -> ViewSpec {
 pub fn agents_view(
     dark: bool,
     connected: bool,
+    chain: &str,
     account: &str,
     open_run: &str,
     opened: i64,
 ) -> ViewSpec {
     let props = serde_json::json!({
+        "chain": chain,
         "account": account,
         "open_run": open_run,
         "opened": opened,
@@ -217,6 +221,7 @@ pub fn event_int(event: &ModuleViewEvent, field: &str) -> i64 {
 pub fn node_view(
     dark: bool,
     connected: bool,
+    chain: &str,
     status: &str,
     data_dir: &str,
     wall_now: i64,
@@ -224,6 +229,7 @@ pub fn node_view(
     let props = serde_json::json!({
         "connected": connected,
         "dark": dark,
+        "chain": chain,
         "status": status,
         "data_dir": data_dir,
         "wall_now": wall_now,
@@ -240,10 +246,17 @@ pub fn node_view(
 /// `rpc.blocks` (re-read on `rpc.live` for the `block` plane) and runs the
 /// workspace search over `rpc.query` / `rpc.view`. The one intent that comes
 /// back is `copy` (`text`, `label`) — the clipboard is an OS door.
-pub fn explorer_view(dark: bool, connected: bool, head: i64, sync_line: &str) -> ViewSpec {
+pub fn explorer_view(
+    dark: bool,
+    connected: bool,
+    chain: &str,
+    head: i64,
+    sync_line: &str,
+) -> ViewSpec {
     let props = serde_json::json!({
         "connected": connected,
         "dark": dark,
+        "chain": chain,
         "head": head,
         "sync_line": sync_line,
     });
@@ -279,6 +292,7 @@ pub fn explorer_view(dark: bool, connected: bool, head: i64, sync_line: &str) ->
 pub fn settings_view(
     dark: bool,
     connected: bool,
+    chain: &str,
     loading: bool,
     status: &str,
     mutation_phase: crate::MutationPhase,
@@ -313,6 +327,7 @@ pub fn settings_view(
     let props = serde_json::json!({
         "dark": dark,
         "connected": connected,
+        "chain": chain,
         "loading": loading,
         "status": status,
         "busy": mutation_phase != crate::MutationPhase::Idle,
@@ -430,6 +445,7 @@ pub fn forge_view(
         "dark": dark,
         "org": org,
         "about": about,
+        "chain": network_chain_id,
         "network_chain_id": network_chain_id,
         "connected_rpc": connected_rpc,
         "link": link,
@@ -473,6 +489,8 @@ struct ChatProps<'a> {
     connected: bool,
     endpoint: &'a str,
     network_name: &'a str,
+    /// the connected chain, under the one name every view reads it by
+    chain: &'a str,
     network_chain_id: &'a str,
     status: &'a str,
     block_height: i64,
@@ -546,6 +564,7 @@ pub fn chat_view(
         connected,
         endpoint,
         network_name,
+        chain: network_chain_id,
         network_chain_id,
         status,
         block_height,
@@ -3687,13 +3706,28 @@ impl gpui_kit::Render for NativeModuleView {
                 }
                 None => gpui_kit::div().size_full().into_any_element(),
             },
-            Err(reason) => gpui_kit::div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(reason)
-                .into_any_element(),
+            // the whole sentence, wrapped inside the pane: one line wider
+            // than the pane is centred off both edges, and a reader loses
+            // its start and its end — what failed, and what to do about it
+            Err(reason) => {
+                let reason = gpui_kit::div()
+                    .id("view-unavailable")
+                    .max_w_full()
+                    .child(reason);
+                #[cfg(test)]
+                let reason = {
+                    use gpui_kit::test::TestSupportExt as _;
+                    reason.test_support()
+                };
+                gpui_kit::div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p_4()
+                    .child(reason)
+                    .into_any_element()
+            }
         }
     }
 }
@@ -6146,6 +6180,141 @@ pub(crate) mod tests {
         }
     }
 
+    /// A DESKTOP VIEW WITH NO STAGED BYTES SAYS WHY, WHOLE, ON ITS OWN TAB.
+    ///
+    /// A build with no views staged fails every desktop load before any
+    /// candidate, and the seat holds the loader's sentence: what is missing
+    /// and what to run. The tab draws that sentence wrapped inside its pane —
+    /// one line wider than the pane was centred off both edges, so a reader
+    /// saw neither what failed nor what to do about it. The real native
+    /// renderer and the app's own fonts, so the wrap is the one a reader gets.
+    #[test]
+    fn a_desktop_view_with_no_staged_bytes_draws_its_whole_reason_inside_the_tab() {
+        let _turn = blocking_connection_turn();
+        let bare = tempfile::tempdir().expect("a build with no views");
+        let reason = find_views_dir(
+            None,
+            Ok(bare.path().join("debug").join("ducktape-app")),
+            &bare.path().join("target").join("views"),
+        )
+        .expect_err("nothing is staged");
+        mounted("agents").lock().expect("module view lock").slot = Slot::Failed(reason);
+
+        let width = gpui_kit::px(360.);
+        let mut native = crate::frame_probe::headless_context();
+        let window = native
+            .open_window(gpui_kit::size(width, gpui_kit::px(600.)), |_, cx| {
+                cx.new(|_| NativeModuleView::new("agents"))
+            })
+            .expect("native window opens");
+        native
+            .update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("the tab draws");
+        let drawn = native
+            .update_window(window.into(), |_, window, _| {
+                window.find("view-unavailable").bounds()
+            })
+            .expect("the tab drew its reason");
+        assert!(
+            drawn.origin.x >= gpui_kit::px(0.) && drawn.right() <= width,
+            "the reason runs off the tab: {drawn:?}"
+        );
+        assert!(
+            drawn.size.height > gpui_kit::px(40.),
+            "the reason is one line, not wrapped: {drawn:?}"
+        );
+    }
+
+    /// EVERY VIEW READS THE CONNECTED CHAIN BY ONE NAME (#104). A view that
+    /// builds a `duck://` address or keys a preference by chain reads `chain`
+    /// (`<label>#<salt>`) whichever seat it sits in; `network_chain_id`
+    /// stays beside it where a view already reads that.
+    #[test]
+    fn every_views_props_carry_the_connected_chain_as_chain() {
+        let chain = "dognet#b5b6ea90";
+        let updates = crate::backend::update::UpdateFacts::default();
+        let specs = [
+            governance_view(false, true, chain),
+            inbox_view(false, true, chain, "7"),
+            palette_view(false, true, chain),
+            members_view(false, true, chain),
+            agents_view(false, true, chain, "7", "", 0),
+            node_view(false, true, chain, "", "", 0),
+            explorer_view(false, true, chain, 0, ""),
+            settings_view(
+                false,
+                true,
+                chain,
+                false,
+                "",
+                crate::MutationPhase::Idle,
+                crate::Appearance::System,
+                false,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                false,
+                false,
+                "",
+                "",
+                "",
+                "",
+                &updates,
+            ),
+            forge_view(false, true, "", "", chain, "", "", 0),
+            pages_view(false, true, chain, "", 0),
+            chat_view(
+                false,
+                true,
+                "",
+                "",
+                chain,
+                "",
+                0,
+                "7",
+                "",
+                0,
+                "",
+                "",
+                0,
+                0,
+                crate::MutationPhase::Idle,
+                false,
+                false,
+                "",
+                "",
+                0,
+                0,
+                false,
+                false,
+                &[],
+                false,
+                0,
+            ),
+            files_view(false, true, chain, "7", "", 0),
+            registered_view("home", false, true, chain, "7"),
+        ];
+        let mut props: Vec<(&str, Vec<u8>)> = specs
+            .into_iter()
+            .map(|spec| (spec.module, spec.props))
+            .collect();
+        props.push(("call", crate::call::call_props("eng", chain)));
+        for (module, props) in props {
+            let props: serde_json::Value = serde_json::from_slice(&props).expect("props decode");
+            assert_eq!(props["chain"], chain, "{module} is not told its chain");
+        }
+    }
+
     /// The desktop's own view is the same on every node: its load lands
     /// though the app moved to a node meanwhile, where a module's view
     /// asked of the node since left lands nowhere.
@@ -7183,6 +7352,7 @@ pub(crate) mod tests {
             connected: true,
             endpoint: "http://127.0.0.1:1",
             network_name: "testnet",
+            chain: "testnet#abcd",
             network_chain_id: "testnet#abcd",
             status: "Live",
             block_height: 84_912,
@@ -7383,7 +7553,7 @@ pub(crate) mod tests {
     fn redrawn_texts(mounted: &Arc<Mutex<Mounted>>) -> Vec<String> {
         // the props read the seat's taste under its own lock, as the
         // shell's render does: built before this seat is held
-        let props = Some(governance_view(false, true).props);
+        let props = Some(governance_view(false, true, "").props);
         let mut locked = mounted.lock().expect("module view lock");
         let Slot::Ready(guest) = &mut locked.slot else {
             panic!("a seated view");

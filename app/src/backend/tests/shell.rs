@@ -428,6 +428,34 @@ fn a_node_rpc_url_is_an_http_origin_and_nothing_else() {
     }
 }
 
+/// A REMOTE NODE'S DATA DIRECTORY IS NOT A PATH ON THIS DEVICE. The Node
+/// overview names the directory of the workspace that serves the endpoint; an
+/// endpoint no workspace here serves is a remote, whose data lives on its own
+/// machine, so it names none (the view says "Not reported") — never the
+/// ducktape home, which is every workspace's parent and no node's directory.
+#[test]
+fn a_remote_nodes_data_directory_is_not_a_path_on_this_device() {
+    let (home, _key) = joined_workspace("dognet#107");
+    let remote = "http://100.92.85.92:28107";
+    let mut prefs = serde_json::json!({});
+    assert_eq!(
+        data_dir_serving(&prefs, Some(home.path()), remote),
+        "",
+        "a remote node's directory is on its own machine"
+    );
+    assert_eq!(
+        data_dir_serving(&prefs, None, remote),
+        "",
+        "no home, no workspace"
+    );
+    store_endpoint_override(&mut prefs, "dognet#107", remote);
+    assert_eq!(
+        data_dir_serving(&prefs, Some(home.path()), remote),
+        home.path().join("dognet#107").display().to_string(),
+        "the workspace that serves the endpoint names its own directory"
+    );
+}
+
 /// A STORED NODE URL IS STILL THE WORKSPACE'S OWN NODE (#92, #70). The URL
 /// Settings keeps resolves to the workspace — its keystore, its chain — so the
 /// open's own-node check runs against whatever answers there, exactly as on
