@@ -1012,6 +1012,11 @@ fn the_waiting_steps_copy_command_confirms_itself() {
             window.render_frame(cx);
             assert_eq!(view.read(cx).test_state(cx).toast, "Command copied");
             assert!(window.find("toast-dismiss").visible());
+            // in the body's corner, as in the workspace's content box: not
+            // straddling the hairline of the 36px footer band below it.
+            let footer_top = window.viewport_size().height - gpui_kit::px(36.);
+            let toast = window.find("toast-dismiss").bounds();
+            assert!(toast.bottom() <= footer_top, "{toast:?} crosses the footer");
         })
         .unwrap();
 }
