@@ -819,6 +819,42 @@ impl DesktopWindow {
             }))
     }
 
+    /// The toast, floating in the corner of its layout's positioned box until
+    /// it is dismissed or ages out. The workspace and the join screens draw
+    /// this one element, so a copy confirms itself on either.
+    fn toast(&self, cx: &gpui_kit::App) -> Option<gpui_kit::Div> {
+        use gpui_kit::component::button::ButtonVariants as _;
+        use gpui_kit::*;
+        let toast = self.model.read(cx).state.toast.clone();
+        if toast.is_empty() {
+            return None;
+        }
+        let theme = gpui_kit::component::Theme::global(cx);
+        Some(
+            div()
+                .absolute()
+                .bottom_4()
+                .right_4()
+                .max_w(px(420.))
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_4()
+                .py_2p5()
+                .rounded(px(design::radius::CARD as f32))
+                .border_1()
+                .border_color(theme.color_tokens().border)
+                .bg(theme.popover)
+                .shadow_md()
+                .child(div().flex_1().text_size(px(12.5)).child(toast))
+                .child(
+                    self.action("toast-dismiss", "Dismiss", Message::DismissToast, false)
+                        .ghost()
+                        .h_7(),
+                ),
+        )
+    }
+
     fn onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         use crate::HubStep;
         use gpui_kit::component::button::ButtonVariants as _;
@@ -1522,6 +1558,7 @@ impl DesktopWindow {
                 );
         }
         div()
+            .relative()
             .size_full()
             .flex()
             .flex_col()
@@ -1611,6 +1648,7 @@ impl DesktopWindow {
                             .child("A workspace your team runs."),
                     ),
             )
+            .children(self.toast(cx))
             .into_any_element()
     }
 
@@ -1663,10 +1701,7 @@ impl DesktopWindow {
             crate::module_view::tab_label(module, &crate::module_view::module_name(module))
         };
         let navigation = navigation_rows(&label);
-        let (sidebar, popover) = {
-            let theme = gpui_kit::component::Theme::global(cx);
-            (theme.sidebar, theme.popover)
-        };
+        let sidebar = gpui_kit::component::Theme::global(cx).sidebar;
         let state = &self.model.read(cx).state;
         let palette = design::palette(state.is_dark());
         let accent = hsla_of(palette.accent);
@@ -1972,7 +2007,6 @@ impl DesktopWindow {
         tabs = tabs.child(account);
         let state = &self.model.read(cx).state;
         let error = state.error.clone();
-        let toast = state.toast.clone();
         let update_strip = state.update_strip();
         let needs_account =
             state.connected && !state.account_exists && !state.account_banner_dismissed;
@@ -2072,36 +2106,7 @@ impl DesktopWindow {
                 .w_full()
                 .overflow_hidden()
                 .child(view)
-                .when(!toast.is_empty(), |element| {
-                    element.child(
-                        div()
-                            .absolute()
-                            .bottom_4()
-                            .right_4()
-                            .max_w(px(420.))
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .px_4()
-                            .py_2p5()
-                            .rounded(px(design::radius::CARD as f32))
-                            .border_1()
-                            .border_color(colors.border)
-                            .bg(popover)
-                            .shadow_md()
-                            .child(div().flex_1().text_size(px(12.5)).child(toast))
-                            .child(
-                                self.action(
-                                    "toast-dismiss",
-                                    "Dismiss",
-                                    Message::DismissToast,
-                                    false,
-                                )
-                                .ghost()
-                                .h_7(),
-                            ),
-                    )
-                }),
+                .children(self.toast(cx)),
         );
         let mut root = div()
             .relative()
