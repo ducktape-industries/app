@@ -669,7 +669,7 @@ fn a_launched_app_without_a_release_key_still_reports_it_rendered() {
     std::fs::write(&state_path, state::encode(&pending)).unwrap();
 
     let (_, module) = module_path!().split_once("::").unwrap();
-    let child = std::process::Command::new(std::env::current_exe().unwrap())
+    let child = own_binary_copy_in(root.path())
         .args(["--exact", "--ignored", "--nocapture"])
         .arg(format!("{module}::launched_without_a_key_child"))
         .env("DUCKTAPE_RELEASE", current.to_string())
@@ -698,6 +698,22 @@ fn a_launched_app_without_a_release_key_still_reports_it_rendered() {
         !updates.join("keys").exists(),
         "no key was pinned on the way"
     );
+}
+
+/// A command for this test binary, run from a private copy in `dir`: another
+/// `cargo test` sharing the target dir can relink the original mid-run, and
+/// from then on `current_exe()` names a deleted file.
+fn own_binary_copy_in(dir: &std::path::Path) -> std::process::Command {
+    // Linux's /proc/self/exe still opens the running image after the relink
+    // unlinked its path; elsewhere the path is all there is.
+    let running = if cfg!(target_os = "linux") {
+        std::path::PathBuf::from("/proc/self/exe")
+    } else {
+        std::env::current_exe().unwrap()
+    };
+    let copy = dir.join("self-test-binary");
+    std::fs::copy(running, &copy).unwrap();
+    std::process::Command::new(copy)
 }
 
 /// The app half of the test above, run only in its child.
