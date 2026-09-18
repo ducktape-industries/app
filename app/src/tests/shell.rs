@@ -1177,6 +1177,7 @@ async fn an_offline_network_says_so_before_any_wallet_step() {
         chain_id: "dognet#d2a0ec8f".into(),
         name: "dognet".into(),
         endpoint: dead.clone(),
+        endpoint_override: String::new(),
         kind: "local".into(),
         last_used: 0,
         probed: true,

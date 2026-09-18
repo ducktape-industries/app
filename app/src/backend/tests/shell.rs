@@ -480,7 +480,12 @@ async fn a_node_rpc_url_is_kept_only_where_the_workspaces_own_node_answers() {
     let before = prefs.clone();
 
     assert_eq!(
-        repoint_workspace(&mut prefs, workspace(), "http://100.92.85.92:28990/v1").await,
+        repoint_workspace(
+            &mut prefs,
+            workspace(),
+            &Repoint::Set("http://100.92.85.92:28990/v1".into())
+        )
+        .await,
         Err("A node RPC URL is http:// or https:// followed by a host and an optional port, and nothing else.".to_string())
     );
     assert_eq!(prefs, before, "a refused URL stores nothing");
@@ -496,7 +501,7 @@ async fn a_node_rpc_url_is_kept_only_where_the_workspaces_own_node_answers() {
     ] {
         let foreign = super::node_that_serves_its_status_once(status).await;
         assert_eq!(
-            repoint_workspace(&mut prefs, workspace(), &foreign).await,
+            repoint_workspace(&mut prefs, workspace(), &Repoint::Set(foreign)).await,
             Err(said.to_string())
         );
         assert_eq!(prefs, before, "a foreign node's URL stores nothing");
@@ -504,7 +509,7 @@ async fn a_node_rpc_url_is_kept_only_where_the_workspaces_own_node_answers() {
 
     let own = super::node_that_serves_its_status_once(serving_status("dognet#93", &key)).await;
     assert_eq!(
-        repoint_workspace(&mut prefs, workspace(), &format!(" {own}/ ")).await,
+        repoint_workspace(&mut prefs, workspace(), &Repoint::Set(format!(" {own}/ "))).await,
         Ok(EndpointFacts {
             endpoint: own.clone(),
             endpoint_override: own.clone(),
@@ -524,13 +529,66 @@ async fn a_node_rpc_url_is_kept_only_where_the_workspaces_own_node_answers() {
     )
     .unwrap();
     assert_eq!(
-        repoint_workspace(&mut prefs, workspace(), "").await,
+        repoint_workspace(&mut prefs, workspace(), &Repoint::Set(String::new())).await,
         Ok(EndpointFacts {
             endpoint: local,
             endpoint_override: String::new(),
         })
     );
     assert_eq!(prefs, before, "a clear leaves the last-used stamp");
+}
+
+/// THE LAUNCH WINDOW GOES BACK TO `node.toml` WITH THE OVERRIDE'S NODE DOWN
+/// (#94). Settings is inside the console, which does not open while the
+/// override's node is down — and a node that moved to another machine leaves
+/// `node.toml`'s port silent too. The row's clear asks no node: `node.toml` is
+/// stored back and the row resolves there, and the next open makes the
+/// own-node check (#70). Settings' own clear still asks first: its reconnect
+/// makes no check.
+#[tokio::test(flavor = "current_thread")]
+async fn the_launch_window_clears_an_override_whose_node_is_down() {
+    let (home, _key) = joined_workspace("dognet#94");
+    let dir = home.path().join("dognet#94");
+    let workspace = || ("dognet#94".to_string(), dir.clone());
+    let silent = (
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap(),
+    );
+    let moved = format!("http://{}", silent.0.local_addr().unwrap());
+    let local = format!("http://{}", silent.1.local_addr().unwrap());
+    drop(silent);
+    let node_toml = std::fs::read_to_string(dir.join("node.toml")).unwrap();
+    std::fs::write(
+        dir.join("node.toml"),
+        node_toml.replace("0.0.0.0:18619", local.trim_start_matches("http://")),
+    )
+    .unwrap();
+    let before = serde_json::json!({"networks": {"dognet#94": {"last_used": 7}}});
+    let mut prefs = before.clone();
+    store_endpoint_override(&mut prefs, "dognet#94", &moved);
+    let overridden = prefs.clone();
+
+    assert_eq!(
+        repoint_workspace(&mut prefs, workspace(), &Repoint::Set(String::new())).await,
+        Err(format!("Can't reach this network's node at {local}."))
+    );
+    assert_eq!(
+        prefs, overridden,
+        "Settings' clear asks the node it reconnects to"
+    );
+
+    assert_eq!(
+        repoint_workspace(&mut prefs, workspace(), &Repoint::Clear).await,
+        Ok(EndpointFacts {
+            endpoint: local.clone(),
+            endpoint_override: String::new(),
+        })
+    );
+    assert_eq!(prefs, before, "a clear leaves the last-used stamp");
+    assert_eq!(
+        workspace_endpoint_in(&prefs, "dognet#94", &dir),
+        Some(local)
+    );
 }
 
 /// THE JOIN WAITS HONESTLY (#18). The app attaches to a node it does not

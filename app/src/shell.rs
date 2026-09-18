@@ -1214,6 +1214,7 @@ impl DesktopWindow {
                 for network in networks {
                     let label = crate::backend::network_row_label(&network);
                     let picked = network.id == selected;
+                    let node_toml = crate::backend::offers_node_toml(&network);
                     recent = recent.child(
                         div()
                             .flex()
@@ -1231,6 +1232,17 @@ impl DesktopWindow {
                                 .flex_1()
                                 .when(picked, |button| button.secondary()),
                             )
+                            .when(node_toml, |row| {
+                                row.child(
+                                    self.action(
+                                        format!("node-toml/{}", network.id),
+                                        "Use node.toml",
+                                        Message::ClearNetworkEndpoint(network.id.clone()),
+                                        busy,
+                                    )
+                                    .ghost(),
+                                )
+                            })
                             .child(
                                 self.action(
                                     format!("forget/{}", network.id),
