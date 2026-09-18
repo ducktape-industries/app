@@ -895,3 +895,50 @@ async fn a_node_nothing_answers_for_is_said_in_the_apps_words_and_logged_in_the_
     let said = exchange_failure(&answering, failed).await;
     assert_eq!(said, raw);
 }
+
+/// A RELEASE-2 NODE'S MINT IS AN INVITATION (#88). Release 2 answers `POST
+/// /v1/invite` with the blob alone, no `notes`, and the app read that reply as
+/// one it could not read: Copy invitation said the node made nothing, though
+/// it had. A reply without notes is a mint with none, copied and toasted as
+/// any other.
+#[tokio::test(flavor = "current_thread")]
+async fn a_mint_reply_without_notes_is_copied() {
+    use crate::backend::view_source::tests::{FakeDeployment, fake_node};
+    let (home, _key) = joined_workspace("dognet#88");
+    let node = FakeDeployment::serving(
+        "noop",
+        &module_artifact::Artifact::Module(module_artifact::ModuleArtifact {
+            component: vec![0],
+            index: None,
+            view: None,
+            lanes: Vec::new(),
+        }),
+    );
+    *node.invite.lock().unwrap() = Some(serde_json::json!({"invite": "🦆release-2"}));
+    let rpc = fake_node(node).await.origin().to_string();
+    let dir = home.path().join("dognet#88");
+    let node_toml = std::fs::read_to_string(dir.join("node.toml")).unwrap();
+    let listen = rpc.trim_start_matches("http://").trim_end_matches('/');
+    std::fs::write(
+        dir.join("node.toml"),
+        node_toml.replace("0.0.0.0:18619", listen),
+    )
+    .unwrap();
+
+    let minted = mint_invite_in(Some(home.path().into()), "dognet#88".into())
+        .await
+        .expect("a reply without notes is a mint");
+    assert_eq!(
+        minted,
+        Invitation {
+            blob: "🦆release-2".into(),
+            notes: Vec::new(),
+        }
+    );
+
+    let (mut app, _) = crate::Ducktape::boot();
+    let _ = app.update(crate::AppMessage::OnboardingInviteMinted(minted));
+    assert_eq!(app.invite_link, "🦆release-2");
+    assert!(app.invite_refusal.is_empty(), "{}", app.invite_refusal);
+    assert_eq!(app.toast, "Invite copied");
+}

@@ -250,8 +250,16 @@ pub async fn join_network(blob: crate::secret::Secret) -> Result<WorkspaceInit, 
 /// The app takes no TTL: it mints the ONE default every other door mints
 /// (`workspace_config::DEFAULT_INVITE_TTL_DAYS`).
 pub async fn mint_invite(workspace: String) -> Result<Invitation, AppError> {
+    mint_invite_in(ducktape_home(), workspace).await
+}
+
+/// [`mint_invite`] for the workspaces under `home`.
+pub(crate) async fn mint_invite_in(
+    home: Option<PathBuf>,
+    workspace: String,
+) -> Result<Invitation, AppError> {
     let minted: Result<Invitation, String> = async {
-        let endpoint = workspace_rpc(&workspace)?;
+        let endpoint = workspace_rpc(home.as_deref(), &workspace)?;
         let ttl = workspace_config::DEFAULT_INVITE_TTL_DAYS;
         let minted = rpc_client(&endpoint)?.mint_invite(ttl).await?;
         Ok(Invitation {
@@ -275,12 +283,13 @@ pub struct Invitation {
 /// The endpoint serving a workspace named by directory OR by chain id — the
 /// same two spellings the CLI's `-n` selector takes, because the callers that
 /// used to pass one to `-n` now need a URL instead.
-fn workspace_rpc(selector: &str) -> Result<String, String> {
+fn workspace_rpc(home: Option<&Path>, selector: &str) -> Result<String, String> {
     let selector = selector.trim();
     let matches_selector = |chain_id: &str, dir: &Path| {
         chain_id == selector || dir.file_name().is_some_and(|name| name == selector)
     };
-    workspaces()
+    home.map(workspaces_in)
+        .unwrap_or_default()
         .into_iter()
         .find(|(chain_id, dir)| matches_selector(chain_id, dir))
         .and_then(|(chain_id, dir)| workspace_endpoint(&chain_id, &dir))
