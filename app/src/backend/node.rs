@@ -58,6 +58,8 @@ pub struct SettingsFacts {
     /// The viewer's full public-key hex, or empty without a local user key.
     /// Views resolve account membership from this key and the identity module.
     pub user_key: String,
+    /// The node RPC URL this session uses and the override Settings stored.
+    pub endpoint: EndpointFacts,
 }
 
 /// The NETWORK card's Data dir row.
@@ -87,6 +89,7 @@ pub async fn load_settings_facts(
                 .await
                 .map(|key| hex_encode(&key))
                 .unwrap_or_default(),
+            endpoint: endpoint_facts(&rpc),
         })
     }
     .await

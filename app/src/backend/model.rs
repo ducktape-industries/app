@@ -165,7 +165,7 @@ pub(crate) fn rpc_client(input: &str) -> Result<RpcClient, String> {
 /// bug that shape produced was not a slow test but a dead process.
 fn operator_token_for(origin: &str) -> Option<String> {
     let home = super::shell::ducktape_home()?;
-    let (_, workspace) = super::shell::workspace_serving(&home, origin)?;
+    let (_, workspace) = super::shell::workspace_serving(&read_prefs(), &home, origin)?;
     let token = std::fs::read_to_string(workspace.join("admin.token")).ok()?;
     let token = token.trim().to_string();
     (!token.is_empty()).then_some(token)

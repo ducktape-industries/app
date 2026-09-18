@@ -135,6 +135,8 @@ pub(crate) enum SettingsIntent {
     UpdateCheck,
     UpdateRestart,
     UpdateRollback,
+    /// Set the workspace's node RPC URL (`url` in the detail); empty clears it.
+    Endpoint,
 }
 /// The update controls the reader can press; each is one `app_update::Event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -264,6 +266,11 @@ pub struct Ducktape {
     pub(crate) settings_key_state: String,
     pub(crate) settings_user_key: String,
     pub(crate) settings_generation: i64,
+    /// The node RPC URL this session uses, the override Settings stored ("" for
+    /// none), and the sentence after a refused set ("" otherwise).
+    pub(crate) rpc_endpoint: String,
+    pub(crate) rpc_endpoint_override: String,
+    pub(crate) rpc_endpoint_refusal: String,
     pub(crate) account_exists: bool,
     pub(crate) account_number: String,
     pub(crate) account_name: String,
@@ -457,6 +464,8 @@ pub(crate) enum AppMessage {
     SettingsViewEvent(crate::module_view::ModuleViewEvent),
     SettingsUnlocked(String),
     SettingsUnlockFailed(crate::backend::AppError),
+    SettingsEndpointSaved(crate::backend::EndpointFacts),
+    SettingsEndpointRefused(crate::backend::AppError),
     CopyToClipboard(String, String),
     DismissToast,
     ToastTick,
@@ -684,6 +693,9 @@ impl Ducktape {
             settings_key_state: "".to_owned(),
             settings_user_key: "".to_owned(),
             settings_generation: 0,
+            rpc_endpoint: "".to_owned(),
+            rpc_endpoint_override: "".to_owned(),
+            rpc_endpoint_refusal: "".to_owned(),
             account_exists: false,
             account_number: "".to_owned(),
             account_name: "".to_owned(),

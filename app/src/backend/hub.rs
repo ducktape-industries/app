@@ -164,7 +164,7 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
     let mut rows: Vec<HubNetwork> = workspaces()
         .into_iter()
         .map(|(chain_id, dir)| {
-            let endpoint = workspace_endpoint(&dir).unwrap_or_default();
+            let endpoint = workspace_endpoint_in(&prefs, &chain_id, &dir).unwrap_or_default();
             HubNetwork {
                 name: display_name(&chain_id, &chain_id),
                 endpoint,
@@ -508,8 +508,8 @@ pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
             };
         }
     };
-    if let Err(cause) =
-        own_workspace_node(&rpc, &status).and_then(|()| name_remote_keystore(&rpc, &status))
+    if let Err(cause) = own_workspace_node(workspace_at(&rpc), &status)
+        .and_then(|()| name_remote_keystore(&rpc, &status))
     {
         set_local_user_key(None).await;
         return WalletList {
@@ -549,12 +549,16 @@ pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
     list
 }
 
-/// An endpoint a workspace on this device serves opens only onto that
-/// workspace's own node ([`own_node`]) — the check provisioning's wait makes,
-/// made again on the status this open read. A remote has no workspace to
-/// hold the answer to.
-fn own_workspace_node(rpc: &str, status: &serde_json::Value) -> Result<(), String> {
-    let Some((chain_id, dir)) = workspace_at(rpc) else {
+/// An endpoint a workspace on this device serves (`workspace`, the open's
+/// [`workspace_at`]) opens only onto that workspace's own node ([`own_node`]) —
+/// the check provisioning's wait makes, made again on the status this open
+/// read, whether the endpoint is `node.toml`'s or a node RPC URL Settings set.
+/// A remote has no workspace to hold the answer to.
+pub(crate) fn own_workspace_node(
+    workspace: Option<(String, PathBuf)>,
+    status: &serde_json::Value,
+) -> Result<(), String> {
+    let Some((chain_id, dir)) = workspace else {
         return Ok(());
     };
     match own_node(&dir, &chain_id, &super::node::node_facts(status))? {
@@ -563,6 +567,53 @@ fn own_workspace_node(rpc: &str, status: &serde_json::Value) -> Result<(), Strin
             Err("the node on this port has not yet said which network and key it serves".into())
         }
     }
+}
+
+/// Point the workspace the session at `rpc` is at the node RPC URL Settings
+/// typed (`url`; empty clears it back to `node.toml`), and answer the facts it
+/// now resolves to — the endpoint the session reconnects to next.
+pub async fn set_workspace_endpoint(rpc: String, url: String) -> Result<EndpointFacts, AppError> {
+    let (chain_id, dir) = workspace_at(&rpc).ok_or_else(|| {
+        app_error("Only a workspace on this device has a node RPC URL to set.".to_string())
+    })?;
+    let mut prefs = read_prefs();
+    let facts = repoint_workspace(&mut prefs, (chain_id.clone(), dir), &url)
+        .await
+        .map_err(|cause| app_error(user_error(cause)))?;
+    if !write_prefs(&prefs) {
+        return Err(app_error(
+            "The app could not save its preferences.".to_string(),
+        ));
+    }
+    // the session is re-pointed AS this chain, as an open records it.
+    note_served_chain(&facts.endpoint, &chain_id);
+    Ok(facts)
+}
+
+/// [`set_workspace_endpoint`] on `prefs`: `url` must be a node RPC URL
+/// ([`endpoint_origin`]), and the node answering where the workspace then
+/// resolves must be its own ([`own_workspace_node`]) — the check an open makes,
+/// made here because the reconnect that follows makes none. Refused, `prefs`
+/// is left as it was.
+pub(crate) async fn repoint_workspace(
+    prefs: &mut serde_json::Value,
+    (chain_id, dir): (String, PathBuf),
+    url: &str,
+) -> Result<EndpointFacts, String> {
+    let endpoint = match endpoint_origin(url) {
+        Some(endpoint) => endpoint,
+        None if url.trim().is_empty() => String::new(),
+        None => return Err(ENDPOINT_REFUSAL.into()),
+    };
+    let mut next = prefs.clone();
+    store_endpoint_override(&mut next, &chain_id, &endpoint);
+    let facts = endpoint_facts_in(&next, &chain_id, &dir);
+    let status = probe_endpoint(&facts.endpoint)
+        .await
+        .map_err(|cause| unreachable_node(&facts.endpoint, &cause))?;
+    own_workspace_node(Some((chain_id, dir)), &status)?;
+    *prefs = next;
+    Ok(facts)
 }
 
 /// Learn which network a remote endpoint serves, so its keystore has a name

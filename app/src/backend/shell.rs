@@ -54,10 +54,102 @@ pub(crate) fn workspaces_in(root: &Path) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// This workspace's app endpoint, from its `http_listen` — a wildcard bind is
-/// rewritten to loopback, the same as the CLI dials it.
-pub(crate) fn workspace_endpoint(dir: &Path) -> Option<String> {
-    workspace_config::http_base_in(dir).ok()
+/// This workspace's app endpoint — THE one answer to which node a workspace on
+/// this device talks to: the node RPC URL Settings stored for its chain
+/// ([`endpoint_override`]), else its `http_listen`, a wildcard bind rewritten
+/// to loopback the same as the CLI dials it. Either way the workspace stays
+/// itself: its keystore, its chain id and the own-node check ([`own_node`]).
+pub(crate) fn workspace_endpoint(chain_id: &str, dir: &Path) -> Option<String> {
+    workspace_endpoint_in(&read_prefs(), chain_id, dir)
+}
+
+/// [`workspace_endpoint`] against an already-read `prefs`.
+pub(crate) fn workspace_endpoint_in(
+    prefs: &serde_json::Value,
+    chain_id: &str,
+    dir: &Path,
+) -> Option<String> {
+    endpoint_override(prefs, chain_id).or_else(|| workspace_config::http_base_in(dir).ok())
+}
+
+/// The node RPC URL Settings stored for `chain_id`
+/// (`prefs.networks[<chain id>].endpoint`), when it is one ([`endpoint_origin`]);
+/// a hand-edited value that is not falls back to `node.toml`.
+pub(crate) fn endpoint_override(prefs: &serde_json::Value, chain_id: &str) -> Option<String> {
+    prefs["networks"][chain_id]["endpoint"]
+        .as_str()
+        .and_then(endpoint_origin)
+}
+
+/// What Settings says when a typed node RPC URL is not one.
+pub(crate) const ENDPOINT_REFUSAL: &str = "A node RPC URL is http:// or https:// followed by a host and an optional port, and nothing else.";
+
+/// A node RPC URL in the origin form the rpc client keys its connections by —
+/// `http` or `https`, a host (loopback too), an optional port and nothing else:
+/// no path, query, fragment or credentials. `None` for anything else. Parsed
+/// here rather than through [`canonical_endpoint`]: [`workspace_serving`] runs
+/// under the client cache lock that one takes.
+pub(crate) fn endpoint_origin(url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(url.trim()).ok()?;
+    let origin = matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path(), "" | "/");
+    origin.then(|| url.as_str().trim_end_matches('/').to_string())
+}
+
+/// Store `endpoint` — an [`endpoint_origin`] — as `chain_id`'s node RPC URL,
+/// or clear it back to `node.toml` when empty.
+pub(crate) fn store_endpoint_override(
+    prefs: &mut serde_json::Value,
+    chain_id: &str,
+    endpoint: &str,
+) {
+    if !endpoint.is_empty() {
+        prefs["networks"][chain_id]["endpoint"] = serde_json::json!(endpoint);
+        return;
+    }
+    let stored = prefs
+        .get_mut("networks")
+        .and_then(|networks| networks.get_mut(chain_id))
+        .and_then(serde_json::Value::as_object_mut);
+    if let Some(network) = stored {
+        network.remove("endpoint");
+    }
+}
+
+/// The node RPC URL facts Settings draws: the endpoint in use and the stored
+/// override, empty for none.
+#[derive(Clone, Debug, Default, Hash, PartialEq)]
+pub struct EndpointFacts {
+    pub endpoint: String,
+    pub endpoint_override: String,
+}
+
+pub(crate) fn endpoint_facts_in(
+    prefs: &serde_json::Value,
+    chain_id: &str,
+    dir: &Path,
+) -> EndpointFacts {
+    EndpointFacts {
+        endpoint: workspace_endpoint_in(prefs, chain_id, dir).unwrap_or_default(),
+        endpoint_override: endpoint_override(prefs, chain_id).unwrap_or_default(),
+    }
+}
+
+/// [`EndpointFacts`] for the session at `rpc`: a workspace on this device
+/// resolves its own; a remote has no override and uses what it was opened at.
+pub(crate) fn endpoint_facts(rpc: &str) -> EndpointFacts {
+    match workspace_at(rpc) {
+        Some((chain_id, dir)) => endpoint_facts_in(&read_prefs(), &chain_id, &dir),
+        None => EndpointFacts {
+            endpoint: canonical_endpoint(rpc.to_string()),
+            endpoint_override: String::new(),
+        },
+    }
 }
 
 /// The endpoint an EMPTY `rpc` means: the one workspace under the home, when
@@ -65,16 +157,20 @@ pub(crate) fn workspace_endpoint(dir: &Path) -> Option<String> {
 /// Two workspaces are a pick the launch window makes, never a default.
 pub(crate) fn lone_workspace_endpoint() -> Option<String> {
     let listed = workspaces();
-    let [(_, dir)] = listed.as_slice() else {
+    let [(chain_id, dir)] = listed.as_slice() else {
         return None;
     };
-    workspace_endpoint(dir)
+    workspace_endpoint(chain_id, dir)
 }
 
 /// The workspace on this device that serves an endpoint, matched on the
 /// endpoint the app is actually connected to. `None` is a remote.
 pub(crate) fn workspace_at(rpc: &str) -> Option<(String, PathBuf)> {
-    workspace_serving(&ducktape_home()?, &canonical_endpoint(rpc.to_string()))
+    workspace_serving(
+        &read_prefs(),
+        &ducktape_home()?,
+        &canonical_endpoint(rpc.to_string()),
+    )
 }
 
 /// [`workspace_at`] under `root`, for an ALREADY-CANONICAL endpoint. Two
@@ -82,11 +178,16 @@ pub(crate) fn workspace_at(rpc: &str) -> Option<(String, PathBuf)> {
 /// chain the endpoint is opened as ([`note_served_chain`]) only that chain's
 /// workspace answers — never its sibling's keystore, data dir or tokens. An
 /// endpoint nobody has named a chain for (`DUCKTAPE_NODE`, a typed address)
-/// takes the first workspace registered on it.
-pub(crate) fn workspace_serving(root: &Path, endpoint: &str) -> Option<(String, PathBuf)> {
+/// takes the first workspace registered on it. A workspace serves the endpoint
+/// [`workspace_endpoint_in`] resolves for it under `prefs`.
+pub(crate) fn workspace_serving(
+    prefs: &serde_json::Value,
+    root: &Path,
+    endpoint: &str,
+) -> Option<(String, PathBuf)> {
     let served = served_chain(endpoint);
     workspaces_in(root).into_iter().find(|(chain_id, dir)| {
-        workspace_endpoint(dir).as_deref() == Some(endpoint)
+        workspace_endpoint_in(prefs, chain_id, dir).as_deref() == Some(endpoint)
             && served.as_ref().is_none_or(|served| served == chain_id)
     })
 }
@@ -122,7 +223,7 @@ pub async fn join_network(blob: crate::secret::Secret) -> Result<WorkspaceInit, 
         let joined = joining
             .await
             .map_err(|_| "joining this network did not finish".to_string())??;
-        let rpc = workspace_endpoint(&joined.dir)
+        let rpc = workspace_endpoint(&joined.chain_id, &joined.dir)
             .ok_or_else(|| "the new workspace has no node.toml http_listen".to_string())?;
         Ok(WorkspaceInit {
             chain_id: joined.chain_id,
@@ -182,7 +283,7 @@ fn workspace_rpc(selector: &str) -> Result<String, String> {
     workspaces()
         .into_iter()
         .find(|(chain_id, dir)| matches_selector(chain_id, dir))
-        .and_then(|(_, dir)| workspace_endpoint(&dir))
+        .and_then(|(chain_id, dir)| workspace_endpoint(&chain_id, &dir))
         .ok_or_else(|| format!("no local workspace named {selector:?} to mint an invite from"))
 }
 
@@ -385,7 +486,7 @@ pub(crate) fn provision_progress_in(
                     let listen = state
                         .dir
                         .as_deref()
-                        .and_then(workspace_endpoint)
+                        .and_then(|dir| workspace_endpoint(&state.chain_id, dir))
                         .unwrap_or_else(|| state.rpc.clone());
                     state.step = 5;
                     Some((

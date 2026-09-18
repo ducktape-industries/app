@@ -263,7 +263,7 @@ checkpoint_blocks = 32
     );
     assert_eq!(workspace_identity(&dir), Some(short_label(&founder)));
     assert_eq!(
-        workspace_endpoint(&dir).as_deref(),
+        workspace_endpoint_in(&serde_json::json!({}), "mynet#a1b2c3d4", &dir).as_deref(),
         Some("http://127.0.0.1:8844")
     );
 }
@@ -314,9 +314,10 @@ checkpoint_blocks = 32
     };
     let dead = register("walk", "walk#37589218");
     let healthy = register("walk-2", "walk#0e1b62f1");
-    let endpoint = workspace_endpoint(&healthy).unwrap();
+    let no_prefs = serde_json::json!({});
+    let endpoint = workspace_endpoint_in(&no_prefs, "walk#0e1b62f1", &healthy).unwrap();
     assert_eq!(
-        workspace_endpoint(&dead).as_deref(),
+        workspace_endpoint_in(&no_prefs, "walk#37589218", &dead).as_deref(),
         Some(endpoint.as_str())
     );
 
@@ -327,14 +328,209 @@ checkpoint_blocks = 32
     ] {
         note_served_chain(&endpoint, chain_id);
         assert_eq!(
-            workspace_serving(root.path(), &endpoint),
+            workspace_serving(&no_prefs, root.path(), &endpoint),
             Some((chain_id.to_string(), dir.clone())),
             "opening {chain_id} resolves its own workspace"
         );
     }
     // a chain no workspace on this endpoint holds is a remote, not a sibling.
     note_served_chain(&endpoint, "team#c0ffee");
-    assert_eq!(workspace_serving(root.path(), &endpoint), None);
+    assert_eq!(workspace_serving(&no_prefs, root.path(), &endpoint), None);
+}
+
+/// A WORKSPACE'S NODE RPC URL (#92). Settings can point a workspace at its node
+/// on another machine; the URL is kept per chain id beside the last-used stamp,
+/// read back through the prefs file's own encoding, and it — not `node.toml` —
+/// is what the workspace dials while it is set. Cleared, or not a URL (a hand
+/// edit), the workspace dials `node.toml` again.
+#[test]
+fn a_workspace_dials_its_stored_node_url_else_its_node_toml() {
+    let (home, _) = joined_workspace("dognet#920");
+    let dir = home.path().join("dognet#920");
+    let local = Some("http://127.0.0.1:18619");
+    let remote = "http://100.92.85.92:28990";
+    let dials = |prefs: &serde_json::Value| workspace_endpoint_in(prefs, "dognet#920", &dir);
+    assert_eq!(dials(&serde_json::json!({})).as_deref(), local);
+
+    let mut prefs = serde_json::json!({"networks": {"dognet#920": {"last_used": 7}}});
+    store_endpoint_override(&mut prefs, "dognet#920", remote);
+    let written = serde_json::to_vec_pretty(&prefs).unwrap();
+    let mut prefs: serde_json::Value = serde_json::from_slice(&written).unwrap();
+    assert_eq!(
+        prefs["networks"]["dognet#920"],
+        serde_json::json!({"last_used": 7, "endpoint": remote})
+    );
+    assert_eq!(dials(&prefs).as_deref(), Some(remote));
+    assert_eq!(
+        endpoint_override(&prefs, "dognet#920").as_deref(),
+        Some(remote)
+    );
+    assert_eq!(
+        workspace_endpoint_in(&prefs, "catnet#920", &dir).as_deref(),
+        local,
+        "another chain's URL is not this one's"
+    );
+
+    store_endpoint_override(&mut prefs, "dognet#920", "");
+    assert_eq!(
+        prefs["networks"]["dognet#920"],
+        serde_json::json!({"last_used": 7}),
+        "clearing keeps the last-used stamp"
+    );
+    assert_eq!(dials(&prefs).as_deref(), local);
+    assert_eq!(endpoint_override(&prefs, "dognet#920"), None);
+
+    for invalid in [
+        serde_json::json!("ftp://100.92.85.92:28990"),
+        serde_json::json!("http://100.92.85.92:28990/v1"),
+        serde_json::json!("100.92.85.92:28990"),
+        serde_json::json!(""),
+        serde_json::json!(28990),
+    ] {
+        prefs["networks"]["dognet#920"]["endpoint"] = invalid.clone();
+        assert_eq!(dials(&prefs).as_deref(), local, "{invalid} is not a URL");
+        assert_eq!(endpoint_override(&prefs, "dognet#920"), None);
+    }
+}
+
+/// WHAT A NODE RPC URL IS (#92): `http` or `https`, a host (loopback too), an
+/// optional port and nothing else — in the origin form the rpc client keys its
+/// connections by, so a stored URL and the session dialled at it are one name.
+#[test]
+fn a_node_rpc_url_is_an_http_origin_and_nothing_else() {
+    for (typed, origin) in [
+        ("http://100.92.85.92:28990", "http://100.92.85.92:28990"),
+        (
+            "  http://100.92.85.92:28990/  ",
+            "http://100.92.85.92:28990",
+        ),
+        ("https://Node.Example", "https://node.example"),
+        ("http://node.example:80", "http://node.example"),
+        ("http://127.0.0.1:8844", "http://127.0.0.1:8844"),
+        ("http://localhost:28990", "http://localhost:28990"),
+        ("http://[::1]:28990", "http://[::1]:28990"),
+    ] {
+        assert_eq!(endpoint_origin(typed).as_deref(), Some(origin), "{typed}");
+        assert_eq!(canonical_endpoint(typed.to_string()), origin, "{typed}");
+    }
+    for refused in [
+        "",
+        "100.92.85.92:28990",
+        "ftp://100.92.85.92:28990",
+        "http://",
+        "http://100.92.85.92:28990/v1",
+        "http://100.92.85.92:28990?chain=dognet",
+        "http://100.92.85.92:28990#top",
+        "http://duck:secret@100.92.85.92:28990",
+        "http://100.92.85.92:99999",
+    ] {
+        assert_eq!(endpoint_origin(refused), None, "{refused:?}");
+    }
+}
+
+/// A STORED NODE URL IS STILL THE WORKSPACE'S OWN NODE (#92, #70). The URL
+/// Settings keeps resolves to the workspace — its keystore, its chain — so the
+/// open's own-node check runs against whatever answers there, exactly as on
+/// `node.toml`'s port: another network's node, or another key, is refused. The
+/// address is no exception for being remote.
+#[test]
+fn the_own_node_check_holds_a_stored_node_url_to_its_workspace() {
+    let (home, key) = joined_workspace("dognet#92");
+    let dir = home.path().join("dognet#92");
+    let remote = "http://100.92.85.92:28992";
+    let mut prefs = serde_json::json!({});
+    assert_eq!(
+        workspace_serving(&prefs, home.path(), remote),
+        None,
+        "unset, the address is a remote"
+    );
+    store_endpoint_override(&mut prefs, "dognet#92", remote);
+    let workspace = workspace_serving(&prefs, home.path(), remote);
+    assert_eq!(workspace, Some(("dognet#92".to_string(), dir)));
+
+    let status = |chain_id: &str, key: &str| -> serde_json::Value {
+        serde_json::from_str(serving_status(chain_id, key)).unwrap()
+    };
+    assert_eq!(
+        own_workspace_node(workspace.clone(), &status("catnet#92", &key)),
+        Err("another network's node (catnet#92) answers on this port".to_string())
+    );
+    assert_eq!(
+        own_workspace_node(workspace.clone(), &status("dognet#92", &"bb".repeat(32))),
+        Err("a node with another key answers on this port".to_string())
+    );
+    assert_eq!(
+        own_workspace_node(workspace, &status("dognet#92", &key)),
+        Ok(())
+    );
+}
+
+/// SETTINGS KEEPS A NODE RPC URL ONLY WHERE THE WORKSPACE'S OWN NODE ANSWERS
+/// (#92, #70). The session reconnects to what a set resolves to, and a
+/// reconnect checks nothing — so the set makes the open's check first: a typed
+/// value that is not a URL, or a node of another network or another key at
+/// it, is refused with its sentence and the prefs stay as they were. A clear
+/// goes back to `node.toml` through the same check.
+#[tokio::test(flavor = "current_thread")]
+async fn a_node_rpc_url_is_kept_only_where_the_workspaces_own_node_answers() {
+    let (home, key) = joined_workspace("dognet#93");
+    let dir = home.path().join("dognet#93");
+    let workspace = || ("dognet#93".to_string(), dir.clone());
+    let mut prefs = serde_json::json!({"networks": {"dognet#93": {"last_used": 7}}});
+    let before = prefs.clone();
+
+    assert_eq!(
+        repoint_workspace(&mut prefs, workspace(), "http://100.92.85.92:28990/v1").await,
+        Err("A node RPC URL is http:// or https:// followed by a host and an optional port, and nothing else.".to_string())
+    );
+    assert_eq!(prefs, before, "a refused URL stores nothing");
+    for (status, said) in [
+        (
+            serving_status("catnet#93", &key),
+            "another network's node (catnet#93) answers on this port",
+        ),
+        (
+            serving_status("dognet#93", &"bb".repeat(32)),
+            "a node with another key answers on this port",
+        ),
+    ] {
+        let foreign = super::node_that_serves_its_status_once(status).await;
+        assert_eq!(
+            repoint_workspace(&mut prefs, workspace(), &foreign).await,
+            Err(said.to_string())
+        );
+        assert_eq!(prefs, before, "a foreign node's URL stores nothing");
+    }
+
+    let own = super::node_that_serves_its_status_once(serving_status("dognet#93", &key)).await;
+    assert_eq!(
+        repoint_workspace(&mut prefs, workspace(), &format!(" {own}/ ")).await,
+        Ok(EndpointFacts {
+            endpoint: own.clone(),
+            endpoint_override: own.clone(),
+        })
+    );
+    assert_eq!(
+        prefs["networks"]["dognet#93"],
+        serde_json::json!({"last_used": 7, "endpoint": own})
+    );
+
+    let local = super::node_that_serves_its_status_once(serving_status("dognet#93", &key)).await;
+    let node_toml = std::fs::read_to_string(dir.join("node.toml")).unwrap();
+    let listen = local.trim_start_matches("http://");
+    std::fs::write(
+        dir.join("node.toml"),
+        node_toml.replace("0.0.0.0:18619", listen),
+    )
+    .unwrap();
+    assert_eq!(
+        repoint_workspace(&mut prefs, workspace(), "").await,
+        Ok(EndpointFacts {
+            endpoint: local,
+            endpoint_override: String::new(),
+        })
+    );
+    assert_eq!(prefs, before, "a clear leaves the last-used stamp");
 }
 
 /// THE JOIN WAITS HONESTLY (#18). The app attaches to a node it does not

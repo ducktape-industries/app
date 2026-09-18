@@ -138,6 +138,8 @@ impl Ducktape {
             AppMessage::SettingsViewEvent(event) => self.on_settings_view_event(event),
             AppMessage::SettingsUnlocked(pubkey) => self.on_settings_unlocked(pubkey),
             AppMessage::SettingsUnlockFailed(cause) => self.on_settings_unlock_failed(cause),
+            AppMessage::SettingsEndpointSaved(next) => self.on_settings_endpoint_saved(next),
+            AppMessage::SettingsEndpointRefused(cause) => self.on_settings_endpoint_refused(cause),
             AppMessage::CopyToClipboard(text, label) => self.on_copy_to_clipboard(text, label),
             AppMessage::DismissToast => self.on_dismiss_toast(),
             AppMessage::ToastTick => self.on_toast_tick(),
@@ -1922,6 +1924,8 @@ impl Ducktape {
         self.settings_key_path = next.key_path.to_owned();
         self.settings_key_state = next.key_state.to_owned();
         self.settings_user_key = next.user_key.to_owned();
+        self.rpc_endpoint = next.endpoint.endpoint;
+        self.rpc_endpoint_override = next.endpoint.endpoint_override;
 
         Task::none()
     }
@@ -2265,6 +2269,16 @@ impl Ducktape {
             SettingsIntent::UpdateRollback => {
                 Task::done(AppMessage::UpdateAction(UpdateAction::RollBack))
             }
+            SettingsIntent::Endpoint => Task::perform(
+                crate::backend::set_workspace_endpoint(
+                    self.connected_rpc.to_owned(),
+                    crate::module_view::event_text(&(event), "url"),
+                ),
+                |result| match result {
+                    Ok(value) => AppMessage::SettingsEndpointSaved(value),
+                    Err(error) => AppMessage::SettingsEndpointRefused(error),
+                },
+            ),
             SettingsIntent::Notifications => {
                 self.desktop_notifications = crate::module_view::event_flag(&(event), "enabled");
                 let pending_task = Task::perform(
@@ -2290,6 +2304,25 @@ impl Ducktape {
     fn on_settings_unlocked(&mut self, pubkey: String) -> Task<AppMessage> {
         self.error = "".to_owned();
         self.signer_key = pubkey.to_owned();
+        Task::none()
+    }
+    /// A stored node RPC URL takes effect the way Settings → Reconnect does: the
+    /// session is re-pointed at what the workspace now resolves to.
+    fn on_settings_endpoint_saved(
+        &mut self,
+        next: crate::backend::EndpointFacts,
+    ) -> Task<AppMessage> {
+        self.rpc_endpoint_refusal = "".to_owned();
+        self.rpc_endpoint_override = next.endpoint_override;
+        self.rpc_endpoint = next.endpoint.to_owned();
+        self.connected_rpc = next.endpoint;
+        Task::done(AppMessage::Reconnect)
+    }
+    fn on_settings_endpoint_refused(
+        &mut self,
+        cause: crate::backend::AppError,
+    ) -> Task<AppMessage> {
+        self.rpc_endpoint_refusal = cause.message;
         Task::none()
     }
     fn on_settings_unlock_failed(&mut self, cause: crate::backend::AppError) -> Task<AppMessage> {

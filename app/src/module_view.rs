@@ -300,6 +300,9 @@ pub fn settings_view(
     account_exists: bool,
     account_busy: bool,
     account_ticket: &str,
+    rpc_endpoint: &str,
+    rpc_endpoint_override: &str,
+    rpc_endpoint_refusal: &str,
     updates: &crate::backend::update::UpdateFacts,
 ) -> ViewSpec {
     let appearance = match appearance {
@@ -332,6 +335,9 @@ pub fn settings_view(
         "account_exists": account_exists,
         "account_busy": account_busy,
         "account_ticket": account_ticket,
+        "rpc_endpoint": rpc_endpoint,
+        "rpc_endpoint_override": rpc_endpoint_override,
+        "rpc_endpoint_refusal": rpc_endpoint_refusal,
         "tasting": taste_props(),
         "update_state": updates.state,
         "update_current": updates.current,
@@ -384,6 +390,7 @@ pub fn settings_intent(event: &ModuleViewEvent) -> crate::SettingsIntent {
         "update_check" => Intent::UpdateCheck,
         "update_restart" => Intent::UpdateRestart,
         "update_rollback" => Intent::UpdateRollback,
+        "endpoint" => Intent::Endpoint,
         _ => Intent::Copy,
     }
 }
@@ -724,6 +731,7 @@ pub(crate) fn intents_of(module: &str) -> &'static [&'static str] {
             "update_check",
             "update_restart",
             "update_rollback",
+            "endpoint",
         ],
         // pages speaks the kernel contract: every read is `rpc.view` and
         // every write `op.submit`. What is left are the two OS doors — the

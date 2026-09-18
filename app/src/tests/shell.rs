@@ -181,6 +181,7 @@ fn a_move_to_a_pane_that_does_not_draw_the_settings_facts_keeps_the_connect_load
         key_state: "encrypted".into(),
         data_dir: "/w".into(),
         user_key: "abcd".into(),
+        endpoint: Default::default(),
     }));
     assert_eq!(
         app.settings_user_key, "abcd",
@@ -193,6 +194,80 @@ fn a_move_to_a_pane_that_does_not_draw_the_settings_facts_keeps_the_connect_load
         app.settings_generation, in_flight,
         "entering Settings must issue a fresh read"
     );
+}
+
+/// A WORKSPACE'S NODE RPC URL IS SETTINGS' TO DRAW AND TO SET (#92). The view
+/// sends `endpoint` with the typed `url`; the app draws the URL in use, the
+/// stored override and — after a refused set, until the next kept one — the
+/// refusal's one sentence. A kept URL (or a clear) re-points the session and
+/// reconnects it the way Settings → Reconnect does.
+#[test]
+fn settings_draws_the_node_rpc_url_and_a_kept_one_reconnects_the_session() {
+    let (mut app, _) = Ducktape::boot();
+    app.shell_tab = ShellTab::View("settings");
+    let drawn = |app: &Ducktape| -> [serde_json::Value; 3] {
+        let (view, _) = app.native_view();
+        let props: serde_json::Value = serde_json::from_slice(&view.props).unwrap();
+        [
+            "rpc_endpoint",
+            "rpc_endpoint_override",
+            "rpc_endpoint_refusal",
+        ]
+        .map(|fact| props[fact].clone())
+    };
+    let event = crate::module_view::view_event(
+        "endpoint".into(),
+        r#"{"url":"http://100.92.85.92:28990"}"#.into(),
+    );
+    assert_eq!(
+        crate::module_view::settings_intent(&event),
+        SettingsIntent::Endpoint
+    );
+    assert_eq!(
+        crate::module_view::event_text(&event, "url"),
+        "http://100.92.85.92:28990"
+    );
+
+    let _ = app.update(AppMessage::SettingsLoaded(crate::backend::SettingsFacts {
+        generation: app.settings_generation,
+        key_path: "/w/user.key".into(),
+        key_state: "encrypted".into(),
+        data_dir: "/w".into(),
+        user_key: "abcd".into(),
+        endpoint: crate::backend::EndpointFacts {
+            endpoint: "http://127.0.0.1:8844".into(),
+            endpoint_override: String::new(),
+        },
+    }));
+    assert_eq!(drawn(&app), ["http://127.0.0.1:8844", "", ""]);
+
+    let refusal = "A node RPC URL is http:// or https:// followed by a host and an optional port, and nothing else.";
+    let _ = app.update(AppMessage::SettingsEndpointRefused(
+        refusal.to_string().into(),
+    ));
+    assert_eq!(drawn(&app), ["http://127.0.0.1:8844", "", refusal]);
+
+    let remote = "http://100.92.85.92:28990";
+    let _ = app.update(AppMessage::SettingsEndpointSaved(
+        crate::backend::EndpointFacts {
+            endpoint: remote.into(),
+            endpoint_override: remote.into(),
+        },
+    ));
+    assert_eq!(drawn(&app), [remote, remote, ""]);
+    assert_eq!(app.connected_rpc, remote, "the session is re-pointed");
+    assert!(
+        handler_body("SettingsEndpointSaved").contains("Task::done(AppMessage::Reconnect)"),
+        "a kept URL reconnects through Settings → Reconnect's own message"
+    );
+
+    let _ = app.update(AppMessage::SettingsEndpointSaved(
+        crate::backend::EndpointFacts {
+            endpoint: "http://127.0.0.1:8844".into(),
+            endpoint_override: String::new(),
+        },
+    ));
+    assert_eq!(drawn(&app), ["http://127.0.0.1:8844", "", ""]);
 }
 
 /// THE JOIN OPENS THE CALL'S WINDOW, AND THE CONSOLE KEEPS SAYING SO.
