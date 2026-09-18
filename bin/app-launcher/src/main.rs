@@ -13,8 +13,10 @@
 //!   installed launcher before it flips;
 //! - `--rollback`: the manual escape hatch, the Settings row's `UserRollback`
 //!   from a shell;
-//! - `install --from <built release> [--release-key HEX]`: seed, flip,
-//!   write state, pin the release key (`make install-app`).
+//! - `install --from <built release> [--release-key HEX] [--replace]`: seed,
+//!   flip, write state, pin the release key (`make install-app`). A release
+//!   older than the pin, or one with no `release.json` over an installed one,
+//!   is only offered until `--replace` takes it.
 //!
 //! When the update machinery cannot be trusted (no state, a link where a
 //! file should be, a flip that refused) a boot still runs the app beside
@@ -42,7 +44,7 @@ use crate::layout::{EnvInputs, Layout, Platform};
 use crate::refusal::Refusal;
 
 const TARGET: &str = "ducktape::update";
-const USAGE: &str = "usage: ducktape-launcher [app args...]\n       ducktape-launcher --qualify <state.json>\n       ducktape-launcher --rollback\n       ducktape-launcher install --from <built release dir or Ducktape.app> [--release-key HEX]\n";
+const USAGE: &str = "usage: ducktape-launcher [app args...]\n       ducktape-launcher --qualify <state.json>\n       ducktape-launcher --rollback\n       ducktape-launcher install --from <built release dir or Ducktape.app> [--release-key HEX] [--replace]\n";
 
 /// Every way the launcher can be invoked; one match in `main`.
 #[derive(Debug, PartialEq, Eq)]
@@ -53,6 +55,7 @@ enum Mode {
     Install {
         from: PathBuf,
         release_key: Option<String>,
+        replace: bool,
     },
     Help,
 }
@@ -79,18 +82,26 @@ fn parse(args: Vec<OsString>) -> Result<Mode, String> {
 }
 
 fn parse_install(args: Vec<OsString>) -> Result<Mode, String> {
-    let (from, release_key) = match args.as_slice() {
-        [flag, from] if flag == "--from" => (from, None),
-        [flag, from, key_flag, key] | [key_flag, key, flag, from]
-            if flag == "--from" && key_flag == "--release-key" =>
-        {
-            (from, Some(key.to_string_lossy().into_owned()))
+    let usage = || "install needs `--from <path>` [--release-key HEX] [--replace]".to_string();
+    let (mut from, mut release_key, mut replace) = (None, None, false);
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        match flag.to_str() {
+            Some("--from") if from.is_none() => {
+                from = Some(PathBuf::from(args.next().ok_or_else(usage)?));
+            }
+            Some("--release-key") if release_key.is_none() => {
+                let key = args.next().ok_or_else(usage)?;
+                release_key = Some(key.to_string_lossy().into_owned());
+            }
+            Some("--replace") if !replace => replace = true,
+            _ => return Err(usage()),
         }
-        _ => return Err("install needs `--from <path>` [--release-key HEX]".to_string()),
-    };
+    }
     Ok(Mode::Install {
-        from: PathBuf::from(from),
+        from: from.ok_or_else(usage)?,
         release_key,
+        replace,
     })
 }
 
@@ -107,7 +118,11 @@ fn main() -> ExitCode {
         Mode::Boot(args) => boot(&args),
         Mode::Qualify(state) => run_qualify(&state),
         Mode::Rollback => rollback(),
-        Mode::Install { from, release_key } => run_install(&from, release_key.as_deref()),
+        Mode::Install {
+            from,
+            release_key,
+            replace,
+        } => run_install(&from, release_key.as_deref(), replace),
         Mode::Help => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -205,9 +220,9 @@ fn run_qualify(state: &std::path::Path) -> ExitCode {
     }
 }
 
-fn run_install(from: &std::path::Path, release_key: Option<&str>) -> ExitCode {
+fn run_install(from: &std::path::Path, release_key: Option<&str>, replace: bool) -> ExitCode {
     let result = host_layout().and_then(|layout| {
-        let sha = install::install(&layout, from, release_key)?;
+        let sha = install::install(&layout, from, release_key, replace)?;
         Ok((layout, sha))
     });
     match result {
@@ -275,11 +290,13 @@ mod tests {
             Mode::Install {
                 from: "/b".into(),
                 release_key: None,
+                replace: false,
             }
         );
         let pinned = Mode::Install {
             from: "/b".into(),
             release_key: Some("ab".into()),
+            replace: false,
         };
         assert_eq!(
             parse(vec![
@@ -302,6 +319,31 @@ mod tests {
             ])
             .unwrap(),
             pinned
+        );
+        assert_eq!(
+            parse(vec![
+                "install".into(),
+                "--replace".into(),
+                "--from".into(),
+                "/b".into(),
+            ])
+            .unwrap(),
+            Mode::Install {
+                from: "/b".into(),
+                release_key: None,
+                replace: true,
+            }
+        );
+        assert!(parse(vec!["install".into(), "--from".into()]).is_err());
+        assert!(
+            parse(vec![
+                "install".into(),
+                "--from".into(),
+                "/b".into(),
+                "--from".into(),
+                "/c".into()
+            ])
+            .is_err()
         );
         assert!(parse(vec!["install".into()]).is_err());
         assert!(parse(vec!["install".into(), "--release-key".into(), "ab".into()]).is_err());

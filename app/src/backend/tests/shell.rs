@@ -970,3 +970,81 @@ async fn a_mint_reply_without_notes_is_copied() {
     assert!(app.invite_refusal.is_empty(), "{}", app.invite_refusal);
     assert_eq!(app.toast, "Invite copied");
 }
+
+/// An invite minted before node contract 7 carries no coordinator byte after
+/// its coordination mode. The join refuses it in a sentence that names the fix
+/// before anything is written, rather than joining a network it misread.
+#[tokio::test(flavor = "current_thread")]
+async fn an_invite_in_the_old_envelope_is_refused_by_name() {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let issuer = ed25519::PrivateKey::from_seed(7);
+    let descriptor = workspace_config::NetworkDescriptor {
+        chain_id: "ducktape#a1b2c3d4".into(),
+        validators: vec![
+            issuer
+                .public_key()
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        ],
+        bootstrap: vec![],
+        reach: vec![],
+        coordination: Some("private".into()),
+        block_time_ms: workspace_config::DEFAULT_BLOCK_TIME_MS,
+        genesis: "ab".repeat(32),
+        modules: Vec::new(),
+    };
+    let token = workspace_config::mint_invite_token(
+        &issuer,
+        descriptor.genesis_namespace().as_bytes(),
+        u64::MAX,
+    );
+    let wireguard = workspace_config::InviteWireGuard {
+        public_key: [0u8; 32],
+        endpoint: None,
+        intro: None,
+        mesh_port: 52200,
+    };
+    let signed = |coordinator: Option<&str>| {
+        let blob = workspace_config::encode_invite(
+            &descriptor,
+            &token,
+            &wireguard,
+            &[],
+            coordinator,
+            &issuer,
+        )
+        .expect("encode");
+        let mut bytes = b64.decode(blob.trim_start_matches('🦆')).expect("base64");
+        bytes.truncate(bytes.len() - 64);
+        (blob, bytes)
+    };
+    let (fresh, off) = signed(None);
+    let (_, named) = signed(Some("coord.example.net:3478"));
+    workspace_config::decode_invite(&fresh).expect("the new envelope reads");
+
+    // The two envelopes agree up to the coordinator flag; the old one is the
+    // same bytes without it, signed by the same issuer.
+    let flag = off.iter().zip(&named).position(|(a, b)| a != b).unwrap();
+    let mut old = off.clone();
+    old.remove(flag);
+    let signature = issuer.sign(workspace_config::INVITE_ENVELOPE_NAMESPACE, &old);
+    old.extend_from_slice(signature.as_ref());
+    let old = format!("🦆{}", b64.encode(old));
+
+    let refused = join_network(crate::secret::Secret::new(old))
+        .await
+        .expect_err("an old envelope never joins");
+    assert!(
+        refused
+            .message
+            .starts_with("This invite cannot be read here (")
+            && refused.message.ends_with(
+                "An invite made by an older Ducktape reads this way — ask for a fresh one."
+            ),
+        "{}",
+        refused.message
+    );
+}

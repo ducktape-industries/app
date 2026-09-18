@@ -449,7 +449,16 @@ fn a_reinstall_of_a_newer_build_keeps_the_old_one_as_previous() {
             .success()
     );
     let (source_b, sha_b) = rig.build("B");
-    let again = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
+    // B names no release, so replacing A with it is an offer: nothing is
+    // written until the user takes it with --replace (#97).
+    let offered = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
+    assert!(!offered.status.success());
+    let err = stderr(&offered);
+    assert!(err.contains("release_unknown_provenance"), "{err}");
+    assert!(err.contains("--replace"), "{err}");
+    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
+    assert!(!rig.release_dir(sha_b).exists());
+    let again = rig.launcher(&["install", "--from", source_b.to_str().unwrap(), "--replace"]);
     assert!(again.status.success(), "{}", stderr(&again));
     assert_eq!(rig.link("current"), Some(link_target(sha_b)));
     assert_eq!(rig.link("previous"), Some(link_target(sha_a)));
@@ -610,11 +619,82 @@ fn install_pins_the_release_key_and_never_replaces_a_different_one() {
         format!("{key}\n")
     );
 
-    let same = rig.launcher(&["install", "--release-key", &key, "--from", source_b]);
+    let same = rig.launcher(&[
+        "install",
+        "--release-key",
+        &key,
+        "--from",
+        source_b,
+        "--replace",
+    ]);
     assert!(same.status.success(), "{}", stderr(&same));
     assert_eq!(rig.link("current"), Some(link_target(sha_b)));
     assert_eq!(
         fs::read_to_string(rig.release_key_path()).unwrap(),
         format!("{key}\n")
     );
+}
+
+/// A release that names itself in `release.json` pins that sequence, so the
+/// channel publishing the same sequence reads as what already runs (#97). An
+/// OLDER sequence over it is an offer, never a silent flip: nothing is written
+/// until `--replace` takes it, and the pin does not lower when it does. A
+/// `release.json` that is not exactly `{sequence, display}` is refused.
+#[test]
+fn a_release_json_pins_its_sequence_and_an_older_one_is_only_offered() {
+    let rig = Rig::new();
+    let identify =
+        |source: &Path, text: &str| fs::write(source.join("release.json"), text).unwrap();
+    let (source_a, sha_a) = rig.build("A");
+    identify(&source_a, "{\"sequence\":5,\"display\":\"0.1.0+aaaa\"}\n");
+    let installed = rig.launcher(&["install", "--from", source_a.to_str().unwrap()]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert_eq!(
+        rig.read_state(),
+        Phase::Idle(Idle {
+            current: sha_a,
+            previous: None,
+            pinned_sequence: 5,
+        })
+    );
+
+    let (source_b, sha_b) = rig.build("B");
+    identify(&source_b, "{\"sequence\":3,\"display\":\"0.1.0+bbbb\"}");
+    let offered = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
+    assert!(!offered.status.success());
+    let err = stderr(&offered);
+    assert!(err.contains("release_older"), "{err}");
+    assert!(err.contains("0.1.0+bbbb is sequence 3"), "{err}");
+    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
+    assert!(!rig.release_dir(sha_b).exists());
+
+    let taken = rig.launcher(&["install", "--replace", "--from", source_b.to_str().unwrap()]);
+    assert!(taken.status.success(), "{}", stderr(&taken));
+    assert_eq!(rig.link("current"), Some(link_target(sha_b)));
+    assert_eq!(
+        rig.read_state(),
+        Phase::Idle(Idle {
+            current: sha_b,
+            previous: Some(sha_a),
+            pinned_sequence: 5,
+        })
+    );
+
+    let (source_c, sha_c) = rig.build("C");
+    identify(
+        &source_c,
+        "{\"sequence\":6,\"display\":\"x\",\"sha256\":\"y\"}",
+    );
+    let refused = rig.launcher(&["install", "--from", source_c.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    let err = stderr(&refused);
+    assert!(err.contains("release_identity_invalid"), "{err}");
+    assert!(!rig.release_dir(sha_c).exists());
+
+    // a newer sequence replaces what runs with no question, and pins itself.
+    identify(&source_c, "{\"sequence\":6,\"display\":\"0.1.0+cccc\"}");
+    let newer = rig.launcher(&["install", "--from", source_c.to_str().unwrap()]);
+    assert!(newer.status.success(), "{}", stderr(&newer));
+    assert_eq!(rig.read_state().pinned_sequence(), 6);
+    assert_eq!(rig.link("current"), Some(link_target(sha_c)));
 }

@@ -217,6 +217,14 @@ pub async fn join_network(blob: crate::secret::Secret) -> Result<WorkspaceInit, 
         if !valid {
             return Err("invite must be between 1 and 65536 bytes".into());
         }
+        // The envelope's own words ("unknown coordinator flag 138") name no
+        // fix; an invite minted by an older node reads exactly that way.
+        if let Err(error) = workspace_config::decode_invite(&blob) {
+            return Err(format!(
+                "This invite cannot be read here ({error}). An invite made by an older \
+                 Ducktape reads this way — ask for a fresh one."
+            ));
+        }
         let joining = tokio::task::spawn_blocking(move || {
             workspace_config::join_workspace(&blob, None, &Default::default())
         });
