@@ -2130,7 +2130,9 @@ impl DesktopWindow {
 
     /// The update strip across the top of the console: the same quiet
     /// one-line band as the account notice. A staged release offers the
-    /// restart; a rollback says so until dismissed.
+    /// restart; one its own qualify refused says why and offers nothing (a
+    /// newer release supersedes it; Settings discards it); a rollback says
+    /// so until dismissed.
     fn update_strip(
         &self,
         strip: crate::backend::update::UpdateStrip,
@@ -2142,22 +2144,27 @@ impl DesktopWindow {
             crate::backend::update::UpdateStrip::Ready { display } => (
                 format!("Ducktape {display} is ready"),
                 hsla_of(palette.accent_soft),
-                self.action(
+                Some(self.action(
                     "update-restart",
                     "Restart to update",
                     Message::UpdateAction(crate::UpdateAction::RestartToUpdate),
                     false,
-                ),
+                )),
+            ),
+            crate::backend::update::UpdateStrip::Refused { display, reason } => (
+                format!("Ducktape {display} was refused ({reason})"),
+                hsla_of(palette.warning_soft),
+                None,
             ),
             crate::backend::update::UpdateStrip::RolledBack { failed, reason } => (
                 format!("Update {failed} was rolled back ({reason})"),
                 hsla_of(palette.warning_soft),
-                self.action(
+                Some(self.action(
                     "update-rollback-dismiss",
                     "Dismiss",
                     Message::UpdateAction(crate::UpdateAction::DismissRollbackNotice),
                     false,
-                ),
+                )),
             ),
         };
         div()
@@ -2178,7 +2185,7 @@ impl DesktopWindow {
                     .text_color(colors.foreground)
                     .child(words),
             )
-            .child(action.outline().h_6().text_size(px(12.)))
+            .children(action.map(|action| action.outline().h_6().text_size(px(12.))))
             .into_any_element()
     }
 

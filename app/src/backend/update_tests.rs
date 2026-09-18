@@ -342,8 +342,8 @@ async fn tick_drives_fetch_then_download_while_connected() {
     );
     assert_eq!(
         updater.tick(1_000 + 2 * CHECK_INTERVAL_SECS, true),
-        None,
-        "Staged: a tick fetches nothing"
+        Some(Job::Fetch),
+        "a tick in Staged fetches"
     );
 }
 
@@ -446,6 +446,68 @@ fn rendered_clears_pending_healthy_and_collects() {
     // and `Rendered` anywhere else is nothing
     assert_eq!(updater.apply(Event::Rendered), None);
     assert_eq!(updater.reading().phase, reading.phase);
+}
+
+/// A staged release its own qualify refused (#57): the strip and the
+/// Settings facts say why instead of offering the restart, the channel still
+/// checks, and the Settings rollback discards it (sealed directory and all)
+/// back to `Idle` on what runs, the pin kept.
+#[test]
+fn a_refused_staged_release_says_why_and_stays_clearable() {
+    let updates = tempfile::tempdir().unwrap();
+    let paths = UpdatePaths::under(updates.path());
+    let current = Sha::digest(b"running");
+    let previous = Sha::digest(b"before");
+    let broken = Sha::digest(b"broken");
+    for sha in [current, previous, broken] {
+        let dir = paths.releases_dir.join(sha.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ducktape-app"), b"app").unwrap();
+        stage::seal(&dir).unwrap();
+    }
+    let staged = Phase::Staged(app_update::Staged {
+        current,
+        previous: Some(previous),
+        pinned_sequence: 4,
+        staged: broken,
+        sequence: 4,
+        display: "0.1.0+qualify-fail".into(),
+        node_contract: 6,
+        refused: Some("qualify_exit_3".into()),
+    });
+    let mut updater = Updater::new(staged, Some(keys()), paths.clone());
+
+    let reading = updater.reading();
+    assert_eq!(
+        strip_of(Some(&reading)),
+        Some(UpdateStrip::Refused {
+            display: "0.1.0+qualify-fail".into(),
+            reason: "qualify_exit_3".into(),
+        })
+    );
+    let facts = facts_of(Some(&reading), 0);
+    assert_eq!(facts.state, "staged");
+    assert_eq!(facts.staged_display, "0.1.0+qualify-fail");
+    assert_eq!(facts.refused, "qualify_exit_3");
+    assert_eq!(updater.tick(1_000, true), Some(Job::Fetch), "not frozen");
+    assert_eq!(updater.reply(None), None);
+
+    assert_eq!(updater.apply(Event::UserRollback), None);
+    let reading = updater.reading();
+    let idle = Phase::Idle(app_update::Idle {
+        current,
+        previous: Some(previous),
+        pinned_sequence: 4,
+    });
+    assert_eq!(reading.phase, idle);
+    let persisted =
+        app_update::state::decode(&std::fs::read_to_string(&paths.state_path).unwrap()).unwrap();
+    assert_eq!(persisted, idle);
+    assert!(paths.releases_dir.join(current.to_string()).is_dir());
+    assert!(paths.releases_dir.join(previous.to_string()).is_dir());
+    assert!(!paths.releases_dir.join(broken.to_string()).exists());
+    assert_eq!(strip_of(Some(&reading)), None);
+    assert_eq!(facts_of(Some(&reading), 0).refused, "");
 }
 
 /// A rollback notice shows until dismissed; the dismissal keeps the failed
