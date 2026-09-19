@@ -441,6 +441,7 @@ fn views_audit(views: &std::path::Path, exempt_epoch_8: bool) -> Vec<String> {
         failures.extend(found_by_the_walk(
             &name,
             module,
+            epoch_8,
             &tree(&mut cx, window.into()),
         ));
         if !tab_key_leaves_a_button(&mut cx, window.into()) {
@@ -454,7 +455,9 @@ fn views_audit(views: &std::path::Path, exempt_epoch_8: bool) -> Vec<String> {
 
 /// What the QA walk of #116 could not find in a view, found: the chat
 /// composer as a named text area, and Home's Copy button and This node card.
-fn found_by_the_walk(name: &str, module: &str, tree: &Tree) -> Vec<String> {
+/// An epoch-8 Editor has no label on the wire (`epoch_8_cannot_carry`), so the
+/// composer's name is asked of every other view only.
+fn found_by_the_walk(name: &str, module: &str, epoch_8: bool, tree: &Tree) -> Vec<String> {
     let all = nodes(tree);
     let missing = |what: &str| format!("{name}: {what} is not in the tree");
     let mut failures = Vec::new();
@@ -463,7 +466,7 @@ fn found_by_the_walk(name: &str, module: &str, tree: &Tree) -> Vec<String> {
             let composer = all
                 .iter()
                 .any(|node| node.role() == Role::MultilineTextInput && !said(node).is_empty());
-            if !composer {
+            if !composer && !epoch_8 {
                 failures.push(missing("a named message composer"));
             }
         }
