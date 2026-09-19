@@ -32,6 +32,14 @@ pub use ::chat::client::{ChatChannel, ChatReader, HuddleSeat, NameDirectory, sho
 // the app's own test helpers, which build message rows the way a send does.
 #[cfg(test)]
 pub use ::chat::client::{ChatMessage, author_display, author_name, paragraph_blocks};
+
+/// The network a test's rendered rows name: chat links a mention to the
+/// account's address on a chain, and a fixture has no connection to take one
+/// from. The sim's `local` is no chain id the address grammar reads.
+#[cfg(test)]
+pub(crate) fn test_chain() -> duck_address::ChainId {
+    "dognet#b5b6ea90".parse().expect("a chain id")
+}
 /// How many one-second polls the provisioning screen waits before it says the
 /// node is not running and names the command that starts it.
 const PROVISION_PATIENCE: u32 = 8;

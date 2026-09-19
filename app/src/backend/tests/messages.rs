@@ -59,7 +59,7 @@ fn a_search_hits_author_is_not_reformatted_into_system() {
         updated_at: 0,
     };
     assert_eq!(
-        author_display("acct:7", &NameDirectory::from_accounts(&[program])),
+        author_display("acct:7", &directory_of(&[program])),
         "quackbot"
     );
 }
@@ -74,7 +74,7 @@ fn message_groups_collapse_consecutive_authors() {
         meta: format!("#{seq}"),
         edit_body: "body".into(),
         body: "body".into(),
-        blocks: paragraph_blocks("body"),
+        blocks: paragraph_blocks("body", &test_chain()),
         pending: false,
         rev: 0,
         edited: false,

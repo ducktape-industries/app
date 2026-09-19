@@ -560,7 +560,13 @@ pub(super) fn answer(
                 .ok()
                 .and_then(|ask| ask["link"].as_str().map(str::to_owned))
                 .filter(|link| !link.is_empty());
-            match link {
+            let chain = guest
+                .props_sent
+                .as_deref()
+                .and_then(|props| serde_json::from_slice::<serde_json::Value>(props).ok())
+                .and_then(|props| props["chain"].as_str().map(str::to_owned))
+                .unwrap_or_default();
+            match link.map(|link| guest.epoch.open_link(link, &chain)) {
                 Some(link) => {
                     guest.intents.push(ModuleViewEvent {
                         kind: "open_link".into(),

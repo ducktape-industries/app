@@ -19,6 +19,7 @@ pulldown-cmark = "0.12.2"
 # and the account link a mention spells. One implementation, whether the
 # reader of it is this app or the chat view.
 chat.workspace = true
+chat-identity.workspace = true
 duck-address.workspace = true
 files-wire.workspace = true
 # the huddle media planes: the call-socket framing and voice/video wire.

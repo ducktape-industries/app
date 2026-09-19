@@ -88,7 +88,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "borsh",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -170,8 +170,8 @@ dependencies = [
  "attribution-wire",
  "borsh",
  "dispatch-wire",
- "identity-wire",
- "sdk",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
 ]
@@ -331,7 +331,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce12409fe0e3403b7c71d04ae49aa04dd40"
 dependencies = [
  "commonware-cryptography",
- "keyscheme",
+ "keyscheme 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -660,8 +660,8 @@ dependencies = [
  "async-trait",
  "attribution-wire",
  "borsh",
- "identity-wire",
- "sdk",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
 ]
@@ -672,7 +672,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "borsh",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -682,13 +682,13 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce12409fe0e3403b7c71d04ae49aa04dd40"
 dependencies = [
  "base64 0.22.1",
- "identity-wire",
- "keyscheme",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "keyscheme 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "node",
  "qrcode",
  "rand 0.8.8",
  "reqwest 0.12.28",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
@@ -1260,7 +1260,7 @@ name = "capability-wire"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -1409,15 +1409,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "chat-message"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
+dependencies = [
+ "borsh",
+ "serde",
+]
+
+[[package]]
 name = "chat-wire"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "borsh",
- "chat-message",
- "identity-wire",
- "index-guest",
- "sdk",
+ "chat-message 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "index-guest 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "chat-wire"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
+dependencies = [
+ "borsh",
+ "chat-message 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
+ "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
+ "index-guest 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1637,8 +1663,8 @@ name = "collaboration-wire"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
- "chat-wire",
- "sdk",
+ "chat-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -1985,7 +2011,7 @@ dependencies = [
  "run-envelope",
  "runs-wire",
  "saga-wire",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "tokio",
@@ -2855,12 +2881,12 @@ source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
 
 [[package]]
 name = "digest"
@@ -2958,9 +2984,9 @@ dependencies = [
  "borsh",
  "capability-wire",
  "dispatch-wire",
- "identity-wire",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "saga",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -2979,7 +3005,7 @@ source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa
 dependencies = [
  "borsh",
  "saga-wire",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "sha2 0.10.9",
 ]
@@ -3051,7 +3077,7 @@ source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa
 [[package]]
 name = "duck-address"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
 dependencies = [
  "refusal-class",
 ]
@@ -3096,7 +3122,7 @@ dependencies = [
 [[package]]
 name = "duckfs-core"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -3111,7 +3137,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "sha2 0.10.9",
  "tracing",
 ]
@@ -3125,12 +3151,12 @@ dependencies = [
  "authpage",
  "base64 0.22.1",
  "block2 0.5.1",
- "chat-wire",
+ "chat-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "commonware-cryptography",
  "core-graphics 0.24.0",
  "cpal",
  "design 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
- "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0)",
+ "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "ducktape-home",
  "ducktape-rpc",
  "files-wire",
@@ -3141,7 +3167,8 @@ dependencies = [
  "git2",
  "gpui-kit",
  "gpui-notion",
- "identity-wire",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "image",
  "keystore",
  "media-service",
@@ -3157,7 +3184,7 @@ dependencies = [
  "rand 0.8.8",
  "reqwest 0.12.28",
  "run-envelope",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3173,8 +3200,8 @@ dependencies = [
  "tray-icon",
  "unicode-segmentation",
  "usvg 0.45.1",
- "view-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0)",
  "view-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2)",
+ "view-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "wasmtime",
  "workspace-config",
  "x11rb",
@@ -3611,17 +3638,17 @@ source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce
 dependencies = [
  "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "duckfs-disk",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "wasm-host",
 ]
 
 [[package]]
 name = "files-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
 dependencies = [
- "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0)",
- "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0)",
+ "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "refusal-class",
 ]
 
@@ -3841,13 +3868,13 @@ dependencies = [
  "attribution-wire",
  "base64 0.22.1",
  "blobstore",
- "chat-wire",
+ "chat-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "forge-wire",
  "git-primitives",
  "git2",
- "identity-wire",
- "keyscheme",
- "sdk",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "keyscheme 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -3862,7 +3889,7 @@ dependencies = [
  "blobstore",
  "forge",
  "git-primitives",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "sha2 0.10.9",
  "wasm-host",
 ]
@@ -3872,9 +3899,9 @@ name = "forge-wire"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
- "chat-wire",
+ "chat-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -4066,8 +4093,8 @@ dependencies = [
  "borsh",
  "duckdns",
  "gateway-wire",
- "identity-wire",
- "sdk",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4080,7 +4107,7 @@ source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa
 dependencies = [
  "borsh",
  "duckdns",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4284,7 +4311,7 @@ dependencies = [
  "borsh",
  "commonware-cryptography",
  "modules-wire",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -5257,7 +5284,7 @@ dependencies = [
  "dispatch 0.1.0",
  "identity",
  "modules",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "sha2 0.10.9",
  "tracing",
  "valset",
@@ -5516,9 +5543,9 @@ dependencies = [
  "async-trait",
  "borsh",
  "commonware-cryptography",
- "identity-wire",
- "keyscheme",
- "sdk",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "keyscheme 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
 ]
@@ -5529,8 +5556,20 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "borsh",
- "keyscheme",
- "sdk",
+ "keyscheme 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "serde",
+]
+
+[[package]]
+name = "identity-wire"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
+dependencies = [
+ "borsh",
+ "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
+ "keyscheme 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "serde",
 ]
 
@@ -5632,13 +5671,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "index-guest"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
+dependencies = [
+ "borsh",
+ "serde",
+]
+
+[[package]]
 name = "indexer"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce12409fe0e3403b7c71d04ae49aa04dd40"
 dependencies = [
  "borsh",
  "fluent31",
- "index-guest",
+ "index-guest 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "sha2 0.10.9",
  "thiserror 2.0.20",
@@ -5955,6 +6003,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyscheme"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
+dependencies = [
+ "base64 0.22.1",
+ "borsh",
+ "commonware-codec",
+ "commonware-cryptography",
+ "commonware-utils",
+ "ed25519-dalek",
+ "k256",
+ "p256 0.13.2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sha3",
+]
+
+[[package]]
 name = "keystore"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce12409fe0e3403b7c71d04ae49aa04dd40"
@@ -6037,7 +6104,7 @@ source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce
 dependencies = [
  "async-trait",
  "kv-wire",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "sha2 0.10.9",
 ]
@@ -6047,7 +6114,7 @@ name = "kv-wire"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -6608,7 +6675,7 @@ dependencies = [
  "borsh",
  "module-artifact",
  "modules-wire",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "valset-wire",
 ]
@@ -6620,7 +6687,7 @@ source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa
 dependencies = [
  "borsh",
  "module-artifact",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -6859,9 +6926,9 @@ dependencies = [
  "async-trait",
  "commonware-cryptography",
  "host",
- "keyscheme",
+ "keyscheme 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "libc",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "sha2 0.10.9",
  "thiserror 2.0.20",
  "tracing",
@@ -6890,7 +6957,7 @@ dependencies = [
  "blobstore",
  "borsh",
  "bytes",
- "chat-wire",
+ "chat-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "commonware-codec",
  "commonware-cryptography",
  "commonware-runtime",
@@ -6908,7 +6975,7 @@ dependencies = [
  "host",
  "identity",
  "indexer",
- "keyscheme",
+ "keyscheme 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "kv",
  "module-artifact",
  "modules",
@@ -6919,7 +6986,7 @@ dependencies = [
  "reqwest 0.12.28",
  "runs-wire",
  "saga",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -7897,8 +7964,8 @@ name = "pages-wire"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
- "index-guest",
- "sdk",
+ "index-guest 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
 ]
@@ -9064,7 +9131,7 @@ dependencies = [
 [[package]]
 name = "refusal-class"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
 
 [[package]]
 name = "regalloc2"
@@ -9306,13 +9373,13 @@ source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa
 dependencies = [
  "agent-wire",
  "borsh",
- "chat-wire",
+ "chat-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "collaboration-wire",
  "dispatch-wire",
  "governance-wire",
  "node-work",
  "run-envelope",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -9562,9 +9629,9 @@ dependencies = [
  "async-trait",
  "borsh",
  "capability-wire",
- "index-guest",
+ "index-guest 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "saga-wire",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -9577,7 +9644,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "borsh",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -9679,6 +9746,19 @@ source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa
 dependencies = [
  "async-trait",
  "borsh",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "sdk"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
+dependencies = [
+ "async-trait",
+ "borsh",
+ "refusal-class",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -10057,7 +10137,7 @@ dependencies = [
  "node",
  "noded",
  "saga-wire",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "tokio",
@@ -10242,8 +10322,8 @@ dependencies = [
  "data-plane",
  "futures",
  "host",
- "index-guest",
- "sdk",
+ "index-guest 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "thiserror 2.0.20",
  "tokio",
  "tracing",
@@ -10592,7 +10672,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "attribution-wire",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -11868,7 +11948,7 @@ dependencies = [
  "borsh",
  "commonware-codec",
  "commonware-cryptography",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
  "serde_json",
  "valset-wire",
@@ -11879,7 +11959,7 @@ name = "valset-wire"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "serde",
 ]
 
@@ -11954,20 +12034,6 @@ dependencies = [
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
-dependencies = [
- "bincode",
- "design 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0)",
- "futures",
- "memchr",
- "serde",
- "unicode-segmentation",
- "wasmparser 0.251.0",
-]
-
-[[package]]
-name = "view-wire"
-version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "bincode",
@@ -11976,6 +12042,20 @@ dependencies = [
  "memchr",
  "serde",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "view-wire"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
+dependencies = [
+ "bincode",
+ "design 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
+ "futures",
+ "memchr",
+ "serde",
+ "unicode-segmentation",
+ "wasmparser 0.251.0",
 ]
 
 [[package]]
@@ -12147,7 +12227,7 @@ dependencies = [
  "async-trait",
  "git-primitives",
  "module-artifact",
- "sdk",
+ "sdk 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "sha2 0.10.9",
  "wasmtime",
 ]
@@ -13618,7 +13698,7 @@ dependencies = [
  "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "ducktape-home",
  "governance-wire",
- "identity-wire",
+ "identity-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "module-artifact",
  "nat-traversal",
  "rand 0.8.8",

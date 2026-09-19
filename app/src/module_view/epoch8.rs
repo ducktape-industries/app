@@ -14,6 +14,8 @@
 //! together with `Epoch::Eight` and the `view-wire-8` dependency.
 use crate::DuckKind;
 use crate::backend::DuckLink;
+use duck_address::ChainId;
+use duck_address::identity::AccountAddress;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use view_wire as wire;
@@ -289,17 +291,17 @@ pub(super) fn picture_base(base: &str) -> DuckLink {
         let rest = base.strip_prefix("duck://forge/")?;
         let (body, fragment) = rest.split_once('#').unwrap_or((rest, ""));
         let (address, query) = body.split_once('?').unwrap_or((body, ""));
-        let net = query.is_empty()
-            || query
-                .strip_prefix("net=")
-                .is_some_and(::chat::client::is_chain_digest);
+        let hex = |text: &str, len: usize| {
+            text.len() == len && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+        };
+        // `?net=` carried the chain id's 8-hex half
+        let net = query.is_empty() || query.strip_prefix("net=").is_some_and(|net| hex(net, 8));
         let (path, rev) = address.split_once('@').unwrap_or((address, ""));
         let segments: Vec<&str> = path.split('/').collect();
         let clean = segments
             .iter()
             .all(|segment| !segment.is_empty() && *segment != "." && *segment != "..");
-        let oid = rev.is_empty()
-            || (rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+        let oid = rev.is_empty() || hex(rev, 40);
         let [repo, "blob", file @ ..] = segments.as_slice() else {
             return None;
         };
@@ -312,6 +314,24 @@ pub(super) fn picture_base(base: &str) -> DuckLink {
         })
     };
     read().unwrap_or_else(|| DuckLink::of(DuckKind::Unknown))
+}
+
+/// The link an epoch-8 view hands `host.open_link`, as the open plane reads
+/// it. The epoch-8 chat view spells a mention `duck://account/<n>`, exactly
+/// as chat-wire minted it then, naming no network; it is re-spelled as the
+/// account's address on the chain the view was handed (its `chain` prop), so
+/// it opens the DM it always did. With no chain there is nothing to spell it
+/// on: it goes on as it came and the open plane refuses the old form, as it
+/// does for every other surface. Anything else passes as is.
+pub(super) fn open_link(link: String, chain: &str) -> String {
+    let account = link
+        .strip_prefix("duck://account/")
+        .and_then(|account| account.parse::<u64>().ok())
+        .filter(|account| *account > 0 && link == format!("duck://account/{account}"));
+    let address = account
+        .zip(chain.parse::<ChainId>().ok())
+        .and_then(|(account, chain)| AccountAddress { account }.address(chain).ok());
+    address.map_or(link, |address| address.to_string())
 }
 
 #[cfg(test)]
@@ -654,5 +674,41 @@ mod tests {
         assert_eq!(Epoch::Eight.props("forge", bytes.clone()), bytes);
         let empty = serde_json::to_vec(&serde_json::json!({ "route": "" })).unwrap();
         assert_eq!(read(Epoch::Eight.props("files", empty))["route"], "");
+    }
+
+    /// THE OLD ACCOUNT SPELLING, READ AT ONE DOOR. An epoch-8 chat view's
+    /// mention hands over `duck://account/<n>`: from that view it opens the
+    /// account on the chain the view was handed; from an epoch-10 view, and
+    /// with no chain to spell it on, it reaches the open plane as it came
+    /// and is refused with the old-form sentence.
+    #[test]
+    fn the_old_account_spelling_opens_only_from_an_epoch_8_view() {
+        use crate::backend::{OLD_FORM, resolve_duck_link};
+        const HERE: &str = "dognet#b5b6ea90";
+        let opened = |epoch: Epoch, link: &str, chain: &str| {
+            resolve_duck_link(epoch.open_link(link.into(), chain), HERE.into())
+        };
+        let eight = opened(Epoch::Eight, "duck://account/7", HERE);
+        assert_eq!(
+            (eight.kind, eight.account.as_str()),
+            (DuckKind::Account, "7")
+        );
+        for (epoch, chain) in [(Epoch::Ten, HERE), (Epoch::Eight, "")] {
+            let refused = opened(epoch, "duck://account/7", chain);
+            assert_eq!(
+                (refused.kind, refused.refusal.as_str()),
+                (DuckKind::Unknown, OLD_FORM),
+                "{epoch:?} on {chain:?}"
+            );
+        }
+        for spelled in ["duck://account/0", "duck://account/07", "duck://account/+7"] {
+            assert_eq!(
+                opened(Epoch::Eight, spelled, HERE).kind,
+                DuckKind::Unknown,
+                "{spelled}"
+            );
+        }
+        let address = "duck://dognet-b5b6ea90/chat/general";
+        assert_eq!(Epoch::Eight.open_link(address.into(), HERE), address);
     }
 }
