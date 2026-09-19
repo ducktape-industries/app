@@ -304,10 +304,9 @@ fn ax_contract_native() {
     assert_clean(failures);
 }
 
-/// Every view staged in `DUCKTAPE_VIEWS_DIR` (the deployed set: epoch 8, its
-/// three exemptions apply) and, when `DUCKTAPE_VIEWS_DIR_NEXT` names one, the
-/// set that deploys next, with no exemption at all — mounted as the canary
-/// mounts them (tests/canary.rs), in the state their session props give.
+/// Every view staged in `DUCKTAPE_VIEWS_DIR` (the deployed set, wire epoch
+/// 10), with no exemption — mounted as the canary mounts them
+/// (tests/canary.rs), in the state their session props give.
 #[test]
 fn ax_contract_views() {
     let views = std::env::var_os("DUCKTAPE_VIEWS_DIR")
@@ -315,14 +314,10 @@ fn ax_contract_views() {
         .unwrap_or_else(|| {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views")
         });
-    let mut failures = views_audit(&views, true);
-    if let Some(next) = std::env::var_os("DUCKTAPE_VIEWS_DIR_NEXT") {
-        failures.extend(views_audit(std::path::Path::new(&next), false));
-    }
-    assert_clean(failures);
+    assert_clean(views_audit(&views));
 }
 
-fn views_audit(views: &std::path::Path, exempt_epoch_8: bool) -> Vec<String> {
+fn views_audit(views: &std::path::Path) -> Vec<String> {
     use crate::backend::view_source::tests::{FakeDeployment, fake_node};
     let set = views.file_name().unwrap_or_default().to_string_lossy();
     let mut modules = std::fs::read_dir(views)
@@ -398,34 +393,15 @@ fn views_audit(views: &std::path::Path, exempt_epoch_8: bool) -> Vec<String> {
         let root = crate::module_view::canary::frame(module)
             .unwrap_or_else(|| panic!("view {module} did not render a frame"));
         // the view's own tree, held to the wire's rules
-        let epoch_8 = exempt_epoch_8
-            && crate::module_view::canary::epoch(module) == Some(crate::module_view::Epoch::Eight);
         let name = format!("{set}: view {module}");
         for fault in view_wire::accessibility_faults(&root) {
-            if !(epoch_8 && epoch_8_cannot_carry(&root, &fault)) {
-                failures.push(format!(
-                    "{name}: {} — {:?}",
-                    fault.path.join("/"),
-                    fault.kind
-                ));
-            }
+            failures.push(format!(
+                "{name}: {} — {:?}",
+                fault.path.join("/"),
+                fault.kind
+            ));
         }
-        // the host half of the same exemption: an epoch-8 Editor has no label
-        // to hand the field it draws
-        let unlabelled = match epoch_8 {
-            true => unlabelled_editors(&root),
-            false => Vec::new(),
-        };
-        failures.extend(
-            audit(&name, &mut cx, window.into())
-                .into_iter()
-                .filter(|failure| {
-                    !(failure.ends_with("text input without a label")
-                        && unlabelled
-                            .iter()
-                            .any(|key| failure.contains(&format!("{key}/field\")"))))
-                }),
-        );
+        failures.extend(audit(&name, &mut cx, window.into()));
         // a wire Tab is a native Tab: the kit button draws a role of its own
         let wire_tabs = tabs_in(&root);
         let native_tabs = cx
@@ -448,7 +424,6 @@ fn views_audit(views: &std::path::Path, exempt_epoch_8: bool) -> Vec<String> {
         failures.extend(found_by_the_walk(
             &name,
             module,
-            epoch_8,
             &tree(&mut cx, window.into()),
         ));
         if !tab_key_leaves_a_button(&mut cx, window.into()) {
@@ -462,9 +437,7 @@ fn views_audit(views: &std::path::Path, exempt_epoch_8: bool) -> Vec<String> {
 
 /// What the QA walk of #116 could not find in a view, found: the chat
 /// composer as a named text area, and Home's Copy button and This node card.
-/// An epoch-8 Editor has no label on the wire (`epoch_8_cannot_carry`), so the
-/// composer's name is asked of every other view only.
-fn found_by_the_walk(name: &str, module: &str, epoch_8: bool, tree: &Tree) -> Vec<String> {
+fn found_by_the_walk(name: &str, module: &str, tree: &Tree) -> Vec<String> {
     let all = nodes(tree);
     let missing = |what: &str| format!("{name}: {what} is not in the tree");
     let mut failures = Vec::new();
@@ -473,7 +446,7 @@ fn found_by_the_walk(name: &str, module: &str, epoch_8: bool, tree: &Tree) -> Ve
             let composer = all
                 .iter()
                 .any(|node| node.role() == Role::MultilineTextInput && !said(node).is_empty());
-            if !composer && !epoch_8 {
+            if !composer {
                 failures.push(missing("a named message composer"));
             }
         }
@@ -528,103 +501,6 @@ fn tab_key_leaves_a_button(cx: &mut HeadlessAppContext, window: AnyWindowHandle)
 fn tabs_in(node: &view_wire::Node) -> usize {
     let own = crate::view_tree::accessible(node).role == Some(gpui_kit::Role::Tab);
     usize::from(own) + node.children().iter().map(tabs_in).sum::<usize>()
-}
-
-/// The keys of the Editors in `node`'s tree that carry no label.
-fn unlabelled_editors(node: &view_wire::Node) -> Vec<String> {
-    let mut keys: Vec<String> = node
-        .children()
-        .iter()
-        .flat_map(unlabelled_editors)
-        .collect();
-    if let view_wire::Node::Editor { key, label, .. } = node
-        && label.as_deref().is_none_or(str::is_empty)
-    {
-        keys.push(key.clone());
-    }
-    keys
-}
-
-/// Whether a view built at wire epoch 8 could not have avoided `fault`: its
-/// wire has no label on an Editor, Slider, ComboBox or PickList
-/// (`UnlabeledInput`), no role on a MouseArea (`NoRole`) and no label on an
-/// Overlay (`Unnamed`). Every other fault it answers for, and an epoch-10
-/// view answers for all of them.
-fn epoch_8_cannot_carry(root: &view_wire::Node, fault: &view_wire::Fault) -> bool {
-    use view_wire::{FaultKind, Node};
-    fn at<'a>(node: &'a Node, path: &[String]) -> Option<&'a Node> {
-        let (first, rest) = path.split_first()?;
-        if node.key().unwrap_or_default() != first {
-            return None;
-        }
-        if rest.is_empty() {
-            return Some(node);
-        }
-        node.children().iter().find_map(|child| at(child, rest))
-    }
-    matches!(
-        (fault.kind, at(root, &fault.path)),
-        (
-            FaultKind::UnlabeledInput,
-            Some(
-                Node::Editor { .. }
-                    | Node::Slider { .. }
-                    | Node::ComboBox { .. }
-                    | Node::PickList { .. }
-            )
-        ) | (FaultKind::NoRole, Some(Node::MouseArea { .. }))
-            | (FaultKind::Unnamed, Some(Node::Overlay { .. }))
-    )
-}
-
-#[test]
-fn an_epoch_8_view_answers_only_for_the_faults_its_wire_can_carry() {
-    use view_wire::{FaultKind, Node, accessibility_faults};
-    let mut editor = Node::Editor {
-        options: Box::default(),
-        key: "composer".into(),
-        placeholder: String::new(),
-        label: None,
-        document: view_wire::editor_document::EditorDocumentRef {
-            document: "draft".into(),
-            reset: 1,
-            text_revision: 0,
-            revision: 0,
-            cursor: Default::default(),
-            byte_len: 0,
-        },
-        on_document: 0,
-        editable: true,
-        width: None,
-        height: None,
-        min_height: None,
-        max_height: None,
-    };
-    let root = view_wire::kit::column("page", [editor.clone(), view_wire::kit::text("a", "")]);
-    let faults = accessibility_faults(&root);
-    assert_eq!(faults.len(), 1, "{faults:?}");
-    assert_eq!(faults[0].kind, FaultKind::UnlabeledInput);
-    assert!(epoch_8_cannot_carry(&root, &faults[0]));
-    // an unlabelled input could always be named: epoch 8 answers for it
-    let Node::Editor { label, .. } = &mut editor else {
-        unreachable!()
-    };
-    *label = Some("Message".into());
-    let input = Node::Input {
-        options: Default::default(),
-        key: "search".into(),
-        placeholder: String::new(),
-        value: String::new(),
-        on_input: 1,
-        on_submit: None,
-        width: None,
-        secure: false,
-        style: Box::default(),
-    };
-    let root = view_wire::kit::column("page", [editor, input]);
-    let faults = accessibility_faults(&root);
-    assert_eq!(faults.len(), 1, "{faults:?}");
-    assert!(!epoch_8_cannot_carry(&root, &faults[0]));
 }
 
 /// `window`'s tree as a screen reader has it now.
