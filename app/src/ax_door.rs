@@ -18,8 +18,12 @@
 //! `DUCKTAPE_AX_DOOR_PRIVATE=1` may ask for one private node's text ([`reveal`]).
 //! A keyboard-only walk sends keys through the window's own key dispatch
 //! ([`press_keys`]) and reads the bindings it can reach ([`shortcuts`]).
+//! Every read draws the window it reads, and every answer carries
+//! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
 use futures::StreamExt as _;
-use gpui_kit::accesskit::{Action, ActionData, ActionRequest, NodeId, Role, Toggled, TreeId};
+use gpui_kit::accesskit::{
+    Action, ActionData, ActionRequest, NodeId, Role, Toggled, TreeId, TreeUpdate,
+};
 use gpui_kit::{AnyWindowHandle, App, AsyncApp, ElementId, Window};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -42,6 +46,10 @@ pub(crate) struct AxNode {
     pub(crate) id: String,
     pub(crate) role: String,
     pub(crate) name: String,
+    /// what a screen reader reads after the name: why a control is
+    /// disabled, a field's placeholder
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) description: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) value: Option<String>,
     pub(crate) state: Vec<&'static str>,
@@ -125,6 +133,13 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             (true, Some(_)) => MASK.to_owned(),
             (_, label) => truncate(label.unwrap_or_default()),
         };
+        let description = node.description().map(|text| {
+            if private {
+                MASK.to_owned()
+            } else {
+                truncate(text)
+            }
+        });
         let value = node
             .value()
             .map(truncate)
@@ -175,6 +190,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             id: String::new(),
             role: format!("{role:?}"),
             name,
+            description,
             value,
             state,
             actions,
@@ -281,13 +297,14 @@ fn truncate(text: &str) -> String {
     }
 }
 
-/// `compact=1`: the nodes that carry something — a name, a value, a state
-/// or an action. Pure structure is dropped.
+/// `compact=1`: the nodes that carry something — a name, a description, a
+/// value, a state or an action. Pure structure is dropped.
 pub(crate) fn compact(nodes: &[AxNode]) -> Vec<&AxNode> {
     nodes
         .iter()
         .filter(|node| {
             !node.name.is_empty()
+                || node.description.is_some()
                 || node.value.is_some()
                 || !node.state.is_empty()
                 || !node.actions.is_empty()
@@ -533,6 +550,8 @@ pub(crate) fn reveal(name: &str, window: &Window, id: &str) -> Reply {
 pub(crate) struct Reply {
     status: u16,
     body: String,
+    /// `X-Ax-Revision`
+    revision: Option<u64>,
 }
 
 impl Reply {
@@ -540,11 +559,20 @@ impl Reply {
         Self {
             status,
             body: body.to_string(),
+            revision: None,
         }
     }
 
     fn ok(body: serde_json::Value) -> Self {
         Self::new(200, body)
+    }
+
+    /// The reply, answered off the trees of `revision` ([`Seen`]).
+    pub(crate) fn revised(self, revision: u64) -> Self {
+        Self {
+            revision: Some(revision),
+            ..self
+        }
     }
 
     #[cfg(test)]
@@ -555,6 +583,29 @@ impl Reply {
     #[cfg(test)]
     pub(crate) fn body(&self) -> &str {
         &self.body
+    }
+
+    #[cfg(test)]
+    pub(crate) fn revision(&self) -> Option<u64> {
+        self.revision
+    }
+}
+
+/// The tree the door last read of each window, and the revision: how many
+/// reads found a window's tree unlike the one before, so a caller sees
+/// whether the tree advanced between two answers.
+#[derive(Default)]
+pub(crate) struct Seen {
+    trees: HashMap<String, TreeUpdate>,
+    pub(crate) revision: u64,
+}
+
+impl Seen {
+    fn saw(&mut self, name: &str, tree: &TreeUpdate) {
+        if self.trees.get(name) != Some(tree) {
+            self.trees.insert(name.to_owned(), tree.clone());
+            self.revision += 1;
+        }
     }
 }
 
@@ -568,15 +619,17 @@ pub(crate) async fn serve(
     windows: impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
     cx: &mut AsyncApp,
 ) {
+    let mut seen = Seen::default();
     while let Some((request, reply)) = calls.next().await {
-        let answer = answer(request, &windows, cx).await;
-        let _ = reply.send(answer);
+        let answer = answer(request, &windows, &mut seen, cx).await;
+        let _ = reply.send(answer.revised(seen.revision));
     }
 }
 
 async fn answer(
     request: Request,
     windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Reply {
     let all = Filter::default();
@@ -586,17 +639,17 @@ async fn answer(
             compact: small,
             bounds,
         } => {
-            let nodes = read(windows, &filter, bounds, cx).await;
+            let nodes = read(windows, &filter, bounds, seen, cx);
             match small {
                 true => Reply::ok(json!(compact(&nodes))),
                 false => Reply::ok(json!(nodes)),
             }
         }
         Request::Actions(filter) => {
-            Reply::ok(json!(offers(&read(windows, &filter, false, cx).await)))
+            Reply::ok(json!(offers(&read(windows, &filter, false, seen, cx))))
         }
         Request::Act(act) => {
-            let before = read(windows, &all, false, cx).await;
+            let before = read(windows, &all, false, seen, cx);
             let Some(target) = before.iter().find(|node| node.id == act.id) else {
                 return Reply::new(
                     404,
@@ -625,11 +678,11 @@ async fn answer(
                     perform_by_id(&name, window, cx, &act.id, &act.action, &value)
                 });
             }
-            let after = settle(&before, act.deadline_ms, windows, cx).await;
+            let after = settle(&before, act.deadline_ms, windows, seen, cx).await;
             Reply::ok(json!(delta(&before, &after)))
         }
         Request::Key(key) => {
-            let before = read(windows, &all, false, cx).await;
+            let before = read(windows, &all, false, seen, cx);
             let Some(handle) = keyboard_window(key.window.as_deref(), &before, windows, cx) else {
                 return Reply::new(404, json!({ "error": "no such window" }));
             };
@@ -641,11 +694,11 @@ async fn answer(
             if let Err(error) = pressed {
                 return Reply::new(400, json!({ "error": error }));
             }
-            let after = settle(&before, key.deadline_ms, windows, cx).await;
+            let after = settle(&before, key.deadline_ms, windows, seen, cx).await;
             Reply::ok(json!(delta(&before, &after)))
         }
         Request::Keys(filter) => {
-            let before = read(windows, &all, false, cx).await;
+            let before = read(windows, &all, false, seen, cx);
             let Some(handle) = keyboard_window(filter.window.as_deref(), &before, windows, cx)
             else {
                 return Reply::new(404, json!({ "error": "no such window" }));
@@ -657,7 +710,7 @@ async fn answer(
         Request::Wait(wait) => {
             let deadline = Instant::now() + Duration::from_millis(wait.deadline_ms.min(60_000));
             loop {
-                let nodes = read(windows, &all, false, cx).await;
+                let nodes = read(windows, &all, false, seen, cx);
                 if let Some(reply) = wait.step(&nodes, Instant::now() >= deadline) {
                     return reply;
                 }
@@ -666,7 +719,7 @@ async fn answer(
         }
         Request::Reveal(Reveal { id }) => {
             // a window's tree is switched on by the read
-            let _ = read(windows, &all, false, cx).await;
+            let _ = read(windows, &all, false, seen, cx);
             let name = id.split_once(':').map_or("", |(name, _)| name).to_owned();
             cx.update(|cx| windows(cx))
                 .into_iter()
@@ -687,6 +740,7 @@ async fn settle(
     before: &[AxNode],
     deadline_ms: Option<u64>,
     windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Vec<AxNode> {
     let deadline = Instant::now() + Duration::from_millis(deadline_ms.unwrap_or(2000));
@@ -695,7 +749,7 @@ async fn settle(
     let mut quiet = 0;
     while quiet < 3 && Instant::now() < deadline {
         cx.background_executor().timer(POLL).await;
-        let now = read(windows, &Filter::default(), false, cx).await;
+        let now = read(windows, &Filter::default(), false, seen, cx);
         let key = serde_json::to_string(&now).unwrap_or_default();
         match key == last {
             true => quiet += 1,
@@ -830,43 +884,49 @@ pub(crate) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
     out
 }
 
-/// Every served window's visible nodes. A window with no tree yet is
-/// switched on and given up to a second to draw one.
-async fn read(
+/// Every served window's [`current`] nodes.
+fn read(
     windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
     filter: &Filter,
     bounds: bool,
+    seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Vec<AxNode> {
     let list = cx.update(|cx| windows(cx));
     let mut out = Vec::new();
-    for _ in 0..20 {
-        out.clear();
-        let mut pending = false;
-        for (name, handle) in &list {
-            if filter.window.as_deref().is_some_and(|want| want != name) {
-                continue;
-            }
-            let nodes = handle.update(cx, |_, window, _| {
-                if !window.is_a11y_active() || window.a11y_tree().is_none() {
-                    window.activate_a11y();
-                    return None;
-                }
-                Some(snapshot(name, window, bounds))
-            });
-            match nodes {
-                Ok(Some(nodes)) => out.extend(nodes),
-                Ok(None) => pending = true,
-                Err(_) => {}
-            }
+    for (name, handle) in &list {
+        if filter.window.as_deref().is_some_and(|want| want != name) {
+            continue;
         }
-        if !pending {
-            break;
-        }
-        cx.background_executor().timer(POLL).await;
+        let nodes = handle.update(cx, |_, window, cx| current(name, window, cx, bounds, seen));
+        out.extend(nodes.unwrap_or_default());
     }
     out.retain(|node| filter.keeps(node));
     out
+}
+
+/// `window`'s visible nodes off a frame drawn for this read: a window the OS
+/// stops drawing (covered, asleep, locked; #147) would otherwise serve its
+/// last tree for as long as it stays hidden. The OS presents the draw with
+/// its next frame. The first read switches the window's tree on.
+pub(crate) fn current(
+    name: &str,
+    window: &mut Window,
+    cx: &mut App,
+    bounds: bool,
+    seen: &mut Seen,
+) -> Vec<AxNode> {
+    if !window.is_a11y_active() {
+        window.activate_a11y();
+    }
+    // ponytail: gpui keeps a window's dirty flag private, so every read
+    // draws; a wait's polls draw 20 times a second, and only with the door
+    window.draw(cx).clear(cx);
+    let Some(tree) = window.a11y_tree() else {
+        return Vec::new();
+    };
+    seen.saw(name, tree);
+    snapshot(name, window, bounds)
 }
 
 /// Performs `action` on the node `id` names in window `name`, through the
@@ -1066,10 +1126,13 @@ pub(crate) fn accept(
             408 => "Request Timeout",
             _ => "Service Unavailable",
         };
+        let revision = reply.revision.map_or(String::new(), |revision| {
+            format!("X-Ax-Revision: {revision}\r\n")
+        });
         let mut stream = stream;
         let _ = write!(
             stream,
-            "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            "HTTP/1.1 {} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n{revision}Connection: close\r\n\r\n{}",
             reply.status,
             reply.body.len(),
             reply.body

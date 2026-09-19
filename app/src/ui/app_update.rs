@@ -4002,7 +4002,7 @@ impl Ducktape {
     }
     fn on_join_network_submit(&mut self) -> Task<AppMessage> {
         if (self.mutation_phase != MutationPhase::Idle)
-            || (self.secrets.text("join_invite")).is_empty()
+            || self.secrets.text("join_invite").trim().is_empty()
         {
             return Task::none();
         }
