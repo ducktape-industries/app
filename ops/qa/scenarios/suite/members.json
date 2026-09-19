@@ -2,7 +2,7 @@
  "name": "members",
  "about": "Filter the member list and open this node's own record. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [],
  "steps": [

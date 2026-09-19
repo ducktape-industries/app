@@ -2,7 +2,7 @@
  "name": "forge",
  "about": "Open the forge on a network with no repository. A repository comes only from a git push through the network's Git service, which the app does not offer, so browsing one is not walked on a fresh network. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 forge/src/forge.rs:57-79,267-276 — the repository and branch pickers are PickLists with no label (unnamed ComboBoxes)",

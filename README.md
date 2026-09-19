@@ -9,12 +9,13 @@ and how to build and sign a macOS release bundle.
 
 ## Repo DAG
 
-Ducktape is split into five repositories under the `ducktape-industries`
-organization:
+Ducktape is split into six repositories under the `ducktape-industries`
+organization (ducktape-qa is private):
 
 ```
 ducktape-sdk  <-- ducktape            (the node: kernel, consensus modules, services)
 ducktape-sdk  <-- ducktape-app        (this repo: the desktop shell)
+ducktape-app  <-- ducktape-qa         (private: the Jev walk runner + acceptance scenarios; pinned here by ops/qa/RUNNER_REV)
 ducktape-sdk  <-- ducktape-modules    (consensus module crates + their wasm components)
 ducktape-sdk  <-- ducktape-views      (module-owned wasm views the app loads at runtime)
 ```
@@ -50,7 +51,7 @@ Before a merge to `dev`:
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`, with `DUCKTAPE_VIEWS_DIR` at the staged views and `DUCKTAPE_MODULES_DIR` at the pinned core's sim-modules set
 - `cargo test ax_contract`: every screen's accessibility tree, read headless (#114). `ax_contract_native` must pass; `ax_contract_views` (every staged view) runs with `-- --ignored` until wire epoch 9 gives editors a label.
-- `python3 -m unittest discover ops/qa`: the QA walk runner against a fake door and a fake judge
+- `ops/qa/run.sh --check`: every suite scenario (`ops/qa/scenarios/suite/*.json`) loads through the QA runner at the pinned `ops/qa/RUNNER_REV`. The runner's own unit tests run in ducktape-qa.
 
 ## Test door (`ax`)
 
@@ -61,16 +62,8 @@ A QA runner reads and drives the app through its accessibility tree — the same
 - Ids are `<window>:<element id>` (`console:view:chat`), a view's `<window>:<module>/<wire key>`; never an index. Password fields' values and the recovery-phrase words read `•••`.
 - Private reveal (test rig only): so an unattended walk can confirm the recovery phrase, a launch that sets `DUCKTAPE_AX_DOOR_PRIVATE=1` as well as `DUCKTAPE_AX_DOOR` adds `POST /reveal {id}` (`ducktape-app ax reveal <id>`) and logs `ax_door_private=on` in `app.log`. It answers the unmasked name and value of ONE showing node marked private — text a person reads on the screen, like the phrase words. A secure input is refused (403): its dots are all anyone sees. Without the variable the endpoint does not exist (404). `tree`, `actions`, `act` deltas and `wait` stay masked either way. Never set it outside a QA rig.
 
-## QA walk (`ops/qa/walk.py`)
+## QA walk (ducktape-qa, pinned)
 
-`python3 ops/qa/walk.py <scenario.json>… --out <dir> [--params file.json] [--param k=v …] [--keep-going] [--keyboard]` walks the app through the door: several scenarios run in turn on one rig, each after the preludes it `include`s. The regression suite, its params file, output and cost: [`ops/qa/README.md`](ops/qa/README.md). Plain Python 3 stdlib. Exit 0 PASS, 1 FAIL, 2 FAIL-UNJUDGED, 3 a bad scenario or command line.
+The walk runner and the acceptance scenarios live in the private repo [ducktape-industries/ducktape-qa](https://github.com/ducktape-industries/ducktape-qa) (moved from `ops/qa` at 8f74e92a); its README has the scenario format, the rig, what leaves the machine, output and cost. The runner drives the app only through the test door above. This repo keeps the per-surface suite (`ops/qa/scenarios/suite/*.json`) and pins the runner by rev in `ops/qa/RUNNER_REV`.
 
-- Scenario: `{name, params: {name: doc}, rig: {display, env, secrets}, steps: [{say, expect?, kind?, …}]}`. `{param:k}`, `{rig:dir|home|config|data|state|run|ducktape_home}` and `{secret:name}` fill argv and text. Kinds:
-  - `ui` (default): Jev `choice` over the door's closed action list (`<id> <action> <label>` + "none of these") → act (text from the step's `text` or a rig `secret`, never from the model) → Jev `noul` on the delta and the tree against `expect`. Passes at ≥ 0.7, else one retry after `settle_ms` (after the step's `wait` if it has one). An answer outside the list leaves the step unjudged.
-  - `wait` (`wait: {role, name, state, in, gone}`, `deadline_ms`; the runner asks the door again until its own deadline), `shell` (fixed `argv`, no shell; `expect_exit`, `expect_output` regex; `background` keeps it running), `launch` (`argv`, waits for the door), `stop`: no model call.
-  - `private_remember` (`match: {role, name, in, ids_prefix}`, `as`) and `private_copy` (`from`: ids or matchers, or `from_indexed: {memory, prompt: <matcher>, regex}` — the numbers the visible prompt asks for, in its order; `into`: a secure input only; `how`: `type` | `set_value`): only with `rig: {private: true}`, which sets `DUCKTAPE_AX_DOOR_PRIVATE=1`. The revealed text is held in memory and goes only back into the app: never into a Jev request, the transcript, the ledger or any file. The transcript says `private_copy from <source> into <id>: <n> chars`.
-- Rig: private HOME/XDG/`DUCKTAPE_HOME` under `<out>/rig`, its own Xvfb on a free display, `DUCKTAPE_AX_DOOR=0`. Every child starts in its own session and is recorded in `rig/pids.json` (pid, exe, start time). Teardown sends SIGTERM to a recorded process group only while `/proc/<pid>/exe` is under the rig (or is the rig's own Xvfb) and the start time matches; nothing else is ever signalled.
-- Secrets: `{"file": path}` or `{"generate": "password"}`, resolved at run time. Every file the runner writes shows them as `{secret:name}`.
-- What leaves the machine: only the step text and the door's masked compact tree and delta, sent to `api.typesafe.ai` with `JEV_API_KEY` from the environment. Any judge or door error makes the step unjudged (fail closed).
-- Output, in a new `<out>/run-NN/` per invocation: `transcript.jsonl` (one line per step), `failing-tree-<scenario>-<step>.json`, `ledger.jsonl` (one line per Jev call: tokens, USD at $0.042/M), `result.json` (per-scenario verdicts and failures).
-- Scenarios: `ops/qa/scenarios/launch-window.json` (no network: `--param app=<ducktape-app>`); `setup.json` (the live install-and-join prelude; its params are listed at the top of the file) and `reopen.json`; `seq4-acceptance.json`, `registry-views.json` (every rail tab and the palette off the registry) and `update-path.json` on that prelude; `suite/*.json`, one per surface.
+`ops/qa/run.sh <scenario.json>… --out <dir> [--params file.json] [--param k=v …] [--keep-going] [--keyboard]` checks out ducktape-qa at exactly that rev (under `${XDG_CACHE_HOME:-~/.cache}/ducktape-qa/<rev>`; a dirty or other-rev checkout is refused) and runs its `walk.py`. Suite scenarios include `setup.json`, which the runner takes from its own `scenarios/acceptance/`. How to run the suite: [`ops/qa/README.md`](ops/qa/README.md).
