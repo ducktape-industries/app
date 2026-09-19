@@ -1,0 +1,38 @@
+{
+ "name": "chat-no-account",
+ "about": "The suite's setup continues without an account, so this walk has none: a room then refuses writing and says how to get one, and the room header's Start a huddle is disabled (views#65). The walk makes its own room (qa-noacct-<walk_tag>); making a channel needs no account. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "app/src/ax_door.rs:41-56 — the door's node carries no description, so the reason a disabled control gives (Start a huddle: 'Create an account to start a huddle', ducktape-views@3242af7 chat/src/ui/kit.rs:779-784) reaches a screen reader but not the walk: only the room's refusal line can say what to do next here"
+ ],
+ "steps": [
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Chat tab is selected and the chat view shows a New channel button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press New channel in the chat sidebar",
+   "expect": "a Create a channel card shows: a Channel name field, Voice room: Off and Members only: Off buttons, and Cancel and Create channel buttons"
+  },
+  {
+   "say": "type the channel name into the Channel name field",
+   "text": "qa-noacct-{param:walk_tag}",
+   "expect": "the Channel name field's value is qa-noacct-{param:walk_tag} and Create channel is enabled (its state does not list disabled)"
+  },
+  {
+   "say": "press Create channel",
+   "settle_ms": 4000,
+   "expect": "the Create a channel card is gone and the channel list shows a button named for qa-noacct-{param:walk_tag} (a leading # is fine). A line in the room refusing to write for want of an account is this walk's expected state, not an error"
+  },
+  {
+   "say": "press the qa-noacct-{param:walk_tag} channel in the channel list",
+   "expect": "the room header's name label reads qa-noacct-{param:walk_tag}; the room header's Start a huddle reports disabled; there is no message composer and no Send button, and in their place a line refuses writing for want of an account AND says what to do next (it names creating an account, such as 'Create an account to write'). A refusal that only says the key holds no account, with no next step, does not meet this"
+  }
+ ]
+}

@@ -10,10 +10,9 @@
  "gaps": [
   "ducktape-views@a2a73e1 support/composer/src/binding.rs:264 — the composer is an Editor with no label (epoch 8): a MultilineTextInput with no name, only its id says composer",
   "ducktape-views@a2a73e1 chat/src/ui/kit.rs:556-568 — a message body is RichText: the sent text is not in the tree, so a send is proven only by a new author label",
-  "ducktape-views@a2a73e1 chat/src/ui/chat.rs:686-740 — Open thread, React with 👍, Manage reactions and More message actions show only while the pointer hovers the row, and the row menu is a MouseArea with no role: thread reply and react cannot be reached from the tree or by keys, so they are not walked",
+  "ducktape-views@3242af7 chat/src/ui/chat.rs:729-800 with app/src/view_tree.rs hover() — Open thread, React with 👍, Manage reactions and More message actions are drawn only while the pointer hovers the row (or its menu is open); the row itself (a Row named 'author: text') presses to nothing without Shift and its menu is a right press: the message menu cannot be reached from the tree or by keys, so it is not walked",
   "ducktape-views@a2a73e1 chat/src/ui/chat.rs:1752-1778, kit.rs:292-321 — every reaction cell and pill is named Add reaction / Remove reaction; the emoji is only the description",
-  "ducktape-views@a2a73e1 chat/src/ui/chat.rs:309-320,570-590 — with no channel (a fresh network) the room pane is a nameless room: the header is a bare # and 'This is the very beginning of #. Say hello', over a composer whose buttons are all disabled and nothing says to create a channel first (FINDINGS-2026-09-19 C1)",
-  "app/src/view_tree.rs:4470 — a view's Editor reports only its role and label: not its text (value), not its placeholder, not editable: false, so the composer's draft is not in the tree and a read-only composer is still offered type (FINDINGS-2026-09-19 A1)"
+  "ducktape-views@a2a73e1 chat/src/ui/chat.rs:309-320,570-590 — with no channel (a fresh network) the room pane is a nameless room: the header is a bare # and 'This is the very beginning of #. Say hello', over a composer whose buttons are all disabled and nothing says to create a channel first (FINDINGS-2026-09-19 C1)"
  ],
  "steps": [
   {

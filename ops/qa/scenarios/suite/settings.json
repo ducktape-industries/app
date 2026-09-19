@@ -1,6 +1,6 @@
 {
  "name": "settings",
- "about": "Run an update check and flip one harmless preference back and forth. Starts from an open console and leaves it open.",
+ "about": "Run an update check, flip one harmless preference back and forth, then switch the appearance to Dark, walk the chat and pages views in it, and set it back to System (a fresh rig starts on System). Starts from an open console and leaves it open.",
  "include": [
   "setup.json"
  ],
@@ -35,6 +35,31 @@
   {
    "say": "press General",
    "expect": "General reports checked and the Updates label shows"
+  },
+  {
+   "say": "press Dark under Appearance",
+   "expect": "Dark reports checked (System and Light do not) and the Appearance detail reads 'Pinned for this device.'",
+   "settle_ms": 3000
+  },
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "in the dark appearance the Chat tab is selected and the chat view still shows its controls by name: a New channel button and a Channels label, and every button in it has a name; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "open the Pages tab in the rail",
+   "settle_ms": 4000,
+   "expect": "in the dark appearance the Pages tab is selected and the pages view still shows its controls by name: a New page button, and every button in it has a name; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "open the Settings tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the settings view shows the General pane with Dark checked under Appearance"
+  },
+  {
+   "say": "press System under Appearance",
+   "expect": "System reports checked and the Appearance detail reads 'Following the system appearance.'",
+   "settle_ms": 3000
   }
  ]
 }
