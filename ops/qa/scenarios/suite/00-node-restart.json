@@ -1,6 +1,6 @@
 {
- "name": "zz-node-restart",
- "about": "Sorts last: it disturbs the node. The member node under the app restarts as a scheduled update restarts it (a gap of about 9 s); a view whose request hit the gap stayed on its error or on Loading… for good (#150). The walk opens Chat, Files and Forge, restarts the rig's member node (the runner's rig step: SIGTERM, the same argv again, done when /v1/status is past starting/recovering/joining/syncing), then opens Chat, Forge, Boards and Files again, pressing no Retry, and expects each to come back by itself within the step's settle; then it makes a file, so a write lands after the restart. Needs setup's member node, no account. Starts from an open console and leaves it open.",
+ "name": "00-node-restart",
+ "about": "Sorts first (LC_ALL=C), right after setup and before any other scenario opens a view: the views that stayed stuck in run 5 were opened for the first time after the node came back, and reopening views that had already loaded did not reproduce it. The member node under the app restarts as a scheduled update restarts it (a gap of about 9 s); a view whose request hit the gap stayed on its error or on Loading… for good (#150). The walk restarts the rig's member node first (the runner's rig step: SIGTERM, the same argv again, done when /v1/status is past starting/recovering/joining/syncing), then opens Chat, Files, Forge and Boards for the first time, pressing no Retry, and expects each to come up by itself within the step's settle; then it makes a file, so a write lands after the restart. Needs setup's member node and no account: it makes none, so chat-no-account after it still has none. Starts from an open console and leaves it open.",
  "include": [
   "setup.json"
  ],
@@ -8,21 +8,6 @@
   "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
  },
  "steps": [
-  {
-   "say": "open the Chat tab in the rail",
-   "settle_ms": 4000,
-   "expect": "the Chat tab is selected and the chat view shows a New channel button and its channel list; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
-  },
-  {
-   "say": "open the Files tab in the rail",
-   "settle_ms": 4000,
-   "expect": "the Files tab is selected and the files view shows a New file button and a file list or its empty state; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
-  },
-  {
-   "say": "open the Forge tab in the rail",
-   "settle_ms": 4000,
-   "expect": "the Forge tab is selected and the forge view shows an organization label, a repositories count and either a button per repository or the empty state that says to push a git repository to this network; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
-  },
   {
    "kind": "rig",
    "say": "restart the member node under the app, as a scheduled update does, and wait until it serves again",
@@ -32,7 +17,12 @@
   {
    "say": "open the Chat tab in the rail",
    "settle_ms": 20000,
-   "expect": "the Chat tab is selected and the chat view shows a New channel button and its channel list; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+   "expect": "the Chat tab is selected and the chat view shows a New channel button (this rig has no account yet, so New channel reporting disabled beside a line refusing for want of an account is expected, not an error) and its channel list or its empty state; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+  },
+  {
+   "say": "open the Files tab in the rail",
+   "settle_ms": 20000,
+   "expect": "the Files tab is selected and the files view shows a New file button and a file list or its empty state; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
   },
   {
    "say": "open the Forge tab in the rail",
