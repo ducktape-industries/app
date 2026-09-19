@@ -607,6 +607,276 @@ fn door_serves_a_node_description() {
     );
 }
 
+/// A named wire overlay is a modal AccessKit scope: its base is covered for
+/// door reads and acts, while closing it restores the base controls.
+#[test]
+fn door_scopes_a_named_overlay_to_the_active_modal() {
+    use std::sync::{Arc, Mutex};
+
+    fn fixture(open: bool) -> view_wire::Node {
+        let base = view_wire::kit::button(
+            "base-action",
+            "Base action",
+            Some(1),
+            view_wire::ButtonPreset::Primary,
+        );
+        let modal = view_wire::kit::button(
+            "modal-action",
+            "Modal action",
+            Some(2),
+            view_wire::ButtonPreset::Primary,
+        );
+        view_wire::Node::Overlay {
+            key: "fixture-overlay".into(),
+            label: Some("Fixture dialog".into()),
+            padding: 0.,
+            backdrop: view_wire::Rgba([0., 0., 0., 0.4]),
+            align_x: view_wire::AlignX::Center,
+            align_y: view_wire::AlignY::Center,
+            on_dismiss: None,
+            children: if open { vec![base, modal] } else { vec![base] },
+        }
+    }
+
+    let mut cx = crate::frame_probe::headless_context();
+    let view = cx.new(|_| crate::view_tree::ViewTree::new(fixture(false)));
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let observed = events.clone();
+    let subscription = cx.update(|cx| {
+        cx.subscribe(&view, move |_, event: &view_wire::Event, _| {
+            observed.lock().unwrap().push(event.clone());
+        })
+    });
+    let root_view = view.clone();
+    let window: AnyWindowHandle = cx
+        .open_window(size(px(400.), px(300.)), |window, cx| {
+            cx.new(|cx| gpui_kit::component::Root::new(root_view, window, cx))
+        })
+        .unwrap()
+        .into();
+    cx.update_window(window, |_, window, _| window.activate_a11y())
+        .unwrap();
+    draw(&mut cx, window);
+    let base_id = read(&mut cx, window, "fixture")
+        .into_iter()
+        .find(|node| node.name == "Base action")
+        .expect("base action before open")
+        .id;
+    cx.update_window(window, |_, _, cx| {
+        view.update(cx, |view, cx| view.replace(fixture(true), cx));
+    })
+    .unwrap();
+    draw(&mut cx, window);
+
+    let modal_accesskit = cx
+        .update_window(window, |_, window, _| {
+            window.a11y_tree().and_then(|update| {
+                update
+                    .nodes
+                    .iter()
+                    .map(|(_, node)| node)
+                    .find(|node| node.role() == gpui_kit::Role::Dialog)
+                    .map(|node| (node.label().map(str::to_owned), node.is_modal()))
+            })
+        })
+        .unwrap();
+    assert_eq!(
+        modal_accesskit,
+        Some((Some("Fixture dialog".to_owned()), true))
+    );
+
+    let scoped = read(&mut cx, window, "fixture");
+    let base = scoped.iter().find(|node| node.name == "Base action");
+    let modal = scoped.iter().find(|node| node.name == "Modal action");
+    assert!(base.is_none(), "covered base is absent: {}", json(&scoped));
+    let modal = modal.expect("modal action is reachable");
+    assert!(modal.actions.contains(&"press"));
+    let offers = serde_json::to_string(&ax_door::offers(&scoped)).unwrap();
+    assert!(offers.contains("Modal action"), "{offers}");
+    assert!(!offers.contains("Base action"), "{offers}");
+
+    cx.update_window(window, |_, window, cx| {
+        assert!(ax_door::perform_by_id(
+            "fixture", window, cx, &modal.id, "focus", ""
+        ));
+    })
+    .unwrap();
+    draw(&mut cx, window);
+    keys(&mut cx, window, "tab shift-tab", "");
+    let focused_nodes = read(&mut cx, window, "fixture");
+    let focused_modal = focused(&focused_nodes)
+        .map(|node| node.name.as_str())
+        .unwrap_or_default();
+    assert_eq!(focused_modal, "Modal action");
+
+    let covered = cx
+        .update_window(window, |_, window, cx| {
+            ax_door::perform_by_id("fixture", window, cx, &base_id, "press", "")
+        })
+        .unwrap();
+    assert!(!covered);
+    assert!(events.lock().unwrap().is_empty());
+    let pressed = cx
+        .update_window(window, |_, window, cx| {
+            ax_door::perform_by_id("fixture", window, cx, &modal.id, "press", "")
+        })
+        .unwrap();
+    assert!(pressed);
+    assert_eq!(&*events.lock().unwrap(), &[view_wire::Event::Message(2)]);
+
+    cx.update_window(window, |_, _, cx| {
+        view.update(cx, |view, cx| view.replace(fixture(false), cx));
+    })
+    .unwrap();
+    draw(&mut cx, window);
+    let restored = read(&mut cx, window, "fixture");
+    let base = restored
+        .iter()
+        .find(|node| node.name == "Base action")
+        .expect("base action returns after close");
+    assert!(!restored.iter().any(|node| node.name == "Modal action"));
+    let offers = serde_json::to_string(&ax_door::offers(&restored)).unwrap();
+    assert!(offers.contains("Base action"), "{offers}");
+    cx.update_window(window, |_, window, cx| {
+        assert!(ax_door::perform_by_id(
+            "fixture", window, cx, &base.id, "focus", ""
+        ));
+    })
+    .unwrap();
+    keys(&mut cx, window, "tab shift-tab", "");
+    assert_eq!(
+        focused(&read(&mut cx, window, "fixture")).map(|node| node.name.as_str()),
+        Some("Base action")
+    );
+    let pressed = cx
+        .update_window(window, |_, window, cx| {
+            ax_door::perform_by_id("fixture", window, cx, &base.id, "press", "")
+        })
+        .unwrap();
+    assert!(pressed);
+    assert_eq!(
+        &*events.lock().unwrap(),
+        &[view_wire::Event::Message(2), view_wire::Event::Message(1)]
+    );
+    drop(subscription);
+}
+
+#[test]
+fn door_nested_modal_is_topmost_and_window_local() {
+    fn fixture(stage: u8) -> view_wire::Node {
+        let base = view_wire::kit::button(
+            "nested-base",
+            "Nested base",
+            Some(1),
+            view_wire::ButtonPreset::Primary,
+        );
+        let outer_action = view_wire::kit::button(
+            "outer-action",
+            "Outer action",
+            Some(2),
+            view_wire::ButtonPreset::Primary,
+        );
+        let inner = view_wire::Node::Overlay {
+            key: "inner-overlay".into(),
+            label: Some("Inner dialog".into()),
+            padding: 0.,
+            backdrop: view_wire::Rgba([0.; 4]),
+            align_x: view_wire::AlignX::Left,
+            align_y: view_wire::AlignY::Top,
+            on_dismiss: None,
+            children: vec![
+                view_wire::Node::empty(),
+                view_wire::kit::button(
+                    "inner-action",
+                    "Inner action",
+                    Some(3),
+                    view_wire::ButtonPreset::Primary,
+                ),
+            ],
+        };
+        let modal = match stage {
+            0 => None,
+            1 => Some(view_wire::kit::column("outer-card", [outer_action])),
+            _ => Some(view_wire::kit::column("outer-card", [outer_action, inner])),
+        };
+        view_wire::Node::Overlay {
+            key: "outer-overlay".into(),
+            label: Some("Outer dialog".into()),
+            padding: 0.,
+            backdrop: view_wire::Rgba([0.; 4]),
+            align_x: view_wire::AlignX::Left,
+            align_y: view_wire::AlignY::Top,
+            on_dismiss: None,
+            children: match modal {
+                Some(modal) => vec![base, modal],
+                None => vec![base],
+            },
+        }
+    }
+
+    let mut cx = crate::frame_probe::headless_context();
+    let first_view = cx.new(|_| crate::view_tree::ViewTree::new(fixture(0)));
+    let second_view = cx.new(|_| crate::view_tree::ViewTree::new(fixture(0)));
+    let open = |cx: &mut HeadlessAppContext, view: gpui_kit::Entity<crate::view_tree::ViewTree>| {
+        cx.open_window(size(px(400.), px(300.)), |window, cx| {
+            let view = view.clone();
+            cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
+        })
+        .unwrap()
+        .into()
+    };
+    let first: AnyWindowHandle = open(&mut cx, first_view.clone());
+    let second: AnyWindowHandle = open(&mut cx, second_view);
+    for window in [first, second] {
+        cx.update_window(window, |_, window, _| window.activate_a11y())
+            .unwrap();
+        draw(&mut cx, window);
+    }
+    let base_id = read(&mut cx, first, "nested")
+        .into_iter()
+        .find(|node| node.name == "Nested base")
+        .expect("the underlay is visible before opening")
+        .id;
+
+    cx.update_window(first, |_, _, cx| {
+        first_view.update(cx, |view, cx| view.replace(fixture(1), cx));
+    })
+    .unwrap();
+    draw(&mut cx, first);
+    let outer_id = read(&mut cx, first, "nested")
+        .into_iter()
+        .find(|node| node.name == "Outer action")
+        .expect("the outer dialog is visible")
+        .id;
+
+    cx.update_window(first, |_, _, cx| {
+        first_view.update(cx, |view, cx| view.replace(fixture(2), cx));
+    })
+    .unwrap();
+    draw(&mut cx, first);
+    let nested = read(&mut cx, first, "nested");
+    assert!(nested.iter().any(|node| node.name == "Inner action"));
+    assert!(!nested.iter().any(|node| node.name == "Outer action"));
+    assert!(!nested.iter().any(|node| node.name == "Nested base"));
+    assert_eq!(json(&nested), json(&read(&mut cx, first, "nested")));
+    assert!(
+        !cx.update_window(first, |_, window, cx| {
+            ax_door::perform_by_id("nested", window, cx, &outer_id, "press", "")
+        })
+        .unwrap()
+    );
+    assert!(
+        !cx.update_window(first, |_, window, cx| {
+            ax_door::perform_by_id("nested", window, cx, &base_id, "press", "")
+        })
+        .unwrap()
+    );
+
+    let other = read(&mut cx, second, "nested");
+    assert!(other.iter().any(|node| node.name == "Nested base"));
+    assert!(!other.iter().any(|node| node.name == "Inner action"));
+}
+
 /// #147: a window the OS stops drawing (covered, asleep, locked) still
 /// serves its current tree — a door read draws it — and the revision moves
 /// only when the tree does.

@@ -104,6 +104,13 @@ pub fn aria<E: InteractiveElement>(mut element: E, set: impl FnOnce(Aria<'_>) ->
     element
 }
 
+/// Marks the element's accessible node as a modal dialog boundary.
+pub fn modal<E: InteractiveElement>(element: E) -> E {
+    aria(element, |node| {
+        node.a11y_synthetic_children(|tree| tree.parent_node().set_modal())
+    })
+}
+
 /// An element's accessibility properties, reached through its interactivity.
 pub struct Aria<'a>(&'a mut Interactivity);
 

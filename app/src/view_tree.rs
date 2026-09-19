@@ -2,6 +2,7 @@
 //! input state; interaction uses the same semantic events the guests consume.
 
 use gpui_kit::MouseUpEvent;
+use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::component::radio::Radio;
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
@@ -1054,7 +1055,12 @@ impl ViewTree {
                 wire::Node::ResizeHandle { key, .. } => {
                     drags.insert(key.clone());
                 }
-                wire::Node::Overlay { key, children, .. } if children.len() > 1 => {
+                wire::Node::Overlay {
+                    key,
+                    label,
+                    children,
+                    ..
+                } if named_overlay(label, children) => {
                     dialogs.insert(key.clone());
                 }
                 wire::Node::Responsive { key, .. } => {
@@ -2472,7 +2478,7 @@ impl ViewTree {
         };
         let mut element = shadows(
             div()
-                .relative()
+                .absolute()
                 .bg(gpui_kit::component::Theme::global(cx)
                     .color_tokens()
                     .surface)
@@ -2668,23 +2674,30 @@ impl ViewTree {
             element = element.child(self.node(base, window, cx));
         }
         if let Some(modal) = children.get(1) {
+            let named = named_overlay(label, children);
+            let nested = has_named_overlay(modal);
+            if named && nested {
+                // The focus-trap registry keeps weak handles until another
+                // trap registers; drop an obscured ancestor before that pass.
+                self.dialogs.remove(key);
+            }
             let shade = div()
                 .id(format!("{key}/backdrop"))
                 .absolute()
                 .inset_0()
                 .bg(rgba(*backdrop));
-            let opened = !self.dialogs.contains_key(key);
-            let entry = self
-                .dialogs
-                .entry(key.clone())
-                .or_insert_with(|| cx.focus_handle())
-                .clone();
-            let mut layer = div()
-                .id(format!("{key}/layer"))
-                .absolute()
-                .inset_0()
-                .flex()
-                .p(px(*padding));
+            let opened = named && !self.dialogs.contains_key(key);
+            let entry = (named && !nested).then(|| {
+                self.dialogs
+                    .entry(key.clone())
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone()
+            });
+            let is_float = matches!(modal, wire::Node::Float { .. });
+            let mut layer = div().id(format!("{key}/layer")).absolute().inset_0();
+            if !is_float {
+                layer = layer.flex().p(px(*padding));
+            }
             if let Some(message) = on_dismiss {
                 let message = *message;
                 layer = layer
@@ -2699,42 +2712,64 @@ impl ViewTree {
                         }
                     }));
             }
-            layer = match align_x {
-                wire::AlignX::Left => layer.justify_start(),
-                wire::AlignX::Center => layer.justify_center(),
-                wire::AlignX::Right => layer.justify_end(),
-            };
-            layer = match align_y {
-                wire::AlignY::Top => layer.items_start(),
-                wire::AlignY::Center => layer.items_center(),
-                wire::AlignY::Bottom => layer.items_end(),
-            };
-            // a named overlay is a dialog; the layer holds what it shows
-            if label.is_some() {
-                layer = announce(layer, accessible(node));
+            if !is_float {
+                layer = match align_x {
+                    wire::AlignX::Left => layer.justify_start(),
+                    wire::AlignX::Center => layer.justify_center(),
+                    wire::AlignX::Right => layer.justify_end(),
+                };
+                layer = match align_y {
+                    wire::AlignY::Top => layer.items_start(),
+                    wire::AlignY::Center => layer.items_center(),
+                    wire::AlignY::Bottom => layer.items_end(),
+                };
             }
-            element = element.child(shade).child(
-                layer.child(
-                    div()
-                        .bg(gpui_kit::component::Theme::global(cx)
+            let content = if is_float {
+                self.node(modal, window, cx)
+            } else {
+                div()
+                    .bg(gpui_kit::component::Theme::global(cx)
+                        .color_tokens()
+                        .surface)
+                    .text_color(
+                        gpui_kit::component::Theme::global(cx)
                             .color_tokens()
-                            .surface)
-                        .text_color(
-                            gpui_kit::component::Theme::global(cx)
-                                .color_tokens()
-                                .surface_foreground,
-                        )
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        // a dialog takes the keyboard when it opens; a
-                        // popup's view moves focus itself (widget commands)
-                        .children(
-                            label
-                                .is_some()
-                                .then(|| dialog_entry(&entry, opened, window, cx)),
-                        )
-                        .child(self.node(modal, window, cx)),
-                ),
-            );
+                            .surface_foreground,
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // a dialog takes the keyboard when it opens; a
+                    // popup's view moves focus itself (widget commands)
+                    .children(
+                        entry
+                            .as_ref()
+                            .map(|entry| dialog_entry(entry, opened, window, cx)),
+                    )
+                    .child(self.node(modal, window, cx))
+                    .into_any_element()
+            };
+            if is_float {
+                layer = layer.children(
+                    entry
+                        .as_ref()
+                        .map(|entry| dialog_entry(entry, opened, window, cx)),
+                );
+            }
+            layer = layer.child(content);
+            let layer = if named {
+                let layer = gpui_notion::editor::ui::modal(announce(layer, accessible(node)));
+                match (nested, entry.as_ref()) {
+                    (false, Some(entry)) => div()
+                        .absolute()
+                        .inset_0()
+                        .focus_trap(format!("{key}/focus-trap-container"), entry)
+                        .child(layer)
+                        .into_any_element(),
+                    _ => layer.into_any_element(),
+                }
+            } else {
+                layer.into_any_element()
+            };
+            element = element.child(shade).child(layer);
         }
         element.into_any_element()
     }
@@ -3859,6 +3894,19 @@ fn rgba(color: wire::Rgba) -> Hsla {
     gpui_kit::Rgba { r, g, b, a }.into()
 }
 
+fn named_overlay(label: &Option<String>, children: &[wire::Node]) -> bool {
+    label.as_deref().is_some_and(|label| !label.is_empty()) && children.len() > 1
+}
+
+fn has_named_overlay(node: &wire::Node) -> bool {
+    match node {
+        wire::Node::Overlay {
+            label, children, ..
+        } if named_overlay(label, children) => true,
+        _ => node.children().iter().any(has_named_overlay),
+    }
+}
+
 fn content_dimensions(node: &wire::Node) -> (Option<wire::Length>, Option<wire::Length>) {
     match node {
         wire::Node::Space { width, height }
@@ -4511,8 +4559,10 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             disabled: on_press.is_none() && on_release.is_none(),
             ..labelled(role_of(role), label)
         },
-        // a named overlay is a dialog; an unnamed one is layout
-        Node::Overlay { label, .. } if label.is_some() => labelled(Role::Dialog, label),
+        // only an open named overlay is a dialog; a closed or unnamed one is layout
+        Node::Overlay {
+            label, children, ..
+        } if named_overlay(label, children) => labelled(Role::Dialog, label),
         // the wire gives a code no label: it is read as what it is
         Node::Qr { .. } => Accessible {
             role: Some(Role::Image),
@@ -6665,7 +6715,7 @@ mod tests {
 
     #[test]
     fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
-        let overlay = |label: Option<&str>| wire::Node::Overlay {
+        let overlay = |label: Option<&str>, open| wire::Node::Overlay {
             key: "o".into(),
             label: label.map(str::to_owned),
             padding: 0.,
@@ -6673,16 +6723,79 @@ mod tests {
             align_x: wire::AlignX::Center,
             align_y: wire::AlignY::Center,
             on_dismiss: None,
-            children: vec![],
+            children: if open {
+                vec![wire::Node::empty(), wire::Node::empty()]
+            } else {
+                Vec::new()
+            },
         };
         assert_eq!(
-            accessible(&overlay(Some("Rename channel"))),
+            accessible(&overlay(Some("Rename channel"), true)),
             Accessible {
                 role: Some(gpui_kit::Role::Dialog),
                 name: Some("Rename channel".into()),
                 ..Default::default()
             }
         );
-        assert_eq!(accessible(&overlay(None)), Accessible::default());
+        assert_eq!(
+            accessible(&overlay(Some("Rename channel"), false)),
+            Accessible::default()
+        );
+        assert_eq!(accessible(&overlay(None, true)), Accessible::default());
+    }
+
+    #[gpui_kit::test]
+    fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let card = wire::kit::sized(
+            wire::kit::container("float-card", wire::Node::empty()),
+            Some(wire::Length::Fixed(40.)),
+            Some(wire::Length::Fixed(20.)),
+        );
+        let root = wire::Node::Overlay {
+            key: "float-overlay".into(),
+            label: Some("Context menu".into()),
+            padding: 30.,
+            backdrop: wire::Rgba([0.; 4]),
+            align_x: wire::AlignX::Right,
+            align_y: wire::AlignY::Bottom,
+            on_dismiss: None,
+            children: vec![
+                wire::kit::spacer(),
+                wire::Node::Float {
+                    key: "float".into(),
+                    x: 37.,
+                    y: 29.,
+                    scale: 1.,
+                    shadow: Default::default(),
+                    radius: None,
+                    content: Box::new(card),
+                },
+            ],
+        };
+        let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
+        let tree = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        let card = tree
+            .read_with(&native, |tree, _| tree.measured_bounds("float-card"))
+            .expect("the floated card was measured");
+        assert_eq!(card.origin, point(px(37.), px(29.)));
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let quads = window.painted_quads();
+            let scale = window.scale_factor();
+            let card_surfaces = quads
+                .iter()
+                .filter(|quad| {
+                    quad.bounds.size.width.as_f32() == 40. * scale
+                        && quad.bounds.size.height.as_f32() == 20. * scale
+                })
+                .count();
+            assert_eq!(
+                card_surfaces, 1,
+                "the Float owns the card surface: {quads:?}"
+            );
+        });
     }
 }
