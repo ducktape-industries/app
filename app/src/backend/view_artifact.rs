@@ -4,8 +4,19 @@
 //! The caller retains the expected hash and request generation, and rechecks
 //! both before installing the result. This loader never selects a deployment
 //! or substitutes a desktop resource after a failed fetch.
+//!
+//! A verified artifact is kept on disk under its code hash, per user
+//! (`<cache_dir>/views/<hex code hash>`, the app's own cache directory), and
+//! is hashed again on every read: a second connect, or another network
+//! running the same code, fetches nothing, and a swap fetches only the hash
+//! that changed. An entry that no longer hashes to its name is removed and
+//! fetched again. At most [`FETCHES_AT_ONCE`] fetches share the link; the
+//! view a tab is drawing never queues behind them.
 
 use std::fmt;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use ducktape_rpc::Client;
 use module_artifact::{
@@ -28,7 +39,7 @@ pub enum Error {
     /// The local node does not hold the blob: the bytes have not reached
     /// it (yet).
     NotHeld,
-    Transport(ducktape_rpc::Error),
+    Transport(String),
     HashMismatch,
     InvalidArtifact(String),
 }
@@ -59,23 +70,164 @@ pub struct Frame {
     pub view: Option<ViewArtifact>,
 }
 
-/// The frame under `expected_hash`, fetched off the node and verified: a
-/// 404 is [`Error::NotHeld`], bytes that do not hash to it
+/// How many artifact fetches share the link at once: a slow link is not
+/// split fifteen ways, and the view on screen skips the queue.
+pub const FETCHES_AT_ONCE: usize = 3;
+
+/// What a fetch tells the seat waiting for it, and asks of it.
+pub struct Watch<'a> {
+    /// Bytes in, of how many when the node said. `(n, Some(n))` is every
+    /// byte in: verification is next.
+    pub bytes: &'a (dyn Fn(u64, Option<u64>) + Sync),
+    /// Whether a tab draws the seat now: its fetch does not wait its turn.
+    pub on_screen: &'a (dyn Fn() -> bool + Sync),
+}
+
+impl Default for Watch<'_> {
+    fn default() -> Self {
+        Watch::UNSEEN
+    }
+}
+
+impl Watch<'static> {
+    /// Nobody watching: a background read, e.g. a taste's frame.
+    pub const UNSEEN: Self = Self {
+        bytes: &|_, _| {},
+        on_screen: &|| false,
+    };
+}
+
+/// The frame under `expected_hash`: from the `cache` directory if an entry
+/// there still hashes to it, else fetched off the node, verified and kept
+/// there. A 404 is [`Error::NotHeld`], bytes that do not hash to it
 /// [`Error::HashMismatch`].
-pub async fn fetch(client: &Client, expected_hash: [u8; 32]) -> Result<Frame, Error> {
-    let bytes = client
-        .get_blob(&expected_hash, MAX_ARTIFACT_BYTES)
-        .await
-        .map_err(|error| {
-            // the client's blob get carries the node's status line in its
-            // one string: `RPC blob get returned 404 Not Found`
-            let not_found = error.to_string().ends_with("returned 404 Not Found");
-            match not_found {
-                true => Error::NotHeld,
-                false => Error::Transport(error),
-            }
-        })?;
-    verified_frame(&bytes, expected_hash)
+pub async fn fetch(
+    cache: Option<&Path>,
+    client: &Client,
+    expected_hash: [u8; 32],
+    watch: &Watch<'_>,
+) -> Result<Frame, Error> {
+    if let Some(frame) = cache.and_then(|dir| cached(dir, expected_hash, watch)) {
+        return Ok(frame);
+    }
+    let _turn = link_turn(watch.on_screen).await;
+    let bytes = download(client, expected_hash, watch.bytes).await?;
+    let frame = verified_frame(&bytes, expected_hash)?;
+    if let Some(dir) = cache
+        && let Err(error) = keep(dir, expected_hash, &bytes)
+    {
+        tracing::warn!(target: "ducktape::app", error = %error, "view artifact not cached");
+    }
+    Ok(frame)
+}
+
+/// A turn on the link: one of [`FETCHES_AT_ONCE`], or none at all for a
+/// seat a tab draws — checked again while it waits, so a tab opened onto a
+/// queued view pulls it out of the queue.
+async fn link_turn(
+    on_screen: &(dyn Fn() -> bool + Sync),
+) -> Option<tokio::sync::SemaphorePermit<'static>> {
+    static LINK: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(FETCHES_AT_ONCE);
+    let mut queued = std::pin::pin!(LINK.acquire());
+    loop {
+        if on_screen() {
+            return None;
+        }
+        tokio::select! {
+            turn = &mut queued => return turn.ok(),
+            () = tokio::time::sleep(Duration::from_millis(100)) => {}
+        }
+    }
+}
+
+/// The blob's bytes, read as they arrive so the seat can say how many are in.
+/// No overall deadline: a slow link that keeps sending finishes; one that
+/// goes quiet for [`STALLED`] is unreachable.
+async fn download(
+    client: &Client,
+    hash: [u8; 32],
+    progress: &(dyn Fn(u64, Option<u64>) + Sync),
+) -> Result<Vec<u8>, Error> {
+    const STALLED: Duration = Duration::from_secs(30);
+    static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    let http = HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .connect_timeout(STALLED)
+            .read_timeout(STALLED)
+            .build()
+            .expect("an http client")
+    });
+    let transport = |error: reqwest::Error| Error::Transport(error.to_string());
+    let url = format!("{}/v1/files/blob/{}", client.origin(), hex(&hash));
+    let mut response = http.get(url).send().await.map_err(transport)?;
+    let status = response.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(Error::NotHeld);
+    }
+    if !status.is_success() {
+        return Err(Error::Transport(format!("the node answered {status}")));
+    }
+    let total = response.content_length();
+    let past_limit =
+        || Error::Transport(format!("past the {MAX_ARTIFACT_BYTES} byte artifact limit"));
+    if total.is_some_and(|total| total > MAX_ARTIFACT_BYTES as u64) {
+        return Err(past_limit());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(transport)? {
+        if bytes.len() + chunk.len() > MAX_ARTIFACT_BYTES {
+            return Err(past_limit());
+        }
+        bytes.extend_from_slice(&chunk);
+        progress(bytes.len() as u64, total);
+    }
+    let received = bytes.len() as u64;
+    progress(received, Some(received));
+    Ok(bytes)
+}
+
+/// The cached frame under `hash`, hashed again as it is read. An entry that
+/// does not verify is refused and removed, and the caller fetches it anew.
+fn cached(dir: &Path, hash: [u8; 32], watch: &Watch<'_>) -> Option<Frame> {
+    let path = dir.join(hex(&hash));
+    let bytes = std::fs::read(&path).ok()?;
+    (watch.bytes)(bytes.len() as u64, Some(bytes.len() as u64));
+    match verified_frame(&bytes, hash) {
+        Ok(frame) => Some(frame),
+        Err(error) => {
+            tracing::warn!(
+                target: "ducktape::app",
+                path = %path.display(),
+                error = %error,
+                "cached view artifact refused and removed"
+            );
+            let _ = std::fs::remove_file(&path);
+            None
+        }
+    }
+}
+
+fn hex(hash: &[u8; 32]) -> String {
+    hash.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Writes a verified artifact under its hash: to a temporary name beside it,
+/// then renamed over, so a reader never meets half an entry.
+fn keep(dir: &Path, hash: [u8; 32], bytes: &[u8]) -> std::io::Result<()> {
+    static TEMP: AtomicU64 = AtomicU64::new(0);
+    std::fs::create_dir_all(dir)?;
+    let name = hex(&hash);
+    let temp = dir.join(format!(
+        ".{name}.{}.{}.tmp",
+        std::process::id(),
+        TEMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written =
+        std::fs::write(&temp, bytes).and_then(|()| std::fs::rename(&temp, dir.join(&name)));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 fn verified_frame(bytes: &[u8], expected_hash: [u8; 32]) -> Result<Frame, Error> {
@@ -193,6 +345,106 @@ mod tests {
                 core: None,
                 view: Some(view),
             }
+        );
+    }
+
+    /// A node that answers `bytes` to every blob asked of it, counting the asks.
+    async fn serving(bytes: Vec<u8>) -> (Client, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = Client::new(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut head = Vec::new();
+                let mut byte = [0];
+                while !head.ends_with(b"\r\n\r\n") && socket.read_exact(&mut byte).await.is_ok() {
+                    head.push(byte[0]);
+                }
+                counted.fetch_add(1, Ordering::SeqCst);
+                let answer = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    bytes.len()
+                );
+                let _ = socket.write_all(answer.as_bytes()).await;
+                let _ = socket.write_all(&bytes).await;
+            }
+        });
+        (client, asked)
+    }
+
+    /// The cache by code hash: a miss fetches and keeps the entry — written
+    /// whole under its hash, nothing left beside it — a hit asks the node
+    /// nothing, and an entry that no longer hashes to its name is refused,
+    /// removed and fetched again.
+    #[tokio::test]
+    async fn the_cache_serves_a_verified_entry_and_refetches_a_corrupted_one() {
+        let artifact = Artifact::module(vec![1, 2, 3]);
+        let (hash, encoded) = (artifact.hash(), artifact.encode());
+        let (client, asked) = serving(encoded.clone()).await;
+        let cache = tempfile::tempdir().unwrap();
+        let entry = cache.path().join(hex(&hash));
+        let listed = || {
+            std::fs::read_dir(cache.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+                .collect::<Vec<_>>()
+        };
+
+        let first = fetch(Some(cache.path()), &client, hash, &Watch::UNSEEN)
+            .await
+            .unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(listed(), [hex(&hash)], "a temporary was left behind");
+        assert_eq!(std::fs::read(&entry).unwrap(), encoded);
+
+        // a second connect, or another network running the same code
+        let said = std::sync::Mutex::new(Vec::new());
+        let watch = Watch {
+            bytes: &|received, total| said.lock().unwrap().push((received, total)),
+            on_screen: &|| false,
+        };
+        let hit = fetch(Some(cache.path()), &client, hash, &watch)
+            .await
+            .unwrap();
+        assert_eq!(hit, first);
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "a hit asked the node");
+        let length = encoded.len() as u64;
+        assert_eq!(*said.lock().unwrap(), [(length, Some(length))]);
+
+        let mut corrupted = encoded.clone();
+        corrupted[5] ^= 1;
+        std::fs::write(&entry, &corrupted).unwrap();
+        assert_eq!(cached(cache.path(), hash, &Watch::UNSEEN), None);
+        assert!(!entry.exists(), "the corrupted entry was not removed");
+        std::fs::write(&entry, &corrupted).unwrap();
+        let refetched = fetch(Some(cache.path()), &client, hash, &Watch::UNSEEN)
+            .await
+            .unwrap();
+        assert_eq!(refetched, first);
+        assert_eq!(asked.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(&entry).unwrap(), encoded);
+    }
+
+    /// An entry is written beside its name and renamed over it: whatever was
+    /// there is replaced whole, and no temporary outlives the write.
+    #[test]
+    fn a_cache_write_replaces_the_entry_whole() {
+        let cache = tempfile::tempdir().unwrap();
+        let dir = cache.path().join("views");
+        let hash = [7; 32];
+        keep(&dir, hash, b"first").unwrap();
+        keep(&dir, hash, b"second, longer").unwrap();
+        let listed: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(listed, [hex(&hash)]);
+        assert_eq!(
+            std::fs::read(dir.join(hex(&hash))).unwrap(),
+            b"second, longer"
         );
     }
 

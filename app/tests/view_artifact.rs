@@ -20,7 +20,7 @@ async fn a_missing_blob_is_not_held_and_not_a_view_removal() {
             .unwrap();
     });
     assert!(matches!(
-        view_artifact::fetch(&client, [0; 32]).await,
+        view_artifact::fetch(None, &client, [0; 32], &view_artifact::Watch::UNSEEN).await,
         Err(view_artifact::Error::NotHeld)
     ));
     server.join().unwrap();

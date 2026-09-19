@@ -231,6 +231,17 @@ fn ax_contract_native() {
         app
     };
     failures.extend(native("console", connected(), Console));
+    // a tab whose view is still on its way, and one whose load failed
+    for (failed, name) in [
+        (false, "console, view loading"),
+        (true, "console, view failed"),
+    ] {
+        crate::module_view::loading_tests::seat_standin("chat", failed);
+        let mut app = connected();
+        app.shell_tab = ShellTab::View("chat");
+        failures.extend(native(name, app, Console));
+    }
+    crate::module_view::loading_tests::unseat("chat");
     for (phase, strip) in [(staged, "ready"), (rolled_back, "rolled-back")] {
         let mut app = connected();
         app.updater = Some(super::shell::armed_updater(phase, updates.path()));
