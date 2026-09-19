@@ -264,7 +264,7 @@ fn ax_contract_native() {
 /// Every view staged in `DUCKTAPE_VIEWS_DIR`, mounted as the canary mounts
 /// it (tests/canary.rs), in the state its session props give.
 #[test]
-#[ignore = "wire epoch 9: an Editor has no label on the wire (chat composer: text input without a label)"]
+#[ignore = "the views staged in DUCKTAPE_VIEWS_DIR are still wire epoch 8: the chat composer's Editor carries no label (text input without a label)"]
 fn ax_contract_views() {
     use crate::backend::view_source::tests::{FakeDeployment, fake_node};
     let views = std::env::var_os("DUCKTAPE_VIEWS_DIR")
@@ -342,11 +342,103 @@ fn ax_contract_views() {
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         cx.run_until_parked();
-        assert!(
-            crate::module_view::canary::frame(module).is_some(),
-            "view {module} did not render a frame"
-        );
+        let root = crate::module_view::canary::frame(module)
+            .unwrap_or_else(|| panic!("view {module} did not render a frame"));
+        // the view's own tree, held to the wire's rules
+        let epoch_8 =
+            crate::module_view::canary::epoch(module) == Some(crate::module_view::Epoch::Eight);
+        for fault in view_wire::accessibility_faults(&root) {
+            if !(epoch_8 && epoch_8_cannot_carry(&root, &fault)) {
+                failures.push(format!(
+                    "view {module}: {} — {:?}",
+                    fault.path.join("/"),
+                    fault.kind
+                ));
+            }
+        }
         failures.extend(audit(&format!("view {module}"), &mut cx, window.into()));
     }
     assert_clean(failures);
+}
+
+/// Whether a view built at wire epoch 8 could not have avoided `fault`: its
+/// wire has no label on an Editor, Slider, ComboBox or PickList
+/// (`UnlabeledInput`), no role on a MouseArea (`NoRole`) and no label on an
+/// Overlay (`Unnamed`). Every other fault it answers for, and an epoch-10
+/// view answers for all of them.
+fn epoch_8_cannot_carry(root: &view_wire::Node, fault: &view_wire::Fault) -> bool {
+    use view_wire::{FaultKind, Node};
+    fn at<'a>(node: &'a Node, path: &[String]) -> Option<&'a Node> {
+        let (first, rest) = path.split_first()?;
+        if node.key().unwrap_or_default() != first {
+            return None;
+        }
+        if rest.is_empty() {
+            return Some(node);
+        }
+        node.children().iter().find_map(|child| at(child, rest))
+    }
+    matches!(
+        (fault.kind, at(root, &fault.path)),
+        (
+            FaultKind::UnlabeledInput,
+            Some(
+                Node::Editor { .. }
+                    | Node::Slider { .. }
+                    | Node::ComboBox { .. }
+                    | Node::PickList { .. }
+            )
+        ) | (FaultKind::NoRole, Some(Node::MouseArea { .. }))
+            | (FaultKind::Unnamed, Some(Node::Overlay { .. }))
+    )
+}
+
+#[test]
+fn an_epoch_8_view_answers_only_for_the_faults_its_wire_can_carry() {
+    use view_wire::{FaultKind, Node, accessibility_faults};
+    let mut editor = Node::Editor {
+        options: Box::default(),
+        key: "composer".into(),
+        placeholder: String::new(),
+        label: None,
+        document: view_wire::editor_document::EditorDocumentRef {
+            document: "draft".into(),
+            reset: 1,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: 0,
+        },
+        on_document: 0,
+        editable: true,
+        width: None,
+        height: None,
+        min_height: None,
+        max_height: None,
+    };
+    let root = view_wire::kit::column("page", [editor.clone(), view_wire::kit::text("a", "")]);
+    let faults = accessibility_faults(&root);
+    assert_eq!(faults.len(), 1, "{faults:?}");
+    assert_eq!(faults[0].kind, FaultKind::UnlabeledInput);
+    assert!(epoch_8_cannot_carry(&root, &faults[0]));
+    // an unlabelled input could always be named: epoch 8 answers for it
+    let Node::Editor { label, .. } = &mut editor else {
+        unreachable!()
+    };
+    *label = Some("Message".into());
+    let input = Node::Input {
+        options: Default::default(),
+        key: "search".into(),
+        placeholder: String::new(),
+        value: String::new(),
+        on_input: 1,
+        on_submit: None,
+        width: None,
+        secure: false,
+        style: Box::default(),
+    };
+    let root = view_wire::kit::column("page", [editor, input]);
+    let faults = accessibility_faults(&root);
+    assert_eq!(faults.len(), 1, "{faults:?}");
+    assert!(!epoch_8_cannot_carry(&root, &faults[0]));
 }

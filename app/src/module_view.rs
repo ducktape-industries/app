@@ -1702,6 +1702,8 @@ pub(crate) enum Failure {
     Trapped(String),
     /// Bytes this build does not run as a view, or a load overtaken.
     Refused(String),
+    /// The view speaks a wire epoch this app does not.
+    WireEpoch(String),
 }
 
 impl Failure {
@@ -1713,6 +1715,7 @@ impl Failure {
             Failure::NotActivated(_) => "This view is not activated yet",
             Failure::Trapped(_) => "This view stopped",
             Failure::Refused(_) => "This view could not be loaded",
+            Failure::WireEpoch(_) => "This view speaks a wire this app does not",
         }
     }
 
@@ -1741,7 +1744,8 @@ impl fmt::Display for Failure {
         | Failure::NotListed(reason)
         | Failure::NotActivated(reason)
         | Failure::Trapped(reason)
-        | Failure::Refused(reason)) = self;
+        | Failure::Refused(reason)
+        | Failure::WireEpoch(reason)) = self;
         formatter.write_str(reason)
     }
 }
@@ -2134,6 +2138,16 @@ pub(crate) mod canary {
             .input_presentation(key, window, cx)
     }
 
+    /// The wire epoch `module`'s mounted view speaks.
+    pub(crate) fn epoch(module: &'static str) -> Option<super::Epoch> {
+        let mounted = super::mounted(module);
+        let mounted = mounted.lock().expect("module view lock");
+        match &mounted.slot {
+            super::Slot::Ready(guest) => Some(guest.epoch),
+            _ => None,
+        }
+    }
+
     pub(crate) fn frame(module: &'static str) -> Option<super::wire::Node> {
         let mounted = super::mounted(module);
         let mounted = mounted.lock().expect("module view lock");
@@ -2246,6 +2260,8 @@ struct Guest {
     user_activation: Option<()>,
     sessions: std::collections::BTreeMap<u64, tokio::sync::watch::Sender<Vec<u8>>>,
     module: &'static str,
+    /// The wire its frames come in, from its manifest.
+    epoch: Epoch,
     /// The manifest's name: what a registered view's tab is called.
     name: String,
     store: Store<HostState>,
@@ -2633,12 +2649,12 @@ impl Guest {
             let component_bytes = component;
             let component = Self::compile(&component_bytes, &shown);
             timing.compile = compiled.elapsed();
-            let component = component.map_err(Failure::Refused)?;
+            let (component, epoch) = component?;
             let seated = Instant::now();
             let name = manifest_name(&component_bytes);
             let prepared = (|| -> Result<Self, Failure> {
-                let mut fresh =
-                    Self::instantiate(module, &component, &shown).map_err(Failure::Refused)?;
+                let mut fresh = Self::instantiate(module, &component, epoch, &shown)
+                    .map_err(Failure::Refused)?;
                 fresh.name = name.clone();
                 fresh.deployed(hash, assets);
                 match &mut against {
@@ -2896,8 +2912,9 @@ impl Guest {
 
     /// The component instantiated and mounted; `shown` names it in errors.
     fn from_bytes(module: &'static str, bytes: &[u8], shown: &str) -> Result<Self, String> {
-        let component = Self::compile(bytes, shown)?;
-        let mut guest = Self::instantiate(module, &component, shown)?;
+        let (component, epoch) =
+            Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
+        let mut guest = Self::instantiate(module, &component, epoch, shown)?;
         guest.name = manifest_name(bytes);
         guest.init(shown)?;
         Ok(guest)
@@ -2905,18 +2922,21 @@ impl Guest {
 
     /// The component's bytes checked and compiled — the cranelift stage of
     /// a load, measured on its own.
-    fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Component>, String> {
+    fn compile(bytes: &[u8], shown: &str) -> Result<(Arc<Component>, Epoch), Failure> {
         if bytes.len() as u64 > MAX_MODULE_BYTES {
-            return Err(format!(
+            return Err(Failure::Refused(format!(
                 "{shown}: past the {MAX_MODULE_BYTES} byte module limit"
-            ));
+            )));
         }
         // its preferred size is for placing a new window; the tab embeds
-        view_wire::manifest::read_manifest(bytes)
-            .ok_or_else(|| format!("{shown}: the component's manifest cannot be read"))?
-            .check_wire_protocol()
-            .map_err(|error| format!("{shown}: {error}"))?;
-        compiled_view(bytes).map_err(|error| format!("{shown}: {error}"))
+        let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
+            Failure::Refused(format!("{shown}: the component's manifest cannot be read"))
+        })?;
+        let epoch = Epoch::of(manifest.wire_epoch)
+            .map_err(|error| Failure::WireEpoch(format!("{shown}: {error}")))?;
+        let component =
+            compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))?;
+        Ok((component, epoch))
     }
 
     /// The component instantiated, its exports bound, nothing run yet: a
@@ -2924,6 +2944,7 @@ impl Guest {
     fn instantiate(
         module: &'static str,
         component: &Component,
+        epoch: Epoch,
         shown: &str,
     ) -> Result<Self, String> {
         let engine = engine();
@@ -2986,6 +3007,7 @@ impl Guest {
             user_activation: None,
             sessions: Default::default(),
             module,
+            epoch,
             name: String::new(),
             store,
             tick,
@@ -3390,14 +3412,14 @@ impl Guest {
     /// A trap ends the view; the widget shows the message in its place.
     fn tick(&mut self) {
         let events = std::mem::take(&mut self.pending);
-        let bytes = wire::encode(&events);
+        let bytes = self.epoch.events(&events);
         arm(&mut self.store);
         let outcome = self
             .tick
             .call(&mut self.store, (bytes,))
             .map(|(frame,)| frame)
             .map_err(|error| first_line(&error))
-            .and_then(|frame| shape(&frame));
+            .and_then(|frame| shape(self.epoch, &frame));
         match outcome {
             Ok((mut frame, mut reports)) => {
                 let inherits = frame.root.is_none();
@@ -3502,11 +3524,14 @@ fn merge(
 
 /// What the host is willing to take from one tick's bytes: nothing in here
 /// is trusted — the length, the counts, the tree.
-fn shape(bytes: &[u8]) -> Result<(wire::Frame, display_diagnostics::FrameReports), String> {
+fn shape(
+    epoch: Epoch,
+    bytes: &[u8],
+) -> Result<(wire::Frame, display_diagnostics::FrameReports), String> {
     if bytes.len() > MAX_FRAME_BYTES {
         return Err("frame too large".to_string());
     }
-    let mut frame: wire::Frame = wire::decode(bytes)?;
+    let mut frame = epoch.frame(bytes)?;
     let requests_exceed_budget = frame.requests.len() > MAX_REQUESTS_PER_TICK;
     let cancels_exceed_budget = frame.cancels.len() > 2 * MAX_REQUESTS_PER_TICK;
     if requests_exceed_budget || cancels_exceed_budget {
@@ -3540,6 +3565,54 @@ fn first_line(error: &wasmtime::Error) -> String {
         .unwrap_or("trap")
         .to_string()
 }
+
+/// The wire epoch a view speaks, from its manifest: every seam where the
+/// host reads what a guest wrote, or writes what a guest reads, goes through
+/// the mounted view's. A view deployed before epoch 10 keeps running on an
+/// app built after it, and an app upgrade never waits on a view rebuild.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Epoch {
+    /// Every view deployed before epoch 10; see `epoch8.rs`.
+    Eight,
+    Ten,
+}
+
+impl Epoch {
+    /// The epoch a manifest names, or the sentence a view speaking any
+    /// other one is refused with.
+    fn of(wire_epoch: u32) -> Result<Epoch, String> {
+        match wire_epoch {
+            view_wire_8::WIRE_EPOCH => Ok(Epoch::Eight),
+            wire::WIRE_EPOCH => Ok(Epoch::Ten),
+            other => Err(format!(
+                "this view speaks wire epoch {other}; this app speaks {} and {}",
+                view_wire_8::WIRE_EPOCH,
+                wire::WIRE_EPOCH
+            )),
+        }
+    }
+
+    /// Guest → host: one tick's frame, as the tree the presenter works on.
+    fn frame(self, bytes: &[u8]) -> Result<wire::Frame, String> {
+        match self {
+            Epoch::Eight => epoch8::frame(bytes),
+            Epoch::Ten => wire::decode(bytes),
+        }
+    }
+
+    /// Host → guest: one tick's events. Everything the host writes for a
+    /// guest — events, answers inside them, widget-command replies — has
+    /// the same layout at 8 and 10 (only `Node` moved), so both epochs take
+    /// the one encoding; `epoch8::tests` holds that to be true.
+    fn events(self, events: &[wire::Event]) -> Vec<u8> {
+        match self {
+            Epoch::Eight | Epoch::Ten => wire::encode(&events),
+        }
+    }
+}
+
+#[path = "module_view/epoch8.rs"]
+mod epoch8;
 
 #[path = "module_view/display_diagnostics.rs"]
 mod display_diagnostics;
@@ -4239,17 +4312,17 @@ pub(crate) mod tests {
         let baseline_time = before.elapsed();
         drop(baseline);
         let before = Instant::now();
-        let cold = Guest::compile(&bytes, "benchmark").unwrap();
+        let (cold, _) = Guest::compile(&bytes, "benchmark").unwrap();
         let cold_time = before.elapsed();
         let before = Instant::now();
-        let warm = Guest::compile(&bytes, "benchmark").unwrap();
+        let (warm, epoch) = Guest::compile(&bytes, "benchmark").unwrap();
         let warm_time = before.elapsed();
         assert!(
             Arc::ptr_eq(&cold, &warm),
             "actual guest code must be reused"
         );
         let before = Instant::now();
-        let mut first = Guest::instantiate("governance", &warm, "benchmark").unwrap();
+        let mut first = Guest::instantiate("governance", &warm, epoch, "benchmark").unwrap();
         first.init("benchmark").unwrap();
         let initialized = before.elapsed();
         let before = Instant::now();
@@ -5217,9 +5290,9 @@ pub(crate) mod tests {
         };
         let _turn = blocking_connection_turn();
         let bytes = std::fs::read(&staged).expect("the staged view");
-        let component = Guest::compile(&bytes, "refusal").expect("the view compiles");
-        let mut guest =
-            Guest::instantiate("governance", &component, "refusal").expect("the view instantiates");
+        let (component, epoch) = Guest::compile(&bytes, "refusal").expect("the view compiles");
+        let mut guest = Guest::instantiate("governance", &component, epoch, "refusal")
+            .expect("the view instantiates");
         // Well-formed, and tagged with a layout that is not this build's:
         // what a snapshot written before the state moved looks like.
         let foreign = wire::Snapshot {
@@ -7021,6 +7094,7 @@ pub(crate) mod tests {
         use wire::WidgetCommand as C;
         let popup = |key: &str, content| wire::Node::Overlay {
             key: key.into(),
+            label: None,
             padding: 0.,
             backdrop: wire::Rgba([0.; 4]),
             align_x: wire::AlignX::Left,
@@ -9156,7 +9230,7 @@ pub(crate) mod tests {
                 .collect(),
             ..Default::default()
         };
-        let (accepted, _) = shape(&wire::encode(&frame)).expect("exact request budget");
+        let (accepted, _) = shape(Epoch::Ten, &wire::encode(&frame)).expect("exact request budget");
         assert_eq!(accepted.requests.len(), MAX_REQUESTS_PER_TICK);
         frame.requests.push(wire::Request {
             id: MAX_REQUESTS_PER_TICK as u64,
@@ -9164,16 +9238,17 @@ pub(crate) mod tests {
             payload: Vec::new(),
         });
         assert_eq!(
-            shape(&wire::encode(&frame)).err().as_deref(),
+            shape(Epoch::Ten, &wire::encode(&frame)).err().as_deref(),
             Some("frame request or cancellation budget exceeded")
         );
         frame.requests.clear();
         frame.cancels = (0..(2 * MAX_REQUESTS_PER_TICK) as u64).collect();
-        let (accepted, _) = shape(&wire::encode(&frame)).expect("exact cancellation budget");
+        let (accepted, _) =
+            shape(Epoch::Ten, &wire::encode(&frame)).expect("exact cancellation budget");
         assert_eq!(accepted.cancels.len(), 2 * MAX_REQUESTS_PER_TICK);
         frame.cancels.push((2 * MAX_REQUESTS_PER_TICK) as u64);
         assert_eq!(
-            shape(&wire::encode(&frame)).err().as_deref(),
+            shape(Epoch::Ten, &wire::encode(&frame)).err().as_deref(),
             Some("frame request or cancellation budget exceeded")
         );
     }

@@ -185,7 +185,7 @@ async fn judge(
         return Some(Refusal::CoreChangesToo);
     }
     let speaks_our_wire = view_wire::manifest::read_manifest(&view.component)
-        .is_some_and(|manifest| manifest.check_wire_protocol().is_ok());
+        .is_some_and(|manifest| super::Epoch::of(manifest.wire_epoch).is_ok());
     if !speaks_our_wire {
         return Some(Refusal::WireProtocol);
     }

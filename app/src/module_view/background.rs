@@ -199,6 +199,7 @@ fn session_source(
 /// draws under that same lock.
 struct SessionCode {
     component: wasmtime::component::Component,
+    epoch: super::Epoch,
     module: &'static str,
     name: String,
     assets: Arc<crate::backend::view_source::Assets>,
@@ -211,6 +212,7 @@ impl SessionCode {
     fn capture(guest: &Guest) -> Self {
         Self {
             component: guest.component.clone(),
+            epoch: guest.epoch,
             module: guest.module,
             name: guest.name.clone(),
             assets: guest.assets.clone(),
@@ -221,7 +223,7 @@ impl SessionCode {
     }
 
     fn instantiate(self) -> Result<(Guest, Arc<()>), String> {
-        let mut guest = Guest::instantiate(self.module, &self.component, self.module)?;
+        let mut guest = Guest::instantiate(self.module, &self.component, self.epoch, self.module)?;
         guest.name = self.name;
         guest.assets = self.assets;
         guest.hash = self.hash;

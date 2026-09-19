@@ -1206,6 +1206,7 @@ mod rich_tests {
         };
         wire::Node::Editor {
             key: "unrelated-product/editor".into(),
+            label: None,
             document: EditorDocumentRef {
                 document: "draft".into(),
                 reset,

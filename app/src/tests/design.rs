@@ -50,6 +50,8 @@ fn a_tree_at_the_wire_depth_cap_renders_on_the_main_thread_stack() {
         .spawn(|| {
             let mut root = wire::Node::Text {
                 key: "leaf".into(),
+                heading: None,
+                live: None,
                 content: "deep".into(),
                 width: None,
                 size: None,
