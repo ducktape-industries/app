@@ -2158,6 +2158,22 @@ pub(crate) mod canary {
         Some(root)
     }
 
+    /// Whether the view is owed answers to reads it made, once every one in
+    /// flight has landed: its next draw takes them.
+    pub(crate) fn wait_for_reads(module: &'static str) -> bool {
+        let replies = match &super::mounted(module)
+            .lock()
+            .expect("module view lock")
+            .slot
+        {
+            super::Slot::Ready(guest) => guest.replies.clone(),
+            _ => return false,
+        };
+        let owed = replies.answer_owed();
+        replies.wait_idle();
+        owed
+    }
+
     pub(crate) static TAPS: Mutex<Vec<mpsc::Sender<String>>> = Mutex::new(Vec::new());
 
     pub(crate) fn tap() -> mpsc::Receiver<String> {
