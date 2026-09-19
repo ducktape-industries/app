@@ -395,6 +395,20 @@
   {
    "say": "press Unlock",
    "settle_ms": 5000,
+   "expect": "the app moves on from the Welcome back step: the account step (Your account) or the workspace shows; no error sentence"
+  },
+  {
+   "kind": "wait",
+   "say": "L5 after unlock the account step or the workspace shows",
+   "wait": {
+    "role": "Button",
+    "name": "Continue without account"
+   },
+   "deadline_ms": 60000
+  },
+  {
+   "say": "continue without an account",
+   "settle_ms": 5000,
    "expect": "the workspace console opens with its rail of tabs, or is opening"
   },
   {
