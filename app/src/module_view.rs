@@ -3639,10 +3639,10 @@ impl Epoch {
         }
     }
 
-    /// Guest → host: the link a view hands `host.open_link`. An epoch-8 chat
-    /// view spells an account mention the way it always did, and that one
-    /// spelling is read for it alone (`epoch8::open_link`) on `chain`, the
-    /// chain the view was handed; an epoch-10 view hands the address.
+    /// Guest → host: the link a view hands `host.open_link`. An epoch-8 view
+    /// mints its links in the old form, and that form is read for it alone
+    /// (`epoch8::open_link`) into the address it names on `chain`, the chain
+    /// the view was handed; an epoch-10 view hands the address.
     fn open_link(self, link: String, chain: &str) -> String {
         match self {
             Epoch::Eight => epoch8::open_link(link, chain),

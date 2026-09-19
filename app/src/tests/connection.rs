@@ -385,6 +385,22 @@ fn a_launch_link_the_app_cannot_open_says_so_in_the_console() {
     }
 }
 
+/// The old form is not read at launch, even where the same string clicked
+/// inside a deployed epoch-8 view opens (`module_view/epoch8.rs`): a launch
+/// link comes from no view.
+#[test]
+fn a_launch_link_in_the_old_form_is_refused_whatever_it_names() {
+    for link in [
+        "duck://page/pg-1",
+        "duck://channel/general#42",
+        "duck://forge/ducks/core/58",
+        "duck://account/7",
+    ] {
+        let app = launched_on(link, true);
+        assert_eq!(app.error, crate::backend::OLD_FORM, "{link}");
+    }
+}
+
 /// And a well-formed one still lands where it points.
 #[test]
 fn a_well_formed_launch_link_still_opens_files() {

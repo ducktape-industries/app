@@ -14,8 +14,13 @@
 //! together with `Epoch::Eight` and the `view-wire-8` dependency.
 use crate::DuckKind;
 use crate::backend::DuckLink;
-use duck_address::ChainId;
+use duck_address::chat::MessageAddress;
+use duck_address::forge::{ForgeLocator, ForgeRepoAddress, ForgeTarget};
 use duck_address::identity::AccountAddress;
+use duck_address::pages::PageAddress;
+use duck_address::runs::RunAddress;
+use duck_address::{Address, ChainId, number};
+use files_wire::FileAddress;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use view_wire as wire;
@@ -281,6 +286,50 @@ fn node(mut node: old::Node) -> Result<wire::Node, String> {
     Ok(mapped)
 }
 
+/// An old-form link split as the app split it before the address move:
+/// `duck://<module>/<path>[@<rev>][?net=<digest>][#<fragment>]`, every path
+/// segment non-empty and neither `.` nor `..`, the query nothing or exactly
+/// `net=` and the chain id's 8-hex half.
+struct OldForm<'a> {
+    module: &'a str,
+    segments: Vec<&'a str>,
+    rev: &'a str,
+    net: &'a str,
+    fragment: &'a str,
+}
+
+fn old_form(link: &str) -> Option<OldForm<'_>> {
+    let rest = link.strip_prefix("duck://")?;
+    let (body, fragment) = rest.split_once('#').unwrap_or((rest, ""));
+    let (address, query) = body.split_once('?').unwrap_or((body, ""));
+    let net = match query {
+        "" => "",
+        query => query.strip_prefix("net=").filter(|net| hex(net, 8))?,
+    };
+    let (path, rev) = address.split_once('@').unwrap_or((address, ""));
+    let (module, path) = path.split_once('/')?;
+    let segments: Vec<&str> = path.split('/').collect();
+    let clean = segments
+        .iter()
+        .all(|segment| !segment.is_empty() && *segment != "." && *segment != "..");
+    clean.then_some(OldForm {
+        module,
+        segments,
+        rev,
+        net,
+        fragment,
+    })
+}
+
+fn hex(text: &str, len: usize) -> bool {
+    text.len() == len && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// A number the old form counted from 1.
+fn positive(segment: &str) -> Option<u64> {
+    number(segment).filter(|number| *number > 0)
+}
+
 /// The `base` an epoch-8 forge view hands `picture.inline`, read exactly as
 /// the app read it before the address move: the one form that view mints,
 /// `duck://forge/<repo>/blob/<path>[@<oid>][?net=<digest>]`, is the repo,
@@ -288,28 +337,15 @@ fn node(mut node: old::Node) -> Result<wire::Node, String> {
 /// else anchors nothing, as before.
 pub(super) fn picture_base(base: &str) -> DuckLink {
     let read = || {
-        let rest = base.strip_prefix("duck://forge/")?;
-        let (body, fragment) = rest.split_once('#').unwrap_or((rest, ""));
-        let (address, query) = body.split_once('?').unwrap_or((body, ""));
-        let hex = |text: &str, len: usize| {
-            text.len() == len && text.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-        };
-        // `?net=` carried the chain id's 8-hex half
-        let net = query.is_empty() || query.strip_prefix("net=").is_some_and(|net| hex(net, 8));
-        let (path, rev) = address.split_once('@').unwrap_or((address, ""));
-        let segments: Vec<&str> = path.split('/').collect();
-        let clean = segments
-            .iter()
-            .all(|segment| !segment.is_empty() && *segment != "." && *segment != "..");
-        let oid = rev.is_empty() || hex(rev, 40);
-        let [repo, "blob", file @ ..] = segments.as_slice() else {
+        let old = old_form(base).filter(|old| old.module == "forge" && old.fragment.is_empty())?;
+        let oid = old.rev.is_empty() || hex(old.rev, 40);
+        let [repo, "blob", file @ ..] = old.segments.as_slice() else {
             return None;
         };
-        let named = net && clean && oid && fragment.is_empty() && !file.is_empty();
-        named.then(|| DuckLink {
+        (oid && !file.is_empty()).then(|| DuckLink {
             repo: (*repo).to_owned(),
             path: file.join("/"),
-            rev: rev.to_owned(),
+            rev: old.rev.to_owned(),
             ..DuckLink::of(DuckKind::ForgeBlob)
         })
     };
@@ -317,21 +353,105 @@ pub(super) fn picture_base(base: &str) -> DuckLink {
 }
 
 /// The link an epoch-8 view hands `host.open_link`, as the open plane reads
-/// it. The epoch-8 chat view spells a mention `duck://account/<n>`, exactly
-/// as chat-wire minted it then, naming no network; it is re-spelled as the
-/// account's address on the chain the view was handed (its `chain` prop), so
-/// it opens the DM it always did. With no chain there is nothing to spell it
-/// on: it goes on as it came and the open plane refuses the old form, as it
-/// does for every other surface. Anything else passes as is.
+/// it. An epoch-8 view mints links in the old form (`page`, `channel`,
+/// `files`, `run`, `forge`, `account`); each is re-spelled as the address it
+/// names on the chain the view was handed (its `chain` prop), and then
+/// opens through the one grammar and its scope check like any address.
+/// What has no address (a flat forge repo name, a file at a forge head, a
+/// malformed link), and every link when the view has no chain, goes on as
+/// it came and the open plane refuses the old form, as it does for every
+/// other surface. An address passes as is.
 pub(super) fn open_link(link: String, chain: &str) -> String {
-    let account = link
-        .strip_prefix("duck://account/")
-        .and_then(|account| account.parse::<u64>().ok())
-        .filter(|account| *account > 0 && link == format!("duck://account/{account}"));
-    let address = account
-        .zip(chain.parse::<ChainId>().ok())
-        .and_then(|(account, chain)| AccountAddress { account }.address(chain).ok());
+    let address = chain
+        .parse::<ChainId>()
+        .ok()
+        .and_then(|chain| address(&link, chain));
     address.map_or(link, |address| address.to_string())
+}
+
+/// The old form's module table, each row as its module's typed address.
+fn address(link: &str, chain: ChainId) -> Option<Address> {
+    let old = old_form(link)?;
+    // `?net=` carried the chain id's hex half and nothing of its label: a
+    // link naming another half is spelled on it under this chain's label, so
+    // the scope check refuses it as another network
+    let chain = match old.net {
+        "" => chain,
+        net => format!("{}#{net}", chain.label).parse().ok()?,
+    };
+    let plain = old.rev.is_empty() && old.fragment.is_empty();
+    let address = match (old.module, old.segments.as_slice()) {
+        ("page", [page]) if old.rev.is_empty() => PageAddress {
+            page: (*page).to_owned(),
+            block: (!old.fragment.is_empty()).then(|| old.fragment.to_owned()),
+        }
+        .address(chain),
+        ("channel", [channel]) if old.rev.is_empty() => MessageAddress {
+            channel: (*channel).to_owned(),
+            seq: match old.fragment {
+                "" => None,
+                seq => Some(positive(seq)?),
+            },
+        }
+        .address(chain),
+        // the one files path the old form named
+        ("files", ["shared", "attachments", _, _]) if plain => FileAddress {
+            path: old
+                .segments
+                .iter()
+                .map(|segment| (*segment).to_owned())
+                .collect(),
+        }
+        .address(chain),
+        ("run", [digest]) if plain && hex(digest, 64) => RunAddress {
+            digest: (*digest).to_owned(),
+        }
+        .address(chain),
+        ("account", [account]) if plain => AccountAddress {
+            account: positive(account)?,
+        }
+        .address(chain),
+        ("forge", segments) => return forge(segments, old.rev, old.fragment, chain),
+        _ => return None,
+    };
+    address.ok()
+}
+
+/// An old forge tail, `<repo>`, `<repo>/<n>[#<seq>]` or
+/// `<repo>/blob/<path>@<rev>`, whose repo is named `<owner>/<repo>`. What
+/// the old form read as a flat name has no address, and neither has a file
+/// at the head (no `@<rev>`): the address names a commit.
+fn forge(segments: &[&str], rev: &str, fragment: &str, chain: ChainId) -> Option<Address> {
+    let flat = match segments {
+        [_] | [_, "blob", _, ..] => true,
+        [_, item] => positive(item).is_some(),
+        _ => false,
+    };
+    let [owner, repo, target @ ..] = segments else {
+        return None;
+    };
+    let repo = ForgeRepoAddress::from_name(&format!("{owner}/{repo}"))
+        .ok()
+        .filter(|_| !flat)?;
+    let target = match target {
+        [] if rev.is_empty() && fragment.is_empty() => return repo.address(chain).ok(),
+        [number] if rev.is_empty() => {
+            let number = positive(number)?;
+            match fragment {
+                "" => ForgeTarget::Item { number },
+                seq => ForgeTarget::Comment {
+                    number,
+                    seq: positive(seq)?,
+                },
+            }
+        }
+        ["blob", path @ ..] if fragment.is_empty() => ForgeTarget::Blob {
+            rev: rev.to_owned(),
+            path: path.iter().map(|segment| (*segment).to_owned()).collect(),
+        },
+        _ => return None,
+    };
+    ForgeLocator { repo, target }.address(chain).ok()
 }
 
 #[cfg(test)]
@@ -710,5 +830,128 @@ mod tests {
         }
         let address = "duck://dognet-b5b6ea90/chat/general";
         assert_eq!(Epoch::Eight.open_link(address.into(), HERE), address);
+    }
+
+    /// EVERY OLD FORM AN EPOCH-8 VIEW MINTS, READ AT ONE DOOR. Handed to
+    /// `host.open_link` by an epoch-8 view, each opens exactly what its
+    /// address opens; the same string from an epoch-10 view, pasted or
+    /// launched (both reach the open plane as they came) is refused with the
+    /// old-form sentence.
+    #[test]
+    fn an_old_form_link_from_an_epoch_8_view_opens_what_its_address_opens() {
+        use crate::backend::{OLD_FORM, resolve_duck_link};
+        const HERE: &str = "dognet#b5b6ea90";
+        const AT: &str = "duck://dognet-b5b6ea90";
+        let net = "?net=b5b6ea90";
+        let dispatch = "ab".repeat(32);
+        let rev = "1".repeat(40);
+        for (old, new) in [
+            ("duck://page/pg-1".to_owned(), format!("{AT}/pages/pg-1")),
+            (
+                format!("duck://page/pg-1{net}#blk-7"),
+                format!("{AT}/pages/pg-1/block/blk-7"),
+            ),
+            (
+                "duck://channel/general".into(),
+                format!("{AT}/chat/general"),
+            ),
+            (
+                format!("duck://channel/general{net}#42"),
+                format!("{AT}/chat/general/42"),
+            ),
+            (
+                "duck://files/shared/attachments/u1/보고서.pdf".into(),
+                format!("{AT}/files/shared/attachments/u1/%EB%B3%B4%EA%B3%A0%EC%84%9C.pdf"),
+            ),
+            (
+                format!("duck://run/{dispatch}{net}"),
+                format!("{AT}/runs/{dispatch}"),
+            ),
+            (
+                "duck://forge/ducks/core".into(),
+                format!("{AT}/forge/ducks/core"),
+            ),
+            (
+                format!("duck://forge/ducks/core/58{net}"),
+                format!("{AT}/forge/ducks/core/58"),
+            ),
+            (
+                "duck://forge/ducks/core/58#12".into(),
+                format!("{AT}/forge/ducks/core/58/comment/12"),
+            ),
+            (
+                format!("duck://forge/ducks/core/blob/docs/logo.png@{rev}{net}"),
+                format!("{AT}/forge/ducks/core/blob/{rev}/docs/logo.png"),
+            ),
+            ("duck://account/7".into(), format!("{AT}/identity/7")),
+        ] {
+            let address = resolve_duck_link(new, HERE.into());
+            assert!(
+                !matches!(address.kind, DuckKind::Unknown),
+                "{old}: {}",
+                address.refusal
+            );
+            let eight = resolve_duck_link(Epoch::Eight.open_link(old.clone(), HERE), HERE.into());
+            assert_eq!(eight, address, "{old}");
+            let ten = resolve_duck_link(Epoch::Ten.open_link(old.clone(), HERE), HERE.into());
+            let pasted = resolve_duck_link(old.clone(), HERE.into());
+            for refused in [ten, pasted] {
+                assert_eq!(
+                    (refused.kind, refused.refusal.as_str()),
+                    (DuckKind::Unknown, OLD_FORM),
+                    "{old}"
+                );
+            }
+        }
+    }
+
+    /// What the translation does not open: a `?net=` naming another network
+    /// is refused as that network; what has no address, and every old form
+    /// from a view with no chain, gets the old-form sentence.
+    #[test]
+    fn an_old_form_link_that_names_nothing_here_is_refused() {
+        use crate::backend::{OLD_FORM, foreign_network_error, resolve_duck_link};
+        const HERE: &str = "dognet#b5b6ea90";
+        let opened = |link: &str, chain: &str| {
+            resolve_duck_link(Epoch::Eight.open_link(link.into(), chain), HERE.into())
+        };
+        let theirs = opened("duck://forge/ducks/core/58?net=aaaaaaaa", HERE);
+        assert_eq!(theirs.kind, DuckKind::ForeignNetwork);
+        assert_eq!(
+            foreign_network_error(&theirs, HERE.into()),
+            "this link belongs to network dognet#aaaaaaaa — this app is on dognet#b5b6ea90"
+        );
+        let rev = "1".repeat(40);
+        for untranslatable in [
+            // a flat repo name has no address
+            "duck://forge/core".to_owned(),
+            "duck://forge/core/58".into(),
+            "duck://forge/core/58#12".into(),
+            format!("duck://forge/core/blob/README.md@{rev}"),
+            // a file at the head names no commit
+            "duck://forge/ducks/core/blob/README.md".into(),
+            "duck://forge/ducks/core/blob/README.md@main".into(),
+            "duck://forge/ducks/core/58#x".into(),
+            "duck://page/pg-1@v2".into(),
+            "duck://page/pg-1?net=nope".into(),
+            "duck://channel/general#0".into(),
+            "duck://files/etc/passwd".into(),
+            "duck://files/shared/attachments/../x".into(),
+            "duck://run/abc".into(),
+            "duck://team.duck/index.html".into(),
+            "duck://".into(),
+        ] {
+            let refused = opened(&untranslatable, HERE);
+            assert_eq!(
+                (refused.kind, refused.refusal.as_str()),
+                (DuckKind::Unknown, OLD_FORM),
+                "{untranslatable}"
+            );
+        }
+        let chainless = opened("duck://page/pg-1", "");
+        assert_eq!(
+            (chainless.kind, chainless.refusal.as_str()),
+            (DuckKind::Unknown, OLD_FORM)
+        );
     }
 }
