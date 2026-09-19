@@ -1791,8 +1791,9 @@ pub(crate) fn ships_no_view(module: &str) -> bool {
 
 /// Retry, as a failed or stopped tab offers it: the seat's view is asked for
 /// again now, under a new generation, past any hold-off a block's retries
-/// left. A failure goes back to loading, and a stopped view gives up its
-/// seat, so what lands is a fresh instance rather than a swap against it.
+/// left. A failure goes back to loading, and a stopped view — or one left on
+/// a request the node never answered ([`Guest::left_unanswered`]) — gives up
+/// its seat, so what lands is a fresh instance rather than a swap against it.
 pub(crate) fn retry(module: &'static str) -> Loads {
     let registry = registry().lock().expect("module views");
     let Some(seat) = registry.get(module) else {
@@ -1800,7 +1801,10 @@ pub(crate) fn retry(module: &'static str) -> Loads {
     };
     let snapshot = connection().lock().expect("views rpc").clone();
     let mut locked = seat.lock().expect("module view lock");
-    let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
+    let stopped = matches!(
+        &locked.slot,
+        Slot::Ready(guest) if guest.fault.is_some() || guest.left_unanswered()
+    );
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
         locked.slot = Slot::Loading;
         locked.hash = None;
@@ -2479,6 +2483,13 @@ impl Drop for Guest {
 
 impl Guest {
     /// Reusing identical code still retires work started on the old connection.
+    /// The view's last node request spent its retry budget and it holds no
+    /// `rpc.live` subscription: nothing it has will make it ask again once
+    /// the node answers ([`kernel::live_resumed`]).
+    fn left_unanswered(&self) -> bool {
+        self.live_subscriptions.is_empty() && self.replies.left_unanswered()
+    }
+
     fn reconnect(&mut self, revision: u64) {
         if self.connection_rev == revision {
             return;

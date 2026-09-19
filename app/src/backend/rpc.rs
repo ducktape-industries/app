@@ -107,9 +107,7 @@ pub(crate) async fn seated_write(
 pub(crate) async fn seated_data_plane_signer(
     rpc: &RpcClient,
 ) -> Result<ducktape_rpc::WriteAuth, view_wire::Refusal> {
-    let status = rpc.status().await.map_err(refused)?;
-    let node_key = hex_decode(&status.public_key)
-        .map_err(|error| view_wire::Refusal::new("malformed_reply", error))?;
+    let node_key = node_public_key(rpc).await?;
     let key = {
         let session = SIGNER.lock().await;
         let Some(signer) = session.as_ref() else {
@@ -457,12 +455,10 @@ pub(crate) async fn seated_gateway_proof(
 /// This node's own public key — the bytes a data-plane signature is bound to, so
 /// a proof minted for one node cannot be replayed at another. Read off the
 /// node's own `status`, which is where every other signing caller reads it.
-pub(crate) async fn node_public_key(rpc: &str) -> Result<Vec<u8>, String> {
-    let status = crate::backend::rpc_client(rpc)?
-        .status()
-        .await
-        .map_err(|error| error.to_string())?;
-    crate::backend::hex_decode(&status.public_key)
+pub(crate) async fn node_public_key(rpc: &RpcClient) -> Result<Vec<u8>, view_wire::Refusal> {
+    let status = rpc.status().await.map_err(refused)?;
+    hex_decode(&status.public_key)
+        .map_err(|error| view_wire::Refusal::new("malformed_reply", error))
 }
 
 /// The session seat, when `password` is the one it was taken with. The lock
