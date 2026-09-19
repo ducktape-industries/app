@@ -440,6 +440,137 @@ fn return_in_the_invitation_field_submits_it_as_join_network_does() {
     assert_eq!(by_key, submitted(false));
 }
 
+/// A node no workspace serves: a wallet form sent to it is refused before any
+/// key is written.
+const UNSERVED: &str = "http://127.0.0.1:9";
+
+/// How a walked wallet form ends: Return in its last field, a press on the
+/// named button, or neither.
+enum Last<'a> {
+    Return,
+    Press(&'a str),
+    Neither,
+}
+
+/// A wallet form of more than one field (#144), each field typed in by name
+/// and left by Return, which must hand focus to the next field. The tree once
+/// `last` ends it.
+fn walk_a_wallet_form(app: Ducktape, fields: &[(&str, &str)], last: Last) -> String {
+    let (mut cx, window) = open(app, crate::shell::WindowKind::Onboarding);
+    for (at, (name, text)) in fields.iter().enumerate() {
+        let nodes = read(&mut cx, window, "onboarding");
+        let field = nodes
+            .iter()
+            .find(|node| node.name == *name)
+            .unwrap_or_else(|| panic!("{name}: {}", json(&nodes)))
+            .id
+            .clone();
+        let typed = cx
+            .update_window(window, |_, window, cx| {
+                ax_door::perform_by_id("onboarding", window, cx, &field, "type", text)
+            })
+            .unwrap();
+        assert!(typed, "{name} is showing");
+        cx.run_until_parked();
+        draw(&mut cx, window);
+        let Some((next, _)) = fields.get(at + 1) else {
+            break;
+        };
+        keys(&mut cx, window, "enter", "");
+        let nodes = read(&mut cx, window, "onboarding");
+        assert_eq!(
+            focused(&nodes).map(|node| node.name.as_str()),
+            Some(*next),
+            "Return in {name}: {}",
+            json(&nodes)
+        );
+    }
+    match last {
+        Last::Return => keys(&mut cx, window, "enter", ""),
+        Last::Press(button) => {
+            let nodes = read(&mut cx, window, "onboarding");
+            let id = nodes
+                .iter()
+                .find(|node| node.name == button)
+                .unwrap_or_else(|| panic!("{button}: {}", json(&nodes)))
+                .id
+                .clone();
+            let pressed = cx
+                .update_window(window, |_, window, cx| {
+                    ax_door::perform_by_id("onboarding", window, cx, &id, "press", "")
+                })
+                .unwrap();
+            assert!(pressed, "{button} is showing");
+            cx.run_until_parked();
+            draw(&mut cx, window);
+        }
+        Last::Neither => {}
+    }
+    json(&read(&mut cx, window, "onboarding"))
+}
+
+/// "Protect your wallet": Return in Password moves to Confirm password, and
+/// Return there creates the wallet as Create wallet does — and does nothing
+/// while the two differ and Create wallet is disabled.
+#[test]
+fn return_walks_protect_your_wallet_and_submits_it_as_create_wallet_does() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let app = || {
+        let mut app = Ducktape::initial_state();
+        app.hub_step = HubStep::Password;
+        app.rpc = UNSERVED.into();
+        app
+    };
+    let matched = [
+        ("Password", "correct-horse"),
+        ("Confirm password", "correct-horse"),
+    ];
+    let by_key = walk_a_wallet_form(app(), &matched, Last::Return);
+    assert!(by_key.contains("has not answered"), "submitted: {by_key}");
+    let by_press = walk_a_wallet_form(app(), &matched, Last::Press("Create wallet"));
+    assert_eq!(by_key, by_press);
+    let mismatched = [
+        ("Password", "correct-horse"),
+        ("Confirm password", "correct-hors"),
+    ];
+    assert_eq!(
+        walk_a_wallet_form(app(), &mismatched, Last::Return),
+        walk_a_wallet_form(app(), &mismatched, Last::Neither),
+        "Return past a disabled Create wallet"
+    );
+}
+
+/// "Restore your wallet": Return walks Wallet name → Recovery phrase → New
+/// password, and there restores as Restore does — and does nothing while a
+/// restore is already under way and Restore is disabled.
+#[test]
+fn return_walks_restore_your_wallet_and_submits_it_as_restore_does() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let app = |busy: bool| {
+        let mut app = Ducktape::initial_state();
+        app.hub_step = HubStep::Restore;
+        app.rpc = UNSERVED.into();
+        if busy {
+            app.mutation_phase = MutationPhase::Onboarding;
+        }
+        app
+    };
+    let fields = [
+        ("Wallet name", "restored"),
+        ("Recovery phrase", "not a phrase"),
+        ("New password", "correct-horse"),
+    ];
+    let by_key = walk_a_wallet_form(app(false), &fields, Last::Return);
+    assert!(by_key.contains("has not answered"), "submitted: {by_key}");
+    let by_press = walk_a_wallet_form(app(false), &fields, Last::Press("Restore"));
+    assert_eq!(by_key, by_press);
+    assert_eq!(
+        walk_a_wallet_form(app(true), &fields, Last::Return),
+        walk_a_wallet_form(app(true), &fields, Last::Neither),
+        "Return past a disabled Restore"
+    );
+}
+
 /// A node's description is served — why a control is disabled, a field's
 /// placeholder — as a screen reader reads it after the name.
 #[test]

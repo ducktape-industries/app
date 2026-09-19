@@ -503,7 +503,8 @@ pub(crate) enum AppMessage {
     UnlockSubmit(String),
     KeyUnlocked(String),
     LoginSkip,
-    PasswordSubmit(String),
+    /// the password and its confirmation
+    PasswordSubmit(String, String),
     DeviceKeyCreated(String),
     PhraseWrittenDown,
     ShowPhraseAgain,
