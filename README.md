@@ -9,12 +9,13 @@ and how to build and sign a macOS release bundle.
 
 ## Repo DAG
 
-Ducktape is split into five repositories under the `ducktape-industries`
-organization:
+Ducktape is split into six repositories under the `ducktape-industries`
+organization (ducktape-qa is private):
 
 ```
 ducktape-sdk  <-- ducktape            (the node: kernel, consensus modules, services)
 ducktape-sdk  <-- ducktape-app        (this repo: the desktop shell)
+ducktape-app  <-- ducktape-qa         (private: the Jev walk runner + acceptance scenarios; pinned here by ops/qa/RUNNER_REV)
 ducktape-sdk  <-- ducktape-modules    (consensus module crates + their wasm components)
 ducktape-sdk  <-- ducktape-views      (module-owned wasm views the app loads at runtime)
 ```
