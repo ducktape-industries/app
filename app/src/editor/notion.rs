@@ -137,7 +137,8 @@ impl BlockSpec for DocumentPage {
 const PICTURE_HEIGHT: Pixels = px(480.);
 
 /// The document's image block: gpui-notion's, with the one change that a
-/// `duck://files/…` address draws from the host picture store. A picture in a
+/// files address (`duck://<chain>/files/…`, or the older `duck://files/…`)
+/// draws from the host picture store. A picture in a
 /// page is a file on the network, not on the writer's disk — the guest puts
 /// it there and then asks `picture.load` for every address its page names, so
 /// what this draws is already decoded.
@@ -190,7 +191,7 @@ impl BlockSpec for DocumentImage {
         };
         // Until the guest's `picture.load` lands, the block holds its place
         // rather than collapsing the text around it.
-        let Some(picture) = crate::backend::stored_picture(crate::backend::PAGES_SURFACE, path)
+        let Some(picture) = crate::backend::stored_picture(crate::backend::PAGES_SURFACE, &path)
         else {
             return Some(plate(ctx, cx, "Loading the picture…").into_any_element());
         };
@@ -234,10 +235,17 @@ fn plate(ctx: &BlockContext, cx: &App, say: &'static str) -> impl IntoElement {
 
 /// The duckfs path behind a picture's address, or `None` when the address is
 /// not one of ours — a picture off the web, or a path on somebody's disk.
-fn duckfs_path(src: &str) -> Option<&str> {
+/// A page is stored content, so both spellings of a files address draw: the
+/// `duck://<chain>/files/<path…>` a page writes now, and the
+/// `duck://files/<path>` its older pictures carry, forever.
+fn duckfs_path(src: &str) -> Option<String> {
+    let link = crate::backend::classify_duck_link(src.to_owned());
+    if link.kind == crate::DuckKind::Files {
+        return Some(link.path);
+    }
     let path = src.strip_prefix("duck://files")?;
-    let plain = !path.is_empty() && !path.contains(['?', '#']);
-    plain.then_some(path)
+    let plain = path.starts_with('/') && !path.contains(['?', '#']);
+    plain.then(|| path.to_owned())
 }
 
 /// The badge's height: one marker slot.
@@ -1011,6 +1019,42 @@ fn restore_cursor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A page picture draws from the store under its duckfs path by either
+    /// spelling of its files address; nothing else is a stored picture.
+    #[test]
+    fn a_page_picture_is_found_by_either_spelling_of_its_files_address() {
+        let path = Some("/shared/attachments/u1/duck.png".to_owned());
+        assert_eq!(
+            duckfs_path("duck://files/shared/attachments/u1/duck.png"),
+            path
+        );
+        assert_eq!(
+            duckfs_path("duck://dognet-b5b6ea90/files/shared/attachments/u1/duck.png"),
+            path
+        );
+        assert_eq!(
+            duckfs_path(
+                "duck://dognet-b5b6ea90/files/shared/attachments/u1/%EC%98%A4%EB%A6%AC.png"
+            )
+            .as_deref(),
+            Some("/shared/attachments/u1/오리.png")
+        );
+        assert_eq!(
+            duckfs_path("duck://files-b5b6ea90/files/shared/a.png").as_deref(),
+            Some("/shared/a.png")
+        );
+        for other in [
+            "https://example.com/duck.png",
+            "/home/me/duck.png",
+            "duck://files/shared/duck.png?v=2",
+            "duck://files",
+            "duck://dognet-b5b6ea90/pages/pg-1",
+            "duck://dognet-b5b6ea90/files/shared/../etc",
+        ] {
+            assert_eq!(duckfs_path(other), None, "{other}");
+        }
+    }
 
     #[gpui_kit::test]
     fn rich_application_menu_returns_opaque_choice_through_the_document_queue(

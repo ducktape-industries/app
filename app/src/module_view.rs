@@ -3609,6 +3609,12 @@ impl Epoch {
     /// epoch: the files `route` is the full `duck://<chain>/files/…` address
     /// the app holds, and an epoch-8 files view is handed the bare duckfs path
     /// it names, as it always was.
+    ///
+    /// The forge `link` is NOT re-spelled for an epoch-8 view. It only ever
+    /// holds an address the open plane routed, which names `<owner>/<repo>`,
+    /// and the epoch-8 forge view takes everything before the first `/` as
+    /// the repo: the old spelling would land it on repo `<owner>`. Handed the
+    /// new address, it lands nowhere.
     fn props(self, module: &str, props: Vec<u8>) -> Vec<u8> {
         if self == Epoch::Ten || module != "files" {
             return props;
@@ -3619,6 +3625,18 @@ impl Epoch {
         let route = value["route"].as_str().unwrap_or_default().to_owned();
         value["route"] = crate::backend::classify_duck_link(route).path.into();
         serde_json::to_vec(&value).unwrap_or(props)
+    }
+
+    /// Guest → host: the document a `picture.inline` names, which its
+    /// relative pictures resolve against. An epoch-8 forge view spells it
+    /// `duck://forge/<repo>/blob/<path>@<rev>[?net=…]` and it is read as it
+    /// always was (`epoch8::picture_base`); an epoch-10 view hands the
+    /// address.
+    fn picture_base(self, base: String, net: String) -> crate::backend::DuckLink {
+        match self {
+            Epoch::Eight => epoch8::picture_base(&base),
+            Epoch::Ten => crate::backend::resolve_duck_link(base, net),
+        }
     }
 
     /// Host → guest: one tick's events. Everything the host writes for a

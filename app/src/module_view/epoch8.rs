@@ -12,6 +12,8 @@
 //!
 //! Deleted the wave after epoch-10 views are deployed on every network,
 //! together with `Epoch::Eight` and the `view-wire-8` dependency.
+use crate::DuckKind;
+use crate::backend::DuckLink;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use view_wire as wire;
@@ -277,6 +279,41 @@ fn node(mut node: old::Node) -> Result<wire::Node, String> {
     Ok(mapped)
 }
 
+/// The `base` an epoch-8 forge view hands `picture.inline`, read exactly as
+/// the app read it before the address move: the one form that view mints,
+/// `duck://forge/<repo>/blob/<path>[@<oid>][?net=<digest>]`, is the repo,
+/// file and commit a README's relative pictures resolve against. Anything
+/// else anchors nothing, as before.
+pub(super) fn picture_base(base: &str) -> DuckLink {
+    let read = || {
+        let rest = base.strip_prefix("duck://forge/")?;
+        let (body, fragment) = rest.split_once('#').unwrap_or((rest, ""));
+        let (address, query) = body.split_once('?').unwrap_or((body, ""));
+        let net = query.is_empty()
+            || query
+                .strip_prefix("net=")
+                .is_some_and(::chat::client::is_chain_digest);
+        let (path, rev) = address.split_once('@').unwrap_or((address, ""));
+        let segments: Vec<&str> = path.split('/').collect();
+        let clean = segments
+            .iter()
+            .all(|segment| !segment.is_empty() && *segment != "." && *segment != "..");
+        let oid = rev.is_empty()
+            || (rev.len() == 40 && rev.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')));
+        let [repo, "blob", file @ ..] = segments.as_slice() else {
+            return None;
+        };
+        let named = net && clean && oid && fragment.is_empty() && !file.is_empty();
+        named.then(|| DuckLink {
+            repo: (*repo).to_owned(),
+            path: file.join("/"),
+            rev: rev.to_owned(),
+            ..DuckLink::of(DuckKind::ForgeBlob)
+        })
+    };
+    read().unwrap_or_else(|| DuckLink::of(DuckKind::Unknown))
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{Epoch, Failure, Guest, shape};
@@ -537,6 +574,66 @@ mod tests {
             )
         );
         assert_eq!(failure.title(), "This view speaks a wire this app does not");
+    }
+
+    /// `picture.inline`'s base, per epoch: an epoch-8 forge view's spelling
+    /// anchors the README as it always did, so a relative picture is read at
+    /// the README's own commit beside it; an epoch-10 view's address anchors
+    /// the same. Neither epoch reads the other's spelling.
+    #[test]
+    fn an_epoch_8_readme_anchors_its_relative_pictures_as_before() {
+        use crate::backend::resolve_repo_path;
+        let rev = "0123456789abcdef0123456789abcdef01234567";
+        let anchored = |link: DuckLink| {
+            let picture = resolve_repo_path(&link.path, "img/duck.png");
+            (link.kind, link.repo, link.rev, picture)
+        };
+        let old = format!("duck://forge/core/blob/docs/README.md@{rev}?net=b5b6ea90");
+        let eight = Epoch::Eight.picture_base(old.clone(), String::new());
+        assert_eq!(
+            anchored(eight),
+            (
+                DuckKind::ForgeBlob,
+                "core".into(),
+                rev.into(),
+                Some("docs/img/duck.png".into())
+            )
+        );
+        let unpinned =
+            Epoch::Eight.picture_base("duck://forge/core/blob/README.md".into(), "".into());
+        assert_eq!(
+            (unpinned.repo.as_str(), unpinned.rev.as_str()),
+            ("core", "")
+        );
+        for refused in [
+            "duck://forge/core/blob/README.md@main",
+            "duck://forge/core/blob/README.md?net=nope",
+            "duck://forge/core/blob/../README.md",
+            "duck://forge/core/7",
+        ] {
+            let link = Epoch::Eight.picture_base(refused.into(), "".into());
+            assert_eq!(
+                (link.kind, link.repo.as_str()),
+                (DuckKind::Unknown, ""),
+                "{refused}"
+            );
+        }
+
+        let new = format!("duck://dognet-b5b6ea90/forge/ducks/core/blob/{rev}/docs/README.md");
+        let ten = Epoch::Ten.picture_base(new.clone(), "dognet#b5b6ea90".into());
+        assert_eq!(
+            anchored(ten),
+            (
+                DuckKind::ForgeBlob,
+                "ducks/core".into(),
+                rev.into(),
+                Some("docs/img/duck.png".into())
+            )
+        );
+        let old_at_ten = Epoch::Ten.picture_base(old, "dognet#b5b6ea90".into());
+        assert_eq!(old_at_ten.repo, "");
+        let new_at_eight = Epoch::Eight.picture_base(new, "".into());
+        assert_eq!(new_at_eight.repo, "");
     }
 
     /// The files route, per epoch: the app holds the full address; an
