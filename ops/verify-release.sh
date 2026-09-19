@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Stage the release twice, each into a fresh target dir, and compare the
+# Stage the release twice into one cleaned target dir, and compare the
 # binaries' sha256: a GO needs both stagings byte-identical. The build box
 # has flipped bits before, so one build proves nothing and two equal ones
 # bind the sha. The first staging is left in <out-dir>.
 #   ops/verify-release.sh [--work <dir>] <out-dir>
-# --work holds the two target dirs and the second staging (~20 GB each); by
+# --work holds the shared target dir and the second staging (~20 GB each); by
 # default a fresh dir under target/, removed when the builds agree.
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+cargo=${CARGO:-cargo}
 usage() { echo "usage: ops/verify-release.sh [--work <dir>] <out-dir>" >&2; exit 2; }
 work= out=
 while (($#)); do
@@ -25,8 +26,15 @@ if [[ -z $work ]]; then
   own_work=1
 fi
 mkdir -p "$work"
-CARGO_TARGET_DIR="$work/target-1" "$repo/ops/stage-release.sh" "$out"
-CARGO_TARGET_DIR="$work/target-2" "$repo/ops/stage-release.sh" "$work/stage-2"
+work=$(cd "$work" && pwd -P)
+target="$work/target"
+export RUSTC_WRAPPER= CARGO_INCREMENTAL=0
+CARGO_TARGET_DIR="$target" "$repo/ops/stage-release.sh" "$out"
+(
+  cd "$repo"
+  CARGO_TARGET_DIR="$target" "$cargo" clean --target-dir "$target"
+)
+CARGO_TARGET_DIR="$target" "$repo/ops/stage-release.sh" "$work/stage-2"
 status=0
 for bin in ducktape-launcher ducktape-app; do
   first=$(sha256sum <"$out/$bin") second=$(sha256sum <"$work/stage-2/$bin")

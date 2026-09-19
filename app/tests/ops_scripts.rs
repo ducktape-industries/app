@@ -93,9 +93,9 @@ fn every_ops_script_parses() {
     }
 }
 
-/// `ops/verify-release.sh` fails naming the binary two stagings disagree on,
-/// and passes when they agree. The stand-in cargo builds an app whose bytes
-/// follow its target dir (the drift #130 found) unless `APP_BYTES` pins them.
+/// `ops/verify-release.sh` uses one cleaned target dir with reproducibility
+/// settings for both builds, fails naming a binary that truly differs, and
+/// passes when both builds produce identical bytes.
 #[test]
 fn verify_release_names_the_binary_two_builds_disagree_on() {
     let dir = tempfile::tempdir().unwrap();
@@ -103,21 +103,38 @@ fn verify_release_names_the_binary_two_builds_disagree_on() {
     std::fs::write(
         &cargo,
         r#"#!/bin/sh
+printf '%s|%s|%s|%s\n' "$1" "$CARGO_TARGET_DIR" "${RUSTC_WRAPPER-unset}" "${CARGO_INCREMENTAL-unset}" >>"$FAKE_CARGO_LOG"
 case $1 in
 metadata) printf '{"target_directory": "%s"}\n' "$CARGO_TARGET_DIR" ;;
+clean)
+  [ "$2" = --target-dir ] && [ "$3" = "$FAKE_TARGET" ] || exit 2
+  ;;
 build)
+  [ "${RUSTC_WRAPPER-}" = "" ] || exit 3
+  [ "${CARGO_INCREMENTAL-}" = 0 ] || exit 4
   mkdir -p "$CARGO_TARGET_DIR/release"
   echo launcher >"$CARGO_TARGET_DIR/release/ducktape-launcher"
-  echo "${APP_BYTES:-$CARGO_TARGET_DIR}" >"$CARGO_TARGET_DIR/release/ducktape-app" ;;
+  builds=$(awk -F'|' '$1 == "build" { n++ } END { print n + 0 }' "$FAKE_CARGO_LOG")
+  if [ "${APP_BYTES:-}" = drift ]; then
+    echo "app-$builds" >"$CARGO_TARGET_DIR/release/ducktape-app"
+  else
+    echo "${APP_BYTES:-app}" >"$CARGO_TARGET_DIR/release/ducktape-app"
+  fi ;;
 esac
 "#,
     )
     .unwrap();
     std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
     let verify = |name: &str, app_bytes: &str| {
+        let target = dir.path().join(name).join("work/target");
+        let log = dir.path().join(name).join("cargo.log");
         Command::new(root().join("ops/verify-release.sh"))
             .env("CARGO", &cargo)
+            .env("CARGO_INCREMENTAL", "1")
+            .env("RUSTC_WRAPPER", "caller-wrapper")
             .env("APP_BYTES", app_bytes)
+            .env("FAKE_CARGO_LOG", &log)
+            .env("FAKE_TARGET", &target)
             .arg("--work")
             .arg(dir.path().join(name).join("work"))
             .arg(dir.path().join(name).join("out"))
@@ -125,7 +142,7 @@ esac
             .unwrap()
     };
 
-    let drifting = verify("drifting", "");
+    let drifting = verify("drifting", "drift");
     let stderr = String::from_utf8_lossy(&drifting.stderr);
     assert_eq!(drifting.status.code(), Some(1), "{stderr}");
     assert!(stderr.contains("ducktape-app differs"), "{stderr}");
@@ -138,4 +155,28 @@ esac
         String::from_utf8_lossy(&steady.stderr)
     );
     assert!(dir.path().join("steady/out/ducktape-app").is_file());
+
+    for name in ["drifting", "steady"] {
+        let target = dir.path().join(name).join("work/target");
+        let log = std::fs::read_to_string(dir.path().join(name).join("cargo.log")).unwrap();
+        let calls: Vec<Vec<&str>> = log.lines().map(|line| line.split('|').collect()).collect();
+        assert_eq!(calls.len(), 5, "{name}: {log}");
+        assert_eq!(
+            calls.iter().map(|call| call[0]).collect::<Vec<_>>(),
+            ["metadata", "build", "clean", "metadata", "build"]
+        );
+        assert!(
+            calls.iter().all(|call| call[1] == target.to_str().unwrap()),
+            "{name}: {log}"
+        );
+        assert!(calls.iter().all(|call| call[2].is_empty()), "{name}: {log}");
+        assert!(calls.iter().all(|call| call[3] == "0"), "{name}: {log}");
+        assert!(dir.path().join(name).join("out/ducktape-app").is_file());
+        assert!(
+            dir.path()
+                .join(name)
+                .join("work/stage-2/ducktape-app")
+                .is_file()
+        );
+    }
 }
