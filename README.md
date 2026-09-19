@@ -50,7 +50,7 @@ Before a merge to `dev`:
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets -- -D warnings`
 - `cargo test --workspace`, with `DUCKTAPE_VIEWS_DIR` at the staged views and `DUCKTAPE_MODULES_DIR` at the pinned core's sim-modules set
-- `cargo test ax_contract`: every screen's accessibility tree, read headless (#114). `ax_contract_native` must pass; `ax_contract_views` (every staged view) runs with `-- --ignored` until wire epoch 9 gives editors a label.
+- `cargo test ax_contract`: every screen's accessibility tree, read headless (#114). `ax_contract_native` and `ax_contract_views` (every view in `DUCKTAPE_VIEWS_DIR`: the deployed set, wire epoch 10, with no exemption) must pass.
 - `ops/qa/run.sh --check`: every suite scenario (`ops/qa/scenarios/suite/*.json`) loads through the QA runner at the pinned `ops/qa/RUNNER_REV`. The runner's own unit tests run in ducktape-qa.
 
 ## Test door (`ax`)

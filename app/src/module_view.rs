@@ -2140,16 +2140,6 @@ pub(crate) mod canary {
             .input_presentation(key, window, cx)
     }
 
-    /// The wire epoch `module`'s mounted view speaks.
-    pub(crate) fn epoch(module: &'static str) -> Option<super::Epoch> {
-        let mounted = super::mounted(module);
-        let mounted = mounted.lock().expect("module view lock");
-        match &mounted.slot {
-            super::Slot::Ready(guest) => Some(guest.epoch),
-            _ => None,
-        }
-    }
-
     pub(crate) fn frame(module: &'static str) -> Option<super::wire::Node> {
         let mounted = super::mounted(module);
         let mounted = mounted.lock().expect("module view lock");
@@ -6124,7 +6114,7 @@ pub(crate) mod tests {
         can_reads([
             (
                 "list_repos",
-                serde_json::json!({ "repos": [{ "name": "core", "head": "1111222233334444" }] }),
+                serde_json::json!({ "repos": [{ "name": "ducks/core", "head": "1111222233334444" }] }),
             ),
             (
                 "list_refs",
@@ -6159,7 +6149,7 @@ pub(crate) mod tests {
                 "dark": false, "connected": true, "org": "duckhouse", "about": "a pond",
                 "network_chain_id": "mynet#d0cdf950",
                 "connected_rpc": "http://127.0.0.1:1",
-                "link": "duck://forge/core/7", "link_tick": 1
+                "link": "duck://mynet-d0cdf950/forge/ducks/core/7", "link_tick": 1
             })
             .to_string()
             .into_bytes(),
