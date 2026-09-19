@@ -5,15 +5,13 @@
   "setup.json"
  ],
  "gaps": [
-  "ducktape-views@a2a73e1 explorer/src/presentation.rs:179 — every block row is named Inspect block: rows differ only by id or a child label",
-  "ducktape-views@a2a73e1 explorer — a search hit cannot be opened (it has only Copy reference)",
-  "ducktape-views@a2a73e1 explorer/src/presentation.rs:192-193 — the empty ledger says No blocks yet beside a header that says block 10,984: the list is the last 100 blocks that carried operations (FINDINGS-2026-09-19 E1)"
+  "ducktape-views@a2a73e1 explorer — a search hit cannot be opened (it has only Copy reference)"
  ],
  "steps": [
   {
    "say": "open the Explorer tab in the rail",
    "settle_ms": 4000,
-   "expect": "the Explorer tab is selected and the explorer view shows a Search messages, pages, issues, files, runs… field, a Refresh button, and either block rows (buttons named Inspect block) or the empty ledger (No blocks yet, with a line saying blocks that carry operations appear here); no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+   "expect": "the Explorer tab is selected and the explorer view shows a Search messages, pages, issues, files, runs… field, a Refresh button, a height label such as 'block 28,293', and either block rows (buttons named like 'Block 28263, 1 op') with the detail 'Select a block to inspect its operations and dispatch trace.', or an empty ledger ('No operations in the last 100 blocks' or 'No blocks yet', with a line saying blocks that carry operations appear here); no failure state (no failure title such as 'This network does not list this view', no 'Blocks not read', no Retry button) and it is not still loading"
   },
   {
    "say": "search the workspace: type qa and Enter into the search field",

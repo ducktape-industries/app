@@ -1,6 +1,6 @@
 {
  "name": "boards",
- "about": "Create a board and put a note on it. Starts from an open console and leaves it open.",
+ "about": "Create a board and put a note on it. A network with no board shows the new-board form; a used one opens straight onto its last board, so the walk opens the board list from the switcher. Starts from an open console and leaves it open.",
  "include": [
   "setup.json"
  ],
@@ -17,7 +17,11 @@
   {
    "say": "open the Boards tab in the rail",
    "settle_ms": 4000,
-   "expect": "the Boards tab is selected and the boards view shows a Name a new board field and a Create board button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+   "expect": "the Boards tab is selected and the boards view shows either the new-board form (a Name a new board field and a Create board button: the network has no board yet) or the last board open (a board switcher button named for that board, a sync label such as Saved, a Board canvas button and the tool buttons); no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "bring up the new-board form: press the board switcher (the button at the top left named for the open board) to open the board list; if no board is open and the Name a new board field already shows, press the Boards tab in the rail instead, which keeps the form",
+   "expect": "a Name a new board field and a Create board button show"
   },
   {
    "say": "type the board name into the Name a new board field",
@@ -26,7 +30,7 @@
   },
   {
    "say": "press Create board",
-   "expect": "the new board opens: the board switcher button is named QA board {param:walk_tag} and an Add a note button shows",
+   "expect": "the new board opens: the board switcher button is named QA board {param:walk_tag} and an Add a note button shows (the board list may still be open over the board)",
    "settle_ms": 4000
   },
   {
