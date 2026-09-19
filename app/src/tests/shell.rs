@@ -913,6 +913,60 @@ fn a_long_row_label_keeps_its_actions_in_the_launch_window() {
         .unwrap();
 }
 
+/// A launch-window row whose node the probe measured silent: after a re-found
+/// (#137) every install still holds the dead chain's row.
+pub(super) fn silent_workspace_row(id: &str) -> backend::HubNetwork {
+    backend::HubNetwork {
+        name: "dognet".into(),
+        live: false,
+        height: -1,
+        contract: 0,
+        phase: String::new(),
+        behind_by: -1,
+        ..refused_workspace_row(id, "http://127.0.0.1:1")
+    }
+}
+
+/// A SAVED NETWORK THAT STOPPED ANSWERING (#137). A network re-founded under
+/// a new chain id leaves every install's row for the old one saying only
+/// offline. The row says the network has not answered and what to ask for —
+/// words true of an unreachable node too, since the app cannot tell the two
+/// apart — and offers Join with a new invite beside Forget, on the row. A row
+/// whose node answers carries neither.
+#[test]
+fn a_silent_network_row_says_so_and_offers_a_new_invite() {
+    use gpui_kit::test::TestWindowExt as _;
+    let (dead, live) = ("dognet#b5b6ea90", "dognet#88507a8b");
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Networks;
+    app.hub_networks = vec![
+        silent_workspace_row(dead),
+        backend::HubNetwork {
+            name: "dognet".into(),
+            contract: backend::EXPECTED_NODE_CONTRACT,
+            ..refused_workspace_row(live, "http://127.0.0.1:2")
+        },
+    ];
+    assert_eq!(
+        backend::not_answering_line(&app.hub_networks[0]).as_deref(),
+        Some("dognet has not answered. If it was re-founded, ask a member for a new invite.")
+    );
+    assert_eq!(backend::not_answering_line(&app.hub_networks[1]), None);
+    let (mut native, window, view) = onboarding_window(app);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find(format!("forget/{dead}")).visible());
+            assert!(window.find(format!("new-invite/{dead}")).visible());
+            assert!(window.try_find(format!("new-invite/{live}")).is_none());
+            window.click(format!("new-invite/{dead}"), cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).test_state(cx).hub_step, HubStep::Join);
+            assert!(window.find("join-submit").visible());
+        })
+        .unwrap();
+}
+
 /// `Rendered` is the launcher's contract, not the release channel's: an app
 /// the launcher started (`DUCKTAPE_RELEASE` + `DUCKTAPE_UPDATE_STATE`) on an
 /// install that pins no release key still settles a flipped release when
@@ -1126,6 +1180,7 @@ fn leaving_a_joins_wait_drops_its_poll() {
         settled: true,
         hint: String::new(),
         command: String::new(),
+        ports_held: String::new(),
     };
     let _ = app.update(AppMessage::ProvisionProgressReply(
         waiting,
@@ -1159,6 +1214,7 @@ async fn the_ready_screen_mints_an_invitation_only_when_asked() {
         settled: true,
         hint: String::new(),
         command: String::new(),
+        ports_held: String::new(),
     };
     let ready = app.update(AppMessage::ProvisionProgressReply(
         waiting,
@@ -1269,6 +1325,7 @@ fn the_waiting_steps_copy_command_confirms_itself() {
         settled: false,
         hint: String::new(),
         command: "ducktape node run".into(),
+        ports_held: String::new(),
     }];
     let (mut native, window, view) = onboarding_window(app);
     window

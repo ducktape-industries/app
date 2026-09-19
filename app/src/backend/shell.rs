@@ -318,6 +318,10 @@ pub struct ProvisionStep {
     pub hint: String,
     /// The command a step names, for the screen's copy action; empty when none.
     pub command: String,
+    /// Under the command, while the node has not answered: which other saved
+    /// workspace holds one of this one's ports, and how to stop its node
+    /// ([`ports_held`]); empty otherwise.
+    pub ports_held: String,
 }
 
 /// What the blocked wait says once patience runs out: what to run, and where
@@ -359,13 +363,14 @@ pub(crate) fn provision_progress_in(
         rpc: String,
         step: usize,
         attempts: u32,
+        /// Every workspace saved beside this one, for [`ports_held`].
+        saved: Vec<(String, PathBuf)>,
     }
-    let found = home
-        .as_deref()
-        .map(workspaces_in)
-        .unwrap_or_default()
-        .into_iter()
-        .find(|(chain_id, dir)| *chain_id == workspace || dir.display().to_string() == workspace);
+    let saved = home.as_deref().map(workspaces_in).unwrap_or_default();
+    let found = saved
+        .iter()
+        .find(|(chain_id, dir)| *chain_id == workspace || dir.display().to_string() == workspace)
+        .cloned();
     let (chain_id, workspace, dir) = match found {
         Some((chain_id, dir)) => (chain_id, dir.display().to_string(), Some(dir)),
         None => (workspace.clone(), workspace, None),
@@ -381,6 +386,7 @@ pub(crate) fn provision_progress_in(
             rpc,
             step: 0,
             attempts: 0,
+            saved,
         },
         |mut state| async move {
             // the workspace's own facts, then the node's own answer.
@@ -440,6 +446,16 @@ pub(crate) fn provision_progress_in(
                         (Some(facts), Some(dir)) => own_node(dir, &state.chain_id, facts),
                         _ => Ok(false),
                     };
+                    // a node that is not this workspace's own, or none at all:
+                    // another saved workspace may hold the ports it needs.
+                    let held = match own {
+                        Ok(true) => String::new(),
+                        _ => state
+                            .dir
+                            .as_deref()
+                            .and_then(|dir| ports_held(dir, &state.saved))
+                            .unwrap_or_default(),
+                    };
                     if let Err(answered) = own {
                         tokio::time::sleep(Duration::from_secs(1)).await;
                         let waiting = node_wait_step(
@@ -452,6 +468,7 @@ pub(crate) fn provision_progress_in(
                             ProvisionStep {
                                 state: "waiting".into(),
                                 hint: answered,
+                                ports_held: held,
                                 ..waiting
                             },
                             state,
@@ -479,6 +496,7 @@ pub(crate) fn provision_progress_in(
                                 settled: false,
                                 hint: String::new(),
                                 command: String::new(),
+                                ports_held: String::new(),
                             },
                             state,
                         ));
@@ -490,12 +508,15 @@ pub(crate) fn provision_progress_in(
                     state.attempts += 1;
                     tokio::time::sleep(Duration::from_secs(1)).await;
                     Some((
-                        node_wait_step(
-                            &state.workspace,
-                            super::update::release_key_for(&state.chain_id).as_deref(),
-                            state.attempts,
-                            &plane_failure,
-                        ),
+                        ProvisionStep {
+                            ports_held: held,
+                            ..node_wait_step(
+                                &state.workspace,
+                                super::update::release_key_for(&state.chain_id).as_deref(),
+                                state.attempts,
+                                &plane_failure,
+                            )
+                        },
                         state,
                     ))
                 }
@@ -514,6 +535,7 @@ pub(crate) fn provision_progress_in(
                             settled: true,
                             hint: String::new(),
                             command: String::new(),
+                            ports_held: String::new(),
                         },
                         state,
                     ))
@@ -570,7 +592,55 @@ pub(crate) fn node_wait_step(
             (false, _) => String::new(),
         },
         command,
+        ports_held: String::new(),
     }
+}
+
+/// Why a joined workspace's node cannot bind (#137): `join` writes the same
+/// listen ports into every workspace, so a second network on one machine
+/// names the first one's. When another saved workspace's `node.toml` names
+/// one of `dir`'s TCP listen ports and something answers a connect on that
+/// port on loopback now, the waiting step names that workspace and how to
+/// stop its node. Nothing but loopback, and only the ports both `node.toml`s
+/// name, is probed. `None` when no port is shared or none is held.
+pub(crate) fn ports_held(dir: &Path, saved: &[(String, PathBuf)]) -> Option<String> {
+    let ports = |dir: &Path| -> Vec<u16> {
+        let Ok((config, _)) = workspace_config::load_node_toml(&dir.join("node.toml")) else {
+            return Vec::new();
+        };
+        [
+            config.listen,
+            config.http_listen,
+            config.rpc_listen,
+            config.gateway_listen,
+        ]
+        .iter()
+        .filter_map(|addr| addr.rsplit_once(':')?.1.parse().ok())
+        .filter(|port| *port != 0)
+        .collect()
+    };
+    let own = ports(dir);
+    saved
+        .iter()
+        .filter(|(_, other)| other != dir)
+        .find_map(|(chain_id, other)| {
+            let port = ports(other).into_iter().find(|port| {
+                let loopback = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, *port));
+                own.contains(port)
+                    && std::net::TcpStream::connect_timeout(&loopback, Duration::from_millis(250))
+                        .is_ok()
+            })?;
+            let unit = other.file_name()?.to_string_lossy().replace('\'', r"'\''");
+            Some(format!(
+                "{chain_id}, another network saved on this machine, names port {port} in its \
+             node.toml too, and something is listening there now, so this network's node \
+             cannot start. Stop that network's node first. Rootless unit: systemctl --user \
+             disable --now \"ducktape-node-user@$(systemd-escape '{unit}')\". System unit: \
+             sudo systemctl disable --now \"ducktape-node@$(systemd-escape '{unit}')\". By \
+             hand: stop that workspace's ducktape-node-launcher with SIGTERM; it checkpoints \
+             and exits."
+            ))
+        })
 }
 
 /// A step whose fact is either established or missing.
@@ -585,6 +655,7 @@ fn registered_step(index: i64, label: &str, established: bool) -> ProvisionStep 
         settled: established,
         hint: String::new(),
         command: String::new(),
+        ports_held: String::new(),
     }
 }
 

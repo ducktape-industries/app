@@ -752,6 +752,21 @@ pub fn network_row_label(row: &HubNetwork) -> String {
     }
 }
 
+/// The line under a row whose node the probe measured silent (#137): what the
+/// person can do, beside **Join with a new invite** and **Forget**. From here
+/// a re-founded network and an unreachable node look the same, so the words
+/// are true of both. `None` for a row that answered, one another network
+/// answers for, and one not probed yet.
+pub fn not_answering_line(row: &HubNetwork) -> Option<String> {
+    let silent = row.probed && !row.live && !row.another_network;
+    silent.then(|| {
+        format!(
+            "{} has not answered. If it was re-founded, ask a member for a new invite.",
+            row.name
+        )
+    })
+}
+
 /// Whether a row offers **Use node.toml**: a workspace on this device whose
 /// node RPC URL Settings overrode. Settings lives in the console, which does
 /// not open while the override's node is down (#94).
