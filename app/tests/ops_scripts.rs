@@ -92,3 +92,50 @@ fn every_ops_script_parses() {
         }
     }
 }
+
+/// `ops/verify-release.sh` fails naming the binary two stagings disagree on,
+/// and passes when they agree. The stand-in cargo builds an app whose bytes
+/// follow its target dir (the drift #130 found) unless `APP_BYTES` pins them.
+#[test]
+fn verify_release_names_the_binary_two_builds_disagree_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let cargo = dir.path().join("cargo");
+    std::fs::write(
+        &cargo,
+        r#"#!/bin/sh
+case $1 in
+metadata) printf '{"target_directory": "%s"}\n' "$CARGO_TARGET_DIR" ;;
+build)
+  mkdir -p "$CARGO_TARGET_DIR/release"
+  echo launcher >"$CARGO_TARGET_DIR/release/ducktape-launcher"
+  echo "${APP_BYTES:-$CARGO_TARGET_DIR}" >"$CARGO_TARGET_DIR/release/ducktape-app" ;;
+esac
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let verify = |name: &str, app_bytes: &str| {
+        Command::new(root().join("ops/verify-release.sh"))
+            .env("CARGO", &cargo)
+            .env("APP_BYTES", app_bytes)
+            .arg("--work")
+            .arg(dir.path().join(name).join("work"))
+            .arg(dir.path().join(name).join("out"))
+            .output()
+            .unwrap()
+    };
+
+    let drifting = verify("drifting", "");
+    let stderr = String::from_utf8_lossy(&drifting.stderr);
+    assert_eq!(drifting.status.code(), Some(1), "{stderr}");
+    assert!(stderr.contains("ducktape-app differs"), "{stderr}");
+    assert!(!stderr.contains("ducktape-launcher differs"), "{stderr}");
+
+    let steady = verify("steady", "app");
+    assert!(
+        steady.status.success(),
+        "{}",
+        String::from_utf8_lossy(&steady.stderr)
+    );
+    assert!(dir.path().join("steady/out/ducktape-app").is_file());
+}

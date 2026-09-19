@@ -224,7 +224,12 @@ takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
    or one Apple never notarized (`bundle_not_stapled`). On Linux,
    `ops/stage-release.sh target/app-release` builds and lays out
    `target/app-release/{ducktape-launcher, ducktape-app}`, which the
-   same target packs into `Ducktape-<sha7>-linux-<arch>.tar.zst`. Then `make publish-app` with
+   same target packs into `Ducktape-<sha7>-linux-<arch>.tar.zst`. A GO needs
+   `ops/verify-release.sh target/app-release` to pass: it stages the release
+   twice, each into a fresh target dir, prints both binaries' two sha256s,
+   exits 1 naming a binary that differs, and leaves the first staging in
+   place. The build box has flipped bits before; two equal builds bind the
+   sha, one proves nothing. Then `make publish-app` with
    `NODE`, `RELEASE_KEY`, `SEQUENCE` and `DISPLAY` composes and signs the
    manifest and lands everything under `/shared/releases` on the network's
    duckfs (`ops/release/publish.sh`); its `ARCHIVES` defaults to what
