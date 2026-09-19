@@ -42,6 +42,8 @@ pub struct TextEditor {
     projection: Option<Projection>,
     painted: Option<wire::EditorOptions>,
     fills: bool,
+    /// the wire `label`: the field's accessible name
+    label: Option<SharedString>,
     ime: Option<crate::module_view::input::ImeState>,
     _observation: Subscription,
     _keystrokes: Subscription,
@@ -84,6 +86,7 @@ impl TextEditor {
             projection: None,
             painted: None,
             fills: true,
+            label: None,
             ime: None,
             _observation: observation,
             _keystrokes: keystrokes,
@@ -105,6 +108,15 @@ impl TextEditor {
         }
         self.fills = fills;
         cx.notify();
+    }
+
+    /// The name assistive technology reads for the field.
+    pub fn set_label(&mut self, label: Option<String>, cx: &mut Context<Self>) {
+        let label = label.map(SharedString::from);
+        if self.label != label {
+            self.label = label;
+            cx.notify();
+        }
     }
 
     pub fn widget_command(
@@ -453,6 +465,7 @@ impl Render for TextEditor {
                     Textarea::new(&self.input),
                 )
                 .role(gpui_kit::Role::MultilineTextInput)
+                .when_some(self.label.clone(), |field, label| field.aria_label(label))
                 .when(self.fills, |field| field.h_full()),
             )
     }

@@ -193,7 +193,7 @@ fn install_boot_update_crash_and_rollback() {
 
     // boot in Idle: exec A with the contract env and argv passed through;
     // the URL never reaches the launcher's own log.
-    let url = "duck://forge/ducktape/1?net=abc";
+    let url = "duck://dognet-b5b6ea90/forge/core/app/1";
     let booted = rig.installed_launcher(&[url]);
     assert!(booted.status.success(), "{}", stderr(&booted));
     let out = stdout(&booted);
@@ -495,7 +495,7 @@ fn a_release_installs_under_the_launcher_it_ships() {
         shipped
     );
     assert_eq!(rig.link("current"), Some(link_target(sha)));
-    let booted = rig.installed_launcher(&["duck://forge/ducktape/1?net=abc"]);
+    let booted = rig.installed_launcher(&["duck://dognet-b5b6ea90/forge/core/app/1"]);
     assert!(booted.status.success(), "{}", stderr(&booted));
     assert!(stdout(&booted).contains("build=A"), "{}", stdout(&booted));
     assert!(

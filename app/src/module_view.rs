@@ -630,10 +630,12 @@ pub fn chat_intent(event: &ModuleViewEvent) -> crate::ChatIntent {
 /// reader and the Markdown document are host surfaces defined in `surfaces.rs`.
 ///
 /// `route` is the one navigation fact that cannot be the view's: a
-/// `duck://files/<path>` link is resolved by the shell's link plane, which
-/// also moves the tab, so the address arrives as a SESSION fact like any
-/// other. `route_serial` counts the pushes, which is what makes the same path
-/// twice a second navigation rather than a value that never changed.
+/// `duck://<chain>/files/<path>` link is resolved by the shell's link plane,
+/// which also moves the tab, so the address arrives as a SESSION fact like
+/// any other — the full address, or the bare path for an epoch-8 view
+/// (`Epoch::props`). `route_serial` counts the pushes, which is what makes
+/// the same path twice a second navigation rather than a value that never
+/// changed.
 pub fn files_view(
     dark: bool,
     connected: bool,
@@ -3064,9 +3066,12 @@ impl Guest {
             return;
         }
         self.props_sent = props.clone();
+        let props = self
+            .epoch
+            .props(self.module, props.clone().unwrap_or_default());
         self.pending.push(wire::Event::Response {
             id,
-            result: Ok(props.clone().unwrap_or_default()),
+            result: Ok(props),
             done: false,
         });
     }
@@ -3598,6 +3603,22 @@ impl Epoch {
             Epoch::Eight => epoch8::frame(bytes),
             Epoch::Ten => wire::decode(bytes),
         }
+    }
+
+    /// Host → guest: the props a view is handed. One fact is spelled per
+    /// epoch: the files `route` is the full `duck://<chain>/files/…` address
+    /// the app holds, and an epoch-8 files view is handed the bare duckfs path
+    /// it names, as it always was.
+    fn props(self, module: &str, props: Vec<u8>) -> Vec<u8> {
+        if self == Epoch::Ten || module != "files" {
+            return props;
+        }
+        let Ok(mut value) = serde_json::from_slice::<serde_json::Value>(&props) else {
+            return props;
+        };
+        let route = value["route"].as_str().unwrap_or_default().to_owned();
+        value["route"] = crate::backend::classify_duck_link(route).path.into();
+        serde_json::to_vec(&value).unwrap_or(props)
     }
 
     /// Host → guest: one tick's events. Everything the host writes for a

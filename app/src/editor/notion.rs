@@ -310,7 +310,7 @@ impl RichWireEditor {
             cx.subscribe_in(&editor, window, |this, _, action: &MenuAction, _, cx| {
                 this.menu_action(action, cx);
             });
-        // A link in a page is as often `duck://page/…` as it is the web, and
+        // A link in a page is as often `duck://<chain>/pages/…` as the web, and
         // the app already knows what every `duck://` address names — so a
         // press goes to the one place that routes them all.
         let links = cx.subscribe(&editor, |_, _, pressed: &LinkPressed, _| {

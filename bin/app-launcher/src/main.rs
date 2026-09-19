@@ -269,7 +269,7 @@ mod tests {
 
     #[test]
     fn everything_not_a_launcher_flag_passes_through_to_the_app() {
-        let url = OsString::from("duck://forge/ducktape/1?net=abc");
+        let url = OsString::from("duck://dognet-b5b6ea90/forge/core/app/1");
         assert_eq!(
             parse(vec![url.clone()]).unwrap(),
             Mode::Boot(vec![url.clone()])

@@ -3049,6 +3049,14 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 
 [[package]]
+name = "duck-address"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+dependencies = [
+ "refusal-class",
+]
+
+[[package]]
 name = "duckdns"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
@@ -3063,7 +3071,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce12409fe0e3403b7c71d04ae49aa04dd40"
 dependencies = [
  "base64 0.22.1",
- "duckfs-core",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "glob",
  "reqwest 0.12.28",
  "serde",
@@ -3086,11 +3094,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "duckfs-core"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+dependencies = [
+ "base64 0.22.1",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "duckfs-disk"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
- "duckfs-core",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "sdk",
  "sha2 0.10.9",
  "tracing",
@@ -3110,8 +3130,10 @@ dependencies = [
  "core-graphics 0.24.0",
  "cpal",
  "design 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0)",
  "ducktape-home",
  "ducktape-rpc",
+ "files-wire",
  "forge-wire",
  "futures",
  "gateway-wire",
@@ -3587,10 +3609,20 @@ name = "files-odb"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce12409fe0e3403b7c71d04ae49aa04dd40"
 dependencies = [
- "duckfs-core",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "duckfs-disk",
  "sdk",
  "wasm-host",
+]
+
+[[package]]
+name = "files-wire"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+dependencies = [
+ "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0)",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0)",
+ "refusal-class",
 ]
 
 [[package]]
@@ -3841,7 +3873,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
 dependencies = [
  "chat-wire",
- "duck-address",
+ "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "sdk",
  "serde",
 ]
@@ -6405,7 +6437,7 @@ version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#dfa41ce12409fe0e3403b7c71d04ae49aa04dd40"
 dependencies = [
  "base64 0.22.1",
- "duckfs-core",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "forge-wire",
  "pages-wire",
  "reqwest 0.12.28",
@@ -6865,7 +6897,7 @@ dependencies = [
  "compute-service",
  "dispatch 0.1.0",
  "duckfs-client",
- "duckfs-core",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "files-odb",
  "forge",
  "forge-odb",
@@ -9030,6 +9062,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "refusal-class"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=1c20b2489e4849f060e586d2b1061fa3db21f0b0#1c20b2489e4849f060e586d2b1061fa3db21f0b0"
+
+[[package]]
 name = "regalloc2"
 version = "0.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10013,7 +10050,7 @@ dependencies = [
  "blobstore",
  "commonware-runtime",
  "dispatch-wire",
- "duckfs-core",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "futures",
  "host",
  "indexer",
@@ -13577,8 +13614,8 @@ dependencies = [
  "commonware-cryptography",
  "commonware-p2p",
  "commonware-utils",
- "duck-address",
- "duckfs-core",
+ "duck-address 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
+ "duckfs-core 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev)",
  "ducktape-home",
  "governance-wire",
  "identity-wire",

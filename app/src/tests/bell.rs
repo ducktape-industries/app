@@ -41,9 +41,9 @@ fn an_unanswered_count_keeps_the_number_the_rail_has() {
 fn opening_a_row_s_address_leaves_the_overlay_behind() {
     let (mut app, _) = Ducktape::boot();
     app.bell_open = true;
-    app.network_chain_id = "dognet#0000".into();
+    app.network_chain_id = "dognet#b5b6ea90".into();
     let _ = app.update(AppMessage::OpenMessageLink(
-        "duck://page/page-a?net=0000".into(),
+        "duck://dognet-b5b6ea90/pages/page-a".into(),
     ));
     assert!(!app.bell_open);
 }
