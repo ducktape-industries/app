@@ -853,16 +853,14 @@ impl Store {
             self.fault = Some("editor interaction cannot request a native key action".into());
             return;
         };
-        match native_key(text, document.reference.cursor, key) {
-            Ok((patches, cursor)) => self.commit(
-                name,
-                patches,
-                cursor,
-                wire::EditorHistoryEffect::Native,
-                Some(request.input),
-            ),
-            Err(error) => self.fault = Some(error),
-        }
+        let (patches, cursor) = native_key(text, document.reference.cursor, key);
+        self.commit(
+            name,
+            patches,
+            cursor,
+            wire::EditorHistoryEffect::Native,
+            Some(request.input),
+        );
     }
 
     fn document_message(&mut self, message: &DocumentMessage) {
@@ -1101,36 +1099,87 @@ fn native_key(
     text: &str,
     cursor: wire::EditorCursor,
     key: &wire::keyboard::KeyState,
-) -> Result<(Vec<wire::EditorPatch>, wire::EditorCursor), String> {
+) -> (Vec<wire::EditorPatch>, wire::EditorCursor) {
     use wire::keyboard::{Key, Named};
     let caret = offset(text, cursor.position);
     let anchor = cursor.selection.map_or(caret, |p| offset(text, p));
     let mut start = caret.min(anchor);
-    let end = caret.max(anchor);
+    let mut end = caret.max(anchor);
+    // a span one patch may remove: never half a character, a grapheme or a
+    // two-byte line terminator
+    let removable = |start: usize, end: usize| {
+        let patch = wire::EditorPatch {
+            start_byte: start as u32,
+            end_byte: end as u32,
+            replacement: String::new(),
+        };
+        text.is_char_boundary(start)
+            && text.is_char_boundary(end)
+            && wire::patched_editor_text(text, &[patch], wire::EditorCursor::default()).is_ok()
+    };
     let replacement = match &key.key {
         Key::Named(Named::Enter) => "\n",
         Key::Named(Named::Tab) => "\t",
         Key::Named(Named::Backspace) => {
             if start == end && start > 0 {
                 start -= 1;
-                while start > 0 {
-                    let patch = wire::EditorPatch {
-                        start_byte: start as u32,
-                        end_byte: end as u32,
-                        replacement: String::new(),
-                    };
-                    if text.is_char_boundary(start)
-                        && wire::patched_editor_text(text, &[patch], wire::EditorCursor::default())
-                            .is_ok()
-                    {
-                        break;
-                    }
+                while start > 0 && !removable(start, end) {
                     start -= 1;
                 }
             }
             ""
         }
-        _ => return Err("guest requested unsupported native editor key".into()),
+        // forward: what follows the caret, and nothing at the end
+        Key::Named(Named::Delete) => {
+            if start == end && end < text.len() {
+                end += 1;
+                while end < text.len() && !removable(start, end) {
+                    end += 1;
+                }
+            }
+            ""
+        }
+        // the caret to the same column a line up or down, or to the start or
+        // end of the text past the first or last line — no patch, and the
+        // selection goes
+        Key::Named(named @ (Named::ArrowUp | Named::ArrowDown)) => {
+            let here = position(text, caret);
+            let last = wire::editor_lines(text).count().saturating_sub(1) as u32;
+            let at = match named {
+                Named::ArrowUp if here.line == 0 => 0,
+                Named::ArrowUp => offset(
+                    text,
+                    wire::EditorPosition {
+                        line: here.line - 1,
+                        ..here
+                    },
+                ),
+                _ if here.line >= last => text.len(),
+                _ => offset(
+                    text,
+                    wire::EditorPosition {
+                        line: here.line + 1,
+                        ..here
+                    },
+                ),
+            };
+            let caret_at = |at: usize| wire::EditorCursor {
+                position: position(text, at),
+                selection: None,
+            };
+            // the same column a line away can fall inside a grapheme: back to
+            // its start, which the wire takes as a caret
+            let mut at = at;
+            while at > 0 && wire::patched_editor_text(text, &[], caret_at(at)).is_err() {
+                at -= 1;
+            }
+            return (Vec::new(), caret_at(at));
+        }
+        // Escape, a cut with nothing selected, and any key the host has no
+        // native default for do nothing — committed with no patch, so the
+        // guest's editor is not left waiting. Stopping the view over a key it
+        // handed the host stopped Chat's composer on an ordinary keystroke.
+        _ => return (Vec::new(), cursor),
     };
     let mut next = text[..start].to_owned();
     next.push_str(replacement);
@@ -1139,14 +1188,14 @@ fn native_key(
         position: position(&next, start + replacement.len()),
         selection: None,
     };
-    Ok((
+    (
         vec![wire::EditorPatch {
             start_byte: start as u32,
             end_byte: end as u32,
             replacement: replacement.into(),
         }],
         cursor,
-    ))
+    )
 }
 
 /// One native keystroke as the guest's key state. Both mounts read the same
@@ -1423,6 +1472,230 @@ mod rich_tests {
         assert!(
             matches!(&request.input, wire::EditorRequestInput::Interaction { action: wire::editor_presentation::EditorInteraction::Action { tag } } if tag == "send")
         );
+    }
+
+    /// Suite run 7: a composer handed a key back to the host's default and the
+    /// host knew only Enter, Tab and Backspace — the view stopped ("guest
+    /// requested unsupported native editor key"), on every later visit too. A
+    /// key with no native default is a no-op: committed with no patch, no
+    /// fault, and the next Enter still applies.
+    #[test]
+    fn a_native_key_the_host_has_no_default_for_is_a_noop_not_a_fault() {
+        let store = seeded(93);
+        let press = |stroke: &str| {
+            store.request(
+                "unrelated-product/editor",
+                wire::EditorRequestInput::Key {
+                    key: key_state(&gpui_kit::Keystroke::parse(stroke).unwrap()),
+                    repeat: false,
+                },
+            );
+            let events = store.drain();
+            let [wire::Event::EditorRequest { request, .. }] = events.as_slice() else {
+                panic!("the key asks the guest first: {events:?}");
+            };
+            store
+                .frame(&wire::Frame {
+                    editor_decisions: vec![wire::EditorResponse {
+                        id: request.id.clone(),
+                        decision: wire::EditorDecision::DefaultEditorAction,
+                    }],
+                    ..Default::default()
+                })
+                .expect("the default action never stops the view");
+            let events = store.drain();
+            let [
+                wire::Event::EditorTransaction {
+                    event: wire::EditorTransactionEvent::Commit { patches, after, .. },
+                    ..
+                },
+            ] = events.as_slice()
+            else {
+                panic!("the default action commits: {events:?}");
+            };
+            // the guest observes the commit, so the next key is not held
+            let mut next = node(1);
+            let wire::Node::Editor { document, .. } = &mut next else {
+                unreachable!()
+            };
+            *document = after.clone();
+            store.replace(&next).unwrap();
+            store.frame(&wire::Frame::default()).unwrap();
+            let text = store.lock().documents["draft"].text.clone().unwrap();
+            (patches.clone(), text)
+        };
+
+        let (patches, text) = press("escape");
+        assert!(patches.is_empty(), "{patches:?}");
+        assert_eq!(&*text, "draft", "an unknown key changes nothing");
+
+        let (patches, text) = press("enter");
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            text.matches('\n').count(),
+            1,
+            "Enter still applies: {text:?}"
+        );
+    }
+
+    /// `native_key` for `stroke` over `text`, caret at byte `at`: the text
+    /// after its patch and the caret after.
+    fn native(text: &str, at: usize, stroke: &str) -> (String, wire::EditorPosition) {
+        let cursor = wire::EditorCursor {
+            position: position(text, at),
+            selection: None,
+        };
+        let key = key_state(&gpui_kit::Keystroke::parse(stroke).unwrap());
+        let (patches, cursor) = native_key(text, cursor, &key);
+        let next =
+            wire::patched_editor_text(text, &patches, cursor).expect("a patch the wire takes");
+        assert!(cursor.selection.is_none());
+        (next, cursor.position)
+    }
+
+    fn at(line: u32, column: u32) -> wire::EditorPosition {
+        wire::EditorPosition { line, column }
+    }
+
+    /// The keys a composer hands back as "yours, natively" (views manager,
+    /// from the composer binding): the host does each as a text field does.
+    #[test]
+    fn the_keys_a_composer_hands_back_edit_and_move_as_a_text_field_does() {
+        // Delete is forward, one character, and nothing at the end
+        assert_eq!(native("abc", 1, "delete"), ("ac".into(), at(0, 1)));
+        assert_eq!(native("aé!", 1, "delete"), ("a!".into(), at(0, 1)));
+        assert_eq!(native("a\r\nb", 1, "delete"), ("ab".into(), at(0, 1)));
+        assert_eq!(native("abc", 3, "delete"), ("abc".into(), at(0, 3)));
+        // Up and Down keep the column a line away, and stop at the ends
+        let three = "one\ntwo\nthree";
+        assert_eq!(native(three, 6, "up"), (three.into(), at(0, 2)));
+        assert_eq!(native(three, 6, "down"), (three.into(), at(2, 2)));
+        assert_eq!(native(three, 2, "up"), (three.into(), at(0, 0)));
+        assert_eq!(native(three, 10, "down"), (three.into(), at(2, 5)));
+        assert_eq!(
+            native("abcdef\nab", 5, "down"),
+            ("abcdef\nab".into(), at(1, 2)),
+            "a shorter line clamps the column"
+        );
+        // Escape and a cut with nothing selected leave text and caret alone,
+        // as does a key nothing hands back
+        for stroke in ["escape", "ctrl-x", "cmd-x", "f5"] {
+            assert_eq!(
+                native("abc", 1, stroke),
+                ("abc".into(), at(0, 1)),
+                "{stroke}"
+            );
+        }
+    }
+
+    /// NO KEY STOPS A VIEW — the class, not the one key Chat hit. Every named
+    /// key the wire defines (read off serde's own variant list, so a key the
+    /// wire adds is tried too) and a sample of characters under each modifier
+    /// set, over empty, one-line, multi-line, CRLF and combining text with the
+    /// caret at the start, the middle and the end, answered with the default
+    /// action: no fault, and a text and caret the wire accepts.
+    #[test]
+    fn no_key_answered_with_the_default_action_stops_a_view() {
+        use wire::keyboard::{Key, Modifiers, Named};
+        let unknown = serde_json::from_str::<Named>("\"-\"")
+            .unwrap_err()
+            .to_string();
+        let named: Vec<Named> = unknown
+            .split('`')
+            .skip(3)
+            .step_by(2)
+            .map(|name| serde_json::from_str(&format!("\"{name}\"")).unwrap())
+            .collect();
+        assert!(
+            named.len() > 100 && named.contains(&Named::Delete),
+            "{unknown}"
+        );
+        let plain = Modifiers::default();
+        let control = Modifiers {
+            control: true,
+            ..plain
+        };
+        let sets = [
+            plain,
+            control,
+            Modifiers {
+                shift: true,
+                ..plain
+            },
+            Modifiers { alt: true, ..plain },
+            Modifiers {
+                logo: true,
+                ..plain
+            },
+            Modifiers {
+                shift: true,
+                ..control
+            },
+        ];
+        let template = key_state(&gpui_kit::Keystroke::parse("a").unwrap());
+        let state = |key: Key, modifiers: Modifiers| wire::keyboard::KeyState {
+            key: key.clone(),
+            modified_key: key,
+            modifiers,
+            ..template.clone()
+        };
+        let mut keys: Vec<_> = named
+            .iter()
+            .flat_map(|name| [plain, control].map(|set| state(Key::Named(*name), set)))
+            .collect();
+        for character in ["a", "x", "é", "1", " ", "\u{301}"] {
+            keys.extend(sets.map(|set| state(Key::Character(character.into()), set)));
+        }
+
+        for text in [
+            "",
+            "draft",
+            "one\ntwo\nthree",
+            "a\r\nb",
+            "e\u{301}x\nab🙂",
+            "e\u{301}x\nab",
+        ] {
+            for caret in [0, text.len() / 2, text.len()] {
+                for key in &keys {
+                    let store = seeded(7);
+                    {
+                        let mut locked = store.lock();
+                        let document = locked.documents.get_mut("draft").unwrap();
+                        document.text = Some(Arc::from(text));
+                        document.reference.byte_len = text.len() as u32;
+                        document.reference.cursor = wire::EditorCursor {
+                            position: position(text, caret),
+                            selection: None,
+                        };
+                    }
+                    store.request(
+                        "unrelated-product/editor",
+                        wire::EditorRequestInput::Key {
+                            key: key.clone(),
+                            repeat: false,
+                        },
+                    );
+                    let events = store.drain();
+                    let [wire::Event::EditorRequest { request, .. }] = events.as_slice() else {
+                        panic!("the key asks the guest first: {events:?}");
+                    };
+                    let decided = store.frame(&wire::Frame {
+                        editor_decisions: vec![wire::EditorResponse {
+                            id: request.id.clone(),
+                            decision: wire::EditorDecision::DefaultEditorAction,
+                        }],
+                        ..Default::default()
+                    });
+                    let case = format!("{:?} on {text:?} at {caret}", key.key);
+                    assert!(decided.is_ok(), "{case}: {decided:?}");
+                    let locked = store.lock();
+                    let document = &locked.documents["draft"];
+                    let after = document.text.clone().expect("the text stays");
+                    wire::patched_editor_text(&after, &[], document.reference.cursor)
+                        .unwrap_or_else(|error| panic!("{case}: {error:?}"));
+                }
+            }
+        }
     }
 
     #[test]

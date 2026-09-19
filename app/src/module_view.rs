@@ -21,7 +21,9 @@ mod kernel;
 mod taste;
 
 pub(crate) use kernel::chord_of;
-pub use kernel::{block_hit as view_block_hit, live_hit as view_live_hit};
+pub use kernel::{
+    block_hit as view_block_hit, live_hit as view_live_hit, live_resumed as view_live_resumed,
+};
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
 /// threads can compile or join child loads between requests; their own parked
@@ -1708,10 +1710,15 @@ pub(crate) enum Failure {
     WireEpoch(String),
 }
 
+/// What a view and the screen hear when the node did not answer — a load that
+/// could not ask, or a request that ran out of retries. The transport's own
+/// text stays in the log.
+pub(crate) const NODE_UNREACHABLE: &str = "The node could not be reached";
+
 impl Failure {
     fn title(&self) -> &'static str {
         match self {
-            Failure::Unreachable(_) => "The node could not be reached",
+            Failure::Unreachable(_) => NODE_UNREACHABLE,
             Failure::HashMismatch(_) => "The bytes do not match the network's code hash",
             Failure::NotListed(_) => "This network does not list this view",
             Failure::NotActivated(_) => "This view is not activated yet",
@@ -4999,9 +5006,23 @@ pub(crate) mod tests {
     /// connection. Blocking sockets on a plain thread — the kernel's runtime
     /// is the one under test, and a stub sharing it would be driven by it.
     fn stub_index_node(body: &'static str) -> String {
-        use std::io::{Read as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind the stub node");
         let origin = format!("http://{}", listener.local_addr().expect("stub address"));
+        stub_node_on(listener, body);
+        origin
+    }
+
+    /// [`stub_index_node`] on a listener the caller holds — the port a test
+    /// closed and opens again. Each request is read whole (a frame POST has a
+    /// body) and answered `body`; the count is the frames that reached
+    /// `/v1/submit/frame`.
+    fn stub_node_on(
+        listener: std::net::TcpListener,
+        body: &'static str,
+    ) -> Arc<std::sync::atomic::AtomicUsize> {
+        use std::io::{Read as _, Write as _};
+        let frames = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = frames.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
@@ -5012,9 +5033,20 @@ pub(crate) mod tests {
                         break;
                     }
                     request.extend_from_slice(&chunk[..read]);
-                    if String::from_utf8_lossy(&request).contains("\r\n\r\n") {
+                    let Some(end) = request.windows(4).position(|at| at == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let head = String::from_utf8_lossy(&request[..end]).to_ascii_lowercase();
+                    let length = head
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .map_or(0, |value| value.trim().parse().unwrap_or(0));
+                    if request.len() >= end + 4 + length {
                         break;
                     }
+                }
+                if request.starts_with(b"POST /v1/submit/frame ") {
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
                 let response = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
@@ -5024,7 +5056,98 @@ pub(crate) mod tests {
                 let _ = stream.shutdown(std::net::Shutdown::Both);
             }
         });
-        origin
+        frames
+    }
+
+    /// A NODE UPDATE UNDER AN OPEN VIEW (#150). Suite run 5: the member node
+    /// restarted in 9 s, and every view whose request hit that gap kept its
+    /// failure for the rest of the run — Chat's error, Files' and Forge's
+    /// "Loading…", Boards' unsaved board. A read asked while the port is
+    /// closed stays pending and lands once the node listens again; a write is
+    /// retried and reaches the node ONCE.
+    #[test]
+    fn a_request_that_hit_a_restarting_node_lands_once_the_node_is_back() {
+        let Some(staged) = staged("governance") else {
+            return;
+        };
+        let _turn = blocking_connection_turn();
+        let mut guest = Guest::load_from("governance", &staged).expect("the view loads");
+        // the node's port, closed: a restart as the app sees it
+        let address = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("a free port");
+        let client = crate::backend::rpc_client(&format!("http://{address}")).expect("a client");
+        connection().lock().expect("views rpc").client = Some(client);
+        kernel::runtime().block_on(crate::backend::seat_test_signer(150));
+
+        let read = serde_json::json!({ "target": "pages", "query": { "list_pages": {} } });
+        let write = serde_json::json!({ "target": "boards", "payload": { "touch": {} } });
+        assert!(kernel::answer(
+            &mut guest,
+            "rpc",
+            "view",
+            8,
+            &serde_json::to_vec(&read).unwrap()
+        ));
+        assert!(kernel::answer(
+            &mut guest,
+            "op",
+            "submit",
+            9,
+            &serde_json::to_vec(&write).unwrap()
+        ));
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        assert!(
+            guest.replies.any_in_flight(),
+            "both wait while the node is away, instead of answering its absence"
+        );
+
+        let listener = std::net::TcpListener::bind(address).expect("the node's port again");
+        let frames = stub_node_on(listener, r#"{"height":5}"#);
+        guest.replies.wait_idle();
+        kernel::runtime().block_on(crate::backend::lock_signer());
+        guest
+            .replies
+            .drain_into(&mut guest.pending)
+            .expect("bounded replies");
+        let answers: HashMap<u64, _> = guest
+            .pending
+            .drain(..)
+            .filter_map(|event| match event {
+                wire::Event::Response { id, result, .. } => Some((id, result)),
+                _ => None,
+            })
+            .collect();
+        let reply: serde_json::Value =
+            serde_json::from_slice(answers[&8].as_ref().expect("the read lands")).unwrap();
+        assert_eq!(reply, serde_json::json!({ "height": 5 }));
+        assert_eq!(
+            answers[&9],
+            Ok(b"5".to_vec()),
+            "the write lands at its height"
+        );
+        assert_eq!(
+            frames.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "and its frame reached the node once"
+        );
+
+        // A view left drawing a failure — a node away longer than the budget —
+        // asks again when the node's stream is ready: each of its `rpc.live`
+        // subscriptions, whatever the plane, gets an item.
+        guest.live_subscriptions.push((10, "pages".to_owned()));
+        let seat = fresh("governance");
+        seat.lock().unwrap().slot = Slot::Ready(Box::new(guest));
+        assert_eq!(kernel::live_resumed(0), 1, "a view was told");
+        let locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &locked.slot else {
+            unreachable!()
+        };
+        assert!(guest.pending.contains(&wire::Event::Response {
+            id: 10,
+            result: Ok(b"{}".to_vec()),
+            done: false,
+        }));
     }
 
     /// The bundled component, end to end through the host, on the kernel

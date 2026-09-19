@@ -795,6 +795,8 @@ impl Ducktape {
             LiveKind::Ready => {
                 self.hydration_generation += 1;
                 self.hydration_retry_attempt = 0;
+                self.views_live_serial =
+                    crate::module_view::view_live_resumed(self.views_live_serial);
                 let pending_task = Task::perform(
                     crate::backend::live_resync_load(
                         self.connected_rpc.to_owned(),
