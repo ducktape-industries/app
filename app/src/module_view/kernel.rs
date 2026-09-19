@@ -257,10 +257,6 @@ pub(super) struct Replies {
     /// [`Replies::backlogged`] wakes here and reads its socket again.
     drained: tokio::sync::watch::Sender<()>,
     fault: Mutex<Option<String>>,
-    /// The last node request this view made spent its retry budget and got
-    /// the host's sentence: a view that holds no `rpc.live` subscription has
-    /// nothing else that would make it ask again ([`live_resumed`]).
-    unanswered: std::sync::atomic::AtomicBool,
 }
 
 impl Default for Replies {
@@ -272,7 +268,6 @@ impl Default for Replies {
             changed: tokio::sync::watch::channel(()).0,
             drained: tokio::sync::watch::channel(()).0,
             fault: Mutex::default(),
-            unanswered: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -327,11 +322,6 @@ impl Replies {
         }
         self.item(id, result, false);
         self.fault().is_none()
-    }
-
-    /// See [`Replies::unanswered`].
-    pub(super) fn left_unanswered(&self) -> bool {
-        self.unanswered.load(Ordering::SeqCst)
     }
 
     pub(super) fn fault(&self) -> Option<String> {
@@ -798,8 +788,6 @@ fn spawn(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
     let task = runtime().spawn(async move {
         let _counted = counted;
         let result = until_answered(NODE_RETRY_BUDGET, || call(client.clone(), ask.clone())).await;
-        let unanswered = matches!(&result, Err(refusal) if refusal.reason == "rpc_client");
-        replies.unanswered.store(unanswered, Ordering::SeqCst);
         replies.item(id, result, true);
     });
     guest
@@ -2299,29 +2287,17 @@ pub fn live_hit(plane: &str, serial: i64) -> i64 {
 /// dropped socket. Anything may have moved while it was away, and a view
 /// whose request ran out of retries in the gap is still drawing that failure:
 /// every `rpc.live` subscription, on every plane, gets one item, so each view
-/// asks again. A view left on that failure with no subscription to hear it
-/// on is asked for again whole, as Retry does ([`super::retry`]) — a request
-/// it already had answered cannot be answered twice. Answers the serial as
-/// [`live_hit`] does.
+/// asks again. Answers the serial as [`live_hit`] does.
 pub fn live_resumed(serial: i64) -> i64 {
     let registry = super::registry().lock().expect("module views");
     let mut told = false;
-    let mut left = Vec::new();
-    for (module, mounted) in registry.iter() {
+    for mounted in registry.values() {
         let mut locked = mounted.lock().expect("module view lock");
         let Slot::Ready(guest) = &mut locked.slot else {
             continue;
         };
         told |= !guest.live_subscriptions.is_empty();
         invalidate_live(guest, None);
-        if guest.left_unanswered() {
-            left.push(*module);
-        }
-    }
-    drop(registry);
-    for module in left {
-        let _detached = super::retry(module);
-        told = true;
     }
     match told {
         true => serial + 1,
@@ -3131,29 +3107,5 @@ mod tests {
         replies.wait_idle();
         drop(node);
         runtime().block_on(crate::backend::lock_signer());
-    }
-
-    /// A view whose request spent its budget and that holds no `rpc.live`
-    /// subscription has nothing that makes it ask again: when the node's
-    /// stream is ready, its seat is asked for again whole, as Retry does. A
-    /// view the node has answered since is left alone.
-    #[test]
-    fn a_view_left_unanswered_without_a_live_subscription_is_asked_for_again() {
-        let Some(staged) = super::super::tests::staged("governance") else {
-            return;
-        };
-        let _turn = super::super::tests::blocking_connection_turn();
-        let guest = super::super::Guest::load_from("governance", &staged).expect("the view loads");
-        guest.replies.unanswered.store(true, Ordering::SeqCst);
-        let seat = super::super::tests::fresh("governance");
-        seat.lock().unwrap().slot = Slot::Ready(Box::new(guest));
-        let asked = seat.lock().unwrap().generation;
-        assert_eq!(live_resumed(0), 1, "the app redraws");
-        let locked = seat.lock().unwrap();
-        assert!(locked.generation > asked, "the seat was asked for again");
-        assert!(
-            !matches!(locked.slot, Slot::Ready(_)),
-            "as a fresh instance"
-        );
     }
 }
