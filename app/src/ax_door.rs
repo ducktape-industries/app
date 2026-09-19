@@ -64,7 +64,8 @@ pub(crate) struct AxNode {
 }
 
 /// The visible nodes of `window`'s last tree, in tree order; empty before
-/// the window has built one.
+/// the window has built one. An active modal returns only its reachable
+/// subtree, matching what the door promises a screen reader can reach.
 pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
     let Some(update) = window.a11y_tree() else {
         return Vec::new();
@@ -92,7 +93,14 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 }
             }
         };
-    push_children(&mut stack, root, &format!("{name}:"), name, &[]);
+    // Children are pushed in reverse so this is a deterministic pre-order
+    // walk in paint order; the last visible modal is the nested/tree-topmost
+    // boundary, just as the last painted sibling is visually on top.
+    let modal = topmost_modal(root, &nodes);
+    match modal {
+        Some(id) => stack.push((id, format!("{name}:"), name.to_owned(), Vec::new())),
+        None => push_children(&mut stack, root, &format!("{name}:"), name, &[]),
+    }
     while let Some((id, prefix, scope, mut path)) = stack.pop() {
         let Some(node) = nodes.get(&id) else { continue };
         if node.is_hidden() {
@@ -206,6 +214,55 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         node.id = id;
     }
     out
+}
+
+/// The last painted modal that is actually reachable. A hidden ancestor hides
+/// its whole subtree, including modal descendants.
+fn topmost_modal(
+    root: NodeId,
+    nodes: &HashMap<NodeId, &gpui_kit::accesskit::Node>,
+) -> Option<NodeId> {
+    let mut modal = None;
+    let mut stack = vec![root];
+    while let Some(id) = stack.pop() {
+        let Some(node) = nodes.get(&id) else { continue };
+        if node.is_hidden() {
+            continue;
+        }
+        if node.is_modal() {
+            modal = Some(id);
+        }
+        stack.extend(node.children().iter().rev().copied());
+    }
+    modal
+}
+
+#[cfg(test)]
+mod modal_tests {
+    use super::*;
+
+    #[test]
+    fn a_modal_below_a_hidden_ancestor_does_not_replace_the_visible_modal() {
+        let (root_id, visible_id, hidden_id, hidden_modal_id) =
+            (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
+        let mut root = gpui_kit::accesskit::Node::new(Role::Window);
+        root.set_children([visible_id, hidden_id]);
+        let mut visible = gpui_kit::accesskit::Node::new(Role::Dialog);
+        visible.set_modal();
+        let mut hidden = gpui_kit::accesskit::Node::new(Role::GenericContainer);
+        hidden.set_hidden();
+        hidden.set_children([hidden_modal_id]);
+        let mut hidden_modal = gpui_kit::accesskit::Node::new(Role::Dialog);
+        hidden_modal.set_modal();
+        let nodes = HashMap::from([
+            (root_id, &root),
+            (visible_id, &visible),
+            (hidden_id, &hidden),
+            (hidden_modal_id, &hidden_modal),
+        ]);
+
+        assert_eq!(topmost_modal(root_id, &nodes), Some(visible_id));
+    }
 }
 
 /// Each `(prefix, path)`'s id: its last segment, widened by its ancestors'

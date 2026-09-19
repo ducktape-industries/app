@@ -2626,6 +2626,7 @@ impl DesktopWindow {
                     .pb_2()
                     .child(inbox),
             );
+        let panel = gpui_notion::editor::ui::modal(panel);
         let model = self.model.clone();
         Some(
             // A popover dims nothing: the catcher is transparent and exists
