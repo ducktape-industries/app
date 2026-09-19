@@ -365,6 +365,7 @@ impl Desktop {
                     _activation: activation,
                     _observer: observer,
                     _keystrokes: keystrokes,
+                    _focus_lost: DesktopWindow::blur_what_leaves(window, cx),
                 }
             });
             opened_view = Some(view.downgrade());
@@ -526,11 +527,36 @@ pub(crate) struct DesktopWindow {
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
     _keystrokes: gpui_kit::Subscription,
+    _focus_lost: gpui_kit::Subscription,
 }
 
 struct NativeInput {
     state: Entity<gpui_kit::component::input::InputState>,
     subscription: gpui_kit::Subscription,
+}
+
+/// What Return in an onboarding field does (#144).
+#[derive(Clone, Copy)]
+enum Enter {
+    /// The message of the form's default button, sent as a click on it sends
+    /// it; the model refuses it when the button is disabled.
+    Submit(fn(&DesktopWindow, &gpui_kit::App) -> Message),
+    /// A field before a form's last one: on to the field named.
+    Next(&'static str),
+}
+
+fn password_submit(this: &DesktopWindow, cx: &gpui_kit::App) -> Message {
+    Message::PasswordSubmit(
+        this.value("password", cx),
+        this.value("password-confirm", cx),
+    )
+}
+
+fn restore_submit(this: &DesktopWindow, cx: &gpui_kit::App) -> Message {
+    Message::RestoreSubmit(
+        this.value("restore-name", cx),
+        this.value("restore-password", cx),
+    )
 }
 
 impl DesktopWindow {
@@ -563,6 +589,14 @@ impl DesktopWindow {
                 );
             });
         })
+    }
+
+    /// A focused element that leaves the tree — its tab left, its overlay
+    /// closed, its view reloading — takes the focus with it. Left behind, a
+    /// hidden view's editor still counts as focused and hears the next key
+    /// (#156). A click focuses it again once it is back.
+    fn blur_what_leaves(window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::Subscription {
+        cx.on_focus_lost(window, |_, window, cx| window.blur(cx))
     }
 
     fn global_key(&mut self, key: KeyPress, in_guest_editor: bool, cx: &mut Context<Self>) {
@@ -772,15 +806,13 @@ impl DesktopWindow {
             .unwrap_or_default()
     }
 
-    /// `enter`: the message of the form's default button, sent on Return in
-    /// the field as a click on it sends it (#144); the model refuses it when
-    /// the button is disabled.
+    /// `enter`: what Return in the field does (#144).
     fn input(
         &mut self,
         key: &'static str,
         placeholder: &'static str,
         masked: bool,
-        enter: Option<fn(&Self, &gpui_kit::App) -> Message>,
+        enter: Option<Enter>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
@@ -792,23 +824,32 @@ impl DesktopWindow {
                     .masked(masked)
             });
             let model = self.model.clone();
-            let subscription = cx.subscribe(&state, move |this, input, event, cx| {
-                if let (InputEvent::PressEnter { .. }, Some(enter)) = (event, enter) {
-                    let message = enter(this, cx);
-                    model.update(cx, |model, cx| model.dispatch(message, cx));
-                }
-                let InputEvent::Change = event else {
-                    return;
-                };
-                let secret_slot = matches!(key, "restore_words" | "join_invite");
-                if secret_slot {
-                    let text = input.read(cx).value().to_string();
-                    model.update(cx, |model, cx| {
-                        model.dispatch(Message::SecretTyped(key.into(), text), cx)
-                    });
-                }
-                cx.notify();
-            });
+            let subscription =
+                cx.subscribe_in(&state, window, move |this, input, event, window, cx| {
+                    match (event, enter) {
+                        (InputEvent::PressEnter { .. }, Some(Enter::Submit(message))) => {
+                            let message = message(this, cx);
+                            model.update(cx, |model, cx| model.dispatch(message, cx));
+                        }
+                        (InputEvent::PressEnter { .. }, Some(Enter::Next(next))) => {
+                            if let Some(next) = this.inputs.get(next) {
+                                next.state.update(cx, |next, cx| next.focus(window, cx));
+                            }
+                        }
+                        _ => {}
+                    }
+                    let InputEvent::Change = event else {
+                        return;
+                    };
+                    let secret_slot = matches!(key, "restore_words" | "join_invite");
+                    if secret_slot {
+                        let text = input.read(cx).value().to_string();
+                        model.update(cx, |model, cx| {
+                            model.dispatch(Message::SecretTyped(key.into(), text), cx)
+                        });
+                    }
+                    cx.notify();
+                });
             self.inputs.insert(
                 key,
                 NativeInput {
@@ -1036,7 +1077,7 @@ impl DesktopWindow {
                                 "unlock",
                                 "Wallet password",
                                 true,
-                                Some(|this, cx| Message::UnlockSubmit(this.value("unlock", cx))),
+                                Some(Enter::Submit(|this, cx| Message::UnlockSubmit(this.value("unlock", cx)))),
                                 window,
                                 cx,
                             ))
@@ -1099,8 +1140,22 @@ impl DesktopWindow {
                         "Protect your wallet",
                         "A password encrypts the key on this device.",
                     ))
-                    .child(self.input("password", "Password", true, None, window, cx))
-                    .child(self.input("password-confirm", "Confirm password", true, None, window, cx));
+                    .child(self.input(
+                        "password",
+                        "Password",
+                        true,
+                        Some(Enter::Next("password-confirm")),
+                        window,
+                        cx,
+                    ))
+                    .child(self.input(
+                        "password-confirm",
+                        "Confirm password",
+                        true,
+                        Some(Enter::Submit(password_submit)),
+                        window,
+                        cx,
+                    ));
                 let problem = crate::backend::password_problem(
                     &self.value("password", cx),
                     &self.value("password-confirm", cx),
@@ -1112,7 +1167,7 @@ impl DesktopWindow {
                             "password-submit",
                             "Create wallet",
                             invalid,
-                            |this, cx| Message::PasswordSubmit(this.value("password", cx)),
+                            password_submit,
                             cx,
                         )
                         .primary()
@@ -1188,7 +1243,7 @@ impl DesktopWindow {
                     "phrase-answer",
                     "Requested words, separated by spaces",
                     true,
-                    Some(|this, cx| Message::ConfirmPhraseSubmit(this.value("phrase-answer", cx))),
+                    Some(Enter::Submit(|this, cx| Message::ConfirmPhraseSubmit(this.value("phrase-answer", cx)))),
                     window,
                     cx,
                 ))
@@ -1218,22 +1273,32 @@ impl DesktopWindow {
                     "Restore your wallet",
                     "The recovery phrase rebuilds the key on this device.",
                 ))
-                .child(self.input("restore-name", "Wallet name", false, None, window, cx))
-                .child(self.input("restore_words", "Recovery phrase", true, None, window, cx))
-                .child(self.input("restore-password", "New password", true, None, window, cx))
+                .child(self.input(
+                    "restore-name",
+                    "Wallet name",
+                    false,
+                    Some(Enter::Next("restore_words")),
+                    window,
+                    cx,
+                ))
+                .child(self.input(
+                    "restore_words",
+                    "Recovery phrase",
+                    true,
+                    Some(Enter::Next("restore-password")),
+                    window,
+                    cx,
+                ))
+                .child(self.input(
+                    "restore-password",
+                    "New password",
+                    true,
+                    Some(Enter::Submit(restore_submit)),
+                    window,
+                    cx,
+                ))
                 .child(
-                    self.submit(
-                        "restore-submit",
-                        "Restore",
-                        busy,
-                        |this, cx| {
-                            Message::RestoreSubmit(
-                                this.value("restore-name", cx),
-                                this.value("restore-password", cx),
-                            )
-                        },
-                        cx,
-                    )
+                    self.submit("restore-submit", "Restore", busy, restore_submit, cx)
                     .primary()
                     .w_full()
                     .h_8(),
@@ -1446,9 +1511,9 @@ impl DesktopWindow {
                                             "remote",
                                             "Remote node address",
                                             false,
-                                            Some(|this, cx| {
+                                            Some(Enter::Submit(|this, cx| {
                                                 Message::ConnectRemoteSubmit(this.value("remote", cx))
-                                            }),
+                                            })),
                                             window,
                                             cx,
                                         )),
@@ -1506,7 +1571,7 @@ impl DesktopWindow {
                             "join_invite",
                             "Invitation",
                             true,
-                            Some(|_, _| Message::JoinNetworkSubmit),
+                            Some(Enter::Submit(|_, _| Message::JoinNetworkSubmit)),
                             window,
                             cx,
                         ))
@@ -1666,7 +1731,7 @@ impl DesktopWindow {
                     "account-name",
                     "Account name",
                     false,
-                    Some(|this, cx| Message::WelcomeCreateSubmit(this.value("account-name", cx))),
+                    Some(Enter::Submit(|this, cx| Message::WelcomeCreateSubmit(this.value("account-name", cx)))),
                     window,
                     cx,
                 ))
@@ -2666,6 +2731,7 @@ pub(crate) fn test_window(
             _activation: activation,
             _observer: observer,
             _keystrokes: keystrokes,
+            _focus_lost: DesktopWindow::blur_what_leaves(window, cx),
         }
     })
 }

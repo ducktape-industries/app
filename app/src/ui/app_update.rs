@@ -179,7 +179,7 @@ impl Ducktape {
             AppMessage::UnlockSubmit(pw) => self.on_unlock_submit(pw),
             AppMessage::KeyUnlocked(pubkey) => self.on_key_unlocked(pubkey),
             AppMessage::LoginSkip => self.on_login_skip(),
-            AppMessage::PasswordSubmit(pw) => self.on_password_submit(pw),
+            AppMessage::PasswordSubmit(pw, confirm) => self.on_password_submit(pw, confirm),
             AppMessage::DeviceKeyCreated(_name) => self.on_device_key_created(_name),
             AppMessage::PhraseWrittenDown => self.on_phrase_written_down(),
             AppMessage::ShowPhraseAgain => self.on_show_phrase_again(),
@@ -3184,8 +3184,11 @@ impl Ducktape {
         self.onboarding_error = "".to_owned();
         Task::done(AppMessage::NetworkEntered)
     }
-    fn on_password_submit(&mut self, pw: String) -> Task<AppMessage> {
-        if (self.mutation_phase != MutationPhase::Idle) || (pw).is_empty() {
+    /// Refuses what the disabled Create wallet refuses: Return sends this too.
+    fn on_password_submit(&mut self, pw: String, confirm: String) -> Task<AppMessage> {
+        if (self.mutation_phase != MutationPhase::Idle)
+            || !crate::backend::password_problem(&pw, &confirm).is_empty()
+        {
             return Task::none();
         }
         self.onboarding_error = "".to_owned();
