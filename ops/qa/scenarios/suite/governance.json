@@ -2,7 +2,7 @@
  "name": "governance",
  "about": "Open governance. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 governance/src/lib.rs:300-570 — there is no control to create a proposal: propose cannot be walked",

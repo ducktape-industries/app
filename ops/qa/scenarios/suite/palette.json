@@ -2,7 +2,7 @@
  "name": "palette",
  "about": "Open the palette, search, close it. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 palette — there are no commands: the palette only searches messages and pages, so \"run a command\" cannot be walked",

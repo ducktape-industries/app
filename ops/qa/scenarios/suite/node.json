@@ -2,7 +2,7 @@
  "name": "node",
  "about": "Read this node's overview, activity and modules. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 node/src/presentation.rs:558-566 — the tracing filter field is named by an example value (info,ducktape::join=debug), not its purpose",

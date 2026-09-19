@@ -2,7 +2,7 @@
  "name": "agents",
  "about": "Switch between the agent registry and runs. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 agents/src/lib.rs:1201 — the executor picker is a PickList with no label",

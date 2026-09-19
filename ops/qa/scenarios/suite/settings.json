@@ -2,7 +2,7 @@
  "name": "settings",
  "about": "Run an update check and flip one harmless preference back and forth. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 settings/src/lib.rs:825-955 — panes and choices are Buttons that report checked (epoch 8 has no Tab or RadioButton on the wire): readable, but a screen reader hears buttons"

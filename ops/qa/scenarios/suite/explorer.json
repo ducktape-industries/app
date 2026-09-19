@@ -2,7 +2,7 @@
  "name": "explorer",
  "about": "Search the workspace from the explorer. The block list shows only blocks that carried operations among the last 100 (explorer/src/host.rs:22): a quiet network has none, and the explorer cannot make one, so inspecting a block is not walked here. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 explorer/src/presentation.rs:179 — every block row is named Inspect block: rows differ only by id or a child label",

@@ -2,7 +2,7 @@
  "name": "boards",
  "about": "Create a board and put a note on it. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "params": {
   "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"

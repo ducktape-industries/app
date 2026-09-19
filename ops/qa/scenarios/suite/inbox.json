@@ -2,7 +2,7 @@
  "name": "inbox",
  "about": "Open the bell and close it. Starts from an open console and leaves it open.",
  "include": [
-  "../setup.json"
+  "setup.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 inbox/src/presentation.rs:126 — rows are unnamed buttons",
