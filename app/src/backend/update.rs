@@ -376,6 +376,8 @@ impl Updater {
                 stage::collect(&self.paths.releases_dir, &self.paths.partial_dir(), &keep);
                 Effect::Nothing
             }
+            // The node launcher's `record-world`; an app release speaks no module world.
+            Command::RecordWorld(_) => Effect::Nothing,
             Command::Qualify(sha) => launcher_owned("qualify", sha),
             Command::Exec(sha) => launcher_owned("exec", sha),
             Command::ResolveSwap { from: _, to } => launcher_owned("resolve_swap", to),

@@ -1022,8 +1022,12 @@ async fn an_invite_in_the_old_envelope_is_refused_by_name() {
         (blob, bytes)
     };
     let (fresh, off) = signed(None);
-    let (_, named) = signed(Some("coord.example.net:3478"));
+    let (current, named) = signed(Some("coord.example.net:3478"));
     workspace_config::decode_invite(&fresh).expect("the new envelope reads");
+    let read = workspace_config::decode_invite(&current).expect("the new envelope reads");
+    assert_eq!(read.descriptor, descriptor);
+    assert_eq!(read.token, token);
+    assert_eq!(read.coordinator.as_deref(), Some("coord.example.net:3478"));
 
     // The two envelopes agree up to the coordinator flag; the old one is the
     // same bytes without it, signed by the same issuer.

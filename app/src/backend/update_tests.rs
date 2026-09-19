@@ -422,6 +422,9 @@ fn rendered_clears_pending_healthy_and_collects() {
         boots: 1,
         pinned_sequence: 5,
     });
+    // core asks the world recorded first; the app does nothing and goes on.
+    let (_, commands) = app_update::step(pending.clone(), Event::Rendered);
+    assert_eq!(commands.first(), Some(&Command::RecordWorld(current)));
     let mut updater = Updater::new(pending, Some(keys()), paths.clone());
 
     assert_eq!(updater.apply(Event::Rendered), None);
