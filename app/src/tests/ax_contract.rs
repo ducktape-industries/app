@@ -368,12 +368,30 @@ fn views_audit(views: &std::path::Path) -> Vec<String> {
             "pending": null, "history": [{"height": 7, "code_hash": artifact.hash()}]
         })).collect::<Vec<_>>()
     }});
+    // one open, empty room: on a network with none, chat draws "No channels
+    // yet" and no composer to audit
+    let room = serde_json::json!({ "id": "general", "name": "general", "archived": false,
+        "post_policy": "open", "voice": false, "head_seq": 0, "huddle": [] });
+    node.answer_view(
+        "chat",
+        serde_json::json!({
+            "channels": { "channels": { "channels": [room], "has_more": false } },
+            "channel": { "channel": room },
+            "roots": { "roots": { "roots": [], "has_more": false } },
+            "members": { "members": { "members": [], "has_more": false } },
+        }),
+    );
     let client = runtime.block_on(fake_node(node));
     crate::module_view::connected(&client).joined();
     let mut failures = Vec::new();
     for module in modules {
         let mut app = Ducktape::initial_state();
         app.connected = true;
+        // a reader on an account, in the room a connect lands on (the only
+        // one): a key that holds no account gets chat's account notice where
+        // the composer would be
+        app.account_number = "1".to_owned();
+        app.active_channel = "general".to_owned();
         app.shell_tab = ShellTab::View(module);
         let (spec, _) = app.native_view();
         let mut cx = crate::frame_probe::headless_context();
@@ -387,9 +405,16 @@ fn views_audit(views: &std::path::Path) -> Vec<String> {
                 cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
             })
             .unwrap();
-        cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
-            .unwrap();
-        cx.run_until_parked();
+        // a view's own reads (chat's rooms) land off the window thread, each
+        // answer the next draw's: draw until none is owed
+        for _ in 0..64 {
+            cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+                .unwrap();
+            cx.run_until_parked();
+            if !crate::module_view::canary::wait_for_reads(module) {
+                break;
+            }
+        }
         let root = crate::module_view::canary::frame(module)
             .unwrap_or_else(|| panic!("view {module} did not render a frame"));
         // the view's own tree, held to the wire's rules
