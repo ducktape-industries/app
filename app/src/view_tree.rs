@@ -1960,6 +1960,22 @@ impl ViewTree {
         if let Some(role) = accessible.role {
             button = button.role(role);
         }
+        // GPUI's generic Click action falls back to a centre-point pointer
+        // click. Register the semantic action on the button itself so an
+        // accessibility press does not depend on overlapping hit-test layers.
+        let button = if let Some(message) = *on_press {
+            let view = cx.entity().downgrade();
+            gpui_notion::editor::ui::aria(button, |node| {
+                node.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.user_activation.set(Some(message));
+                        cx.emit(wire::Event::Message(message));
+                    });
+                })
+            })
+        } else {
+            button
+        };
         let button = announce(button, accessible);
         dimensions(pad(button, *padding), *width, *height).into_any_element()
     }
