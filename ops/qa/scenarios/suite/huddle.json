@@ -1,8 +1,9 @@
 {
  "name": "huddle",
- "about": "A fresh network has no channel: the walk makes its own (qa-huddle-<walk_tag>), then starts a huddle in it and leaves it. Starts from an open console and leaves it open.",
+ "about": "A fresh network has no channel: the walk makes its own (qa-huddle-<walk_tag>), then starts a huddle in it and leaves it, as the account new-account made. Starts from an open console and leaves it open.",
  "include": [
-  "setup.json"
+  "setup.json",
+  "new-account.json"
  ],
  "gaps": [
   "ducktape-views@a2a73e1 call/src/panel.rs:398-416 — who is speaking is shown only by initials colour",
@@ -15,7 +16,7 @@
   {
    "say": "open the Chat tab in the rail",
    "settle_ms": 4000,
-   "expect": "the Chat tab is selected and the chat view shows a New channel button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+   "expect": "the Chat tab is selected and the chat view shows a New channel button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading and the rail's account button reads Account: followed by a name (Account: qa-{param:walk_tag}, or Account #<number>), not Account: Sign in"
   },
   {
    "say": "press New channel in the chat sidebar",
@@ -33,7 +34,7 @@
   },
   {
    "say": "press the qa-huddle-{param:walk_tag} channel in the channel list",
-   "expect": "the room header's name label reads qa-huddle-{param:walk_tag} and the composer shows a Send button and, in the room header, a Start a huddle button"
+   "expect": "the room header's name label reads qa-huddle-{param:walk_tag} and the composer shows a Send button and, in the room header, a Start a huddle button that is enabled (its state does not list disabled)"
   },
   {
    "say": "press Start a huddle",

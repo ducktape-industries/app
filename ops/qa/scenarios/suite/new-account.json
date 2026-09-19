@@ -1,0 +1,36 @@
+{
+ "name": "new-account",
+ "about": "The suite's setup continues without an account; this walk makes one from the joined key (qa-<walk_tag>). Chat and huddle include it as a prelude, so it runs once per rig, just before the first of them and after chat-no-account (which needs no account to exist yet): name no suite file so it sorts before chat-no-account.json and includes this. Making the account is a user-signed create; the passkey half after it waits on a phone this walk does not have, so the walk cancels it there. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "steps": [
+  {
+   "say": "press the rail's account button, Account: Sign in",
+   "settle_ms": 4000,
+   "expect": "the account screen shows: a Your account heading, an Account name field, and Create account, Sign in, Use this device, Continue without account and Cancel buttons"
+  },
+  {
+   "say": "type the account name into the Account name field",
+   "text": "qa-{param:walk_tag}",
+   "expect": "the Account name field's value is qa-{param:walk_tag} and Create account is enabled (its state does not list disabled)"
+  },
+  {
+   "say": "press Create account",
+   "settle_ms": 10000,
+   "expect": "the account is made and the screen has gone on to the passkey step: an Account QR code image and the line 'Scan 1 of 2 — your phone creates the passkey.' show (a time-left line is fine); no error sentence. A line that refuses the account is a finding: quote it"
+  },
+  {
+   "say": "press Cancel to stop the passkey scan (the account is already made; this walk has no phone)",
+   "expect": "the Account QR code and the Scan 1 of 2 line are gone; the Your account screen still shows, with no error sentence"
+  },
+  {
+   "say": "press Cancel to go back to the console",
+   "settle_ms": 8000,
+   "expect": "the console shows again with its rail; the rail's account button reads Account: qa-{param:walk_tag} (or Account #<number>), not Account: Sign in, and there is no 'Sign in to use your account on this network.' banner"
+  }
+ ]
+}
