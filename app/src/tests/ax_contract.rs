@@ -419,7 +419,7 @@ fn views_audit(views: &std::path::Path) -> Vec<String> {
             .unwrap_or_else(|| panic!("view {module} did not render a frame"));
         // the view's own tree, held to the wire's rules
         let name = format!("{set}: view {module}");
-        for fault in view_accessibility_faults(&root) {
+        for fault in view_wire::accessibility_faults(&root) {
             failures.push(format!(
                 "{name}: {} — {:?}",
                 fault.path.join("/"),
@@ -458,40 +458,6 @@ fn views_audit(views: &std::path::Path) -> Vec<String> {
         }
     }
     failures
-}
-
-/// An unnamed overlay with content is a wire layout layer, not an AX dialog.
-/// Named overlays remain strict: the host must expose them as dialogs.
-fn view_accessibility_faults(root: &view_wire::Node) -> Vec<view_wire::Fault> {
-    fn layout_overlays(
-        node: &view_wire::Node,
-        path: &mut Vec<String>,
-        allowed: &mut Vec<Vec<String>>,
-    ) {
-        path.push(node.key().unwrap_or_default().into());
-        if let view_wire::Node::Overlay {
-            label: None,
-            children,
-            ..
-        } = node
-            && children.len() > 1
-        {
-            allowed.push(path.clone());
-        }
-        for child in node.children() {
-            layout_overlays(child, path, allowed);
-        }
-        path.pop();
-    }
-
-    let mut allowed = Vec::new();
-    layout_overlays(root, &mut Vec::new(), &mut allowed);
-    view_wire::accessibility_faults(root)
-        .into_iter()
-        .filter(|fault| {
-            fault.kind != view_wire::FaultKind::Unnamed || !allowed.contains(&fault.path)
-        })
-        .collect()
 }
 
 /// What the QA walk of #116 could not find in a view, found: the chat
