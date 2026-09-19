@@ -37,11 +37,22 @@ pub(crate) fn refused(error: ducktape_rpc::Error) -> view_wire::Refusal {
 /// exchange that never completed leaves the op's fate unknown, so the view
 /// must re-read before it retries. A node that said no named its reason, so
 /// that refusal reaches the view exactly as a read's does ([`refused`]).
+/// The unresolved sentence is the host's: the client's detail is transport
+/// text ("error sending request for url …"), which goes to the log.
 pub(crate) fn submit_refused(failure: ducktape_rpc::SubmitFailure) -> view_wire::Refusal {
     match failure {
         ducktape_rpc::SubmitFailure::Refused(error) => refused(error),
         ducktape_rpc::SubmitFailure::Unresolved(detail) => {
-            view_wire::Refusal::new("unresolved", detail)
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "submit_unresolved",
+                error = %detail,
+                "a write got no answer from the node"
+            );
+            view_wire::Refusal::new(
+                "unresolved",
+                "The node did not confirm this change; it may still land. Reload before trying again.",
+            )
         }
     }
 }
@@ -80,6 +91,11 @@ pub(crate) async fn seated_write(
         };
         signer.sign_with_blob(target, next_sequence(), &payload, required_blob)
     };
+    // Ask the node before the frame leaves: a node that is restarting fails
+    // HERE, as `rpc_client`, which the kernel retries — the op never left.
+    // A frame that left and got no answer is `unresolved` and is never
+    // resent: the node does not dedupe one op sent twice.
+    rpc.status_json().await.map_err(refused)?;
     submit_raw_frame(rpc, target, frame)
         .await
         .map_err(submit_refused)
@@ -382,6 +398,17 @@ pub(crate) async fn seat_signer(
     let pubkey = hex_encode(signer.key.public_key().as_ref());
     *SIGNER.lock().await = Some(signer);
     Ok(pubkey)
+}
+
+/// The seat over a key made from `seed`: a test that signs, without a key
+/// file to unlock.
+#[cfg(test)]
+pub(crate) async fn seat_test_signer(seed: u64) {
+    use commonware_cryptography::Signer as _;
+    *SIGNER.lock().await = Some(Signer {
+        password: Zeroizing::new(String::new()),
+        key: commonware_cryptography::ed25519::PrivateKey::from_seed(seed),
+    });
 }
 
 /// Sign one data-plane request with the key ALREADY SEATED — the seat the

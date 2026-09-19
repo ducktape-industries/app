@@ -662,6 +662,49 @@ pub(super) fn answer(
 
 type Call = fn(ducktape_rpc::Client, serde_json::Value) -> Answered;
 
+/// How long a view's node request keeps asking a node that does not answer.
+/// A scheduled node update is a restart of seconds; past this the view gets
+/// its own error path.
+const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Runs one node door until the node answers — a restart or a scheduled
+/// update closes the port for seconds, and a request that hit that gap used
+/// to stay failed for the view's whole life (#150).
+///
+/// Only the rpc client's own `rpc_client` token is retried: the request never
+/// got a node answer, the same class `view_source` reads as unreachable. A
+/// refusal the node authored is final. A write only ever fails with that token
+/// before its frame leaves ([`crate::backend::seated_write`] asks the node
+/// first), so a retry never sends one op twice. Backoff is the app's own
+/// connection's ([`crate::backend::retry_delay`]); when the budget is spent the
+/// view gets the host's sentence, never the transport's.
+async fn until_answered(budget: std::time::Duration, mut call: impl FnMut() -> Answered) -> Answer {
+    let deadline = tokio::time::Instant::now() + budget;
+    let mut attempt = 0;
+    loop {
+        let result = call().await;
+        let Err(refusal) = &result else {
+            return result;
+        };
+        if refusal.reason != "rpc_client" {
+            return result;
+        }
+        attempt += 1;
+        let delay = crate::backend::retry_delay(attempt);
+        if tokio::time::Instant::now() + delay > deadline {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "view_request_unanswered",
+                error = %refusal.sentence,
+                attempts = attempt,
+                "a view's node request got no answer within its retry budget"
+            );
+            return Err(wire::Refusal::new("rpc_client", super::NODE_UNREACHABLE));
+        }
+        tokio::time::sleep(delay).await;
+    }
+}
+
 /// Runs one node call for a request: decoded here, answered on the kernel
 /// runtime, delivered at the guest's next redraw.
 fn asset_read(guest: &mut Guest, id: u64, payload: &[u8]) {
@@ -708,7 +751,7 @@ fn spawn(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
     };
     let task = runtime().spawn(async move {
         let _counted = counted;
-        let result = call(client, ask).await;
+        let result = until_answered(NODE_RETRY_BUDGET, || call(client.clone(), ask.clone())).await;
         replies.item(id, result, true);
     });
     guest
@@ -939,7 +982,8 @@ fn spawn_raw(guest: &mut Guest, id: u64, payload: &[u8], call: RawCall) {
     };
     let task = runtime().spawn(async move {
         let _counted = counted;
-        let result = call(client, bytes).await;
+        let result =
+            until_answered(NODE_RETRY_BUDGET, || call(client.clone(), bytes.clone())).await;
         replies.item(id, result, true);
     });
     guest
@@ -2009,10 +2053,15 @@ fn admin(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
         for (name, value) in signed {
             request = request.header(name, value);
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| host_fault(format!("could not reach the node: {error}")))?;
+        let response = request.send().await.map_err(|error| {
+            tracing::warn!(target: "ducktape::app", reason = "admin_unanswered", error = %error);
+            // a connect that failed sent nothing, so it is retried like
+            // any unanswered read; one that left is the host's fault
+            match error.is_connect() {
+                true => wire::Refusal::new("rpc_client", super::NODE_UNREACHABLE),
+                false => host_fault(super::NODE_UNREACHABLE),
+            }
+        })?;
         let code = response.status();
         let text = response.text().await.unwrap_or_default();
         match code.is_success() {
@@ -2121,6 +2170,28 @@ pub fn live_hit(plane: &str, serial: i64) -> i64 {
             });
             told = true;
         }
+    }
+    match told {
+        true => serial + 1,
+        false => serial,
+    }
+}
+
+/// The node's stream is ready again — after a restart, a scheduled update, a
+/// dropped socket. Anything may have moved while it was away, and a view
+/// whose request ran out of retries in the gap is still drawing that failure:
+/// every `rpc.live` subscription, on every plane, gets one item, so each view
+/// asks again. Answers the serial as [`live_hit`] does.
+pub fn live_resumed(serial: i64) -> i64 {
+    let registry = super::registry().lock().expect("module views");
+    let mut told = false;
+    for mounted in registry.values() {
+        let mut locked = mounted.lock().expect("module view lock");
+        let Slot::Ready(guest) = &mut locked.slot else {
+            continue;
+        };
+        told |= !guest.live_subscriptions.is_empty();
+        invalidate_live(guest, None);
     }
     match told {
         true => serial + 1,
@@ -2443,6 +2514,55 @@ mod tests {
             admin_ask(&smuggled).is_err(),
             "a route that would need escaping is refused, never escaped"
         );
+    }
+
+    /// A NODE THAT STAYS AWAY, OR ANSWERS NOTHING USABLE (#150): whatever the
+    /// transport did — refused the connect, closed it unanswered, spoke no
+    /// HTTP, sent bytes that are no reply — past the budget the view gets the
+    /// host's sentence under the client's token, never the transport text the
+    /// rpc client wraps ("error sending request for url …"), which is what
+    /// Chat, Forge and Boards drew.
+    #[test]
+    fn a_request_past_its_retry_budget_answers_the_hosts_sentence() {
+        let closed = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("a free port")
+            .to_string();
+        let ask = serde_json::json!({ "target": "pages", "query": {} });
+        for address in [
+            closed,
+            answering(b""),
+            answering(b"not http\r\n\r\n"),
+            answering(b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\nconnection: close\r\n\r\nnot"),
+        ] {
+            let client = ducktape_rpc::Client::new(&format!("http://{address}")).expect("a client");
+            let refusal = runtime()
+                .block_on(until_answered(std::time::Duration::from_secs(2), || {
+                    view(client.clone(), ask.clone())
+                }))
+                .expect_err("nothing answers");
+            assert_eq!(
+                refusal,
+                wire::Refusal::new("rpc_client", super::super::NODE_UNREACHABLE),
+                "{address}"
+            );
+        }
+    }
+
+    /// A socket that answers every connection with exactly `reply`, then
+    /// closes it.
+    fn answering(reply: &'static [u8]) -> String {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address").to_string();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { break };
+                let _ = stream.read(&mut [0u8; 4096]);
+                let _ = stream.write_all(reply);
+            }
+        });
+        address
     }
 
     /// A refused ask never reaches the node, and the answer lands in
