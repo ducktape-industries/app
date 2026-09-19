@@ -165,6 +165,7 @@ impl Ducktape {
                     &self.rpc_endpoint,
                     &self.rpc_endpoint_override,
                     &self.rpc_endpoint_refusal,
+                    !self.node_data_dir.is_empty(),
                     &self.update_facts(),
                 ),
                 AppMessage::SettingsViewEvent,
