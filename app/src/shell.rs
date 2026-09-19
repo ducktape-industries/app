@@ -772,11 +772,15 @@ impl DesktopWindow {
             .unwrap_or_default()
     }
 
+    /// `enter`: the message of the form's default button, sent on Return in
+    /// the field as a click on it sends it (#144); the model refuses it when
+    /// the button is disabled.
     fn input(
         &mut self,
         key: &'static str,
         placeholder: &'static str,
         masked: bool,
+        enter: Option<fn(&Self, &gpui_kit::App) -> Message>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
@@ -788,7 +792,11 @@ impl DesktopWindow {
                     .masked(masked)
             });
             let model = self.model.clone();
-            let subscription = cx.subscribe(&state, move |_, input, event, cx| {
+            let subscription = cx.subscribe(&state, move |this, input, event, cx| {
+                if let (InputEvent::PressEnter { .. }, Some(enter)) = (event, enter) {
+                    let message = enter(this, cx);
+                    model.update(cx, |model, cx| model.dispatch(message, cx));
+                }
                 let InputEvent::Change = event else {
                     return;
                 };
@@ -1024,7 +1032,14 @@ impl DesktopWindow {
                             .flex_col()
                             .gap_2()
                             .p_2()
-                            .child(self.input("unlock", "Wallet password", true, window, cx))
+                            .child(self.input(
+                                "unlock",
+                                "Wallet password",
+                                true,
+                                Some(|this, cx| Message::UnlockSubmit(this.value("unlock", cx))),
+                                window,
+                                cx,
+                            ))
                             .child(
                                 self.submit(
                                     "unlock-submit",
@@ -1084,8 +1099,8 @@ impl DesktopWindow {
                         "Protect your wallet",
                         "A password encrypts the key on this device.",
                     ))
-                    .child(self.input("password", "Password", true, window, cx))
-                    .child(self.input("password-confirm", "Confirm password", true, window, cx));
+                    .child(self.input("password", "Password", true, None, window, cx))
+                    .child(self.input("password-confirm", "Confirm password", true, None, window, cx));
                 let problem = crate::backend::password_problem(
                     &self.value("password", cx),
                     &self.value("password-confirm", cx),
@@ -1173,6 +1188,7 @@ impl DesktopWindow {
                     "phrase-answer",
                     "Requested words, separated by spaces",
                     true,
+                    Some(|this, cx| Message::ConfirmPhraseSubmit(this.value("phrase-answer", cx))),
                     window,
                     cx,
                 ))
@@ -1202,9 +1218,9 @@ impl DesktopWindow {
                     "Restore your wallet",
                     "The recovery phrase rebuilds the key on this device.",
                 ))
-                .child(self.input("restore-name", "Wallet name", false, window, cx))
-                .child(self.input("restore_words", "Recovery phrase", true, window, cx))
-                .child(self.input("restore-password", "New password", true, window, cx))
+                .child(self.input("restore-name", "Wallet name", false, None, window, cx))
+                .child(self.input("restore_words", "Recovery phrase", true, None, window, cx))
+                .child(self.input("restore-password", "New password", true, None, window, cx))
                 .child(
                     self.submit(
                         "restore-submit",
@@ -1430,6 +1446,9 @@ impl DesktopWindow {
                                             "remote",
                                             "Remote node address",
                                             false,
+                                            Some(|this, cx| {
+                                                Message::ConnectRemoteSubmit(this.value("remote", cx))
+                                            }),
                                             window,
                                             cx,
                                         )),
@@ -1483,7 +1502,14 @@ impl DesktopWindow {
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Network invitation"),
                         )
-                        .child(self.input("join_invite", "Invitation", true, window, cx))
+                        .child(self.input(
+                            "join_invite",
+                            "Invitation",
+                            true,
+                            Some(|_, _| Message::JoinNetworkSubmit),
+                            window,
+                            cx,
+                        ))
                         .child(hint(
                             "Paste the invitation shared by a network member. It stays hidden on this screen."
                                 .into(),
@@ -1636,7 +1662,14 @@ impl DesktopWindow {
                             .child(self.qr.as_ref().expect("account QR").1.clone()),
                     );
                 }
-                body.child(self.input("account-name", "Account name", false, window, cx))
+                body.child(self.input(
+                    "account-name",
+                    "Account name",
+                    false,
+                    Some(|this, cx| Message::WelcomeCreateSubmit(this.value("account-name", cx))),
+                    window,
+                    cx,
+                ))
                     .child(
                         self.submit(
                             "account-create",

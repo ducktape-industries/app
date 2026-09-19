@@ -376,6 +376,176 @@ fn door_masks_secure_input_and_private_text() {
     assert!(!whole.contains("abandon"), "{whole}");
 }
 
+/// "Join your team", a stranger's first screen.
+fn join_screen() -> (HeadlessAppContext, AnyWindowHandle) {
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Join;
+    open(app, crate::shell::WindowKind::Onboarding)
+}
+
+fn invitation_field(cx: &mut HeadlessAppContext, window: AnyWindowHandle) -> String {
+    let nodes = read(cx, window, "onboarding");
+    nodes
+        .iter()
+        .find(|node| node.role == "PasswordInput")
+        .unwrap_or_else(|| panic!("the invitation field: {}", json(&nodes)))
+        .id
+        .clone()
+}
+
+/// `invite` typed into the invitation field through the door.
+fn type_invitation(cx: &mut HeadlessAppContext, window: AnyWindowHandle, invite: &str) {
+    let field = invitation_field(cx, window);
+    let typed = cx
+        .update_window(window, |_, window, cx| {
+            ax_door::perform_by_id("onboarding", window, cx, &field, "type", invite)
+        })
+        .unwrap();
+    assert!(typed, "{field} is showing");
+    cx.run_until_parked();
+}
+
+/// #144: Return in the invitation field submits it as Join network does —
+/// the one field's form and its default button.
+#[test]
+fn return_in_the_invitation_field_submits_it_as_join_network_does() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let submitted = |by_key: bool| {
+        let (mut cx, window) = join_screen();
+        type_invitation(&mut cx, window, "not-an-invitation");
+        draw(&mut cx, window);
+        match by_key {
+            true => keys(&mut cx, window, "enter", ""),
+            false => {
+                let nodes = read(&mut cx, window, "onboarding");
+                let join = nodes
+                    .iter()
+                    .find(|node| node.name == "Join network")
+                    .unwrap_or_else(|| panic!("Join network: {}", json(&nodes)));
+                assert!(join.actions.contains(&"press"), "{}", json(&nodes));
+                let pressed = cx
+                    .update_window(window, |_, window, cx| {
+                        ax_door::perform_by_id("onboarding", window, cx, &join.id, "press", "")
+                    })
+                    .unwrap();
+                assert!(pressed);
+                cx.run_until_parked();
+                draw(&mut cx, window);
+            }
+        }
+        json(&read(&mut cx, window, "onboarding"))
+    };
+    let by_key = submitted(true);
+    assert!(by_key.contains("cannot be read here"), "rejected: {by_key}");
+    assert_eq!(by_key, submitted(false));
+}
+
+/// A node's description is served — why a control is disabled, a field's
+/// placeholder — as a screen reader reads it after the name.
+#[test]
+fn door_serves_a_node_description() {
+    let mut send = view_wire::kit::button("send", "Send", None, view_wire::ButtonPreset::Primary);
+    let view_wire::Node::Button { description, .. } = &mut send else {
+        unreachable!()
+    };
+    *description = Some("Create an account to send".into());
+    let mut cx = crate::frame_probe::headless_context();
+    let window: AnyWindowHandle = cx
+        .open_window(size(px(400.), px(300.)), |window, cx| {
+            let view = cx.new(|_| crate::view_tree::ViewTree::new(send));
+            cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
+        })
+        .unwrap()
+        .into();
+    cx.update_window(window, |_, window, _| window.activate_a11y())
+        .unwrap();
+    draw(&mut cx, window);
+    let nodes = read(&mut cx, window, "view");
+    let send = nodes
+        .iter()
+        .find(|node| node.name == "Send")
+        .unwrap_or_else(|| panic!("Send: {}", json(&nodes)));
+    assert_eq!(
+        send.description.as_deref(),
+        Some("Create an account to send")
+    );
+    assert!(
+        json(&nodes).contains(r#""description":"Create an account to send""#),
+        "{}",
+        json(&nodes)
+    );
+}
+
+/// #147: a window the OS stops drawing (covered, asleep, locked) still
+/// serves its current tree — a door read draws it — and the revision moves
+/// only when the tree does.
+#[test]
+fn a_door_read_serves_a_change_no_frame_has_drawn() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let (mut cx, window) = join_screen();
+    let (calls, served) = futures::channel::mpsc::unbounded();
+    cx.update(|cx| {
+        cx.spawn(async move |cx| {
+            ax_door::serve(served, move |_| vec![("onboarding".into(), window)], cx).await
+        })
+        .detach()
+    });
+    let tree = |cx: &mut HeadlessAppContext| {
+        let (reply, answer) = std::sync::mpsc::channel();
+        let request = ax_door::Request::Tree {
+            filter: Default::default(),
+            compact: true,
+            bounds: false,
+        };
+        calls.unbounded_send((request, reply)).unwrap();
+        cx.run_until_parked();
+        answer.try_recv().expect("the door answered")
+    };
+    let joinable = |body: &str| {
+        let nodes: Vec<serde_json::Value> = serde_json::from_str(body).unwrap();
+        let join = nodes
+            .iter()
+            .find(|node| node["name"] == "Join network")
+            .unwrap_or_else(|| panic!("Join network: {body}"));
+        !join["state"]
+            .as_array()
+            .unwrap()
+            .contains(&"disabled".into())
+    };
+    let first = tree(&mut cx);
+    assert!(!joinable(first.body()), "no invitation yet");
+    let again = tree(&mut cx);
+    assert_eq!(
+        (again.body(), again.revision()),
+        (first.body(), first.revision()),
+        "nothing changed, nothing advanced"
+    );
+    // one key, read before any frame: this harness draws a dirty window as
+    // an update ends and a window draws before each key it dispatches, so
+    // the change and the read share one update and the change is one key
+    let field = invitation_field(&mut cx, window);
+    let (stale, served) = cx
+        .update_window(window, |_, window, cx| {
+            let typed = ax_door::perform_by_id("onboarding", window, cx, &field, "type", "x");
+            assert!(typed);
+            let stale = ax_door::snapshot("onboarding", window, false);
+            let mut seen = ax_door::Seen::default();
+            let served = ax_door::current("onboarding", window, cx, false, &mut seen);
+            (json(&stale), json(&served))
+        })
+        .unwrap();
+    assert!(!joinable(&stale), "the last frame's tree: {stale}");
+    assert!(joinable(&served), "{served}");
+    let after = tree(&mut cx);
+    assert!(joinable(after.body()), "{}", after.body());
+    assert!(
+        after.revision() > first.revision(),
+        "{:?} after {:?}",
+        after.revision(),
+        first.revision()
+    );
+}
+
 #[test]
 fn door_wait_answers_at_its_deadline() {
     let _turn = crate::module_view::tests::blocking_connection_turn();
@@ -423,13 +593,23 @@ fn door_round_trip_over_loopback() {
     let port = listener.local_addr().unwrap().port();
     std::thread::spawn(move || {
         ax_door::accept(listener, "t0ken", false, |request| {
-            Some(Reply::new(200, serde_json::json!(format!("{request:?}"))))
+            Some(Reply::new(200, serde_json::json!(format!("{request:?}"))).revised(7))
         })
     });
     let door = DoorFile {
         port,
         token: "t0ken".into(),
     };
+    {
+        use std::io::{Read as _, Write as _};
+        let mut raw = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        raw.write_all(b"GET /tree HTTP/1.1\r\nAuthorization: Bearer t0ken\r\n\r\n")
+            .unwrap();
+        let mut response = String::new();
+        raw.read_to_string(&mut response).unwrap();
+        let head = response.split_once("\r\n\r\n").unwrap().0;
+        assert!(head.contains("\r\nX-Ax-Revision: 7\r\n"), "{head}");
+    }
     let (status, body) = ax_door::call(&door, "GET", "/tree?window=console&compact=1", "").unwrap();
     assert_eq!(status, 200);
     assert!(
