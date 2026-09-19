@@ -20,12 +20,12 @@ use gpui_kit::{
     AnyElement, AnyView, App, AppContext as _, Bounds, BoxShadow, Context, CursorStyle, Div,
     Element, ElementId, Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable as _,
     FollowMode, FontWeight, GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, Image,
-    ImageFormat, InspectorElementId, InteractiveElement as _, IntoElement, LayoutId, ListAlignment,
-    ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit,
-    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement as _, StrikethroughStyle,
-    Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout, UnderlineStyle, Window,
-    auto, canvas, div, fill, img, point, px, relative, rgb, size, svg,
+    ImageFormat, InspectorElementId, InteractiveElement as _, IntoElement, KeyDownEvent, LayoutId,
+    ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
+    StrikethroughStyle, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
+    UnderlineStyle, Window, auto, canvas, div, fill, img, point, px, relative, rgb, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -239,10 +239,11 @@ impl EditorView {
 
     /// The wire `label`, onto the field the editor draws: the node this
     /// mount announces is a wrapper, not the text. A rich editor's blocks are
-    /// its own nodes, so only the plain field takes one.
+    /// its own nodes, named by their kind; the label names its page.
     fn label(&self, label: Option<String>, cx: &mut App) {
-        if let Self::Text(view) = self {
-            view.update(cx, |editor, cx| editor.set_label(label, cx));
+        match self {
+            Self::Text(view) => view.update(cx, |editor, cx| editor.set_label(label, cx)),
+            Self::Rich(view) => view.update(cx, |editor, cx| editor.set_label(label, cx)),
         }
     }
 
@@ -396,6 +397,8 @@ pub struct ViewTree {
     scroll_positions: HashMap<String, (Point<Pixels>, Point<Pixels>)>,
     pickers: HashMap<String, Picker>,
     drags: HashMap<String, Point<Pixels>>,
+    /// The overlays showing a dialog, and where focus enters each.
+    dialogs: HashMap<String, FocusHandle>,
     containers: HashMap<String, [f64; 2]>,
     bounds: HashMap<String, Bounds<Pixels>>,
     sensors: HashMap<String, SensorState>,
@@ -660,6 +663,7 @@ impl ViewTree {
             scroll_positions: HashMap::new(),
             pickers: HashMap::new(),
             drags: HashMap::new(),
+            dialogs: HashMap::new(),
             containers: HashMap::new(),
             bounds: HashMap::new(),
             sensors: HashMap::new(),
@@ -1022,6 +1026,7 @@ impl ViewTree {
         let mut scrolls = std::collections::HashSet::new();
         let mut pickers = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
+        let mut dialogs = std::collections::HashSet::new();
         let mut containers = std::collections::HashSet::new();
         let mut retained = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
@@ -1048,6 +1053,9 @@ impl ViewTree {
                 }
                 wire::Node::ResizeHandle { key, .. } => {
                     drags.insert(key.clone());
+                }
+                wire::Node::Overlay { key, children, .. } if children.len() > 1 => {
+                    dialogs.insert(key.clone());
                 }
                 wire::Node::Responsive { key, .. } => {
                     containers.insert(key.clone());
@@ -1125,6 +1133,7 @@ impl ViewTree {
         self.scroll_positions.retain(|key, _| scrolls.contains(key));
         self.pickers.retain(|key, _| pickers.contains(key));
         self.drags.retain(|key, _| drags.contains(key));
+        self.dialogs.retain(|key, _| dialogs.contains(key));
         self.containers.retain(|key, _| containers.contains(key));
         self.ranges.retain(|key, _| retained.contains(key));
         self.editors.retain(|key, _| retained.contains(key));
@@ -1498,7 +1507,9 @@ impl ViewTree {
             Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
             Node::Svg { .. } => self.vector(node, window),
             Node::Canvas { .. } => self.drawing(node, cx),
-            Node::Qr { code, .. } => qr(code),
+            Node::Qr { key, code } => {
+                announce(div().id(key.clone()).child(qr(code)), accessible(node)).into_any_element()
+            }
             Node::Surface { key, name, .. } => match self.surfaces.get(key) {
                 Some(surface) => surface.clone().into_any_element(),
                 None => div()
@@ -2662,6 +2673,12 @@ impl ViewTree {
                 .absolute()
                 .inset_0()
                 .bg(rgba(*backdrop));
+            let opened = !self.dialogs.contains_key(key);
+            let entry = self
+                .dialogs
+                .entry(key.clone())
+                .or_insert_with(|| cx.focus_handle())
+                .clone();
             let mut layer = div()
                 .id(format!("{key}/layer"))
                 .absolute()
@@ -2670,10 +2687,17 @@ impl ViewTree {
                 .p(px(*padding));
             if let Some(message) = on_dismiss {
                 let message = *message;
-                layer = layer.on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(message))),
-                );
+                layer = layer
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(message))),
+                    )
+                    .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+                        if event.keystroke.key == "escape" {
+                            cx.stop_propagation();
+                            cx.emit(wire::Event::Message(message));
+                        }
+                    }));
             }
             layer = match align_x {
                 wire::AlignX::Left => layer.justify_start(),
@@ -2701,6 +2725,13 @@ impl ViewTree {
                                 .surface_foreground,
                         )
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        // a dialog takes the keyboard when it opens; a
+                        // popup's view moves focus itself (widget commands)
+                        .children(
+                            label
+                                .is_some()
+                                .then(|| dialog_entry(&entry, opened, window, cx)),
+                        )
                         .child(self.node(modal, window, cx)),
                 ),
             );
@@ -3019,8 +3050,24 @@ impl ViewTree {
                     });
                 }));
         }
-        // an area with no role is plumbing assistive technology skips
+        // An area with no role is plumbing assistive technology skips. One
+        // with a role is a control: Tab reaches it, and Enter, Space or a
+        // screen reader's press is the pointer's press and release. A
+        // pointer's own click is already both.
         if role.is_some() {
+            let (press, release) = (*on_press, *on_release);
+            if press.is_some() || release.is_some() {
+                element = gpui_notion::editor::ui::keyboard(element).on_click(cx.listener(
+                    move |_, event: &gpui_kit::ClickEvent, _, cx| {
+                        if !event.is_keyboard() {
+                            return;
+                        }
+                        for message in [press, release].into_iter().flatten() {
+                            cx.emit(wire::Event::Message(message));
+                        }
+                    },
+                ));
+            }
             element = announce(element, accessible(node));
         }
         element
@@ -3241,7 +3288,7 @@ impl ViewTree {
                     StyledText::new(text.clone()).with_highlights([(0..text.len(), style)]);
                 let layout = styled.layout().clone();
                 let run_index = layouts.len();
-                layouts.push((text, layout.clone()));
+                layouts.push((text.clone(), layout.clone()));
                 let ranges = selections.clone();
                 let selection = canvas(
                     |_, _, _| (),
@@ -3258,6 +3305,9 @@ impl ViewTree {
                 if let (Some(handler), Some(link)) = (on_link, &span.link) {
                     let handler = *handler;
                     let link = link.clone();
+                    painted = gpui_notion::editor::ui::keyboard(
+                        painted.role(gpui_kit::Role::Link).aria_label(text.clone()),
+                    );
                     painted =
                         painted
                             .cursor_pointer()
@@ -4239,6 +4289,30 @@ fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
     Some(RenderImage::new(vec![image::Frame::new(pixels)]))
 }
 
+/// Where focus enters a dialog: a node-less element drawn first in it,
+/// tracking `entry`. The frame the dialog opens, focus that is still where
+/// it was at the end of that frame moves to the first Tab stop after this
+/// one — the dialog's first control — so a keyboard is in the dialog it
+/// opened, not behind it. Focus the dialog's own content took is left alone.
+pub(crate) fn dialog_entry(
+    entry: &FocusHandle,
+    opened: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    if opened {
+        let before = window.focused(cx);
+        let entry = entry.clone();
+        window.defer(cx, move |window, cx| {
+            if window.focused(cx) == before {
+                window.focus(&entry, cx);
+                window.focus_next(cx);
+            }
+        });
+    }
+    div().id("dialog-entry").track_focus(entry)
+}
+
 /// What one wire node is to assistive technology: the role it plays, the
 /// name it is called, and the value and states it reports.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -4416,15 +4490,24 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             expanded,
             selected,
             checked,
+            on_press,
+            on_release,
             ..
         } => Accessible {
             toggled: *checked,
             expanded: *expanded,
             selected: *selected,
+            disabled: on_press.is_none() && on_release.is_none(),
             ..labelled(role_of(role), label)
         },
         // a named overlay is a dialog; an unnamed one is layout
         Node::Overlay { label, .. } if label.is_some() => labelled(Role::Dialog, label),
+        // the wire gives a code no label: it is read as what it is
+        Node::Qr { .. } => Accessible {
+            role: Some(Role::Image),
+            name: Some("QR code".into()),
+            ..Default::default()
+        },
         // an unlabelled picture is decoration: it stays out of the tree
         Node::Image { label, .. } | Node::ImageViewer { label, .. } | Node::Svg { label, .. } => {
             match label.as_deref().and_then(named) {

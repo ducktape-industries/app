@@ -234,23 +234,25 @@ impl super::view::NotionEditor {
     fn render_turn_into(&self, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
         let label = self.active_block_label(cx);
         let focus = focus.clone();
-        Button::new("turn-into")
-            .ghost()
-            .small()
-            .label(label)
-            .icon(Lucide("chevron-down"))
-            .dropdown_menu(move |menu, _window, _cx| {
-                menu.action_context(focus.clone())
-                    .menu("Text", Box::new(actions::SetParagraph))
-                    .menu("Heading 1", Box::new(actions::SetHeading1))
-                    .menu("Heading 2", Box::new(actions::SetHeading2))
-                    .menu("Heading 3", Box::new(actions::SetHeading3))
-                    .menu("Bulleted list", Box::new(actions::ToggleBulletList))
-                    .menu("Numbered list", Box::new(actions::ToggleOrderedList))
-                    .menu("To-do list", Box::new(actions::ToggleTaskList))
-                    .menu("Blockquote", Box::new(actions::ToggleBlockquote))
-                    .menu("Code block", Box::new(actions::ToggleCodeBlock))
-            })
+        ui::menu_trigger(
+            Button::new("turn-into")
+                .ghost()
+                .small()
+                .label(label)
+                .icon(Lucide("chevron-down")),
+        )
+        .dropdown_menu(move |menu, _window, _cx| {
+            menu.action_context(focus.clone())
+                .menu("Text", Box::new(actions::SetParagraph))
+                .menu("Heading 1", Box::new(actions::SetHeading1))
+                .menu("Heading 2", Box::new(actions::SetHeading2))
+                .menu("Heading 3", Box::new(actions::SetHeading3))
+                .menu("Bulleted list", Box::new(actions::ToggleBulletList))
+                .menu("Numbered list", Box::new(actions::ToggleOrderedList))
+                .menu("To-do list", Box::new(actions::ToggleTaskList))
+                .menu("Blockquote", Box::new(actions::ToggleBlockquote))
+                .menu("Code block", Box::new(actions::ToggleCodeBlock))
+        })
     }
 
     /// Label of the active block's node type, for the turn-into trigger.
@@ -264,16 +266,18 @@ impl super::view::NotionEditor {
 
     fn render_more_menu(&self, focus: &FocusHandle, _cx: &mut Context<Self>) -> impl IntoElement {
         let focus = focus.clone();
-        ui::icon_button("more-marks", "ellipsis", "More formatting")
-            .ghost()
-            .small()
-            .dropdown_menu(move |menu, _window, _cx| {
-                menu.action_context(focus.clone())
-                    .menu("Superscript", Box::new(actions::ToggleSuperscript))
-                    .menu("Subscript", Box::new(actions::ToggleSubscript))
-                    .separator()
-                    .menu("Reset formatting", Box::new(actions::ClearMarks))
-            })
+        ui::menu_trigger(
+            ui::icon_button("more-marks", "ellipsis", "More formatting")
+                .ghost()
+                .small(),
+        )
+        .dropdown_menu(move |menu, _window, _cx| {
+            menu.action_context(focus.clone())
+                .menu("Superscript", Box::new(actions::ToggleSuperscript))
+                .menu("Subscript", Box::new(actions::ToggleSubscript))
+                .separator()
+                .menu("Reset formatting", Box::new(actions::ClearMarks))
+        })
     }
 
     fn render_link_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -288,9 +292,7 @@ impl super::view::NotionEditor {
     /// Text and highlight swatches, as the template's color popover.
     fn render_color_menu(&self, focus: &FocusHandle, _cx: &mut Context<Self>) -> impl IntoElement {
         let focus = focus.clone();
-        ui::icon_button("color", "palette", "Color")
-            .ghost()
-            .small()
+        ui::menu_trigger(ui::icon_button("color", "palette", "Color").ghost().small())
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu.action_context(focus.clone()).label("Text color");
                 for color in TextColor::ALL {
