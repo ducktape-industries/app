@@ -321,6 +321,7 @@ pub fn settings_view(
     rpc_endpoint: &str,
     rpc_endpoint_override: &str,
     rpc_endpoint_refusal: &str,
+    rpc_endpoint_editable: bool,
     updates: &crate::backend::update::UpdateFacts,
 ) -> ViewSpec {
     let appearance = match appearance {
@@ -357,6 +358,12 @@ pub fn settings_view(
         "rpc_endpoint": rpc_endpoint,
         "rpc_endpoint_override": rpc_endpoint_override,
         "rpc_endpoint_refusal": rpc_endpoint_refusal,
+        "rpc_endpoint_editable": rpc_endpoint_editable,
+        "rpc_endpoint_editability_reason": if rpc_endpoint_editable {
+            ""
+        } else {
+            "This connection has no local workspace."
+        },
         "tasting": taste_props(),
         "update_state": updates.state,
         "update_current": updates.current,
@@ -6947,6 +6954,7 @@ pub(crate) mod tests {
                 "",
                 "",
                 "",
+                true,
                 &updates,
             ),
             forge_view(false, true, "", "", chain, "", "", 0),

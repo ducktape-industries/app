@@ -215,6 +215,14 @@ fn settings_draws_the_node_rpc_url_and_a_kept_one_reconnects_the_session() {
         ]
         .map(|fact| props[fact].clone())
     };
+    let editability = |app: &Ducktape| -> [serde_json::Value; 2] {
+        let (view, _) = app.native_view();
+        let props: serde_json::Value = serde_json::from_slice(&view.props).unwrap();
+        [
+            props["rpc_endpoint_editable"].clone(),
+            props["rpc_endpoint_editability_reason"].clone(),
+        ]
+    };
     let event = crate::module_view::view_event(
         "endpoint".into(),
         r#"{"url":"http://100.92.85.92:28990"}"#.into(),
@@ -240,6 +248,10 @@ fn settings_draws_the_node_rpc_url_and_a_kept_one_reconnects_the_session() {
         },
     }));
     assert_eq!(drawn(&app), ["http://127.0.0.1:8844", "", ""]);
+    assert_eq!(
+        editability(&app),
+        [serde_json::json!(true), serde_json::json!("")]
+    );
 
     let refusal = "A node RPC URL is http:// or https:// followed by a host and an optional port, and nothing else.";
     let _ = app.update(AppMessage::SettingsEndpointRefused(
@@ -268,6 +280,26 @@ fn settings_draws_the_node_rpc_url_and_a_kept_one_reconnects_the_session() {
         },
     ));
     assert_eq!(drawn(&app), ["http://127.0.0.1:8844", "", ""]);
+
+    let _ = app.update(AppMessage::SettingsLoaded(crate::backend::SettingsFacts {
+        generation: app.settings_generation,
+        key_path: "/w/user.key".into(),
+        key_state: "encrypted".into(),
+        data_dir: String::new(),
+        user_key: "abcd".into(),
+        endpoint: crate::backend::EndpointFacts {
+            endpoint: remote.into(),
+            endpoint_override: String::new(),
+        },
+    }));
+    assert_eq!(drawn(&app), [remote, "", ""]);
+    assert_eq!(
+        editability(&app),
+        [
+            serde_json::json!(false),
+            serde_json::json!("This connection has no local workspace."),
+        ]
+    );
 }
 
 /// THE JOIN OPENS THE CALL'S WINDOW, AND THE CONSOLE KEEPS SAYING SO.

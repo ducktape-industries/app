@@ -3813,6 +3813,7 @@ impl Ducktape {
         self.onboarding_error = "".to_owned();
         self.connected_rpc = self.rpc.to_owned();
         self.network_chain_id = "".to_owned();
+        self.node_data_dir.clear();
         self.network_name =
             crate::backend::network_label(&self.network_chain_id, &self.connected_rpc);
         self.node_phase.clear();
