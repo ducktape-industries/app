@@ -26,18 +26,25 @@ gpui-notion = { path = "crates/gpui-notion" }
 sdk = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "sdk" }
 # view-wire is pinned apart from the rest of the sdk line: the host speaks two
 # wire epochs at once (`app/src/module_view/epoch8.rs`). `view-wire` is the
-# epoch the presenter works on (10, 1c20b24); `view-wire-8` is the epoch every
+# epoch the presenter works on (10, 81953e6); `view-wire-8` is the epoch every
 # view deployed before it was built at (8, 5fa05de — the sdk rev the app pinned
 # then), linked only to decode those views' frames. Core's noded links its own
 # view-wire privately (bindgen + manifest), so no type crosses between them.
-view-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "1c20b2489e4849f060e586d2b1061fa3db21f0b0", package = "view-wire" }
+view-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "view-wire" }
 view-wire-8 = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2", package = "view-wire" }
 # the `duck://` grammar, at the view-wire rev: the rest of the line's
-# duck-address (5fa05de) has no typed tails. files-wire carries `FileAddress`.
-duck-address = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "1c20b2489e4849f060e586d2b1061fa3db21f0b0", package = "duck-address" }
-files-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "1c20b2489e4849f060e586d2b1061fa3db21f0b0", package = "files-wire" }
+# duck-address (5fa05de) has no typed tails and no account address.
+# files-wire carries `FileAddress`.
+duck-address = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "duck-address" }
+files-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "files-wire" }
 design = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "design" }
-chat = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "chat-wire" }
+# chat's client view model, at the view-wire rev: a mention links the
+# account's `duck://<chain>/identity/<n>`, which chat-wire at 5fa05de cannot
+# mint. Its `NameDirectory` reads the `AccountView` of the identity-wire it
+# links (`chat-identity`); the app's `identity` stays core's (5fa05de), and
+# `backend/roster.rs` hands the one record to the other — the shape did not move.
+chat = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "chat-wire" }
+chat-identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "identity-wire" }
 forge = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "forge-wire" }
 gateway = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "gateway-wire" }
 identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "identity-wire" }

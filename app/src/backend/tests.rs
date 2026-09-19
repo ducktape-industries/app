@@ -285,7 +285,7 @@ async fn load_messages(rpc: &RpcClient, channel_id: &str) -> Result<Vec<ChatMess
     let facts = ReaderFacts::current().await;
     let mut messages: Vec<ChatMessage> = roots
         .into_iter()
-        .map(|row| chat_message(row, facts.reader()))
+        .map(|row| chat_message(row, facts.reader(), &test_chain()))
         .collect();
     mark_message_groups(&mut messages);
     Ok(messages)

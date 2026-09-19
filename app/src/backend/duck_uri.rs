@@ -7,7 +7,8 @@
 //!
 //! [`classify_duck_link`] maps a parsed address onto the open plane's kinds
 //! through each module's typed tail (`PageAddress`, `MessageAddress`,
-//! `FileAddress`, `RunAddress`, `ForgeRepoAddress` / `ForgeLocator`): every
+//! `FileAddress`, `RunAddress`, `ForgeRepoAddress` / `ForgeLocator`,
+//! `AccountAddress`): every
 //! surface that opens or embeds a link classifies through it and nowhere
 //! else. What names nothing is [`DuckKind::Unknown`] carrying the sentence
 //! why — never an error here; the caller decides what "nothing to open"
@@ -18,12 +19,15 @@
 //! against the connected one, compared as the crate's `ChainId`.
 //!
 //! THE OLD FORM IS NOT READ (core #2637, ruling Q4). `duck://<module>/…
-//! [?net=<digest>]` is refused with [`OLD_FORM`], never guessed at: a stored
-//! link of that form opens nothing rather than the wrong thing.
+//! [?net=<digest>]` and the chain-less `duck://account/<n>` are refused with
+//! [`OLD_FORM`], never guessed at: a stored link of that form opens nothing
+//! rather than the wrong thing. The one reader of `duck://account/<n>` left is
+//! for a mention an epoch-8 chat view hands over (`module_view/epoch8.rs`).
 
 pub(crate) use crate::DuckKind;
 use duck_address::chat::MessageAddress;
 use duck_address::forge::{ForgeLocator, ForgeRepoAddress, ForgeTarget};
+use duck_address::identity::AccountAddress;
 use duck_address::pages::PageAddress;
 use duck_address::runs::RunAddress;
 use duck_address::{Address, ChainId, Refused};
@@ -58,8 +62,8 @@ pub struct DuckLink {
     /// `account`: the account number, as the DM peer list keys it.
     pub account: String,
     /// The network the address names; `None` for a link that names none (a
-    /// web link, an account, `Unknown`). `foreign_network` carries the one
-    /// that did NOT match.
+    /// web link, `Unknown`). `foreign_network` carries the one that did NOT
+    /// match.
     pub chain: Option<ChainId>,
     /// `unknown`: why it opens nothing, as a sentence to show.
     pub refusal: String,
@@ -108,12 +112,6 @@ pub fn classify_duck_link(url: String) -> DuckLink {
     let Some(rest) = url.strip_prefix("duck://") else {
         return DuckLink::unknown("this link names nothing the app can open");
     };
-    if let Some(account) = account_link(&url) {
-        return DuckLink {
-            account,
-            ..DuckLink::of(DuckKind::Account)
-        };
-    }
     let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
     if authority.parse::<ChainId>().is_err() {
         return DuckLink::unknown(OLD_FORM);
@@ -164,6 +162,10 @@ fn typed(address: &Address) -> Result<DuckLink, Refused> {
             dispatch: RunAddress::try_from(address)?.digest,
             ..DuckLink::of(DuckKind::Run)
         },
+        "identity" => DuckLink {
+            account: AccountAddress::try_from(address)?.account.to_string(),
+            ..DuckLink::of(DuckKind::Account)
+        },
         // forge, the one module left (`Address::parse` refuses the rest): a
         // bare `<owner>/<repo>` is the repository, anything longer a locator.
         _ if address.path.len() == 2 => DuckLink {
@@ -204,16 +206,6 @@ fn counted(number: u64) -> Result<i64, Refused> {
             format!("{number} is past the largest number this app opens."),
         )
     })
-}
-
-/// `duck://account/<n>`, exactly as chat's `duck_account_link` spells a
-/// mention. An account is identity, not a module, so `duck-address` has no
-/// form for it and the sdk still mints this one; it names no network and
-/// resolves against the connected one.
-fn account_link(url: &str) -> Option<String> {
-    let account: u64 = url.strip_prefix("duck://account/")?.parse().ok()?;
-    let spelled = account > 0 && ::chat::client::duck_account_link(account) == url;
-    spelled.then(|| account.to_string())
 }
 
 /// The open plane's entry: the grammar, plus the one check the grammar cannot
@@ -396,8 +388,7 @@ mod tests {
     }
 
     /// Links minted by the crate's own typed tails, as a view mints them,
-    /// read back to the same thing — and the one form the sdk mints outside
-    /// the crate, chat's account mention.
+    /// read back to the same thing — chat's account mention among them.
     #[test]
     fn minted_addresses_round_trip_through_the_classifier() {
         use duck_address::chat::MessageAddress;
@@ -436,35 +427,37 @@ mod tests {
         let file = FileAddress {
             path: vec!["shared".into(), "보고서 Final.pdf".into()],
         };
-        let minted = file.address(chain).expect("mints").to_string();
+        let minted = file.address(chain.clone()).expect("mints").to_string();
         assert_eq!(
             resolve_duck_link(minted, HERE.into()).path,
             "/shared/보고서 Final.pdf"
         );
 
-        let account = classify_duck_link(::chat::client::duck_account_link(7));
+        let minted = AccountAddress { account: 7 }
+            .address(chain.clone())
+            .expect("mints")
+            .to_string();
+        assert_eq!(minted, format!("{AT}/identity/7"));
+        assert_eq!(minted, ::chat::client::duck_account_link(&chain, 7));
+        let account = resolve_duck_link(minted, HERE.into());
         assert_eq!(
             (account.kind, account.account.as_str(), account.chain),
-            (DuckKind::Account, "7", None)
+            (DuckKind::Account, "7", Some(chain))
         );
-        for other in [
-            "duck://account/0",
-            "duck://account/07",
-            "duck://account/7/keys",
-        ] {
-            assert_eq!(kind(other), DuckKind::Unknown, "{other}");
-        }
+        assert!(refusal(&format!("{AT}/identity/07")).contains("leading zero"));
+        assert!(refusal(&format!("{AT}/identity/7/keys")).contains("is not one"));
     }
 
     /// THE OLD FORM (ruling Q4): every row of the module table this app
-    /// used to read, with or without `?net=`, and the query as chat's writer
-    /// still spells it, is refused with one sentence — never read as the
-    /// module it names.
+    /// used to read, with or without `?net=` as chat's writer spelled it, and
+    /// the chain-less account mention, is refused with one sentence — never
+    /// read as the module it names. Pasted or launched, `duck://account/<n>`
+    /// is an old form like the rest; only an epoch-8 view's mention is read
+    /// (`module_view/epoch8.rs`).
     #[test]
     fn the_old_form_is_refused_with_the_sentence_not_misrouted() {
         let dispatch = "ab".repeat(32);
-        let net = ::chat::client::duck_net_query(HERE);
-        assert_eq!(net, "?net=b5b6ea90");
+        let net = "?net=b5b6ea90";
         for old in [
             "duck://page/pg-1".to_owned(),
             "duck://page/pg-1#blk-7".into(),
@@ -479,6 +472,7 @@ mod tests {
             format!("duck://channel/general{net}#42"),
             format!("duck://run/{dispatch}"),
             "duck://team.duck/index.html".into(),
+            "duck://account/7".into(),
             "duck://".into(),
         ] {
             assert_eq!(refusal(&old), OLD_FORM, "{old}");
@@ -524,9 +518,13 @@ mod tests {
             "a web link belongs to no network"
         );
         assert_eq!(
-            resolve_duck_link("duck://account/7".into(), HERE.into()).kind,
-            DuckKind::Account,
-            "an account names no network"
+            resolve_duck_link(format!("{AT}/identity/7"), HERE.into()).account,
+            "7"
+        );
+        assert_eq!(
+            resolve_duck_link("duck://dognet-aaaaaaaa/identity/7".into(), HERE.into()).kind,
+            DuckKind::ForeignNetwork,
+            "account 7 on another network is not this network's account 7"
         );
 
         let refused = foreign_network_error(&theirs, HERE.into());

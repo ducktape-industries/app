@@ -3639,6 +3639,17 @@ impl Epoch {
         }
     }
 
+    /// Guest → host: the link a view hands `host.open_link`. An epoch-8 chat
+    /// view spells an account mention the way it always did, and that one
+    /// spelling is read for it alone (`epoch8::open_link`) on `chain`, the
+    /// chain the view was handed; an epoch-10 view hands the address.
+    fn open_link(self, link: String, chain: &str) -> String {
+        match self {
+            Epoch::Eight => epoch8::open_link(link, chain),
+            Epoch::Ten => link,
+        }
+    }
+
     /// Host → guest: one tick's events. Everything the host writes for a
     /// guest — events, answers inside them, widget-command replies — has
     /// the same layout at 8 and 10 (only `Node` moved), so both epochs take
