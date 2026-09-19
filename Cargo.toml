@@ -24,14 +24,10 @@ gpui-notion = { path = "crates/gpui-notion" }
 
 # --- sdk-line: ducktape-sdk (types-only wire/platform crates) ---
 sdk = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "sdk" }
-# view-wire is pinned apart from the rest of the sdk line: the host speaks two
-# wire epochs at once (`app/src/module_view/epoch8.rs`). `view-wire` is the
-# epoch the presenter works on (10, 81953e6); `view-wire-8` is the epoch every
-# view deployed before it was built at (8, 5fa05de — the sdk rev the app pinned
-# then), linked only to decode those views' frames. Core's noded links its own
-# view-wire privately (bindgen + manifest), so no type crosses between them.
+# view-wire is pinned apart from the rest of the sdk line: the host and
+# presenter speak epoch 10 (81953e6). Core's noded links its own view-wire
+# privately (bindgen + manifest), so no type crosses between them.
 view-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "view-wire" }
-view-wire-8 = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2", package = "view-wire" }
 # the `duck://` grammar, at the view-wire rev: the rest of the line's
 # duck-address (5fa05de) has no typed tails and no account address.
 # files-wire carries `FileAddress`.

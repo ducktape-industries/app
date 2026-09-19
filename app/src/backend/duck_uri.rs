@@ -21,9 +21,7 @@
 //! THE OLD FORM IS NOT READ (core #2637, ruling Q4). `duck://<module>/…
 //! [?net=<digest>]` and the chain-less `duck://account/<n>` are refused with
 //! [`OLD_FORM`], never guessed at: a stored link of that form opens nothing
-//! rather than the wrong thing. The one reader of the old form left is for a
-//! link a deployed epoch-8 view hands `host.open_link`: it is re-spelled as
-//! the address it names before it reaches here (`module_view/epoch8.rs`).
+//! rather than the wrong thing.
 
 pub(crate) use crate::DuckKind;
 use duck_address::chat::MessageAddress;
@@ -453,8 +451,7 @@ mod tests {
     /// used to read, with or without `?net=` as chat's writer spelled it, and
     /// the chain-less account mention, is refused with one sentence — never
     /// read as the module it names. Pasted or launched, `duck://account/<n>`
-    /// is an old form like the rest; only an epoch-8 view's mention is read
-    /// (`module_view/epoch8.rs`).
+    /// is an old form like the rest.
     #[test]
     fn the_old_form_is_refused_with_the_sentence_not_misrouted() {
         let dispatch = "ab".repeat(32);

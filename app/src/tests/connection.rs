@@ -385,9 +385,7 @@ fn a_launch_link_the_app_cannot_open_says_so_in_the_console() {
     }
 }
 
-/// The old form is not read at launch, even where the same string clicked
-/// inside a deployed epoch-8 view opens (`module_view/epoch8.rs`): a launch
-/// link comes from no view.
+/// The old form is not read at launch: a launch link comes from no view.
 #[test]
 fn a_launch_link_in_the_old_form_is_refused_whatever_it_names() {
     for link in [
@@ -407,9 +405,6 @@ fn a_well_formed_launch_link_still_opens_files() {
     let link = "duck://dognet-040b41aa/files/shared/no-such-path-rehearsal-open/missing.txt";
     let app = launched_on(link, true);
     assert_eq!(app.shell_tab, ShellTab::View("files"));
-    assert_eq!(
-        app.fs_route, link,
-        "the address; `Epoch::props` spells it per view"
-    );
+    assert_eq!(app.fs_route, link, "the epoch-10 address reaches the view");
     assert!(app.error.is_empty());
 }

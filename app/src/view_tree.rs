@@ -4342,9 +4342,6 @@ pub(crate) struct Accessible {
 /// controls' roles: it says `label`, and the role follows from the variant.
 /// The node's accessibility id is its wire key under the module's view, the
 /// element id each variant is already built with.
-///
-/// A view built at wire epoch 8 reaches here with every field epoch 10 added
-/// `None` (`module_view/epoch8.rs`), so it maps as it did before them.
 pub(crate) fn accessible(node: &wire::Node) -> Accessible {
     use gpui_kit::Role;
     use wire::Node;

@@ -108,8 +108,6 @@ zeroize.workspace = true
 # same wasmtime pin as the node — a view is not consensus, but one runtime
 # in one binary is one set of semantics to reason about.
 view-wire = { workspace = true, features = ["manifest"] }
-# The epoch-8 wire, only to read the frames of views deployed at it.
-view-wire-8.workspace = true
 wasmtime.workspace = true
 
 # The native notification leg (`src/backend/notify.rs`): being @mentioned or
