@@ -47,6 +47,8 @@ pub struct NotionEditor {
     pub(crate) blocks: Vec<Block>,
     next_id: u64,
     focus_handle: FocusHandle,
+    /// What assistive technology calls the page as a whole.
+    name: SharedString,
     /// Block whose input currently holds focus.
     pub(crate) focused: Option<BlockId>,
     /// Review aid: show every block's gutter controls without hovering.
@@ -97,7 +99,10 @@ impl NotionEditor {
         let mut this = Self {
             blocks: Vec::new(),
             next_id: 1,
-            focus_handle: cx.focus_handle(),
+            // the page itself holds focus while whole blocks are selected,
+            // so Tab reaches it too
+            focus_handle: cx.focus_handle().tab_stop(true),
+            name: "Page".into(),
             focused: None,
             always_show_gutter: false,
             block_bounds: HashMap::new(),
@@ -240,6 +245,17 @@ impl NotionEditor {
             let state = self.blocks[ix].state.clone();
             state.update(cx, |state, cx| state.set_placeholder(text, window, cx));
         }
+    }
+
+    /// What assistive technology calls the page.
+    pub fn name(&self) -> &SharedString {
+        &self.name
+    }
+
+    /// What assistive technology calls the page; "Page" until named.
+    pub fn set_name(&mut self, name: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.name = name.into();
+        cx.notify();
     }
 
     /// Review aid: keep the gutter controls on screen for every block, for
@@ -991,8 +1007,17 @@ impl NotionEditor {
         }
     }
 
-    fn render_text(&self, ix: usize, layout: &BlockLayout, cx: &mut Context<Self>) -> AnyElement {
+    fn render_text(
+        &self,
+        ix: usize,
+        layout: &BlockLayout,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let block = &self.blocks[ix];
+        // What the block is, as the slash menu names it: a screen reader
+        // hears "Heading 1" or "To-do list" and the words in it.
+        let name = self.spec_at(ix, cx).label(&block.attrs);
         let height = self.block_height(ix, layout, cx);
         let family = if layout.mono {
             cx.theme().mono_font_family.clone()
@@ -1019,15 +1044,36 @@ impl NotionEditor {
                     .mt(-lead.y)
                     .mb(-(block.fit.inset() - lead.y))
                     .child(
-                        Editor::new(&block.state)
-                            .appearance(false)
-                            .bordered(false)
-                            .h(height)
-                            .font_family(family)
-                            .text_size(layout.text_size)
-                            .font_weight(layout.font_weight)
-                            .line_height(relative(layout.line_height))
-                            .text_color(color),
+                        // One node for the block's text (`ui::text_field`):
+                        // the kit's own input keeps its tab stop on an inner
+                        // element with no node.
+                        super::ui::text_field(
+                            ("block-text", block.id.0 as usize),
+                            &block.state.focus_handle(cx),
+                            {
+                                let state = block.state.clone();
+                                move |value, window, cx| {
+                                    state.update(cx, |state, cx| {
+                                        state.replace_all(value, window, cx)
+                                    })
+                                }
+                            },
+                            Editor::new(&block.state)
+                                .role(gpui_kit::component::RoleOverride::Presentational)
+                                .appearance(false)
+                                .bordered(false)
+                                .h(height)
+                                .font_family(family)
+                                .text_size(layout.text_size)
+                                .font_weight(layout.font_weight)
+                                .line_height(relative(layout.line_height))
+                                .text_color(color),
+                        )
+                        .role(Role::MultilineTextInput)
+                        .aria_label(name)
+                        .when(window.is_a11y_active(), |field| {
+                            field.aria_value(block.state.read(cx).value().to_string())
+                        }),
                     ),
             )
             .into_any_element()
@@ -1064,7 +1110,7 @@ impl NotionEditor {
         };
         let content = match body {
             Some(body) => body,
-            None => self.render_text(ix, &layout, cx),
+            None => self.render_text(ix, &layout, window, cx),
         };
 
         let leading = {
@@ -1331,6 +1377,8 @@ impl Render for NotionEditor {
         let root = div()
             .id("editor")
             .test_support()
+            .role(Role::Document)
+            .aria_label(self.name.clone())
             .key_context(actions::CONTEXT)
             .track_focus(&self.focus_handle)
             .size_full()
@@ -1380,6 +1428,7 @@ impl Render for NotionEditor {
                                 div()
                                     .id("trailing-space")
                                     .control(Role::Button, "Add a block at the end")
+                                    .keyboard()
                                     .test_support()
                                     .w_full()
                                     .h(cx.editor_theme().page_bottom)

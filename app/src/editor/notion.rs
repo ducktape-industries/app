@@ -368,6 +368,16 @@ impl RichWireEditor {
         cx.notify();
     }
 
+    /// The wire `label`, as the page's name; "Page" when the view gave none.
+    pub fn set_label(&mut self, label: Option<String>, cx: &mut Context<Self>) {
+        let name = SharedString::from(label.unwrap_or_else(|| "Page".into()));
+        self.editor.update(cx, |editor, cx| {
+            if editor.name() != &name {
+                editor.set_name(name, cx);
+            }
+        });
+    }
+
     /// Install the projection when it settled on text this editor did not
     /// produce (another writer, a guest normalization, a page switch).
     pub fn sync(&mut self, window: &mut Window, cx: &mut Context<Self>) {

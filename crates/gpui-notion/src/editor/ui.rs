@@ -5,8 +5,8 @@ use gpui_kit::component::button::Button;
 use gpui_kit::component::{ActiveTheme, ThemeStyled as _};
 use gpui_kit::{
     AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement, Interactivity,
-    IntoElement, ParentElement as _, Role, SharedString, Stateful, StatefulInteractiveElement,
-    Styled as _, Window, div,
+    IntoElement, MouseButton, ParentElement as _, Role, SharedString, Stateful,
+    StatefulInteractiveElement, Styled as _, Window, div,
 };
 
 use super::theme::ActiveEditorTheme;
@@ -52,9 +52,35 @@ pub trait Control: StatefulInteractiveElement {
     fn control(self, role: Role, name: impl Into<SharedString>) -> Self {
         self.role(role).aria_label(name)
     }
+
+    /// [`keyboard`], in a builder chain.
+    fn keyboard(self) -> Self
+    where
+        Self: Sized,
+    {
+        keyboard(self)
+    }
 }
 
 impl<E: StatefulInteractiveElement> Control for E {}
+
+/// A control a keyboard reaches with Tab and presses with Enter or Space, as
+/// a pointer presses it. A pointer's press does not move focus to it, so
+/// pressing it leaves the caret where it was.
+pub fn keyboard<E: StatefulInteractiveElement>(element: E) -> E {
+    element
+        .focusable()
+        .tab_stop(true)
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+}
+
+/// A button that opens a dropdown menu. The menu opens on the press it
+/// listens for, and on Enter or Space; a click listener is what tells
+/// assistive technology the button can be pressed at all, and its press
+/// lands as that pointer press.
+pub fn menu_trigger(button: Button) -> Button {
+    button.on_click(|_, _, _| {})
+}
 
 /// An icon-only button. `name` is both its tooltip and its accessible name,
 /// so a tooltip is never the only thing that says what the button does.

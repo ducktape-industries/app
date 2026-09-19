@@ -125,6 +125,34 @@ fn rules(
         if !stated {
             fail(id, role, "stateful control does not report its state");
         }
+        // A control that a pointer cannot press is disabled, and says so;
+        // otherwise a screen reader announces it as available (#115).
+        let pressable = data.supports_action(Action::Click);
+        let control = matches!(
+            role,
+            Role::Button
+                | Role::Link
+                | Role::Tab
+                | Role::CheckBox
+                | Role::Switch
+                | Role::RadioButton
+                | Role::MenuItem
+                | Role::ListBoxOption
+        );
+        if control && !pressable && !node.is_disabled() {
+            fail(
+                id,
+                role,
+                "control that cannot be pressed does not report disabled",
+            );
+        }
+        // What a pointer can press, a keyboard can reach.
+        if pressable && !node.is_disabled() && !data.supports_action(Action::Focus) {
+            fail(id, role, "pressable node a keyboard cannot focus");
+        }
+        if node.is_dialog() && !named {
+            fail(id, role, "dialog without a name");
+        }
         if data.supports_action(Action::Focus) && !node.is_disabled() && !reached.contains(&id) {
             fail(id, role, "focusable node not reachable in tab order");
         }
@@ -142,6 +170,14 @@ fn assert_clean(failures: Vec<String>) {
 }
 
 fn native(name: &str, app: Ducktape, kind: crate::shell::WindowKind) -> Vec<String> {
+    let (mut cx, window) = open_native(app, kind);
+    audit(name, &mut cx, window)
+}
+
+fn open_native(
+    app: Ducktape,
+    kind: crate::shell::WindowKind,
+) -> (HeadlessAppContext, AnyWindowHandle) {
     let (width, height) = match kind {
         crate::shell::WindowKind::Console => (1280., 800.),
         crate::shell::WindowKind::Onboarding => (480., 640.),
@@ -154,7 +190,7 @@ fn native(name: &str, app: Ducktape, kind: crate::shell::WindowKind) -> Vec<Stri
             cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
         })
         .expect("native screen opens");
-    audit(name, &mut cx, window.into())
+    (cx, window.into())
 }
 
 /// Every step of the launch window.
@@ -402,8 +438,83 @@ fn views_audit(views: &std::path::Path, exempt_epoch_8: bool) -> Vec<String> {
                 "{name}: {wire_tabs} wire tab(s), {native_tabs} native Tab node(s) reporting selected"
             ));
         }
+        failures.extend(found_by_the_walk(
+            &name,
+            module,
+            epoch_8,
+            &tree(&mut cx, window.into()),
+        ));
+        if !tab_key_leaves_a_button(&mut cx, window.into()) {
+            failures.push(format!(
+                "{name}: Tab pressed on a button inside the view does not move focus"
+            ));
+        }
     }
     failures
+}
+
+/// What the QA walk of #116 could not find in a view, found: the chat
+/// composer as a named text area, and Home's Copy button and This node card.
+/// An epoch-8 Editor has no label on the wire (`epoch_8_cannot_carry`), so the
+/// composer's name is asked of every other view only.
+fn found_by_the_walk(name: &str, module: &str, epoch_8: bool, tree: &Tree) -> Vec<String> {
+    let all = nodes(tree);
+    let missing = |what: &str| format!("{name}: {what} is not in the tree");
+    let mut failures = Vec::new();
+    match module {
+        "chat" => {
+            let composer = all
+                .iter()
+                .any(|node| node.role() == Role::MultilineTextInput && !said(node).is_empty());
+            if !composer && !epoch_8 {
+                failures.push(missing("a named message composer"));
+            }
+        }
+        "home" => {
+            if !all
+                .iter()
+                .any(|node| node.role() == Role::Button && said(node) == "Copy")
+            {
+                failures.push(missing("the Copy button"));
+            }
+            if !all.iter().any(|node| said(node) == "This node") {
+                failures.push(missing("This node"));
+            }
+        }
+        _ => {}
+    }
+    failures
+}
+
+/// Whether Tab, pressed as a key while a button inside the view has focus,
+/// moves focus on: the view hears the key, and does not keep it. True of a
+/// view with no button.
+fn tab_key_leaves_a_button(cx: &mut HeadlessAppContext, window: AnyWindowHandle) -> bool {
+    for _ in 0..200 {
+        let focused = cx
+            .update_window(window, |_, window, cx| {
+                window.focus_next(cx);
+                window.focused(cx)
+            })
+            .unwrap();
+        let on_button = self::tree(cx, window)
+            .state()
+            .focus()
+            .is_some_and(|node| node.role() == Role::Button);
+        if !on_button {
+            continue;
+        }
+        cx.update_window(window, |_, window, cx| {
+            window.dispatch_keystroke(gpui_kit::Keystroke::parse("tab").unwrap(), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let after = cx
+            .update_window(window, |_, window, cx| window.focused(cx))
+            .unwrap();
+        return after.is_some() && after != focused;
+    }
+    true
 }
 
 /// How many nodes of `node`'s tree the wire says are tabs.
@@ -507,4 +618,305 @@ fn an_epoch_8_view_answers_only_for_the_faults_its_wire_can_carry() {
     let faults = accessibility_faults(&root);
     assert_eq!(faults.len(), 1, "{faults:?}");
     assert!(!epoch_8_cannot_carry(&root, &faults[0]));
+}
+
+/// `window`'s tree as a screen reader has it now.
+fn tree(cx: &mut HeadlessAppContext, window: AnyWindowHandle) -> Tree {
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        window.activate_a11y();
+        window.draw(cx).clear(cx);
+        let update = window.last_a11y_tree_update();
+        Tree::new(update.expect("an active window sends its tree"), true)
+    })
+    .unwrap()
+}
+
+/// Every node of `tree` but its root.
+fn nodes(tree: &Tree) -> Vec<accesskit_consumer::Node<'_>> {
+    let mut all = Vec::new();
+    let mut stack = vec![tree.state().root()];
+    while let Some(node) = stack.pop() {
+        stack.extend(node.children());
+        if !node.is_root() {
+            all.push(node);
+        }
+    }
+    all
+}
+
+/// What a screen reader reads a node as: its name, or a text's words.
+fn said(node: &accesskit_consumer::Node<'_>) -> String {
+    node.label().or_else(|| node.value()).unwrap_or_default()
+}
+
+/// The nodes of `tree` a screen reader reads as `words`.
+fn reading<'a>(tree: &'a Tree, words: &str) -> Vec<accesskit_consumer::Node<'a>> {
+    nodes(tree)
+        .into_iter()
+        .filter(|node| said(node) == words)
+        .collect()
+}
+
+/// Whether `node` or a node above it plays `role`.
+fn within(node: &accesskit_consumer::Node<'_>, role: Role) -> bool {
+    let mut at = Some(*node);
+    while let Some(node) = at {
+        if node.role() == role {
+            return true;
+        }
+        at = node.parent();
+    }
+    false
+}
+
+fn connected_app() -> Ducktape {
+    let mut app = Ducktape::initial_state();
+    app.connected = true;
+    app.connected_rpc = "http://127.0.0.1:8844".into();
+    app.network_name = "walk".into();
+    app
+}
+
+/// #115: a control that cannot be pressed is reported disabled — a native
+/// one (Join with no invite) and a view's (a Button with no handler).
+#[test]
+fn ax_contract_a_control_that_cannot_be_pressed_reports_disabled() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Join;
+    let (mut cx, window) = open_native(app, crate::shell::WindowKind::Onboarding);
+    let tree = tree(&mut cx, window);
+    let join = reading(&tree, "Join network");
+    assert_eq!(join.len(), 1, "one Join network button");
+    assert_eq!(join[0].role(), Role::Button);
+    assert!(
+        join[0].is_disabled(),
+        "Join network with no invite is disabled"
+    );
+    let root = view_wire::kit::column(
+        "page",
+        [
+            view_wire::kit::button("send", "Send", None, view_wire::ButtonPreset::Primary),
+            view_wire::kit::button("save", "Save", Some(1), view_wire::ButtonPreset::Primary),
+        ],
+    );
+    let mut cx = crate::frame_probe::headless_context();
+    let window = cx
+        .open_window(size(px(400.), px(300.)), |window, cx| {
+            let view = cx.new(|_| crate::view_tree::ViewTree::new(root));
+            cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
+        })
+        .unwrap();
+    let tree = self::tree(&mut cx, window.into());
+    assert!(reading(&tree, "Send")[0].is_disabled());
+    assert!(!reading(&tree, "Save")[0].is_disabled());
+}
+
+/// #116: the rail's sections are tabs a screen reader can find, name and
+/// press, the open one selected, under their headings, in a navigation
+/// landmark.
+#[test]
+fn ax_contract_the_rail_sections_are_selectable_tabs() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let (mut cx, window) = open_native(connected_app(), crate::shell::WindowKind::Console);
+    let tree = tree(&mut cx, window);
+    let tabs: Vec<_> = nodes(&tree)
+        .into_iter()
+        .filter(|node| node.role() == Role::Tab)
+        .collect();
+    assert!(
+        tabs.len() >= 2,
+        "the rail's sections are tabs: {}",
+        tabs.len()
+    );
+    for tab in &tabs {
+        assert!(!said(tab).is_empty(), "a section is named");
+        assert!(
+            tab.data().supports_action(Action::Click),
+            "{} presses",
+            said(tab)
+        );
+        assert!(
+            tab.data().supports_action(Action::Focus),
+            "{} focuses",
+            said(tab)
+        );
+        assert!(
+            within(tab, Role::Navigation),
+            "{} is in the rail",
+            said(tab)
+        );
+    }
+    let selected = tabs
+        .iter()
+        .filter(|tab| tab.data().is_selected() == Some(true))
+        .count();
+    assert_eq!(selected, 1, "the open section is the selected tab");
+    for heading in ["Workspace", "Network"] {
+        assert!(
+            reading(&tree, heading)
+                .iter()
+                .any(|node| node.role() == Role::Heading),
+            "the rail heading {heading} is read"
+        );
+    }
+    for button in ["Search", "Notifications"] {
+        assert_eq!(reading(&tree, button)[0].role(), Role::Button, "{button}");
+    }
+}
+
+/// The console's announcements are live regions holding their words: the
+/// error an Alert, the toast and the update strip a Status.
+#[test]
+fn ax_contract_announcements_are_live_regions() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let updates = tempfile::tempdir().unwrap();
+    let staged = app_update::Phase::Staged(app_update::Staged {
+        current: app_update::Sha::digest(b"current"),
+        previous: None,
+        pinned_sequence: 2,
+        staged: app_update::Sha::digest(b"next"),
+        sequence: 3,
+        display: "2026.09.3+abcdef0".into(),
+        node_contract: backend::EXPECTED_NODE_CONTRACT,
+        refused: None,
+    });
+    let mut app = connected_app();
+    app.updater = Some(super::shell::armed_updater(staged, updates.path()));
+    app.error = "The node refused the write".into();
+    app.toast = "Saved".into();
+    app.account_exists = false;
+    let (mut cx, window) = open_native(app, crate::shell::WindowKind::Console);
+    let tree = tree(&mut cx, window);
+    for (words, role) in [
+        ("The node refused the write", Role::Alert),
+        ("Saved", Role::Status),
+        ("Ducktape 2026.09.3+abcdef0 is ready", Role::Status),
+        ("Sign in to use your account on this network.", Role::Status),
+    ] {
+        let found = reading(&tree, words);
+        assert_eq!(found.len(), 1, "{words} is read");
+        assert!(within(&found[0], role), "{words} is in a {role:?}");
+    }
+}
+
+/// The bell's popover is a dialog called Notifications: opening it puts
+/// focus inside it, and Escape closes it.
+#[test]
+fn ax_contract_the_bell_is_a_dialog_that_takes_focus() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let mut app = connected_app();
+    app.bell_open = true;
+    let (mut cx, window) = open_native(app, crate::shell::WindowKind::Console);
+    let tree = tree(&mut cx, window);
+    let dialog = nodes(&tree)
+        .into_iter()
+        .find(|node| node.role() == Role::Dialog)
+        .expect("the bell is a dialog");
+    assert_eq!(said(&dialog), "Notifications");
+    let focus = tree.state().focus().expect("focus is on a node");
+    assert!(
+        focus.is_descendant_of(&dialog),
+        "focus is in the dialog, on {:?} {}",
+        focus.role(),
+        said(&focus)
+    );
+    cx.update_window(window, |_, window, cx| {
+        window.dispatch_keystroke(gpui_kit::Keystroke::parse("escape").unwrap(), cx);
+    })
+    .unwrap();
+    let tree = self::tree(&mut cx, window);
+    assert!(
+        !nodes(&tree).iter().any(|node| node.role() == Role::Dialog),
+        "Escape closed the bell"
+    );
+}
+
+/// The pages editor: every block kind with its gutter drawn, held to the
+/// same rules. #117: the gutter's two icon buttons beside each block are
+/// named. The selection toolbar over selected words is held to its names,
+/// roles, states and presses; not to Tab reach: it lives only while the
+/// caret's block holds focus, and Tab inside a block indents (#114).
+#[test]
+fn ax_contract_editor() {
+    use gpui_notion::editor::{BlockAttrs, BlockContent, NotionEditor, types};
+    let content = vec![
+        BlockContent::new(types::HEADING, "Title").with_attrs(BlockAttrs::level(1)),
+        BlockContent::paragraph("A paragraph with words to select."),
+        BlockContent::new(types::TASK_LIST, "A task"),
+        BlockContent::new(types::TOGGLE, "A toggle"),
+        BlockContent::new(types::CODE_BLOCK, "fn main() {}")
+            .with_attrs(BlockAttrs::language("rust")),
+        gpui_notion::editor::table_content(&[&["Name", "Role"], &["Ada", "Author"]]),
+        BlockContent::new(types::IMAGE, ""),
+        BlockContent::paragraph(""),
+    ];
+    let mut failures = Vec::new();
+    for selecting in [false, true] {
+        let mut cx = crate::frame_probe::headless_context();
+        let content = content.clone();
+        let mut opened = None;
+        let window = cx
+            .open_window(size(px(900.), px(900.)), |window, cx| {
+                let editor = cx.new(|cx| {
+                    let mut editor = NotionEditor::with_content(content, window, cx);
+                    editor.show_gutter_always();
+                    editor
+                });
+                opened = Some(editor.clone());
+                cx.new(|cx| gpui_kit::component::Root::new(editor, window, cx))
+            })
+            .unwrap();
+        let editor = opened.expect("the editor opened");
+        if selecting {
+            cx.update_window(window.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+                editor.update(cx, |editor, cx| {
+                    editor.select_text_in_block(1, 2..11, window, cx)
+                });
+            })
+            .unwrap();
+        }
+        let tree = tree(&mut cx, window.into());
+        for name in ["Insert block", "Block options"] {
+            let buttons = reading(&tree, name);
+            assert!(
+                buttons.len() >= 2 && buttons.iter().all(|node| node.role() == Role::Button),
+                "every block's gutter has a {name} button: {}",
+                buttons.len()
+            );
+        }
+        if !selecting {
+            failures.extend(audit("editor", &mut cx, window.into()));
+            continue;
+        }
+        for name in [
+            "Bold",
+            "Italic",
+            "Underline",
+            "Strikethrough",
+            "Code",
+            "Comment",
+            "Link",
+            "Color",
+            "More formatting",
+        ] {
+            let found = reading(&tree, name);
+            assert_eq!(found.len(), 1, "the toolbar's {name}");
+            let button = found[0];
+            assert_eq!(button.role(), Role::Button, "{name}");
+            assert!(
+                button.data().supports_action(Action::Click),
+                "{name} presses"
+            );
+        }
+        for mark in ["Bold", "Italic", "Underline", "Strikethrough", "Code"] {
+            assert!(
+                reading(&tree, mark)[0].toggled().is_some(),
+                "{mark} is a toggle"
+            );
+        }
+    }
+    assert_clean(failures);
 }

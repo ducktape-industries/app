@@ -360,6 +360,7 @@ impl Desktop {
                     inputs: HashMap::new(),
                     input_step: None,
                     qr: None,
+                    bell_entry: None,
                     focus,
                     _activation: activation,
                     _observer: observer,
@@ -520,6 +521,8 @@ pub(crate) struct DesktopWindow {
     input_step: Option<crate::HubStep>,
     qr: Option<(String, Entity<crate::view_tree::ViewTree>)>,
     focus: gpui_kit::FocusHandle,
+    /// Where focus enters the bell's popover while it is open.
+    bell_entry: Option<gpui_kit::FocusHandle>,
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
     _keystrokes: gpui_kit::Subscription,
@@ -881,7 +884,7 @@ impl DesktopWindow {
     /// The toast, floating in the corner of its layout's positioned box until
     /// it is dismissed or ages out. The workspace and the join screens draw
     /// this one element, so a copy confirms itself on either.
-    fn toast(&self, cx: &gpui_kit::App) -> Option<gpui_kit::Div> {
+    fn toast(&self, cx: &gpui_kit::App) -> Option<gpui_kit::Stateful<gpui_kit::Div>> {
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let toast = self.model.read(cx).state.toast.clone();
@@ -891,6 +894,8 @@ impl DesktopWindow {
         let theme = gpui_kit::component::Theme::global(cx);
         Some(
             div()
+                .id("toast")
+                .role(Role::Status)
                 .absolute()
                 .bottom_4()
                 .right_4()
@@ -965,7 +970,7 @@ impl DesktopWindow {
                     div()
                         .text_size(px(13.5))
                         .text_color(colors.muted_foreground)
-                        .child(subtitle),
+                        .child(Text::new("hero-subtitle".into(), subtitle.into())),
                 )
         };
         let panel = || {
@@ -1588,7 +1593,13 @@ impl DesktopWindow {
                         self.qr =
                             Some((payload, cx.new(|_| crate::view_tree::ViewTree::new(node))));
                     }
-                    body = body.child(self.qr.as_ref().expect("account QR").1.clone());
+                    body = body.child(
+                        div()
+                            .id("account-qr")
+                            .role(gpui_kit::Role::Image)
+                            .aria_label("Account QR code")
+                            .child(self.qr.as_ref().expect("account QR").1.clone()),
+                    );
                 }
                 body.child(self.input("account-name", "Account name", false, window, cx))
                     .child(
@@ -1745,6 +1756,8 @@ impl DesktopWindow {
                             .when(!error.is_empty(), |element| {
                                 element.child(
                                     div()
+                                        .id("onboarding-error")
+                                        .role(gpui_kit::Role::Alert)
                                         .mt_4()
                                         .p_3()
                                         .border_1()
@@ -1752,7 +1765,10 @@ impl DesktopWindow {
                                         .border_color(colors.destructive)
                                         .text_color(colors.destructive)
                                         .text_size(px(12.5))
-                                        .child(error),
+                                        .child(Text::new(
+                                            "onboarding-error-message".into(),
+                                            error.into(),
+                                        )),
                                 )
                             }),
                     )
@@ -1843,6 +1859,7 @@ impl DesktopWindow {
         let faint = hsla_of(palette.faint);
         let live = state.connected;
         let bell_unread = state.bell_unread;
+        let bell_open = state.bell_open;
         // The voice dock's facts, read here so the rail below owns no borrow.
         let voice = state.huddle_joined.then(|| VoiceDock {
             room: state.huddle_channel_name.clone(),
@@ -1958,6 +1975,11 @@ impl DesktopWindow {
             None,
             live,
         )
+        .aria_keyshortcuts(if cfg!(target_os = "macos") {
+            "Meta+K"
+        } else {
+            "Control+K"
+        })
         .child(
             div()
                 .flex_shrink_0()
@@ -1990,6 +2012,8 @@ impl DesktopWindow {
             None,
             live,
         )
+        // it opens a popover, and says whether it is open
+        .aria_expanded(bell_open)
         .when(bell_unread > 0, |row| {
             row.child(div().flex_shrink_0().size(px(6.)).rounded_full().bg(accent))
         })
@@ -1998,8 +2022,12 @@ impl DesktopWindow {
             this.model
                 .update(cx, |model, cx| model.dispatch(Message::ToggleBell, cx));
         }));
+        // The rail is the window's navigation: its sections are the tabs
+        // that seat a view, under their headings.
         let mut tabs = div()
             .id("workspace-rail")
+            .role(Role::Navigation)
+            .aria_label("Sections")
             .flex()
             .flex_col()
             .w(px(RAIL_WIDTH))
@@ -2035,6 +2063,12 @@ impl DesktopWindow {
             if let Some(heading) = section.heading {
                 tabs = tabs.child(
                     div()
+                        .id(gpui_kit::SharedString::from(format!(
+                            "rail-heading:{heading}"
+                        )))
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label(heading)
                         .px_2()
                         .pt_3()
                         .pb_1()
@@ -2169,6 +2203,8 @@ impl DesktopWindow {
             // A quiet one-line notice: the screen behind it stays the loudest thing.
             content = content.child(
                 div()
+                    .id("account-banner")
+                    .role(Role::Status)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -2183,7 +2219,10 @@ impl DesktopWindow {
                             .flex_1()
                             .text_size(px(12.))
                             .text_color(colors.muted_foreground)
-                            .child("Sign in to use your account on this network."),
+                            .child(Text::new(
+                                "account-banner-words".into(),
+                                "Sign in to use your account on this network.".into(),
+                            )),
                     )
                     .child(
                         self.action(
@@ -2220,6 +2259,8 @@ impl DesktopWindow {
         if !error.is_empty() {
             content = content.child(
                 div()
+                    .id("error-plate")
+                    .role(Role::Alert)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -2272,7 +2313,7 @@ impl DesktopWindow {
             .overflow_hidden()
             .child(tabs)
             .child(content);
-        if let Some(overlay) = self.overlay(cx) {
+        if let Some(overlay) = self.overlay(window, cx) {
             root = root.child(overlay);
         }
         // The palette is the topmost layer and its own overlay: it draws its
@@ -2348,6 +2389,7 @@ impl DesktopWindow {
         };
         div()
             .id("update-strip")
+            .role(Role::Status)
             .flex()
             .items_center()
             .gap_2()
@@ -2370,7 +2412,11 @@ impl DesktopWindow {
     /// `inbox` view and a view lays itself out for the width it is handed —
     /// a popover column, not the page the tab underneath draws. The height
     /// is this chrome's to cap; the guest scrolls inside it.
-    fn overlay(&mut self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+    fn overlay(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
         use gpui_kit::component::ActiveTheme as _;
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
@@ -2381,8 +2427,14 @@ impl DesktopWindow {
         // A bell that is not the topmost overlay gives its seat back.
         if topmost != "bell" {
             self.unseat_inbox(cx);
+            self.bell_entry = None;
             return None;
         }
+        let opened = self.bell_entry.is_none();
+        let entry = self
+            .bell_entry
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
         // The seat is taken before the card is drawn: everything below
         // borrows the model, and seating writes to it.
         let inbox = self.seat_inbox(cx);
@@ -2397,6 +2449,10 @@ impl DesktopWindow {
             .pb_1p5()
             .child(
                 div()
+                    .id("bell-heading")
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .aria_label("Notifications")
                     .flex_1()
                     .text_size(px(13.))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -2411,8 +2467,13 @@ impl DesktopWindow {
                     .w_6()
                     .px_0(),
             );
+        // a dialog called what its heading says; opening it puts the
+        // keyboard in it, and Escape closes it (`escape_target`)
         let panel = div()
             .id("shell-modal")
+            .role(Role::Dialog)
+            .aria_label("Notifications")
+            .child(crate::view_tree::dialog_entry(&entry, opened, window, cx))
             .flex()
             .flex_col()
             .w(px(BELL_POPOVER_WIDTH))
@@ -2533,6 +2594,7 @@ pub(crate) fn test_window(
             input_step: None,
             qr: None,
             focus: cx.focus_handle(),
+            bell_entry: None,
             _activation: activation,
             _observer: observer,
             _keystrokes: keystrokes,
@@ -3011,7 +3073,6 @@ impl DesktopWindow {
             1 => "with 1 other".to_owned(),
             n => format!("with {n} others"),
         };
-        let mute = if voice.muted { "Unmute" } else { "Mute" };
         div()
             .id("rail-voice")
             .flex()
@@ -3035,13 +3096,13 @@ impl DesktopWindow {
                             .text_size(px(12.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(success)
-                            .child("Voice connected"),
+                            .child(Text::new("voice-state".into(), "Voice connected".into())),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(muted)
-                            .child(voice.elapsed),
+                            .child(Text::new("voice-elapsed".into(), voice.elapsed.into())),
                     ),
             )
             .child(
@@ -3049,7 +3110,10 @@ impl DesktopWindow {
                     .truncate()
                     .text_size(px(12.))
                     .text_color(fg)
-                    .child(format!("#{} · {with}", voice.room)),
+                    .child(Text::new(
+                        "voice-room".into(),
+                        format!("#{} · {with}", voice.room).into(),
+                    )),
             )
             .child(
                 div()
@@ -3057,9 +3121,14 @@ impl DesktopWindow {
                     .items_center()
                     .gap(px(4.))
                     .child(
-                        self.action("rail-voice-mute", mute, Message::ToggleCallMute, false)
+                        self.action("rail-voice-mute", "Mute", Message::ToggleCallMute, false)
                             .xsmall()
-                            .outline(),
+                            .outline()
+                            .map(|mute| {
+                                use gpui_kit::component::Selectable as _;
+                                mute.selected(voice.muted)
+                            })
+                            .toggled(voice.muted),
                     )
                     .child(
                         self.action("rail-voice-open", "Open", Message::ShowHuddle, false)
