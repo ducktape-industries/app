@@ -2766,14 +2766,12 @@ impl Ducktape {
             crate::backend::resolve_duck_link(url.to_owned(), self.network_chain_id.to_owned());
         match link.kind {
             DuckKind::Unknown => {
-                self.error = "this link names nothing the app can open".to_owned();
+                self.error = link.refusal.to_owned();
                 Task::none()
             }
             DuckKind::ForeignNetwork => {
-                self.error = crate::backend::foreign_network_error(
-                    link.net.to_owned(),
-                    self.network_chain_id.to_owned(),
-                );
+                self.error =
+                    crate::backend::foreign_network_error(&link, self.network_chain_id.to_owned());
                 Task::none()
             }
             DuckKind::Web => Task::perform(
@@ -2790,7 +2788,7 @@ impl Ducktape {
             }
             DuckKind::Run => Task::done(AppMessage::OpenRunPanel(link.dispatch.to_owned())),
             DuckKind::Files => {
-                self.fs_route = link.path.to_owned();
+                self.fs_route = url.to_owned();
                 self.fs_route_serial += 1;
                 self.account_qr_auth_generation = self.account_qr_auth_generation.wrapping_add(1);
                 if let Some(previous_handle) = self.account_qr_auth_task.take() {

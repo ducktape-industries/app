@@ -237,6 +237,15 @@ impl EditorView {
         }
     }
 
+    /// The wire `label`, onto the field the editor draws: the node this
+    /// mount announces is a wrapper, not the text. A rich editor's blocks are
+    /// its own nodes, so only the plain field takes one.
+    fn label(&self, label: Option<String>, cx: &mut App) {
+        if let Self::Text(view) = self {
+            view.update(cx, |editor, cx| editor.set_label(label, cx));
+        }
+    }
+
     fn widget_command(&self, command: &wire::WidgetCommand, window: &mut Window, cx: &mut App) {
         match self {
             Self::Text(view) => view.update(cx, |editor, cx| {
@@ -1928,7 +1937,13 @@ impl ViewTree {
                 cx.stop_propagation();
             }));
         }
-        let button = announce(button, accessible(node));
+        // the kit button resolves its own role at render, over the one
+        // `announce` sets: a Tab is told so here or it is drawn a Button
+        let accessible = accessible(node);
+        if let Some(role) = accessible.role {
+            button = button.role(role);
+        }
+        let button = announce(button, accessible);
         dimensions(pad(button, *padding), *width, *height).into_any_element()
     }
 
@@ -2829,6 +2844,7 @@ impl ViewTree {
         editor
             .view
             .fills(!matches!(height, Some(wire::Length::Shrink)), cx);
+        editor.view.label(accessible(node).name, cx);
         editor.view.sync(window, cx);
         if let Some(command) = replaced_focus {
             editor.view.widget_command(&command, window, cx);
@@ -3727,6 +3743,10 @@ impl ViewTree {
         let mut select = Select::new(&picker.state)
             .id(key.clone())
             .placeholder(placeholder.to_owned());
+        // the kit draws the picker's node itself; the wire `label` names it
+        if let Some(name) = accessible(node).name {
+            select = select.accessibility_label(name);
+        }
         if let Some(wire::Length::Fixed(height)) = menu_height {
             select = select.menu_max_h(px(height));
         }

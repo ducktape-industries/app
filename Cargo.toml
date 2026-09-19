@@ -32,6 +32,10 @@ sdk = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "d
 # view-wire privately (bindgen + manifest), so no type crosses between them.
 view-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "1c20b2489e4849f060e586d2b1061fa3db21f0b0", package = "view-wire" }
 view-wire-8 = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2", package = "view-wire" }
+# the `duck://` grammar, at the view-wire rev: the rest of the line's
+# duck-address (5fa05de) has no typed tails. files-wire carries `FileAddress`.
+duck-address = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "1c20b2489e4849f060e586d2b1061fa3db21f0b0", package = "duck-address" }
+files-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "1c20b2489e4849f060e586d2b1061fa3db21f0b0", package = "files-wire" }
 design = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "design" }
 chat = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "chat-wire" }
 forge = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "forge-wire" }

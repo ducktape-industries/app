@@ -261,18 +261,28 @@ fn ax_contract_native() {
     assert_clean(failures);
 }
 
-/// Every view staged in `DUCKTAPE_VIEWS_DIR`, mounted as the canary mounts
-/// it (tests/canary.rs), in the state its session props give.
+/// Every view staged in `DUCKTAPE_VIEWS_DIR` (the deployed set: epoch 8, its
+/// three exemptions apply) and, when `DUCKTAPE_VIEWS_DIR_NEXT` names one, the
+/// set that deploys next, with no exemption at all — mounted as the canary
+/// mounts them (tests/canary.rs), in the state their session props give.
 #[test]
-#[ignore = "the views staged in DUCKTAPE_VIEWS_DIR are still wire epoch 8: the chat composer's Editor carries no label (text input without a label)"]
 fn ax_contract_views() {
-    use crate::backend::view_source::tests::{FakeDeployment, fake_node};
     let views = std::env::var_os("DUCKTAPE_VIEWS_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views")
         });
-    let mut modules = std::fs::read_dir(&views)
+    let mut failures = views_audit(&views, true);
+    if let Some(next) = std::env::var_os("DUCKTAPE_VIEWS_DIR_NEXT") {
+        failures.extend(views_audit(std::path::Path::new(&next), false));
+    }
+    assert_clean(failures);
+}
+
+fn views_audit(views: &std::path::Path, exempt_epoch_8: bool) -> Vec<String> {
+    use crate::backend::view_source::tests::{FakeDeployment, fake_node};
+    let set = views.file_name().unwrap_or_default().to_string_lossy();
+    let mut modules = std::fs::read_dir(views)
         .unwrap_or_else(|error| panic!("{}: {error}; build ducktape-views and point DUCKTAPE_VIEWS_DIR at its target/views", views.display()))
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().into_string().ok()?;
@@ -345,20 +355,76 @@ fn ax_contract_views() {
         let root = crate::module_view::canary::frame(module)
             .unwrap_or_else(|| panic!("view {module} did not render a frame"));
         // the view's own tree, held to the wire's rules
-        let epoch_8 =
-            crate::module_view::canary::epoch(module) == Some(crate::module_view::Epoch::Eight);
+        let epoch_8 = exempt_epoch_8
+            && crate::module_view::canary::epoch(module) == Some(crate::module_view::Epoch::Eight);
+        let name = format!("{set}: view {module}");
         for fault in view_wire::accessibility_faults(&root) {
             if !(epoch_8 && epoch_8_cannot_carry(&root, &fault)) {
                 failures.push(format!(
-                    "view {module}: {} — {:?}",
+                    "{name}: {} — {:?}",
                     fault.path.join("/"),
                     fault.kind
                 ));
             }
         }
-        failures.extend(audit(&format!("view {module}"), &mut cx, window.into()));
+        // the host half of the same exemption: an epoch-8 Editor has no label
+        // to hand the field it draws
+        let unlabelled = match epoch_8 {
+            true => unlabelled_editors(&root),
+            false => Vec::new(),
+        };
+        failures.extend(
+            audit(&name, &mut cx, window.into())
+                .into_iter()
+                .filter(|failure| {
+                    !(failure.ends_with("text input without a label")
+                        && unlabelled
+                            .iter()
+                            .any(|key| failure.contains(&format!("{key}/field\")"))))
+                }),
+        );
+        // a wire Tab is a native Tab: the kit button draws a role of its own
+        let wire_tabs = tabs_in(&root);
+        let native_tabs = cx
+            .update_window(window.into(), |_, window, _| {
+                let update = window.last_a11y_tree_update().expect("a tree");
+                update
+                    .nodes
+                    .iter()
+                    .filter(|(_, node)| {
+                        node.role() == gpui_kit::Role::Tab && node.is_selected().is_some()
+                    })
+                    .count()
+            })
+            .unwrap();
+        if native_tabs < wire_tabs {
+            failures.push(format!(
+                "{name}: {wire_tabs} wire tab(s), {native_tabs} native Tab node(s) reporting selected"
+            ));
+        }
     }
-    assert_clean(failures);
+    failures
+}
+
+/// How many nodes of `node`'s tree the wire says are tabs.
+fn tabs_in(node: &view_wire::Node) -> usize {
+    let own = crate::view_tree::accessible(node).role == Some(gpui_kit::Role::Tab);
+    usize::from(own) + node.children().iter().map(tabs_in).sum::<usize>()
+}
+
+/// The keys of the Editors in `node`'s tree that carry no label.
+fn unlabelled_editors(node: &view_wire::Node) -> Vec<String> {
+    let mut keys: Vec<String> = node
+        .children()
+        .iter()
+        .flat_map(unlabelled_editors)
+        .collect();
+    if let view_wire::Node::Editor { key, label, .. } = node
+        && label.as_deref().is_none_or(str::is_empty)
+    {
+        keys.push(key.clone());
+    }
+    keys
 }
 
 /// Whether a view built at wire epoch 8 could not have avoided `fault`: its

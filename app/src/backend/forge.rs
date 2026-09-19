@@ -97,16 +97,17 @@ pub async fn load_inline_pictures(
     park_inline_pictures(doc, pictures);
 }
 
-/// Where an image URL's bytes live, by the duck:// module table: a
-/// `duck://forge/<repo>/blob/<path>[@rev]` is that repo's committed file, a
-/// `duck://files/...` is the attachment in duckfs, a bare relative path is
-/// this repo's file beside the document at the document's own commit, and a
-/// web URL is one capped GET. Every other kind — a page or channel ref, a
-/// malformed duck URI — has no bytes to fetch.
+/// Where an image URL's bytes live, by the `duck://` address: a
+/// `duck://<chain>/forge/<owner>/<repo>/blob/<rev>/<path>` is that repo's
+/// committed file, a `duck://<chain>/files/shared/attachments/…` is the
+/// attachment in duckfs, a bare relative path is this repo's file beside the
+/// document at the document's own commit, and a web URL is one capped GET.
+/// Every other kind — a page or channel address, anything that does not
+/// parse — has no bytes to fetch.
 ///
 /// Scoped by `net`, the connected chain id, exactly as the open plane is: a
-/// citation whose `?net=` names another network addresses another store, so
-/// it draws nothing rather than this network's object of the same name.
+/// citation whose chain is another network addresses another store, so it
+/// draws nothing rather than this network's object of the same name.
 async fn inline_picture_bytes(
     client: &RpcClient,
     anchor: &super::duck_uri::DuckLink,
@@ -121,10 +122,14 @@ async fn inline_picture_bytes(
             .await
             .ok()
             .and_then(|(_, bytes)| bytes),
-        DuckKind::Files => super::storage::files_read_all(client, &link.path)
-            .await
-            .ok()
-            .flatten(),
+        // Attachments only: a document is anyone's to write, and a picture
+        // it cites is read with this member's client.
+        DuckKind::Files if link.path.starts_with("/shared/attachments/") => {
+            super::storage::files_read_all(client, &link.path)
+                .await
+                .ok()
+                .flatten()
+        }
         DuckKind::Unknown => {
             let path = resolve_repo_path(&anchor.path, url)?;
             forge_blob_bytes(client, &anchor.repo, &anchor.rev, &path)
@@ -135,6 +140,7 @@ async fn inline_picture_bytes(
         DuckKind::Web => web_picture_bytes(url).await,
         // A citation from another network, and the kinds that name no bytes.
         DuckKind::ForeignNetwork
+        | DuckKind::Files
         | DuckKind::Page
         | DuckKind::ForgeRepo
         | DuckKind::ForgeItem

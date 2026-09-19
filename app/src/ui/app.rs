@@ -961,7 +961,9 @@ mod state_tests {
         let actual = state.shell_tab;
         let expected = ShellTab::View("agents");
         assert_eq!(actual, expected);
-        let reply_message = AppMessage::OpenMessageLink("duck://channel/general".to_owned());
+        state.network_chain_id = "testnet#abcd0123".to_owned();
+        let reply_message =
+            AppMessage::OpenMessageLink("duck://testnet-abcd0123/chat/general".to_owned());
         dispatch(&mut state, reply_message);
         let actual = state.shell_tab;
         let expected = ShellTab::View("chat");

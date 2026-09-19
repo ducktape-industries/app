@@ -375,8 +375,9 @@ fn a_launch_link_the_app_cannot_open_says_so_in_the_console() {
             facts_first,
         );
         assert_eq!(
-            app.error, "this link names nothing the app can open",
-            "facts first: {facts_first}"
+            app.error,
+            crate::backend::OLD_FORM,
+            "the old form, facts first: {facts_first}"
         );
         assert!(app.startup_duck_link.is_empty(), "opened once");
         let _ = app.update(AppMessage::DismissError);
@@ -387,14 +388,12 @@ fn a_launch_link_the_app_cannot_open_says_so_in_the_console() {
 /// And a well-formed one still lands where it points.
 #[test]
 fn a_well_formed_launch_link_still_opens_files() {
-    let app = launched_on(
-        "duck://files/shared/attachments/no-such-path-rehearsal-open/missing.txt",
-        true,
-    );
+    let link = "duck://dognet-040b41aa/files/shared/no-such-path-rehearsal-open/missing.txt";
+    let app = launched_on(link, true);
     assert_eq!(app.shell_tab, ShellTab::View("files"));
     assert_eq!(
-        app.fs_route,
-        "/shared/attachments/no-such-path-rehearsal-open/missing.txt"
+        app.fs_route, link,
+        "the address; `Epoch::props` spells it per view"
     );
     assert!(app.error.is_empty());
 }

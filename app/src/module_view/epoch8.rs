@@ -538,4 +538,24 @@ mod tests {
         );
         assert_eq!(failure.title(), "This view speaks a wire this app does not");
     }
+
+    /// The files route, per epoch: the app holds the full address; an
+    /// epoch-10 files view is handed it as is, an epoch-8 one the bare
+    /// duckfs path it has always been routed by. No other view's props move.
+    #[test]
+    fn the_files_route_is_the_address_at_ten_and_the_path_at_eight() {
+        let address = "duck://dognet-b5b6ea90/files/shared/%EB%B3%B4%EA%B3%A0%EC%84%9C.pdf";
+        let props = serde_json::json!({
+            "chain": "dognet#b5b6ea90", "route": address, "route_serial": 2,
+        });
+        let bytes = serde_json::to_vec(&props).unwrap();
+        let read = |bytes: Vec<u8>| serde_json::from_slice::<serde_json::Value>(&bytes).unwrap();
+        assert_eq!(read(Epoch::Ten.props("files", bytes.clone())), props);
+        let eight = read(Epoch::Eight.props("files", bytes.clone()));
+        assert_eq!(eight["route"], "/shared/보고서.pdf");
+        assert_eq!(eight["route_serial"], 2);
+        assert_eq!(Epoch::Eight.props("forge", bytes.clone()), bytes);
+        let empty = serde_json::to_vec(&serde_json::json!({ "route": "" })).unwrap();
+        assert_eq!(read(Epoch::Eight.props("files", empty))["route"], "");
+    }
 }
