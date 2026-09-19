@@ -1514,6 +1514,7 @@ impl ViewTree {
             font,
             align_x,
             options,
+            heading,
             ..
         } = node
         else {
@@ -1549,6 +1550,10 @@ impl ViewTree {
         }
         #[cfg(not(test))]
         let _ = (key, cx);
+        if heading.is_some() {
+            return announce(element.id(format!("{key}/heading")), accessible(node))
+                .into_any_element();
+        }
         element.into_any_element()
     }
 
@@ -2621,6 +2626,7 @@ impl ViewTree {
     ) -> AnyElement {
         let wire::Node::Overlay {
             key,
+            label,
             children,
             backdrop,
             padding,
@@ -2664,6 +2670,10 @@ impl ViewTree {
                 wire::AlignY::Center => layer.items_center(),
                 wire::AlignY::Bottom => layer.items_end(),
             };
+            // a named overlay is a dialog; the layer holds what it shows
+            if label.is_some() {
+                layer = announce(layer, accessible(node));
+            }
             element = element.child(shade).child(
                 layer.child(
                     div()
@@ -2882,6 +2892,8 @@ impl ViewTree {
             on_move,
             on_press_at,
             on_scroll,
+            role,
+            ..
         } = node
         else {
             unreachable!()
@@ -2990,6 +3002,10 @@ impl ViewTree {
                         pixels,
                     });
                 }));
+        }
+        // an area with no role is plumbing assistive technology skips
+        if role.is_some() {
+            element = announce(element, accessible(node));
         }
         element
             .child(self.node(content, window, cx))
@@ -4218,6 +4234,11 @@ pub(crate) struct Accessible {
     pub step: Option<f64>,
     pub toggled: Option<bool>,
     pub expanded: Option<bool>,
+    pub selected: Option<bool>,
+    /// A heading's level, 1 to 6.
+    pub level: Option<usize>,
+    /// How a change to text that is not focused is announced.
+    pub live: Option<wire::Live>,
     /// A control with no handler: it is drawn, and does nothing.
     pub disabled: bool,
 }
@@ -4228,9 +4249,8 @@ pub(crate) struct Accessible {
 /// The node's accessibility id is its wire key under the module's view, the
 /// element id each variant is already built with.
 ///
-/// wire epoch 9: the wire does not carry these yet, so nothing here guesses
-/// them — a name for Editor, Slider, ComboBox, PickList, MouseArea, Canvas and
-/// Qr; a role for MouseArea; a heading level and a live region for Text.
+/// A view built at wire epoch 8 reaches here with every field epoch 10 added
+/// `None` (`module_view/epoch8.rs`), so it maps as it did before them.
 pub(crate) fn accessible(node: &wire::Node) -> Accessible {
     use gpui_kit::Role;
     use wire::Node;
@@ -4241,22 +4261,49 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
         max: Some(max.into()),
         ..Default::default()
     };
+    let role_of = |role: &wire::Role| match role {
+        wire::Role::Button => Role::Button,
+        wire::Role::Link => Role::Link,
+        wire::Role::Tab => Role::Tab,
+        wire::Role::MenuItem => Role::MenuItem,
+        wire::Role::Row => Role::Row,
+        wire::Role::Checkbox => Role::CheckBox,
+        wire::Role::Switch => Role::Switch,
+    };
+    let labelled = |role: Role, label: &Option<String>| Accessible {
+        role: Some(role),
+        name: label.as_deref().and_then(named),
+        ..Default::default()
+    };
     match node {
-        Node::Text { content, .. } => Accessible {
-            role: Some(Role::Label),
+        Node::Text {
+            content,
+            heading,
+            live,
+            ..
+        } => Accessible {
+            role: Some(match heading {
+                Some(_) => Role::Heading,
+                None => Role::Label,
+            }),
             name: named(content),
+            level: heading.map(usize::from),
+            live: *live,
             ..Default::default()
         },
         Node::Button {
             content,
             label,
+            role,
             checked,
             expanded,
+            selected,
             description,
             on_press,
             ..
         } => Accessible {
-            role: Some(Role::Button),
+            role: Some(role.as_ref().map_or(Role::Button, role_of)),
+            selected: *selected,
             name: label.as_deref().and_then(named).or(match content {
                 wire::ButtonContent::Label(text) => named(text),
                 wire::ButtonContent::Child(_) => None,
@@ -4292,6 +4339,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             ..Default::default()
         },
         Node::Slider {
+            label,
             value,
             min,
             max,
@@ -4299,6 +4347,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             ..
         } => Accessible {
             role: Some(Role::Slider),
+            name: label.as_deref().and_then(named),
             step: Some((*step).into()),
             ..numeric(*value, *min, *max)
         },
@@ -4324,20 +4373,38 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             disabled: options.disabled,
             ..Default::default()
         },
-        Node::Editor { .. } => Accessible {
-            role: Some(Role::MultilineTextInput),
-            ..Default::default()
-        },
+        Node::Editor { label, .. } => labelled(Role::MultilineTextInput, label),
         Node::ComboBox {
-            options, selected, ..
+            options,
+            selected,
+            label,
+            ..
         }
         | Node::PickList {
-            options, selected, ..
+            options,
+            selected,
+            label,
+            ..
         } => Accessible {
-            role: Some(Role::ComboBox),
             value: selected.and_then(|index| options.get(index as usize).cloned()),
-            ..Default::default()
+            ..labelled(Role::ComboBox, label)
         },
+        // an area is announced only as what its view says it is
+        Node::MouseArea {
+            role: Some(role),
+            label,
+            expanded,
+            selected,
+            checked,
+            ..
+        } => Accessible {
+            toggled: *checked,
+            expanded: *expanded,
+            selected: *selected,
+            ..labelled(role_of(role), label)
+        },
+        // a named overlay is a dialog; an unnamed one is layout
+        Node::Overlay { label, .. } if label.is_some() => labelled(Role::Dialog, label),
         // an unlabelled picture is decoration: it stays out of the tree
         Node::Image { label, .. } | Node::ImageViewer { label, .. } | Node::Svg { label, .. } => {
             match label.as_deref().and_then(named) {
@@ -4369,6 +4436,11 @@ fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible)
         step,
         toggled,
         expanded,
+        selected,
+        level,
+        // ponytail: the gpui-pre fork has no live-region setter; `live` is
+        // mapped and dropped here until it gains one
+        live: _,
         disabled,
     } = accessible;
     let element = ui::aria(element, |mut node| {
@@ -4404,6 +4476,12 @@ fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible)
         }
         if let Some(expanded) = expanded {
             node = node.aria_expanded(expanded);
+        }
+        if let Some(selected) = selected {
+            node = node.aria_selected(selected);
+        }
+        if let Some(level) = level {
+            node = node.aria_level(level);
         }
         node
     });
@@ -4899,6 +4977,7 @@ mod tests {
         for key in ["another-app/body", "/pages/document"] {
             let mut root = wire::Node::Editor {
                 key: key.into(),
+                label: None,
                 document: wire::editor_document::EditorDocumentRef {
                     document: key.into(),
                     reset: 1,
@@ -5184,6 +5263,8 @@ mod tests {
         cx.update(gpui_kit::init);
         let text = |key: &str, content: String, width, wrapping| wire::Node::Text {
             key: key.into(),
+            heading: None,
+            live: None,
             content,
             width,
             size: Some(14.),
@@ -5272,6 +5353,8 @@ mod tests {
         };
         let root = wire::Node::Button {
             key: "wrapping-parent".into(),
+            role: None,
+            selected: None,
             content: wire::ButtonContent::Child(Box::new(root)),
             label: None,
             checked: None,
@@ -5473,6 +5556,7 @@ mod tests {
         cx.update(gpui_kit::init);
         let combo = |reset, handler| wire::Node::ComboBox {
             key: "combo".into(),
+            label: None,
             state_key: "choices".into(),
             reset,
             options: vec!["Alpha".into(), "Beta".into()],
@@ -5630,6 +5714,8 @@ mod tests {
             tree.replace(
                 wire::Node::Button {
                     key: "watched".into(),
+                    role: None,
+                    selected: None,
                     content: wire::ButtonContent::Label("New action".into()),
                     label: None,
                     checked: None,
@@ -5690,6 +5776,7 @@ mod tests {
         ] {
             let root = wire::Node::Editor {
                 key: "document".into(),
+                label: None,
                 options: Box::default(),
                 placeholder: String::new(),
                 document: wire::editor_document::EditorDocumentRef {
@@ -5768,6 +5855,7 @@ mod tests {
         let leading = 20.;
         let root = wire::Node::Editor {
             key: "document".into(),
+            label: None,
             options: Box::new(wire::EditorOptions {
                 size: Some(14.),
                 line_height: Some(wire::LineHeight::Absolute(leading)),
@@ -5865,6 +5953,8 @@ mod tests {
     ) -> wire::Node {
         wire::Node::Button {
             key: "b".into(),
+            role: None,
+            selected: None,
             content,
             label: label.map(str::to_owned),
             checked: None,
@@ -5941,6 +6031,8 @@ mod tests {
         let text = |content: &str| wire::Node::Text {
             options: Default::default(),
             key: "t".into(),
+            heading: None,
+            live: None,
             content: content.into(),
             size: None,
             color: None,
@@ -6071,6 +6163,7 @@ mod tests {
     fn a_slider_and_a_progress_report_their_value_in_range() {
         let slider = wire::Node::Slider {
             key: "s".into(),
+            label: None,
             value: 30.,
             min: 0.,
             max: 100.,
@@ -6139,10 +6232,11 @@ mod tests {
     }
 
     #[test]
-    fn an_editor_is_a_multiline_field_with_no_name_on_the_wire_yet() {
-        let editor = wire::Node::Editor {
+    fn an_editor_is_a_multiline_field_named_by_its_label() {
+        let mut editor = wire::Node::Editor {
             options: Box::default(),
             key: "e".into(),
+            label: None,
             placeholder: "Write something".into(),
             document: wire::editor_document::EditorDocumentRef {
                 document: "e".into(),
@@ -6166,6 +6260,11 @@ mod tests {
                 ..Default::default()
             }
         );
+        let wire::Node::Editor { label, .. } = &mut editor else {
+            unreachable!()
+        };
+        *label = Some("Message".into());
+        assert_eq!(accessible(&editor).name.as_deref(), Some("Message"));
     }
 
     #[test]
@@ -6173,6 +6272,7 @@ mod tests {
         let options = vec!["Low".to_owned(), "High".to_owned()];
         let combo = |selected| wire::Node::ComboBox {
             key: "c".into(),
+            label: None,
             state_key: "c".into(),
             options: options.clone(),
             selected,
@@ -6185,6 +6285,7 @@ mod tests {
         let pick = |selected| wire::Node::PickList {
             settings: Box::default(),
             key: "p".into(),
+            label: None,
             options: options.clone(),
             selected,
             placeholder: Some("Priority".into()),
@@ -6204,6 +6305,16 @@ mod tests {
         }
         for node in [combo(None), pick(None), combo(Some(7)), pick(Some(7))] {
             assert_eq!(accessible(&node).value, None);
+        }
+        for mut node in [combo(Some(1)), pick(Some(1))] {
+            assert_eq!(accessible(&node).name, None);
+            let (wire::Node::ComboBox { label, .. } | wire::Node::PickList { label, .. }) =
+                &mut node
+            else {
+                unreachable!()
+            };
+            *label = Some("Priority".into());
+            assert_eq!(accessible(&node).name.as_deref(), Some("Priority"));
         }
     }
 
@@ -6231,5 +6342,165 @@ mod tests {
             height: None,
         };
         assert_eq!(accessible(&space), Accessible::default());
+    }
+
+    #[test]
+    fn a_slider_is_named_by_its_label() {
+        let slider = |label: Option<&str>| wire::Node::Slider {
+            key: "s".into(),
+            label: label.map(str::to_owned),
+            value: 1.,
+            min: 0.,
+            max: 2.,
+            step: 1.,
+            on_change: 1,
+            on_release: None,
+            axis: wire::Axis::Row,
+            width: None,
+            height: None,
+            style: Default::default(),
+        };
+        assert_eq!(
+            accessible(&slider(Some("Volume"))).name.as_deref(),
+            Some("Volume")
+        );
+        assert_eq!(accessible(&slider(Some(""))).name, None);
+        assert_eq!(accessible(&slider(None)).name, None);
+    }
+
+    #[test]
+    fn a_text_heading_has_its_level_and_a_live_text_its_politeness() {
+        let text = |heading, live| wire::Node::Text {
+            key: "t".into(),
+            content: "Members".into(),
+            width: None,
+            size: None,
+            color: None,
+            font: Default::default(),
+            align_x: None,
+            options: Default::default(),
+            heading,
+            live,
+        };
+        for level in 1..=6u8 {
+            assert_eq!(
+                accessible(&text(Some(level), None)),
+                Accessible {
+                    role: Some(gpui_kit::Role::Heading),
+                    name: Some("Members".into()),
+                    level: Some(level.into()),
+                    ..Default::default()
+                }
+            );
+        }
+        for live in [wire::Live::Polite, wire::Live::Assertive] {
+            assert_eq!(
+                accessible(&text(None, Some(live))),
+                Accessible {
+                    role: Some(gpui_kit::Role::Label),
+                    name: Some("Members".into()),
+                    live: Some(live),
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
+    /// Every role a view can give a mouse area or a button, and what
+    /// assistive technology hears for it.
+    const ROLES: [(wire::Role, gpui_kit::Role); 7] = [
+        (wire::Role::Button, gpui_kit::Role::Button),
+        (wire::Role::Link, gpui_kit::Role::Link),
+        (wire::Role::Tab, gpui_kit::Role::Tab),
+        (wire::Role::MenuItem, gpui_kit::Role::MenuItem),
+        (wire::Role::Row, gpui_kit::Role::Row),
+        (wire::Role::Checkbox, gpui_kit::Role::CheckBox),
+        (wire::Role::Switch, gpui_kit::Role::Switch),
+    ];
+
+    #[test]
+    fn a_button_with_a_role_is_that_role_and_reports_selected() {
+        for (role, heard) in ROLES {
+            let mut tab = button(wire::ButtonContent::Label("Inbox".into()), None, Some(1));
+            let wire::Node::Button {
+                role: set,
+                selected,
+                ..
+            } = &mut tab
+            else {
+                unreachable!()
+            };
+            (*set, *selected) = (Some(role), Some(true));
+            let tab = accessible(&tab);
+            assert_eq!(tab.role, Some(heard));
+            assert_eq!(tab.selected, Some(true));
+            assert_eq!(tab.name.as_deref(), Some("Inbox"));
+        }
+    }
+
+    #[test]
+    fn a_mouse_area_is_announced_only_as_the_role_its_view_gives_it() {
+        let area = |role, label: Option<&str>| wire::Node::MouseArea {
+            key: "m".into(),
+            role,
+            label: label.map(str::to_owned),
+            expanded: Some(true),
+            selected: Some(false),
+            checked: Some(true),
+            on_press: Some(1),
+            on_release: None,
+            on_double_click: None,
+            on_right_press: None,
+            on_right_release: None,
+            on_middle_press: None,
+            on_middle_release: None,
+            on_enter: None,
+            on_exit: None,
+            on_move: None,
+            on_press_at: None,
+            on_scroll: None,
+            content: Box::new(wire::Node::empty()),
+        };
+        for (role, heard) in ROLES {
+            assert_eq!(
+                accessible(&area(Some(role), Some("Wrap lines"))),
+                Accessible {
+                    role: Some(heard),
+                    name: Some("Wrap lines".into()),
+                    toggled: Some(true),
+                    expanded: Some(true),
+                    selected: Some(false),
+                    ..Default::default()
+                }
+            );
+            assert_eq!(accessible(&area(Some(role), Some(""))).name, None);
+        }
+        assert_eq!(
+            accessible(&area(None, Some("Wrap lines"))),
+            Accessible::default()
+        );
+    }
+
+    #[test]
+    fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
+        let overlay = |label: Option<&str>| wire::Node::Overlay {
+            key: "o".into(),
+            label: label.map(str::to_owned),
+            padding: 0.,
+            backdrop: wire::Rgba([0.; 4]),
+            align_x: wire::AlignX::Center,
+            align_y: wire::AlignY::Center,
+            on_dismiss: None,
+            children: vec![],
+        };
+        assert_eq!(
+            accessible(&overlay(Some("Rename channel"))),
+            Accessible {
+                role: Some(gpui_kit::Role::Dialog),
+                name: Some("Rename channel".into()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(accessible(&overlay(None)), Accessible::default());
     }
 }
