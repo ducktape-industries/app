@@ -1,0 +1,30 @@
+{
+ "name": "huddle",
+ "about": "Start a huddle in the open channel and leave it. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 call/src/panel.rs:398-416 — who is speaking is shown only by initials colour",
+  "ducktape-views@a2a73e1 call/src/panel.rs:305,382 — video tiles and the stage are unlabelled images: not in the tree",
+  "ducktape-views@a2a73e1 call — mute shows only as the name flip Mute / Unmute, no toggled state",
+  "app/src/shell.rs:3038-3052 — the voice dock says Voice connected, the time and the room in plain text: not in the tree; its Open button is a vague name"
+ ],
+ "steps": [
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Chat tab is selected and the chat view shows a Start a huddle button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press Start a huddle",
+   "expect": "the huddle started: the chat header shows Leave huddle and Show huddle, or the rail shows Mute and Leave voice controls; no error",
+   "settle_ms": 6000
+  },
+  {
+   "say": "press Leave (the rail voice control) or Leave huddle",
+   "expect": "the huddle ended: the rail's Mute and Leave voice controls are gone and the chat header offers Start a huddle again",
+   "settle_ms": 4000
+  }
+ ]
+}

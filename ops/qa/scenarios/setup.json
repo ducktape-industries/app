@@ -1,0 +1,293 @@
+{
+ "name": "setup",
+ "about": "LIVE prelude every live walk includes: install an app release from its archive into <out>/rig, join a live network by a single-use invite, install and run a member node, make a wallet (its recovery phrase is revealed to this rig only and held in memory), continue without an account, and wait until the console is open and every view it asked of the network has landed. WRITE-ONLY on the network: it spends the invite and runs a member node. Ends with the console open; teardown stops the app and the member node it started. A scenario that starts from an open console includes it; in a run of several it runs once.",
+ "params": {
+  "release_archive": "the app release archive, e.g. Ducktape-<rev>-linux-x86_64.tar.zst",
+  "release_sha256": "its sha256 (64 hex)",
+  "release_key_file": "file with the app release key (64 hex); a secret, compared to keys/release.pub",
+  "version": "the version the installed launcher must report, e.g. 0.1.0+e0fbcb88",
+  "release_sequence": "the sequence release.json pins, e.g. 4",
+  "invite_file": "file with the single-use invitation line (0600); a secret, never written anywhere",
+  "network": "the network's workspace dir name the waiting step shows, e.g. dognet#b5b6ea90",
+  "node_archive": "the member node release archive, e.g. ducktape-<rev>-linux-x86_64.tar.zst",
+  "node_release_key_file": "file with the release key the member node's launcher pins (64 hex); a secret"
+ },
+ "rig": {
+  "display": true,
+  "secrets": {
+   "invite": {
+    "file": "{param:invite_file}"
+   },
+   "release_key": {
+    "file": "{param:release_key_file}"
+   },
+   "node_release_key": {
+    "file": "{param:node_release_key_file}"
+   },
+   "wallet_password": {
+    "generate": "password"
+   }
+  },
+  "private": true
+ },
+ "steps": [
+  {
+   "kind": "shell",
+   "say": "L1 the release archive is the one named",
+   "argv": [
+    "sha256sum",
+    "{param:release_archive}"
+   ],
+   "expect_output": "^{param:release_sha256}\\b"
+  },
+  {
+   "kind": "shell",
+   "say": "L1 make the unpack dirs",
+   "argv": [
+    "mkdir",
+    "-p",
+    "{rig:dir}/release",
+    "{rig:dir}/node"
+   ]
+  },
+  {
+   "kind": "shell",
+   "say": "L1 unpack the release",
+   "argv": [
+    "tar",
+    "--zstd",
+    "-xf",
+    "{param:release_archive}",
+    "-C",
+    "{rig:dir}/release"
+   ]
+  },
+  {
+   "kind": "shell",
+   "say": "L1 install with the release's own launcher",
+   "argv": [
+    "{rig:dir}/release/ducktape-launcher",
+    "install",
+    "--from",
+    "{rig:dir}/release",
+    "--release-key",
+    "{secret:release_key}"
+   ],
+   "timeout_ms": 300000
+  },
+  {
+   "kind": "shell",
+   "say": "L1 the installed launcher reports the release's version",
+   "argv": [
+    "{rig:data}/ducktape/current/ducktape-launcher",
+    "--version"
+   ],
+   "expect_output": "{param:version}"
+  },
+  {
+   "kind": "shell",
+   "say": "L1 state.json is idle",
+   "argv": [
+    "cat",
+    "{rig:config}/ducktape/updates/state.json"
+   ],
+   "expect_output": "\"phase\":\\s*\"idle\""
+  },
+  {
+   "kind": "shell",
+   "say": "L1 state.json pins the release's sequence",
+   "argv": [
+    "cat",
+    "{rig:config}/ducktape/updates/state.json"
+   ],
+   "expect_output": "\"pinned_sequence\":\\s*{param:release_sequence}\\b"
+  },
+  {
+   "kind": "shell",
+   "say": "L1 keys/release.pub is byte-equal to the key file",
+   "argv": [
+    "cmp",
+    "-s",
+    "{param:release_key_file}",
+    "{rig:config}/ducktape/updates/keys/release.pub"
+   ]
+  },
+  {
+   "kind": "launch",
+   "say": "L2 boot the installed launcher",
+   "argv": [
+    "{rig:data}/ducktape/current/ducktape-launcher"
+   ],
+   "deadline_ms": 90000
+  },
+  {
+   "kind": "wait",
+   "say": "L2 the launch window offers Join with invitation",
+   "wait": {
+    "role": "Button",
+    "name": "Join with invitation"
+   },
+   "deadline_ms": 15000
+  },
+  {
+   "say": "press Join with invitation",
+   "expect": "the invitation screen shows an Invitation field and a Join network button"
+  },
+  {
+   "say": "put the invitation into the Invitation field",
+   "secret": "invite",
+   "expect": "the Join network button is enabled (no disabled state)"
+  },
+  {
+   "say": "press Join network",
+   "settle_ms": 5000,
+   "expect": "the app is setting up the network (a step such as Setting up your network or Waiting for your node) and shows no refusal or error sentence"
+  },
+  {
+   "kind": "wait",
+   "say": "L2 the waiting step shows the node command block",
+   "wait": {
+    "role": "Button",
+    "name": "Copy command"
+   },
+   "deadline_ms": 120000
+  },
+  {
+   "kind": "shell",
+   "say": "L2 unpack the member node release",
+   "argv": [
+    "tar",
+    "--zstd",
+    "-xf",
+    "{param:node_archive}",
+    "-C",
+    "{rig:dir}/node"
+   ]
+  },
+  {
+   "kind": "shell",
+   "say": "L2 install the member node as the waiting step says",
+   "timeout_ms": 300000,
+   "argv": [
+    "{rig:dir}/node/ducktape-node-launcher",
+    "install",
+    "--workspace",
+    "{rig:ducktape_home}/{param:network}",
+    "--config",
+    "{rig:ducktape_home}/{param:network}/node.toml",
+    "--from",
+    "{rig:dir}/node/ducktape",
+    "--release-key",
+    "{secret:node_release_key}"
+   ]
+  },
+  {
+   "kind": "shell",
+   "say": "L2 run the member node as the waiting step says",
+   "background": true,
+   "settle_ms": 5000,
+   "argv": [
+    "{rig:dir}/node/ducktape-node-launcher",
+    "run",
+    "--workspace",
+    "{rig:ducktape_home}/{param:network}",
+    "--config",
+    "{rig:ducktape_home}/{param:network}/node.toml"
+   ]
+  },
+  {
+   "kind": "wait",
+   "say": "L2 the ready screen offers Open Ducktape (this step's ms = node start to ready)",
+   "wait": {
+    "role": "Button",
+    "name": "Open Ducktape"
+   },
+   "deadline_ms": 900000
+  },
+  {
+   "say": "press Open Ducktape",
+   "expect": "the Protect your wallet step shows, with Password and Confirm password fields (a password-length hint is not an error)"
+  },
+  {
+   "say": "put the wallet password into the Password field",
+   "secret": "wallet_password"
+  },
+  {
+   "say": "put the wallet password into the Confirm password field",
+   "secret": "wallet_password",
+   "expect": "the Create wallet button is enabled (no disabled state)"
+  },
+  {
+   "say": "press Create wallet",
+   "settle_ms": 5000,
+   "expect": "the recovery phrase step shows (Write down your recovery phrase) with its words hidden"
+  },
+  {
+   "kind": "private_remember",
+   "say": "remember the recovery phrase words the screen shows (the door reveals them to this rig only; held in memory, never written or sent)",
+   "match": {
+    "ids_prefix": "onboarding:phrase-word/"
+   },
+   "as": "phrase"
+  },
+  {
+   "say": "press I wrote it down",
+   "expect": "the confirm step asks for the requested recovery words"
+  },
+  {
+   "kind": "private_copy",
+   "say": "type the words the confirm step asks for (its prompt names their numbers) into the answer field",
+   "from_indexed": {
+    "memory": "phrase",
+    "prompt": {
+     "name": "Type words",
+     "in": "onboarding"
+    },
+    "regex": "Type words ([0-9, and]+)"
+   },
+   "into": {
+    "role": "PasswordInput",
+    "ids_prefix": "onboarding:phrase-answer"
+   },
+   "how": "type"
+  },
+  {
+   "say": "press Confirm recovery phrase",
+   "settle_ms": 5000,
+   "expect": "the account step shows (Your account); no error sentence"
+  },
+  {
+   "kind": "wait",
+   "say": "the account step shows: Your account",
+   "wait": {
+    "role": "Heading",
+    "name": "Your account"
+   },
+   "deadline_ms": 60000
+  },
+  {
+   "say": "continue without an account",
+   "settle_ms": 5000,
+   "expect": "the workspace console opens with its rail of tabs"
+  },
+  {
+   "kind": "wait",
+   "say": "L2 the console is open (this step's ms = open to first tab)",
+   "wait": {
+    "role": "Tab",
+    "in": "console"
+   },
+   "deadline_ms": 120000
+  },
+  {
+   "kind": "wait",
+   "say": "every view the console asked of the network has landed: the rail's Loading views line clears",
+   "wait": {
+    "name": "Loading views",
+    "in": "console",
+    "gone": true
+   },
+   "deadline_ms": 300000
+  }
+ ]
+}
