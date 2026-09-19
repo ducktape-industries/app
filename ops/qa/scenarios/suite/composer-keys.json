@@ -36,9 +36,9 @@
    "expect": "the room header's name label reads qa-keys-{param:walk_tag}; a message composer (a text field named Message #qa-keys-{param:walk_tag}) shows with a Send button, and no line refuses writing for want of an account"
   },
   {
-   "say": "type x into the Message #qa-keys-{param:walk_tag} composer (the type action on that field, which puts the caret there)",
-   "text": "x",
-   "expect": "the Message #qa-keys-{param:walk_tag} composer holds focus (its state lists focused) and the Send button is enabled (its state does not list disabled: the typed x landed); on an app that reports the composer's value it reads x"
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field, which puts the caret there)",
+   "text": "k",
+   "expect": "the Message #qa-keys-{param:walk_tag} composer holds focus (its state lists focused) and the Send button is enabled (its state does not list disabled: the typed k landed); on an app that reports the composer's value it reads k"
   },
   {
    "kind": "shell",
@@ -51,9 +51,9 @@
    ]
   },
   {
-   "say": "type x into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
-   "text": "x",
-   "expect": "after Delete, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed x landed, so Delete did not wedge the editor). On an app that reports the composer's value it reads x"
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "k",
+   "expect": "after Delete, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed k landed, so Delete did not wedge the editor). On an app that reports the composer's value it reads k"
   },
   {
    "kind": "shell",
@@ -66,9 +66,9 @@
    ]
   },
   {
-   "say": "type x into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
-   "text": "x",
-   "expect": "after ArrowUp, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed x landed, so ArrowUp did not wedge the editor). On an app that reports the composer's value it reads x"
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "k",
+   "expect": "after ArrowUp, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed k landed, so ArrowUp did not wedge the editor). On an app that reports the composer's value it reads k"
   },
   {
    "kind": "shell",
@@ -81,9 +81,9 @@
    ]
   },
   {
-   "say": "type x into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
-   "text": "x",
-   "expect": "after ArrowDown, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed x landed, so ArrowDown did not wedge the editor). On an app that reports the composer's value it reads x"
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "k",
+   "expect": "after ArrowDown, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed k landed, so ArrowDown did not wedge the editor). On an app that reports the composer's value it reads k"
   },
   {
    "kind": "shell",
@@ -96,9 +96,9 @@
    ]
   },
   {
-   "say": "type x into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
-   "text": "x",
-   "expect": "after Escape, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed x landed, so Escape did not wedge the editor). On an app that reports the composer's value it reads x"
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "k",
+   "expect": "after Escape, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed k landed, so Escape did not wedge the editor). On an app that reports the composer's value it reads k"
   },
   {
    "kind": "shell",
