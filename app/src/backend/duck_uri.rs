@@ -21,8 +21,9 @@
 //! THE OLD FORM IS NOT READ (core #2637, ruling Q4). `duck://<module>/…
 //! [?net=<digest>]` and the chain-less `duck://account/<n>` are refused with
 //! [`OLD_FORM`], never guessed at: a stored link of that form opens nothing
-//! rather than the wrong thing. The one reader of `duck://account/<n>` left is
-//! for a mention an epoch-8 chat view hands over (`module_view/epoch8.rs`).
+//! rather than the wrong thing. The one reader of the old form left is for a
+//! link a deployed epoch-8 view hands `host.open_link`: it is re-spelled as
+//! the address it names before it reaches here (`module_view/epoch8.rs`).
 
 pub(crate) use crate::DuckKind;
 use duck_address::chat::MessageAddress;
