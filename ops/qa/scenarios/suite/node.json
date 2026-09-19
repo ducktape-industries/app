@@ -1,0 +1,30 @@
+{
+ "name": "node",
+ "about": "Read this node's overview, activity and modules. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 node/src/presentation.rs:558-566 — the tracing filter field is named by an example value (info,ducktape::join=debug), not its purpose",
+  "ducktape-views@a2a73e1 node — the permissions matrix is bare ✓ / – labels with no row or column context"
+ ],
+ "steps": [
+  {
+   "say": "open the Node tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Node tab is selected and the node view shows a This node label, a connection badge, and Node overview, Node permissions, Node activity and Node modules buttons with Node overview checked, and a Height row reading block N; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press Node activity",
+   "expect": "Node activity reports checked; a Filter lines field and level buttons All, Error, Warn, Info, Debug and Trace show"
+  },
+  {
+   "say": "press Node modules",
+   "expect": "Node modules reports checked; modules show with a status badge such as Active"
+  },
+  {
+   "say": "press Node overview",
+   "expect": "Node overview reports checked"
+  }
+ ]
+}

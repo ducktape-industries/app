@@ -1,0 +1,23 @@
+{
+ "name": "inbox",
+ "about": "Open the bell and close it. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 inbox/src/presentation.rs:126 — rows are unnamed buttons",
+  "app/src/shell.rs:2403 — the popover heading Notifications is plain text: not in the tree",
+  "ducktape-views@a2a73e1 inbox — no per-row mark-read"
+ ],
+ "steps": [
+  {
+   "say": "press Notifications in the rail",
+   "expect": "the notifications popover opens: a Close button and the inbox (an Inbox label with an unread badge and Mark all read, or Nothing new)",
+   "settle_ms": 3000
+  },
+  {
+   "say": "press Close",
+   "expect": "the popover is gone: no Close button and no Inbox label"
+  }
+ ]
+}

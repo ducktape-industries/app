@@ -176,6 +176,97 @@ fn door_act_answers_with_the_delta() {
     );
 }
 
+fn keys(cx: &mut HeadlessAppContext, window: AnyWindowHandle, keys: &str, text: &str) {
+    cx.update_window(window, |_, window, cx| {
+        ax_door::press_keys(window, cx, keys, text)
+    })
+    .unwrap()
+    .unwrap_or_else(|error| panic!("{keys}: {error}"));
+    cx.run_until_parked();
+    draw(cx, window);
+}
+
+fn focused(nodes: &[AxNode]) -> Option<&AxNode> {
+    nodes.iter().find(|node| node.state.contains(&"focused"))
+}
+
+/// A keyboard-only walk: Tab moves focus through the window's own key
+/// dispatch, the tree reports where focus is, and Enter on a focused rail
+/// tab selects it — no accessibility action involved.
+#[test]
+fn door_keys_move_focus_and_activate_the_focused_node() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let (mut cx, window) = open(console(), crate::shell::WindowKind::Console);
+    // Tab from nowhere goes nowhere: the kit binds it in the Root context,
+    // on no dispatch path until something holds focus. A real window focuses
+    // its own handle when it opens (shell.rs); the fixture does not, so start
+    // from a focused node.
+    let first = read(&mut cx, window, "console")
+        .into_iter()
+        .find(|node| node.actions.contains(&"focus"))
+        .expect("a focusable node");
+    cx.update_window(window, |_, window, cx| {
+        ax_door::perform_by_id("console", window, cx, &first.id, "focus", "")
+    })
+    .unwrap();
+    draw(&mut cx, window);
+    let mut seen = Vec::new();
+    let tab = loop {
+        keys(&mut cx, window, "tab", "");
+        let nodes = read(&mut cx, window, "console");
+        let now = focused(&nodes)
+            .unwrap_or_else(|| panic!("Tab puts focus on a node: {}", json(&nodes)))
+            .clone();
+        if now.role == "Tab" && !now.state.contains(&"selected") {
+            break now;
+        }
+        assert!(
+            !seen.contains(&now.id) && seen.len() < 200,
+            "Tab went round without reaching an unselected rail tab: {seen:?}"
+        );
+        seen.push(now.id);
+    };
+    keys(&mut cx, window, "shift-tab", "");
+    let back = read(&mut cx, window, "console");
+    assert_ne!(
+        focused(&back).map(|node| node.id.as_str()),
+        Some(tab.id.as_str()),
+        "Shift-Tab moves focus back"
+    );
+    keys(&mut cx, window, "tab enter", "");
+    let after = read(&mut cx, window, "console");
+    let pressed = after.iter().find(|node| node.id == tab.id).unwrap();
+    assert!(
+        pressed.state.contains(&"selected"),
+        "Enter on the focused tab selects it: {}",
+        json(&after)
+    );
+    // a view's chord is a claim, not a binding: the door names it too
+    crate::module_view::claim_chord("cmd-shift-alt-9", "palette").unwrap();
+    let shortcuts = cx
+        .update_window(window, |_, window, cx| {
+            assert!(ax_door::press_keys(window, cx, "tab k-ctrl", "").is_err());
+            serde_json::to_string(&ax_door::shortcuts(window, cx)).unwrap()
+        })
+        .unwrap();
+    crate::module_view::release_chord("cmd-shift-alt-9", "palette");
+    assert!(
+        shortcuts.contains(r#""keys":"tab""#),
+        "the bindings reachable from focus: {shortcuts}"
+    );
+    let command = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    assert!(
+        shortcuts.contains(&format!(
+            r#""keys":"{command}-shift-alt-9","action":"the palette view's cmd-shift-alt-9""#
+        )),
+        "a claimed chord: {shortcuts}"
+    );
+}
+
 fn press(cx: &mut HeadlessAppContext, window: AnyWindowHandle, id: &str) {
     let pressed = cx
         .update_window(window, |_, window, cx| {
@@ -354,6 +445,17 @@ fn door_round_trip_over_loopback() {
     );
     assert_eq!(ax_door::call(&door, "POST", "/act", "{").unwrap().0, 400);
     assert_eq!(ax_door::call(&door, "GET", "/nowhere", "").unwrap().0, 404);
+    let (status, body) = ax_door::call(
+        &door,
+        "POST",
+        "/key",
+        r#"{"keys":"shift-tab","window":"console"}"#,
+    )
+    .unwrap();
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#"keys: \"shift-tab\""#), "{body}");
+    let (status, body) = ax_door::call(&door, "GET", "/keys?window=console", "").unwrap();
+    assert_eq!((status, body.contains("Keys")), (200, true), "{body}");
     // without DUCKTAPE_AX_DOOR_PRIVATE=1 there is no reveal at all
     let ask = r#"{"id":"onboarding:phrase-word/1"}"#;
     let (status, body) = ax_door::call(&door, "POST", "/reveal", ask).unwrap();

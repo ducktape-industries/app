@@ -1,0 +1,40 @@
+{
+ "name": "settings",
+ "about": "Run an update check and flip one harmless preference back and forth. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 settings/src/lib.rs:825-955 — panes and choices are Buttons that report checked (epoch 8 has no Tab or RadioButton on the wire): readable, but a screen reader hears buttons"
+ ],
+ "steps": [
+  {
+   "say": "open the Settings tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Settings tab is selected and the settings view shows General, Network, Account and Security buttons with General checked, and an Updates label with a Check now button; status notes such as 'Last check refused: sequence_not_newer.' are states, not errors; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press Check now",
+   "expect": "the check ran: the Last check row reads just now or Checking…, or the update note reads a result such as 'Up to date.' or 'Last check refused: sequence_not_newer.', or a Ready to install row shows; a refusal note is a state, not an error",
+   "settle_ms": 8000
+  },
+  {
+   "say": "press Off under Mentions and direct messages",
+   "expect": "Off reports checked and the detail reads 'Silent — the bell is the only notice.'",
+   "settle_ms": 3000
+  },
+  {
+   "say": "press On under Mentions and direct messages",
+   "expect": "On reports checked and the detail reads 'A desktop banner when you are named, or written to directly.'",
+   "settle_ms": 3000
+  },
+  {
+   "say": "press Network",
+   "expect": "Network reports checked; Reconnect and Switch network buttons and a node RPC URL field show"
+  },
+  {
+   "say": "press General",
+   "expect": "General reports checked and the Updates label shows"
+  }
+ ]
+}

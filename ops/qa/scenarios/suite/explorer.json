@@ -1,0 +1,32 @@
+{
+ "name": "explorer",
+ "about": "Inspect a block and search the workspace. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 explorer/src/presentation.rs:179 — every block row is named Inspect block: rows differ only by id or a child label",
+  "ducktape-views@a2a73e1 explorer — a search hit cannot be opened (it has only Copy reference)"
+ ],
+ "steps": [
+  {
+   "say": "open the Explorer tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Explorer tab is selected and the explorer view shows a Search messages, pages, issues, files, runs… field, a Refresh button and block rows (buttons named Inspect block); no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press the first Inspect block row",
+   "expect": "a block opens: a label Block N, a Copy block hash button and Block hash, Commit and Operations rows"
+  },
+  {
+   "say": "search the workspace: type qa and Enter into the search field",
+   "text": "qa\n",
+   "settle_ms": 4000,
+   "expect": "search results show: an All filter button with result rows, or 'No matching results.' (Searching… is a state, not an error)"
+  },
+  {
+   "say": "press Clear workspace search",
+   "expect": "the search results are gone"
+  }
+ ]
+}

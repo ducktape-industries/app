@@ -1,0 +1,46 @@
+{
+ "name": "boards",
+ "about": "Create a board and put a note on it. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "ducktape-views@a2a73e1 canvas/src/presentation.rs:1403 — the canvas is a MouseArea with no role: placing, drawing, selecting and its menu are pointer-only",
+  "ducktape-views@a2a73e1 canvas/src/presentation.rs:3581 — the note editor has no label",
+  "ducktape-views@a2a73e1 canvas/src/presentation.rs:2551 — markdown note text is RichText: not in the tree",
+  "ducktape-views@a2a73e1 canvas — a card has no node but its text label: an empty card and the selection are pixels only"
+ ],
+ "steps": [
+  {
+   "say": "open the Boards tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Boards tab is selected and the boards view shows a Name a new board field and a Create board button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "type the board name into the Name a new board field",
+   "text": "QA board {param:walk_tag}",
+   "expect": "the Name a new board field holds QA board {param:walk_tag} and Create board is enabled"
+  },
+  {
+   "say": "press Create board",
+   "expect": "the new board opens: the board switcher button is named QA board {param:walk_tag} and an Add a note button shows",
+   "settle_ms": 4000
+  },
+  {
+   "say": "press Add a note",
+   "expect": "a note editor opens and a Done button shows"
+  },
+  {
+   "say": "type the note text into the new note",
+   "text": "qa note {param:walk_tag}"
+  },
+  {
+   "say": "press Done",
+   "expect": "the board shows a label reading qa note {param:walk_tag} and the sync label reads Saving 1 change… or Saved (not Not saved)",
+   "settle_ms": 4000
+  }
+ ]
+}

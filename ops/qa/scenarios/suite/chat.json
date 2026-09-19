@@ -1,0 +1,33 @@
+{
+ "name": "chat",
+ "about": "Send a message in the open channel. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "ducktape-views@a2a73e1 support/composer/src/binding.rs:264 — the composer is an Editor with no label (epoch 8): a MultilineTextInput with no name, only its id says composer",
+  "ducktape-views@a2a73e1 chat/src/ui/kit.rs:556-568 — a message body is RichText: the sent text is not in the tree, so a send is proven only by a new author label",
+  "ducktape-views@a2a73e1 chat/src/ui/chat.rs:686-740 — Open thread, React with 👍, Manage reactions and More message actions show only while the pointer hovers the row, and the row menu is a MouseArea with no role: thread reply and react cannot be reached from the tree or by keys, so they are not walked",
+  "ducktape-views@a2a73e1 chat/src/ui/chat.rs:1752-1778, kit.rs:292-321 — every reaction cell and pill is named Add reaction / Remove reaction; the emoji is only the description"
+ ],
+ "steps": [
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Chat tab is selected and the chat view shows a Send button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "type a short message into the message composer",
+   "text": "hello from the qa walk {param:walk_tag}",
+   "expect": "the Send button is enabled (its state does not list disabled)"
+  },
+  {
+   "say": "press Send",
+   "expect": "a new message card appears in the timeline with an author label (a pending 'sending…' label is fine) and the Send button reports disabled again; no error sentence",
+   "settle_ms": 4000
+  }
+ ]
+}

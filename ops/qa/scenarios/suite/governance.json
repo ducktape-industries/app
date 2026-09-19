@@ -1,0 +1,19 @@
+{
+ "name": "governance",
+ "about": "Open governance. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 governance/src/lib.rs:300-570 — there is no control to create a proposal: propose cannot be walked",
+  "ducktape-views@a2a73e1 governance/src/lib.rs:543-566 — Approve / Reject show for validators only and the walk joins as a member node: a vote needs a validator rig",
+  "ducktape-views@a2a73e1 governance — no you-voted state: after a vote only the tally changes"
+ ],
+ "steps": [
+  {
+   "say": "open the Governance tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Governance tab is selected and the governance view shows its proposals or an empty state (a member that is not a validator sees that only this network's validators vote); no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  }
+ ]
+}

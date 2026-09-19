@@ -1,0 +1,31 @@
+{
+ "name": "members",
+ "about": "Filter the member list and open this node's own record. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "gaps": [],
+ "steps": [
+  {
+   "say": "open the Members tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Members tab is selected and the members view shows a Members label, a summary such as 'N humans, M agents', filter buttons Show all members, Show humans only, Show agents only and Show validators only with Show all members checked, and member rows; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press Show validators only",
+   "expect": "Show validators only reports checked; the rows shown are validators (role label Validator) or there are none"
+  },
+  {
+   "say": "press Show all members",
+   "expect": "Show all members reports checked"
+  },
+  {
+   "say": "press this node's own row (the row with the This node label)",
+   "expect": "a member record opens with a Close member button and a Copy this node's key button"
+  },
+  {
+   "say": "press Close member",
+   "expect": "the record is closed: no Close member button"
+  }
+ ]
+}

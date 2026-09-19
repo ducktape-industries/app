@@ -1,0 +1,39 @@
+{
+ "name": "pages",
+ "about": "Create a page, give it a title, add a to-do line. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "ducktape-views@a2a73e1 pages/src/pages.rs:568 — title and body are one Editor with no label and no value in the tree: typed text shows only through the toolbar title label",
+  "ducktape-views@a2a73e1 pages/src/editor_binding.rs:496 — a to-do checkbox is painted inside the editor: no CheckBox node, so checking it cannot be done or proven from the tree",
+  "ducktape-views@a2a73e1 pages/src/editor_binding.rs:402-407,557 — undo is Ctrl/Cmd+Z only, no Undo button: the pointer door has no key, so undo is not walked",
+  "ducktape-views@a2a73e1 pages/src/rows.rs:371 — search result rows are unnamed buttons; rows.rs:127-133 row actions show only on hover"
+ ],
+ "steps": [
+  {
+   "say": "open the Pages tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Pages tab is selected and the pages view shows a New page button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press New page",
+   "expect": "a new page opens: the toolbar title label reads Untitled and the page list has an Untitled row; no error",
+   "settle_ms": 3000
+  },
+  {
+   "say": "type the title into the page document editor",
+   "text": "QA walk {param:walk_tag}",
+   "expect": "the toolbar title label reads QA walk {param:walk_tag} and the page list has a row named QA walk {param:walk_tag}"
+  },
+  {
+   "say": "type a new line with a to-do item into the page document editor",
+   "text": "\n- [ ] tape the walk",
+   "settle_ms": 3000,
+   "expect": "the save status label reads Saving… or Saved (not Not saved); no error"
+  }
+ ]
+}

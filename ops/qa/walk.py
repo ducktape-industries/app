@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
 """Walk the app through its accessibility door (#114) with a typed-question judge.
 
-usage: walk.py <scenario.json> --out <dir> [--param k=v ...] [--keep-going]
+usage: walk.py <scenario.json> [<scenario.json> ...] --out <dir> [--params file.json]
+               [--param k=v ...] [--keep-going] [--keyboard]
 
-A scenario is {name, params?, rig, steps}. A `ui` step asks Jev (TypeSafe System
-One) a `choice` over the door's closed action list, acts, then asks a `noul` on
-the delta and the tree. `wait`, `shell`, `launch`, `stop` and the `private_*`
-steps make no model call. Plain Python 3 stdlib; see README "QA walk" for the
-format and the rules.
+A scenario is {name, include?, params?, rig, steps}. A `ui` step asks Jev
+(TypeSafe System One) a `choice` over the door's closed action list, acts, then
+asks a `noul` on the delta and the tree. `wait`, `shell`, `launch`, `stop` and
+the `private_*` steps make no model call. Several scenarios run on ONE rig, in
+turn: a scenario's `include`d preludes run once before it, a failing scenario is
+recorded and the next still runs (one that needs a prelude that did not pass is
+skipped). `--keyboard` offers only what a keyboard has: move focus, activate the
+focused node, type into the focused field, Escape, named shortcuts. Plain Python
+3 stdlib; see ops/qa/README.md for the format and the rules.
 
 The Jev key comes from env JEV_API_KEY and goes nowhere but the request header.
 Rig secrets are resolved at run time and are written only as `{secret:<name>}`.
@@ -15,6 +20,9 @@ Private text the door reveals (rig.private only) is held in memory and goes
 nowhere but back into a secure input of the app: no file, no request to Jev.
 Every child runs in its own session; teardown signals only the process groups
 this run recorded, and only while /proc/<pid>/exe still says they are ours.
+
+Every invocation writes a new <out>/run-NN/ (transcript, ledger, result, failing
+trees); <out>/rig is kept, so a later run on the same --out starts on that rig.
 
 Exit: 0 PASS, 1 FAIL, 2 FAIL-UNJUDGED, 3 the scenario or the command line is bad.
 """
@@ -36,6 +44,14 @@ JEV_URL = 'https://api.typesafe.ai/v1/systemone'
 PRICE = 0.042 / 1e6  # USD per Jev input token
 PASS_AT = 0.7
 KINDS = ('ui', 'wait', 'shell', 'launch', 'stop', 'private_remember', 'private_copy')
+DOOR_WAIT_CAP_MS = 60_000  # the door answers one /wait within this at most (ax_door.rs); longer = ask again
+KEY_BUDGET = 40  # keys one keyboard step may press before it fails
+MOVES = ('tab', 'shift-tab', 'up', 'down', 'left', 'right')
+KEYS = {'enter': 'activate the focused node', 'space': 'activate or toggle the focused node',
+        'escape': 'close or cancel', 'backspace': 'delete the character before the caret'}
+SHORTCUT = re.compile(r'^(ctrl|alt|super|cmd|platform|function|fn)-|^f\d+$')  # a named shortcut, not typing
+TEXT_ROLES = ('TextInput', 'MultilineTextInput', 'SearchInput', 'EmailInput', 'NumberInput', 'PasswordInput',
+              'PhoneNumberInput', 'UrlInput')
 # How the door writes a tree (PR #120), so the judge reads state by the door's rule.
 TREE = ('`screen` is the app\'s accessibility tree as a flat list of nodes {id, role, name, value?, state[], '
         'actions[], in}. `state` lists flags such as disabled, focused, selected, checked, expanded: a control '
@@ -80,6 +96,41 @@ def find(spec, tree):
     if isinstance(spec, str):
         return spec
     return next((node['id'] for node in tree if matches(spec, node)), None)
+
+
+def merge_rig(specs):
+    """One rig for every scenario of a run: a display or reveal if any asks,
+    secrets and env by name (the same name must mean the same source)."""
+    rig = {'display': any(s.get('display', True) for s in specs),
+           'private': any(s.get('private') for s in specs), 'secrets': {}, 'env': {}}
+    for spec in specs:
+        for key in ('secrets', 'env'):
+            for name, value in (spec.get(key) or {}).items():
+                if rig[key].setdefault(name, value) != value:
+                    raise Refused(f'rig {key} {name}: two scenarios define it differently')
+    return rig
+
+
+def load(path, _within=()):
+    """A scenario file with its includes resolved, relative to the file: the
+    top-level `include` names preludes (each runs once per rig, before it), a
+    step `{"include": file}` stands for that file's steps and rig."""
+    path = Path(path).resolve()
+    if path in _within:
+        raise Refused(f'{path.name} includes itself')
+    scenario = json.loads(path.read_text())
+    scenario['preludes'] = [load(path.parent / name, _within + (path,)) for name in scenario.get('include', [])]
+    steps = []
+    for step in scenario['steps']:
+        if 'include' not in step:
+            steps.append(step)
+            continue
+        inner = load(path.parent / step['include'], _within + (path,))
+        steps += inner['steps']
+        if 'rig' in inner:
+            scenario['rig'] = merge_rig([scenario.get('rig') or {}, inner['rig']])
+    scenario['steps'] = steps
+    return scenario
 
 
 def start_time(pid):
@@ -256,8 +307,21 @@ class Door:
         return value.get('value') or value.get('name') or ''
 
     def wait(self, spec, deadline_ms):
+        """The door answers one wait within DOOR_WAIT_CAP_MS: ask again until OUR deadline."""
         body = {k: spec[k] for k in ('role', 'name', 'state', 'in', 'gone') if k in spec}
-        return self.call('POST', '/wait', dict(body, deadline_ms=deadline_ms), timeout=deadline_ms / 1000 + 10)
+        end = time.monotonic() + deadline_ms / 1000
+        while True:
+            ask = min(max(0, round((end - time.monotonic()) * 1000)), DOOR_WAIT_CAP_MS)
+            status, value = self.call('POST', '/wait', dict(body, deadline_ms=ask), timeout=ask / 1000 + 10)
+            if status != 408 or time.monotonic() >= end:
+                return status, value
+
+    def key(self, keys='', text=''):
+        """Keys (`tab`, `shift-tab`, `enter`, `ctrl-k`) then text, through the app's own key dispatch."""
+        return self.must('POST', '/key', {'keys': keys, 'text': text})
+
+    def shortcuts(self):
+        return self.must('GET', '/keys')
 
 
 class Jev:
@@ -296,72 +360,152 @@ class Jev:
 
 
 class Walk:
-    def __init__(self, scenario, out, params, keep_going=False):
-        self.scenario, self.out, self.keep_going = scenario, Path(out), keep_going
-        missing = sorted({m.group(2) for m in HOLE.finditer(json.dumps(scenario))
+    def __init__(self, scenarios, out, params, keep_going=False, keyboard=False):
+        self.out, self.keep_going, self.keyboard = Path(out), keep_going, keyboard
+        # every scenario after the preludes it includes, each once: (scenario, the preludes it needs)
+        self.plan, named = [], {}
+
+        def add(scenario):
+            needs = []
+            for prelude in scenario.get('preludes', []):
+                needs += add(prelude) + [prelude['name']]
+            name = scenario['name']
+            if name not in named:
+                named[name] = scenario['steps']
+                self.plan.append((scenario, list(dict.fromkeys(needs))))
+            elif named[name] != scenario['steps']:
+                raise Refused(f'two different scenarios are named {name}')
+            return needs
+
+        for scenario in scenarios if isinstance(scenarios, list) else [scenarios]:
+            add(scenario)
+        everything = json.dumps([s for s, _ in self.plan])
+        missing = sorted({m.group(2) for m in HOLE.finditer(everything)
                           if m.group(1) == 'param' and m.group(2) not in params})
         if missing:
             raise Refused('missing --param ' + ', '.join(missing))
-        for n, step in enumerate(scenario['steps'], 1):
-            if step.get('kind', 'ui') not in KINDS:
-                raise Refused(f'step {n}: kind must be one of {KINDS}')
-            if step.get('kind', '').startswith('private_') and not (scenario.get('rig') or {}).get('private'):
-                raise Refused(f'step {n}: a private step needs "rig": {{"private": true}}')
-            if step.get('kind') == 'private_copy' and step.get('how', 'type') not in ('type', 'set_value'):
-                raise Refused(f'step {n}: how must be "type" or "set_value"')
+        spec = merge_rig([s['rig'] for s, _ in self.plan if 'rig' in s] or [{}])
+        for scenario, _ in self.plan:
+            for n, step in enumerate(scenario['steps'], 1):
+                at = f"{scenario['name']} step {n}"
+                if step.get('kind', 'ui') not in KINDS:
+                    raise Refused(f'{at}: kind must be one of {KINDS}')
+                if step.get('kind', '').startswith('private_') and not spec['private']:
+                    raise Refused(f'{at}: a private step needs "rig": {{"private": true}}')
+                if step.get('kind') == 'private_copy' and step.get('how', 'type') not in ('type', 'set_value'):
+                    raise Refused(f'{at}: how must be "type" or "set_value"')
         self.out.mkdir(parents=True, exist_ok=True)
-        for name in ('transcript.jsonl', 'ledger.jsonl', 'failing-tree.json', 'result.json'):
-            (self.out / name).unlink(missing_ok=True)
-        self.rig = Rig(self.out / 'rig', scenario.get('rig') or {}, params)
-        unknown = sorted({m.group(2) for m in HOLE.finditer(json.dumps(scenario))
+        runs = [int(d.name[4:]) for d in self.out.glob('run-*') if d.name[4:].isdigit()]
+        self.run_dir = self.out / f'run-{max(runs, default=0) + 1:02d}'
+        self.run_dir.mkdir()
+        self.rig = Rig(self.out / 'rig', spec, params)
+        unknown = sorted({m.group(2) for m in HOLE.finditer(everything)
                           if m.group(1) == 'secret' and m.group(2) not in self.rig.secrets})
-        unknown += [s['secret'] for s in scenario['steps'] if s.get('secret') and s['secret'] not in self.rig.secrets]
+        unknown += [step['secret'] for s, _ in self.plan for step in s['steps']
+                    if step.get('secret') and step['secret'] not in self.rig.secrets]
         if unknown:
             self.rig.teardown()
             raise Refused('undeclared rig secret(s): ' + ', '.join(sorted(set(unknown))))
         self.door = Door(self.rig.door_file())
-        self.jev = Jev(self.out / 'ledger.jsonl', self.rig.redact)
-        self.last_tree = None
+        self.jev = Jev(self.run_dir / 'ledger.jsonl', self.rig.redact)
+        self.last_tree = self.offers = None
         self.memory = {}  # private_remember: never written, never sent
 
     def write(self, name, value, mode='w'):
-        with open(self.out / name, mode) as handle:
+        with open(self.run_dir / name, mode) as handle:
             handle.write(self.rig.redact(json.dumps(value, ensure_ascii=False)) + '\n')
 
     def run(self):
-        steps, passed, verdicts = self.scenario['steps'], 0, []
+        results, done = [], {}
         try:
-            for n, step in enumerate(steps, 1):
-                began, line = time.monotonic(), {'n': n, 'kind': step.get('kind', 'ui'), 'say': step['say']}
-                self.last_tree = None
-                try:
-                    verdict = getattr(self, 'step_' + line['kind'])(step, line)
-                except Unjudged as error:
-                    verdict, line['reason'] = 'unjudged', str(error)
-                except OSError as error:  # a step's program or file is not there
-                    verdict, line['reason'] = 'fail', f'{type(error).__name__}: {error}'
-                line['verdict'], line['ms'] = verdict, round((time.monotonic() - began) * 1000)
-                self.write('transcript.jsonl', line, 'a')
-                verdicts.append(verdict)
-                if verdict == 'pass':
-                    passed += 1
+            for scenario, needs in self.plan:
+                blocked = [name for name in needs if done.get(name) != 'PASS']
+                if blocked:
+                    entry = {'scenario': scenario['name'], 'result': 'SKIPPED', 'steps_passed': 0,
+                             'steps_total': len(scenario['steps']), 'usd': 0.0, 'failures': [],
+                             'reason': 'needs ' + ', '.join(blocked) + ' to pass first'}
                 else:
-                    if self.last_tree is not None and not (self.out / 'failing-tree.json').exists():
-                        self.write('failing-tree.json', {'step': n, 'say': step['say'], 'tree': self.last_tree})
-                    if not self.keep_going:
-                        break
+                    entry = self.run_one(scenario)
+                    if entry['result'] != 'PASS' and self.rig.app is not None:
+                        try:  # leave no dialog of a failed scenario over the next one's start
+                            self.door.key('escape escape')
+                        except Unjudged:
+                            pass
+                done[scenario['name']] = entry['result']
+                results.append(entry)
         finally:
             stopped = self.rig.teardown()
             for log in self.rig.paths['logs'].iterdir():  # children wrote these unfiltered
                 log.write_text(self.rig.redact(log.read_text(errors='replace')))
-        result = ('FAIL' if 'fail' in verdicts else 'FAIL-UNJUDGED' if 'unjudged' in verdicts
-                  else 'PASS' if passed == len(steps) else 'FAIL-UNJUDGED')
-        value = {'scenario': self.scenario.get('name'), 'result': result, 'steps_passed': passed,
-                 'steps_total': len(steps), 'usd': round(self.jev.usd, 8), 'teardown': stopped}
+        verdicts = [entry['result'] for entry in results]
+        value = {'run': str(self.run_dir), 'mode': 'keyboard' if self.keyboard else 'pointer',
+                 'result': ('FAIL' if 'FAIL' in verdicts else 'PASS' if set(verdicts) == {'PASS'}
+                            else 'FAIL-UNJUDGED'),
+                 'steps_passed': sum(entry['steps_passed'] for entry in results),
+                 'steps_total': sum(entry['steps_total'] for entry in results),
+                 'usd': round(self.jev.usd, 8), 'scenarios': results, 'teardown': stopped}
         self.write('result.json', value)
         return value
 
+    def run_one(self, scenario):
+        name, steps, passed, verdicts, failures = scenario['name'], scenario['steps'], 0, [], []
+        spent = self.jev.usd
+        for n, step in enumerate(steps, 1):
+            began = time.monotonic()
+            line = {'scenario': name, 'n': n, 'kind': step.get('kind', 'ui'), 'say': step['say']}
+            self.last_tree = self.offers = None
+            try:
+                verdict = getattr(self, 'step_' + line['kind'])(step, line)
+            except Unjudged as error:
+                verdict, line['reason'] = 'unjudged', str(error)
+            except OSError as error:  # a step's program or file is not there
+                verdict, line['reason'] = 'fail', f'{type(error).__name__}: {error}'
+            line['verdict'], line['ms'] = verdict, round((time.monotonic() - began) * 1000)
+            self.write('transcript.jsonl', line, 'a')
+            verdicts.append(verdict)
+            if verdict == 'pass':
+                passed += 1
+                continue
+            failure = {'step': n, 'say': step['say'], 'verdict': verdict}
+            failure.update({k: line[k] for k in ('chosen', 'keys', 'noul', 'reason') if k in line})
+            if self.offers is not None:
+                failure['offers'] = self.offers
+            if self.last_tree is not None:
+                tree = 'failing-tree-%s-%02d.json' % (re.sub(r'[^A-Za-z0-9_.-]', '-', name), n)
+                self.write(tree, {'scenario': name, 'step': n, 'say': step['say'], 'tree': self.last_tree})
+                failure['tree'] = str(self.run_dir / tree)
+            failures.append(failure)
+            if not self.keep_going:
+                break
+        result = ('FAIL' if 'fail' in verdicts else 'FAIL-UNJUDGED' if 'unjudged' in verdicts
+                  else 'PASS' if passed == len(steps) else 'FAIL-UNJUDGED')
+        return {'scenario': name, 'result': result, 'steps_passed': passed, 'steps_total': len(steps),
+                'usd': round(self.jev.usd - spent, 8), 'failures': failures}
+
+    def choose(self, step, state, instructions, options):
+        """The judge's pick among `options` (or None for `none of these`), as an index."""
+        criteria = {f'o{i}': text for i, text in enumerate(options)}
+        criteria['none'] = 'none of these'
+        self.offers = options
+        answer = self.jev.ask('choice', state, {'type': 'choice', 'instructions': TREE + instructions,
+                                                'criteria': criteria})
+        chosen = answer.get('choice') if isinstance(answer, dict) else None
+        if not isinstance(chosen, str) or chosen not in criteria:
+            raise Unjudged(f'the judge answered {str(chosen)[:40]!r}, not an option')
+        return None if chosen == 'none' else int(chosen[1:])
+
+    def text_for(self, step, line, action):
+        """What a fill types: the step's text or a rig secret, never the model's."""
+        if 'text' in step:
+            return self.rig.fill(step['text'])
+        if step.get('secret'):
+            line['value'] = '{secret:%s}' % step['secret']
+            return self.rig.secrets[step['secret']]
+        raise Unjudged(f'{action} chosen but the step gives no text or secret')
+
     def step_ui(self, step, line):
+        if self.keyboard:
+            return self.keyboard_ui(step, line)
         tree, offers = self.door.tree(), self.door.actions()
         self.last_tree = tree
         # A control that can be pressed or filled is never the answer as a bare `focus`;
@@ -369,31 +513,18 @@ class Walk:
         acts = {o['id'] for o in offers if o['action'] != 'focus'}
         offers = [o for o in offers if o['action'] != 'focus' or o['id'] not in acts]
         options = [f"{o['id']} {o['action']} {o['label']}" for o in offers]
-        criteria = {f'o{i}': text for i, text in enumerate(options)}
-        criteria['none'] = 'none of these'
         line['options'] = len(options)
-        answer = self.jev.ask('choice', {'step': step['say'], 'screen': tree}, {
-            'type': 'choice',
-            'instructions': (TREE + 'Which ONE option performs this step: '
-                             f'"{step["say"]}"? Each option is an element id, the action, then the element\'s role '
-                             'and name. Answer `none` if no option performs it.'),
-            'criteria': criteria})
-        chosen = answer.get('choice') if isinstance(answer, dict) else None
-        if not isinstance(chosen, str) or chosen not in criteria:
-            raise Unjudged(f'the judge answered {str(chosen)[:40]!r}, not an option')
-        if chosen == 'none':
+        chosen = self.choose(step, {'step': step['say'], 'screen': tree},
+                             f'Which ONE option performs this step: "{step["say"]}"? Each option is an element id, '
+                             'the action, then the element\'s role and name. Answer `none` if no option performs it.',
+                             options)
+        if chosen is None:
             line['chosen'], line['reason'] = 'none', 'no offered action performs this step'
             return 'fail'
-        offer = offers[int(chosen[1:])]
-        line['chosen'] = options[int(chosen[1:])]
+        offer, line['chosen'] = offers[chosen], options[chosen]
         value = None
         if offer['action'] in ('set_value', 'type'):
-            if 'text' in step:
-                value = self.rig.fill(step['text'])
-            elif step.get('secret'):
-                value, line['value'] = self.rig.secrets[step['secret']], '{secret:%s}' % step['secret']
-            else:
-                raise Unjudged(f"{offer['action']} chosen but the step gives no text or secret")
+            value = self.text_for(step, line, offer['action'])
         delta = self.door.act(offer['id'], offer['action'], value)
         after = self.door.tree()
         if not step.get('expect'):
@@ -401,7 +532,58 @@ class Walk:
             # and the next step's expectation (an enabled button) proves the value took.
             self.last_tree, line['delta'] = after, summary(delta)
             return 'pass'
-        score = self.judge(step, line['chosen'], delta, after)
+        return 'pass' if self.met(step, line, line['chosen'], tree, delta, after) else 'fail'
+
+    def keyboard_ui(self, step, line):
+        """Keyboard only: one key at a time from what a keyboard user has — move
+        focus, activate the focused node, type into the focused field, Escape, a
+        named shortcut — until the step's expectation holds or KEY_BUDGET runs out."""
+        before, pressed = self.door.tree(), []
+        line['keys'] = pressed
+        for _ in range(step.get('keys', KEY_BUDGET)):
+            tree = self.last_tree = self.door.tree()
+            shortcuts = [s for s in self.door.shortcuts() if SHORTCUT.search(s['keys'])]  # they follow focus
+            focused = next((n for n in tree if 'focused' in n['state']), None)
+            offers = [(key, f'press {key}: move focus') for key in MOVES]
+            offers += [(key, f'press {key}: {what}') for key, what in KEYS.items()]
+            offers += [(s['keys'], f"press {s['keys']}: {s['action']}") for s in shortcuts
+                       if s['keys'] not in KEYS]
+            if focused and focused['role'] in TEXT_ROLES and ('text' in step or step.get('secret')):
+                offers.append((None, f"type the step's text into the focused {focused['role']} {focused['name']}"))
+            chosen = self.choose(
+                step, {'step': step['say'], 'focused': focused, 'pressed': pressed, 'screen': tree},
+                'The user works the app with the KEYBOARD ONLY. `focused` is the node that holds keyboard focus '
+                '(null: none yet) and `pressed` the keys already pressed for this step. Which ONE key performs '
+                f'this step now, or moves focus toward the control that performs it: "{step["say"]}"? Tab and '
+                'Shift-Tab move focus through the controls in order, arrows move within a list or group, Enter '
+                'and Space activate the focused node. Answer `none` if no key can.',
+                [label for _, label in offers])
+            if chosen is None:
+                line['chosen'], line['reason'] = 'none', 'no key performs this step'
+                return 'fail'
+            key, line['chosen'] = offers[chosen]
+            if key is None:
+                self.door.key(text=self.text_for(step, line, 'type'))
+                pressed.append('type')
+            else:
+                self.door.key(key)
+                pressed.append(key)
+            if key in MOVES:
+                continue
+            after = self.door.tree()
+            if not step.get('expect'):
+                if key is None:  # a fill without expect passes on the act, as with a pointer
+                    self.last_tree, line['delta'] = after, summary(diff(before, after))
+                    return 'pass'
+                continue
+            if self.met(step, line, line['chosen'], before, diff(before, after), after):
+                return 'pass'
+        line['reason'] = f"not done within {len(pressed)} keys" + (f"; {line['reason']}" if 'reason' in line else '')
+        return 'fail'
+
+    def met(self, step, line, chosen, before, delta, after):
+        """The judge's noul on `expect`, once more after `settle_ms` when under PASS_AT."""
+        score = self.judge(step, chosen, delta, after)
         if score < PASS_AT:
             settle = step.get('settle_ms', 1500)
             if step.get('wait'):
@@ -409,12 +591,16 @@ class Walk:
             else:
                 time.sleep(settle / 1000)
             later = self.door.tree()
-            delta, after = diff(tree, later), later
-            score = self.judge(step, line['chosen'], delta, after)
+            delta, after = diff(before, later), later
+            score = self.judge(step, chosen, delta, after)
             line['retried'] = True
         self.last_tree = after
         line['delta'], line['noul'] = summary(delta), score
-        return 'pass' if score >= PASS_AT else 'fail'
+        if score < PASS_AT:
+            line['reason'] = f"the judge scored {score:.2f} (< {PASS_AT}) for: {step['expect']}"
+        else:
+            line.pop('reason', None)
+        return score >= PASS_AT
 
     def judge(self, step, chosen, delta, tree):
         answer = self.jev.ask('noul', {'step': step['say'], 'action': chosen, 'delta': delta, 'screen': tree}, {
@@ -546,9 +732,27 @@ class Walk:
                 return 'fail'
             texts, source = [self.door.reveal(i) for i in ids], ','.join(ids)
         text = ' '.join(texts)
-        self.door.act(into, step.get('how', 'type'), text)
+        if not self.keyboard:
+            self.door.act(into, step.get('how', 'type'), text)
+        elif self.tab_to(into):
+            self.door.key(text=text)
+        else:
+            line['reason'] = f'into {into}: Tab never puts focus on it'
+            return 'fail'
         line['copied'] = f'private_copy from {source} into {into}: {len(text)} chars'
         return 'pass'
+
+    def tab_to(self, target):
+        """Presses Tab (no model call) until `target` holds focus; False once focus comes round again."""
+        seen = []
+        while True:
+            now = next((n['id'] for n in self.door.tree() if 'focused' in n['state']), None)
+            if now == target:
+                return True
+            if now in seen or len(seen) > 500:
+                return False
+            seen.append(now)
+            self.door.key('tab')
 
     def step_stop(self, step, line):
         if self.rig.app is None:
@@ -559,20 +763,24 @@ class Walk:
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    parser.add_argument('scenario')
+    parser.add_argument('scenarios', nargs='+', metavar='scenario')
     parser.add_argument('--out', required=True)
+    parser.add_argument('--params', metavar='FILE', help='a JSON object of params; --param overrides')
     parser.add_argument('--param', action='append', default=[], metavar='K=V')
-    parser.add_argument('--keep-going', action='store_true')
+    parser.add_argument('--keep-going', action='store_true', help='run the rest of a scenario after a failed step')
+    parser.add_argument('--keyboard', action='store_true', help='drive every ui step by keys only')
     args = parser.parse_args(argv)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))  # so teardown runs
     try:
-        params = dict(p.split('=', 1) for p in args.param)
-        walk = Walk(json.loads(Path(args.scenario).read_text()), args.out, params, args.keep_going)
+        params = json.loads(Path(args.params).read_text()) if args.params else {}
+        params.update(dict(p.split('=', 1) for p in args.param))
+        walk = Walk([load(path) for path in args.scenarios], args.out, params, args.keep_going, args.keyboard)
     except (Refused, ValueError, OSError, KeyError) as error:
         print(f'walk: {error}', file=sys.stderr)
         return 3
     result = walk.run()
-    print(json.dumps({k: result[k] for k in ('result', 'steps_passed', 'steps_total', 'usd')}))
+    print(json.dumps(dict({k: result[k] for k in ('result', 'steps_passed', 'steps_total', 'usd', 'run')},
+                          scenarios={e['scenario']: e['result'] for e in result['scenarios']})))
     return {'PASS': 0, 'FAIL': 1}.get(result['result'], 2)
 
 

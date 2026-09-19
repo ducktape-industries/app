@@ -1,0 +1,33 @@
+{
+ "name": "forge",
+ "about": "Browse a repository. Starts from an open console and leaves it open.",
+ "include": [
+  "../setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 forge/src/forge.rs:57-79,267-276 — the repository and branch pickers are PickLists with no label (unnamed ComboBoxes)",
+  "ducktape-views@a2a73e1 forge/src/components.rs:280 — file contents are a Surface: not in the tree",
+  "ducktape-views@a2a73e1 forge/src/components.rs:167-178 — a folder and a file are named alike (weight only) and fold state is only a ▸/▾ glyph label"
+ ],
+ "steps": [
+  {
+   "say": "open the Forge tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Forge tab is selected and the forge view shows an organization label, a repositories count and a button per repository (or its empty state); no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press the first repository in the list",
+   "expect": "the repository opens: an All repos button and Code, Issues and Pull requests buttons with Code checked, and a file tree of buttons named by entry",
+   "settle_ms": 4000
+  },
+  {
+   "say": "press the first entry of the file tree",
+   "expect": "either the folder opens (more tree entries show) or the file opens (a Copy path button and a Read only label show)",
+   "settle_ms": 4000
+  },
+  {
+   "say": "press All repos",
+   "expect": "the repository list shows again"
+  }
+ ]
+}

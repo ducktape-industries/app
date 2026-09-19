@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -51,10 +52,16 @@ class Server(http.server.ThreadingHTTPServer):
         return f'http://127.0.0.1:{self.server_address[1]}{path}'
 
 
-def fake_door(nodes, leak=False):
+SHORTCUTS = [{'keys': 'tab', 'action': 'root::Tab'}, {'keys': 'ctrl-k', 'action': 'shell::OpenPalette'}]
+
+
+def fake_door(nodes, leak=False, wait_cap_ms=None):
     """A door over `nodes`; an act on JOIN swaps the screen, an act on FIELD
-    answers with the raw value when `leak` (a door that forgot to mask)."""
-    screen = {'nodes': list(nodes)}
+    answers with the raw value when `leak` (a door that forgot to mask). Keys:
+    `tab` moves focus along the nodes that have actions, `enter` on JOIN acts
+    on it, text types into a focused FIELD. A wait answers like the door's: at
+    most `wait_cap_ms` (its 60 s cap, scaled down), then 408."""
+    screen = {'nodes': json.loads(json.dumps(nodes))}
 
     def route(method, path, headers, body):
         if headers.get('Authorization') != 'Bearer ' + TOKEN:
@@ -64,7 +71,24 @@ def fake_door(nodes, leak=False):
         if path.startswith('/actions'):
             return 200, [{'id': n['id'], 'action': a, 'label': f"{n['role']} {n['name']}"}
                          for n in screen['nodes'] for a in n['actions']]
+        if path.startswith('/keys'):
+            return 200, SHORTCUTS
         request = json.loads(body)
+        if path == '/wait':
+            ms = request['deadline_ms'] if wait_cap_ms is None else min(request['deadline_ms'], wait_cap_ms)
+            time.sleep(ms / 1000)
+            found = [n for n in screen['nodes'] if request.get('name', '') in n['name']]
+            return (200, {'node': found[0]}) if found else (408, {'error': 'deadline passed', 'tree': screen['nodes']})
+        if path == '/key':
+            stops = [n for n in screen['nodes'] if n['actions']]
+            at = next((i for i, n in enumerate(stops) if 'focused' in n['state']), -1)
+            if request['keys'] == 'tab' and stops:
+                for n in stops:
+                    n['state'] = [flag for flag in n['state'] if flag != 'focused']
+                stops[(at + 1) % len(stops)]['state'].append('focused')
+            elif request['keys'] == 'enter' and at >= 0 and stops[at]['id'] == JOIN['id']:
+                screen['nodes'] = [dict(FIELD, state=[])]
+            return 200, {'appeared': [], 'disappeared': [], 'changed': []}
         if request['id'] not in {n['id'] for n in screen['nodes']}:
             return 404, {'error': 'no such node'}
         if request['id'] == JOIN['id']:
@@ -72,7 +96,14 @@ def fake_door(nodes, leak=False):
             return 200, {'appeared': [FIELD], 'disappeared': [JOIN['id']], 'changed': []}
         value = request['value'] if leak else '•••'
         return 200, {'appeared': [], 'disappeared': [], 'changed': [dict(FIELD, value=value)]}
-    return Server(route)
+    server = Server(route)
+    server.screen = screen
+    return server
+
+
+def door_nodes(door):
+    """The fake door's live screen, for a test that changes it mid-walk."""
+    return door.screen['nodes']
 
 
 def fake_jev(replies):
@@ -90,11 +121,11 @@ class WalkTest(unittest.TestCase):
         self.out = Path(tempfile.mkdtemp(prefix='walk-test-'))
         self.addCleanup(shutil.rmtree, self.out, True)
 
-    def walk(self, steps, door, judge, secrets=None, **kw):
+    def walk(self, steps, door, judge, secrets=None, scenarios=None, **kw):
         scenario = {'name': 't', 'rig': {'display': False, 'secrets': secrets or {}}, 'steps': steps}
         with mock.patch.object(walk, 'JEV_URL', judge.url('/v1/systemone')), \
                 mock.patch.dict(os.environ, {'JEV_API_KEY': 'test-key'}):
-            run = walk.Walk(scenario, self.out, {}, **kw)
+            run = walk.Walk(scenarios or scenario, self.out, {}, **kw)
             door_file = run.rig.door_file()
             door_file.parent.mkdir(parents=True, exist_ok=True)
             door_file.write_text(json.dumps({'port': door.server_address[1], 'token': TOKEN}))
@@ -104,8 +135,11 @@ class WalkTest(unittest.TestCase):
             server.server_close()
         return result
 
+    def run_dir(self):
+        return sorted(self.out.glob('run-*'))[-1]
+
     def lines(self, name):
-        return [json.loads(line) for line in (self.out / name).read_text().splitlines()]
+        return [json.loads(line) for line in (self.run_dir() / name).read_text().splitlines()]
 
     def test_choice_can_only_pick_from_the_list(self):
         step = {'say': 'join with an invitation', 'expect': 'the invitation field shows'}
@@ -113,7 +147,10 @@ class WalkTest(unittest.TestCase):
         result = self.walk([step], door, fake_jev([jev('choice', {'choice': 'o7'})]))
         self.assertEqual(result['result'], 'FAIL-UNJUDGED')
         self.assertFalse([c for c in door.calls if c[0] == 'POST'], 'an invented option must never reach the door')
-        self.assertTrue((self.out / 'failing-tree.json').exists())
+        failure = result['scenarios'][0]['failures'][0]
+        self.assertTrue(Path(failure['tree']).exists())
+        self.assertEqual(failure['offers'], ['onboarding:network-join press Button Join with invitation'])
+        first = (self.run_dir() / 'transcript.jsonl').read_text()
 
         door = fake_door([JOIN])
         judge = fake_jev([jev('choice', {'choice': 'o0'}), jev('noul', {'noul': 0.93})])
@@ -125,6 +162,10 @@ class WalkTest(unittest.TestCase):
         self.assertEqual(asked['criteria'], {'o0': 'onboarding:network-join press Button Join with invitation',
                                              'none': 'none of these'})
         self.assertEqual(self.lines('transcript.jsonl')[0]['verdict'], 'pass')
+        # a second run on the same --out is numbered: the first one's output stays as it was
+        self.assertEqual(sorted(d.name for d in self.out.glob('run-*')), ['run-01', 'run-02'])
+        self.assertEqual((self.out / 'run-01' / 'transcript.jsonl').read_text(), first)
+        self.assertEqual(json.loads((self.out / 'run-01' / 'result.json').read_text())['result'], 'FAIL-UNJUDGED')
 
     def test_none_of_these_is_a_fail_not_a_guess(self):
         step = {'say': 'open settings', 'expect': 'settings shows'}
@@ -172,7 +213,7 @@ class WalkTest(unittest.TestCase):
         self.assertAlmostEqual(ledger[0]['usd'], 0.042)
         self.assertAlmostEqual(ledger[1]['usd'], 0.021)
         self.assertAlmostEqual(result['usd'], 0.063)
-        self.assertEqual(json.loads((self.out / 'result.json').read_text())['usd'], result['usd'])
+        self.assertEqual(json.loads((self.run_dir() / 'result.json').read_text())['usd'], result['usd'])
 
     def test_private_text_fills_the_asked_words_and_goes_nowhere_else(self):
         words = {n: f'SECRETword{n}x' for n in range(1, 7)}
@@ -243,6 +284,96 @@ class WalkTest(unittest.TestCase):
         for path in self.out.rglob('*'):
             if path.is_file():
                 self.assertNotIn('SECRET', path.read_text(errors='replace'), path)
+
+    def test_a_wait_outlasts_the_door_cap(self):
+        """The door answers one wait within 60 s; the runner asks again until ITS deadline."""
+        member = {'id': 'onboarding:open', 'role': 'Button', 'name': 'Open Ducktape', 'state': [],
+                  'actions': ['press'], 'in': 'onboarding'}
+        door = fake_door([JOIN], wait_cap_ms=100)
+        shown = threading.Timer(0.35, lambda: door_nodes(door).append(member))
+        shown.start()
+        step = {'kind': 'wait', 'say': 'the member node is ready', 'wait': {'name': 'Open Ducktape'},
+                'deadline_ms': 3000}
+        with mock.patch.object(walk, 'DOOR_WAIT_CAP_MS', 100):
+            result = self.walk([step], door, fake_jev([]))
+        self.assertEqual(result['result'], 'PASS')
+        asked = [json.loads(c[2])['deadline_ms'] for c in door.calls if c[1] == '/wait']
+        self.assertGreater(len(asked), 2, 'asked again after the cap')
+        self.assertTrue(all(ms <= 100 for ms in asked), asked)
+
+        began = time.monotonic()
+        with mock.patch.object(walk, 'DOOR_WAIT_CAP_MS', 100):
+            result = self.walk([dict(step, deadline_ms=450)], fake_door([JOIN], wait_cap_ms=100), fake_jev([]))
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertGreaterEqual(time.monotonic() - began, 0.45, 'failed at the runner deadline, not the door cap')
+        self.assertEqual(self.lines('transcript.jsonl')[0]['reason'], 'deadline passed')
+
+    def test_a_suite_runs_scenarios_on_one_rig(self):
+        folder = Path(tempfile.mkdtemp(prefix='walk-suite-'))
+        self.addCleanup(shutil.rmtree, folder, True)
+        rig = {'display': False}
+        files = {
+            'setup.json': {'name': 'setup', 'rig': rig, 'steps': [
+                {'kind': 'wait', 'say': 'the join button shows', 'wait': {'name': 'Join'}, 'deadline_ms': 200}]},
+            'a.json': {'name': 'a', 'include': ['setup.json'], 'steps': [{'say': 'open settings', 'expect': 'x'}]},
+            'join.json': {'name': 'join', 'rig': rig, 'steps': [
+                {'say': 'join with an invitation', 'expect': 'the invitation field shows'}]},
+            'b.json': {'name': 'b', 'include': ['setup.json'], 'steps': [{'include': 'join.json'}]},
+        }
+        for name, value in files.items():
+            (folder / name).write_text(json.dumps(value))
+        scenarios = [walk.load(folder / 'a.json'), walk.load(folder / 'b.json')]
+        judge = fake_jev([jev('choice', {'choice': 'none'}, 10), jev('choice', {'choice': 'o0'}, 20),
+                          jev('noul', {'noul': 0.9}, 30)])
+        result = self.walk(None, fake_door([JOIN]), judge, scenarios=scenarios)
+        verdicts = {e['scenario']: e['result'] for e in result['scenarios']}
+        self.assertEqual(verdicts, {'setup': 'PASS', 'a': 'FAIL', 'b': 'PASS'}, 'setup once, then a, then b')
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertEqual([(l['scenario'], l['n']) for l in self.lines('transcript.jsonl')],
+                         [('setup', 1), ('a', 1), ('b', 1)])
+        failed = result['scenarios'][1]
+        self.assertEqual(failed['failures'][0]['reason'], 'no offered action performs this step')
+        self.assertEqual(failed['failures'][0]['offers'], ['onboarding:network-join press Button Join with invitation'])
+        self.assertTrue(Path(failed['failures'][0]['tree']).exists())
+        self.assertAlmostEqual(failed['usd'], 10 * walk.PRICE)
+        self.assertAlmostEqual(result['scenarios'][2]['usd'], 50 * walk.PRICE)
+
+        # a prelude that fails keeps every scenario that needs it from running
+        door = fake_door([FIELD])
+        result = self.walk(None, door, fake_jev([]), scenarios=scenarios)
+        self.assertEqual([e['result'] for e in result['scenarios']], ['FAIL', 'SKIPPED', 'SKIPPED'])
+        self.assertIn('needs setup', result['scenarios'][1]['reason'])
+        self.assertEqual(result['result'], 'FAIL')
+
+        (folder / 'loop.json').write_text(json.dumps({'name': 'loop', 'include': ['loop.json'], 'steps': []}))
+        self.assertRaises(walk.Refused, walk.load, folder / 'loop.json')
+
+    def test_keyboard_mode_offers_only_keys(self):
+        steps = [{'say': 'join with an invitation', 'expect': 'the invitation field shows'},
+                 {'say': 'paste the invitation', 'secret': 'invite'}]
+        secret = self.out.parent / f'{self.out.name}-kbd'
+        secret.write_text('INVITE-by-keys\n')
+        self.addCleanup(secret.unlink)
+        door = fake_door([FIELD, JOIN])
+        judge = fake_jev([jev('choice', {'choice': 'o0'}), jev('choice', {'choice': 'o0'}),
+                          jev('choice', {'choice': 'o6'}), jev('noul', {'noul': 0.9}),
+                          jev('choice', {'choice': 'o0'}), jev('choice', {'choice': 'o11'})])
+        result = self.walk(steps, door, judge, secrets={'invite': {'file': str(secret)}}, keyboard=True)
+        self.assertEqual(result['result'], 'PASS', self.lines('transcript.jsonl'))
+        self.assertEqual(result['mode'], 'keyboard')
+        self.assertFalse([c for c in door.calls if c[1] == '/act'], 'a keyboard walk never acts on a node')
+        keys = [json.loads(c[2]) for c in door.calls if c[1] == '/key']
+        self.assertEqual([(k['keys'], k['text']) for k in keys],
+                         [('tab', ''), ('tab', ''), ('enter', ''), ('tab', ''), ('', 'INVITE-by-keys')])
+        asked = [json.loads(c[2])['questions']['q'] for c in judge.calls]
+        first = asked[0]['criteria']
+        self.assertEqual(first['o0'], 'press tab: move focus')
+        self.assertIn('press ctrl-k: shell::OpenPalette', first.values())
+        self.assertFalse([v for v in first.values() if 'network-join' in v], 'no node is offered to act on')
+        self.assertFalse([v for v in first.values() if v.startswith('type')], 'no typing while no field has focus')
+        self.assertTrue(asked[-1]['criteria']['o11'].startswith("type the step's text into the focused PasswordInput"))
+        self.assertEqual(self.lines('transcript.jsonl')[0]['keys'], ['tab', 'tab', 'enter'])
+        self.assertNotIn('INVITE-by-keys', ''.join(c[2] for c in judge.calls))
 
     def test_teardown_signals_only_recorded_processes_of_its_own(self):
         rig = walk.Rig(self.out / 'rig', {'display': False}, {})

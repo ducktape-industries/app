@@ -16,6 +16,8 @@
 //! [`gpui_notion::editor::ui::AX_PRIVATE`] (the recovery-phrase words) are
 //! masked here, before anything leaves the process. Only a rig that also sets
 //! `DUCKTAPE_AX_DOOR_PRIVATE=1` may ask for one private node's text ([`reveal`]).
+//! A keyboard-only walk sends keys through the window's own key dispatch
+//! ([`press_keys`]) and reads the bindings it can reach ([`shortcuts`]).
 use futures::StreamExt as _;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, NodeId, Role, Toggled, TreeId};
 use gpui_kit::{AnyWindowHandle, App, AsyncApp, ElementId, Window};
@@ -458,6 +460,22 @@ impl Wait {
     }
 }
 
+/// `POST /key`: what a keyboard sends to one window — `keys`, keystrokes as
+/// GPUI parses them (`tab`, `shift-tab`, `enter`, `ctrl-k`, space-separated),
+/// then `text`, one key per character, to whatever holds focus.
+#[derive(Debug, Deserialize, PartialEq)]
+pub(crate) struct Key {
+    #[serde(default)]
+    keys: String,
+    #[serde(default)]
+    text: String,
+    /// the window that gets them; else the one holding focus, else the first
+    #[serde(default)]
+    window: Option<String>,
+    #[serde(default)]
+    deadline_ms: Option<u64>,
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum Request {
     Tree {
@@ -469,6 +487,8 @@ pub(crate) enum Request {
     Act(Act),
     Wait(Wait),
     Reveal(Reveal),
+    Key(Key),
+    Keys(Filter),
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -605,21 +625,34 @@ async fn answer(
                     perform_by_id(&name, window, cx, &act.id, &act.action, &value)
                 });
             }
-            // the next settled frame: the tree unchanged for three polls
-            let deadline = Instant::now() + Duration::from_millis(act.deadline_ms.unwrap_or(2000));
-            let mut after = before.clone();
-            let mut last = serde_json::to_string(&after).unwrap_or_default();
-            let mut quiet = 0;
-            while quiet < 3 && Instant::now() < deadline {
-                cx.background_executor().timer(POLL).await;
-                let now = read(windows, &all, false, cx).await;
-                let key = serde_json::to_string(&now).unwrap_or_default();
-                match key == last {
-                    true => quiet += 1,
-                    false => (quiet, last, after) = (0, key, now),
-                }
-            }
+            let after = settle(&before, act.deadline_ms, windows, cx).await;
             Reply::ok(json!(delta(&before, &after)))
+        }
+        Request::Key(key) => {
+            let before = read(windows, &all, false, cx).await;
+            let Some(handle) = keyboard_window(key.window.as_deref(), &before, windows, cx) else {
+                return Reply::new(404, json!({ "error": "no such window" }));
+            };
+            let pressed = handle
+                .update(cx, |_, window, cx| {
+                    press_keys(window, cx, &key.keys, &key.text)
+                })
+                .unwrap_or_else(|_| Err("the window is gone".into()));
+            if let Err(error) = pressed {
+                return Reply::new(400, json!({ "error": error }));
+            }
+            let after = settle(&before, key.deadline_ms, windows, cx).await;
+            Reply::ok(json!(delta(&before, &after)))
+        }
+        Request::Keys(filter) => {
+            let before = read(windows, &all, false, cx).await;
+            let Some(handle) = keyboard_window(filter.window.as_deref(), &before, windows, cx)
+            else {
+                return Reply::new(404, json!({ "error": "no such window" }));
+            };
+            handle
+                .update(cx, |_, window, cx| Reply::ok(json!(shortcuts(window, cx))))
+                .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })))
         }
         Request::Wait(wait) => {
             let deadline = Instant::now() + Duration::from_millis(wait.deadline_ms.min(60_000));
@@ -646,6 +679,155 @@ async fn answer(
                 .unwrap_or_else(|| Reply::new(404, json!({ "error": "no such window" })))
         }
     }
+}
+
+/// The next settled frame after an input: the tree unchanged for three polls
+/// (or `deadline_ms`, 2 s unless given).
+async fn settle(
+    before: &[AxNode],
+    deadline_ms: Option<u64>,
+    windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    cx: &mut AsyncApp,
+) -> Vec<AxNode> {
+    let deadline = Instant::now() + Duration::from_millis(deadline_ms.unwrap_or(2000));
+    let mut after = before.to_vec();
+    let mut last = serde_json::to_string(&after).unwrap_or_default();
+    let mut quiet = 0;
+    while quiet < 3 && Instant::now() < deadline {
+        cx.background_executor().timer(POLL).await;
+        let now = read(windows, &Filter::default(), false, cx).await;
+        let key = serde_json::to_string(&now).unwrap_or_default();
+        match key == last {
+            true => quiet += 1,
+            false => (quiet, last, after) = (0, key, now),
+        }
+    }
+    after
+}
+
+/// The window a keyboard types into: `named`, else the one whose tree
+/// holds focus, else the first served.
+fn keyboard_window(
+    named: Option<&str>,
+    nodes: &[AxNode],
+    windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    cx: &mut AsyncApp,
+) -> Option<AnyWindowHandle> {
+    let list = cx.update(|cx| windows(cx));
+    let find = |want: &str| {
+        list.iter()
+            .find_map(|(name, handle)| (name == want).then_some(*handle))
+    };
+    match named {
+        Some(named) => find(named),
+        None => nodes
+            .iter()
+            .find(|node| node.state.contains(&"focused"))
+            .and_then(|node| find(node.scope.split('/').next().unwrap_or_default()))
+            .or_else(|| list.first().map(|(_, handle)| *handle)),
+    }
+}
+
+/// Sends `keys` (space-separated keystrokes as GPUI parses them) and then
+/// `text`, one key per character, through the window's own key dispatch:
+/// its key bindings and the focused element's handlers, as a keyboard's
+/// keys arrive — never an OS event. An unparsable keystroke sends nothing.
+pub(crate) fn press_keys(
+    window: &mut Window,
+    cx: &mut App,
+    keys: &str,
+    text: &str,
+) -> Result<(), String> {
+    let strokes = keys
+        .split_whitespace()
+        .map(|key| gpui_kit::Keystroke::parse(key).map_err(|error| error.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    for stroke in strokes {
+        // down, then up: a focused element takes Enter/Space as a click on
+        // the release, as it does from a keyboard
+        window.dispatch_keystroke(stroke.clone(), cx);
+        window.dispatch_event(
+            gpui_kit::PlatformInput::KeyUp(gpui_kit::KeyUpEvent { keystroke: stroke }),
+            cx,
+        );
+    }
+    type_text(window, cx, text);
+    Ok(())
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub(crate) struct Shortcut {
+    keys: String,
+    action: String,
+}
+
+/// The named keys a view's chord may end in, besides a letter or a digit.
+const CHORD_KEYS: [&str; 14] = [
+    "enter",
+    "escape",
+    "space",
+    "tab",
+    "backspace",
+    "delete",
+    "up",
+    "down",
+    "left",
+    "right",
+    "home",
+    "end",
+    "pageup",
+    "pagedown",
+];
+
+/// The key bindings a keyboard can reach from where focus is now (the
+/// focused element's context, or the window's root when nothing is), and
+/// the chords the seated views hold (`module_view::claim_chord`): a view's
+/// chord is claimed, not bound, so no binding names it.
+pub(crate) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
+    let focus = window.focused(cx);
+    let mut out: Vec<Shortcut> = Vec::new();
+    for action in window.available_actions(cx) {
+        let bindings = match &focus {
+            Some(focus) => window.bindings_for_action_in(&*action, focus),
+            None => window.bindings_for_action(&*action),
+        };
+        for binding in bindings {
+            let keys = binding
+                .keystrokes()
+                .iter()
+                .map(|key| key.unparse())
+                .collect::<Vec<_>>()
+                .join(" ");
+            let shortcut = Shortcut {
+                keys,
+                action: action.name().to_owned(),
+            };
+            if !out.contains(&shortcut) {
+                out.push(shortcut);
+            }
+        }
+    }
+    let command = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
+    let keys = ('a'..='z')
+        .chain('0'..='9')
+        .map(String::from)
+        .chain(CHORD_KEYS.map(String::from));
+    for key in keys {
+        for extra in ["", "-shift", "-alt", "-shift-alt"] {
+            let chord = format!("cmd{extra}-{key}");
+            if let Some(module) = crate::module_view::chord_holder(&chord) {
+                out.push(Shortcut {
+                    keys: format!("{command}{extra}-{key}"),
+                    action: format!("the {module} view's {chord}"),
+                });
+            }
+        }
+    }
+    out
 }
 
 /// Every served window's visible nodes. A window with no tree yet is
@@ -726,24 +908,29 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
         ),
         "type" => {
             window.dispatch_a11y_action(request(Action::Focus, None), cx);
-            for ch in value.chars() {
-                let (key, text) = match ch {
-                    '\n' => ("enter".to_owned(), None),
-                    '\t' => ("tab".to_owned(), None),
-                    ' ' => ("space".to_owned(), Some(" ".to_owned())),
-                    ch => (ch.to_string(), Some(ch.to_string())),
-                };
-                window.dispatch_keystroke(
-                    gpui_kit::Keystroke {
-                        modifiers: Default::default(),
-                        key,
-                        key_char: text,
-                    },
-                    cx,
-                );
-            }
+            type_text(window, cx, value);
         }
         _ => {}
+    }
+}
+
+/// `text` as keys, one per character, to whatever holds focus.
+fn type_text(window: &mut Window, cx: &mut App, text: &str) {
+    for ch in text.chars() {
+        let (key, text) = match ch {
+            '\n' => ("enter".to_owned(), None),
+            '\t' => ("tab".to_owned(), None),
+            ' ' => ("space".to_owned(), Some(" ".to_owned())),
+            ch => (ch.to_string(), Some(ch.to_string())),
+        };
+        window.dispatch_keystroke(
+            gpui_kit::Keystroke {
+                modifiers: Default::default(),
+                key,
+                key_char: text,
+            },
+            cx,
+        );
     }
 }
 
@@ -958,8 +1145,17 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
         ("POST", "act") => parse(body).map(Request::Act),
         ("POST", "wait") => parse(body).map(Request::Wait),
         ("POST", "reveal") if private => parse(body).map(Request::Reveal),
+        ("POST", "key") => parse(body).map(Request::Key),
+        ("GET", "keys") => Ok(Request::Keys(filter)),
         _ => {
-            let mut endpoints = vec!["GET /tree", "GET /actions", "POST /act", "POST /wait"];
+            let mut endpoints = vec![
+                "GET /tree",
+                "GET /actions",
+                "POST /act",
+                "POST /wait",
+                "POST /key",
+                "GET /keys",
+            ];
             if private {
                 endpoints.push("POST /reveal");
             }
@@ -1004,6 +1200,8 @@ pub(crate) fn call(
 const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--compact] [--bounds]
        ducktape-app ax actions [--window W] [--view V]
        ducktape-app ax act <id> <press|focus|set_value|type|scroll_into_view> [value]
+       ducktape-app ax key <keys> [--text T] [--window W]   (keys: tab, shift-tab, enter, ctrl-k …)
+       ducktape-app ax keys [--window W]
        ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]
        ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)";
 
@@ -1040,6 +1238,12 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             json!({ "id": id, "action": action, "value": value.first() }).to_string(),
         ),
         (Some("reveal"), [id]) => ("POST", "/reveal".to_owned(), json!({ "id": id }).to_string()),
+        (Some("key"), keys) if keys.len() <= 1 => (
+            "POST",
+            "/key".to_owned(),
+            json!({ "keys": keys.first().copied().unwrap_or_default(), "text": flags.get("text").copied().unwrap_or_default(), "window": flags.get("window") }).to_string(),
+        ),
+        (Some("keys"), []) => ("GET", format!("/keys?{}", query(&["window"])), String::new()),
         (Some("wait"), []) => (
             "POST",
             "/wait".to_owned(),
