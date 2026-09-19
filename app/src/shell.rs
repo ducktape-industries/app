@@ -604,10 +604,16 @@ impl DesktopWindow {
         let palette = self.palette_module.clone();
         let seated = self.module.as_ref().map(|(_, view)| view.clone());
         let overlay = self.overlay_module.clone();
-        [palette, seated, overlay]
+        let landed = [palette, seated, overlay]
             .into_iter()
             .flatten()
-            .any(|view| view.update(cx, |view, cx| view.chord(&chord, cx)))
+            .any(|view| view.update(cx, |view, cx| view.chord(&chord, cx)));
+        // what the press opened may be a layer this window mounts only once
+        // it draws
+        if landed {
+            cx.notify();
+        }
+        landed
     }
 
     fn released(&mut self, cx: &mut gpui_kit::App) {
@@ -1794,6 +1800,12 @@ impl DesktopWindow {
         use gpui_kit::component::{Sizable as _, button::ButtonVariants as _};
         use gpui_kit::*;
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        // the connect's views landing in the background: nothing else wakes
+        // the rail that counts them
+        let views_loading = crate::module_view::views_loading();
+        if views_loading.is_some() {
+            window.request_animation_frame();
+        }
         let (spec, route) = self.model.read(cx).state.native_view();
         let module_changed = self
             .module
@@ -1897,7 +1909,20 @@ impl DesktopWindow {
                                     .text_size(px(11.))
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(ink_muted)
-                                    .child(state.status.clone()),
+                                    .child(match &views_loading {
+                                        // ONE line for the connect's views,
+                                        // gone once every one has landed
+                                        Some((landed, asked)) => Text::new(
+                                            "views-loading".into(),
+                                            format!(
+                                                "Loading views from {} {landed}/{asked}",
+                                                state.network_name
+                                            )
+                                            .into(),
+                                        )
+                                        .into_any_element(),
+                                        None => state.status.clone().into_any_element(),
+                                    }),
                             ),
                     )
                     .child(
@@ -2033,6 +2058,19 @@ impl DesktopWindow {
                     Some(selected),
                     true,
                 )
+                // which views can be opened as they are, while others load
+                .when_some(crate::module_view::rail_note(view), |row, note| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(9.5))
+                            .text_color(ink.muted)
+                            .child(Text::new(
+                                ElementId::Name(format!("rail-note:{view}").into()),
+                                note.into(),
+                            )),
+                    )
+                })
                 .when(bytes == TabBytes::Desktop, |row| {
                     // WHERE THE BYTES COME FROM, on the row. Every other tab
                     // is served by the connected node's registry and changes

@@ -104,25 +104,20 @@ pub fn connect(rpc: String, attempt: i64, generation: i64) -> view_wire::Task<cr
         async move {
             let rpc = rpc_client(&rpc)?;
             // The views and workspace load concurrently, as they do on a warm
-            // connection. The next publication names the remaining view wait.
-            let views = crate::module_view::connected(&rpc);
-            let workspace = load_workspace(&rpc, None, generation).await?;
-            Ok::<_, String>((workspace, views))
+            // connection. The workspace opens without waiting for the views:
+            // each tab says how far its own has come, the shell counts them,
+            // and one that landed opens while the rest still load.
+            drop(crate::module_view::connected(&rpc));
+            load_workspace(&rpc, None, generation).await
         },
         |result| result,
     )
     .then(move |result| match result {
-        Ok((workspace, views)) => Task::done(AppMessage::ConnectionProgress(
+        Ok(workspace) => Task::done(AppMessage::ConnectionProgress(
             generation,
             "Preparing workspace screens…",
         ))
-        .chain(Task::perform(
-            async move {
-                views.settled().await;
-                workspace
-            },
-            AppMessage::WorkspaceConnected,
-        )),
+        .chain(Task::done(AppMessage::WorkspaceConnected(workspace))),
         Err(cause) => Task::done(AppMessage::ConnectFailed(HydrationError {
             generation,
             message: user_error(cause.to_string()),
