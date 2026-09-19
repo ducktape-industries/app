@@ -2881,11 +2881,6 @@ source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#736
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
-
-[[package]]
-name = "design"
-version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578#81953e68d0e8ceb142c49d2ad5397d55c3322578"
 
 [[package]]
@@ -3204,7 +3199,6 @@ dependencies = [
  "tray-icon",
  "unicode-segmentation",
  "usvg 0.45.1",
- "view-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2)",
  "view-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "wasmtime",
  "workspace-config",
@@ -12040,19 +12034,6 @@ dependencies = [
  "serde",
  "unicode-segmentation",
  "wasmparser 0.251.0",
-]
-
-[[package]]
-name = "view-wire"
-version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?rev=5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2#5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2"
-dependencies = [
- "bincode",
- "design 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=5fa05decd8b1b22edbfb1ea0c57f4fd7f26cc7a2)",
- "futures",
- "memchr",
- "serde",
- "unicode-segmentation",
 ]
 
 [[package]]

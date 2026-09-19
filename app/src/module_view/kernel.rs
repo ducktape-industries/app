@@ -105,7 +105,7 @@ pub(super) mod media;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use super::{Epoch, Guest, ModuleViewEvent, Slot, wire};
+use super::{Guest, ModuleViewEvent, Slot, wire};
 // A refusal the NODE authored, carried through with the token the node gave
 // it: the rpc client split the envelope off, so no door here parses text.
 use crate::backend::refused;
@@ -581,14 +581,7 @@ pub(super) fn answer(
         ("op", "submit_bytes") => spawn(guest, id, payload, submit_bytes),
         ("rpc", "admin") => spawn(guest, id, payload, admin),
         ("picture", "put") => spawn_host(guest, id, payload, picture_put),
-        ("picture", "inline") => match guest.epoch {
-            Epoch::Eight => spawn(guest, id, payload, |client, ask| {
-                picture_inline(client, ask, Epoch::Eight)
-            }),
-            Epoch::Ten => spawn(guest, id, payload, |client, ask| {
-                picture_inline(client, ask, Epoch::Ten)
-            }),
-        },
+        ("picture", "inline") => spawn(guest, id, payload, picture_inline),
         // THE ONE DOOR OUT OF A VIEW. Every view used to declare an
         // `open_link` intent of its own and spell the address field its own
         // way; there is one door now, module-free, and the app resolves the
@@ -599,13 +592,7 @@ pub(super) fn answer(
                 .ok()
                 .and_then(|ask| ask["link"].as_str().map(str::to_owned))
                 .filter(|link| !link.is_empty());
-            let chain = guest
-                .props_sent
-                .as_deref()
-                .and_then(|props| serde_json::from_slice::<serde_json::Value>(props).ok())
-                .and_then(|props| props["chain"].as_str().map(str::to_owned))
-                .unwrap_or_default();
-            match link.map(|link| guest.epoch.open_link(link, &chain)) {
+            match link {
                 Some(link) => {
                     guest.intents.push(ModuleViewEvent {
                         kind: "open_link".into(),
@@ -2205,8 +2192,7 @@ fn picture_put(ask: serde_json::Value) -> Answered {
     })
 }
 
-/// `base` is read by the asking view's epoch ([`Epoch::picture_base`]).
-fn picture_inline(client: ducktape_rpc::Client, ask: serde_json::Value, epoch: Epoch) -> Answered {
+fn picture_inline(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let doc = ask["doc"].as_str().unwrap_or_default().to_owned();
         let source = ask["source"].as_str().unwrap_or_default().to_owned();
@@ -2215,7 +2201,7 @@ fn picture_inline(client: ducktape_rpc::Client, ask: serde_json::Value, epoch: E
         if doc.is_empty() {
             return Err(malformed("`picture.inline` names no document"));
         }
-        let anchor = epoch.picture_base(base, net.clone());
+        let anchor = crate::backend::resolve_duck_link(base, net.clone());
         crate::backend::load_inline_pictures(&client, doc, &source, anchor, net).await;
         Ok(Vec::new())
     })
