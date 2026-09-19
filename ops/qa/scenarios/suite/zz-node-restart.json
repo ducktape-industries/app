@@ -1,0 +1,67 @@
+{
+ "name": "zz-node-restart",
+ "about": "Sorts last: it disturbs the node. The member node under the app restarts as a scheduled update restarts it (a gap of about 9 s); a view whose request hit the gap stayed on its error or on Loading… for good (#150). The walk opens Chat, Files and Forge, restarts the rig's member node (the runner's rig step: SIGTERM, the same argv again, done when /v1/status is past starting/recovering/joining/syncing), then opens Chat, Forge, Boards and Files again, pressing no Retry, and expects each to come back by itself within the step's settle; then it makes a file, so a write lands after the restart. Needs setup's member node, no account. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "steps": [
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Chat tab is selected and the chat view shows a New channel button and its channel list; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+  },
+  {
+   "say": "open the Files tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Files tab is selected and the files view shows a New file button and a file list or its empty state; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+  },
+  {
+   "say": "open the Forge tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Forge tab is selected and the forge view shows an organization label, a repositories count and either a button per repository or the empty state that says to push a git repository to this network; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+  },
+  {
+   "kind": "rig",
+   "say": "restart the member node under the app, as a scheduled update does, and wait until it serves again",
+   "rig": "restart-node",
+   "deadline_ms": 300000
+  },
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 20000,
+   "expect": "the Chat tab is selected and the chat view shows a New channel button and its channel list; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+  },
+  {
+   "say": "open the Forge tab in the rail",
+   "settle_ms": 20000,
+   "expect": "the Forge tab is selected and the forge view shows an organization label, a repositories count and either a button per repository or the empty state that says to push a git repository to this network; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+  },
+  {
+   "say": "open the Boards tab in the rail",
+   "settle_ms": 20000,
+   "expect": "the Boards tab is selected and the boards view shows either the new-board form (a Name a new board field and a Create board button) or the last board open (a board switcher button named for that board, a sync label such as Saved, a Board canvas button and the tool buttons); no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+  },
+  {
+   "say": "open the Files tab in the rail",
+   "settle_ms": 20000,
+   "expect": "the Files tab is selected and the files view shows a New file button and a file list or its empty state; no failure state (no 'This view stopped' title, no failure title such as 'This network does not list this view', no Retry button), no text reading 'error sending request' anywhere, and it is not still loading (no Loading… label)"
+  },
+  {
+   "say": "press New file",
+   "expect": "a New file dialog shows a File name field and a Create file button"
+  },
+  {
+   "say": "type the file name into the File name field",
+   "text": "qa-restart-{param:walk_tag}.txt",
+   "expect": "the File name field holds qa-restart-{param:walk_tag}.txt and Create file is enabled"
+  },
+  {
+   "say": "press Create file",
+   "settle_ms": 10000,
+   "expect": "the dialog closes and the list has a row named File qa-restart-{param:walk_tag}.txt; no error sentence and no text reading 'error sending request'"
+  }
+ ]
+}
