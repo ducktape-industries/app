@@ -99,8 +99,8 @@ pub(crate) enum DuckKind {
 /// A tab is a seated view and nothing else, so this carries an id and has no
 /// arm per view: ten arms meant a view the connected node's registry listed
 /// but this build had never heard of could not BE a tab, which is the whole
-/// point of a registry. The strip's rows come from the registry plus the ids
-/// whose bytes ship with the app (`backend::view_source::DESKTOP_OWNED`), and
+/// point of a registry. The strip's rows are the registry's, arranged by a
+/// local preference (`shell::navigation_rows`), and
 /// an id no arm anywhere names still seats, draws and routes
 /// (`ui::native_view`, `shell::navigation_rows`).
 ///

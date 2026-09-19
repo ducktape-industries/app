@@ -73,4 +73,4 @@ A QA runner reads and drives the app through its accessibility tree — the same
 - Secrets: `{"file": path}` or `{"generate": "password"}`, resolved at run time. Every file the runner writes shows them as `{secret:name}`.
 - What leaves the machine: only the step text and the door's masked compact tree and delta, sent to `api.typesafe.ai` with `JEV_API_KEY` from the environment. Any judge or door error makes the step unjudged (fail closed).
 - Output: `transcript.jsonl` (one line per step), `failing-tree.json`, `ledger.jsonl` (one line per Jev call: tokens, USD at $0.042/M), `result.json`.
-- Scenarios: `ops/qa/scenarios/launch-window.json` (no network: `--param app=<ducktape-app>`); `seq4-acceptance.json` (a live install-and-join acceptance; its params are listed at the top of the file).
+- Scenarios: `ops/qa/scenarios/launch-window.json` (no network: `--param app=<ducktape-app>`); `seq4-acceptance.json` (a live install-and-join acceptance; its params are listed at the top of the file); `registry-views.json` (the same install and join on a network that lists all 15 views: every rail tab and the palette off the registry, same params).

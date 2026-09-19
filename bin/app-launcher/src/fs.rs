@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use app_update::{Phase, Sha, state};
 use sha2::{Digest, Sha256};
 
-use crate::layout::{APP_EXE, LAUNCHER_EXE, VIEWS_DIR};
+use crate::layout::{APP_EXE, LAUNCHER_EXE};
 use crate::plan::Link;
 use crate::refusal::Refusal;
 
@@ -132,26 +132,9 @@ pub fn require_executable(path: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// A `views/` directory holding at least one `.wasm`.
-pub fn require_views(bin_dir: &Path) -> Result<(), Refusal> {
-    let views = bin_dir.join(VIEWS_DIR);
-    let entries =
-        fs::read_dir(&views).map_err(|error| Refusal::io("views_missing", &views, &error))?;
-    let has_wasm = entries
-        .flatten()
-        .any(|entry| entry.path().extension().is_some_and(|ext| ext == "wasm"));
-    match has_wasm {
-        true => Ok(()),
-        false => Err(Refusal::new(
-            "views_missing",
-            format!("{} holds no .wasm", views.display()),
-        )),
-    }
-}
-
 /// A release dir the launcher may flip to: not a link, holding both
-/// executables and the views. Sealing it is the app's job; the launcher
-/// only checks it is whole.
+/// executables — a release is nothing else. Sealing it is the app's job;
+/// the launcher only checks it is whole.
 pub fn require_release(release_dir: &Path, bin_dir: &Path) -> Result<(), Refusal> {
     refuse_symlink(release_dir)?;
     let is_dir = fs::metadata(release_dir)
@@ -164,8 +147,7 @@ pub fn require_release(release_dir: &Path, bin_dir: &Path) -> Result<(), Refusal
         ));
     }
     require_executable(&bin_dir.join(APP_EXE))?;
-    require_executable(&bin_dir.join(LAUNCHER_EXE))?;
-    require_views(bin_dir)
+    require_executable(&bin_dir.join(LAUNCHER_EXE))
 }
 
 /// Whether this user may create and rename entries in `dir`.

@@ -9,7 +9,7 @@
 //!
 //! Linux (`<data>` = `$XDG_DATA_HOME/ducktape`, else `~/.local/share/ducktape`):
 //! ```text
-//! <data>/releases/<sha>/{ducktape-launcher, ducktape-app, views/*.wasm}
+//! <data>/releases/<sha>/{ducktape-launcher, ducktape-app}
 //! <data>/current  -> releases/<sha>     # the install path; flipped by rename(2)
 //! <data>/previous -> releases/<sha>
 //! ```
@@ -33,7 +33,6 @@ const APP: &str = "ducktape";
 pub const BUNDLE: &str = "Ducktape.app";
 pub const APP_EXE: &str = "ducktape-app";
 pub const LAUNCHER_EXE: &str = "ducktape-launcher";
-pub const VIEWS_DIR: &str = "views";
 pub const STATE_FILE: &str = "state.json";
 const JOURNAL_FILE: &str = "swap.json";
 const RELEASES_DIR: &str = "releases";

@@ -35,8 +35,9 @@ pub use super::view_artifact::Error as FetchError;
 /// The BUILT-IN surfaces whose view is drawn by the module's own artifact:
 /// each has a props builder of its own and is asked of the connected node at
 /// connect and again at every block that moves its deployment. Every other
-/// view off the node is a registry-listed `Kind::View` entry, seated from
-/// `module_status` alone.
+/// view is a registry-listed `Kind::View` entry, seated from `module_status`
+/// alone — the chrome's own (`members`, `settings`, `palette`, …) included:
+/// nothing the app draws ships beside its binary.
 ///
 /// Most are tabs, with a `ShellTab` arm and an intent decoder each. `inbox`
 /// is not: it is the bell overlay's body, seated in the overlay's own slot
@@ -44,16 +45,6 @@ pub use super::view_artifact::Error as FetchError;
 /// lazily, because the count beside the rail is a headless run of this same
 /// view and it is wanted at connect.
 pub const MODULE_OWNED: [&str; 6] = ["governance", "files", "pages", "chat", "forge", "inbox"];
-
-/// The desktop's own views, staged beside the binary and asked for at boot.
-/// Every view that is not one of these comes off the connected node.
-pub const DESKTOP_OWNED: [&str; 6] = [
-    "members", "agents", "node", "explorer", "settings", "palette",
-];
-
-pub fn desktop_owned(module: &str) -> bool {
-    DESKTOP_OWNED.contains(&module)
-}
 
 /// The assets a deployment ships beside its view, by canonical relative
 /// path. Shared between the guest and the host surfaces that paint them,

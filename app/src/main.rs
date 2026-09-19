@@ -53,9 +53,10 @@ fn main() {
             "open-file limit left at the inherited default"
         ),
     }
-    // the desktop's own views are there before the window is: a tab's
-    // first draw never finds a load on its way
-    module_view::booted().joined();
+    // no view ships with the app: every one comes off the connected node.
+    // A view developer's DUCKTAPE_VIEWS_DIR supplies files in their place,
+    // and app.log says so for each one it supplies
+    module_view::override_views_from(std::env::var_os("DUCKTAPE_VIEWS_DIR").map(Into::into));
     shell::run();
 }
 

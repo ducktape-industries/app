@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Native macOS bundle: stage both executables and the view files, then —
-# on the local signing path — sign inside-out, image, optionally notarize.
+# Native macOS bundle: stage both executables, then — on the local signing
+# path — sign inside-out, image, optionally notarize. No view ships in the
+# bundle: every view the app draws comes off the connected node's registry.
 #
 # ONE signing path per environment, chosen by DUCKTAPE_SIGN_VIA:
 #   unset    local: DUCKTAPE_CODESIGN_IDENTITY (ad-hoc by default) signs the
@@ -45,12 +46,6 @@ case "$sign_via" in
     ;;
   *) echo "DUCKTAPE_SIGN_VIA=$sign_via is not a signing path (unset = local, airlock = the airlock gateway)" >&2; exit 1 ;;
 esac
-# The views ops/views.rev pins, or a DUCKTAPE_VIEWS_DIR whose VIEWS_REV says
-# it holds them; settled before the app is built.
-# shellcheck source=ops/views-pin-check.sh
-source "$repo/ops/views-pin-check.sh"
-pinned_views "$repo"
-views=$(cd "$views" && pwd -P)
 [[ "$(uname -s)" == Darwin ]] || { echo "macOS bundling requires macOS" >&2; exit 1; }
 cd "$repo"
 "${CARGO:-cargo}" build --locked --release -p ducktape-app -p app-launcher
@@ -61,14 +56,9 @@ mkdir -p "$repo/target/app-bundle"
 stage=$(mktemp -d "$repo/target/app-bundle/stage.XXXXXX")
 app="$stage/Ducktape.app"
 contents="$app/Contents"
-mkdir -p "$contents/MacOS" "$contents/Resources/views" "$stage/Ducktape.iconset"
+mkdir -p "$contents/MacOS" "$contents/Resources" "$stage/Ducktape.iconset"
 install -m 0755 "$release_bin/ducktape-launcher" "$contents/MacOS/ducktape-launcher"
 install -m 0755 "$release_bin/ducktape-app" "$contents/MacOS/ducktape-app"
-install -m 0644 "$views"/*_view.wasm "$contents/Resources/views/"
-printf '%s\n' "$views_rev" >"$contents/Resources/views/VIEWS_REV"
-# views_dir() looks for `views/` beside the executable: the link keeps the
-# payload under Resources where a bundle's resources belong.
-ln -s ../Resources/views "$contents/MacOS/views"
 install -m 0644 "$repo/app/packaging/Info.plist" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" "$contents/Info.plist"

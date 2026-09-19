@@ -273,7 +273,7 @@ fn ax_contract_views() {
             std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views")
         });
     let mut modules = std::fs::read_dir(&views)
-        .unwrap_or_else(|error| panic!("{}: {error}; run `make views`", views.display()))
+        .unwrap_or_else(|error| panic!("{}: {error}; build ducktape-views and point DUCKTAPE_VIEWS_DIR at its target/views", views.display()))
         .filter_map(|entry| {
             let name = entry.ok()?.file_name().into_string().ok()?;
             let module = name.strip_suffix("_view.wasm")?.to_owned();
@@ -287,12 +287,11 @@ fn ax_contract_views() {
         .build()
         .unwrap();
     let _turn = runtime.block_on(crate::module_view::canary::connection_turn());
-    // the desktop's own views load from the staged set; every other view
-    // off a node whose registry lists it, as a module's or on its own
-    use crate::backend::view_source::{MODULE_OWNED, desktop_owned};
+    // every view off a node whose registry lists it, as a module's or on
+    // its own — the staged set is the fixture registry's artifacts
+    use crate::backend::view_source::MODULE_OWNED;
     let served = modules
         .iter()
-        .filter(|module| !desktop_owned(module))
         .enumerate()
         .map(|(index, module)| {
             let view = std::fs::read(views.join(format!("{module}_view.wasm"))).unwrap();
@@ -321,7 +320,6 @@ fn ax_contract_views() {
             "pending": null, "history": [{"height": 7, "code_hash": artifact.hash()}]
         })).collect::<Vec<_>>()
     }});
-    crate::module_view::booted().joined();
     let client = runtime.block_on(fake_node(node));
     crate::module_view::connected(&client).joined();
     let mut failures = Vec::new();

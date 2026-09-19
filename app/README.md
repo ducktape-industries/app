@@ -4,8 +4,8 @@ Native GPUI desktop shell with dynamically loaded, Rust-authored WASM views.
 
 ```bash
 # a node (ducktape-industries/ducktape) is a separate repo this app talks to
-# over RPC; run one, then stage the pinned views and run the app:
-make run
+# over RPC; run one to connect to, then:
+cargo run -p ducktape-app
 ```
 
 The launch window lists the workspaces under the ducktape home (one
@@ -50,31 +50,31 @@ reconnect action; an empty buffer is distinct from a refused connection.
 ## Module-owned views
 
 The Approvals, Members, Agents, Node, Explorer, Settings, Chat, Files,
-Pages and Forge tabs keep their state and behavior in WASM views built out
-of the `ducktape-industries/ducktape-views` repo
-(`governance`, `members`, `agents`, `node`, `explorer`, `settings`, `chat`, `files`,
-`pages`, `forge`). Rust cdylibs compile to `wasm32-unknown-unknown`; wasm-tools wraps their embedded WIT exports as components that the app
-loads from a file at runtime (`src/module_view.rs`).
-The desktop's own six (`members`, `agents`, `node`, `explorer`, `settings`,
-`palette`) ship with the app, from the ducktape-views commit `ops/views.rev`
-pins. `make views` (`ops/stage-views.sh`, run by `make run` and `make dev`)
-fetches that commit into `target/views-src`, runs its `ops/build-views.sh`
-over every view package, and stages `target/views/<module>_view.wasm` plus
-`target/views/VIEWS_REV` (the pin); `views_dir()` finds `target/views` for a
-checkout build. It needs rustup (it honours the views repo's
-`rust-toolchain.toml`: 1.96.1 with `wasm32-unknown-unknown`), `wasm-tools`
-on `PATH` at the version `ops/views.wasm-tools` records (its version is part
-of the bytes; another one warns here and is refused for a release), and
-network plus git credentials for the views' `ducktape-sdk` git dependencies.
-To move the pin, put a ducktape-views dev commit in `ops/views.rev` (and
-re-check `ops/views.wasm-tools` against what views builds with), run
-`make views` and the suite, and open a PR. Working on views, point
-`DUCKTAPE_VIEWS_DIR` at your own staged set; it wins over every other place.
-The release scripts (`ops/bundle-app-macos.sh`, `ops/stage-release.sh`)
-stage the pin themselves and refuse a `DUCKTAPE_VIEWS_DIR` whose
-`VIEWS_REV` is not the pin unless `DUCKTAPE_VIEWS_UNPINNED=1`, so a release's
-`views/VIEWS_REV` names the views it ships. A tab whose view is not staged
-says so in its place.
+Pages and Forge tabs, the palette and the bell keep their state and behavior
+in WASM views built out of the `ducktape-industries/ducktape-views` repo
+(`governance`, `members`, `agents`, `node`, `explorer`, `settings`,
+`palette`, `inbox`, `chat`, `files`, `pages`, `forge`). Rust cdylibs compile
+to `wasm32-unknown-unknown`; wasm-tools wraps their embedded WIT exports as
+components (`src/module_view.rs`).
+
+NO VIEW SHIPS WITH THE APP. Every one comes off the connected node's module
+registry, fetched and verified under its entry's active code hash
+(`src/backend/view_source.rs`): a module's own view out of its artifact
+(`governance`, `inbox`, `chat`, `files`, `pages`, `forge`), and every other
+view — `home`, `canvas`, `call` and the chrome's own `members`, `agents`,
+`node`, `explorer`, `settings` and `palette` — as a `Kind::View` registry
+entry. A release is the launcher and the app, nothing else, so a wasm change
+never needs an app release. Before a node is connected the app draws only
+native UI (the launch window); a tab whose view the connected network does
+not list says so in its place.
+
+Working on views, point `DUCKTAPE_VIEWS_DIR` at ducktape-views' built
+`target/views`: while it is set, `<id>_view.wasm` there is loaded for any
+view the connected network lists, in place of the network's artifact and
+unverified, and app.log says so for each one (`view_source` …
+`state=Overridden`). It is a view developer's override and nothing else —
+releases never set it. The test suite reads the same variable for its view
+fixtures, which it serves off a fake node's registry.
 
 Deployed views follow the module registry's active deployment hash on block
 events. The host fetches and verifies a candidate, compiles it away from the
@@ -148,7 +148,7 @@ their shared wire vocabulary.
 
 `cargo build --release -p ducktape-app -p app-launcher && ops/bundle-app-macos.sh`
 builds `Ducktape.app` and `Ducktape-<version>-<arch>.dmg` under
-`target/app-bundle/`, carrying the pinned views, and
+`target/app-bundle/` and
 signs both **ad-hoc**, which runs on the machine that built it and nowhere
 else — Gatekeeper refuses an ad-hoc bundle that arrived over the network. A bundle that leaves this Mac is signed with a Developer ID
 identity and notarized by Apple. `ops/bundle-app-macos.sh` does both itself, off four
@@ -157,9 +157,8 @@ environment variables exported into the shell before the build.
 The bundle carries two executables in `Contents/MacOS`: `ducktape-launcher`,
 its `CFBundleExecutable` (`app/packaging/Info.plist`), reads the update state
 and `exec`s `ducktape-app` beside it — same PID, same bundle, so notifications,
-TCC grants and `duck://` events all belong to `dev.ducktape.app`. The views
-sit under `Contents/Resources/views` with a `MacOS/views` link, where
-`views_dir()` finds them beside the executable. The helper is nested code and
+TCC grants and `duck://` events all belong to `dev.ducktape.app`. No view
+ships in the bundle. The helper is nested code and
 is signed first, then the bundle, so `codesign --verify --deep --strict` — what
 `ducktape-launcher --qualify` runs on a staged release — passes on the bundle
 as built. `ducktape-launcher install --from target/app-bundle/Ducktape.app`
@@ -224,7 +223,7 @@ takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
    sha256. The script refuses by name an ad-hoc bundle (`adhoc_bundle_refused`)
    or one Apple never notarized (`bundle_not_stapled`). On Linux,
    `ops/stage-release.sh target/app-release` builds and lays out
-   `target/app-release/{ducktape-launcher, ducktape-app, views/}`, which the
+   `target/app-release/{ducktape-launcher, ducktape-app}`, which the
    same target packs into `Ducktape-<sha7>-linux-<arch>.tar.zst`. Then `make publish-app` with
    `NODE`, `RELEASE_KEY`, `SEQUENCE` and `DISPLAY` composes and signs the
    manifest and lands everything under `/shared/releases` on the network's
