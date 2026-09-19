@@ -348,6 +348,12 @@ impl Updater {
                 Effect::Nothing
             }
             Command::Fetch => Effect::Start(Job::Fetch),
+            // A node launcher's: `step` asks it only after `Designated`, which
+            // the app never raises — the app offers the channel's latest.
+            Command::FetchDesignated(sha) => {
+                warn!(target: "ducktape::update", event = "app_update_ignored", command = "fetch_designated", sha = %sha);
+                Effect::Nothing
+            }
             Command::Download { sha, size } => Effect::Start(Job::Download { sha, size }),
             Command::Verify(sha) => Effect::Start(Job::Verify { sha }),
             Command::SealImmutable(sha) => {

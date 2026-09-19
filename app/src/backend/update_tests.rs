@@ -314,7 +314,10 @@ async fn tick_drives_fetch_then_download_while_connected() {
         panic!("staged, not {:?}", reading.phase);
     };
     assert_eq!(staged.staged, sha);
-    assert_eq!(staged.pinned_sequence, 3, "the pin advanced");
+    // core #2690: the pin advances at the flip, never at the stage — a
+    // staged release this install never ran must not read as up to date.
+    assert_eq!(staged.sequence, 3);
+    assert_eq!(staged.pinned_sequence, 0, "the pin waits for the flip");
     assert_eq!(
         reading.banner,
         Some(UpdateBanner::Ready {
@@ -530,7 +533,7 @@ fn a_refused_staged_release_says_why_and_stays_clearable() {
         staged: broken,
         sequence: 4,
         display: "0.1.0+qualify-fail".into(),
-        node_contract: 6,
+        node_contract: 7,
         refused: Some("qualify_exit_3".into()),
     });
     let mut updater = Updater::new(staged, Some(keys()), paths.clone());

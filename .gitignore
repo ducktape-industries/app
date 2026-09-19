@@ -45,3 +45,4 @@ HANDOFF.md
 .wrangler/
 
 .env
+__pycache__/

@@ -29,6 +29,7 @@ fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("chat", seat.clone());
     seat
@@ -220,7 +221,7 @@ fn chat_native_overlays_are_visible_and_route_menu_and_emoji_presses(cx: &mut Te
                     "guest {focus} menu requests real native focus; queued commands: {:?}",
                     match &seat.lock().unwrap().slot {
                         Slot::Ready(guest) => guest.widget_commands.clone(),
-                        Slot::Failed(_) | Slot::Loading | Slot::Empty => Vec::new(),
+                        _ => Vec::new(),
                     }
                 );
             });
@@ -578,6 +579,7 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("pages", seat.clone());
     cx.update(gpui_kit::init);
@@ -633,11 +635,12 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
     let row = menu
         .items
         .iter()
-        .position(|item| item.label.contains("Ada Lovelace"))
+        .find(|item| item.label.contains("Ada Lovelace"))
+        .map(|item| gpui_kit::SharedString::from(format!("application-suggestion/{}", item.tag)))
         .expect("the WASM supplies the account directory");
     native.update(|window, cx| {
         window.render_frame(cx);
-        window.click(("application-suggestion", row), cx);
+        window.click(row, cx);
     });
     settle_native_documents(&mut native, &seat);
     let (rich, paint) = projection();
@@ -743,6 +746,7 @@ fn call_panel_renders_staged_wasm_and_routes_native_control_clicks(cx: &mut Test
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("call", seat.clone());
     cx.update(gpui_kit::init);
@@ -890,6 +894,7 @@ fn forge_wasm_merges_through_the_real_service(cx: &mut TestAppContext) {
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("forge", seat.clone());
     struct LivePump(tokio::task::JoinHandle<()>);
@@ -1004,6 +1009,7 @@ fn keys_typed_into_a_note_the_view_just_opened_reach_it_in_order(cx: &mut TestAp
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("canvas", seat.clone());
     cx.update(gpui_kit::init);

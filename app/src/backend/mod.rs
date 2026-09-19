@@ -32,7 +32,6 @@ pub use ::chat::client::{ChatChannel, ChatReader, HuddleSeat, NameDirectory, sho
 // the app's own test helpers, which build message rows the way a send does.
 #[cfg(test)]
 pub use ::chat::client::{ChatMessage, author_display, author_name, paragraph_blocks};
-const DEFAULT_RPC: &str = "http://127.0.0.1:8844";
 /// How many one-second polls the provisioning screen waits before it says the
 /// node is not running and names the command that starts it.
 const PROVISION_PATIENCE: u32 = 8;
@@ -185,6 +184,7 @@ pub mod view_source;
 pub use agent::*;
 pub use app_dirs::app_log_path;
 pub(crate) use app_dirs::cache_dir;
+pub(crate) use app_dirs::state_dir;
 pub use chat::*;
 pub use duck_uri::*;
 pub use explorer::*;

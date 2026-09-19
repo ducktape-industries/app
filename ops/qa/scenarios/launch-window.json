@@ -1,0 +1,20 @@
+{
+  "name": "launch-window",
+  "about": "The launch window with NO network: nothing here joins or connects. Connect is never pressed.",
+  "params": {
+    "app": "path to a ducktape-app binary (the door ships in every build; it opens only with DUCKTAPE_AX_DOOR)"
+  },
+  "rig": {"display": true},
+  "steps": [
+    {"kind": "launch", "say": "start the app on a fresh home with no network", "argv": ["{param:app}"], "deadline_ms": 60000},
+    {"kind": "wait", "say": "the launch window offers Join with invitation", "wait": {"role": "Button", "name": "Join with invitation", "in": "onboarding"}, "deadline_ms": 10000},
+    {"kind": "wait", "say": "the launch window names its screen: Your networks", "wait": {"role": "Heading", "name": "Your networks"}, "deadline_ms": 5000},
+    {"say": "type the address 127.0.0.1:9 into the Remote node address field", "text": "127.0.0.1:9",
+     "expect": "the Remote node address field holds 127.0.0.1:9 and the Connect button is enabled (it no longer reports disabled)"},
+    {"say": "clear the Remote node address field by setting its value to empty text", "text": "",
+     "expect": "the Remote node address field is empty and the Connect button reports disabled"},
+    {"say": "press Join with invitation", "expect": "the invitation screen shows: an Invitation field and a Join network button"},
+    {"say": "go back to the networks list", "expect": "the launch window again shows the Remote node address field and Join with invitation"},
+    {"kind": "stop", "say": "quit the app"}
+  ]
+}

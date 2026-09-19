@@ -143,6 +143,7 @@ use gpui_kit::{
     AppContext as _, AsyncApp, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, Window,
 };
+use gpui_notion::editor::ui::Control as _;
 use std::collections::{BTreeMap, HashMap};
 
 struct Desktop {
@@ -155,6 +156,29 @@ struct Desktop {
 }
 
 impl Desktop {
+    /// The windows the test door serves, named by kind; a second window of
+    /// one kind is `console2`.
+    fn ax_windows(&self, cx: &gpui_kit::App) -> Vec<(String, gpui_kit::AnyWindowHandle)> {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        self.windows
+            .iter()
+            .filter_map(|(key, handle)| {
+                let name = match self.views.get(key)?.upgrade()?.read(cx).kind {
+                    WindowKind::Onboarding => "onboarding",
+                    WindowKind::Console => "console",
+                    WindowKind::Huddle => "huddle",
+                };
+                let count = seen.entry(name).or_default();
+                *count += 1;
+                let name = match *count {
+                    1 => name.to_owned(),
+                    count => format!("{name}{count}"),
+                };
+                Some((name, *handle))
+            })
+            .collect()
+    }
+
     fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         // Native callbacks run on GPUI's thread, not a Tokio worker. Reducers
         // may construct effects which spawn immediately, before their first poll.
@@ -580,10 +604,16 @@ impl DesktopWindow {
         let palette = self.palette_module.clone();
         let seated = self.module.as_ref().map(|(_, view)| view.clone());
         let overlay = self.overlay_module.clone();
-        [palette, seated, overlay]
+        let landed = [palette, seated, overlay]
             .into_iter()
             .flatten()
-            .any(|view| view.update(cx, |view, cx| view.chord(&chord, cx)))
+            .any(|view| view.update(cx, |view, cx| view.chord(&chord, cx)));
+        // what the press opened may be a layer this window mounts only once
+        // it draws
+        if landed {
+            cx.notify();
+        }
+        landed
     }
 
     fn released(&mut self, cx: &mut gpui_kit::App) {
@@ -747,7 +777,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::input::{Input, InputEvent, InputState};
+        use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
         if !self.inputs.contains_key(key) {
             let state = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -776,9 +806,36 @@ impl DesktopWindow {
                 },
             );
         }
-        Input::new(&self.inputs[key].state)
-            .aria_label(placeholder)
-            .into_any_element()
+        use gpui_kit::{Focusable as _, StatefulInteractiveElement as _};
+        // One node for the field (`ui::text_field`). A masked field is a
+        // password to assistive technology too, which keeps its value out of
+        // the accessibility tree.
+        let state = &self.inputs[key].state;
+        let input = Input::new(state).id(key);
+        let input = match masked {
+            true => input.content_type(InputContentType::Password),
+            false => input,
+        };
+        let field = gpui_notion::editor::ui::text_field(
+            gpui_kit::SharedString::from(format!("{key}/field")),
+            &state.read(cx).focus_handle(cx),
+            {
+                let state = state.clone();
+                move |value, window, cx| {
+                    state.update(cx, |state, cx| state.replace_all(value, window, cx))
+                }
+            },
+            input.role(gpui_kit::component::RoleOverride::Presentational),
+        )
+        .aria_label(placeholder);
+        match masked {
+            true => field.role(gpui_kit::Role::PasswordInput),
+            false if window.is_a11y_active() => field
+                .role(gpui_kit::Role::TextInput)
+                .aria_value(state.read(cx).value().to_string()),
+            false => field.role(gpui_kit::Role::TextInput),
+        }
+        .into_any_element()
     }
 
     fn action(
@@ -790,13 +847,14 @@ impl DesktopWindow {
     ) -> gpui_kit::component::button::Button {
         use gpui_kit::component::Disableable as _;
         let model = self.model.clone();
-        gpui_kit::component::button::Button::new(key)
+        let button = gpui_kit::component::button::Button::new(key)
             .label(label)
             .disabled(disabled)
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 model.update(cx, |model, cx| model.dispatch(message.clone(), cx))
-            })
+            });
+        gpui_notion::editor::ui::disabled(button, disabled)
     }
 
     fn submit(
@@ -808,7 +866,7 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::component::button::Button {
         use gpui_kit::component::Disableable as _;
-        gpui_kit::component::button::Button::new(key)
+        let button = gpui_kit::component::button::Button::new(key)
             .label(label)
             .disabled(disabled)
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -816,7 +874,8 @@ impl DesktopWindow {
                 let message = message(this, cx);
                 this.model
                     .update(cx, |model, cx| model.dispatch(message, cx));
-            }))
+            }));
+        gpui_notion::editor::ui::disabled(button, disabled)
     }
 
     /// The toast, floating in the corner of its layout's positioned box until
@@ -846,7 +905,12 @@ impl DesktopWindow {
                 .border_color(theme.color_tokens().border)
                 .bg(theme.popover)
                 .shadow_md()
-                .child(div().flex_1().text_size(px(12.5)).child(toast))
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.5))
+                        .child(Text::new("toast-message".into(), toast.into())),
+                )
                 .child(
                     self.action("toast-dismiss", "Dismiss", Message::DismissToast, false)
                         .ghost()
@@ -876,16 +940,26 @@ impl DesktopWindow {
             }
             self.input_step = Some(step);
         }
+        // A heading is a node of its own, named by its words, so a screen
+        // reader and the test door find what a screen is (#114). The id is
+        // the heading's place, not its words.
+        let heading = |id: &'static str, level: usize, text: &'static str| {
+            div()
+                .id(id)
+                .role(gpui_kit::Role::Heading)
+                .aria_level(level)
+                .aria_label(text)
+                .child(text)
+        };
         let hero = |title: &'static str, subtitle: &'static str| {
             div()
                 .flex()
                 .flex_col()
                 .gap_1()
                 .child(
-                    div()
+                    heading("hero-title", 1, title)
                         .text_size(px(design::type_scale::TITLE as f32))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
+                        .font_weight(FontWeight::SEMIBOLD),
                 )
                 .child(
                     div()
@@ -902,11 +976,13 @@ impl DesktopWindow {
                 .rounded(px(design::radius::CARD as f32))
                 .overflow_hidden()
         };
+        // A hint says where the step stands, so a screen reader reads it
+        // too: the sentence is its own identity.
         let hint = |text: String| {
             div()
                 .text_size(px(12.5))
                 .text_color(colors.muted_foreground)
-                .child(text)
+                .child(Text::new(ElementId::Name(text.clone().into()), text.into()))
         };
         let mut body = div().flex().flex_col().gap_4().w_full();
         body = match step {
@@ -1035,6 +1111,7 @@ impl DesktopWindow {
                 ));
                 let mut words = panel().flex().flex_col().p_3().gap_1();
                 for row in crate::backend::phrase_rows() {
+                    // shown on screen, so read aloud too: each word after its number
                     let word = |number: String, text: String| {
                         div()
                             .flex_1()
@@ -1046,9 +1123,21 @@ impl DesktopWindow {
                                     .text_size(px(12.))
                                     .map(mono_family)
                                     .text_color(colors.muted_foreground)
-                                    .child(number),
+                                    .child(Text::new(
+                                        ElementId::Name(format!("phrase-number/{number}").into()),
+                                        number.clone().into(),
+                                    )),
                             )
-                            .child(div().map(mono_family).child(text))
+                            .child(
+                                // private: the test door masks it (#114)
+                                div().map(mono_family).child(gpui_notion::editor::ui::ax_private(
+                                    div()
+                                        .id(ElementId::Name(format!("phrase-word/{number}").into()))
+                                        .role(gpui_kit::Role::Label)
+                                        .aria_value(text.clone())
+                                        .child(text),
+                                )),
+                            )
                     };
                     words = words.child(
                         div()
@@ -1166,10 +1255,9 @@ impl DesktopWindow {
                         .flex()
                         .justify_between()
                         .child(
-                            div()
+                            heading("networks-saved", 2, "Saved networks")
                                 .text_size(px(12.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Saved networks"),
+                                .font_weight(FontWeight::MEDIUM),
                         )
                         .child(
                             div()
@@ -1188,10 +1276,9 @@ impl DesktopWindow {
                             .flex_col()
                             .gap_1()
                             .child(
-                                div()
+                                heading("networks-empty", 2, "No networks yet")
                                     .text_size(px(15.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("No networks yet"),
+                                    .font_weight(FontWeight::MEDIUM),
                             )
                             .child(
                                 div()
@@ -1622,10 +1709,9 @@ impl DesktopWindow {
                                     .child("D"),
                             )
                             .child(
-                                div()
+                                heading("launch-title", 1, "Ducktape")
                                     .text_size(px(13.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Ducktape"),
+                                    .font_weight(FontWeight::SEMIBOLD),
                             )
                             .on_mouse_down(gpui_kit::MouseButton::Left, |_, window, _| {
                                 window.start_window_move()
@@ -1714,6 +1800,12 @@ impl DesktopWindow {
         use gpui_kit::component::{Sizable as _, button::ButtonVariants as _};
         use gpui_kit::*;
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        // the connect's views landing in the background: nothing else wakes
+        // the rail that counts them
+        let views_loading = crate::module_view::views_loading();
+        if views_loading.is_some() {
+            window.request_animation_frame();
+        }
         let (spec, route) = self.model.read(cx).state.native_view();
         let module_changed = self
             .module
@@ -1817,7 +1909,20 @@ impl DesktopWindow {
                                     .text_size(px(11.))
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(ink_muted)
-                                    .child(state.status.clone()),
+                                    .child(match &views_loading {
+                                        // ONE line for the connect's views,
+                                        // gone once every one has landed
+                                        Some((landed, asked)) => Text::new(
+                                            "views-loading".into(),
+                                            format!(
+                                                "Loading views from {} {landed}/{asked}",
+                                                state.network_name
+                                            )
+                                            .into(),
+                                        )
+                                        .into_any_element(),
+                                        None => state.status.clone().into_any_element(),
+                                    }),
                             ),
                     )
                     .child(
@@ -1850,7 +1955,7 @@ impl DesktopWindow {
             gpui_kit::component::Icon::new(gpui_kit::component::IconName::Search),
             "Search",
             ink,
-            false,
+            None,
             live,
         )
         .child(
@@ -1882,7 +1987,7 @@ impl DesktopWindow {
             gpui_kit::component::Icon::new(gpui_kit::component::IconName::Bell),
             bell_label,
             ink,
-            false,
+            None,
             live,
         )
         .when(bell_unread > 0, |row| {
@@ -1950,9 +2055,22 @@ impl DesktopWindow {
                     nav_icon(view),
                     label,
                     ink,
-                    selected,
+                    Some(selected),
                     true,
                 )
+                // which views can be opened as they are, while others load
+                .when_some(crate::module_view::rail_note(view), |row, note| {
+                    row.child(
+                        div()
+                            .flex_shrink_0()
+                            .text_size(px(9.5))
+                            .text_color(ink.muted)
+                            .child(Text::new(
+                                ElementId::Name(format!("rail-note:{view}").into()),
+                                note.into(),
+                            )),
+                    )
+                })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
                     this.model.update(cx, |model, cx| {
@@ -1972,6 +2090,9 @@ impl DesktopWindow {
         // decides which (`on_open_account`); the row itself does not know.
         let account = div()
             .id("rail-account")
+            .control(Role::Button, format!("Account: {who}"))
+            .focusable()
+            .tab_stop(true)
             .flex()
             .items_center()
             .gap_2()
@@ -2115,7 +2236,12 @@ impl DesktopWindow {
                         )
                         .xsmall(),
                     )
-                    .child(div().flex_1().text_size(px(12.5)).child(error))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .child(Text::new("error-message".into(), error.into())),
+                    )
                     .child(
                         self.action("error-dismiss", "Dismiss", Message::DismissError, false)
                             .ghost()
@@ -2234,7 +2360,7 @@ impl DesktopWindow {
                     .flex_1()
                     .text_size(px(12.))
                     .text_color(colors.foreground)
-                    .child(words),
+                    .child(Text::new("update-words".into(), words.into())),
             )
             .children(action.map(|action| action.h_6().text_size(px(12.))))
     }
@@ -3033,19 +3159,37 @@ fn navigation_rows(label: &dyn Fn(&'static str) -> String) -> Vec<NavSection> {
     ]
 }
 
+/// One row of the rail, a control a keyboard reaches with Tab and presses
+/// with Enter or Space. `selected` is `Some` for a row that seats a view: a
+/// tab, reporting whether it is the open one. `None` is a row that acts: a
+/// button. Its label is its accessible name.
 fn rail_row(
     id: impl Into<gpui_kit::ElementId>,
     icon: gpui_kit::component::Icon,
     label: impl Into<gpui_kit::SharedString>,
     ink: RailInk,
-    selected: bool,
+    selected: Option<bool>,
     enabled: bool,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     use gpui_kit::component::Sizable as _;
     use gpui_kit::*;
     let RailInk { fg, muted, raised } = ink;
-    div()
+    let label = label.into();
+    let row = div()
         .id(id)
+        .control(
+            if selected.is_some() {
+                Role::Tab
+            } else {
+                Role::Button
+            },
+            label.clone(),
+        )
+        .when_some(selected, |row, selected| row.aria_selected(selected))
+        .focusable()
+        .tab_stop(true);
+    let selected = selected.unwrap_or(false);
+    gpui_notion::editor::ui::disabled(row, !enabled)
         .flex()
         .items_center()
         .gap_2()
@@ -3065,7 +3209,7 @@ fn rail_row(
         .when(!enabled, |row| row.opacity(0.5))
         .hover(move |style| style.bg(raised).text_color(fg))
         .child(icon.small())
-        .child(div().flex_1().min_w_0().truncate().child(label.into()))
+        .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
 /// A row's icon: the view's OWN `icons/tab.svg` once it is seated, else the
@@ -3327,6 +3471,20 @@ pub(crate) fn run() {
             desktop.start(initial, cx).detach();
             desktop.subscriptions(cx);
         });
+        // the test door (#114), only when the launch asked for it
+        if let Some(calls) = crate::ax_door::open() {
+            let door_desktop = desktop.downgrade();
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let windows = move |cx: &gpui_kit::App| {
+                    door_desktop
+                        .upgrade()
+                        .map(|desktop| desktop.read(cx).ax_windows(cx))
+                        .unwrap_or_default()
+                };
+                crate::ax_door::serve(calls, windows, cx).await;
+            })
+            .detach();
+        }
         let command_desktop = desktop.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(pending) = commands.next().await {

@@ -9,11 +9,19 @@
 //! its `ducktape-app` executable. A release already seeded under that sha
 //! is reused as is. A source that carries no `ducktape-launcher` gets this
 //! one copied in — a release must be able to boot itself.
+//!
+//! A release says which it is in `release.json` at its archive root
+//! ([`ReleaseIdentity`]): its sequence becomes the pin, so the channel
+//! publishing that same sequence reads as what already runs. Replacing what
+//! runs with an OLDER sequence, or with a release that carries no identity (a
+//! developer's build, of unknown provenance), is never done silently: the
+//! install refuses before it writes, naming `--replace`, the user's action
+//! that takes the offer.
 
 use std::fs as std_fs;
 use std::path::{Path, PathBuf};
 
-use app_update::{Idle, Phase, PublicKey, Sha, state};
+use app_update::{Idle, Phase, PublicKey, ReleaseIdentity, Sha, state};
 use tracing::info;
 
 use crate::flip;
@@ -25,13 +33,19 @@ use crate::refusal::Refusal;
 const TARGET: &str = "ducktape::update";
 const DESKTOP_TEMPLATE: &str = include_str!("../../../app/packaging/dev.ducktape.app.desktop");
 
-pub fn install(layout: &Layout, from: &Path, release_key: Option<&str>) -> Result<Sha, Refusal> {
+pub fn install(
+    layout: &Layout,
+    from: &Path,
+    release_key: Option<&str>,
+    replace: bool,
+) -> Result<Sha, Refusal> {
     let pin = release_key
         .map(|hex| pinnable_key(layout, hex))
         .transpose()?;
+    let identity = release_identity(&identity_path(layout.platform, from))?;
     let sha = match layout.platform {
-        Platform::Linux => install_linux(layout, from),
-        Platform::MacOs => install_macos(layout, from),
+        Platform::Linux => install_linux(layout, from, identity.as_ref(), replace),
+        Platform::MacOs => install_macos(layout, from, identity.as_ref(), replace),
     }?;
     if let Some(key) = pin {
         fs::persist(&layout.release_key_path(), &format!("{key}\n"))?;
@@ -63,16 +77,84 @@ fn pinnable_key(layout: &Layout, hex: &str) -> Result<PublicKey, Refusal> {
     }
 }
 
-fn install_linux(layout: &Layout, from: &Path) -> Result<Sha, Refusal> {
+/// `release.json` at the archive root: beside the executables on Linux,
+/// beside `Ducktape.app` on macOS.
+fn identity_path(platform: Platform, from: &Path) -> PathBuf {
+    let root = match platform {
+        Platform::Linux => from,
+        Platform::MacOs => from.parent().unwrap_or(Path::new("")),
+    };
+    root.join(ReleaseIdentity::FILE)
+}
+
+/// The release's own identity, `None` when it carries none. A file that is
+/// there but is not exactly `{sequence, display}` is refused, never read as
+/// "unknown".
+fn release_identity(path: &Path) -> Result<Option<ReleaseIdentity>, Refusal> {
+    fs::refuse_symlink(path)?;
+    match std_fs::read_to_string(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(Refusal::io("release_identity_unreadable", path, &error)),
+        Ok(text) => ReleaseIdentity::decode(&text).map(Some).map_err(|error| {
+            Refusal::new(
+                "release_identity_invalid",
+                format!("{}: {error}", path.display()),
+            )
+        }),
+    }
+}
+
+/// The pin this install leaves, or the offer it makes instead: a release
+/// older than the pin, or one of unknown provenance replacing an installed
+/// one, flips only with `replace`. The pin never lowers.
+fn consented_pin(
+    outgoing: &Outgoing,
+    identity: Option<&ReleaseIdentity>,
+    replace: bool,
+) -> Result<u64, Refusal> {
+    let pinned = outgoing.pinned_sequence;
+    let offer = match identity {
+        Some(identity) if identity.sequence < pinned => Some((
+            "release_older",
+            format!(
+                "{} is sequence {}, older than the pinned sequence {pinned}",
+                identity.display, identity.sequence
+            ),
+        )),
+        None if outgoing.previous.is_some() => Some((
+            "release_unknown_provenance",
+            format!(
+                "it carries no {}, so whether it is older than the release it replaces is unknown",
+                ReleaseIdentity::FILE
+            ),
+        )),
+        Some(_) | None => None,
+    };
+    match (offer, replace) {
+        (Some((reason, why)), false) => Err(Refusal::new(
+            reason,
+            format!("{why}; nothing was installed — run it again with --replace to install it"),
+        )),
+        _ => Ok(identity.map_or(pinned, |identity| identity.sequence.max(pinned))),
+    }
+}
+
+fn install_linux(
+    layout: &Layout,
+    from: &Path,
+    identity: Option<&ReleaseIdentity>,
+    replace: bool,
+) -> Result<Sha, Refusal> {
     let source_app = from.join(APP_EXE);
     fs::require_executable(&source_app)
         .map_err(|refusal| Refusal::new("source_app_missing", refusal.detail))?;
     let sha = fs::digest_file(&source_app)?;
+    let outgoing = outgoing_release(layout, sha)?;
+    let pinned_sequence = consented_pin(&outgoing, identity, replace)?;
     std_fs::create_dir_all(&layout.install_dir)
         .map_err(|error| Refusal::io("install_root_not_writable", &layout.install_dir, &error))?;
     fs::require_writable_install_dir(&layout.install_dir)?;
     seed_linux(layout, from, sha)?;
-    let outgoing = outgoing_release(layout, sha)?;
     if let Some(from) = outgoing.previous {
         fs::replace_symlink(&Link {
             path: layout.previous_link(),
@@ -86,7 +168,7 @@ fn install_linux(layout: &Layout, from: &Path) -> Result<Sha, Refusal> {
     let idle = Phase::Idle(Idle {
         current: sha,
         previous: outgoing.previous,
-        pinned_sequence: outgoing.pinned_sequence,
+        pinned_sequence,
     });
     fs::persist(&layout.state_path(), &state::encode(&idle))?;
     write_desktop_entry(layout)?;
@@ -111,18 +193,24 @@ fn seed_linux(layout: &Layout, from: &Path, sha: Sha) -> Result<(), Refusal> {
         .map_err(|error| Refusal::io("seed_failed", &release_dir, &error))
 }
 
-fn install_macos(layout: &Layout, from: &Path) -> Result<Sha, Refusal> {
+fn install_macos(
+    layout: &Layout,
+    from: &Path,
+    identity: Option<&ReleaseIdentity>,
+    replace: bool,
+) -> Result<Sha, Refusal> {
     let source_bin = bundle_bin_dir(from);
     fs::require_executable(&source_bin.join(APP_EXE))
         .map_err(|refusal| Refusal::new("source_app_missing", refusal.detail))?;
     let sha = fs::digest_file(&source_bin.join(APP_EXE))?;
+    let installed = layout.installed_bundle();
+    fs::refuse_symlink(&installed)?;
+    let outgoing = outgoing_release(layout, sha)?;
+    let pinned_sequence = consented_pin(&outgoing, identity, replace)?;
     std_fs::create_dir_all(layout.releases_dir())
         .map_err(|error| Refusal::io("seed_failed", &layout.releases_dir(), &error))?;
     fs::require_writable_install_dir(&layout.install_dir)?;
     seed_macos(layout, from, sha)?;
-    let installed = layout.installed_bundle();
-    fs::refuse_symlink(&installed)?;
-    let outgoing = outgoing_release(layout, sha)?;
     let has_installed_bundle = installed.exists();
     let previous = match (has_installed_bundle, outgoing.previous) {
         (false, _) => {
@@ -142,7 +230,7 @@ fn install_macos(layout: &Layout, from: &Path) -> Result<Sha, Refusal> {
     let idle = Phase::Idle(Idle {
         current: sha,
         previous,
-        pinned_sequence: outgoing.pinned_sequence,
+        pinned_sequence,
     });
     fs::persist(&layout.state_path(), &state::encode(&idle))?;
     info!(target: TARGET, event = "app_update_installed", release = %sha);

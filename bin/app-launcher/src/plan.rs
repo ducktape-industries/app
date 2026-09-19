@@ -107,6 +107,7 @@ pub fn plan(layout: &Layout, commands: Vec<Command>) -> Result<Vec<Op>, Refusal>
             Command::Exec(sha) => ops.push(Op::Exec(exec(layout, sha))),
             Command::Banner(_) => {}
             Command::Fetch
+            | Command::FetchDesignated(_)
             | Command::Download { .. }
             | Command::Verify(_)
             | Command::SealImmutable(_)

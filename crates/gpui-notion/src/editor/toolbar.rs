@@ -164,11 +164,9 @@ impl super::view::NotionEditor {
             .child(self.mark_button("code", "Code", MarkKind::Code, cx))
             .child(separator(cx))
             .child(
-                Button::new("comment")
+                ui::icon_button("comment", "message-square-plus", "Comment")
                     .ghost()
                     .small()
-                    .icon(ui::Lucide("message-square-plus"))
-                    .tooltip("Comment")
                     .on_click(cx.listener(|this, _, window, cx| this.add_comment(window, cx))),
             )
             .child(self.render_link_button(cx))
@@ -222,12 +220,11 @@ impl super::view::NotionEditor {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.is_mark_active(&kind, cx);
-        Button::new(SharedString::from(format!("mark-{icon}")))
+        ui::icon_button(SharedString::from(format!("mark-{icon}")), icon, label)
             .ghost()
             .small()
-            .icon(Lucide(icon))
-            .tooltip(label)
             .selected(active)
+            .toggled(active)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.toggle_mark(kind.clone(), window, cx);
             }))
@@ -267,11 +264,9 @@ impl super::view::NotionEditor {
 
     fn render_more_menu(&self, focus: &FocusHandle, _cx: &mut Context<Self>) -> impl IntoElement {
         let focus = focus.clone();
-        Button::new("more-marks")
+        ui::icon_button("more-marks", "ellipsis", "More formatting")
             .ghost()
             .small()
-            .icon(Lucide("ellipsis"))
-            .tooltip("More formatting")
             .dropdown_menu(move |menu, _window, _cx| {
                 menu.action_context(focus.clone())
                     .menu("Superscript", Box::new(actions::ToggleSuperscript))
@@ -283,11 +278,9 @@ impl super::view::NotionEditor {
 
     fn render_link_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.link_at_caret(cx).is_some();
-        Button::new("link")
+        ui::icon_button("link", "link", "Link")
             .ghost()
             .small()
-            .icon(Lucide("link"))
-            .tooltip("Link")
             .selected(active)
             .on_click(cx.listener(|this, _, window, cx| this.open_link_editor(window, cx)))
     }
@@ -295,11 +288,9 @@ impl super::view::NotionEditor {
     /// Text and highlight swatches, as the template's color popover.
     fn render_color_menu(&self, focus: &FocusHandle, _cx: &mut Context<Self>) -> impl IntoElement {
         let focus = focus.clone();
-        Button::new("color")
+        ui::icon_button("color", "palette", "Color")
             .ghost()
             .small()
-            .icon(Lucide("palette"))
-            .tooltip("Color")
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu.action_context(focus.clone()).label("Text color");
                 for color in TextColor::ALL {
@@ -455,11 +446,9 @@ impl super::view::NotionEditor {
                     .w(theme.rems(16.25)),
             )
             .child(
-                Button::new("apply-link")
+                ui::icon_button("apply-link", "corner-down-left", "Apply link")
                     .ghost()
                     .small()
-                    .icon(Lucide("corner-down-left"))
-                    .tooltip("Apply link")
                     .disabled(!has_link)
                     .on_click(
                         cx.listener(|this, _, window, cx| this.apply_link_editor(window, cx)),
@@ -467,11 +456,9 @@ impl super::view::NotionEditor {
             )
             .child(separator(cx))
             .child(
-                Button::new("remove-link")
+                ui::icon_button("remove-link", "unlink", "Remove link")
                     .ghost()
                     .small()
-                    .icon(Lucide("unlink"))
-                    .tooltip("Remove link")
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(editor) = this.link_editor.as_ref() {
                             let (block, range) = (editor.block, editor.range.clone());

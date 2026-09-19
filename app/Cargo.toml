@@ -143,6 +143,8 @@ x11rb = { version = "0.13", features = ["composite", "randr", "xfixes"] }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.6.1", features = ["test-support"] }
+# walks the AccessKit tree the ax_contract gate reads (the adapters' version)
+accesskit_consumer = "=0.38.0"
 syn = { version = "2", features = ["full", "visit"] }
 quote = "1"
 # the dependency line this app is held to is read off the manifests, not

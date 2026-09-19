@@ -1,5 +1,7 @@
 //! App state regressions and native UI/kernel contracts.
 use super::*;
+mod ax_contract;
+mod ax_door;
 mod bell;
 mod canary;
 mod connection;

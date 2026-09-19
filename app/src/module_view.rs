@@ -31,6 +31,7 @@ pub(crate) fn runtime() -> tokio::runtime::Handle {
 }
 
 use std::collections::{HashMap, VecDeque};
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -85,10 +86,11 @@ const RETRY_MAX: Duration = Duration::from_secs(60);
 /// register through `rpc.query` / `rpc.blocks` / `rpc.live`, and a vote or
 /// a settle comes back as `op.submit`, signed here with the seated key. The
 /// one event the app hears is the kernel's `badge` (the tab's open count).
-pub fn governance_view(dark: bool, connected: bool) -> ViewSpec {
+pub fn governance_view(dark: bool, connected: bool, chain: &str) -> ViewSpec {
     let props = serde_json::json!({
         "connected": connected,
         "dark": dark,
+        "chain": chain,
         "tasting": taste_props(),
     });
     module_view(
@@ -139,10 +141,11 @@ pub fn palette_view(dark: bool, connected: bool, chain: &str) -> ViewSpec {
 /// reads the roster itself off the node and signs its writes through
 /// `op.submit`. The one intent left is `copy` (`text`, `label`) — the
 /// clipboard is an OS door the kernel has not opened.
-pub fn members_view(dark: bool, connected: bool) -> ViewSpec {
+pub fn members_view(dark: bool, connected: bool, chain: &str) -> ViewSpec {
     let props = serde_json::json!({
         "connected": connected,
         "dark": dark,
+        "chain": chain,
     });
     module_view("members", serde_json::to_vec(&props).expect("props encode"))
 }
@@ -162,11 +165,13 @@ pub fn members_view(dark: bool, connected: bool) -> ViewSpec {
 pub fn agents_view(
     dark: bool,
     connected: bool,
+    chain: &str,
     account: &str,
     open_run: &str,
     opened: i64,
 ) -> ViewSpec {
     let props = serde_json::json!({
+        "chain": chain,
         "account": account,
         "open_run": open_run,
         "opened": opened,
@@ -218,6 +223,7 @@ pub fn event_int(event: &ModuleViewEvent, field: &str) -> i64 {
 pub fn node_view(
     dark: bool,
     connected: bool,
+    chain: &str,
     status: &str,
     data_dir: &str,
     wall_now: i64,
@@ -225,6 +231,7 @@ pub fn node_view(
     let props = serde_json::json!({
         "connected": connected,
         "dark": dark,
+        "chain": chain,
         "status": status,
         "data_dir": data_dir,
         "wall_now": wall_now,
@@ -241,10 +248,17 @@ pub fn node_view(
 /// `rpc.blocks` (re-read on `rpc.live` for the `block` plane) and runs the
 /// workspace search over `rpc.query` / `rpc.view`. The one intent that comes
 /// back is `copy` (`text`, `label`) — the clipboard is an OS door.
-pub fn explorer_view(dark: bool, connected: bool, head: i64, sync_line: &str) -> ViewSpec {
+pub fn explorer_view(
+    dark: bool,
+    connected: bool,
+    chain: &str,
+    head: i64,
+    sync_line: &str,
+) -> ViewSpec {
     let props = serde_json::json!({
         "connected": connected,
         "dark": dark,
+        "chain": chain,
         "head": head,
         "sync_line": sync_line,
     });
@@ -280,6 +294,7 @@ pub fn explorer_view(dark: bool, connected: bool, head: i64, sync_line: &str) ->
 pub fn settings_view(
     dark: bool,
     connected: bool,
+    chain: &str,
     loading: bool,
     status: &str,
     mutation_phase: crate::MutationPhase,
@@ -314,6 +329,7 @@ pub fn settings_view(
     let props = serde_json::json!({
         "dark": dark,
         "connected": connected,
+        "chain": chain,
         "loading": loading,
         "status": status,
         "busy": mutation_phase != crate::MutationPhase::Idle,
@@ -431,6 +447,7 @@ pub fn forge_view(
         "dark": dark,
         "org": org,
         "about": about,
+        "chain": network_chain_id,
         "network_chain_id": network_chain_id,
         "connected_rpc": connected_rpc,
         "link": link,
@@ -474,6 +491,8 @@ struct ChatProps<'a> {
     connected: bool,
     endpoint: &'a str,
     network_name: &'a str,
+    /// the connected chain, under the one name every view reads it by
+    chain: &'a str,
     network_chain_id: &'a str,
     status: &'a str,
     block_height: i64,
@@ -547,6 +566,7 @@ pub fn chat_view(
         connected,
         endpoint,
         network_name,
+        chain: network_chain_id,
         network_chain_id,
         status,
         block_height,
@@ -882,18 +902,13 @@ fn registered_modules() -> &'static Mutex<Vec<String>> {
 /// is still the connection's.
 static LISTED_AT: AtomicU64 = AtomicU64::new(u64::MAX);
 
-/// The sentence a seat shows for an id the connected network does not list.
-fn not_registered(module: &str) -> String {
-    format!("This network has not registered the {module} view.")
-}
-
-/// What a seat no source event has asked for (`generation` 0) shows once
-/// the connected node's registry has been read without it: the network has
-/// not registered that view. A tab first drawn after the read — the rail
-/// names the chrome's views whether the network lists them or not — has
-/// nobody left to ask for it, and must not say "Loading" for good. The
-/// registry's next listing of it seats it like any view.
-fn unlisted(module: &str, generation: u64) -> Option<String> {
+/// What a seat no source event has asked for (`generation` 0) comes to once
+/// the connected node's registry has been read without it: the load's own
+/// `NotListed` failure, as if it had been asked. A tab first drawn after the
+/// read — the rail names the chrome's views whether the network lists them
+/// or not — has nobody left to ask for it, and must not say "Loading" for
+/// good. The registry's next listing of it seats it like any view.
+fn unlisted(module: &str, generation: u64) -> Option<Failure> {
     use std::sync::atomic::Ordering;
     if generation != 0 {
         return None;
@@ -905,7 +920,11 @@ fn unlisted(module: &str, generation: u64) -> Option<String> {
         .expect("registered modules")
         .iter()
         .any(|id| id == module);
-    (read && !listed).then(|| not_registered(module))
+    (read && !listed).then(|| {
+        Failure::of(crate::backend::view_source::Error::NotListed(
+            module.to_owned(),
+        ))
+    })
 }
 
 pub fn registered_module_ids() -> Vec<String> {
@@ -1180,9 +1199,9 @@ fn module_view(module: &'static str, props: Vec<u8>) -> ViewSpec {
 /// the previous node is still composing lands nowhere. Every seat keeps
 /// what it shows until this node's answer lands: one seated is swapped in
 /// place, one failed or empty off the previous node shows that until then,
-/// and one no tab has drawn yet is seated here. The connect answers only
-/// once the loads returned here have [settled](Loads::settled), so the
-/// tabs it opens onto find their views there.
+/// and one no tab has drawn yet is seated here. The connect does not wait
+/// for the loads returned here: each tab draws its own load's stage until
+/// its view lands, and the shell counts them.
 pub fn connected(client: &ducktape_rpc::Client) -> Loads {
     // THE REGISTRY LOCK FIRST: a connection change and the restart of the
     // views under it are one step. Two callers — `backend::connect` runs on
@@ -1347,14 +1366,15 @@ fn seat_registered_views(
     loads
 }
 
-/// The loads one source event started, each on its own thread. The connect
-/// hands its views over — it settles them before it answers — so a tab
-/// never draws a seat with its answer still on the way. A block's loads
-/// swap in place and are waited on by nobody but a test.
+/// The loads one source event started, each on its own thread. Nothing in
+/// the app waits on them — each tab draws its own load's stage until its
+/// view lands — so outside a test, which joins them, they run detached.
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct Loads(Vec<std::thread::JoinHandle<()>>);
 
 impl Loads {
     /// Every load in: the seats hold what their source answered.
+    #[cfg(test)]
     pub fn joined(self) {
         for load in self.0 {
             load.join().expect("a view load");
@@ -1364,6 +1384,7 @@ impl Loads {
     /// [`joined`](Self::joined), off the executor's threads: a cranelift
     /// compile is a second or more cold, which no async worker sits
     /// through.
+    #[cfg(test)]
     pub async fn settled(self) {
         tokio::task::spawn_blocking(move || self.joined())
             .await
@@ -1527,6 +1548,9 @@ struct Mounted {
     /// it again. Cleared by any load that comes back, so only a repeated
     /// failure on the same candidate widens the gap.
     retry: Option<Retry>,
+    /// When a tab last drew this seat: a load for a seat on screen does not
+    /// queue for the link.
+    shown: Option<Instant>,
 }
 
 /// A failed load's hold-off: the candidate it failed on, when the next
@@ -1576,7 +1600,23 @@ impl Mounted {
             waiting_since: None,
             replacement: Replacement::Preserve,
             retry: None,
+            shown: None,
         }))
+    }
+
+    /// A tab drew this seat within the last half second.
+    fn on_screen(&self) -> bool {
+        self.shown
+            .is_some_and(|at| at.elapsed() < Duration::from_millis(500))
+    }
+
+    /// Load `generation`'s stage, shown only while the seat shows a load and
+    /// still waits for this one: a view drawn, the network's "none" and a
+    /// failure stay up until the load lands.
+    fn show(&mut self, generation: u64, stage: Slot) {
+        if self.generation == generation && self.slot.loading() {
+            self.slot = stage;
+        }
     }
 
     fn replacement_after_wait(&mut self) -> Option<Replacement> {
@@ -1614,12 +1654,96 @@ impl Mounted {
     }
 }
 
+/// What a seat holds, and so what its tab draws: the view on its way —
+/// asked, its bytes coming in, verified, compiled — the view itself, the
+/// network's word that there is none, or why there is none, named.
 enum Slot {
+    /// Asked for; nothing back yet.
     Loading,
+    /// The artifact's bytes coming in: how many, of how many when the node
+    /// said.
+    Fetching {
+        received: u64,
+        total: Option<u64>,
+    },
+    /// Every byte in, hashed against the code hash the registry names.
+    Verifying,
+    /// Verified; its code compiles.
+    Compiling,
     Ready(Box<Guest>),
     /// The active deployment verified, and it ships no view.
     Empty,
-    Failed(String),
+    Failed(Failure),
+}
+
+impl Slot {
+    /// On its way: one of the stages a load shows before it lands.
+    fn loading(&self) -> bool {
+        matches!(
+            self,
+            Slot::Loading | Slot::Fetching { .. } | Slot::Verifying | Slot::Compiling
+        )
+    }
+}
+
+/// Why a seat has no view, by name — the tab says it above the reason and
+/// offers Retry. The reason is the load's own sentence.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum Failure {
+    /// The node could not be asked, or does not hold the bytes (yet).
+    Unreachable(String),
+    /// The bytes do not hash to the code the registry names.
+    HashMismatch(String),
+    /// This network's registry does not list the view.
+    NotListed(String),
+    /// Admitted, and no activation has reached its boundary yet.
+    NotActivated(String),
+    /// The view ran out of fuel or trapped.
+    Trapped(String),
+    /// Bytes this build does not run as a view, or a load overtaken.
+    Refused(String),
+}
+
+impl Failure {
+    fn title(&self) -> &'static str {
+        match self {
+            Failure::Unreachable(_) => "The node could not be reached",
+            Failure::HashMismatch(_) => "The bytes do not match the network's code hash",
+            Failure::NotListed(_) => "This network does not list this view",
+            Failure::NotActivated(_) => "This view is not activated yet",
+            Failure::Trapped(_) => "This view stopped",
+            Failure::Refused(_) => "This view could not be loaded",
+        }
+    }
+
+    /// A registry read or fetch that failed, by what the node did.
+    fn of(error: crate::backend::view_source::Error) -> Failure {
+        use crate::backend::view_source::{Error, FetchError};
+        let reason = error.to_string();
+        match error {
+            Error::Unreachable(_)
+            | Error::Artifact(FetchError::NotHeld | FetchError::Transport(_)) => {
+                Failure::Unreachable(reason)
+            }
+            Error::Artifact(FetchError::HashMismatch) => Failure::HashMismatch(reason),
+            Error::NotListed(_) => Failure::NotListed(reason),
+            Error::Status(_) | Error::Artifact(FetchError::InvalidArtifact(_)) => {
+                Failure::Refused(reason)
+            }
+        }
+    }
+}
+
+impl fmt::Display for Failure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let (Failure::Unreachable(reason)
+        | Failure::HashMismatch(reason)
+        | Failure::NotListed(reason)
+        | Failure::NotActivated(reason)
+        | Failure::Trapped(reason)
+        | Failure::Refused(reason)) = self;
+        formatter.write_str(reason)
+    }
 }
 
 type Registry = Mutex<HashMap<&'static str, Arc<Mutex<Mounted>>>>;
@@ -1650,6 +1774,58 @@ pub(crate) fn ships_no_view(module: &str) -> bool {
         .expect("module views")
         .get(module)
         .is_some_and(|seat| matches!(seat.lock().expect("module view lock").slot, Slot::Empty))
+}
+
+/// Retry, as a failed or stopped tab offers it: the seat's view is asked for
+/// again now, under a new generation, past any hold-off a block's retries
+/// left. A failure goes back to loading, and a stopped view gives up its
+/// seat, so what lands is a fresh instance rather than a swap against it.
+pub(crate) fn retry(module: &'static str) -> Loads {
+    let registry = registry().lock().expect("module views");
+    let Some(seat) = registry.get(module) else {
+        return Loads(Vec::new());
+    };
+    let snapshot = connection().lock().expect("views rpc").clone();
+    let mut locked = seat.lock().expect("module view lock");
+    let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
+    if stopped || matches!(locked.slot, Slot::Failed(_)) {
+        locked.slot = Slot::Loading;
+        locked.hash = None;
+    }
+    locked.retry = None;
+    let generation = locked.start(None);
+    drop(locked);
+    Loads(vec![spawn_load(module, seat, generation, snapshot)])
+}
+
+/// The connected node's views as the shell's one line counts them: how
+/// many of the seats asked of it have landed, of how many — none once every
+/// one has, so the line clears itself.
+pub(crate) fn views_loading() -> Option<(usize, usize)> {
+    connection().lock().expect("views rpc").client.as_ref()?;
+    let registry = registry().lock().expect("module views");
+    let (mut landed, mut asked) = (0, 0);
+    for seat in registry.values() {
+        let seat = seat.lock().expect("module view lock");
+        if seat.generation == 0 {
+            continue;
+        }
+        asked += 1;
+        landed += usize::from(!seat.slot.loading());
+    }
+    (landed < asked).then_some((landed, asked))
+}
+
+/// What the rail says beside a view's row: on its way, or failed. Nothing
+/// for a view that can be opened as it is.
+pub(crate) fn rail_note(module: &str) -> Option<&'static str> {
+    let registry = registry().lock().expect("module views");
+    let seat = registry.get(module)?.lock().expect("module view lock");
+    match &seat.slot {
+        slot if slot.loading() && seat.generation > 0 => Some("Loading"),
+        Slot::Failed(_) => Some("Failed"),
+        _ => None,
+    }
 }
 
 /// Loads the view on its own thread — a cold cranelift compile is a second
@@ -1773,13 +1949,13 @@ fn spawn_load(
             }
             Err(Unloaded {
                 hash: failed_on,
-                reason,
+                failure,
             }) => {
                 tracing::warn!(
                     target: "ducktape::app",
                     module,
                     reason = "module_view_unloadable",
-                    error = %reason,
+                    error = %failure,
                     "module view not loaded"
                 );
                 // the next block leaves the candidate this failed on alone
@@ -1790,7 +1966,7 @@ fn spawn_load(
                 // a view that is there stays, with its hash: the failure is
                 // the replacement's, not its own
                 if !matches!(slot, Slot::Ready(_)) {
-                    *slot = Slot::Failed(reason);
+                    *slot = Slot::Failed(failure);
                 }
             }
         }
@@ -1821,7 +1997,7 @@ enum Loaded {
 /// keys on the bytes that failed, never on what the load was asked after.
 struct Unloaded {
     hash: Option<[u8; 32]>,
-    reason: String,
+    failure: Failure,
 }
 
 /// Whether `hash` is still the module's active code, asked of the node
@@ -1830,11 +2006,11 @@ async fn still_active(
     client: &ducktape_rpc::Client,
     module: &str,
     hash: [u8; 32],
-) -> Result<bool, String> {
+) -> Result<bool, Failure> {
     crate::backend::view_source::active_hash(client, module)
         .await
         .map(|active| active == Some(hash))
-        .map_err(|error| error.to_string())
+        .map_err(Failure::of)
 }
 
 /// One `view_source` line per outcome, with the same fields every time —
@@ -2303,7 +2479,10 @@ impl Guest {
         mounted: &Arc<Mutex<Mounted>>,
     ) -> Result<Loaded, Unloaded> {
         use crate::backend::view_source::{self, ViewSource};
-        let before_any_candidate = |reason: String| Unloaded { hash: None, reason };
+        let before_any_candidate = |failure: Failure| Unloaded {
+            hash: None,
+            failure,
+        };
         let logged = |hash: Option<&[u8; 32]>, state: &str, reason: &str| {
             log_source(module, hash, state, generation, reason);
         };
@@ -2312,14 +2491,16 @@ impl Guest {
             logged(None, "Overridden", &reason);
             return Self::load_from(module, &path)
                 .map(|guest| Loaded::Fresh(Box::new(guest)))
-                .map_err(before_any_candidate);
+                .map_err(|reason| before_any_candidate(Failure::Refused(reason)));
         }
         let client = match client {
             Some(client) => client,
             None => {
                 let reason = "not connected to a node yet";
                 logged(None, "Failed", reason);
-                return Err(before_any_candidate(reason.to_owned()));
+                return Err(before_any_candidate(Failure::Unreachable(
+                    reason.to_owned(),
+                )));
             }
         };
         let runtime = runtime();
@@ -2328,35 +2509,60 @@ impl Guest {
             path: "first",
             ..LoadTiming::default()
         };
-        let mut asked = view_source::Asked::default();
         // the seat's taste, read once: a load is after the frame the seat
         // wanted when it started, and a taste that moves meanwhile starts
         // another load under another generation
         let tasting = mounted.lock().expect("module view lock").tasting;
+        let show = |stage: Slot| {
+            #[cfg(test)]
+            canary::TAPS
+                .lock()
+                .expect("view_source taps")
+                .retain(|tap| {
+                    tap.send(format!(
+                        "view_stage module={module} {}",
+                        stage_words(&stage)
+                    ))
+                    .is_ok()
+                });
+            mounted
+                .lock()
+                .expect("module view lock")
+                .show(generation, stage)
+        };
+        let bytes = |received, total| {
+            show(match total == Some(received) {
+                true => Slot::Verifying,
+                false => Slot::Fetching { received, total },
+            })
+        };
+        let on_screen = || mounted.lock().expect("module view lock").on_screen();
+        let mut asked = view_source::Asked {
+            watch: view_source::Watch {
+                bytes: &bytes,
+                on_screen: &on_screen,
+            },
+            ..view_source::Asked::default()
+        };
         let source = runtime.block_on(view_source::resolve(client, module, tasting, &mut asked));
         timing.status = asked.status;
         timing.fetch = asked.fetch;
         let source = match source {
             Ok(source) => source,
             Err(error) => {
-                let reason = error.to_string();
-                logged(None, "Failed", &reason);
+                let failure = Failure::of(error);
+                logged(None, "Failed", &failure.to_string());
                 timing.log(module, None, started, "Failed");
-                return Err(before_any_candidate(reason));
+                return Err(before_any_candidate(failure));
             }
         };
         let (hash, component, assets) = match source {
-            ViewSource::NotRegistered => {
-                logged(None, "NotRegistered", "");
-                timing.log(module, None, started, "NotRegistered");
-                return Err(before_any_candidate(not_registered(module)));
-            }
             ViewSource::NotActivated => {
                 logged(None, "NotActivated", "");
                 timing.log(module, None, started, "NotActivated");
-                return Err(before_any_candidate(format!(
+                return Err(before_any_candidate(Failure::NotActivated(format!(
                     "the {module} module is not activated yet"
-                )));
+                ))));
             }
             ViewSource::Missing { hash } if tasting.is_some() => {
                 // a taste never empties a seat: the taste set lists such a
@@ -2366,7 +2572,7 @@ impl Guest {
                 timing.log(module, Some(&hash), started, "Failed");
                 return Err(Unloaded {
                     hash: Some(hash),
-                    reason: reason.to_owned(),
+                    failure: Failure::Refused(reason.to_owned()),
                 });
             }
             ViewSource::Missing { hash } => {
@@ -2377,12 +2583,12 @@ impl Guest {
                 timing.check = checked.elapsed();
                 let active = match active {
                     Ok(active) => active,
-                    Err(reason) => {
-                        logged(Some(&hash), "Failed", &reason);
+                    Err(failure) => {
+                        logged(Some(&hash), "Failed", &failure.to_string());
                         timing.log(module, Some(&hash), started, "Failed");
                         return Err(Unloaded {
                             hash: Some(hash),
-                            reason,
+                            failure,
                         });
                     }
                 };
@@ -2392,7 +2598,7 @@ impl Guest {
                     timing.log(module, Some(&hash), started, "Failed");
                     return Err(Unloaded {
                         hash: Some(hash),
-                        reason: reason.to_owned(),
+                        failure: Failure::Refused(reason.to_owned()),
                     });
                 }
                 logged(Some(&hash), "Missing", "");
@@ -2406,7 +2612,7 @@ impl Guest {
             } => (hash, component, assets),
         };
         let shown = format!("{module} view @ {}", hex_short(&hash));
-        let outcome = (|| -> Result<Loaded, String> {
+        let outcome = (|| -> Result<Loaded, Failure> {
             // the instance in the slot, if the deployment is a new one for
             // it: the replacement is seated only against that very
             // instance at that very tick count
@@ -2422,15 +2628,17 @@ impl Guest {
             if against.is_some() {
                 timing.path = "swap";
             }
+            show(Slot::Compiling);
             let compiled = Instant::now();
             let component_bytes = component;
             let component = Self::compile(&component_bytes, &shown);
             timing.compile = compiled.elapsed();
-            let component = component?;
+            let component = component.map_err(Failure::Refused)?;
             let seated = Instant::now();
             let name = manifest_name(&component_bytes);
-            let prepared = (|| -> Result<Self, String> {
-                let mut fresh = Self::instantiate(module, &component, &shown)?;
+            let prepared = (|| -> Result<Self, Failure> {
+                let mut fresh =
+                    Self::instantiate(module, &component, &shown).map_err(Failure::Refused)?;
                 fresh.name = name.clone();
                 fresh.deployed(hash, assets);
                 match &mut against {
@@ -2440,14 +2648,14 @@ impl Guest {
                         let snapshot = {
                             let mut locked = mounted.lock().expect("module view lock");
                             let Slot::Ready(old) = &mut locked.slot else {
-                                return Err(
-                                    "the view left while its replacement was prepared".into()
-                                );
+                                return Err(Failure::Refused(
+                                    "the view left while its replacement was prepared".into(),
+                                ));
                             };
                             if !Arc::ptr_eq(alive, &old.alive) {
-                                return Err(
-                                    "the view changed while its replacement was prepared".into()
-                                );
+                                return Err(Failure::Refused(
+                                    "the view changed while its replacement was prepared".into(),
+                                ));
                             }
                             // Compilation may take many old-view frames. Fence the
                             // state actually captured here, not its precompile tick.
@@ -2455,20 +2663,20 @@ impl Guest {
                             let preserve =
                                 *ticks > 0 && matches!(replacement, Replacement::Preserve);
                             if preserve && !old.settled() {
-                                return Err(
-                                    "the view has pending work; its replacement waits".into()
-                                );
+                                return Err(Failure::Refused(
+                                    "the view has pending work; its replacement waits".into(),
+                                ));
                             }
                             if preserve {
-                                Some(old.snapshot()?)
+                                Some(old.snapshot().map_err(Failure::Trapped)?)
                             } else {
                                 None
                             }
                         };
                         match snapshot {
                             Some(snapshot) => {
-                                wire::Snapshot::decode(&snapshot)?;
-                                match fresh.restore(&snapshot, &shown)? {
+                                wire::Snapshot::decode(&snapshot).map_err(Failure::Refused)?;
+                                match fresh.restore(&snapshot, &shown).map_err(Failure::Trapped)? {
                                     Restored::Carried => {}
                                     // State this build cannot read is state
                                     // lost, not a deployment refused: the
@@ -2484,19 +2692,19 @@ impl Guest {
                                             refusal = %refusal,
                                             "view_state_dropped"
                                         );
-                                        fresh.init(&shown)?;
+                                        fresh.init(&shown).map_err(Failure::Trapped)?;
                                     }
                                 }
                             }
-                            None => fresh.init(&shown)?,
+                            None => fresh.init(&shown).map_err(Failure::Trapped)?,
                         }
                         let framed = Instant::now();
                         let frame = fresh.first_frame(&shown);
                         timing.first_frame = Some(framed.elapsed());
-                        frame?;
+                        frame.map_err(Failure::Trapped)?;
                     }
                     None => {
-                        fresh.init(&shown)?;
+                        fresh.init(&shown).map_err(Failure::Trapped)?;
                     }
                 }
                 Ok(fresh)
@@ -2517,7 +2725,9 @@ impl Guest {
             };
             timing.check = checked.elapsed();
             if !still_wanted? {
-                return Err("the active code moved while the view was prepared".into());
+                return Err(Failure::Refused(
+                    "the active code moved while the view was prepared".into(),
+                ));
             }
             Ok(match against {
                 Some((alive, ticks)) => Loaded::Swap {
@@ -2540,15 +2750,15 @@ impl Guest {
             Ok(Loaded::Unchanged) => "Unchanged",
             // `Swapped` is logged at the seat: the swap can still be refused there
             Ok(_) => "Swap",
-            Err(reason) => {
-                logged(Some(&hash), "Failed", reason);
+            Err(failure) => {
+                logged(Some(&hash), "Failed", &failure.to_string());
                 "Failed"
             }
         };
         timing.log(module, Some(&hash), started, state);
-        outcome.map_err(|reason| Unloaded {
+        outcome.map_err(|failure| Unloaded {
             hash: Some(hash),
-            reason,
+            failure,
         })
     }
 
@@ -3367,11 +3577,71 @@ pub(crate) struct NativeModuleView {
     observers: Vec<gpui_kit::Subscription>,
     hovered_files: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     pointer_inside: std::rc::Rc<std::cell::Cell<bool>>,
+    /// Drawn since the props were last set: a layer mounted this frame.
+    drawn: bool,
 }
 
 impl gpui_kit::EventEmitter<ModuleViewEvent> for NativeModuleView {}
 
+/// What a tab draws where its view is not: the load's stage over a skeleton
+/// of a view, or why there is none — named, with Retry where a retry helps.
+struct Standin {
+    title: Option<&'static str>,
+    words: String,
+    loading: bool,
+    retry: bool,
+}
+
+impl From<String> for Standin {
+    fn from(words: String) -> Self {
+        Standin {
+            title: None,
+            words,
+            loading: false,
+            retry: false,
+        }
+    }
+}
+
+impl From<&Failure> for Standin {
+    fn from(failure: &Failure) -> Self {
+        Standin {
+            title: Some(failure.title()),
+            words: failure.to_string(),
+            loading: false,
+            retry: true,
+        }
+    }
+}
+
+/// The words a loading tab says for its stage.
+fn stage_words(slot: &Slot) -> String {
+    let size = |bytes: u64| match bytes < 1_000_000 {
+        true => format!("{} KB", bytes.div_ceil(1000)),
+        false => format!("{:.1} MB", bytes as f64 / 1e6),
+    };
+    match slot {
+        Slot::Fetching {
+            received,
+            total: Some(total),
+        } => format!(
+            "Fetching the view — {} of {}",
+            size(*received),
+            size(*total)
+        ),
+        Slot::Fetching { received, .. } => format!("Fetching the view — {}", size(*received)),
+        Slot::Verifying => "Verifying the view against its code hash…".into(),
+        Slot::Compiling => "Compiling the view…".into(),
+        _ => "Loading the view…".into(),
+    }
+}
+
 impl NativeModuleView {
+    /// The id around the view's tree: the test door reads the module off it.
+    fn ax_mark(&self) -> gpui_kit::ElementId {
+        gpui_kit::ElementId::Name(format!("{}{}", crate::ax_door::VIEW_MARK, self.module).into())
+    }
+
     pub(crate) fn new(module: &'static str) -> Self {
         Self {
             module,
@@ -3386,6 +3656,7 @@ impl NativeModuleView {
             observers: Vec::new(),
             hovered_files: Default::default(),
             pointer_inside: Default::default(),
+            drawn: false,
         }
     }
 
@@ -3395,6 +3666,40 @@ impl NativeModuleView {
         let changed = seat.props.as_ref() != Some(&props);
         if changed {
             seat.props = Some(props);
+            cx.notify();
+        }
+        // a seat no layer draws this frame is still turned once, after it:
+        // an overlay mounts only once it draws, and it draws only once it
+        // has run (#110)
+        self.drawn = false;
+        let view = cx.weak_entity();
+        cx.defer(move |cx| {
+            let _ = view.update(cx, |view, cx| {
+                if !view.drawn {
+                    view.turn(cx);
+                }
+            });
+        });
+    }
+
+    /// One turn of a seated guest no layer draws: the props, replies and
+    /// presses it is owed go in, and the requests its tick makes are
+    /// answered — a chord claim among them.
+    fn turn(&mut self, cx: &mut gpui_kit::Context<Self>) {
+        let seat = mounted(self.module);
+        let mut locked = seat.lock().expect("module view lock");
+        let Mounted { slot, props, .. } = &mut *locked;
+        let Slot::Ready(guest) = slot else {
+            return;
+        };
+        let again = guest.redraw(props);
+        filesystem::mount(guest, cx);
+        let intents = std::mem::take(&mut guest.intents);
+        drop(locked);
+        for intent in intents {
+            cx.emit(intent);
+        }
+        if again {
             cx.notify();
         }
     }
@@ -3433,6 +3738,9 @@ impl NativeModuleView {
         };
         let taken = guest.chord_pressed(chord);
         drop(mounted);
+        if taken && !self.drawn {
+            self.turn(cx);
+        }
         if taken {
             cx.notify();
         }
@@ -3498,27 +3806,33 @@ impl NativeModuleView {
         &mut self,
         window: &mut gpui_kit::Window,
         cx: &mut gpui_kit::Context<Self>,
-    ) -> Result<(), String> {
+    ) -> Result<(), Standin> {
         let mounted = mounted(self.module);
         let mut locked = mounted.lock().expect("module view lock");
-        let unlisted = unlisted(self.module, locked.generation);
+        locked.shown = Some(Instant::now());
+        if let Some(unlisted) = unlisted(self.module, locked.generation) {
+            locked.slot = Slot::Failed(unlisted);
+        }
         let Mounted { slot, props, .. } = &mut *locked;
         let guest = match slot {
-            Slot::Loading => {
-                if let Some(unlisted) = unlisted {
-                    return Err(unlisted);
-                }
-                window.request_animation_frame();
-                return Err("Loading the view…".into());
-            }
+            Slot::Ready(guest) => guest,
             Slot::Empty => {
                 return Err(format!(
                     "This network has no {} view. An admin can activate a deployment that ships one.",
                     self.module
-                ));
+                )
+                .into());
             }
-            Slot::Failed(reason) => return Err(reason.clone()),
-            Slot::Ready(guest) => guest,
+            Slot::Failed(failure) => return Err((&*failure).into()),
+            loading => {
+                window.request_animation_frame();
+                return Err(Standin {
+                    title: None,
+                    words: stage_words(loading),
+                    loading: true,
+                    retry: false,
+                });
+            }
         };
         let generation = guest.seated_generation();
         let ticks = guest.ticks;
@@ -3543,7 +3857,7 @@ impl NativeModuleView {
             });
         }
         if let Some(fault) = &guest.fault {
-            return Err(format!("This view was stopped: {fault}"));
+            return Err((&Failure::Trapped(fault.clone())).into());
         }
         let same_instance = self.generation == generation
             && self
@@ -3660,6 +3974,89 @@ impl NativeModuleView {
     }
 }
 
+impl NativeModuleView {
+    /// THE ONE STAND-IN every tab draws where its view is not, native, so it
+    /// draws before any wasm exists: a loading view says its stage over a
+    /// skeleton laid out as a view lays itself out — a heading, then rows,
+    /// from the top of the full pane the view will take, so nothing moves
+    /// when it seats — and a failed one says what failed, why, and offers
+    /// Retry.
+    fn standin(&self, standin: Standin, cx: &mut gpui_kit::Context<Self>) -> gpui_kit::AnyElement {
+        use gpui_kit::component::button::Button;
+        use gpui_kit::{
+            FontWeight, InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _,
+            div, px, relative,
+        };
+        let Standin {
+            title,
+            words,
+            loading,
+            retry: offers_retry,
+        } = standin;
+        let module = self.module;
+        // a stable id per kind, so the tree tells a load on its way from a
+        // view that is not there
+        let (id, words_id) = match loading {
+            true => ("view-loading", "view-loading-stage"),
+            false => ("view-unavailable", "view-unavailable-reason"),
+        };
+        // the whole sentence, wrapped inside the pane: one line wider than
+        // the pane is centred off both edges, and a reader loses its start
+        // and its end — what failed, and what to do about it
+        let reason = div()
+            .id(id)
+            .max_w_full()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .children(title.map(|title| {
+                div()
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(gpui_kit::Text::new(
+                        "view-unavailable-title".into(),
+                        title.into(),
+                    ))
+            }))
+            .child(gpui_kit::Text::new(words_id.into(), words.into()))
+            .children(offers_retry.then(|| {
+                Button::new("view-retry")
+                    .label("Retry")
+                    .outline()
+                    .on_click(cx.listener(move |_, _, _, cx| {
+                        cx.stop_propagation();
+                        drop(retry(module));
+                        cx.notify();
+                    }))
+            }));
+        #[cfg(test)]
+        let reason = {
+            use gpui_kit::test::TestSupportExt as _;
+            reason.test_support()
+        };
+        let pane = div().id(self.ax_mark()).size_full().flex().flex_col().p_4();
+        if !loading {
+            return pane
+                .items_center()
+                .justify_center()
+                .child(reason)
+                .into_any_element();
+        }
+        let faint = gpui_kit::hsla(0., 0., 0.5, 0.14);
+        let bar = |width: f32, height: f32| {
+            div()
+                .w(relative(width))
+                .h(px(height))
+                .rounded(px(4.))
+                .bg(faint)
+        };
+        pane.gap_3()
+            .child(bar(0.3, 22.))
+            .child(div().text_size(px(12.)).opacity(0.7).child(reason))
+            .children([0.9, 0.7, 0.8, 0.55, 0.85, 0.65].map(|width| bar(width, 14.)))
+            .into_any_element()
+    }
+}
+
 impl gpui_kit::Render for NativeModuleView {
     fn render(
         &mut self,
@@ -3670,6 +4067,7 @@ impl gpui_kit::Render for NativeModuleView {
             InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _,
         };
         self.bind_observers(window, cx);
+        self.drawn = true;
         match self.frame(window, cx) {
             Ok(()) => match &self.content {
                 Some(content) => {
@@ -3680,6 +4078,7 @@ impl gpui_kit::Render for NativeModuleView {
                     );
                     // A view owns its own inset: a split pane runs to the edges.
                     gpui_kit::div()
+                        .id(self.ax_mark())
                         .key_context(context)
                         .size_full()
                         .child(input::Observe::new(
@@ -3691,13 +4090,7 @@ impl gpui_kit::Render for NativeModuleView {
                 }
                 None => gpui_kit::div().size_full().into_any_element(),
             },
-            Err(reason) => gpui_kit::div()
-                .size_full()
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(reason)
-                .into_any_element(),
+            Err(standin) => self.standin(standin, cx),
         }
     }
 }
@@ -3705,6 +4098,10 @@ impl gpui_kit::Render for NativeModuleView {
 #[cfg(test)]
 #[path = "module_view/input_tests.rs"]
 mod input_tests;
+
+#[cfg(test)]
+#[path = "module_view/loading_tests.rs"]
+pub(crate) mod loading_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {
@@ -4737,6 +5134,7 @@ pub(crate) mod tests {
             waiting_since: None,
             replacement: Replacement::Preserve,
             retry: None,
+            shown: None,
         }));
         registry()
             .lock()
@@ -5431,7 +5829,7 @@ pub(crate) mod tests {
             assert_eq!(
                 Guest::load(module, None, 0, &mounted)
                     .err()
-                    .map(|unloaded| unloaded.reason)
+                    .map(|unloaded| unloaded.failure.to_string())
                     .as_deref(),
                 Some("not connected to a node yet"),
                 "{module}"
@@ -5696,7 +6094,7 @@ pub(crate) mod tests {
 
     /// A deployment of `module` on the fake node: the staged governance
     /// component as its view, told apart by the one asset it ships.
-    fn deployment(component: &[u8], asset: &str) -> module_artifact::Artifact {
+    pub(super) fn deployment(component: &[u8], asset: &str) -> module_artifact::Artifact {
         module_artifact::Artifact::Module(module_artifact::ModuleArtifact {
             component: vec![1, 2, 3],
             index: None,
@@ -5718,10 +6116,12 @@ pub(crate) mod tests {
 
     fn slot_name(slot: &Slot) -> String {
         match slot {
-            Slot::Loading => "loading".into(),
+            slot @ (Slot::Loading | Slot::Fetching { .. } | Slot::Verifying | Slot::Compiling) => {
+                stage_words(slot)
+            }
             Slot::Ready(_) => "ready".into(),
             Slot::Empty => "empty".into(),
-            Slot::Failed(reason) => format!("failed: {reason}"),
+            Slot::Failed(failure) => format!("failed: {failure}"),
         }
     }
 
@@ -5793,6 +6193,7 @@ pub(crate) mod tests {
             waiting_since: None,
             replacement: Replacement::Preserve,
             retry: None,
+            shown: None,
         }));
         registry().lock().unwrap().insert("chat", seat.clone());
         let revision = connection().lock().unwrap().rev;
@@ -5824,7 +6225,7 @@ pub(crate) mod tests {
 
     /// The seat of `module` as no test has touched it: the registry is one
     /// per process, and every deployment test leaves its module drawn.
-    fn fresh(module: &'static str) -> Arc<Mutex<Mounted>> {
+    pub(super) fn fresh(module: &'static str) -> Arc<Mutex<Mounted>> {
         registry().lock().expect("module views").remove(module);
         mounted(module)
     }
@@ -5934,7 +6335,7 @@ pub(crate) mod tests {
     }
 
     /// Holds the node's next status answer until released.
-    fn hold_status(
+    pub(super) fn hold_status(
         node: &crate::backend::view_source::tests::FakeDeployment,
     ) -> Arc<tokio::sync::Notify> {
         let hold = Arc::new(tokio::sync::Notify::new());
@@ -6138,7 +6539,13 @@ pub(crate) mod tests {
             match &locked.slot {
                 Slot::Ready(_) => {}
                 Slot::Failed(reason) => panic!("{module} is not there: {reason}"),
-                Slot::Loading | Slot::Empty => panic!("{module}'s load never answered"),
+                Slot::Loading
+                | Slot::Fetching { .. }
+                | Slot::Verifying
+                | Slot::Compiling
+                | Slot::Empty => {
+                    panic!("{module}'s load never answered")
+                }
             }
         }
         registered().lock().expect("registered views").clear();
@@ -6149,10 +6556,10 @@ pub(crate) mod tests {
     }
 
     /// A view the connected network does not list says so in its own tab,
-    /// in one sentence naming it — never "Loading" for good, never blank. A
-    /// seat asked of the node takes the network's word from its load; one a
-    /// tab first draws after the registry was read, which nobody asks for,
-    /// takes it from that read. Once the network lists the view, the next
+    /// as the named `NotListed` failure — never "Loading" for good, never
+    /// blank. A seat asked of the node takes it from its load; one a tab
+    /// first draws after the registry was read, which nobody asks for, takes
+    /// the same failure from that read. Once the network lists the view, the next
     /// block seats it like any other.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_view_the_network_does_not_list_says_so_in_its_tab() {
@@ -6173,17 +6580,18 @@ pub(crate) mod tests {
         drop(mounted("members"));
         assert_eq!(unlisted("members", 0), None, "no registry read yet");
         connected(&client).settled().await;
-        match &mounted("members").lock().expect("module view lock").slot {
-            Slot::Failed(reason) => {
-                assert_eq!(reason, "This network has not registered the members view.")
-            }
-            _ => panic!("the seat does not say the network has not registered it"),
-        }
+        let said = match &mounted("members").lock().expect("module view lock").slot {
+            Slot::Failed(failure @ Failure::NotListed(_)) => failure.to_string(),
+            _ => panic!("the seat does not say the network does not list it"),
+        };
+        assert!(said.contains("\"members\" is not registered"), "{said}");
         // a tab first drawn after the read: nothing asks for its seat, and
-        // the read says the network does not list it
+        // the read gives it the same named failure a load would have
         assert_eq!(
-            unlisted("agents", 0).as_deref(),
-            Some("This network has not registered the agents view.")
+            unlisted("agents", 0),
+            Some(Failure::NotListed(
+                "module status: module \"agents\" is not registered".into()
+            ))
         );
         assert_eq!(
             unlisted("agents", 1),
@@ -6265,6 +6673,137 @@ pub(crate) mod tests {
             .lock()
             .expect("registered modules")
             .clear();
+    }
+
+    /// A VIEW THAT CANNOT LOAD SAYS WHY, WHOLE, ON ITS OWN TAB.
+    ///
+    /// A failed seat holds the load's own sentence, and the tab draws it
+    /// wrapped inside its pane — one line wider than the pane was centred off
+    /// both edges, so a reader saw neither what failed nor what to do about
+    /// it. The real native renderer and the app's own fonts, so the wrap is
+    /// the one a reader gets.
+    #[test]
+    fn a_failed_views_whole_reason_draws_inside_the_tab() {
+        let _turn = blocking_connection_turn();
+        let reason = "blob fetch: the node answered 503 Service Unavailable for \
+             GET /v1/files/blob/5b0e4c2a9f1d7e3b6c8a2d4f0e1b3c5a7d9f2e4b6c8a0d1f3e5b7c9a2d4f6e8b0 \
+             after 3 attempts over 30 s — the node could not be reached";
+        mounted("agents").lock().expect("module view lock").slot =
+            Slot::Failed(Failure::Unreachable(reason.into()));
+
+        let width = gpui_kit::px(360.);
+        let mut native = crate::frame_probe::headless_context();
+        let window = native
+            .open_window(gpui_kit::size(width, gpui_kit::px(600.)), |_, cx| {
+                cx.new(|_| NativeModuleView::new("agents"))
+            })
+            .expect("native window opens");
+        native
+            .update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
+            .expect("the tab draws");
+        let drawn = native
+            .update_window(window.into(), |_, window, _| {
+                window.find("view-unavailable").bounds()
+            })
+            .expect("the tab drew its reason");
+        assert!(
+            drawn.origin.x >= gpui_kit::px(0.) && drawn.right() <= width,
+            "the reason runs off the tab: {drawn:?}"
+        );
+        assert!(
+            drawn.size.height > gpui_kit::px(40.),
+            "the reason is one line, not wrapped: {drawn:?}"
+        );
+    }
+
+    /// EVERY VIEW READS THE CONNECTED CHAIN BY ONE NAME (#104). A view that
+    /// builds a `duck://` address or keys a preference by chain reads `chain`
+    /// (`<label>#<salt>`) whichever seat it sits in; `network_chain_id`
+    /// stays beside it where a view already reads that.
+    #[test]
+    fn every_views_props_carry_the_connected_chain_as_chain() {
+        let chain = "dognet#b5b6ea90";
+        let updates = crate::backend::update::UpdateFacts::default();
+        let specs = [
+            governance_view(false, true, chain),
+            inbox_view(false, true, chain, "7"),
+            palette_view(false, true, chain),
+            members_view(false, true, chain),
+            agents_view(false, true, chain, "7", "", 0),
+            node_view(false, true, chain, "", "", 0),
+            explorer_view(false, true, chain, 0, ""),
+            settings_view(
+                false,
+                true,
+                chain,
+                false,
+                "",
+                crate::MutationPhase::Idle,
+                crate::Appearance::System,
+                false,
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "",
+                false,
+                false,
+                "",
+                "",
+                "",
+                "",
+                &updates,
+            ),
+            forge_view(false, true, "", "", chain, "", "", 0),
+            pages_view(false, true, chain, "", 0),
+            chat_view(
+                false,
+                true,
+                "",
+                "",
+                chain,
+                "",
+                0,
+                "7",
+                "",
+                0,
+                "",
+                "",
+                0,
+                0,
+                crate::MutationPhase::Idle,
+                false,
+                false,
+                "",
+                "",
+                0,
+                0,
+                false,
+                false,
+                &[],
+                false,
+                0,
+            ),
+            files_view(false, true, chain, "7", "", 0),
+            registered_view("home", false, true, chain, "7"),
+        ];
+        let mut props: Vec<(&str, Vec<u8>)> = specs
+            .into_iter()
+            .map(|spec| (spec.module, spec.props))
+            .collect();
+        props.push(("call", crate::call::call_props("eng", chain)));
+        for (module, props) in props {
+            let props: serde_json::Value = serde_json::from_slice(&props).expect("props decode");
+            assert_eq!(props["chain"], chain, "{module} is not told its chain");
+        }
     }
 
     /// A view the developer's override supplies is the same on every node:
@@ -6385,12 +6924,14 @@ pub(crate) mod tests {
     /// A load starts at a view's source event and never at a draw: the only
     /// callers of `spawn_load` are the connect, the block check (the
     /// registry-listed seats they share, `seat_registered_views`, is called
-    /// by the connect's registry read and the block check alone), and a
-    /// taste — the member's own act (`retaste`) or the connect's registry
-    /// read seating what the device remembered (`seat_remembered_tastes`).
-    /// The views the shell draws by name are exactly the ones those ask for
-    /// — the built-in modules' at connect, the chrome's off the registry —
-    /// and a registered view is drawn by the id the registry listed.
+    /// by the connect's registry read and the block check alone), a taste —
+    /// the member's own act (`retaste`) or the connect's registry read
+    /// seating what the device remembered (`seat_remembered_tastes`) — and
+    /// Retry, pressed on a failed or stopped tab (`retry`), the member's own
+    /// act too. The views the shell draws by name are exactly the ones those
+    /// ask for — the built-in modules' at connect, the chrome's off the
+    /// registry — and a registered view is drawn by the id the registry
+    /// listed.
     #[test]
     fn a_load_starts_at_a_source_event_never_at_a_draw() {
         use crate::backend::view_source::MODULE_OWNED;
@@ -6425,10 +6966,11 @@ pub(crate) mod tests {
                 "connected",
                 "deployments_check",
                 "retaste",
+                "retry",
                 "seat_registered_views",
                 "seat_remembered_tastes",
             ]),
-            "a load started outside the connect, the block check and a taste"
+            "a load started outside the connect, the block check, a taste and Retry"
         );
         let registered_callers: BTreeSet<&str> = shell
             .lines()
@@ -7307,6 +7849,7 @@ pub(crate) mod tests {
             connected: true,
             endpoint: "http://127.0.0.1:1",
             network_name: "testnet",
+            chain: "testnet#abcd",
             network_chain_id: "testnet#abcd",
             status: "Live",
             block_height: 84_912,
@@ -7507,7 +8050,7 @@ pub(crate) mod tests {
     fn redrawn_texts(mounted: &Arc<Mutex<Mounted>>) -> Vec<String> {
         // the props read the seat's taste under its own lock, as the
         // shell's render does: built before this seat is held
-        let props = Some(governance_view(false, true).props);
+        let props = Some(governance_view(false, true, "").props);
         let mut locked = mounted.lock().expect("module view lock");
         let Slot::Ready(guest) = &mut locked.slot else {
             panic!("a seated view");

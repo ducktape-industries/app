@@ -12,13 +12,12 @@
 //! instead of the active one. Nothing on-chain moves for it.
 //!
 //! Every reading here is strict. A registry reply of another shape, a module
-//! the registry lists twice, a hash that is not 32 bytes, a fetch that fails
-//! or a body that does not hash to what was asked for is an [`Error`], never
-//! a fallback to a desktop resource. The only quiet outcomes are the three
-//! the network itself asserts: an id it does not list
-//! ([`ViewSource::NotRegistered`]), a module admitted but not yet activated
-//! ([`ViewSource::NotActivated`]) and a verified deployment that ships no
-//! view ([`ViewSource::Missing`]).
+//! the registry does not list or lists twice, a hash that is not 32 bytes,
+//! a fetch that fails or a body that does not hash to what was asked for is
+//! an [`Error`], never a fallback to a desktop resource. The only quiet
+//! outcomes are the two the network itself asserts: a module admitted but
+//! not yet activated ([`ViewSource::NotActivated`]) and a verified
+//! deployment that ships no view ([`ViewSource::Missing`]).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -57,13 +56,25 @@ pub enum Error {
     /// The registry could not be read as `module_status`, or does not name
     /// this module exactly once with a 32-byte active hash.
     Status(String),
+    /// The registry could not be asked at all.
+    Unreachable(String),
+    /// The registry does not list this module.
+    NotListed(String),
     Artifact(view_artifact::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Status(error) => write!(formatter, "module status: {error}"),
+            Self::Status(error) | Self::Unreachable(error) => {
+                write!(formatter, "module status: {error}")
+            }
+            Self::NotListed(module) => {
+                write!(
+                    formatter,
+                    "module status: module {module:?} is not registered"
+                )
+            }
             Self::Artifact(error) => error.fmt(formatter),
         }
     }
@@ -73,8 +84,6 @@ impl std::error::Error for Error {}
 
 #[derive(Debug, PartialEq)]
 pub enum ViewSource {
-    /// The registry does not list the id: this network has not registered it.
-    NotRegistered,
     /// Admitted, but no activation has reached its boundary yet.
     NotActivated,
     /// The active deployment verified, and it ships no view.
@@ -114,7 +123,7 @@ struct ModuleCode {
     history: Vec<Activation>,
 }
 
-pub use super::view_artifact::Kind;
+pub use super::view_artifact::{Kind, Watch};
 
 /// One registry entry as the seat set reads it: what it is, its active
 /// code hash — `None` for an admission that has not reached its boundary —
@@ -170,10 +179,17 @@ struct Activation {
 /// admission that has not reached its boundary) — in one registry read,
 /// id-ordered as the registry lists them.
 pub async fn active_hashes(client: &Client) -> Result<BTreeMap<String, Entry>, Error> {
-    let reply: StatusReply = client
+    // asked as JSON first: a node that could not be asked is unreachable,
+    // one that answered in a shape this reader does not know is a status error
+    let reply: serde_json::Value = client
         .query("modules", &serde_json::json!("module_status"))
         .await
-        .map_err(|error| Error::Status(error.to_string()))?;
+        .map_err(|error| match error.reason() {
+            "rpc_client" => Error::Unreachable(error.to_string()),
+            _ => Error::Status(error.to_string()),
+        })?;
+    let reply: StatusReply =
+        serde_json::from_value(reply).map_err(|error| Error::Status(error.to_string()))?;
     let mut entries = BTreeMap::new();
     for entry in reply.module_status.modules {
         let module = entry.module_id;
@@ -220,16 +236,19 @@ pub async fn active_hash(client: &Client, module: &str) -> Result<Option<[u8; 32
         .await?
         .remove(module)
         .map(|entry| entry.hash)
-        .ok_or_else(|| Error::Status(format!("module {module:?} is not registered")))
+        .ok_or_else(|| Error::NotListed(module.to_owned()))
 }
 
 /// How long the node took over each question a resolve asks it.
 #[derive(Default)]
-pub struct Asked {
+pub struct Asked<'a> {
     /// the registry (`module_status`)
     pub status: Duration,
     /// the artifact blob
     pub fetch: Duration,
+    /// who watches the fetch, if anyone: its bytes as they come, and
+    /// whether a tab draws it
+    pub watch: view_artifact::Watch<'a>,
 }
 
 /// The module's view as the frame under `wanted` ships it — the tasted
@@ -239,25 +258,22 @@ pub async fn resolve(
     client: &Client,
     module: &str,
     wanted: Option<[u8; 32]>,
-    asked: &mut Asked,
+    asked: &mut Asked<'_>,
 ) -> Result<ViewSource, Error> {
     let hash = match wanted {
         Some(hash) => hash,
         None => {
             let started = Instant::now();
-            let entries = active_hashes(client).await;
+            let active = active_hash(client, module).await;
             asked.status = started.elapsed();
-            let Some(entry) = entries?.remove(module) else {
-                return Ok(ViewSource::NotRegistered);
-            };
-            let Some(hash) = entry.hash else {
+            let Some(hash) = active? else {
                 return Ok(ViewSource::NotActivated);
             };
             hash
         }
     };
     let started = Instant::now();
-    let loaded = frame(client, hash).await;
+    let loaded = frame(client, hash, &asked.watch).await;
     asked.fetch = started.elapsed();
     match loaded.map_err(Error::Artifact)?.view.clone() {
         None => Ok(ViewSource::Missing { hash }),
@@ -280,15 +296,33 @@ fn frames() -> &'static Mutex<HashMap<[u8; 32], Arc<Frame>>> {
     FRAMES.get_or_init(Mutex::default)
 }
 
+/// This user's verified artifacts, by code hash (`view_artifact`), under
+/// the app's own cache directory. A test build keeps off the person's own:
+/// a test names its directory to `view_artifact::fetch`.
+fn user_cache() -> Option<std::path::PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    super::app_dirs::cache_dir()
+        .ok()
+        .map(|dir| dir.join("views"))
+}
+
 /// The verified frame under `hash`: the one held, else fetched off the
 /// node and verified — and NOT held: only the taste walk decides what is
 /// worth holding.
-pub async fn frame(client: &Client, hash: [u8; 32]) -> Result<Arc<Frame>, view_artifact::Error> {
+pub async fn frame(
+    client: &Client,
+    hash: [u8; 32],
+    watch: &view_artifact::Watch<'_>,
+) -> Result<Arc<Frame>, view_artifact::Error> {
     let held = frames().lock().expect("held frames").get(&hash).cloned();
     if let Some(frame) = held {
         return Ok(frame);
     }
-    view_artifact::fetch(client, hash).await.map(Arc::new)
+    view_artifact::fetch(user_cache().as_deref(), client, hash, watch)
+        .await
+        .map(Arc::new)
 }
 
 /// The verified frame under `hash`, held from now on.
@@ -296,7 +330,7 @@ pub async fn hold_frame(
     client: &Client,
     hash: [u8; 32],
 ) -> Result<Arc<Frame>, view_artifact::Error> {
-    let frame = frame(client, hash).await?;
+    let frame = frame(client, hash, &view_artifact::Watch::UNSEEN).await?;
     frames()
         .lock()
         .expect("held frames")
@@ -1028,32 +1062,17 @@ pub(crate) mod tests {
                 "{case}"
             );
         }
-    }
-
-    /// An id the registry does not list is the network's word, not a
-    /// registry the reader fails to understand: this network has not
-    /// registered it, and nothing is fetched for it.
-    #[tokio::test(flavor = "current_thread")]
-    async fn an_id_the_registry_does_not_list_is_not_registered() {
-        let client = node(status_of(&[7; 32]), None, None).await;
-        assert_eq!(
-            resolve(&client, "members", None, &mut Asked::default())
-                .await
-                .unwrap(),
-            ViewSource::NotRegistered
-        );
-        let empty = node(
+        // a module the registry does not list is an error too, by that name
+        let unlisted = node(
             serde_json::json!({"module_status": {"modules": []}}),
-            None,
+            Some(with_view()),
             None,
         )
         .await;
-        assert_eq!(
-            resolve(&empty, "files", None, &mut Asked::default())
-                .await
-                .unwrap(),
-            ViewSource::NotRegistered
-        );
+        assert!(matches!(
+            resolve(&unlisted, "files", None, &mut Asked::default()).await,
+            Err(Error::NotListed(_))
+        ));
     }
 
     /// The taste set is every `(module, hash)` an open code ballot names
@@ -1186,10 +1205,10 @@ pub(crate) mod tests {
         assert!(held.view.is_some());
         // the node forgets the bytes: the held frame still answers
         node.artifacts.lock().unwrap().clear();
-        assert_eq!(frame(&client, hash).await.unwrap(), held);
+        assert_eq!(frame(&client, hash, &Watch::UNSEEN).await.unwrap(), held);
         retain_frames(&BTreeSet::new());
         assert!(matches!(
-            frame(&client, hash).await,
+            frame(&client, hash, &Watch::UNSEEN).await,
             Err(view_artifact::Error::NotHeld)
         ));
     }
