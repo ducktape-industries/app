@@ -456,8 +456,71 @@ fn views_audit(views: &std::path::Path) -> Vec<String> {
                 "{name}: Tab pressed on a button inside the view does not move focus"
             ));
         }
+        let opens = match module {
+            "chat" => Some("New channel"),
+            "pages" => Some("New page"),
+            _ => None,
+        };
+        if let Some(button) = opens {
+            failures.extend(press_changes_view(
+                &name,
+                button,
+                module,
+                &mut cx,
+                window.into(),
+            ));
+        }
     }
     failures
+}
+
+/// A deployed view's primary create action reaches its guest and exposes its
+/// immediate result. This crosses the exact door -> AccessKit -> ViewTree ->
+/// WASM boundary used by a QA walk.
+fn press_changes_view(
+    name: &str,
+    button: &str,
+    module: &str,
+    cx: &mut HeadlessAppContext,
+    window: AnyWindowHandle,
+) -> Vec<String> {
+    cx.update_window(window, |_, window, cx| {
+        window.activate_a11y();
+        window.draw(cx).clear(cx);
+    })
+    .unwrap();
+    let before = cx
+        .update_window(window, |_, window, _| {
+            crate::ax_door::snapshot("console", window, false)
+        })
+        .unwrap();
+    let Some(target) = before.iter().find(|node| node.name == button) else {
+        return vec![format!("{name}: {button} is not in the door tree")];
+    };
+    let pressed = cx
+        .update_window(window, |_, window, cx| {
+            crate::ax_door::perform_by_id("console", window, cx, &target.id, "press", "")
+        })
+        .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| window.draw(cx).clear(cx))
+        .unwrap();
+    cx.run_until_parked();
+    let after = self::tree(cx, window);
+    let changed = match module {
+        "chat" => nodes(&after).iter().any(|node| node.role() == Role::Dialog),
+        "pages" => reading(&after, button)
+            .first()
+            .is_some_and(|node| node.is_disabled()),
+        _ => unreachable!("only state-changing view actions call this helper"),
+    };
+    if pressed && changed {
+        Vec::new()
+    } else {
+        vec![format!(
+            "{name}: pressing {button} did not change the {module} view"
+        )]
+    }
 }
 
 /// What the QA walk of #116 could not find in a view, found: the chat

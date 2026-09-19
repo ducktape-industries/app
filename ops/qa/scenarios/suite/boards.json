@@ -30,8 +30,12 @@
   },
   {
    "say": "press Create board",
-   "expect": "the new board opens: the board switcher button is named QA board {param:walk_tag} and an Add a note button shows (the board list may still be open over the board)",
+   "expect": "the new board opens: the board switcher button is named QA board {param:walk_tag}, and the Board menu dialog may remain open over the board",
    "settle_ms": 4000
+  },
+  {
+   "say": "if the Board menu dialog is open, press the expanded board switcher named QA board {param:walk_tag} to dismiss it; otherwise leave the board as it is",
+   "expect": "the Board menu dialog is closed, the board switcher is named QA board {param:walk_tag}, and an Add a note button shows"
   },
   {
    "say": "press Add a note",
