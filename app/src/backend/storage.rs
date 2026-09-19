@@ -9,8 +9,12 @@ use super::*;
 
 /// Page one duckfs file in whole through the `read` lane (1 MiB pages to eof
 /// — the checkout's `read_all` shape). `None`: past the picture byte cap,
-/// not assembled.
-pub(crate) async fn files_read_all(rpc: &RpcClient, path: &str) -> Result<Option<Vec<u8>>, String> {
+/// not assembled. A failure keeps the rpc client's token, so a read that got
+/// no answer is asked again like any view request's.
+pub(crate) async fn files_read_all(
+    rpc: &RpcClient,
+    path: &str,
+) -> Result<Option<Vec<u8>>, view_wire::Refusal> {
     use super::picture::MAX_PICTURE_BYTES;
     // The `read` lane's own page cap (duckfs `MAX_READ_BYTES`); the node clamps
     // anything larger, so asking for exactly it is one round-trip per MiB.
@@ -25,10 +29,15 @@ pub(crate) async fn files_read_all(rpc: &RpcClient, path: &str) -> Result<Option
                     "read": {"path":path, "offset":offset, "len":page_len}
                 }),
             )
-            .await?;
+            .await
+            .map_err(refused)?;
         let reply = &reply["read"];
-        let page = base64_decode(reply["b64"].as_str().unwrap_or_default())
-            .ok_or("The node's read page is not valid base64")?;
+        let page = base64_decode(reply["b64"].as_str().unwrap_or_default()).ok_or_else(|| {
+            view_wire::Refusal::new(
+                "malformed_reply",
+                "The node's read page is not valid base64",
+            )
+        })?;
         let eof = reply["eof"].as_bool().unwrap_or(true);
         bytes.extend_from_slice(&page);
         let past_cap = bytes.len() > MAX_PICTURE_BYTES;

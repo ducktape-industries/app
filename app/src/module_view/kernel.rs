@@ -155,7 +155,8 @@ fn malformed(error: impl std::fmt::Display) -> wire::Refusal {
     wire::Refusal::new("malformed_request", error.to_string())
 }
 
-/// A websocket upgrade the node refused, classified by what it answered.
+/// A node socket that failed — at the upgrade or after — classified by what
+/// happened to it.
 ///
 /// A `401`/`403` is NOT a broken socket: it is the node saying who may read,
 /// and a view draws that differently — the card keeps its subject and shows
@@ -163,14 +164,24 @@ fn malformed(error: impl std::fmt::Display) -> wire::Refusal {
 /// here because the upgrade is refused before any frame exists, and every gate
 /// that can refuse it (an unsigned request, a key the run does not admit)
 /// answers with one of those two; the node's finer token stays in the sentence,
-/// for the person reading it.
-fn upgrade_failed(error: tokio_tungstenite::tungstenite::Error) -> wire::Refusal {
+/// for the person reading it. A frame past the socket's cap is the node
+/// misbehaving. Anything else is the socket itself — a refused connect, a
+/// reset, a close with no handshake — so the node did not answer, under the
+/// rpc client's own token ([`unanswered`]); the transport text rides along
+/// for the log only.
+fn socket_failed(error: tokio_tungstenite::tungstenite::Error) -> wire::Refusal {
     use tokio_tungstenite::tungstenite::Error;
-    let Error::Http(response) = &error else {
-        return wire::Refusal::new(
-            "stream_open_failed",
-            format!("could not open the node stream: {error}"),
-        );
+    let response = match error {
+        Error::Http(response) => response,
+        Error::Capacity(error) => {
+            return wire::Refusal::new(
+                "too_large",
+                format!("a node stream frame is past its cap: {error}"),
+            );
+        }
+        error => {
+            return wire::Refusal::new("rpc_client", format!("the node stream failed: {error}"));
+        }
     };
     let body = response.body().clone().unwrap_or_default();
     let node = refused(ducktape_rpc::refusal(response.status(), &body));
@@ -183,6 +194,34 @@ fn upgrade_failed(error: tokio_tungstenite::tungstenite::Error) -> wire::Refusal
         false => node,
     }
 }
+
+/// What a view is told when the node sent a reply the host could not read.
+const NODE_UNREADABLE: &str = "The node sent a reply this app could not read";
+
+/// Whether the node never answered: `Ok` with the transport's text, for the
+/// log — the door is asked again — or `Err` with what the view gets now.
+///
+/// The rpc client's `rpc_client` token is the class (the one `view_source`
+/// reads as unreachable), and it holds one thing that is not silence: a reply
+/// that came back and did not decode. The client gives that no token of its
+/// own, so its own sentence (`… returned invalid JSON: …`) tells it apart —
+/// the node answered, and asking again for a minute only draws Loading….
+fn unanswered(refusal: wire::Refusal) -> Result<String, wire::Refusal> {
+    if refusal.reason != "rpc_client" {
+        return Err(refusal);
+    }
+    if refusal.sentence.contains("returned invalid JSON") {
+        tracing::warn!(
+            target: "ducktape::app",
+            reason = "view_reply_unreadable",
+            error = %refusal.sentence,
+            "the node answered a view with a reply that did not decode"
+        );
+        return Err(wire::Refusal::new("malformed_reply", NODE_UNREADABLE));
+    }
+    Ok(refusal.sentence)
+}
+
 /// A door that answers off the kernel runtime.
 type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 
@@ -671,31 +710,28 @@ const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60
 /// update closes the port for seconds, and a request that hit that gap used
 /// to stay failed for the view's whole life (#150).
 ///
-/// Only the rpc client's own `rpc_client` token is retried: the request never
-/// got a node answer, the same class `view_source` reads as unreachable. A
-/// refusal the node authored is final. A write only ever fails with that token
-/// before its frame leaves ([`crate::backend::seated_write`] asks the node
-/// first), so a retry never sends one op twice. Backoff is the app's own
-/// connection's ([`crate::backend::retry_delay`]); when the budget is spent the
-/// view gets the host's sentence, never the transport's.
+/// Only a request the node never answered is retried ([`unanswered`]); a
+/// refusal the node authored, or a reply it sent that did not decode, is
+/// final. A write only ever fails unanswered before its frame leaves
+/// ([`crate::backend::seated_write`] asks the node first), so a retry never
+/// sends one op twice. Backoff is the app's own connection's
+/// ([`crate::backend::retry_delay`]); when the budget is spent the view gets
+/// the host's sentence, never the transport's.
 async fn until_answered(budget: std::time::Duration, mut call: impl FnMut() -> Answered) -> Answer {
     let deadline = tokio::time::Instant::now() + budget;
     let mut attempt = 0;
     loop {
-        let result = call().await;
-        let Err(refusal) = &result else {
-            return result;
-        };
-        if refusal.reason != "rpc_client" {
-            return result;
-        }
+        let detail = unanswered(match call().await {
+            Ok(bytes) => return Ok(bytes),
+            Err(refusal) => refusal,
+        })?;
         attempt += 1;
         let delay = crate::backend::retry_delay(attempt);
         if tokio::time::Instant::now() + delay > deadline {
             tracing::warn!(
                 target: "ducktape::app",
                 reason = "view_request_unanswered",
-                error = %refusal.sentence,
+                error = %detail,
                 attempts = attempt,
                 "a view's node request got no answer within its retry budget"
             );
@@ -1184,12 +1220,15 @@ fn stream_send(guest: &mut Guest, id: u64, payload: &[u8]) {
     guest.replies.item(id, result, true);
 }
 
+/// [`forward`] and the view's `net.send` frames over one socket, until
+/// either half ends; `Some` as [`forward`]'s.
 async fn exchange<S>(
     replies: &Replies,
     id: u64,
     socket: S,
-    mut outgoing: tokio::sync::mpsc::Receiver<tokio_tungstenite::tungstenite::Message>,
-) where
+    outgoing: &mut tokio::sync::mpsc::Receiver<tokio_tungstenite::tungstenite::Message>,
+) -> Option<wire::Refusal>
+where
     S: futures::Stream<
             Item = Result<
                 tokio_tungstenite::tungstenite::Message,
@@ -1210,21 +1249,22 @@ async fn exchange<S>(
                 .map_err(|_| {
                     wire::Refusal::new("stream_send_timeout", "application stream send timed out")
                 })?
-                .map_err(|error| {
-                    wire::Refusal::new(
-                        "stream_send_failed",
-                        format!("node stream send failed: {error}"),
-                    )
-                })?;
+                .map_err(socket_failed)?;
             if closing {
-                return Ok(Vec::new());
+                return Ok(());
             }
         }
-        Ok(Vec::new())
+        Ok(())
     };
     tokio::select! {
-        () = forward(replies, id, reader, StreamEncoding::Frames) => {},
-        result = send => replies.item(id, result, true),
+        failed = forward(replies, id, reader, StreamEncoding::Frames) => failed,
+        sent = send => match sent {
+            Ok(()) => {
+                replies.item(id, Ok(Vec::new()), true);
+                None
+            }
+            Err(refusal) => Some(refusal),
+        },
     }
 }
 
@@ -1268,8 +1308,56 @@ fn stream_ask(ask: &serde_json::Value) -> Result<(String, String), String> {
     Ok((topic.to_owned(), query))
 }
 
+/// One view subscription over a node socket, held for as long as the view
+/// holds it (#162): opened, run, and opened again whenever it could not open
+/// or dropped because the node did not answer ([`unanswered`]) — a restart, a
+/// scheduled update. That is the class [`until_answered`] retries, at the same
+/// backoff ([`crate::backend::retry_delay`]), but with no budget: a standing
+/// subscription has no final failure while its view is mounted, and a node
+/// update can outlast any budget. It ends when the view drops it — the task is
+/// aborted with its [`NodeTask`]. The view is told once per outage, in the
+/// host's sentence; the transport's text goes to the log. Anything else — the
+/// node's refusal, the node ending the topic — ends the subscription as it
+/// always did.
+#[derive(Default)]
+struct Standing {
+    attempt: u32,
+}
+
+impl Standing {
+    /// A socket opened: the next outage starts its backoff over.
+    fn opened(&mut self) {
+        self.attempt = 0;
+    }
+
+    /// The socket could not open, or dropped, with `failed`: `true` once it
+    /// is time to open it again, `false` when that ended the subscription.
+    async fn reopens(&mut self, replies: &Replies, id: u64, failed: wire::Refusal) -> bool {
+        let detail = match unanswered(failed) {
+            Ok(detail) => detail,
+            Err(refusal) => {
+                replies.item(id, Err(refusal), true);
+                return false;
+            }
+        };
+        self.attempt += 1;
+        if self.attempt == 1 {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "view_stream_unanswered",
+                error = %detail,
+                "a view's node stream lost the node; it reopens once the node answers"
+            );
+            let down = wire::Refusal::new("rpc_client", super::NODE_UNREACHABLE);
+            replies.item(id, Err(down), false);
+        }
+        tokio::time::sleep(crate::backend::retry_delay(self.attempt)).await;
+        true
+    }
+}
+
 /// Opens one node topic for a view: the socket under the seated key, then
-/// every frame it sends, until it ends.
+/// every frame it sends, for as long as the view holds it ([`standing`]).
 fn stream_open(guest: &mut Guest, id: u64, payload: &[u8]) {
     guest.tasks.retain(|(_, stream)| !stream.task.is_finished());
     let ask: serde_json::Value = match serde_json::from_slice(payload) {
@@ -1300,9 +1388,22 @@ fn stream_open(guest: &mut Guest, id: u64, payload: &[u8]) {
     };
     let handle = runtime().spawn(async move {
         let _counted = counted;
-        match open_topic(client.origin(), &topic, &query).await {
-            Ok(socket) => forward(&replies, id, socket, StreamEncoding::Bytes).await,
-            Err(refusal) => replies.item(id, Err(refusal), true),
+        let mut standing = Standing::default();
+        loop {
+            let failed = match open_topic(&client, &topic, &query).await {
+                Ok(socket) => {
+                    standing.opened();
+                    let Some(failed) = forward(&replies, id, socket, StreamEncoding::Bytes).await
+                    else {
+                        return;
+                    };
+                    failed
+                }
+                Err(failed) => failed,
+            };
+            if !standing.reopens(&replies, id, failed).await {
+                return;
+            }
         }
     });
     guest.tasks.push((
@@ -1343,54 +1444,36 @@ fn application_stream(guest: &mut Guest, id: u64, payload: &[u8]) {
         guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
         return;
     };
-    let (outgoing, receiver) = tokio::sync::mpsc::channel(1);
+    let (outgoing, mut receiver) = tokio::sync::mpsc::channel(1);
     let task = runtime().spawn(async move {
         let _counted = counted;
-        let open = async {
-            use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
-            let head = application_head(&client, &request, true).await?;
-            let encoded = gateway::encode_proxy_request_head(&head).map_err(host_fault)?;
-            let url = crate::backend::agent_ws_url(client.origin());
-            let origin = url
-                .strip_suffix("/v1/ws")
-                .ok_or_else(|| host_fault("invalid node websocket origin"))?;
-            let mut request = format!("{origin}/v1/gateway/stream")
-                .into_client_request()
-                .map_err(|_| host_fault("invalid application stream destination"))?;
-            request.headers_mut().insert(
-                "x-ducktape-gateway-head",
-                encoded
-                    .try_into()
-                    .map_err(|_| host_fault("invalid application stream head"))?,
-            );
-            let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
-                max_message_size: Some(MAX_STREAM_FRAME_BYTES),
-                max_frame_size: Some(MAX_STREAM_FRAME_BYTES),
-                ..Default::default()
-            };
-            // A guest sends one whole application message per `net.send`, so
-            // Nagle has nothing to coalesce on this socket — it only holds a
-            // frame back until the previous one is acknowledged, adding a
-            // round trip to every frame on a long link. A view cannot reach a
-            // socket option and should not be able to; the bounded transport
-            // the host offers is where the property belongs.
-            let (socket, _) =
-                tokio_tungstenite::connect_async_with_config(request, Some(config), true)
-                    .await
-                    .map_err(upgrade_failed)?;
-            Ok::<_, wire::Refusal>(socket)
-        };
-        match tokio::time::timeout(std::time::Duration::from_secs(30), open).await {
-            Ok(Ok(socket)) => exchange(&replies, id, socket, receiver).await,
-            Ok(Err(refusal)) => replies.item(id, Err(refusal), true),
-            Err(_) => replies.item(
-                id,
+        let mut standing = Standing::default();
+        loop {
+            // an open the node never finished is one it did not answer
+            let opened = tokio::time::timeout(
+                std::time::Duration::from_secs(30),
+                application_open(&client, &request),
+            )
+            .await
+            .unwrap_or_else(|_| {
                 Err(wire::Refusal::new(
-                    "stream_open_timeout",
+                    "rpc_client",
                     "application stream open timed out",
-                )),
-                true,
-            ),
+                ))
+            });
+            let failed = match opened {
+                Ok(socket) => {
+                    standing.opened();
+                    let Some(failed) = exchange(&replies, id, socket, &mut receiver).await else {
+                        return;
+                    };
+                    failed
+                }
+                Err(failed) => failed,
+            };
+            if !standing.reopens(&replies, id, failed).await {
+                return;
+            }
         }
     });
     guest.tasks.push((
@@ -1402,13 +1485,55 @@ fn application_stream(guest: &mut Guest, id: u64, payload: &[u8]) {
     ));
 }
 
+/// One upgrade to a published application route, through the node's
+/// gateway: the route's head, proven by the seated key, on the upgrade.
+async fn application_open(
+    client: &ducktape_rpc::Client,
+    request: &ApplicationRequest,
+) -> Result<
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+    wire::Refusal,
+> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    let head = application_head(client, request, true).await?;
+    let encoded = gateway::encode_proxy_request_head(&head).map_err(host_fault)?;
+    let url = crate::backend::agent_ws_url(client.origin());
+    let origin = url
+        .strip_suffix("/v1/ws")
+        .ok_or_else(|| host_fault("invalid node websocket origin"))?;
+    let mut request = format!("{origin}/v1/gateway/stream")
+        .into_client_request()
+        .map_err(|_| host_fault("invalid application stream destination"))?;
+    request.headers_mut().insert(
+        "x-ducktape-gateway-head",
+        encoded
+            .try_into()
+            .map_err(|_| host_fault("invalid application stream head"))?,
+    );
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(MAX_STREAM_FRAME_BYTES),
+        max_frame_size: Some(MAX_STREAM_FRAME_BYTES),
+        ..Default::default()
+    };
+    // A guest sends one whole application message per `net.send`, so
+    // Nagle has nothing to coalesce on this socket — it only holds a
+    // frame back until the previous one is acknowledged, adding a
+    // round trip to every frame on a long link. A view cannot reach a
+    // socket option and should not be able to; the bounded transport
+    // the host offers is where the property belongs.
+    let (socket, _) = tokio_tungstenite::connect_async_with_config(request, Some(config), true)
+        .await
+        .map_err(socket_failed)?;
+    Ok(socket)
+}
+
 /// The node's own event socket for ONE topic, proven with whichever
 /// credential THIS device holds: the 0600 workspace token when the node runs
 /// here, the seated key's signature on the upgrade otherwise. Either way the
 /// node admits or refuses the topic before the socket exists, and nothing
 /// here is per-topic — a view asks for a topic and gets its frames.
 async fn open_topic(
-    rpc: &str,
+    client: &ducktape_rpc::Client,
     topic: &str,
     query: &str,
 ) -> Result<
@@ -1435,6 +1560,7 @@ async fn open_topic(
     // The node's OPERATOR topics (`logs`) are decided at the upgrade, never on
     // the frame: here by the node's own `admin.token` when this device holds
     // it, below by the seated signature when that key is the operator's.
+    let rpc = client.origin();
     let workspace = crate::backend::workspace_at(rpc).map(|(_, workspace)| workspace);
     let workspace_token = workspace
         .as_deref()
@@ -1445,9 +1571,7 @@ async fn open_topic(
             .and_then(crate::backend::operator_token_in);
         return open_with_token(rpc, topic, &token, operator.as_deref()).await;
     }
-    let node_key = crate::backend::node_public_key(rpc)
-        .await
-        .map_err(host_fault)?;
+    let node_key = crate::backend::node_public_key(client).await?;
     let signed =
         crate::backend::seated_request_headers("GET", &format!("/v1/ws{query}"), &node_key, b"")
             .await
@@ -1473,17 +1597,12 @@ async fn open_topic(
     // per event on an app pointed at a node that is not this machine's.
     let (mut socket, _) = tokio_tungstenite::connect_async_with_config(request, Some(config), true)
         .await
-        .map_err(upgrade_failed)?;
+        .map_err(socket_failed)?;
     let subscribe = serde_json::json!({"op": "subscribe", "topics": [topic]});
     socket
         .send(Message::Text(subscribe.to_string()))
         .await
-        .map_err(|error| {
-            wire::Refusal::new(
-                "stream_open_failed",
-                format!("could not subscribe to the node stream: {error}"),
-            )
-        })?;
+        .map_err(socket_failed)?;
     Ok(socket)
 }
 
@@ -1530,17 +1649,12 @@ async fn open_with_token(
         true,
     )
     .await
-    .map_err(upgrade_failed)?;
+    .map_err(socket_failed)?;
     let subscribe = serde_json::json!({"op": "subscribe", "topics": [topic], "token": token});
     socket
         .send(Message::Text(subscribe.to_string()))
         .await
-        .map_err(|error| {
-            wire::Refusal::new(
-                "stream_open_failed",
-                format!("could not subscribe to the node stream: {error}"),
-            )
-        })?;
+        .map_err(socket_failed)?;
     Ok(socket)
 }
 
@@ -1549,14 +1663,20 @@ async fn open_with_token(
 /// it has never heard of needs no code here. The node ending the socket is
 /// the `done` that ends the subscription — and so is a node topic's
 /// refusal ([`subscribe_verdict`]), which the node sends in place of any
-/// frame and then leaves the socket open with nothing coming.
+/// frame and then leaves the socket open with nothing coming. A socket that
+/// FAILED is handed back instead (`Some`), for [`standing`] to decide.
 #[derive(Clone, Copy)]
 enum StreamEncoding {
     Bytes,
     Frames,
 }
 
-async fn forward<S>(replies: &Replies, id: u64, mut socket: S, encoding: StreamEncoding)
+async fn forward<S>(
+    replies: &Replies,
+    id: u64,
+    mut socket: S,
+    encoding: StreamEncoding,
+) -> Option<wire::Refusal>
 where
     S: futures::Stream<
             Item = Result<
@@ -1574,17 +1694,7 @@ where
             Ok(frame @ (Message::Text(_) | Message::Binary(_))) => frame,
             Ok(Message::Close(_)) => break,
             Ok(_) => continue,
-            Err(error) => {
-                replies.item(
-                    id,
-                    Err(wire::Refusal::new(
-                        "stream_failed",
-                        format!("the node stream failed: {error}"),
-                    )),
-                    true,
-                );
-                return;
-            }
+            Err(error) => return Some(socket_failed(error)),
         };
         if frame.len() > MAX_STREAM_FRAME_BYTES {
             replies.item(
@@ -1595,13 +1705,13 @@ where
                 )),
                 true,
             );
-            return;
+            return None;
         }
         if let (false, Message::Text(text)) = (subscribed, &frame) {
             match subscribe_verdict(text) {
                 Some(Verdict::Refused(refusal)) => {
                     replies.item(id, Err(refusal), true);
-                    return;
+                    return None;
                 }
                 Some(Verdict::Subscribed) => subscribed = true,
                 None => {}
@@ -1624,10 +1734,11 @@ where
         // a view subscribes — four times the whole budget, so that fault was
         // a certainty, not a corner.
         if !replies.subscription_item(&mut drained, id, Ok(bytes)).await {
-            return;
+            return None;
         }
     }
     replies.item(id, Ok(Vec::new()), true);
+    None
 }
 
 /// The node's answer to a one-topic subscribe, read until it has given one:
@@ -1700,10 +1811,7 @@ fn picture_load(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answere
         let surface =
             picture_surface(&ask).ok_or_else(|| malformed("`picture.load` names no surface"))?;
         let path = ask["path"].as_str().unwrap_or_default().to_owned();
-        let read = crate::backend::files_read_all(&client, &path)
-            .await
-            .map_err(|error| wire::Refusal::new("read_failed", error))?;
-        let Some(bytes) = read else {
+        let Some(bytes) = crate::backend::files_read_all(&client, &path).await? else {
             return Err(wire::Refusal::new(
                 "too_large",
                 format!(
@@ -2036,9 +2144,7 @@ fn admin_ask(ask: &serde_json::Value) -> Result<(String, Vec<u8>), String> {
 fn admin(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let (route, body) = admin_ask(&ask).map_err(malformed)?;
-        let node_key = crate::backend::node_public_key(client.origin())
-            .await
-            .map_err(host_fault)?;
+        let node_key = crate::backend::node_public_key(&client).await?;
         let signed = crate::backend::seated_request_headers("POST", &route, &node_key, &body)
             .await
             .ok_or_else(crate::backend::locked_seat)?;
@@ -2445,7 +2551,10 @@ mod tests {
             let (sender, receiver) = tokio::sync::mpsc::channel(1);
             let replies = std::sync::Arc::new(Replies::default());
             let running = replies.clone();
-            let task = tokio::spawn(async move { exchange(&running, 7, client, receiver).await });
+            let task = tokio::spawn(async move {
+                let mut receiver = receiver;
+                exchange(&running, 7, client, &mut receiver).await
+            });
             sender.send(Message::Text("request".into())).await.unwrap();
             assert_eq!(server.next().await.unwrap().unwrap(), Message::Text("request".into()));
             server.send(Message::Binary(vec![9, 8])).await.unwrap();
@@ -2473,7 +2582,10 @@ mod tests {
             let (sender, receiver) = tokio::sync::mpsc::channel(1);
             let replies = std::sync::Arc::new(Replies::default());
             let running = replies.clone();
-            let task = tokio::spawn(async move { exchange(&running, 7, client, receiver).await });
+            let task = tokio::spawn(async move {
+                let mut receiver = receiver;
+                exchange(&running, 7, client, &mut receiver).await
+            });
             sender.send(Message::Close(None)).await.unwrap();
             assert_eq!(server.next().await.unwrap().unwrap(), Message::Close(None));
             task.await.unwrap();
@@ -2529,12 +2641,7 @@ mod tests {
             .expect("a free port")
             .to_string();
         let ask = serde_json::json!({ "target": "pages", "query": {} });
-        for address in [
-            closed,
-            answering(b""),
-            answering(b"not http\r\n\r\n"),
-            answering(b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\nconnection: close\r\n\r\nnot"),
-        ] {
+        for address in [closed, answering(b""), answering(b"not http\r\n\r\n")] {
             let client = ducktape_rpc::Client::new(&format!("http://{address}")).expect("a client");
             let refusal = runtime()
                 .block_on(until_answered(std::time::Duration::from_secs(2), || {
@@ -2547,6 +2654,26 @@ mod tests {
                 "{address}"
             );
         }
+    }
+
+    /// A node that ANSWERED, with bytes that are not the JSON asked for, is
+    /// not a node that did not answer: the view hears the host's sentence at
+    /// once, instead of a minute of Loading… before it.
+    #[test]
+    fn a_reply_that_does_not_decode_is_an_answer_at_once() {
+        let garbled =
+            answering(b"HTTP/1.1 200 OK\r\ncontent-length: 3\r\nconnection: close\r\n\r\nnot");
+        let client = ducktape_rpc::Client::new(&format!("http://{garbled}")).expect("a client");
+        let ask = serde_json::json!({ "target": "pages", "query": {} });
+        let refusal = runtime()
+            .block_on(until_answered(NODE_RETRY_BUDGET, || {
+                view(client.clone(), ask.clone())
+            }))
+            .expect_err("nothing decodes");
+        assert_eq!(
+            refusal,
+            wire::Refusal::new("malformed_reply", NODE_UNREADABLE)
+        );
     }
 
     /// A socket that answers every connection with exactly `reply`, then
@@ -2740,5 +2867,245 @@ mod tests {
             ),
             "{landed:?}"
         );
+    }
+
+    /// A node the test stops and starts on one port, as a restart does: every
+    /// HTTP ask gets one body, and `/v1/ws` a socket that says `subscribed`,
+    /// sends one frame and stays open. Dropping it drops the listener and
+    /// every socket with it — no close handshake, as a process that exits.
+    struct Node(tokio::task::JoinHandle<()>);
+
+    impl Node {
+        fn start(address: std::net::SocketAddr) -> Self {
+            let listener = runtime()
+                .block_on(tokio::net::TcpListener::bind(address))
+                .expect("the node's port");
+            Node(runtime().spawn(async move {
+                let mut sockets = tokio::task::JoinSet::new();
+                while let Ok((stream, _)) = listener.accept().await {
+                    sockets.spawn(Node::serve(stream));
+                }
+            }))
+        }
+
+        async fn serve(mut stream: tokio::net::TcpStream) {
+            use futures::{SinkExt as _, StreamExt as _};
+            use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+            let mut head = [0u8; 4096];
+            let Ok(peeked) = stream.peek(&mut head).await else {
+                return;
+            };
+            let asked = String::from_utf8_lossy(&head[..peeked]).to_ascii_lowercase();
+            if asked.contains("upgrade: websocket") {
+                let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
+                let _subscribe = socket.next().await;
+                for frame in [r#"{"type":"subscribed","topics":{}}"#, r#"{"n":1}"#] {
+                    let _ = socket.send(Message::Text(frame.to_owned())).await;
+                }
+                while let Some(Ok(_)) = socket.next().await {}
+                return;
+            }
+            let mut request = Vec::new();
+            let mut chunk = [0u8; 4096];
+            while let Ok(read @ 1..) = stream.read(&mut chunk).await {
+                request.extend_from_slice(&chunk[..read]);
+                let Some(end) = request.windows(4).position(|at| at == b"\r\n\r\n") else {
+                    continue;
+                };
+                let length = String::from_utf8_lossy(&request[..end])
+                    .to_ascii_lowercase()
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map_or(0, |value| value.trim().parse().unwrap_or(0));
+                if request.len() >= end + 4 + length {
+                    break;
+                }
+            }
+            let mut png = Vec::new();
+            image::RgbaImage::new(1, 1)
+                .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+                .expect("a png");
+            let body = serde_json::json!({
+                "height": 5,
+                "public_key": "00".repeat(32),
+                "read": { "b64": crate::backend::base64_encode(&png), "eof": true },
+            })
+            .to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        }
+    }
+
+    impl Drop for Node {
+        fn drop(&mut self) {
+            self.0.abort();
+        }
+    }
+
+    type Heard = Vec<(u64, Answer)>;
+
+    /// Every answer the view has been handed, until `enough` holds of them.
+    fn hear(
+        replies: &Replies,
+        changed: &mut tokio::sync::watch::Receiver<()>,
+        heard: &mut Heard,
+        enough: impl Fn(&Heard) -> bool,
+    ) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        loop {
+            let mut events = Vec::new();
+            replies.drain_into(&mut events).expect("reply budget");
+            heard.extend(events.into_iter().filter_map(|event| match event {
+                wire::Event::Response { id, result, .. } => Some((id, result)),
+                _ => None,
+            }));
+            if enough(heard) {
+                return;
+            }
+            let left = deadline
+                .checked_duration_since(std::time::Instant::now())
+                .unwrap_or_else(|| panic!("the view never heard enough: {heard:?}"));
+            let _ =
+                runtime().block_on(async { tokio::time::timeout(left, changed.changed()).await });
+        }
+    }
+
+    /// The last answer `id` was handed is `Ok`.
+    fn last_ok(heard: &Heard, id: u64) -> bool {
+        heard
+            .iter()
+            .rev()
+            .find(|(of, _)| *of == id)
+            .is_some_and(|(_, answer)| answer.is_ok())
+    }
+
+    /// The last answer `id` was handed is a failure.
+    fn last_failed(heard: &Heard, id: u64) -> bool {
+        heard
+            .iter()
+            .rev()
+            .find(|(of, _)| *of == id)
+            .is_some_and(|(_, answer)| answer.is_err())
+    }
+
+    /// EVERY DOOR FROM A VIEW TO ITS NODE, THROUGH A NODE UPDATE (#162). A
+    /// member's node was down 17 s in a real network-wide update, and each
+    /// host→node path a view has used to fail in its own way: a stream with
+    /// "could not open the node stream: …" and never again, a picture with
+    /// "read_failed: files query failed: error sending request for url …".
+    /// Here each path — a request, a write's pre-check, a stream opened while
+    /// the node is down, a stream the node drops under it, a picture load —
+    /// meets the node stopped, then started: no answer a view is handed ever
+    /// carries transport text, and every path's last answer is the node's.
+    /// Unmounted, the view leaves nothing behind still asking.
+    #[test]
+    fn no_node_outage_reaches_a_view_as_transport_text_or_outlasts_the_node() {
+        let Some(staged) = super::super::tests::staged("governance") else {
+            return;
+        };
+        let _turn = super::super::tests::blocking_connection_turn();
+        let mut guest =
+            super::super::Guest::load_from("governance", &staged).expect("the view loads");
+        // the node's port, closed: a node mid-update as the app sees it
+        let address = std::net::TcpListener::bind("127.0.0.1:0")
+            .and_then(|listener| listener.local_addr())
+            .expect("a free port");
+        let client = crate::backend::rpc_client(&format!("http://{address}")).expect("a client");
+        super::super::connection().lock().expect("views rpc").client = Some(client);
+        runtime().block_on(crate::backend::seat_test_signer(162));
+        let replies = guest.replies.clone();
+        let mut changed = replies.changes();
+        let mut heard = Heard::new();
+        let stream = serde_json::json!({ "topic": "logs" });
+        let (request, write, opened_down, picture, dropped) = (8, 9, 10, 11, 12);
+        let paths = [
+            (
+                request,
+                "rpc",
+                "view",
+                serde_json::json!({ "target": "pages", "query": {} }),
+            ),
+            (
+                write,
+                "op",
+                "submit",
+                serde_json::json!({ "target": "boards", "payload": { "touch": {} } }),
+            ),
+            (opened_down, "rpc", "stream", stream.clone()),
+            (
+                picture,
+                "picture",
+                "load",
+                serde_json::json!({ "surface": crate::backend::FILES_SURFACE, "path": "/shared/a.png" }),
+            ),
+        ];
+        for (id, capability, operation, ask) in &paths {
+            let payload = serde_json::to_vec(ask).unwrap();
+            assert!(answer(&mut guest, capability, operation, *id, &payload));
+        }
+        // down: the stream is told, in the host's words; the rest wait
+        hear(&replies, &mut changed, &mut heard, |heard| {
+            last_failed(heard, opened_down)
+        });
+
+        let node = Node::start(address);
+        hear(&replies, &mut changed, &mut heard, |heard| {
+            [request, write, opened_down, picture]
+                .iter()
+                .all(|id| last_ok(heard, *id))
+        });
+        let payload = serde_json::to_vec(&stream).unwrap();
+        assert!(answer(&mut guest, "rpc", "stream", dropped, &payload));
+        hear(&replies, &mut changed, &mut heard, |heard| {
+            last_ok(heard, dropped)
+        });
+
+        // the node goes away under two open streams, and comes back
+        drop(node);
+        hear(&replies, &mut changed, &mut heard, |heard| {
+            last_failed(heard, opened_down) && last_failed(heard, dropped)
+        });
+        let node = Node::start(address);
+        hear(&replies, &mut changed, &mut heard, |heard| {
+            last_ok(heard, opened_down) && last_ok(heard, dropped)
+        });
+
+        let transport = [
+            "error sending",
+            "could not open",
+            "the node stream failed",
+            "http://",
+            "127.0.0.1",
+            "os error",
+            "refused",
+            "reset",
+            "hyper",
+            "reqwest",
+            "tungstenite",
+        ];
+        for (id, answer) in &heard {
+            let Err(refusal) = answer else { continue };
+            let words = refusal.sentence.to_ascii_lowercase();
+            assert!(
+                !transport.iter().any(|word| words.contains(word)),
+                "{id} was handed transport text: {refusal:?}"
+            );
+            assert_eq!(
+                refusal,
+                &wire::Refusal::new("rpc_client", super::super::NODE_UNREACHABLE),
+                "{id}"
+            );
+        }
+
+        // unmounted: every standing stream ends with the view
+        drop(guest);
+        replies.wait_idle();
+        drop(node);
+        runtime().block_on(crate::backend::lock_signer());
     }
 }
