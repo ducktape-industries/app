@@ -14,8 +14,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Edges, Entity, EntityInputHandler as _, EventEmitter,
     Focusable as _, Hsla, InteractiveElement as _, IntoElement, Keystroke, MouseButton,
-    ParentElement as _, Render, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, px,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -42,8 +41,8 @@ pub struct TextEditor {
     projection: Option<Projection>,
     painted: Option<wire::EditorOptions>,
     fills: bool,
-    /// the wire `label`: the field's accessible name
-    label: Option<SharedString>,
+    /// the node's mapping; the field's text is added as its value
+    accessible: crate::view_tree::Accessible,
     ime: Option<crate::module_view::input::ImeState>,
     _observation: Subscription,
     _keystrokes: Subscription,
@@ -86,7 +85,7 @@ impl TextEditor {
             projection: None,
             painted: None,
             fills: true,
-            label: None,
+            accessible: Default::default(),
             ime: None,
             _observation: observation,
             _keystrokes: keystrokes,
@@ -110,11 +109,14 @@ impl TextEditor {
         cx.notify();
     }
 
-    /// The name assistive technology reads for the field.
-    pub fn set_label(&mut self, label: Option<String>, cx: &mut Context<Self>) {
-        let label = label.map(SharedString::from);
-        if self.label != label {
-            self.label = label;
+    /// What assistive technology reads for the field, but its text.
+    pub fn set_accessible(
+        &mut self,
+        accessible: crate::view_tree::Accessible,
+        cx: &mut Context<Self>,
+    ) {
+        if self.accessible != accessible {
+            self.accessible = accessible;
             cx.notify();
         }
     }
@@ -432,6 +434,10 @@ impl Render for TextEditor {
             wire::FontFamily::Monospace => design::fonts::FAMILY_MONO.to_owned(),
             _ => design::fonts::FAMILY_UI.to_owned(),
         });
+        let accessible = crate::view_tree::Accessible {
+            value: Some(self.input.read(cx).value().to_string()),
+            ..self.accessible.clone()
+        };
         // The shell reads this context off a keystroke to yield the chords a
         // guest editor claims — Ctrl+K is a link here, not the search palette.
         div()
@@ -451,7 +457,7 @@ impl Render for TextEditor {
             .when_some(family, |element, family| {
                 crate::shell::with_family(element, family)
             })
-            .child(
+            .child(crate::view_tree::announce(
                 gpui_notion::editor::ui::text_field(
                     SharedString::from(format!("{}/field", self.key)),
                     &self.input.read(cx).focus_handle(cx),
@@ -464,10 +470,9 @@ impl Render for TextEditor {
                     // the base Textarea draws no node of its own
                     Textarea::new(&self.input),
                 )
-                .role(gpui_kit::Role::MultilineTextInput)
-                .when_some(self.label.clone(), |field, label| field.aria_label(label))
                 .when(self.fills, |field| field.h_full()),
-            )
+                accessible,
+            ))
     }
 }
 
