@@ -1,6 +1,6 @@
 {
  "name": "forge",
- "about": "Browse a repository. Starts from an open console and leaves it open.",
+ "about": "Open the forge on a network with no repository. A repository comes only from a git push through the network's Git service, which the app does not offer, so browsing one is not walked on a fresh network. Starts from an open console and leaves it open.",
  "include": [
   "../setup.json"
  ],
@@ -12,22 +12,7 @@
  "steps": [
   {
    "say": "open the Forge tab in the rail",
-   "settle_ms": 4000,
-   "expect": "the Forge tab is selected and the forge view shows an organization label, a repositories count and a button per repository (or its empty state); no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
-  },
-  {
-   "say": "press the first repository in the list",
-   "expect": "the repository opens: an All repos button and Code, Issues and Pull requests buttons with Code checked, and a file tree of buttons named by entry",
-   "settle_ms": 4000
-  },
-  {
-   "say": "press the first entry of the file tree",
-   "expect": "either the folder opens (more tree entries show) or the file opens (a Copy path button and a Read only label show)",
-   "settle_ms": 4000
-  },
-  {
-   "say": "press All repos",
-   "expect": "the repository list shows again"
+   "expect": "the Forge tab is selected and the forge view shows an organization label, a repositories count and either a button per repository or the empty state that says to push a git repository to this network (No repositories yet — …) with the push instructions; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
   }
  ]
 }
