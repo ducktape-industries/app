@@ -237,13 +237,13 @@ impl EditorView {
         }
     }
 
-    /// The wire `label`, onto the field the editor draws: the node this
+    /// The node's mapping, onto the field the editor draws: the node this
     /// mount announces is a wrapper, not the text. A rich editor's blocks are
     /// its own nodes, named by their kind; the label names its page.
-    fn label(&self, label: Option<String>, cx: &mut App) {
+    fn announce(&self, accessible: Accessible, cx: &mut App) {
         match self {
-            Self::Text(view) => view.update(cx, |editor, cx| editor.set_label(label, cx)),
-            Self::Rich(view) => view.update(cx, |editor, cx| editor.set_label(label, cx)),
+            Self::Text(view) => view.update(cx, |editor, cx| editor.set_accessible(accessible, cx)),
+            Self::Rich(view) => view.update(cx, |editor, cx| editor.set_label(accessible.name, cx)),
         }
     }
 
@@ -2875,7 +2875,7 @@ impl ViewTree {
         editor
             .view
             .fills(!matches!(height, Some(wire::Length::Shrink)), cx);
-        editor.view.label(accessible(node).name, cx);
+        editor.view.announce(accessible(node), cx);
         editor.view.sync(window, cx);
         if let Some(command) = replaced_focus {
             editor.view.widget_command(&command, window, cx);
@@ -4467,7 +4467,21 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             disabled: options.disabled,
             ..Default::default()
         },
-        Node::Editor { label, .. } => labelled(Role::MultilineTextInput, label),
+        // the document is not on the node: the editor mount adds its text as
+        // the value (`TextEditor::render`)
+        Node::Editor {
+            label,
+            placeholder,
+            editable,
+            ..
+        } => {
+            let field = labelled(Role::MultilineTextInput, label);
+            Accessible {
+                description: field.name.is_none().then(|| named(placeholder)).flatten(),
+                disabled: !editable,
+                ..field
+            }
+        }
         Node::ComboBox {
             options,
             selected,
@@ -4526,7 +4540,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
 /// Puts `accessible` on an element the presenter built. A kit widget draws
 /// its own role, name and value over these; the states it does not report
 /// itself (disabled, expanded, a description) are the ones this adds.
-fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
+pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
     use gpui_notion::editor::ui;
     let Accessible {
         role,
@@ -6335,7 +6349,7 @@ mod tests {
     }
 
     #[test]
-    fn an_editor_is_a_multiline_field_named_by_its_label() {
+    fn an_editor_is_named_by_its_label_and_described_by_its_placeholder_without_one() {
         let mut editor = wire::Node::Editor {
             options: Box::default(),
             key: "e".into(),
@@ -6360,6 +6374,7 @@ mod tests {
             accessible(&editor),
             Accessible {
                 role: Some(gpui_kit::Role::MultilineTextInput),
+                description: Some("Write something".into()),
                 ..Default::default()
             }
         );
@@ -6367,7 +6382,74 @@ mod tests {
             unreachable!()
         };
         *label = Some("Message".into());
-        assert_eq!(accessible(&editor).name.as_deref(), Some("Message"));
+        let named = accessible(&editor);
+        assert_eq!(named.name.as_deref(), Some("Message"));
+        // the placeholder is not a name, nor a second one
+        assert_eq!(named.description, None);
+    }
+
+    /// #139: the field reads the text it holds, and one that takes no typing
+    /// says so and is offered none — the door reads the tree a screen reader
+    /// does.
+    #[gpui_kit::test]
+    fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let words = "no channel is open";
+        for editable in [true, false] {
+            let root = wire::Node::Editor {
+                key: "composer".into(),
+                label: Some("Message".into()),
+                options: Box::default(),
+                placeholder: String::new(),
+                document: wire::editor_document::EditorDocumentRef {
+                    document: "composer".into(),
+                    reset: 1,
+                    text_revision: 0,
+                    revision: 0,
+                    cursor: Default::default(),
+                    byte_len: words.len() as u32,
+                },
+                on_document: 0,
+                editable,
+                width: None,
+                height: None,
+                min_height: None,
+                max_height: None,
+            };
+            let store = crate::editor::wire::EditorStore::new(91);
+            store.replace(&root).unwrap();
+            seed_editor_text(&store, words);
+            let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+                let mut tree = ViewTree::new(root);
+                tree.set_editor_store(store, cx);
+                tree
+            });
+            let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            let nodes = native.update(|window, cx| {
+                window.activate_a11y();
+                window.render_frame(cx);
+                window.render_frame(cx);
+                crate::ax_door::snapshot("t", window, false)
+            });
+            let field = nodes
+                .iter()
+                .find(|node| node.role == "MultilineTextInput")
+                .expect("the editor's field is in the tree");
+            assert_eq!(field.value.as_deref(), Some(words), "editable: {editable}");
+            match editable {
+                true => {
+                    assert!(!field.state.contains(&"disabled"));
+                    assert!(field.actions.contains(&"type"));
+                    assert!(field.actions.contains(&"set_value"));
+                }
+                false => {
+                    assert!(field.state.contains(&"disabled"));
+                    assert!(field.actions.is_empty(), "{:?}", field.actions);
+                }
+            }
+        }
     }
 
     #[test]
