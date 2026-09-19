@@ -52,7 +52,8 @@ async fn forge_blob_bytes(
 
 /// Fetch the pictures a Markdown blob embeds and park them under the
 /// document, keyed by the image URL as written, for `forge_markdown`'s
-/// viewer. Best effort, in document order, the first `MAX_INLINE_PICTURES`:
+/// viewer. `anchor` is the document's own address, read by the asking
+/// view's epoch. Best effort, in document order, the first `MAX_INLINE_PICTURES`:
 /// an image that does not resolve, fetch or decode simply keeps its alt text.
 /// ponytail: fetched before the text lands, so a README with eight large
 /// pictures shows late; split into its own lane if that is ever felt.
@@ -60,11 +61,10 @@ pub async fn load_inline_pictures(
     client: &RpcClient,
     doc: String,
     source: &str,
-    base: String,
+    anchor: super::duck_uri::DuckLink,
     net: String,
 ) {
     use super::picture::{MAX_INLINE_PICTURES, decode_off_thread, park_inline_pictures};
-    let anchor = super::duck_uri::resolve_duck_link(base, net.clone());
     let mut wanted: Vec<String> = Vec::new();
     for item in pulldown_cmark::Parser::new_ext(source, pulldown_cmark::Options::all()) {
         let pulldown_cmark::Event::Start(pulldown_cmark::Tag::Image { dest_url, .. }) = item else {

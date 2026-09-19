@@ -76,7 +76,7 @@
 //!   and parked as the picture the `picture` surface draws under `surface`;
 //!   answered `{width, height}`. `picture.inline` `{doc, source, base, net}`
 //!   — the pictures a Markdown `source` embeds, resolved against the
-//!   document's own `duck://` address and parked under `doc` for the
+//!   document's own `duck://` address (spelled per epoch) and parked under `doc` for the
 //!   document surface. Both are the app's decoder and its one outbound
 //!   picture gate, which a view has neither of.
 //! - `host.visible` empty bytes subscribes to JSON booleans: whether this view
@@ -105,7 +105,7 @@ pub(super) mod media;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use super::{Guest, ModuleViewEvent, Slot, wire};
+use super::{Epoch, Guest, ModuleViewEvent, Slot, wire};
 // A refusal the NODE authored, carried through with the token the node gave
 // it: the rpc client split the envelope off, so no door here parses text.
 use crate::backend::refused;
@@ -542,7 +542,14 @@ pub(super) fn answer(
         ("op", "submit_bytes") => spawn(guest, id, payload, submit_bytes),
         ("rpc", "admin") => spawn(guest, id, payload, admin),
         ("picture", "put") => spawn_host(guest, id, payload, picture_put),
-        ("picture", "inline") => spawn(guest, id, payload, picture_inline),
+        ("picture", "inline") => match guest.epoch {
+            Epoch::Eight => spawn(guest, id, payload, |client, ask| {
+                picture_inline(client, ask, Epoch::Eight)
+            }),
+            Epoch::Ten => spawn(guest, id, payload, |client, ask| {
+                picture_inline(client, ask, Epoch::Ten)
+            }),
+        },
         // THE ONE DOOR OUT OF A VIEW. Every view used to declare an
         // `open_link` intent of its own and spell the address field its own
         // way; there is one door now, module-free, and the app resolves the
@@ -2037,7 +2044,8 @@ fn picture_put(ask: serde_json::Value) -> Answered {
     })
 }
 
-fn picture_inline(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answered {
+/// `base` is read by the asking view's epoch ([`Epoch::picture_base`]).
+fn picture_inline(client: ducktape_rpc::Client, ask: serde_json::Value, epoch: Epoch) -> Answered {
     Box::pin(async move {
         let doc = ask["doc"].as_str().unwrap_or_default().to_owned();
         let source = ask["source"].as_str().unwrap_or_default().to_owned();
@@ -2046,7 +2054,8 @@ fn picture_inline(client: ducktape_rpc::Client, ask: serde_json::Value) -> Answe
         if doc.is_empty() {
             return Err(malformed("`picture.inline` names no document"));
         }
-        crate::backend::load_inline_pictures(&client, doc, &source, base, net).await;
+        let anchor = epoch.picture_base(base, net.clone());
+        crate::backend::load_inline_pictures(&client, doc, &source, anchor, net).await;
         Ok(Vec::new())
     })
 }

@@ -84,7 +84,7 @@ impl DuckLink {
         }
     }
 
-    fn of(kind: DuckKind) -> Self {
+    pub(crate) fn of(kind: DuckKind) -> Self {
         Self {
             kind,
             ..Self::unknown("")
