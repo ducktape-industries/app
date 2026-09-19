@@ -1311,6 +1311,8 @@ impl DesktopWindow {
                     let label = crate::backend::network_row_label(&network);
                     let picked = network.id == selected;
                     let node_toml = crate::backend::offers_node_toml(&network);
+                    let silent = crate::backend::not_answering_line(&network);
+                    let new_invite = format!("new-invite/{}", network.id);
                     recent = recent.child(
                         div()
                             .flex()
@@ -1353,6 +1355,29 @@ impl DesktopWindow {
                                 .flex_shrink_0(),
                             ),
                     );
+                    // a silent node: what to do, and the way to a new invite
+                    // on the row itself — Forget is already beside its name.
+                    recent = recent.when_some(silent, |recent, line| {
+                        recent.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_4()
+                                .pb_2()
+                                .child(div().flex_1().min_w_0().child(hint(line)))
+                                .child(
+                                    self.action(
+                                        new_invite,
+                                        "Join with a new invite",
+                                        Message::GoJoin,
+                                        busy,
+                                    )
+                                    .outline()
+                                    .flex_shrink_0(),
+                                ),
+                        )
+                    });
                 }
                 // a measured contract mismatch, or another network answering
                 // at the row's address, disables the open the way no
@@ -1530,6 +1555,16 @@ impl DesktopWindow {
                         })
                         .when(!step.command.is_empty(), |steps| {
                             steps.child(hint(step.command.clone()).map(mono_family))
+                        })
+                        // not an error: the step still waits, and this says
+                        // what holds its ports until the node comes up.
+                        .when(!step.ports_held.is_empty(), |steps| {
+                            steps.child(
+                                div()
+                                    .id("provision-ports-held")
+                                    .role(Role::Status)
+                                    .child(hint(step.ports_held.clone())),
+                            )
                         });
                 }
                 // the wait keeps polling on this screen; leaving it drops the poll.

@@ -1052,3 +1052,94 @@ async fn an_invite_in_the_old_envelope_is_refused_by_name() {
         refused.message
     );
 }
+
+/// TWO NETWORKS, ONE SET OF PORTS (#137). A join writes the same listen ports
+/// into every workspace, so the node of a network joined beside a running one
+/// cannot bind, and its wait sat with no reason. The waiting step names the
+/// saved workspace whose `node.toml` names the same port — only while
+/// something listens there — and the way to stop that network's node.
+#[test]
+fn the_wait_names_the_saved_workspace_that_holds_its_ports() {
+    let root = tempfile::tempdir().unwrap();
+    let workspace = |name: &str, http: u16| {
+        let dir = root.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        workspace_config::NetworkDescriptor {
+            chain_id: name.into(),
+            validators: vec!["aa".repeat(32)],
+            bootstrap: vec![],
+            reach: vec![],
+            coordination: None,
+            block_time_ms: workspace_config::DEFAULT_BLOCK_TIME_MS,
+            modules: vec![],
+            genesis: String::new(),
+        }
+        .save(&dir.join("network.toml"))
+        .unwrap();
+        std::fs::write(
+            dir.join("node.toml"),
+            format!(
+                r#"network = "network.toml"
+key_file = "node.key"
+listen = "[::]:0"
+advertised = "overlay"
+storage_dir = "data"
+http_listen = "0.0.0.0:{http}"
+gateway_listen = "127.0.0.1:0"
+rpc_listen = "127.0.0.1:0"
+wireguard_listen = "0.0.0.0:51820"
+invite_listen = "0.0.0.0:51821"
+wireguard_advertised = "auto"
+primary_coordinator = "none"
+coordinator_relay = "none"
+checkpoint_blocks = 32
+"#
+            ),
+        )
+        .unwrap();
+        (name.to_string(), dir)
+    };
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let old = workspace("dognet#b5b6ea90", port);
+    let other = workspace("catnet#0e1b62f1", 1);
+    let (_, new) = workspace("dognet#88507a8b", port);
+    let saved = vec![other.clone(), old, (String::new(), new.clone())];
+
+    let hint = ports_held(&new, &saved).expect("the old node holds the port");
+    assert!(hint.starts_with("dognet#b5b6ea90, another network saved on this machine"));
+    assert!(hint.contains(&format!("names port {port} in its node.toml")));
+    assert!(hint.contains("\"ducktape-node-user@$(systemd-escape 'dognet#b5b6ea90')\""));
+    assert!(hint.contains("\"ducktape-node@$(systemd-escape 'dognet#b5b6ea90')\""));
+    assert!(hint.contains("ducktape-node-launcher with SIGTERM"));
+    // a workspace that names other ports is not the one in the way
+    assert_eq!(ports_held(&new, std::slice::from_ref(&other)), None);
+
+    // the waiting step itself says so, under its command, while its own
+    // node has not answered
+    let wait = |held: bool| {
+        let root = root.path().to_path_buf();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(async move {
+            use futures::StreamExt as _;
+            let steps = provision_progress_in(
+                Some(root),
+                "dognet#88507a8b".into(),
+                "http://127.0.0.1:1".into(),
+            );
+            let wait = steps.skip(3).next().await.unwrap();
+            assert_eq!((wait.index, wait.state.as_str()), (4, "waiting"));
+            assert!(!wait.command.is_empty());
+            assert_eq!(!wait.ports_held.is_empty(), held, "{}", wait.ports_held);
+        })
+    };
+    wait(true);
+
+    // the same ports with nothing listening: the node can bind, no hint
+    drop(held);
+    assert_eq!(ports_held(&new, &saved), None);
+    wait(false);
+}

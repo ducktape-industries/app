@@ -259,6 +259,13 @@ fn ax_contract_native() {
             Onboarding,
         ));
     }
+    // a silent row's line and offer, and the wait's ports hint (#137)
+    failures.extend(native("onboarding silent row", silent_row(), Onboarding));
+    failures.extend(native(
+        "onboarding wait, ports held",
+        ports_held_wait(),
+        Onboarding,
+    ));
     let connected = || {
         let mut app = Ducktape::initial_state();
         app.connected = true;
@@ -799,6 +806,58 @@ fn ax_contract_announcements_are_live_regions() {
         assert_eq!(found.len(), 1, "{words} is read");
         assert!(within(&found[0], role), "{words} is in a {role:?}");
     }
+}
+
+const SILENT_LINE: &str =
+    "dognet has not answered. If it was re-founded, ask a member for a new invite.";
+const PORTS_HELD: &str = "dognet#b5b6ea90, another network saved on this machine, holds port 8844.";
+
+/// The launch window over a saved network whose node has not answered.
+fn silent_row() -> Ducktape {
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Networks;
+    app.hub_networks = vec![super::shell::silent_workspace_row("dognet#b5b6ea90")];
+    app
+}
+
+/// The waiting step while another saved workspace's node holds its ports.
+fn ports_held_wait() -> Ducktape {
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Provisioning;
+    app.provision_steps = vec![backend::ProvisionStep {
+        index: 4,
+        label: "Waiting for your node".into(),
+        state: "waiting".into(),
+        settled: false,
+        hint: String::new(),
+        command: "ducktape-node-launcher run".into(),
+        ports_held: PORTS_HELD.into(),
+    }];
+    app
+}
+
+/// A silent row's line is read as text beside its offer, and the waiting
+/// step's ports hint is read inside a Status region — the step still waits;
+/// the hint is not an error (#137).
+#[test]
+fn ax_contract_the_silent_row_and_the_ports_hint_are_read() {
+    let _turn = crate::module_view::tests::blocking_connection_turn();
+    let (mut cx, window) = open_native(silent_row(), crate::shell::WindowKind::Onboarding);
+    let row = tree(&mut cx, window);
+    assert_eq!(reading(&row, SILENT_LINE).len(), 1, "{SILENT_LINE} is read");
+    assert_eq!(reading(&row, "Join with a new invite").len(), 1);
+    let (mut cx, window) = open_native(ports_held_wait(), crate::shell::WindowKind::Onboarding);
+    let wait = tree(&mut cx, window);
+    let found = reading(&wait, PORTS_HELD);
+    assert_eq!(found.len(), 1, "the ports hint is read");
+    assert!(
+        within(&found[0], Role::Status),
+        "the ports hint is a status"
+    );
+    assert!(
+        !within(&found[0], Role::Alert),
+        "the ports hint is not an error"
+    );
 }
 
 /// The bell's popover is a dialog called Notifications: opening it puts
