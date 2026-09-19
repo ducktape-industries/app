@@ -121,11 +121,11 @@ class WalkTest(unittest.TestCase):
         self.out = Path(tempfile.mkdtemp(prefix='walk-test-'))
         self.addCleanup(shutil.rmtree, self.out, True)
 
-    def walk(self, steps, door, judge, secrets=None, scenarios=None, **kw):
+    def walk(self, steps, door, judge, secrets=None, scenarios=None, params=None, **kw):
         scenario = {'name': 't', 'rig': {'display': False, 'secrets': secrets or {}}, 'steps': steps}
         with mock.patch.object(walk, 'JEV_URL', judge.url('/v1/systemone')), \
                 mock.patch.dict(os.environ, {'JEV_API_KEY': 'test-key'}):
-            run = walk.Walk(scenarios or scenario, self.out, {}, **kw)
+            run = walk.Walk(scenarios or scenario, self.out, params or {}, **kw)
             door_file = run.rig.door_file()
             door_file.parent.mkdir(parents=True, exist_ok=True)
             door_file.write_text(json.dumps({'port': door.server_address[1], 'token': TOKEN}))
@@ -284,6 +284,16 @@ class WalkTest(unittest.TestCase):
         for path in self.out.rglob('*'):
             if path.is_file():
                 self.assertNotIn('SECRET', path.read_text(errors='replace'), path)
+
+    def test_the_judge_reads_the_runs_own_names_not_the_holes(self):
+        steps = [{'say': 'join as {param:walk_tag}', 'expect': 'the field holds qa-{param:walk_tag}'}]
+        judge = fake_jev([jev('choice', {'choice': 'o0'}, 10), jev('noul', {'noul': 0.9}, 10)])
+        result = self.walk(steps, fake_door([JOIN]), judge, params={'walk_tag': 'abc1234'})
+        self.assertEqual(result['result'], 'PASS')
+        sent = ' '.join(c[2] for c in judge.calls)
+        self.assertIn('join as abc1234', sent)
+        self.assertIn('the field holds qa-abc1234', sent)
+        self.assertNotIn('{param:', sent)
 
     def test_a_wait_outlasts_the_door_cap(self):
         """The door answers one wait within 60 s; the runner asks again until ITS deadline."""

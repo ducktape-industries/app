@@ -452,6 +452,8 @@ class Walk:
         spent = self.jev.usd
         for n, step in enumerate(steps, 1):
             began = time.monotonic()
+            # what Jev reads names the run's own things: params and rig paths, never a secret
+            step = {**step, **{k: self.rig.fill(step[k]) for k in ('say', 'expect') if k in step}}
             line = {'scenario': name, 'n': n, 'kind': step.get('kind', 'ui'), 'say': step['say']}
             self.last_tree = self.offers = None
             try:
