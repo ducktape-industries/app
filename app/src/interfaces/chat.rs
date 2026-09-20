@@ -107,6 +107,10 @@ pub fn inline_spans(text: &str) -> Vec<Span> {
     let mut plain = String::new();
     let mut index = 0;
     while index < chars.len() {
+        let url = url_len(&chars, index);
+        let reference = reference_at(&chars, index);
+        let bold = fenced(&chars, index, "**").or_else(|| fenced(&chars, index, "__"));
+        let italic = fenced(&chars, index, "*").or_else(|| fenced(&chars, index, "_"));
         if let Some((party, consumed)) = mention_at(&chars, index) {
             flush_plain(&mut plain, &mut spans);
             spans.push(Span {
@@ -114,25 +118,14 @@ pub fn inline_spans(text: &str) -> Vec<Span> {
                 marks: vec![Mark::Mention(party)],
             });
             index += consumed;
-        } else if let Some((inner, consumed)) =
-            fenced(&chars, index, "**").or_else(|| fenced(&chars, index, "__"))
-        {
+        } else if let Some((label, target, consumed)) = reference {
             flush_plain(&mut plain, &mut spans);
-            spans.extend(inline_spans(&inner).into_iter().map(|mut span| {
-                span.marks.push(Mark::Bold);
-                span
-            }));
+            spans.push(Span {
+                text: label,
+                marks: vec![Mark::Link(target)],
+            });
             index += consumed;
-        } else if let Some((inner, consumed)) =
-            fenced(&chars, index, "*").or_else(|| fenced(&chars, index, "_"))
-        {
-            flush_plain(&mut plain, &mut spans);
-            spans.extend(inline_spans(&inner).into_iter().map(|mut span| {
-                span.marks.push(Mark::Italic);
-                span
-            }));
-            index += consumed;
-        } else if let Some(length) = url_len(&chars, index) {
+        } else if let Some(length) = url {
             flush_plain(&mut plain, &mut spans);
             let target: String = chars[index..index + length].iter().collect();
             spans.push(Span {
@@ -140,6 +133,20 @@ pub fn inline_spans(text: &str) -> Vec<Span> {
                 marks: vec![Mark::Link(target)],
             });
             index += length;
+        } else if let Some((inner, consumed)) = bold {
+            flush_plain(&mut plain, &mut spans);
+            spans.extend(inline_spans(&inner).into_iter().map(|mut span| {
+                span.marks.push(Mark::Bold);
+                span
+            }));
+            index += consumed;
+        } else if let Some((inner, consumed)) = italic {
+            flush_plain(&mut plain, &mut spans);
+            spans.extend(inline_spans(&inner).into_iter().map(|mut span| {
+                span.marks.push(Mark::Italic);
+                span
+            }));
+            index += consumed;
         } else {
             plain.push(chars[index]);
             index += 1;
@@ -175,48 +182,97 @@ fn mention_at(chars: &[char], at: usize) -> Option<(Party, usize)> {
 }
 
 fn fenced(chars: &[char], at: usize, marker: &str) -> Option<(String, usize)> {
-    let marker: Vec<_> = marker.chars().collect();
-    if !chars[at..].starts_with(&marker) {
+    let marks: Vec<char> = marker.chars().collect();
+    if !chars[at..].starts_with(marks.as_slice()) {
         return None;
     }
-    let start = at + marker.len();
+    let word_bound = marks[0] == '_';
+    let body_start = at + marks.len();
     if chars
-        .get(start)
-        .is_none_or(|character| character.is_whitespace())
+        .get(body_start)
+        .is_none_or(|next| next.is_whitespace())
     {
         return None;
     }
-    for cursor in start..=chars.len().saturating_sub(marker.len()) {
-        if chars[cursor..].starts_with(&marker)
-            && cursor > start
-            && !chars[cursor - 1].is_whitespace()
-        {
-            return Some((
-                chars[start..cursor].iter().collect(),
-                cursor + marker.len() - at,
-            ));
+    let run_start = (0..at).rev().take_while(|&i| chars[i] == marks[0]).count();
+    if word_bound && at > run_start && chars[at - run_start - 1].is_alphanumeric() {
+        return None;
+    }
+    let mut cursor = body_start;
+    while cursor + marks.len() <= chars.len() {
+        if chars[cursor..].starts_with(marks.as_slice()) {
+            if cursor == body_start {
+                return None;
+            }
+            let end = cursor + marks.len();
+            let space_before = chars[cursor - 1].is_whitespace();
+            let word_after = word_bound
+                && chars[end..]
+                    .iter()
+                    .find(|&&next| next != marks[0])
+                    .is_some_and(|next| next.is_alphanumeric());
+            if !space_before && !word_after {
+                let inner: String = chars[body_start..cursor].iter().collect();
+                return Some((inner, end - at));
+            }
         }
+        cursor += 1;
     }
     None
 }
 
 fn url_len(chars: &[char], at: usize) -> Option<usize> {
     let rest: String = chars[at..].iter().collect();
-    if !["http://", "https://", "duck://"]
-        .iter()
-        .any(|prefix| rest.starts_with(prefix))
-    {
+    if !LINK_SCHEMES.iter().any(|scheme| rest.starts_with(scheme)) {
         return None;
     }
     let mut len = chars[at..]
         .iter()
         .take_while(|c| !c.is_whitespace())
         .count();
-    while len > 0 && chars[at..at + len].last() == Some(&')') {
+    while dangling_close(&chars[at..at + len]) {
         len -= 1;
     }
     (len > 0).then_some(len)
 }
+
+fn dangling_close(run: &[char]) -> bool {
+    let closed = run.last() == Some(&')');
+    let opens = run.iter().filter(|c| **c == '(').count();
+    let closes = run.iter().filter(|c| **c == ')').count();
+    closed && closes > opens
+}
+
+fn reference_at(chars: &[char], at: usize) -> Option<(String, String, usize)> {
+    if chars[at] != '[' {
+        return None;
+    }
+    let label_end = chars[at + 1..]
+        .iter()
+        .position(|c| *c == ']' || *c == '[')?
+        + at
+        + 1;
+    let labelled = chars[label_end] == ']' && chars.get(label_end + 1) == Some(&'(');
+    if !labelled {
+        return None;
+    }
+    let url_start = label_end + 2;
+    let url_end = chars[url_start..]
+        .iter()
+        .position(|c| *c == ')' || c.is_whitespace())?
+        + url_start;
+    let closed = chars[url_end] == ')';
+    if !closed {
+        return None;
+    }
+    let label: String = chars[at + 1..label_end].iter().collect();
+    let target: String = chars[url_start..url_end].iter().collect();
+    let linkable =
+        !label.is_empty() && LINK_SCHEMES.iter().any(|scheme| target.starts_with(scheme));
+    linkable.then(|| (label, target, url_end + 1 - at))
+}
+
+const LINK_SCHEMES: [&str; 3] = ["http://", "https://", "duck://"];
 
 fn decode_hex(value: &str) -> Option<Vec<u8>> {
     if value.is_empty()
@@ -326,3 +382,58 @@ pub mod index;
 
 #[cfg(test)]
 mod owner_golden;
+
+#[cfg(test)]
+mod tests {
+    use super::{Mark, inline_spans};
+
+    #[test]
+    fn inline_parser_keeps_links_and_commonmark_flanking() {
+        let rows = [
+            ("my_var_name", vec![("my_var_name", false, false)]),
+            ("a__b__c", vec![("a__b__c", false, false)]),
+            ("_var_", vec![("var", true, false)]),
+            (
+                "[docs](https://example.test/docs)",
+                vec![("docs", false, false)],
+            ),
+        ];
+        for (text, expected) in rows {
+            let got: Vec<_> = inline_spans(text)
+                .into_iter()
+                .map(|span| {
+                    (
+                        span.text,
+                        span.marks.contains(&Mark::Italic),
+                        span.marks.contains(&Mark::Bold),
+                    )
+                })
+                .collect();
+            let expected: Vec<_> = expected
+                .into_iter()
+                .map(|(text, italic, bold)| (text.to_string(), italic, bold))
+                .collect();
+            assert_eq!(got, expected, "for `{text}`");
+        }
+
+        let reference = inline_spans("[docs](https://example.test/docs)");
+        assert_eq!(
+            reference[0].marks,
+            vec![Mark::Link("https://example.test/docs".into())]
+        );
+
+        let links = inline_spans("(https://example.test/a_(b)) https://example.test/a)");
+        assert_eq!(links[0].text, "(");
+        assert_eq!(links[1].text, "https://example.test/a_(b)");
+        assert_eq!(links[2].text, ") ");
+        assert_eq!(links[3].text, "https://example.test/a");
+        assert_eq!(
+            links[1].marks,
+            vec![Mark::Link("https://example.test/a_(b)".into())]
+        );
+        assert_eq!(
+            links[3].marks,
+            vec![Mark::Link("https://example.test/a".into())]
+        );
+    }
+}
