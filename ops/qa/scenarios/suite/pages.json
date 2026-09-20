@@ -8,9 +8,7 @@
   "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
  },
  "gaps": [
-  "ducktape-views@a2a73e1 pages/src/editor_binding.rs:496 — a to-do checkbox is painted inside the editor: no CheckBox node, so checking it cannot be done or proven from the tree",
-  "ducktape-views@a2a73e1 pages/src/editor_binding.rs:402-407,557 — undo is Ctrl/Cmd+Z only, no Undo button: the pointer door has no key, so undo is not walked",
-  "ducktape-views@a2a73e1 pages/src/rows.rs:371 — search result rows are unnamed buttons; rows.rs:127-133 row actions show only on hover"
+  "This scenario verifies page title and body text through the native block fields of the single guest document editor; it does not verify checkbox toggling, undo, search, or row context actions."
  ],
  "steps": [
   {
