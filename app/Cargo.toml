@@ -34,9 +34,6 @@ module-artifact.workspace = true
 # the `b64` pages the node's read lane answers with
 base64.workspace = true
 sha2.workspace = true
-# the blob read lane's own bounds and reply shape: a page size spelled here
-# as a literal would be a second copy the module cannot see move.
-forge.workspace = true
 gateway.workspace = true
 # the client-computed merge lane: a bare mirror fetched over the node's
 # /forge/{repo} smart-HTTP bridge + the scratch merge commit MergePr CASes.
