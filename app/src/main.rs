@@ -6,6 +6,7 @@ mod ax_door;
 mod backend;
 mod call;
 mod editor;
+mod interfaces;
 mod module_view;
 mod secret;
 mod shell;

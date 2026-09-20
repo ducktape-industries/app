@@ -15,13 +15,7 @@ unicode-segmentation = "1"
 qrcode = { version = "0.14", default-features = false }
 futures.workspace = true
 pulldown-cmark = "0.12.2"
-# chat's CLIENT view model: the block parse a composer's text goes through
-# and the account link a mention spells. One implementation, whether the
-# reader of it is this app or the chat view.
-chat.workspace = true
-chat-identity.workspace = true
 duck-address.workspace = true
-files-wire.workspace = true
 # the huddle media planes: the call-socket framing and voice/video wire.
 media-service.workspace = true
 design.workspace = true
@@ -34,10 +28,6 @@ module-artifact.workspace = true
 # the `b64` pages the node's read lane answers with
 base64.workspace = true
 sha2.workspace = true
-# the blob read lane's own bounds and reply shape: a page size spelled here
-# as a literal would be a second copy the module cannot see move.
-forge.workspace = true
-gateway.workspace = true
 # the client-computed merge lane: a bare mirror fetched over the node's
 # /forge/{repo} smart-HTTP bridge + the scratch merge commit MergePr CASes.
 # forge's exact pin (vendored, no TLS transports — the bridge speaks plain
@@ -46,7 +36,6 @@ git2 = { version = "0.19", default-features = false, features = ["vendored-libgi
 # THE ducktape home resolution (`$DUCKTAPE_HOME` else `~/.ducktape`), in a
 # zero-dependency leaf so every reader of that root agrees about it.
 ducktape-home.workspace = true
-identity.workspace = true
 # THE device keystore, linked rather than spawned. Opening your own key is the
 # app's own business: it used to reach argon2id by starting `ducktape` and
 # piping to it, which made "can this process find a binary on disk?" a
@@ -60,6 +49,10 @@ node.workspace = true
 authpage.workspace = true
 # the ed25519 signer `keystore` hands back and `node::encode_frame` signs with.
 commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+k256.workspace = true
+p256.workspace = true
+unicode-normalization.workspace = true
 # the run envelope a durable agent run is scheduled with — the SCHEMA only.
 # Reaching the composer through `compute-service` would link provider-host
 # and the microVM sandbox into a GUI.

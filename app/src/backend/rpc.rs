@@ -370,15 +370,18 @@ pub(crate) async fn sign_add_key_consent(
 ) -> Result<identity::Authorizer, String> {
     let session = seated_signer(password).await?;
     let signer = session.as_ref().expect("the session was seated above");
-    Ok(workspace_config::ed25519_authorizer(
-        &signer.key,
-        chain_id,
-        scheme,
-        new_key,
-        generation,
+    let preimage =
+        identity::add_key_preimage(chain_id, scheme, new_key, generation, account, expires_at);
+    Ok(identity::Authorizer {
+        key: signer.key.public_key().as_ref().to_vec(),
         account,
         expires_at,
-    ))
+        proof: signer
+            .key
+            .sign(identity::IDENTITY_ADD_KEY_NS, &preimage)
+            .as_ref()
+            .to_vec(),
+    })
 }
 
 /// Take the session seat: the key at `path`, opened under `password`. THE

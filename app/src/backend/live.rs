@@ -1,5 +1,5 @@
 use super::*;
-use ::chat;
+use crate::interfaces::chat;
 
 /// One UI publication may carry at most this many consecutive chat deltas.
 /// The cap bounds one reducer pass; the capacity-one publication gate below

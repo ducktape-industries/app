@@ -888,6 +888,53 @@ pub async fn link_wallet(
 /// knows which that is — touch 1 asks (`userHandle`), touch 2 is the assertion
 /// over this key's `AddKey` preimage for that account. This device signs the
 /// frame (the key being admitted).
+fn login_add_key(
+    chain_id: &str,
+    device_key: &[u8],
+    generation: u64,
+    account: &identity::AccountView,
+    label: Option<String>,
+    proof: Vec<u8>,
+    expires_at: u64,
+) -> Result<identity::IdentityMsg, String> {
+    let preimage = identity::add_key_preimage(
+        chain_id,
+        identity::KeyScheme::Ed25519,
+        device_key,
+        generation,
+        account.number,
+        expires_at,
+    );
+    let signer = account
+        .keys
+        .iter()
+        .filter(|key| key.scheme == identity::KeyScheme::Secp256r1)
+        .find(|key| {
+            identity::KeyScheme::Secp256r1.verify(
+                &key.pubkey,
+                identity::IDENTITY_ADD_KEY_NS,
+                &preimage,
+                &proof,
+            )
+        })
+        .ok_or_else(|| {
+            format!(
+                "no passkey on account {} signed this consent",
+                account.number
+            )
+        })?;
+    Ok(identity::IdentityMsg::AddKey {
+        scheme: identity::KeyScheme::Ed25519,
+        label,
+        authorizer: identity::Authorizer {
+            key: signer.pubkey.clone(),
+            account: account.number,
+            expires_at,
+            proof,
+        },
+    })
+}
+
 pub async fn login_with_passkey(
     rpc: String,
     password: String,
@@ -923,7 +970,7 @@ pub async fn login_with_passkey(
         ))
         .await?;
         let (_, proof) = authpage::login_consent(&chain_id, &consent)?;
-        let msg = authpage::login_add_key(
+        let msg = login_add_key(
             &chain_id,
             &device_key,
             generation,
@@ -1245,7 +1292,7 @@ pub fn login_by_qr(
         .await?;
         let (_, proof) = authpage::login_consent(&chain_id, &consent)?;
         step(&mut tx, CeremonyStep::working("Joining the account…")).await?;
-        let msg = authpage::login_add_key(
+        let msg = login_add_key(
             &chain_id,
             &device_key,
             generation,
@@ -1335,8 +1382,7 @@ mod account_ticket_tests {
             .public_key()
             .as_ref()
             .to_vec();
-        let authorizer = workspace_config::ed25519_authorizer(
-            &member(),
+        let preimage = identity::add_key_preimage(
             "chain-a",
             identity::KeyScheme::Ed25519,
             &new_key,
@@ -1344,6 +1390,15 @@ mod account_ticket_tests {
             11,
             900,
         );
+        let authorizer = identity::Authorizer {
+            key: member().public_key().as_ref().to_vec(),
+            account: 11,
+            expires_at: 900,
+            proof: member()
+                .sign(identity::IDENTITY_ADD_KEY_NS, &preimage)
+                .as_ref()
+                .to_vec(),
+        };
         let ticket = add_key_ticket(&identity::IdentityMsg::AddKey {
             scheme: identity::KeyScheme::Ed25519,
             label: Some("phone".into()),

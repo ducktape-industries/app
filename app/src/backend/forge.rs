@@ -1,5 +1,5 @@
 use super::*;
-use ::forge;
+use crate::interfaces::forge as forge_wire;
 use std::net::IpAddr;
 
 /// Page one blob's bytes in through `blob_bytes` (1 MiB pages to eof).
@@ -25,14 +25,14 @@ async fn forge_blob_bytes(
             "rev": &rev,
             "path": path,
             "offset": bytes.len() as u64,
-            "len": forge::MAX_BLOB_PAGE_BYTES as u64,
+            "len": forge_wire::MAX_BLOB_PAGE_BYTES as u64,
         }});
         let reply: serde_json::Value = client.query("forge", &query).await?;
         let page = reply
             .get("blob_bytes")
             .cloned()
             .ok_or_else(|| "the requested file was not found".to_string())?;
-        let page: forge::BlobBytesReply =
+        let page: forge_wire::BlobBytesReply =
             serde_json::from_value(page).map_err(|error| error.to_string())?;
         rev = page.rev;
         let chunk = super::storage::base64_decode(&page.b64)

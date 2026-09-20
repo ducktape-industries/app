@@ -1,5 +1,5 @@
 use super::*;
-use identity::{AccountNumber, AccountView, IdentityQuery, IdentityReply};
+use crate::interfaces::identity::{AccountNumber, AccountView, IdentityQuery, IdentityReply};
 
 /// The network's name directory as this process last read it: the account
 /// name bound to every user key. Every surface that names a key reads it, and
@@ -78,19 +78,10 @@ pub(crate) async fn read_accounts(client: &RpcClient) -> Result<Vec<AccountView>
 /// The directory an account list binds: every key of an account resolves to
 /// that account — its number and its name.
 ///
-/// chat reads the `AccountView` of the identity-wire it links (81953e6), the
-/// roster decodes core's (5fa05de): one shape at both revs, so a record
-/// crosses as its own JSON.
+/// The local chat and identity interfaces share this app-owned account shape;
+/// the roster passes records directly without depending on either module wire crate.
 pub(crate) fn directory_of(accounts: &[AccountView]) -> NameDirectory {
-    let accounts: Vec<chat_identity::AccountView> = accounts
-        .iter()
-        .map(|account| {
-            serde_json::to_value(account)
-                .and_then(serde_json::from_value)
-                .expect("identity's AccountView is one shape at both sdk revs")
-        })
-        .collect();
-    NameDirectory::from_accounts(&accounts)
+    NameDirectory::from_accounts(accounts)
 }
 
 /// A test's directory, seated the way a roster read seats it, for as long as

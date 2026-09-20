@@ -1,6 +1,6 @@
-use ::chat;
-use ::chat::client::{CHAT_HOT_WINDOW_LIMIT, chat_message, mark_message_groups};
-use ::chat::index::MsgRow;
+use crate::interfaces::chat;
+use crate::interfaces::chat::client::{CHAT_HOT_WINDOW_LIMIT, chat_message, mark_message_groups};
+use crate::interfaces::chat::index::MsgRow;
 use ::node;
 
 use commonware_cryptography::{Signer as _, ed25519};
