@@ -1326,11 +1326,21 @@ impl Standing {
 
     /// The socket could not open, or dropped, with `failed`: `true` once it
     /// is time to open it again, `false` when that ended the subscription.
-    async fn reopens(&mut self, replies: &Replies, id: u64, failed: wire::Refusal) -> bool {
+    /// `refusal` narrows what the view is told (identity for `net.stream`;
+    /// [`voice::voice_refusal`](super::voice::voice_refusal) for `voice.hub`)
+    /// without touching `failed` itself, so [`unanswered`]'s retry
+    /// classification still runs on the kernel's own token.
+    async fn reopens(
+        &mut self,
+        replies: &Replies,
+        id: u64,
+        failed: wire::Refusal,
+        refusal: fn(wire::Refusal) -> wire::Refusal,
+    ) -> bool {
         let detail = match unanswered(failed) {
             Ok(detail) => detail,
-            Err(refusal) => {
-                replies.item(id, Err(refusal), true);
+            Err(final_refusal) => {
+                replies.item(id, Err(refusal(final_refusal)), true);
                 return false;
             }
         };
@@ -1342,7 +1352,7 @@ impl Standing {
                 error = %detail,
                 "a view's node stream lost the node; it reopens once the node answers"
             );
-            let down = wire::Refusal::new("rpc_client", super::NODE_UNREACHABLE);
+            let down = refusal(wire::Refusal::new("rpc_client", super::NODE_UNREACHABLE));
             replies.item(id, Err(down), false);
         }
         tokio::time::sleep(crate::backend::retry_delay(self.attempt)).await;
@@ -1395,7 +1405,10 @@ fn stream_open(guest: &mut Guest, id: u64, payload: &[u8]) {
                 }
                 Err(failed) => failed,
             };
-            if !standing.reopens(&replies, id, failed).await {
+            if !standing
+                .reopens(&replies, id, failed, |refusal| refusal)
+                .await
+            {
                 return;
             }
         }
@@ -1430,10 +1443,16 @@ fn application_stream(guest: &mut Guest, id: u64, payload: &[u8]) {
         );
         return;
     }
-    hold_exchange(guest, id, None, move |client| {
-        let request = request.clone();
-        Box::pin(async move { application_open(&client, &request).await })
-    });
+    hold_exchange(
+        guest,
+        id,
+        None,
+        |refusal| refusal,
+        move |client| {
+            let request = request.clone();
+            Box::pin(async move { application_open(&client, &request).await })
+        },
+    );
 }
 
 type NodeSocket =
@@ -1451,10 +1470,15 @@ fn hold_exchange(
     guest: &mut Guest,
     id: u64,
     ready: Option<&'static str>,
+    refusal: fn(wire::Refusal) -> wire::Refusal,
     open: impl Fn(ducktape_rpc::Client) -> Opening + Send + 'static,
 ) {
-    let Some(client) = connected(guest, id) else {
-        return;
+    let client = match node_client(guest) {
+        Ok(client) => client,
+        Err(error) => {
+            guest.reply(id, Err(refusal(error)));
+            return;
+        }
     };
     let replies = guest.replies.clone();
     let Some(counted) = replies.admit() else {
@@ -1464,7 +1488,7 @@ fn hold_exchange(
     let (outgoing, mut receiver) = tokio::sync::mpsc::channel(1);
     let task = runtime().spawn(async move {
         let _counted = counted;
-        held_exchange(&replies, id, ready, client, open, &mut receiver).await;
+        held_exchange(&replies, id, ready, refusal, client, open, &mut receiver).await;
     });
     guest.tasks.push((
         id,
@@ -1481,6 +1505,7 @@ async fn held_exchange(
     replies: &Replies,
     id: u64,
     ready: Option<&'static str>,
+    refusal: fn(wire::Refusal) -> wire::Refusal,
     client: ducktape_rpc::Client,
     open: impl Fn(ducktape_rpc::Client) -> Opening,
     receiver: &mut tokio::sync::mpsc::Receiver<tokio_tungstenite::tungstenite::Message>,
@@ -1511,7 +1536,7 @@ async fn held_exchange(
             }
             Err(failed) => failed,
         };
-        if !standing.reopens(replies, id, failed).await {
+        if !standing.reopens(replies, id, failed, refusal).await {
             return;
         }
     }
@@ -2389,6 +2414,62 @@ mod tests {
             client_for_revision(revision + 1).unwrap().origin(),
             "http://127.0.0.1:3002"
         );
+    }
+
+    /// [`Standing::reopens`] answers the SAME open-timeout/mid-outage failure
+    /// (`rpc_client`, kernel-wide) through whichever mapper its caller gives:
+    /// unchanged for a `net.stream` subscription (identity), narrowed to
+    /// `node_unreachable` for `voice.hub` ([`voice::voice_refusal`]) — the one
+    /// seam that closes items (a) and (b) of the call view's refusal set.
+    #[tokio::test]
+    async fn the_reopen_notice_narrows_only_for_the_mapper_its_caller_gives() {
+        let net_stream = Replies::default();
+        let mut standing = Standing::default();
+        let failed = wire::Refusal::new("rpc_client", "application stream open timed out");
+        assert!(
+            standing
+                .reopens(&net_stream, 1, failed, |refusal| refusal)
+                .await
+        );
+        let mut landed = Vec::new();
+        net_stream.drain_into(&mut landed).expect("reply budget");
+        match landed.as_slice() {
+            [
+                wire::Event::Response {
+                    id: 1,
+                    result: Err(refusal),
+                    done: false,
+                },
+            ] => assert_eq!(
+                refusal.reason, "rpc_client",
+                "net.stream keeps its own token"
+            ),
+            other => panic!("{other:?}"),
+        }
+
+        let voice_hub = Replies::default();
+        let mut standing = Standing::default();
+        let failed = wire::Refusal::new("rpc_client", "application stream open timed out");
+        assert!(
+            standing
+                .reopens(&voice_hub, 1, failed, voice::voice_refusal)
+                .await
+        );
+        let mut landed = Vec::new();
+        voice_hub.drain_into(&mut landed).expect("reply budget");
+        match landed.as_slice() {
+            [
+                wire::Event::Response {
+                    id: 1,
+                    result: Err(refusal),
+                    done: false,
+                },
+            ] => assert_eq!(
+                refusal.reason, "node_unreachable",
+                "voice.hub narrows the same failure to its own closed set"
+            ),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// The two strings a `rpc.stream` ask becomes, and what it refuses: the

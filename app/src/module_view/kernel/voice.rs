@@ -41,10 +41,29 @@ pub(super) fn answer(guest: &mut Guest, operation: &str, id: u64, payload: &[u8]
             return;
         }
     };
-    super::hold_exchange(guest, id, Some(READY), move |client| {
+    super::hold_exchange(guest, id, Some(READY), voice_refusal, move |client| {
         let channel = channel.clone();
         Box::pin(async move { open_hub(&client, &channel).await })
     });
+}
+
+/// The call view's refusal set is closed at four tokens: `key_without_account`,
+/// `not_in_huddle`, `no_call_hub`, `node_unreachable` (ruling m629bbcea). The
+/// shared retry/timeout machinery in [`hold_exchange`](super::hold_exchange)
+/// speaks two kernel-wide tokens that are not in that set — `rpc_client` (the
+/// open timeout, the mid-outage notice) and `not_connected` (no node
+/// connected at all) — so this is the seam that folds both into
+/// `node_unreachable` before a voice.hub answer reaches the guest. Every
+/// other reason, including the hub's own tokens from [`hub_failed`], passes
+/// through unchanged.
+pub(super) fn voice_refusal(refusal: wire::Refusal) -> wire::Refusal {
+    match refusal.reason.as_str() {
+        "rpc_client" | "not_connected" => wire::Refusal::new(
+            "node_unreachable",
+            "your node cannot be reached for this call",
+        ),
+        _ => refusal,
+    }
 }
 
 /// The one input: a plain-token channel id, which the query string carries
@@ -65,6 +84,16 @@ fn channel_of(payload: &[u8]) -> Result<String, wire::Refusal> {
     }
 }
 
+/// The origin [`open_hub`]'s two proofs both upgrade against: the agent
+/// websocket url with its `/v1/ws` suffix stripped, so each can append its
+/// own path.
+fn ws_origin(rpc: &str) -> Result<String, wire::Refusal> {
+    let url = crate::backend::agent_ws_url(rpc);
+    url.strip_suffix("/v1/ws")
+        .map(str::to_owned)
+        .ok_or_else(|| host_fault("invalid node websocket origin"))
+}
+
 /// The hub upgrade, proven as [`super::open_topic`] proves a topic: the
 /// 0600 workspace token on the query when this device hosts the node, the
 /// seated key's signature over `GET` + this exact path+query otherwise. The
@@ -73,35 +102,65 @@ async fn open_hub(
     client: &ducktape_rpc::Client,
     channel: &str,
 ) -> Result<NodeSocket, wire::Refusal> {
+    let rpc = client.origin();
+    let path = format!("{WS_PATH}?channel={channel}");
+    let workspace_token = crate::backend::workspace_at(rpc)
+        .and_then(|(_, workspace)| crate::backend::read_link_token(&workspace).ok());
+    match workspace_token {
+        Some(token) => open_hub_with_token(rpc, &path, &token).await,
+        None => open_hub_signed(client, &path).await,
+    }
+}
+
+/// The 0600-workspace-token half of [`open_hub`], as [`super::open_with_token`]
+/// is [`super::open_topic`]'s: no signature on the upgrade, the token rides
+/// the query string instead — this device hosts the node, so the wallet can
+/// stay locked.
+async fn open_hub_with_token(
+    rpc: &str,
+    path: &str,
+    token: &str,
+) -> Result<NodeSocket, wire::Refusal> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
+    let ws_origin = ws_origin(rpc)?;
+    let request = format!("{ws_origin}{path}&token={token}")
+        .into_client_request()
+        .map_err(|error| host_fault(format!("could not address the node: {error}")))?;
+    let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
+        max_message_size: Some(super::MAX_STREAM_FRAME_BYTES),
+        max_frame_size: Some(super::MAX_STREAM_FRAME_BYTES),
+        ..Default::default()
+    };
+    // Nagle off: one 20 ms audio frame per write, never coalesced.
+    let (socket, _) = tokio_tungstenite::connect_async_with_config(request, Some(config), true)
+        .await
+        .map_err(hub_failed)?;
+    Ok(socket)
+}
+
+/// The seated-key half of [`open_hub`]: the signature over `GET` + this
+/// exact path+query, for a device that does not host the node.
+async fn open_hub_signed(
+    client: &ducktape_rpc::Client,
+    path: &str,
+) -> Result<NodeSocket, wire::Refusal> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
     use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue};
     let rpc = client.origin();
-    let path = format!("{WS_PATH}?channel={channel}");
-    let ws_origin = crate::backend::agent_ws_url(rpc);
-    let ws_origin = ws_origin
-        .strip_suffix("/v1/ws")
-        .ok_or_else(|| host_fault("invalid node websocket origin"))?;
-    let workspace_token = crate::backend::workspace_at(rpc)
-        .and_then(|(_, workspace)| crate::backend::read_link_token(&workspace).ok());
-    let mut request = match &workspace_token {
-        Some(token) => format!("{ws_origin}{path}&token={token}"),
-        None => format!("{ws_origin}{path}"),
-    }
-    .into_client_request()
-    .map_err(|error| host_fault(format!("could not address the node: {error}")))?;
-    if workspace_token.is_none() {
-        let node_key = crate::backend::node_public_key(client).await?;
-        let signed = crate::backend::seated_request_headers("GET", &path, &node_key, b"")
-            .await
-            .ok_or_else(crate::backend::locked_seat)?;
-        for (name, value) in signed {
-            let value = HeaderValue::from_str(&value).map_err(|error| {
-                host_fault(format!("the signature is not a header value: {error}"))
-            })?;
-            request
-                .headers_mut()
-                .insert(HeaderName::from_static(name), value);
-        }
+    let ws_origin = ws_origin(rpc)?;
+    let mut request = format!("{ws_origin}{path}")
+        .into_client_request()
+        .map_err(|error| host_fault(format!("could not address the node: {error}")))?;
+    let node_key = crate::backend::node_public_key(client).await?;
+    let signed = crate::backend::seated_request_headers("GET", path, &node_key, b"")
+        .await
+        .ok_or_else(crate::backend::locked_seat)?;
+    for (name, value) in signed {
+        let value = HeaderValue::from_str(&value)
+            .map_err(|error| host_fault(format!("the signature is not a header value: {error}")))?;
+        request
+            .headers_mut()
+            .insert(HeaderName::from_static(name), value);
     }
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig {
         max_message_size: Some(super::MAX_STREAM_FRAME_BYTES),
@@ -246,7 +305,16 @@ mod tests {
             let open = |client: ducktape_rpc::Client| -> super::super::Opening {
                 Box::pin(async move { open_hub(&client, "eng").await })
             };
-            held_exchange(&running, 7, Some(READY), client, open, &mut receiver).await
+            held_exchange(
+                &running,
+                7,
+                Some(READY),
+                voice_refusal,
+                client,
+                open,
+                &mut receiver,
+            )
+            .await
         });
         runtime()
             .block_on(sender.send(Message::Text(r#"{"type":"recipients","peers":[]}"#.into())))
@@ -320,5 +388,75 @@ mod tests {
             hub_failed(Error::ConnectionClosed).reason,
             "node_unreachable"
         );
+    }
+
+    /// The device that hosts the node presents its own 0600 workspace token
+    /// on the query, as [`super::open_with_token`]'s upgrade carries no
+    /// signature either — the seated-signature branch is
+    /// [`the_hub_socket_carries_frames_both_ways_and_ends_with_the_subscription`]'s.
+    #[test]
+    // the handshake callback's `Err` is tungstenite's own response type.
+    #[allow(clippy::result_large_err)]
+    fn the_local_workspace_credential_rides_the_query_with_no_signature() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        let rpc = format!("http://{}", listener.local_addr().expect("its address"));
+        listener.set_nonblocking(true).expect("nonblocking");
+        let node = runtime().spawn(async move {
+            let listener = tokio::net::TcpListener::from_std(listener).expect("tokio listener");
+            let (stream, _) = listener.accept().await.expect("the upgrade");
+            let mut path = String::new();
+            let mut signed = false;
+            tokio_tungstenite::accept_hdr_async(
+                stream,
+                |request: &tokio_tungstenite::tungstenite::handshake::server::Request, response| {
+                    path = request.uri().to_string();
+                    signed = ["x-ducktape-key", "x-ducktape-ts", "x-ducktape-sig"]
+                        .iter()
+                        .any(|name| request.headers().contains_key(*name));
+                    Ok(response)
+                },
+            )
+            .await
+            .expect("a ws upgrade");
+            (path, signed)
+        });
+        runtime()
+            .block_on(open_hub_with_token(
+                &rpc,
+                "/v1/call/ws?channel=eng",
+                "wksp-secret",
+            ))
+            .expect("the socket opens");
+        let (path, signed) = runtime().block_on(node).expect("the node saw the upgrade");
+        assert_eq!(path, "/v1/call/ws?channel=eng&token=wksp-secret");
+        assert!(!signed, "the workspace token needs no seated signature");
+    }
+
+    /// The kernel's own transport tokens — `rpc_client` (the shared open
+    /// timeout and reopen notice) and `not_connected`
+    /// ([`super::super::client_for_revision`], no node connected at all) —
+    /// are the two ways a `voice.hub` answer could leak past the call view's
+    /// closed refusal set; both narrow to `node_unreachable` here. The hub's
+    /// own tokens, and anything else, are not this seam's to change.
+    #[test]
+    fn voice_refusal_closes_the_kernel_wide_tokens_and_leaves_the_rest() {
+        for kernel_wide in ["rpc_client", "not_connected"] {
+            assert_eq!(
+                voice_refusal(wire::Refusal::new(kernel_wide, "detail")).reason,
+                "node_unreachable"
+            );
+        }
+        for untouched in [
+            "key_without_account",
+            "not_in_huddle",
+            "no_call_hub",
+            "node_unreachable",
+            "malformed_request",
+        ] {
+            assert_eq!(
+                voice_refusal(wire::Refusal::new(untouched, "detail")),
+                wire::Refusal::new(untouched, "detail")
+            );
+        }
     }
 }
