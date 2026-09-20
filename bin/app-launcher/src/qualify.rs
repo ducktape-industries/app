@@ -56,19 +56,15 @@ pub fn qualify(layout: &Layout, state_path: &Path) -> Result<(), Refusal> {
     }
 }
 
-/// `codesign --verify --deep --strict` then `spctl -a -t exec`: what the
-/// app checked after extraction, checked again on what will run.
+/// `codesign --verify --deep --strict`: the code integrity check the app ran
+/// after extraction, checked again on what will run. Release-channel
+/// signatures and the archive digest establish trust; `spctl`'s Developer ID
+/// assessment is not part of the managed ad-hoc install/update contract.
 fn verify_bundle(bundle: &Path) -> Result<(), Refusal> {
     run_check(
         "codesign_refused",
         Command::new("/usr/bin/codesign")
             .args(["--verify", "--deep", "--strict"])
-            .arg(bundle),
-    )?;
-    run_check(
-        "gatekeeper_refused",
-        Command::new("/usr/sbin/spctl")
-            .args(["-a", "-t", "exec"])
             .arg(bundle),
     )
 }

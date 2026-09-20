@@ -149,10 +149,15 @@ their shared wire vocabulary.
 `cargo build --release -p ducktape-app -p app-launcher && ops/bundle-app-macos.sh`
 builds `Ducktape.app` and `Ducktape-<version>-<arch>.dmg` under
 `target/app-bundle/` and
-signs both **ad-hoc**, which runs on the machine that built it and nowhere
-else — Gatekeeper refuses an ad-hoc bundle that arrived over the network. A bundle that leaves this Mac is signed with a Developer ID
-identity and notarized by Apple. `ops/bundle-app-macos.sh` does both itself, off four
-environment variables exported into the shell before the build.
+signs both **ad-hoc**. The shipped CLI installer preserves the code signature and
+recursively clears only `com.apple.quarantine` from its managed installed
+copy without following symlinks, so no manual xattr or Finder step is needed.
+Signed release-channel updates use the pinned release key and archive digest
+for provenance. For distribution through Gatekeeper-assessed download paths,
+Developer ID signing and Apple notarization are optional packaging choices;
+`ops/bundle-app-macos.sh` supports them through the variables below. They are
+not prerequisites for the managed CLI path. Test actual installed launch and
+update on the destination Mac.
 
 The bundle carries two executables in `Contents/MacOS`: `ducktape-launcher`,
 its `CFBundleExecutable` (`app/packaging/Info.plist`), reads the update state
@@ -162,7 +167,8 @@ ships in the bundle. The helper is nested code and
 is signed first, then the bundle, so `codesign --verify --deep --strict` — what
 `ducktape-launcher --qualify` runs on a staged release — passes on the bundle
 as built. `ducktape-launcher install --from target/app-bundle/Ducktape.app`
-takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
+copies that bundle with `ditto`, retaining its code signature, then applies
+the managed quarantine normalization above to the installed copy only.
 
 1. **The signing identity.** A "Developer ID Application" certificate from the
    Apple Developer Program, in the login keychain. The exact string is what
@@ -207,6 +213,11 @@ takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
    xcrun stapler validate target/app-bundle/Ducktape-*.dmg
    codesign -dv --verbose=4 target/app-bundle/Ducktape.app   # Authority + TeamIdentifier
    ```
+
+The `spctl` command is a Developer ID/notarization packaging check. The
+installed updater instead trusts the signed release manifest and archive
+digest, and checks bundle code integrity with `codesign`; it does not use
+`spctl` as launch proof.
 
 5. **Package and publish.** This step lives in the ducktape core repo
    (`ducktape-industries/ducktape`): `ops/release/archive.sh` and

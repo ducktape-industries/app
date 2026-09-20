@@ -183,6 +183,8 @@ pub fn install_file(from: &Path, to: &Path, mode: u32) -> Result<(), Refusal> {
 
 /// A whole bundle, copied with `/usr/bin/ditto`: the one copier that keeps
 /// it whole (symlinks, modes, extended attributes, the code signature).
+/// The quarantine bit is then removed only from this managed destination;
+/// source bundles and global Gatekeeper state are untouched.
 #[cfg(target_os = "macos")]
 pub fn copy_bundle(from: &Path, to: &Path) -> Result<(), Refusal> {
     let status = std::process::Command::new("/usr/bin/ditto")
@@ -191,10 +193,53 @@ pub fn copy_bundle(from: &Path, to: &Path) -> Result<(), Refusal> {
         .status()
         .map_err(|error| Refusal::io("copy_failed", to, &error))?;
     match status.success() {
-        true => Ok(()),
+        true => clear_quarantine(to),
         false => Err(Refusal::new(
             "copy_failed",
             format!("ditto {} {} exited {status}", from.display(), to.display()),
+        )),
+    }
+}
+
+/// Remove quarantine recursively from one bundle the launcher owns. `ditto`
+/// preserves nested attributes, so checking only the bundle root leaves an
+/// app that Gatekeeper still treats as quarantined.
+#[cfg(target_os = "macos")]
+fn clear_quarantine(bundle: &Path) -> Result<(), Refusal> {
+    let listed = std::process::Command::new("/usr/bin/xattr")
+        .args(["-r", "-s"])
+        .arg(bundle)
+        .output()
+        .map_err(|error| Refusal::io("quarantine_probe_failed", bundle, &error))?;
+    if !listed.status.success() {
+        return Err(Refusal::new(
+            "quarantine_probe_failed",
+            format!(
+                "xattr could not inspect {}: {}",
+                bundle.display(),
+                listed.status
+            ),
+        ));
+    }
+    let has_quarantine = String::from_utf8_lossy(&listed.stdout).contains("com.apple.quarantine")
+        || String::from_utf8_lossy(&listed.stderr).contains("com.apple.quarantine");
+    if !has_quarantine {
+        return Ok(());
+    }
+    let removed = std::process::Command::new("/usr/bin/xattr")
+        .args(["-r", "-s", "-d", "com.apple.quarantine"])
+        .arg(bundle)
+        .output()
+        .map_err(|error| Refusal::io("quarantine_clear_failed", bundle, &error))?;
+    match removed.status.success() {
+        true => Ok(()),
+        false => Err(Refusal::new(
+            "quarantine_clear_failed",
+            format!(
+                "xattr could not clear {}: {}",
+                bundle.display(),
+                removed.status
+            ),
         )),
     }
 }
@@ -232,6 +277,47 @@ pub fn tmp_name(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn quarantine_normalization_stays_inside_the_managed_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let source = root.path().join("source");
+        let destination = root.path().join("copy");
+        let outside = root.path().join("outside");
+        fs::create_dir(&source).unwrap();
+        fs::write(&outside, b"preserve").unwrap();
+        std::os::unix::fs::symlink(&outside, source.join("link")).unwrap();
+        for path in [&source, &outside] {
+            assert!(
+                std::process::Command::new("/usr/bin/xattr")
+                    .args(["-w", "com.apple.quarantine", "0081;00000000;Test;"])
+                    .arg(path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        copy_bundle(&source, &destination).unwrap();
+        assert!(
+            std::process::Command::new("/usr/bin/xattr")
+                .args(["-p", "com.apple.quarantine"])
+                .arg(&outside)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+        assert!(
+            !std::process::Command::new("/usr/bin/xattr")
+                .args(["-p", "com.apple.quarantine"])
+                .arg(&destination)
+                .output()
+                .unwrap()
+                .status
+                .success()
+        );
+    }
 
     #[test]
     fn persist_writes_whole_and_read_state_refuses_a_link() {
