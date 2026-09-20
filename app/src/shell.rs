@@ -535,17 +535,23 @@ impl LayerBounds {
         }
     }
 
+    /// Keeps the layer inside the workspace viewport: never wider or taller
+    /// than it, its title bar always at a visible row. When the workspace is
+    /// narrower than a layer's minimum width the RIGHT edge wins — that is
+    /// where the close control lives, and a layer that cannot be closed is
+    /// the one failure this rule exists to prevent.
     fn constrained(self, viewport: Size<Pixels>) -> Self {
-        let viewport_width = f32::from(viewport.width).max(LAYER_MIN_WIDTH);
-        let viewport_height = f32::from(viewport.height).max(LAYER_MIN_HEIGHT);
+        let viewport_width = f32::from(viewport.width);
+        let viewport_height = f32::from(viewport.height);
         let width = self
             .width
             .clamp(LAYER_MIN_WIDTH, viewport_width.max(LAYER_MIN_WIDTH));
         let height = self
             .height
             .clamp(LAYER_MIN_HEIGHT, viewport_height.max(LAYER_MIN_HEIGHT));
+        let slack = viewport_width - width;
         Self {
-            x: self.x.clamp(0., (viewport_width - width).max(0.)),
+            x: self.x.clamp(slack.min(0.), slack.max(0.)),
             y: self.y.clamp(0., (viewport_height - height).max(0.)),
             width,
             height,
@@ -561,13 +567,72 @@ impl LayerBounds {
         .constrained(viewport)
     }
 
-    fn resized(self, dw: f32, dh: f32, viewport: Size<Pixels>) -> Self {
-        Self {
-            width: self.width + dw,
-            height: self.height + dh,
-            ..self
+    /// Drags the named edges by the pointer delta: a right or bottom edge
+    /// grows the size, a left or top edge moves the origin and keeps the
+    /// opposite edge in place, stopping at the minimum size.
+    fn resized(self, dx: f32, dy: f32, edge: LayerEdge, viewport: Size<Pixels>) -> Self {
+        let mut next = self;
+        if edge.right {
+            next.width = self.width + dx;
+        } else if edge.left {
+            next.width = (self.width - dx).max(LAYER_MIN_WIDTH);
+            next.x = self.x + self.width - next.width;
         }
-        .constrained(viewport)
+        if edge.bottom {
+            next.height = self.height + dy;
+        } else if edge.top {
+            next.height = (self.height - dy).max(LAYER_MIN_HEIGHT);
+            next.y = self.y + self.height - next.height;
+        }
+        next.constrained(viewport)
+    }
+}
+
+/// How far a layer's resize grab zone reaches on each side of its visible
+/// border (#202): a press this far outside the frame still starts a resize.
+const LAYER_GRAB: f32 = 8.;
+
+/// Which sides a resize gesture pulls; a corner pulls two.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LayerEdge {
+    left: bool,
+    right: bool,
+    top: bool,
+    bottom: bool,
+}
+
+impl LayerEdge {
+    /// The eight grab zones in paint order: the four edges first, then the
+    /// four corners, so a corner painted later wins the hit test over the
+    /// edges it overlaps.
+    const ZONES: [(&'static str, Self); 8] = [
+        ("top", Self::sides(false, false, true, false)),
+        ("bottom", Self::sides(false, false, false, true)),
+        ("left", Self::sides(true, false, false, false)),
+        ("right", Self::sides(false, true, false, false)),
+        ("top-left", Self::sides(true, false, true, false)),
+        ("top-right", Self::sides(false, true, true, false)),
+        ("bottom-left", Self::sides(true, false, false, true)),
+        ("bottom-right", Self::sides(false, true, false, true)),
+    ];
+
+    const fn sides(left: bool, right: bool, top: bool, bottom: bool) -> Self {
+        Self {
+            left,
+            right,
+            top,
+            bottom,
+        }
+    }
+
+    fn cursor(self) -> gpui_kit::CursorStyle {
+        use gpui_kit::CursorStyle::*;
+        match (self.left, self.right, self.top, self.bottom) {
+            (true, _, true, _) | (_, true, _, true) => ResizeUpLeftDownRight,
+            (true, _, _, true) | (_, true, true, _) => ResizeUpRightDownLeft,
+            (true, ..) | (_, true, ..) => ResizeLeftRight,
+            _ => ResizeUpDown,
+        }
     }
 }
 
@@ -580,6 +645,7 @@ enum LayerGesture {
     Resize {
         module: &'static str,
         last: Point<Pixels>,
+        edge: LayerEdge,
     },
 }
 
@@ -2191,11 +2257,23 @@ impl DesktopWindow {
 
     fn layer_gesture_capture(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let view = cx.entity().downgrade();
+        let measuring = view.clone();
         canvas(
-            |_, _, _| (),
+            // The canvas fills the layer root, so its laid-out bounds ARE the
+            // workspace viewport (#201): the window minus whatever the shell
+            // draws beside the layers. Every clamp reads this, not the raw
+            // window size, and a change re-clamps every layer on the frame
+            // that follows.
+            move |bounds, _, cx| {
+                let _ = measuring.update(cx, |this, cx| {
+                    if this.workspace_size != bounds.size {
+                        this.workspace_size = bounds.size;
+                        cx.notify();
+                    }
+                });
+            },
             move |_, _, window, _| {
                 let moving = view.clone();
-                let viewport = window.viewport_size();
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                     if phase != gpui_kit::DispatchPhase::Capture
                         || event.pressed_button != Some(gpui_kit::MouseButton::Left)
@@ -2206,19 +2284,21 @@ impl DesktopWindow {
                         let Some(gesture) = this.layer_gesture.as_mut() else {
                             return;
                         };
-                        let (module, last, resize) = match gesture {
-                            LayerGesture::Move { module, last } => (*module, last, false),
-                            LayerGesture::Resize { module, last } => (*module, last, true),
+                        let (module, last, edge) = match gesture {
+                            LayerGesture::Move { module, last } => (*module, last, None),
+                            LayerGesture::Resize { module, last, edge } => {
+                                (*module, last, Some(*edge))
+                            }
                         };
                         let delta = event.position - *last;
                         *last = event.position;
                         let dx = f32::from(delta.x);
                         let dy = f32::from(delta.y);
+                        let viewport = this.workspace_size;
                         if let Some(layer) = this.workspace_layers.get_mut(module) {
-                            layer.bounds = if resize {
-                                layer.bounds.resized(dx, dy, viewport)
-                            } else {
-                                layer.bounds.moved(dx, dy, viewport)
+                            layer.bounds = match edge {
+                                Some(edge) => layer.bounds.resized(dx, dy, edge, viewport),
+                                None => layer.bounds.moved(dx, dy, viewport),
                             };
                             cx.notify();
                         }
@@ -2262,16 +2342,11 @@ impl DesktopWindow {
             }))
     }
 
-    fn workspace_layers(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
+    fn workspace_layers(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         use gpui_kit::component::ActiveTheme as _;
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let ShellTab::View(selected) = self.model.read(cx).state.shell_tab;
-        self.workspace_size = window.viewport_size();
         if self.active_layer.is_none() && self.last_shell_tab.is_none() {
             self.open_workspace_layer(selected, cx);
         }
@@ -2406,36 +2481,58 @@ impl DesktopWindow {
                     LayerAction::Close,
                     cx,
                 ));
-            let resize = div()
-                .id(format!("layer-resize:{module}"))
+            let height = if collapsed {
+                LAYER_TITLE_HEIGHT
+            } else {
+                bounds.height
+            };
+            // The grab frame sits around the layer, LAYER_GRAB past its
+            // border on every side (#202): eight zones, the corners painted
+            // last so they win over the edges they overlap. Only the zones
+            // take the pointer; the frame between them is empty.
+            let mut frame = div()
+                .id(format!("layer-frame:{module}"))
                 .absolute()
-                .right_0()
-                .bottom_0()
-                .w(px(14.))
-                .h(px(14.))
-                .cursor(gpui_kit::CursorStyle::ResizeUpLeftDownRight)
-                .on_mouse_down(
-                    gpui_kit::MouseButton::Left,
-                    cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
-                        this.active_layer = Some(module);
-                        this.layer_gesture = Some(LayerGesture::Resize {
-                            module,
-                            last: event.position,
-                        });
-                        cx.stop_propagation();
-                    }),
-                );
+                .left(px(bounds.x - LAYER_GRAB))
+                .top(px(bounds.y - LAYER_GRAB))
+                .w(px(bounds.width + 2. * LAYER_GRAB))
+                .h(px(height + 2. * LAYER_GRAB));
+            let grab = px(2. * LAYER_GRAB);
+            let zones = LayerEdge::ZONES.map(|(name, edge)| {
+                let mut zone = div()
+                    .id(format!("layer-resize:{module}:{name}"))
+                    .absolute()
+                    .cursor(edge.cursor())
+                    .on_mouse_down(
+                        gpui_kit::MouseButton::Left,
+                        cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                            this.active_layer = Some(module);
+                            this.layer_gesture = Some(LayerGesture::Resize {
+                                module,
+                                last: event.position,
+                                edge,
+                            });
+                            cx.stop_propagation();
+                        }),
+                    );
+                zone = match (edge.left, edge.right) {
+                    (true, _) => zone.left_0().w(grab),
+                    (_, true) => zone.right_0().w(grab),
+                    _ => zone.left(grab).right(grab),
+                };
+                match (edge.top, edge.bottom) {
+                    (true, _) => zone.top_0().h(grab),
+                    (_, true) => zone.bottom_0().h(grab),
+                    _ => zone.top(grab).bottom(grab),
+                }
+            });
             let mut layer = div()
                 .id(format!("workspace-layer:{module}"))
                 .absolute()
-                .left(px(bounds.x))
-                .top(px(bounds.y))
+                .left(px(LAYER_GRAB))
+                .top(px(LAYER_GRAB))
                 .w(px(bounds.width))
-                .h(px(if collapsed {
-                    LAYER_TITLE_HEIGHT
-                } else {
-                    bounds.height
-                }))
+                .h(px(height))
                 .flex()
                 .flex_col()
                 .overflow_hidden()
@@ -2461,8 +2558,7 @@ impl DesktopWindow {
                         cx.notify();
                     }),
                 )
-                .child(header)
-                .child(resize);
+                .child(header);
             if !collapsed {
                 layer = layer.child(
                     div()
@@ -2474,7 +2570,11 @@ impl DesktopWindow {
                         .child(view),
                 );
             }
-            root = root.child(layer);
+            frame = frame.child(layer);
+            for zone in zones {
+                frame = frame.child(zone);
+            }
+            root = root.child(frame);
         }
         if !minimized.is_empty() {
             let mut restore_bar = div()
@@ -3016,7 +3116,7 @@ impl DesktopWindow {
                 .min_w_0()
                 .w_full()
                 .overflow_hidden()
-                .child(self.workspace_layers(window, cx))
+                .child(self.workspace_layers(cx))
                 .children(self.toast(cx)),
         );
         let mut root = div()
@@ -3399,9 +3499,33 @@ mod os_mode_tests {
             bounds.moved(-500., -500., viewport),
             LayerBounds::new(0., 0., 500., 400.)
         );
+        let corner = LayerEdge::sides(false, true, false, true);
         assert_eq!(
-            bounds.resized(1_000., 1_000., viewport),
+            bounds.resized(1_000., 1_000., corner, viewport),
             LayerBounds::new(0., 0., 800., 600.)
+        );
+        // A left/top edge keeps the opposite edge where it is and stops at
+        // the minimum size.
+        let top_left = LayerEdge::sides(true, false, true, false);
+        assert_eq!(
+            bounds.resized(-30., -20., top_left, viewport),
+            LayerBounds::new(10., 30., 530., 420.)
+        );
+        assert_eq!(
+            bounds.resized(1_000., 1_000., top_left, viewport),
+            LayerBounds::new(
+                40. + 500. - LAYER_MIN_WIDTH,
+                50. + 400. - LAYER_MIN_HEIGHT,
+                LAYER_MIN_WIDTH,
+                LAYER_MIN_HEIGHT
+            )
+        );
+        // A workspace narrower than the minimum keeps the right edge — the
+        // close control — inside, at the left's expense.
+        let narrow = gpui_kit::size(gpui_kit::px(300.), gpui_kit::px(600.));
+        assert_eq!(
+            LayerBounds::new(0., 0., 500., 400.).constrained(narrow),
+            LayerBounds::new(300. - LAYER_MIN_WIDTH, 0., LAYER_MIN_WIDTH, 400.)
         );
         assert_eq!(
             LayerBounds::new(20., 30., 100., 100.).constrained(viewport),
