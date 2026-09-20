@@ -34,9 +34,12 @@ impl KeyScheme {
         }
     }
     pub fn verify(self, pubkey: &[u8], namespace: &[u8], preimage: &[u8], proof: &[u8]) -> bool {
+        if !self.pubkey_wellformed(pubkey) {
+            return false;
+        }
         match self {
             Self::Ed25519 => {
-                if !self.pubkey_wellformed(pubkey) || proof.len() != 64 {
+                if proof.len() != 64 {
                     return false;
                 }
                 use commonware_codec::DecodeExt as _;
@@ -264,4 +267,51 @@ pub fn add_key_preimage(
     out.extend_from_slice(&account.to_le_bytes());
     out.extend_from_slice(&expires_at.to_le_bytes());
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn passkey_proof_requires_the_canonical_key_encoding() {
+        use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+        use p256::ecdsa::{Signature, SigningKey, signature::Signer as _};
+        use sha2::{Digest as _, Sha256};
+
+        let key = SigningKey::from_slice(&[1; 32]).unwrap();
+        let namespace = b"test-consent";
+        let preimage = b"device-key";
+        let mut challenge = namespace.to_vec();
+        challenge.extend_from_slice(preimage);
+        let client = serde_json::to_vec(&serde_json::json!({
+            "type": "webauthn.get",
+            "challenge": URL_SAFE_NO_PAD.encode(Sha256::digest(challenge)),
+        }))
+        .unwrap();
+        let mut authenticator = vec![0; 37];
+        authenticator[32] = 1;
+        let mut signed = authenticator.clone();
+        signed.extend_from_slice(&Sha256::digest(&client));
+        let signature: Signature = key.sign(&signed);
+        let mut proof = Vec::new();
+        proof.extend_from_slice(&(authenticator.len() as u32).to_le_bytes());
+        proof.extend_from_slice(&authenticator);
+        proof.extend_from_slice(&(client.len() as u32).to_le_bytes());
+        proof.extend_from_slice(&client);
+        proof.extend_from_slice(&signature.to_bytes());
+        let public = key.verifying_key();
+        assert!(KeyScheme::Secp256r1.verify(
+            public.to_encoded_point(true).as_bytes(),
+            namespace,
+            preimage,
+            &proof
+        ));
+        assert!(!KeyScheme::Secp256r1.verify(
+            public.to_encoded_point(false).as_bytes(),
+            namespace,
+            preimage,
+            &proof
+        ));
+    }
 }
