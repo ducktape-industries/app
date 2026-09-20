@@ -3633,6 +3633,25 @@ pub(crate) struct NativeModuleView {
 
 impl gpui_kit::EventEmitter<ModuleViewEvent> for NativeModuleView {}
 
+fn native_root(root: wire::Node) -> wire::Node {
+    wire::Node::Container {
+        shadow: Default::default(),
+        max_width: None,
+        max_height: None,
+        clip: false,
+        key: "NativeModuleView/root".into(),
+        width: Some(wire::Length::Fill),
+        height: Some(wire::Length::Fill),
+        padding: None,
+        align_x: None,
+        align_y: None,
+        background: None,
+        border: None,
+        snap: None,
+        content: Box::new(root),
+    }
+}
+
 /// What a tab draws where its view is not: the load's stage over a skeleton
 /// of a view, or why there is none — named, with Retry where a retry helps.
 struct Standin {
@@ -3918,6 +3937,7 @@ impl NativeModuleView {
         if changed {
             let mut root = guest.frame.root.clone().unwrap_or_else(wire::Node::empty);
             guest.pictures.hydrate(&mut root);
+            let root = native_root(root);
             self.revision = guest.frame_rev;
             match (&self.content, same_instance) {
                 (Some(content), true) => content.update(cx, |tree, cx| tree.replace(root, cx)),
@@ -6471,6 +6491,14 @@ pub(crate) mod tests {
         });
     }
 
+    pub(super) fn can_bytes(named: &'static str, reply: impl Into<Vec<u8>>) {
+        CANNED_READS.with(|canned| {
+            canned
+                .borrow_mut()
+                .insert(named.to_owned(), Ok(reply.into()));
+        });
+    }
+
     /// Cans a REFUSAL for one query, in the shape the boundary hands a guest:
     /// a token and the refusing side's own sentence. The canned node can say no
     /// as well as yes, which is the only way to drive a view's refused screen
@@ -7974,13 +8002,13 @@ pub(crate) mod tests {
         chat_facts_in("channel-a", 0)
     }
 
-    fn chat_row(seq: i64) -> serde_json::Value {
+    pub(super) fn chat_row(seq: i64) -> serde_json::Value {
         chat_row_of(seq, "first light", None)
     }
 
     /// One committed row as the index answers it — `thread` naming the root it
     /// replies to, for the rows a landing seats a rail on.
-    fn chat_row_of(seq: i64, text: &str, thread: Option<i64>) -> serde_json::Value {
+    pub(super) fn chat_row_of(seq: i64, text: &str, thread: Option<i64>) -> serde_json::Value {
         serde_json::json!({
             "channel_id": "channel-a", "seq": seq, "message_id": format!("m{seq}"),
             "author": "acct:7", "height": 84_912, "time": 84_912,

@@ -2738,6 +2738,13 @@ pub(crate) fn test_window(
 }
 
 #[cfg(test)]
+impl DesktopWindow {
+    pub(crate) fn test_module(&self) -> Option<Entity<crate::module_view::NativeModuleView>> {
+        self.module.as_ref().map(|(_, view)| view.clone())
+    }
+}
+
+#[cfg(test)]
 mod call_control_tests {
     use super::*;
 

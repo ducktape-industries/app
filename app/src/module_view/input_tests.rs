@@ -5,6 +5,19 @@ use gpui_kit::{self as gpui, Entity, TestAppContext, VisualTestContext};
 
 fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
     tests::can_the_chat_room();
+    tests::can_reads([(
+        "channels",
+        serde_json::json!({
+            "channels": {
+                "channels": [{
+                    "id": "channel-a", "name": "general", "created_at": 1,
+                    "post_policy": "open", "owner": "acct:7", "archived": false,
+                    "hooks": [], "huddle": [], "head_seq": 1
+                }],
+                "has_more": false, "next_after": null
+            }
+        }),
+    )]);
     let path = tests::staged("chat").expect("build current chat view first");
     let mut guest = Guest::load_from("chat", &path).expect("build current chat view first");
     let props = tests::chat_facts();
@@ -34,24 +47,468 @@ fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
     registry().lock().unwrap().insert("chat", seat.clone());
     seat
 }
+
+fn pages_seated() -> Arc<Mutex<Mounted>> {
+    tests::can_a_commented_page();
+    let path = tests::staged("pages").expect("build current Pages view first");
+    let mut guest = Guest::load_from("pages", &path).expect("build current Pages view first");
+    let props = tests::pages_facts();
+    guest.redraw(&None);
+    tests::settle_documents(&mut guest, &props);
+    let seat = Arc::new(Mutex::new(Mounted {
+        changes: tokio::sync::watch::channel(()).0,
+        slot: Slot::Ready(Box::new(guest)),
+        props,
+        generation: 1,
+        hash: None,
+        in_flight: false,
+        wanted: None,
+        tasting: None,
+        waiting_since: None,
+        replacement: Replacement::Preserve,
+        retry: None,
+        shown: None,
+    }));
+    registry().lock().unwrap().insert("pages", seat.clone());
+    seat
+}
+
 fn settle(guest: &mut Guest, props: &Option<Vec<u8>>) {
-    for _ in 0..32 {
+    for _ in 0..256 {
         if !guest.redraw(props) {
             return;
         }
     }
     panic!("view did not settle: {:?}", guest.fault);
 }
-fn open(cx: &mut TestAppContext) -> (Entity<NativeModuleView>, VisualTestContext) {
+
+struct SizedNativePane(Entity<NativeModuleView>);
+
+impl gpui_kit::Render for SizedNativePane {
+    fn render(
+        &mut self,
+        _: &mut gpui_kit::Window,
+        _: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::{ParentElement as _, Styled as _};
+
+        gpui_kit::div()
+            .relative()
+            .flex()
+            .size_full()
+            .min_h_0()
+            .min_w_0()
+            .overflow_hidden()
+            .child(
+                gpui_kit::div()
+                    .relative()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .min_w_0()
+                    .w_full()
+                    .overflow_hidden()
+                    .child(
+                        gpui_kit::div()
+                            .size_full()
+                            .flex_1()
+                            .min_h_0()
+                            .min_w_0()
+                            .child(self.0.clone()),
+                    ),
+            )
+    }
+}
+
+fn open_module(
+    cx: &mut TestAppContext,
+    module: &'static str,
+) -> (Entity<NativeModuleView>, VisualTestContext) {
     cx.update(gpui_kit::init);
-    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |_, _| {
-        NativeModuleView::new("chat")
+    cx.update(crate::editor::wire::init_notion);
+    let mut view = None;
+    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |window, cx| {
+        let native = cx.new(|_| NativeModuleView::new(module));
+        view = Some(native.clone());
+        let pane = cx.new(|_| SizedNativePane(native));
+        gpui_kit::component::Root::new(pane, window, cx)
     });
-    let view = window.root(cx).unwrap();
+    let view = view.unwrap();
     let mut native = VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     (view, native)
 }
+
+fn open(cx: &mut TestAppContext) -> (Entity<NativeModuleView>, VisualTestContext) {
+    open_module(cx, "chat")
+}
+
+fn open_console(
+    cx: &mut TestAppContext,
+    module: &'static str,
+) -> (Entity<crate::shell::DesktopWindow>, VisualTestContext) {
+    cx.update(gpui_kit::init);
+    cx.update(crate::editor::wire::init_notion);
+    let mut state = crate::Ducktape::initial_state();
+    state.connected = true;
+    state.connected_rpc = "http://127.0.0.1:1".into();
+    state.network_name = "testnet".into();
+    state.network_chain_id = "testnet#abcd".into();
+    state.status = "Live".into();
+    state.block_height = 84_912;
+    state.account_number = "7".into();
+    state.account_exists = true;
+    state.account_name = "mallard".into();
+    state.settings_user_key = "aa".into();
+    state.active_channel = "channel-a".into();
+    state.active_channel_name = "general".into();
+    state.shell_tab = crate::ShellTab::View(module);
+    let mut presenter = None;
+    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |window, cx| {
+        let view = crate::shell::test_window(state, crate::shell::WindowKind::Console, window, cx);
+        presenter = Some(view.clone());
+        gpui_kit::component::Root::new(view, window, cx)
+    });
+    let presenter = presenter.unwrap();
+    let mut native = VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    native.update(|window, cx| window.render_frame(cx));
+    (presenter, native)
+}
+
+fn console_module(
+    presenter: &Entity<crate::shell::DesktopWindow>,
+    native: &VisualTestContext,
+) -> Entity<NativeModuleView> {
+    presenter
+        .read_with(native, |presenter, _| presenter.test_module())
+        .expect("console module")
+}
+
+fn assert_chat_fixture_geometry(
+    view: &Entity<NativeModuleView>,
+    native: &VisualTestContext,
+    nodes: &[crate::ax_door::AxNode],
+) {
+    let bounds = view.read_with(native, |view, cx| {
+        view.content.as_ref().map(|content| {
+            [
+                "ChatView/@sensor:906",
+                "ChatView/chat/press-area",
+                "ChatView",
+                "ChatView/chat",
+                "ChatView/chat/room",
+                "ChatView/chat/message-stream",
+                "ChatView/chat/composer-room",
+            ]
+            .map(|key| (key, content.read(cx).measured_bounds(key)))
+        })
+    });
+    assert!(
+        bounds
+            .as_ref()
+            .and_then(|bounds| {
+                bounds
+                    .iter()
+                    .find(|(key, _)| *key == "ChatView/chat/message-stream")
+                    .and_then(|(_, bounds)| *bounds)
+            })
+            .is_some_and(|bounds| {
+                bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.)
+            }),
+        "Chat message-stream needs a positive production-sized viewport: {bounds:?}"
+    );
+    assert!(
+        nodes.iter().any(|node| {
+            node.name.contains("first light")
+                || node
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("first light"))
+                || node
+                    .description
+                    .as_deref()
+                    .is_some_and(|description| description.contains("first light"))
+        }),
+        "the initial committed message row is missing from AX: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().any(|node| {
+            node.name == "mallard"
+                || node.value.as_deref() == Some("mallard")
+                || node.description.as_deref() == Some("mallard")
+        }),
+        "the initial message author is missing from AX: {nodes:?}"
+    );
+}
+
+fn door_tree_for(native: &mut VisualTestContext, scope: &str) -> Vec<crate::ax_door::AxNode> {
+    native.update(|window, cx| {
+        window.activate_a11y();
+        let mut seen = crate::ax_door::Seen::default();
+        crate::ax_door::current(scope, window, cx, false, &mut seen)
+    })
+}
+
+fn door_tree(native: &mut VisualTestContext) -> Vec<crate::ax_door::AxNode> {
+    door_tree_for(native, "chat")
+}
+
+fn composer_is_cleared(nodes: &[crate::ax_door::AxNode]) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.name.starts_with("Message #") && node.value.as_deref() == Some(""))
+}
+
+fn send_is_disabled(nodes: &[crate::ax_door::AxNode]) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.name == "Send" && node.state.contains(&"disabled"))
+}
+
+fn wake_chat_live(seat: &Arc<Mutex<Mounted>>) {
+    let mut locked = seat.lock().unwrap();
+    let Slot::Ready(guest) = &mut locked.slot else {
+        panic!("seated view");
+    };
+    let live_ids: Vec<_> = guest
+        .live_subscriptions
+        .iter()
+        .filter(|(_, plane)| plane == "chat")
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(
+        !live_ids.is_empty(),
+        "Chat fixture has no chat live subscription"
+    );
+    for id in live_ids {
+        guest.pending.push(wire::Event::Response {
+            id,
+            result: Ok(b"{}".to_vec()),
+            done: false,
+        });
+    }
+}
+
+fn suppress_viewport_observations(seat: &Arc<Mutex<Mounted>>) {
+    // The drag assertion covers pointer capture; production viewport sizing is
+    // exercised by the console/door fixture separately.
+    let mut locked = seat.lock().unwrap();
+    let Slot::Ready(guest) = &mut locked.slot else {
+        panic!("seated view");
+    };
+    guest
+        .frame
+        .root
+        .as_mut()
+        .unwrap()
+        .for_each_mut(&mut |node| {
+            if let wire::Node::Sensor {
+                on_show, on_resize, ..
+            } = node
+            {
+                *on_show = None;
+                *on_resize = None;
+            }
+        });
+}
+
+#[gpui_kit::test]
+fn door_observation_advances_chat_after_an_async_host_answer(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    tests::can_bytes("host.id", b"message-committed".to_vec());
+    tests::can_reads([("op.submit", serde_json::json!(1))]);
+    let seat = seated(&[]);
+    let (presenter, mut native) = open_console(cx, "chat");
+    let view = console_module(&presenter, &native);
+    settle_native_documents(&mut native, &seat);
+    let initial = door_tree(&mut native);
+    assert_chat_fixture_geometry(&view, &native, &initial);
+    let field = initial
+        .iter()
+        .find(|node| node.name.starts_with("Message #") && node.actions.contains(&"type"))
+        .unwrap_or_else(|| panic!("Chat composer input: {initial:?}"))
+        .id
+        .clone();
+    native.update(|window, cx| {
+        assert!(crate::ax_door::perform_by_id(
+            "chat",
+            window,
+            cx,
+            &field,
+            "type",
+            "door regression"
+        ));
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        window.render_frame(cx);
+    });
+    let ready = door_tree(&mut native);
+    let send = ready
+        .iter()
+        .find(|node| node.name == "Send" && node.actions.contains(&"press"))
+        .unwrap_or_else(|| panic!("enabled Chat Send: {ready:?}"))
+        .id
+        .clone();
+    native.update(|window, cx| {
+        assert!(crate::ax_door::perform_by_id(
+            "chat", window, cx, &send, "press", ""
+        ));
+    });
+    let mut committed = tests::chat_row_of(2, "door regression", None);
+    committed["message_id"] = serde_json::json!("message-committed");
+    tests::can_reads([
+        (
+            "channel",
+            serde_json::json!({ "channel": {
+                "id": "channel-a", "name": "general", "created_at": 1,
+                "post_policy": "open", "owner": "acct:7", "archived": false,
+                "hooks": [], "huddle": [], "head_seq": 2
+            }}),
+        ),
+        (
+            "roots",
+            serde_json::json!({
+                "roots": {
+                    "roots": [
+                        tests::chat_row(1),
+                        committed,
+                    ],
+                    "has_more": false
+                }
+            }),
+        ),
+    ]);
+    native.update(|window, cx| {
+        assert!(window.simulate_next_frame(cx) > 0, "Send requested a frame");
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    wake_chat_live(&seat);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+    });
+    settle_native_documents(&mut native, &seat);
+    let observed = door_tree(&mut native);
+    assert!(
+        composer_is_cleared(&observed),
+        "accepted Send did not clear the composer"
+    );
+    assert!(
+        send_is_disabled(&observed),
+        "accepted Send did not disable the control"
+    );
+    assert!(
+        observed.iter().any(|node| {
+            node.name.contains("door regression")
+                || node.value.as_deref() == Some("door regression")
+                || node.description.as_deref() == Some("door regression")
+        }),
+        "door missed the committed message text: {observed:?}"
+    );
+    assert!(
+        observed.iter().any(|node| {
+            node.name.contains("mallard")
+                || node.value.as_deref() == Some("mallard")
+                || node.description.as_deref() == Some("mallard")
+        }),
+        "door missed the committed message author: {observed:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn native_chat_pointer_opens_creation_in_the_production_console(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    let chat = seated(&[]);
+    let (presenter, mut native) = open_console(cx, "chat");
+    let _view = console_module(&presenter, &native);
+    settle_native_documents(&mut native, &chat);
+    let key = button(&chat, "New channel");
+    click_before_frame(&mut native, key);
+    native.update(|window, cx| window.render_frame(cx));
+    settle_native_documents(&mut native, &chat);
+    let nodes = door_tree(&mut native);
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.name.contains("Create channel")),
+        "native Chat pointer did not open its creation dialog: {nodes:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn native_pages_keyboard_creates_a_page_and_mounts_its_document(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    let pages = pages_seated();
+    let (presenter, mut native) = open_console(cx, "pages");
+    let _view = console_module(&presenter, &native);
+    settle_native_documents(&mut native, &pages);
+    let key = button(&pages, "New page");
+    let mut focused = false;
+    for _ in 0..256 {
+        native.update(|window, cx| window.focus_next(cx));
+        focused = native.update(|window, _| window.find(key.clone()).focused()) == Some(true);
+        if focused {
+            break;
+        }
+    }
+    assert!(focused, "Pages New page did not receive keyboard focus");
+
+    tests::can_bytes("host.id", b"page-created".to_vec());
+    tests::can_reads([
+        (
+            "list_pages",
+            serde_json::json!({ "pages": {
+                "pages": [{ "id": "page-created", "title": "", "parent": null }],
+                "has_more": false, "next_after": null
+            }}),
+        ),
+        (
+            "get_page",
+            serde_json::json!({ "page": { "blocks": [{
+                "id": "page-created", "parent": null, "page": "page-created",
+                "kind": "page", "text": "", "checked": false, "children": []
+            }], "next_after": null }}),
+        ),
+        ("threads_for_targets", serde_json::json!({ "threads": [] })),
+        ("model", serde_json::json!({ "model": { "agents": [] } })),
+        ("op.submit", serde_json::json!(1)),
+    ]);
+    key_press(&mut native, "space");
+    native.run_until_parked();
+    settle_native_documents(&mut native, &pages);
+
+    let (busy, has_document) = {
+        let locked = pages.lock().unwrap();
+        let Slot::Ready(guest) = &locked.slot else {
+            panic!("live Pages view");
+        };
+        let mut has_document = false;
+        guest.frame.root.clone().unwrap().for_each_mut(&mut |node| {
+            if matches!(node, wire::Node::Editor { .. }) {
+                has_document = true;
+            }
+        });
+        (guest.frame.busy, has_document)
+    };
+    assert!(!busy, "Pages create request did not resolve");
+    assert!(
+        has_document,
+        "Pages did not mount the document after create resolved"
+    );
+    let nodes = door_tree_for(&mut native, "pages");
+    assert!(
+        nodes.iter().any(|node| node.name.contains("Untitled")),
+        "Pages document is not observable through the door: {nodes:?}"
+    );
+}
+
 fn button(seat: &Arc<Mutex<Mounted>>, label: &str) -> String {
     fn shows(node: &wire::Node, label: &str) -> bool {
         matches!(node, wire::Node::Text { content, .. } if content == label)
@@ -105,6 +562,24 @@ fn click_before_frame(native: &mut VisualTestContext, key: String) {
                 modifiers: Default::default(),
                 click_count: 1,
             }),
+            cx,
+        );
+    });
+}
+
+fn key_press(native: &mut VisualTestContext, key: &str) {
+    let keystroke = gpui::Keystroke::parse(key).expect("test keystroke");
+    native.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                keystroke: keystroke.clone(),
+                is_held: false,
+                prefer_character_input: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }),
             cx,
         );
     });
@@ -439,6 +914,7 @@ fn thread_width(seat: &Arc<Mutex<Mounted>>) -> f32 {
 fn a_native_pointer_drag_resizes_the_thread_and_release_ends_it(cx: &mut TestAppContext) {
     let _turn = tests::blocking_connection_turn();
     let seat = seated(&["Open thread"]);
+    suppress_viewport_observations(&seat);
     let (_, mut native) = open(cx);
     let key = {
         let locked = seat.lock().unwrap();
@@ -558,36 +1034,13 @@ fn ime_observations_keep_unicode_selection_and_commit_order() {
 #[gpui_kit::test]
 fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
     let _turn = tests::blocking_connection_turn();
-    tests::can_a_commented_page();
     tests::can_reads([
         ("model", serde_json::json!({"model": {"agents": []}})),
         ("op.submit", serde_json::json!(1)),
     ]);
-    let props = tests::pages_facts();
-    let path = tests::staged("pages").expect("build current Pages view first");
-    let mut guest = Guest::load_from("pages", &path).expect("build current Pages view first");
-    tests::settle_documents(&mut guest, &props);
-    let seat = Arc::new(Mutex::new(Mounted {
-        changes: tokio::sync::watch::channel(()).0,
-        slot: Slot::Ready(Box::new(guest)),
-        props,
-        generation: 1,
-        hash: None,
-        in_flight: false,
-        wanted: None,
-        tasting: None,
-        waiting_since: None,
-        replacement: Replacement::Preserve,
-        retry: None,
-        shown: None,
-    }));
-    registry().lock().unwrap().insert("pages", seat.clone());
-    cx.update(gpui_kit::init);
-    cx.update(crate::editor::wire::init_notion);
-    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |_, _| {
-        NativeModuleView::new("pages")
-    });
-    let mut native = VisualTestContext::from_window(window.into(), cx);
+    let seat = pages_seated();
+    let (presenter, mut native) = open_console(cx, "pages");
+    let _view = console_module(&presenter, &native);
     native.update(|window, cx| window.render_frame(cx));
     settle_native_documents(&mut native, &seat);
     native.update(|window, cx| {
@@ -639,7 +1092,6 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
         .map(|item| gpui_kit::SharedString::from(format!("application-suggestion/{}", item.tag)))
         .expect("the WASM supplies the account directory");
     native.update(|window, cx| {
-        window.render_frame(cx);
         window.click(row, cx);
     });
     settle_native_documents(&mut native, &seat);
