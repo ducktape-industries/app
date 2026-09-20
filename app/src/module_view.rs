@@ -4187,6 +4187,19 @@ impl gpui_kit::Render for NativeModuleView {
             Ok(()) => match &self.content {
                 Some(content) => {
                     let content = content.clone();
+                    // GPUI rebuilds the accessibility tree from prepaint on
+                    // every frame and a cached view replays paint without
+                    // it, so a cached guest tree has no nodes and no
+                    // focus for a screen reader. While one is listening,
+                    // render the tree in full each frame as before.
+                    let guest = if window.is_a11y_active() {
+                        content.clone().into_any_element()
+                    } else {
+                        content
+                            .clone()
+                            .cached(gpui_kit::StyleRefinement::default().size_full())
+                            .into_any_element()
+                    };
                     let mut context = gpui_kit::KeyContext::default();
                     context.set(
                         "ducktape_guest",
@@ -4197,11 +4210,7 @@ impl gpui_kit::Render for NativeModuleView {
                         .id(self.ax_mark())
                         .key_context(context)
                         .size_full()
-                        .child(
-                            content
-                                .clone()
-                                .cached(gpui_kit::StyleRefinement::default().size_full()),
-                        )
+                        .child(guest)
                         .child(input::Observe::new(
                             gpui_kit::div().absolute().inset_0().into_any_element(),
                             self,
@@ -4259,14 +4268,21 @@ pub(crate) mod tests {
         view
     }
 
-    #[gpui_kit::test]
-    fn live_video_keeps_guest_editor_mounted_through_native_bounds_changes(
+    const LIVE_VIDEO_PEER: &str = "repaint-stability-peer";
+
+    /// A governance guest showing one live video tile over a native text
+    /// editor, seated and drawn twice in a 640x480 window.
+    fn mount_live_video_guest(
         cx: &mut TestAppContext,
+    ) -> (
+        gpui_kit::Entity<NativeModuleView>,
+        gpui_kit::VisualTestContext,
+        gpui_kit::AnyWindowHandle,
     ) {
         cx.update(gpui_kit::init);
         cx.update(crate::editor::wire::init_notion);
 
-        let resource = "repaint-stability-peer";
+        let resource = LIVE_VIDEO_PEER;
         let alive = std::sync::atomic::AtomicBool::new(true);
         let pixels = [0xff, 0x20, 0x40, 0xff].repeat(4);
         let jpeg = crate::video::encode_frame(&pixels, 2, 2).expect("test video frame");
@@ -4356,6 +4372,14 @@ pub(crate) mod tests {
         let mut native = gpui_kit::VisualTestContext::from_window(handle, cx);
         native.update(|window, cx| window.draw(cx).clear(cx));
         native.update(|window, cx| window.draw(cx).clear(cx));
+        (module, native, handle)
+    }
+
+    #[gpui_kit::test]
+    fn live_video_keeps_guest_editor_mounted_through_native_bounds_changes(
+        cx: &mut TestAppContext,
+    ) {
+        let (module, mut native, handle) = mount_live_video_guest(cx);
 
         let (tree_identity, editor_identity, before) = module.read_with(&native, |view, cx| {
             let tree = view.content.as_ref().expect("guest tree");
@@ -4418,7 +4442,78 @@ pub(crate) mod tests {
             after.saturating_sub(before)
         );
 
-        crate::video::forget_peer(resource);
+        crate::video::forget_peer(LIVE_VIDEO_PEER);
+        drop(crate::video::take_retired());
+    }
+
+    /// A screen reader reads the guest off every frame's accessibility tree,
+    /// which GPUI builds from prepaint; a cached guest replays paint alone
+    /// and vanishes from it. With one listening, the guest keeps its nodes
+    /// and its focus across a native bounds change.
+    #[gpui_kit::test]
+    fn guest_keeps_accessibility_nodes_and_focus_through_native_bounds_changes(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::accesskit::Action;
+
+        let (_module, mut native, handle) = mount_live_video_guest(cx);
+        native.update(|window, _| window.activate_a11y());
+        native.update(|window, cx| window.draw(cx).clear(cx));
+
+        let focused = |native: &mut gpui_kit::VisualTestContext| {
+            native.update(|window, cx| {
+                window.focus_next(cx);
+                window.draw(cx).clear(cx);
+                let update = window
+                    .last_a11y_tree_update()
+                    .expect("an active window sends its tree");
+                let root = update.tree.as_ref().expect("tree root").root;
+                let focus = update.focus;
+                let node = update
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == focus)
+                    .map(|(_, node)| node.clone());
+                (focus != root, node)
+            })
+        };
+
+        let (has_node, node) = focused(&mut native);
+        assert!(has_node, "tab stop focuses an element with no node");
+        assert!(
+            node.is_some_and(|node| node.supports_action(Action::Focus)),
+            "focused node is not focusable"
+        );
+
+        native.simulate_resize(gpui::size(gpui::px(700.), gpui::px(500.)));
+        native.simulate_window_visual_viewport_change(
+            handle,
+            gpui_kit::Bounds::new(
+                gpui_kit::point(gpui_kit::px(8.), gpui_kit::px(12.)),
+                gpui::size(gpui::px(684.), gpui::px(476.)),
+            ),
+        );
+        native.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        // A frame nothing invalidated: what a cached guest would replay.
+        native.update(|window, cx| window.draw(cx).clear(cx));
+        let update = native.update(|window, _| {
+            window
+                .last_a11y_tree_update()
+                .expect("an active window sends its tree")
+        });
+        let root = update.tree.as_ref().expect("tree root").root;
+        assert_ne!(update.focus, root, "focus lost its node after a resize");
+
+        let (has_node, _) = focused(&mut native);
+        assert!(
+            has_node,
+            "tab stop focuses an element with no node after a resize"
+        );
+
+        crate::video::forget_peer(LIVE_VIDEO_PEER);
         drop(crate::video::take_retired());
     }
 
