@@ -3627,6 +3627,9 @@ pub(crate) struct NativeModuleView {
     observers: Vec<gpui_kit::Subscription>,
     hovered_files: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     pointer_inside: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The hitbox whose press took the pointer; GPUI numbers hitboxes per
+    /// frame, so the presenter re-arms the capture on each one it paints.
+    pointer_held: std::rc::Rc<std::cell::Cell<Option<gpui_kit::HitboxId>>>,
     /// Drawn since the props were last set: a layer mounted this frame.
     drawn: bool,
 }
@@ -3706,6 +3709,7 @@ impl NativeModuleView {
             observers: Vec::new(),
             hovered_files: Default::default(),
             pointer_inside: Default::default(),
+            pointer_held: Default::default(),
             drawn: false,
         }
     }

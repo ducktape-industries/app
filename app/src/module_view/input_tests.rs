@@ -4,9 +4,13 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{self as gpui, Entity, TestAppContext, VisualTestContext};
 
 fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
+    seated_as("chat", opened)
+}
+/// The staged chat view seated under `module`: a second copy makes a second layer.
+fn seated_as(module: &'static str, opened: &[&str]) -> Arc<Mutex<Mounted>> {
     tests::can_the_chat_room();
     let path = tests::staged("chat").expect("build current chat view first");
-    let mut guest = Guest::load_from("chat", &path).expect("build current chat view first");
+    let mut guest = Guest::load_from(module, &path).expect("build current chat view first");
     let props = tests::chat_facts();
     guest.redraw(&None);
     settle(&mut guest, &props);
@@ -31,7 +35,7 @@ fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
         retry: None,
         shown: None,
     }));
-    registry().lock().unwrap().insert("chat", seat.clone());
+    registry().lock().unwrap().insert(module, seat.clone());
     seat
 }
 fn settle(guest: &mut Guest, props: &Option<Vec<u8>>) {
@@ -1078,4 +1082,274 @@ fn keys_typed_into_a_note_the_view_just_opened_reach_it_in_order(cx: &mut TestAp
         written, "kiwi mix",
         "the note's editor did not get every key, in order"
     );
+}
+
+/// Guests painted as absolutely placed layers, later ones on top: the OS-mode
+/// shell's workspace without its chrome.
+struct Layers {
+    views: Vec<(Entity<NativeModuleView>, gpui::Bounds<gpui::Pixels>)>,
+}
+impl gpui::Render for Layers {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{ParentElement as _, Styled as _};
+        gpui::div()
+            .size_full()
+            .relative()
+            .children(self.views.iter().map(|(view, bounds)| {
+                gpui::div()
+                    .absolute()
+                    .left(bounds.origin.x)
+                    .top(bounds.origin.y)
+                    .w(bounds.size.width)
+                    .h(bounds.size.height)
+                    .child(view.clone())
+            }))
+    }
+}
+fn layer(x: f32, y: f32) -> gpui::Bounds<gpui::Pixels> {
+    gpui::Bounds {
+        origin: gpui::point(gpui::px(x), gpui::px(y)),
+        size: gpui::size(gpui::px(400.), gpui::px(400.)),
+    }
+}
+fn open_layers(
+    cx: &mut TestAppContext,
+    placed: &[(&'static str, gpui::Bounds<gpui::Pixels>)],
+) -> (Vec<Entity<NativeModuleView>>, VisualTestContext) {
+    cx.update(gpui_kit::init);
+    let views: Vec<_> = placed
+        .iter()
+        .map(|(module, bounds)| {
+            seated_as(module, &[]);
+            (cx.new(|_| NativeModuleView::new(module)), *bounds)
+        })
+        .collect();
+    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |_, _| Layers {
+        views: views.clone(),
+    });
+    let mut native = VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        observe_mouse();
+    });
+    (views.into_iter().map(|(view, _)| view).collect(), native)
+}
+/// Both layers' modules, so a test can re-arm them by name.
+const LAYERS: [&str; 2] = ["chat", "chat-b"];
+/// Chat never asks for mouse observations and every redraw replaces the
+/// guest's frame, so the harness opts in after each draw and before the
+/// deferred delivery that follows it.
+fn observe_mouse() {
+    for module in LAYERS {
+        let Some(seat) = registry().lock().unwrap().get(module).cloned() else {
+            continue;
+        };
+        let mut locked = seat.lock().unwrap();
+        if let Slot::Ready(guest) = &mut locked.slot {
+            guest.frame.mouse_interest = true;
+        }
+    }
+}
+fn pointer(native: &mut VisualTestContext, x: f32, y: f32, event: &str) {
+    let position = gpui::point(gpui::px(x), gpui::px(y));
+    let modifiers = Default::default();
+    native.update(|window, cx| {
+        let event = match event {
+            "move" => gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position,
+                pressed_button: None,
+                modifiers,
+            }),
+            "drag" => gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position,
+                pressed_button: Some(gpui::MouseButton::Left),
+                modifiers,
+            }),
+            "down" => gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position,
+                button: gpui::MouseButton::Left,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+            "up" => gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position,
+                button: gpui::MouseButton::Left,
+                modifiers,
+                click_count: 1,
+            }),
+            _ => unreachable!(),
+        };
+        window.dispatch_event(event, cx);
+        observe_mouse();
+    });
+}
+fn mouse_events_of(
+    recorded: &[(&'static str, wire::Event)],
+    module: &str,
+) -> Vec<wire::mouse::Event> {
+    recorded
+        .iter()
+        .filter(|(guest, _)| *guest == module)
+        .filter_map(|(_, event)| match event {
+            wire::Event::Mouse { event, .. } => Some(*event),
+            _ => None,
+        })
+        .collect()
+}
+#[gpui_kit::test]
+fn side_by_side_layers_each_take_only_their_own_click(cx: &mut TestAppContext) {
+    use wire::mouse::{Button::Left, Event as M};
+    let _turn = tests::blocking_connection_turn();
+    let (_, mut native) = open_layers(
+        cx,
+        &[("chat", layer(100., 100.)), ("chat-b", layer(600., 100.))],
+    );
+    input::record_inputs();
+    pointer(&mut native, 150., 160., "move");
+    pointer(&mut native, 150., 160., "down");
+    pointer(&mut native, 150., 160., "up");
+    pointer(&mut native, 700., 130., "move");
+    pointer(&mut native, 700., 130., "down");
+    pointer(&mut native, 700., 130., "up");
+    let recorded = input::recorded_inputs_by_guest();
+    assert_eq!(
+        mouse_events_of(&recorded, "chat"),
+        vec![
+            M::CursorEntered,
+            M::CursorMoved { x: 50., y: 60. },
+            M::ButtonPressed(Left),
+            M::ButtonReleased(Left),
+            M::CursorLeft,
+        ]
+    );
+    assert_eq!(
+        mouse_events_of(&recorded, "chat-b"),
+        vec![
+            M::CursorEntered,
+            M::CursorMoved { x: 100., y: 30. },
+            M::ButtonPressed(Left),
+            M::ButtonReleased(Left),
+        ]
+    );
+}
+#[gpui_kit::test]
+fn a_click_on_overlapping_layers_reaches_only_the_top_one(cx: &mut TestAppContext) {
+    use wire::mouse::{Button::Left, Event as M};
+    let _turn = tests::blocking_connection_turn();
+    let (_, mut native) = open_layers(
+        cx,
+        &[("chat", layer(100., 100.)), ("chat-b", layer(300., 300.))],
+    );
+    input::record_inputs();
+    pointer(&mut native, 350., 350., "move");
+    pointer(&mut native, 350., 350., "down");
+    pointer(&mut native, 350., 350., "up");
+    let recorded = input::recorded_inputs_by_guest();
+    assert_eq!(mouse_events_of(&recorded, "chat"), vec![]);
+    assert_eq!(
+        mouse_events_of(&recorded, "chat-b"),
+        vec![
+            M::CursorEntered,
+            M::CursorMoved { x: 50., y: 50. },
+            M::ButtonPressed(Left),
+            M::ButtonReleased(Left),
+        ]
+    );
+}
+#[gpui_kit::test]
+fn a_drag_keeps_its_moves_and_release_in_the_layer_it_began_in(cx: &mut TestAppContext) {
+    use wire::mouse::{Button::Left, Event as M};
+    let _turn = tests::blocking_connection_turn();
+    let (_, mut native) = open_layers(
+        cx,
+        &[("chat", layer(100., 100.)), ("chat-b", layer(600., 100.))],
+    );
+    input::record_inputs();
+    pointer(&mut native, 200., 200., "move");
+    pointer(&mut native, 200., 200., "down");
+    pointer(&mut native, 250., 250., "drag");
+    pointer(&mut native, 700., 300., "drag");
+    pointer(&mut native, 700., 300., "up");
+    pointer(&mut native, 50., 50., "move");
+    let recorded = input::recorded_inputs_by_guest();
+    assert_eq!(
+        mouse_events_of(&recorded, "chat"),
+        vec![
+            M::CursorEntered,
+            M::CursorMoved { x: 100., y: 100. },
+            M::ButtonPressed(Left),
+            M::CursorMoved { x: 150., y: 150. },
+            M::CursorLeft,
+            M::CursorMoved { x: 600., y: 200. },
+            M::ButtonReleased(Left),
+        ]
+    );
+    assert_eq!(
+        mouse_events_of(&recorded, "chat-b"),
+        vec![M::CursorEntered, M::CursorLeft]
+    );
+}
+#[gpui_kit::test]
+fn keys_reach_only_the_focused_layer(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    let (views, mut native) = open_layers(
+        cx,
+        &[("chat", layer(100., 100.)), ("chat-b", layer(600., 100.))],
+    );
+    // The shell focuses the active layer; here the layer's first keyed
+    // container stands in for it.
+    let target = {
+        let seat = registry().lock().unwrap()["chat-b"].clone();
+        let locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &locked.slot else {
+            unreachable!()
+        };
+        let mut root = guest.frame.root.clone().unwrap();
+        let mut target = None;
+        root.for_each_mut(&mut |node| {
+            if target.is_none()
+                && matches!(
+                    node,
+                    wire::Node::Container { .. } | wire::Node::Linear { .. }
+                )
+            {
+                target = node.key().map(str::to_owned);
+            }
+        });
+        target.expect("a keyed container")
+    };
+    let focused = native.update(|window, cx| {
+        let content = views[1].read(cx).content.clone().unwrap();
+        content.update(cx, |tree, cx| {
+            tree.execute_widget_command(
+                wire::WidgetCommand::Focus {
+                    target: target.clone(),
+                },
+                window,
+                cx,
+            )
+            .unwrap();
+            tree.execute_widget_command(wire::WidgetCommand::Focused { target }, window, cx)
+        })
+    });
+    assert!(wire::decode::<bool>(&focused.unwrap()).unwrap());
+    native.update(|window, cx| window.render_frame(cx));
+    input::record_inputs();
+    native.update(|window, cx| {
+        let mut stroke = gpui::Keystroke::parse("a").unwrap();
+        stroke.key_char = Some("a".into());
+        window.dispatch_keystroke(stroke, cx);
+    });
+    let keyed: Vec<_> = input::recorded_inputs_by_guest()
+        .into_iter()
+        .filter(|(_, event)| matches!(event, wire::Event::Keyboard { .. }))
+        .map(|(module, _)| module)
+        .collect();
+    assert!(!keyed.is_empty(), "the focused layer takes the key");
+    assert!(keyed.iter().all(|module| *module == "chat-b"), "{keyed:?}");
 }
