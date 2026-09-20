@@ -1,0 +1,18 @@
+{
+ "name": "forge",
+ "about": "Open the forge on a network with no repository. A repository comes only from a git push through the network's Git service, which the app does not offer, so browsing one is not walked on a fresh network. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 forge/src/forge.rs:57-79,267-276 — the repository and branch pickers are PickLists with no label (unnamed ComboBoxes)",
+  "ducktape-views@a2a73e1 forge/src/components.rs:280 — file contents are a Surface: not in the tree",
+  "ducktape-views@a2a73e1 forge/src/components.rs:167-178 — a folder and a file are named alike (weight only) and fold state is only a ▸/▾ glyph label"
+ ],
+ "steps": [
+  {
+   "say": "open the Forge tab in the rail",
+   "expect": "the Forge tab is selected and the forge view shows an organization label, a repositories count and either a button per repository or the empty state that says to push a git repository to this network (No repositories yet — …) with the push instructions; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  }
+ ]
+}

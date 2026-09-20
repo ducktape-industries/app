@@ -1,0 +1,124 @@
+{
+ "name": "composer-keys",
+ "about": "The chat composer claims Delete, ArrowUp, ArrowDown, Escape and ctrl-x for itself; each, pressed in an EMPTY composer, stopped the whole chat view ('This view stopped': guest requested unsupported native editor key; the seq 8 hotfix). The walk makes its own room (qa-keys-<walk_tag>), empties the composer before each key, checks after it that the view still stands and the composer still takes text (Send turns enabled; an app that reports the composer's value also shows the text), then sends. A key is a shell step through the installed app's own `ax key`: the door's POST /key, the app's own key dispatch, never the OS (a pointer walk has no key step). It writes as the account new-account made and sorts after chat-no-account.json, as new-account asks. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json",
+  "new-account.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "ducktape-views@a2a73e1 chat/src/ui/kit.rs:556-568 — a message body is RichText: the sent text is not in the tree, so a send is proven only by a new author label"
+ ],
+ "steps": [
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Chat tab is selected and the chat view shows a New channel button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading and the rail's account button reads Account: followed by a name (Account: qa-{param:walk_tag}, or Account #<number>), not Account: Sign in"
+  },
+  {
+   "say": "press New channel in the chat sidebar",
+   "expect": "a Create a channel card shows: a Channel name field, Voice room: Off and Members only: Off buttons, and Cancel and Create channel buttons"
+  },
+  {
+   "say": "type the channel name into the Channel name field",
+   "text": "qa-keys-{param:walk_tag}",
+   "expect": "the Channel name field's value is qa-keys-{param:walk_tag} and Create channel is enabled (its state does not list disabled)"
+  },
+  {
+   "say": "press Create channel",
+   "settle_ms": 4000,
+   "expect": "the Create a channel card is gone and the channel list shows a button named for qa-keys-{param:walk_tag} (a leading # is fine); no error sentence"
+  },
+  {
+   "say": "press the qa-keys-{param:walk_tag} channel in the channel list",
+   "expect": "the room header's name label reads qa-keys-{param:walk_tag}; a message composer (a text field named Message #qa-keys-{param:walk_tag}) shows with a Send button, and no line refuses writing for want of an account"
+  },
+  {
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field, which puts the caret there)",
+   "text": "k",
+   "expect": "the Message #qa-keys-{param:walk_tag} composer holds focus (its state lists focused) and the Send button is enabled (its state does not list disabled: the typed k landed); on an app that reports the composer's value it reads k"
+  },
+  {
+   "kind": "shell",
+   "say": "press Backspace (the composer is empty again), then Delete in the empty Message #qa-keys-{param:walk_tag} composer",
+   "argv": [
+    "{rig:data}/ducktape/current/ducktape-app",
+    "ax",
+    "key",
+    "backspace delete"
+   ]
+  },
+  {
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "k",
+   "expect": "after Delete, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed k landed, so Delete did not wedge the editor). On an app that reports the composer's value it reads k"
+  },
+  {
+   "kind": "shell",
+   "say": "press Backspace (the composer is empty again), then ArrowUp in the empty Message #qa-keys-{param:walk_tag} composer",
+   "argv": [
+    "{rig:data}/ducktape/current/ducktape-app",
+    "ax",
+    "key",
+    "backspace up"
+   ]
+  },
+  {
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "k",
+   "expect": "after ArrowUp, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed k landed, so ArrowUp did not wedge the editor). On an app that reports the composer's value it reads k"
+  },
+  {
+   "kind": "shell",
+   "say": "press Backspace (the composer is empty again), then ArrowDown in the empty Message #qa-keys-{param:walk_tag} composer",
+   "argv": [
+    "{rig:data}/ducktape/current/ducktape-app",
+    "ax",
+    "key",
+    "backspace down"
+   ]
+  },
+  {
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "k",
+   "expect": "after ArrowDown, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed k landed, so ArrowDown did not wedge the editor). On an app that reports the composer's value it reads k"
+  },
+  {
+   "kind": "shell",
+   "say": "press Backspace (the composer is empty again), then Escape in the empty Message #qa-keys-{param:walk_tag} composer",
+   "argv": [
+    "{rig:data}/ducktape/current/ducktape-app",
+    "ax",
+    "key",
+    "backspace escape"
+   ]
+  },
+  {
+   "say": "type k into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "k",
+   "expect": "after Escape, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed k landed, so Escape did not wedge the editor). On an app that reports the composer's value it reads k"
+  },
+  {
+   "kind": "shell",
+   "say": "press Backspace (the composer is empty again), then ctrl-x (an empty cut: nothing is selected) in the empty Message #qa-keys-{param:walk_tag} composer",
+   "argv": [
+    "{rig:data}/ducktape/current/ducktape-app",
+    "ax",
+    "key",
+    "backspace ctrl-x"
+   ]
+  },
+  {
+   "say": "type a message into the Message #qa-keys-{param:walk_tag} composer (the type action on that field)",
+   "text": "still alive {param:walk_tag}",
+   "expect": "after ctrl-x, the chat view is still shown: the New channel button, the room header's name label reading qa-keys-{param:walk_tag}, and the composer (a text field named Message #qa-keys-{param:walk_tag}); no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key'); and the Send button is enabled (its state does not list disabled: the typed message landed, so ctrl-x did not wedge the editor). On an app that reports the composer's value it reads still alive {param:walk_tag}"
+  },
+  {
+   "say": "press Send",
+   "settle_ms": 4000,
+   "expect": "a new message card appears in the timeline with an author label (a pending 'sending…' label is fine) and the Send button reports disabled again; no 'This view stopped' title, no Retry button and no error sentence (such as 'guest requested unsupported native editor key')"
+  }
+ ]
+}

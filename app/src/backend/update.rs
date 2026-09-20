@@ -5,8 +5,13 @@
 //! The launcher hands a running app two env vars — `DUCKTAPE_RELEASE` (the
 //! sha of the release that is running) and `DUCKTAPE_UPDATE_STATE` (the
 //! `state.json` path, whose directory is the updates dir) — and the pinned
-//! release key sits at `<updates>/keys/release.pub`. Without them there is no
-//! updater (`make dev` runs the binary bare) and this module does nothing.
+//! release key sits at `<updates>/keys/release.pub`, written by the
+//! launcher's install or, when that pinned none, by the first workspace open
+//! whose own node names the network's key ([`adopt_network_key`]). Without
+//! the env there is no updater (`make dev` runs the binary bare) and this
+//! module does nothing. Without the key the launcher's contract still
+//! holds — the first window reports `Rendered` — but the release channel
+//! (fetch, download, verify) stays off.
 //!
 //! What runs here:
 //! - `Fetch`: read `/shared/releases/stable.json` and `.sig` through the
@@ -33,7 +38,10 @@
 //! `/shared/**` is open-write on the files module, so what the node serves
 //! is untrusted bytes until `verify_manifest` says otherwise.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use app_update::layout;
 use app_update::{
@@ -47,7 +55,7 @@ use super::{RpcClient, base64_decode, rpc_client};
 #[path = "update_stage.rs"]
 mod stage;
 
-/// How often a connected app asks the network for the manifest.
+/// How often the app asks the network for the manifest.
 pub(crate) const CHECK_INTERVAL_SECS: i64 = 60 * 60;
 /// The `read` lane's page cap (duckfs `MAX_READ_BYTES`).
 const PAGE_LEN: u64 = 1024 * 1024;
@@ -114,7 +122,8 @@ impl UpdatePaths {
 #[derive(Debug, Clone)]
 pub struct Updater {
     phase: Phase,
-    keys: TrustedKeys,
+    /// `None`: no pinned key, so the channel never checks.
+    keys: Option<TrustedKeys>,
     paths: UpdatePaths,
     last_check: Option<i64>,
     activity: Activity,
@@ -132,6 +141,11 @@ pub struct UpdateReading {
     pub banner: Option<UpdateBanner>,
     pub last_check: Option<i64>,
     pub busy: bool,
+    /// A release key is pinned, so the channel checks.
+    pub armed: bool,
+    /// A workspace open found the pin differs from the key the network
+    /// publishes ([`pin_network_key`]); the pin was kept.
+    pub key_differs: bool,
 }
 
 /// What performing one command asks of the caller.
@@ -146,7 +160,8 @@ enum Effect {
 
 impl Updater {
     /// The updater a launcher-started app runs, or `None` when the process
-    /// was started bare (no env) or the install has no pinned key.
+    /// was started bare (no env). An install with no pinned key still gets
+    /// one: its channel is off, its healthy signal is not.
     pub fn from_env() -> Option<Self> {
         let release = std::env::var(RELEASE_ENV).ok()?;
         let state_path = PathBuf::from(std::env::var_os(STATE_ENV)?);
@@ -155,10 +170,10 @@ impl Updater {
             return None;
         };
         let updates_dir = state_path.parent()?.to_path_buf();
-        let Some(keys) = load_keys(&updates_dir) else {
+        let keys = load_keys(&updates_dir);
+        if keys.is_none() {
             warn!(target: "ducktape::update", event = "app_update_disabled", reason = "no_pinned_key");
-            return None;
-        };
+        }
         let Some(releases_dir) = host_releases_dir(&updates_dir) else {
             warn!(target: "ducktape::update", event = "app_update_disabled", reason = "no_data_dir");
             return None;
@@ -176,13 +191,15 @@ impl Updater {
         Some(Self::new(phase, keys, paths))
     }
 
-    pub fn new(phase: Phase, keys: TrustedKeys, paths: UpdatePaths) -> Self {
-        info!(
-            target: "ducktape::update",
-            event = "app_update_armed",
-            current = %phase.current(),
-            pinned_sequence = phase.pinned_sequence(),
-        );
+    pub fn new(phase: Phase, keys: Option<TrustedKeys>, paths: UpdatePaths) -> Self {
+        if keys.is_some() {
+            info!(
+                target: "ducktape::update",
+                event = "app_update_armed",
+                current = %phase.current(),
+                pinned_sequence = phase.pinned_sequence(),
+            );
+        }
         Updater {
             phase,
             keys,
@@ -207,24 +224,29 @@ impl Updater {
             banner: self.banner.clone(),
             last_check: self.last_check,
             busy: self.activity != Activity::Quiet,
+            armed: self.keys.is_some(),
+            key_differs: PIN_DIFFERS.load(Ordering::Relaxed),
         }
     }
 
-    pub fn keys(&self) -> &TrustedKeys {
-        &self.keys
+    pub fn keys(&self) -> Option<&TrustedKeys> {
+        self.keys.as_ref()
     }
 
     pub fn paths(&self) -> &UpdatePaths {
         &self.paths
     }
 
-    /// The wall tick: a connected app checks once per [`CHECK_INTERVAL_SECS`]
-    /// and never while a job is running. Returns the job to start, if any.
-    pub fn tick(&mut self, now: i64, connected: bool) -> Option<Job> {
+    /// The wall tick: while some node can carry the channel — the console's,
+    /// or the launch window's selected workspace row's, whether or not its
+    /// contract refuses the console ([`super::update_carrier`]) — the app
+    /// checks once per [`CHECK_INTERVAL_SECS`] and never while a job is
+    /// running. Returns the job to start, if any.
+    pub fn tick(&mut self, now: i64, carrier: bool) -> Option<Job> {
         let due = self
             .last_check
             .is_none_or(|last| now - last >= CHECK_INTERVAL_SECS);
-        let checks_now = connected && due;
+        let checks_now = carrier && due;
         if !checks_now {
             return None;
         }
@@ -238,8 +260,23 @@ impl Updater {
     }
 
     fn check(&mut self, now: i64) -> Option<Job> {
+        // an install with no key reads it again: a workspace open may have
+        // pinned the network's since ([`adopt_network_key`]), and it arms
+        // as a fresh install would.
+        if self.keys.is_none() {
+            self.keys = load_keys(&self.paths.updates_dir);
+            if self.keys.is_some() {
+                info!(
+                    target: "ducktape::update",
+                    event = "app_update_armed",
+                    current = %self.phase.current(),
+                    pinned_sequence = self.phase.pinned_sequence(),
+                );
+            }
+        }
         let quiet = self.activity == Activity::Quiet;
-        if !quiet {
+        let armed = self.keys.is_some();
+        if !(quiet && armed) {
             return None;
         }
         self.last_check = Some(now);
@@ -263,6 +300,10 @@ impl Updater {
     /// the phase held here is what `state.json` holds, not what `step`
     /// returned — the flip did not happen.
     pub fn apply(&mut self, event: Event) -> Option<Job> {
+        let settles = matches!(
+            (&self.phase, &event),
+            (Phase::PendingHealthy(_), Event::Rendered)
+        );
         let (phase, commands) = step(self.phase.clone(), event);
         let mut persisted = None;
         let mut job = None;
@@ -282,6 +323,14 @@ impl Updater {
                 }
             }
         }
+        if settles && matches!(phase, Phase::Idle(_)) {
+            info!(
+                target: "ducktape::update",
+                event = "app_update_settled",
+                release = %phase.current(),
+                pinned_sequence = phase.pinned_sequence(),
+            );
+        }
         self.phase = phase;
         if let Some(job) = &job {
             self.activity = activity_of(job);
@@ -299,6 +348,12 @@ impl Updater {
                 Effect::Nothing
             }
             Command::Fetch => Effect::Start(Job::Fetch),
+            // A node launcher's: `step` asks it only after `Designated`, which
+            // the app never raises — the app offers the channel's latest.
+            Command::FetchDesignated(sha) => {
+                warn!(target: "ducktape::update", event = "app_update_ignored", command = "fetch_designated", sha = %sha);
+                Effect::Nothing
+            }
             Command::Download { sha, size } => Effect::Start(Job::Download { sha, size }),
             Command::Verify(sha) => Effect::Start(Job::Verify { sha }),
             Command::SealImmutable(sha) => {
@@ -307,7 +362,9 @@ impl Updater {
             }
             Command::PinSuccessor(successor) => {
                 pin_successor(&self.paths.updates_dir, &successor);
-                self.keys.successor = Some(successor);
+                if let Some(keys) = &mut self.keys {
+                    keys.successor = Some(successor);
+                }
                 Effect::Nothing
             }
             Command::Banner(banner) => {
@@ -319,6 +376,8 @@ impl Updater {
                 stage::collect(&self.paths.releases_dir, &self.paths.partial_dir(), &keep);
                 Effect::Nothing
             }
+            // The node launcher's `record-world`; an app release speaks no module world.
+            Command::RecordWorld(_) => Effect::Nothing,
             Command::Qualify(sha) => launcher_owned("qualify", sha),
             Command::Exec(sha) => launcher_owned("exec", sha),
             Command::ResolveSwap { from: _, to } => launcher_owned("resolve_swap", to),
@@ -359,14 +418,13 @@ fn relaunch_through_launcher() -> bool {
         }
     };
     let launcher = own.with_file_name(stage::LAUNCHER_EXE);
-    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
-    let spawned = std::process::Command::new(&launcher)
-        .args(args)
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .spawn();
+    let spawned = launcher_command(
+        &launcher,
+        std::env::args_os().skip(1),
+        super::app_log_path(),
+    )
+    .process_group(0)
+    .spawn();
     match spawned {
         Ok(_child) => {
             info!(target: "ducktape::update", event = "app_update_relaunch");
@@ -377,6 +435,39 @@ fn relaunch_through_launcher() -> bool {
             false
         }
     }
+}
+
+/// The launcher's command: `args` passed through, stdin and stdout null.
+/// Its stderr — the launcher's only log, so its flip, exec, refusal or
+/// rollback — appends to `log`, the app's own, so a relaunch that fails
+/// after the app quit still says why; a log that does not open leaves it
+/// null.
+fn launcher_command(
+    launcher: &Path,
+    args: impl IntoIterator<Item = std::ffi::OsString>,
+    log: Result<PathBuf, String>,
+) -> std::process::Command {
+    let appended = log.and_then(|path| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .map_err(|error| error.to_string())
+    });
+    let stderr = match appended {
+        Ok(file) => std::process::Stdio::from(file),
+        Err(error) => {
+            warn!(target: "ducktape::update", event = "app_update_relaunch_unlogged", error = %error);
+            std::process::Stdio::null()
+        }
+    };
+    let mut command = std::process::Command::new(launcher);
+    command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(stderr);
+    command
 }
 
 fn seal_release(paths: &UpdatePaths, sha: &Sha) {
@@ -403,20 +494,31 @@ fn host_releases_dir(updates_dir: &Path) -> Option<PathBuf> {
 // ---- the reading the shell draws -------------------------------------------
 
 /// The strip across the top of the console: an update ready to restart
-/// into, or a rollback the reader has not dismissed.
+/// into, a staged one its own qualify refused, or a rollback the reader has
+/// not dismissed. The launch window draws the same strip under a row whose
+/// contract refuses the console, and `Check` — the channel's last word and
+/// the check itself — when nothing else ([`launch_strip_of`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UpdateStrip {
     Ready { display: String },
+    Refused { display: String, reason: String },
     RolledBack { failed: String, reason: String },
+    Check { words: String, busy: bool },
 }
 
 /// The strip a phase draws, if any.
 pub fn strip_of(reading: Option<&UpdateReading>) -> Option<UpdateStrip> {
     let reading = reading?;
     match &reading.phase {
-        Phase::Staged(staged) => Some(UpdateStrip::Ready {
-            display: staged.display.clone(),
-        }),
+        Phase::Staged(staged) => match &staged.refused {
+            None => Some(UpdateStrip::Ready {
+                display: staged.display.clone(),
+            }),
+            Some(reason) => Some(UpdateStrip::Refused {
+                display: staged.display.clone(),
+                reason: reason.clone(),
+            }),
+        },
         Phase::RolledBack(rolled_back) => Some(UpdateStrip::RolledBack {
             failed: rolled_back.failed.short(),
             reason: rollback_words(rolled_back.reason).to_string(),
@@ -427,6 +529,32 @@ pub fn strip_of(reading: Option<&UpdateReading>) -> Option<UpdateStrip> {
     }
 }
 
+/// The strip under a launch-window row whose contract refuses the console:
+/// the console's own strip when a phase draws one, else the check — Settings'
+/// Check now is inside that console, and a newer release is what lifts the
+/// refusal.
+pub fn launch_strip_of(reading: Option<&UpdateReading>, now: i64) -> Option<UpdateStrip> {
+    let reading = reading?;
+    if let Some(strip) = strip_of(Some(reading)) {
+        return Some(strip);
+    }
+    let words = match (&reading.phase, reading.busy) {
+        (Phase::Downloading(downloading), true) => {
+            format!("Downloading Ducktape {}…", downloading.display)
+        }
+        (_, true) => "Checking for updates…".into(),
+        (_, false) => match (note_words(reading), reading.last_check) {
+            (note, _) if !note.is_empty() => note,
+            (_, None) => "Not checked for updates yet".into(),
+            (_, last) => format!("Checked for updates {}", checked_words(last, now)),
+        },
+    };
+    Some(UpdateStrip::Check {
+        words,
+        busy: reading.busy,
+    })
+}
+
 fn rollback_words(reason: RollbackReason) -> &'static str {
     match reason {
         RollbackReason::NeverRendered => "it never came up",
@@ -435,13 +563,15 @@ fn rollback_words(reason: RollbackReason) -> &'static str {
 
 /// The Settings "Updates" section's facts. `state` is one of `unavailable`
 /// (not installed through the launcher), `idle`, `downloading`, `staged`,
-/// `swapping`, `pending_healthy`, `rolled_back`.
+/// `swapping`, `pending_healthy`, `rolled_back`. `refused` is why the staged
+/// release's own qualify refused it, empty when it did not.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UpdateFacts {
     pub state: String,
     pub current: String,
     pub previous: String,
     pub staged_display: String,
+    pub refused: String,
     pub channel: String,
     pub checked: String,
     pub note: String,
@@ -470,15 +600,33 @@ pub fn facts_of(reading: Option<&UpdateReading>, now: i64) -> UpdateFacts {
         }
         Phase::RolledBack(rolled_back) => ("rolled_back", Some(rolled_back.failed), String::new()),
     };
+    let refused = match &reading.phase {
+        Phase::Staged(staged) => staged.refused.clone().unwrap_or_default(),
+        _ => String::new(),
+    };
     UpdateFacts {
         state: state.into(),
         current: reading.phase.current().short(),
         previous: previous.map(|sha| sha.short()).unwrap_or_default(),
         staged_display,
+        refused,
         channel: layout::CHANNEL.into(),
         checked: checked_words(reading.last_check, now),
-        note: banner_words(reading.banner.as_ref()),
+        note: note_words(reading),
         busy: reading.busy,
+    }
+}
+
+/// The section's note: a pin the network's key differs from, then the
+/// channel's own word.
+fn note_words(reading: &UpdateReading) -> String {
+    let channel = match reading.armed {
+        true => banner_words(reading.banner.as_ref()),
+        false => "Updates are off: no release key is pinned.".into(),
+    };
+    match reading.key_differs {
+        true => format!("{KEY_DIFFERS} {channel}").trim_end().into(),
+        false => channel,
     }
 }
 
@@ -577,11 +725,123 @@ fn load_keys(updates_dir: &Path) -> Option<TrustedKeys> {
     Some(TrustedKeys { pinned, successor })
 }
 
+/// `<updates>`, the directory of the launcher's `DUCKTAPE_UPDATE_STATE`;
+/// `None` for a bare run.
+fn updates_dir_from_env() -> Option<PathBuf> {
+    let state_path = PathBuf::from(std::env::var_os(STATE_ENV)?);
+    Some(state_path.parent()?.to_path_buf())
+}
+
+/// The release key a node of `chain_id` pins too, as hex: the one this
+/// install pinned (read without arming the updater), else the one that
+/// network published at an open this session ([`adopt_network_key`]).
+pub(crate) fn release_key_for(chain_id: &str) -> Option<String> {
+    let pinned = updates_dir_from_env()
+        .and_then(|updates_dir| load_keys(&updates_dir))
+        .map(|keys| keys.pinned);
+    let published = || NETWORK_KEYS.lock().ok()?.get(chain_id).copied();
+    pinned.or_else(published).map(|key| key.to_string())
+}
+
 fn pin_successor(updates_dir: &Path, successor: &SuccessorKey) {
     let text = serde_json::to_string_pretty(successor).expect("a SuccessorKey serializes");
     let path = keys_dir(updates_dir).join("successor.json");
     if let Err(error) = write_atomically(&path, text.as_bytes()) {
         warn!(target: "ducktape::update", event = "app_update_persist_failed", reason = "io", error = %error);
+    }
+}
+
+// ---- the network's release key ---------------------------------------------
+
+/// Said in Settings once an open found this app's pin is not the key the
+/// network publishes.
+const KEY_DIFFERS: &str =
+    "This app's pinned release key differs from the one this network publishes; the pin is kept.";
+
+/// An open found a pin other than the network's key: said for the session.
+static PIN_DIFFERS: AtomicBool = AtomicBool::new(false);
+
+/// The release key each network published at its last open this session,
+/// by chain id ([`release_key_for`]).
+static NETWORK_KEYS: Mutex<BTreeMap<String, PublicKey>> = Mutex::new(BTreeMap::new());
+
+/// The app release key the node at `endpoint` says its chain's governance
+/// names, read off `GET /v1/release` as core's [`app_update::ReleaseStatus`],
+/// or `None`: no endpoint, a node that serves no `/v1/release`, no key in it,
+/// anything not 64 hex. Never an error — an open goes on without.
+async fn network_release_key(endpoint: &str) -> Option<PublicKey> {
+    let url = reqwest::Url::parse(endpoint.trim())
+        .ok()?
+        .join("/v1/release")
+        .ok()?;
+    let reply = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .ok()?
+        .get(url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    reply
+        .json::<app_update::ReleaseStatus>()
+        .await
+        .ok()?
+        .release_keys
+        .app
+}
+
+/// A workspace open, once its own node answered: the network's release key
+/// is remembered for the node command ([`release_key_for`]) and, under the
+/// launcher, pinned ([`pin_network_key`]).
+pub(crate) async fn adopt_network_key(chain_id: &str, endpoint: &str) {
+    let Some(network) = network_release_key(endpoint).await else {
+        return;
+    };
+    if let Ok(mut keys) = NETWORK_KEYS.lock() {
+        keys.insert(chain_id.to_string(), network);
+    }
+    if pin_network_key(updates_dir_from_env().as_deref(), network) {
+        PIN_DIFFERS.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The network's key into `<updates>/keys/release.pub` when nothing is
+/// pinned there, the file `ducktape-launcher install --release-key` writes;
+/// the updater arms at its next check. A pin is never replaced: `true` is a
+/// pin that differs, kept and logged. A bare run (`None`) pins nothing.
+fn pin_network_key(updates_dir: Option<&Path>, network: PublicKey) -> bool {
+    let Some(updates_dir) = updates_dir else {
+        return false;
+    };
+    let path = keys_dir(updates_dir).join("release.pub");
+    match std::fs::read_to_string(&path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            match write_atomically(&path, format!("{network}\n").as_bytes()) {
+                Ok(()) => {
+                    info!(target: "ducktape::update", event = "app_update_key_pinned", key = %network)
+                }
+                Err(error) => {
+                    warn!(target: "ducktape::update", event = "app_update_persist_failed", reason = "io", error = %error)
+                }
+            }
+            false
+        }
+        Err(error) => {
+            warn!(target: "ducktape::update", event = "app_update_key_unreadable", error = %error);
+            false
+        }
+        Ok(pinned) if pinned.parse::<PublicKey>().ok() == Some(network) => false,
+        Ok(pinned) => {
+            warn!(
+                target: "ducktape::update",
+                event = "release_key_pinned_differs",
+                pinned = %pinned.trim(),
+                network = %network,
+            );
+            true
+        }
     }
 }
 

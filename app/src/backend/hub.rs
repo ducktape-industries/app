@@ -23,6 +23,11 @@ pub struct HubNetwork {
     pub chain_id: String,
     pub name: String,
     pub endpoint: String,
+    /// The node RPC URL Settings stored for a local row's chain
+    /// ([`endpoint_override`]) — what `endpoint` then is — empty for none and
+    /// for every saved remote. The row says so ([`network_row_label`]) and
+    /// offers the way back to `node.toml` ([`offers_node_toml`]).
+    pub endpoint_override: String,
     pub kind: String,
     pub last_used: i64,
     /// The liveness reading, merged in by `probe_known_networks`. `probed`
@@ -35,6 +40,21 @@ pub struct HubNetwork {
     /// `0` until a live node has answered. Read only through
     /// [`contract_refuses`] — a dead or unprobed row has no number to judge.
     pub contract: u32,
+    /// The probe measured a node at `endpoint` that serves ANOTHER chain id:
+    /// two workspaces on one device can bind the same port, and the node that
+    /// answers is then a sibling's. Its reading is not this row's — `live`
+    /// stays false and no height or contract is taken from it.
+    pub another_network: bool,
+    /// The node's own `phase` and `follow.behind_by` off the same probe
+    /// ([`NodeFacts::phase`], [`NodeFacts::behind_by`]): empty and `-1` until
+    /// this row's node has answered, and `-1` too when the node has heard no
+    /// tip. Read only by [`network_row_label`]; a behind node still opens.
+    pub phase: String,
+    pub behind_by: i64,
+    /// Why the node's mesh is down, off the same probe
+    /// ([`NodeFacts::netstack_failure_reason`]); empty while its plane is not
+    /// failed and until this row's node has answered.
+    pub netstack_failure: String,
 }
 
 /// One probe answer. Never an error: a node that does not answer IS the
@@ -45,6 +65,11 @@ pub struct HubProbe {
     pub live: bool,
     pub height: i64,
     pub contract: u32,
+    /// the chain id the answering node serves; empty when none answered.
+    pub chain_id: String,
+    pub phase: String,
+    pub behind_by: i64,
+    pub netstack_failure: String,
 }
 
 /// One wallet row the launch window lists, straight off `keystore::wallet`.
@@ -70,26 +95,31 @@ pub struct HubState {
 
 /// A picked network's keystore: its wallet rows, why the listing is empty when
 /// it FAILED rather than being empty, and whether the keystore could be
-/// NAMED at all — a remote whose node never answered which network it serves
-/// has no keystore to open, and the pick stays where it is with that error.
+/// NAMED at all — a remote whose node answered but serves no network this app
+/// can hold an identity for has no keystore to open, and the pick stays where
+/// it is with that error. `offline` is the step before all of it: the node did
+/// not answer the open's status read, so nothing past it was read.
 #[derive(Clone, Debug, Hash, PartialEq)]
 pub struct WalletList {
     pub wallets: Vec<WalletInfo>,
     pub error: String,
     pub keystore: bool,
+    pub offline: bool,
 }
 
 /// Which step a picked network's keystore sends the launch window to, as the
-/// discriminant the handler branches on once: rows are the unlock surface, an
+/// discriminant the handler branches on once: a node that did not answer is
+/// the offline step, before any wallet screen; rows are the unlock surface, an
 /// empty keystore mints the device key, and a keystore that could not be named
-/// (the remote never answered) keeps the pick on screen with its error. There
-/// is no silent read-only door: every way into the console goes past a key,
-/// and "Continue read-only" is a button the person presses.
+/// keeps the pick on screen with its error. There is no silent read-only door:
+/// every way into the console goes past a key, and "Continue read-only" is a
+/// button the person presses.
 pub fn wallet_door(list: &WalletList) -> crate::WalletDoor {
-    match (list.keystore, list.wallets.is_empty()) {
-        (false, _) => crate::WalletDoor::Unreached,
-        (true, true) => crate::WalletDoor::Password,
-        (true, false) => crate::WalletDoor::Wallets,
+    match (list.offline, list.keystore, list.wallets.is_empty()) {
+        (true, _, _) => crate::WalletDoor::Offline,
+        (false, false, _) => crate::WalletDoor::Unreached,
+        (false, true, true) => crate::WalletDoor::Password,
+        (false, true, false) => crate::WalletDoor::Wallets,
     }
 }
 
@@ -101,7 +131,8 @@ pub(crate) fn key_state_of(path: &Path) -> String {
 }
 
 /// A network's display name is the human half of its chain id: `demo#a1b2`
-/// reads `demo`. A remote row falls back to its endpoint sans scheme.
+/// reads `demo`. A remote row falls back to its endpoint sans scheme. A human
+/// name more than one row shares is not a name ([`distinct_names`]).
 fn display_name(chain_id: &str, fallback: &str) -> String {
     let named = chain_id.split('#').next().unwrap_or_default();
     if !named.is_empty() {
@@ -111,6 +142,21 @@ fn display_name(chain_id: &str, fallback: &str) -> String {
         .trim_start_matches("http://")
         .trim_start_matches("https://")
         .to_string()
+}
+
+/// A human name two rows share tells neither apart — `node init --name walk`
+/// twice is two networks, `walk#37589218` and `walk#0e1b62f1`. Those rows read
+/// their whole chain id, the salt being what keeps them distinct; a row with no
+/// chain id (a saved remote) keeps its endpoint.
+fn distinct_names(mut rows: Vec<HubNetwork>) -> Vec<HubNetwork> {
+    let names: Vec<String> = rows.iter().map(|row| row.name.clone()).collect();
+    for row in &mut rows {
+        let shared = names.iter().filter(|name| **name == row.name).count() > 1;
+        if shared && !row.chain_id.is_empty() {
+            row.name = row.chain_id.clone();
+        }
+    }
+    rows
 }
 
 /// The known-network list: every workspace directory under the ducktape home
@@ -123,10 +169,11 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
     let mut rows: Vec<HubNetwork> = workspaces()
         .into_iter()
         .map(|(chain_id, dir)| {
-            let endpoint = workspace_endpoint(&dir).unwrap_or_default();
+            let endpoint = workspace_endpoint_in(&prefs, &chain_id, &dir).unwrap_or_default();
             HubNetwork {
                 name: display_name(&chain_id, &chain_id),
                 endpoint,
+                endpoint_override: endpoint_override(&prefs, &chain_id).unwrap_or_default(),
                 kind: "local".into(),
                 last_used: stamps[&chain_id]["last_used"].as_i64().unwrap_or(0),
                 id: chain_id.clone(),
@@ -135,6 +182,10 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
                 live: false,
                 height: -1,
                 contract: 0,
+                another_network: false,
+                phase: String::new(),
+                behind_by: -1,
+                netstack_failure: String::new(),
             }
         })
         .collect();
@@ -155,16 +206,21 @@ pub(crate) fn known_networks() -> Vec<HubNetwork> {
             chain_id: String::new(),
             name: display_name("", endpoint),
             endpoint: endpoint.to_string(),
+            endpoint_override: String::new(),
             kind: "remote".into(),
             last_used: stamps[endpoint]["last_used"].as_i64().unwrap_or(0),
             probed: false,
             live: false,
             height: -1,
             contract: 0,
+            another_network: false,
+            phase: String::new(),
+            behind_by: -1,
+            netstack_failure: String::new(),
         });
     }
     rows.sort_by(|a, b| b.last_used.cmp(&a.last_used).then(a.id.cmp(&b.id)));
-    rows
+    distinct_names(rows)
 }
 
 /// The row the list preselects: the most recently used (the list is sorted
@@ -240,6 +296,17 @@ pub fn selected_network_name(networks: Vec<HubNetwork>, id: String) -> String {
         .into_iter()
         .find(|row| row.id == id)
         .map(|row| row.name)
+        .unwrap_or_default()
+}
+
+/// The selected row's chain id — what its keystore is opened as
+/// ([`load_wallets`]) — or empty for a saved remote, which has none until its
+/// node answers, and for a selection that no longer names a row.
+pub fn selected_network_chain_id(networks: Vec<HubNetwork>, id: String) -> String {
+    networks
+        .into_iter()
+        .find(|row| row.id == id)
+        .map(|row| row.chain_id)
         .unwrap_or_default()
 }
 
@@ -368,6 +435,7 @@ fn wallet_rows(rpc: &str) -> Result<WalletList, String> {
             }],
             error: String::new(),
             keystore: true,
+            offline: false,
         });
     }
     let listed = keystore::wallet::list(&keystore_root(rpc)?)?;
@@ -383,6 +451,7 @@ fn wallet_rows(rpc: &str) -> Result<WalletList, String> {
             .collect(),
         error: String::new(),
         keystore: true,
+        offline: false,
     })
 }
 
@@ -423,19 +492,44 @@ pub async fn hub_state() -> HubState {
 /// is an identity of nobody. The read is a directory listing, never a
 /// subprocess: nothing on the key path execs anything.
 ///
-/// A REMOTE's keystore is named by the network it serves, so its node is
-/// asked first (`/v1/status`); a node that cannot be reached, or serves no
-/// chain yet, has no keystore to open and the launch window stays on the pick
-/// with that error. A workspace on this device names its own keystore and is
-/// not asked.
-pub async fn load_wallets(rpc: String) -> WalletList {
-    if let Err(cause) = name_remote_keystore(&rpc).await {
+/// `chain_id` is the picked network's, when the pick names one: a workspace
+/// on this device is opened as ITS chain, not as whichever workspace shares its
+/// endpoint ([`note_served_chain`]). Every open asks the node first, with the
+/// same bounded `/v1/status` read the network rows are drawn from: a node that
+/// does not answer is offline, and saying so is the whole answer — no wallet
+/// screen runs ahead of a lookup that cannot succeed. A REMOTE's keystore is
+/// then named by the network that answer says it serves; one that serves no
+/// chain yet has no keystore to open and the launch window stays on the pick
+/// with that error. A workspace on this device names its own keystore.
+pub async fn load_wallets(rpc: String, chain_id: String) -> WalletList {
+    note_served_chain(&rpc, &chain_id);
+    let status = match probe_endpoint(&rpc).await {
+        Ok(status) => status,
+        Err(cause) => {
+            set_local_user_key(None).await;
+            return WalletList {
+                wallets: Vec::new(),
+                error: unreachable_node(&rpc, &cause),
+                keystore: false,
+                offline: true,
+            };
+        }
+    };
+    if let Err(cause) = own_workspace_node(workspace_at(&rpc), &status)
+        .and_then(|()| name_remote_keystore(&rpc, &status))
+    {
         set_local_user_key(None).await;
         return WalletList {
             wallets: Vec::new(),
             error: user_error(cause),
             keystore: false,
+            offline: false,
         };
+    }
+    // the network's release key, off the node this open just took as the
+    // workspace's own: a remote's word is not a trust root.
+    if let Some((chain_id, _)) = workspace_at(&rpc) {
+        super::update::adopt_network_key(&chain_id, &rpc).await;
     }
     let list = match wallet_rows(&rpc) {
         Ok(list) => list,
@@ -451,6 +545,7 @@ pub async fn load_wallets(rpc: String) -> WalletList {
                 wallets: Vec::new(),
                 error: user_error(cause),
                 keystore: true,
+                offline: false,
             }
         }
     };
@@ -461,19 +556,102 @@ pub async fn load_wallets(rpc: String) -> WalletList {
     list
 }
 
+/// An endpoint a workspace on this device serves (`workspace`, the open's
+/// [`workspace_at`]) opens only onto that workspace's own node ([`own_node`]) —
+/// the check provisioning's wait makes, made again on the status this open
+/// read, whether the endpoint is `node.toml`'s or a node RPC URL Settings set.
+/// A remote has no workspace to hold the answer to.
+pub(crate) fn own_workspace_node(
+    workspace: Option<(String, PathBuf)>,
+    status: &serde_json::Value,
+) -> Result<(), String> {
+    let Some((chain_id, dir)) = workspace else {
+        return Ok(());
+    };
+    match own_node(&dir, &chain_id, &super::node::node_facts(status))? {
+        true => Ok(()),
+        false => {
+            Err("the node on this port has not yet said which network and key it serves".into())
+        }
+    }
+}
+
+/// What a re-point asks of the node. Settings `Set`s the URL it typed (empty
+/// clears) under a live session whose reconnect checks nothing, so the set
+/// makes the open's own-node check first. The launch window `Clear`s a row's
+/// override with no session on it (#94) — its node may well be down, and
+/// `node.toml`'s with it — and the next open makes that check itself (#70).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Repoint {
+    Set(String),
+    Clear,
+}
+
+/// Point the workspace at `rpc` at a node RPC URL, or back to `node.toml`
+/// ([`Repoint`]), and answer the facts it now resolves to — the endpoint the
+/// session reconnects to next.
+pub async fn set_workspace_endpoint(
+    rpc: String,
+    repoint: Repoint,
+) -> Result<EndpointFacts, AppError> {
+    let (chain_id, dir) = workspace_at(&rpc).ok_or_else(|| {
+        app_error("Only a workspace on this device has a node RPC URL to set.".to_string())
+    })?;
+    let mut prefs = read_prefs();
+    let facts = repoint_workspace(&mut prefs, (chain_id.clone(), dir), &repoint)
+        .await
+        .map_err(|cause| app_error(user_error(cause)))?;
+    if !write_prefs(&prefs) {
+        return Err(app_error(
+            "The app could not save its preferences.".to_string(),
+        ));
+    }
+    // the session is re-pointed AS this chain, as an open records it.
+    note_served_chain(&facts.endpoint, &chain_id);
+    Ok(facts)
+}
+
+/// [`set_workspace_endpoint`] on `prefs`: a set's `url` must be a node RPC URL
+/// ([`endpoint_origin`]), and the node answering where the workspace then
+/// resolves must be its own ([`own_workspace_node`]) — the check an open makes,
+/// made here because the reconnect that follows makes none. A clear asks no
+/// node. Refused, `prefs` is left as it was.
+pub(crate) async fn repoint_workspace(
+    prefs: &mut serde_json::Value,
+    (chain_id, dir): (String, PathBuf),
+    repoint: &Repoint,
+) -> Result<EndpointFacts, String> {
+    let endpoint = match repoint {
+        Repoint::Clear => String::new(),
+        Repoint::Set(url) => match endpoint_origin(url) {
+            Some(endpoint) => endpoint,
+            None if url.trim().is_empty() => String::new(),
+            None => return Err(ENDPOINT_REFUSAL.into()),
+        },
+    };
+    let mut next = prefs.clone();
+    store_endpoint_override(&mut next, &chain_id, &endpoint);
+    let facts = endpoint_facts_in(&next, &chain_id, &dir);
+    if let Repoint::Set(_) = repoint {
+        let status = probe_endpoint(&facts.endpoint)
+            .await
+            .map_err(|cause| unreachable_node(&facts.endpoint, &cause))?;
+        own_workspace_node(Some((chain_id, dir)), &status)?;
+    }
+    *prefs = next;
+    Ok(facts)
+}
+
 /// Learn which network a remote endpoint serves, so its keystore has a name
-/// ([`keystore_root`]). A workspace on this device, or the key override, needs
-/// no asking. The status read is the only network round trip on the key path.
-async fn name_remote_keystore(rpc: &str) -> Result<(), String> {
+/// ([`keystore_root`]), off the status document the open already read — the
+/// only network round trip on the key path. A workspace on this device, or the
+/// key override, needs no asking.
+fn name_remote_keystore(rpc: &str, status: &serde_json::Value) -> Result<(), String> {
     let names_itself = env_user_key().is_some() || workspace_at(rpc).is_some();
     if names_itself {
         return Ok(());
     }
-    let status = rpc_client(rpc)?
-        .status_json()
-        .await
-        .map_err(|error| error.to_string())?;
-    let facts = super::node::node_facts(&status);
+    let facts = super::node::node_facts(status);
     // the same refusal the hub row prints for a probed node, for an endpoint
     // typed in directly: a console never opens against a surface this app was
     // not written for.
@@ -489,20 +667,38 @@ async fn name_remote_keystore(rpc: &str) -> Result<(), String> {
             "this node serves no network yet, so there is no identity to hold for it".into(),
         );
     }
-    note_remote_chain(rpc, &chain_id);
+    note_served_chain(rpc, &chain_id);
     Ok(())
 }
 
-/// Merge one probe answer into the list by row id.
+/// Merge one probe answer into the list by row id. The answer counts for the
+/// row only when the node serves the row's chain id — an endpoint names a port,
+/// not a network, and a sibling workspace's node can be the one listening on
+/// it ([`HubNetwork::another_network`]). A row with no chain id (a saved remote)
+/// has nothing to hold the answer to and takes it as it comes.
 pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<HubNetwork> {
     networks
         .into_iter()
         .map(|mut row| {
             if row.id == probe.id {
+                let another =
+                    probe.live && !row.chain_id.is_empty() && probe.chain_id != row.chain_id;
                 row.probed = true;
-                row.live = probe.live;
-                row.height = probe.height;
-                row.contract = probe.contract;
+                row.another_network = another;
+                row.live = probe.live && !another;
+                row.height = if another { -1 } else { probe.height };
+                row.contract = if another { 0 } else { probe.contract };
+                row.phase = if another {
+                    String::new()
+                } else {
+                    probe.phase.clone()
+                };
+                row.behind_by = if another { -1 } else { probe.behind_by };
+                row.netstack_failure = if another {
+                    String::new()
+                } else {
+                    probe.netstack_failure.clone()
+                };
             }
             row
         })
@@ -511,35 +707,83 @@ pub fn apply_network_probe(networks: Vec<HubNetwork>, probe: HubProbe) -> Vec<Hu
 
 /// The one line a network row prints after its name: the probe's reading,
 /// and — for a live node whose contract number is not this app's — the
-/// refusal, in the same voice as provisioning's `blocked` step.
+/// refusal, in the same voice as provisioning's `blocked` step. A node whose
+/// own phase is `behind` says so, by its gap when it published one, and a node
+/// that has not served yet ([`super::node::before_serving`]) or serves with no
+/// overlay (`isolated`) names its phase, instead of a block number that reads
+/// as healthy. A node whose netstack plane failed names that failure ahead of
+/// any of them: its mesh stays down for the rest of its boot, while a lag or a
+/// sync passes. A row whose node RPC URL Settings overrode says where it
+/// reads first, `via` the override's address.
 pub fn network_row_label(row: &HubNetwork) -> String {
+    let name = match row.endpoint_override.as_str() {
+        "" => row.name.clone(),
+        url => format!("{} · via {}", row.name, display_name("", url)),
+    };
     let unprobed = !row.probed;
     if unprobed {
-        return format!("{} · checking", row.name);
+        return format!("{name} · checking");
+    }
+    if row.another_network {
+        return format!("{name} · another network at this address");
     }
     if !row.live {
-        return format!("{} · offline", row.name);
+        return format!("{name} · offline");
     }
     match super::node::contract_match(row.contract) {
-        super::node::ContractMatch::Match => format!("{} · block {}", row.name, row.height),
+        super::node::ContractMatch::Match if !row.netstack_failure.is_empty() => {
+            format!("{name} · {}", row.netstack_failure.replace('_', " "))
+        }
+        super::node::ContractMatch::Match if row.phase == "behind" && row.behind_by >= 0 => {
+            format!("{name} · behind by {}", row.behind_by)
+        }
+        super::node::ContractMatch::Match if row.phase == "behind" => {
+            format!("{name} · behind")
+        }
+        super::node::ContractMatch::Match
+            if row.phase == "isolated" || super::node::before_serving(&row.phase) =>
+        {
+            format!("{name} · {}", row.phase)
+        }
+        super::node::ContractMatch::Match => format!("{name} · block {}", row.height),
         super::node::ContractMatch::NodeBehind | super::node::ContractMatch::NodeAhead => {
-            format!(
-                "{} · {}",
-                row.name,
-                super::node::contract_hint(row.contract)
-            )
+            format!("{name} · {}", super::node::contract_hint(row.contract))
         }
     }
 }
 
+/// The line under a row whose node the probe measured silent (#137): what the
+/// person can do, beside **Join with a new invite** and **Forget**. From here
+/// a re-founded network and an unreachable node look the same, so the words
+/// are true of both. `None` for a row that answered, one another network
+/// answers for, and one not probed yet.
+pub fn not_answering_line(row: &HubNetwork) -> Option<String> {
+    let silent = row.probed && !row.live && !row.another_network;
+    silent.then(|| {
+        format!(
+            "{} has not answered. If it was re-founded, ask a member for a new invite.",
+            row.name
+        )
+    })
+}
+
+/// Whether a row offers **Use node.toml**: a workspace on this device whose
+/// node RPC URL Settings overrode. Settings lives in the console, which does
+/// not open while the override's node is down (#94).
+pub fn offers_node_toml(row: &HubNetwork) -> bool {
+    row.kind == "local" && !row.endpoint_override.is_empty()
+}
+
 /// Whether the console must NOT open on this row: the probe measured a live
-/// node and its contract number is not [`EXPECTED_NODE_CONTRACT`]. A row the
-/// probe has not answered for, or a dead one, has no number to refuse on —
-/// opening those is the same as before, and the console says offline itself.
+/// node and its contract number is not [`EXPECTED_NODE_CONTRACT`], or the node
+/// at the row's endpoint serves another network — opening that would put the
+/// other network's console under this row's name. A row the probe has not
+/// answered for, or a dead one, has no number to refuse on — opening those is
+/// the same as before, and the open says offline itself ([`load_wallets`]).
 pub fn contract_refuses(row: &HubNetwork) -> bool {
     let measured_live = row.probed && row.live;
     let mismatched = super::node::contract_match(row.contract) != super::node::ContractMatch::Match;
-    measured_live && mismatched
+    row.another_network || (measured_live && mismatched)
 }
 
 /// Whether the selected row refuses ([`contract_refuses`]); a selection that
@@ -551,12 +795,28 @@ pub fn selected_network_refuses(networks: &[HubNetwork], id: &str) -> bool {
         .is_some_and(contract_refuses)
 }
 
+/// The endpoint the release channel is read through while no console is
+/// open: the selected row's, when it is a workspace on this device whose own
+/// node answered — contract refused or not. No own-node check is needed for
+/// the carrier: every byte it serves is verified under the pinned release key
+/// ([`super::update::run_job`]), so a node the console refuses still carries
+/// the release that fixes the refusal. A remote row, a dead or unprobed one
+/// and one where another network answers carry nothing.
+pub fn update_carrier(networks: &[HubNetwork], id: &str) -> Option<String> {
+    networks
+        .iter()
+        .find(|row| row.id == id)
+        .filter(|row| row.kind == "local" && row.probed && row.live && !row.another_network)
+        .map(|row| row.endpoint.clone())
+}
+
 /// Probe every known network's endpoint, emitting one reading per row as it
 /// answers. Bounded: one `/v1/status` with a short timeout per endpoint.
 pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
     use futures::StreamExt;
     let probes = known_networks().into_iter().map(move |row| async move {
-        let status = probe_endpoint(&row.endpoint).await;
+        let status = probe_endpoint(&row.endpoint).await.ok();
+        let facts = status.as_ref().map(super::node::node_facts);
         HubProbe {
             id: row.id,
             live: status.is_some(),
@@ -566,25 +826,64 @@ pub fn probe_known_networks() -> futures::stream::BoxStream<'static, HubProbe> {
                 .as_ref()
                 .and_then(|status| status["height"].as_i64())
                 .unwrap_or(-1),
-            contract: status
+            contract: facts.as_ref().map_or(0, |facts| facts.contract),
+            behind_by: facts.as_ref().map_or(-1, |facts| facts.behind_by),
+            netstack_failure: facts
                 .as_ref()
-                .map_or(0, |status| super::node::node_facts(status).contract),
+                .map(|facts| facts.netstack_failure_reason.clone())
+                .unwrap_or_default(),
+            phase: facts
+                .as_ref()
+                .map(|facts| facts.phase.clone())
+                .unwrap_or_default(),
+            chain_id: facts.map(|facts| facts.chain_id).unwrap_or_default(),
         }
     });
     futures::stream::iter(probes).buffer_unordered(8).boxed()
 }
 
 /// One bounded status read: the `/v1/status` document when the node answers,
-/// `None` when it does not. 3s — a liveness dot must not hang the list.
-async fn probe_endpoint(endpoint: &str) -> Option<serde_json::Value> {
+/// the client's own account of why not when it does not. 3s — a liveness dot
+/// must not hang the list, and opening a network asks the row's question the
+/// row's way.
+async fn probe_endpoint(endpoint: &str) -> Result<serde_json::Value, String> {
     if endpoint.is_empty() {
-        return None;
+        return Err("no endpoint to ask".into());
     }
-    let client = rpc_client(endpoint).ok()?;
+    let client = rpc_client(endpoint)?;
     tokio::time::timeout(Duration::from_secs(3), client.status_json())
         .await
-        .ok()?
-        .ok()
+        .map_err(|_| "the status read timed out after 3s".to_string())?
+        .map_err(String::from)
+}
+
+/// The launch window's sentence for a node nothing answers at. The client's
+/// own words — the HTTP stack's, naming the URL and the socket error — are the
+/// evidence, so they go to the log and never to the screen.
+fn unreachable_node(rpc: &str, cause: &str) -> String {
+    let endpoint = canonical_endpoint(rpc.to_string());
+    tracing::warn!(
+        target: "ducktape::app",
+        reason = "node_unreachable",
+        endpoint = %endpoint,
+        cause,
+        "the node did not answer; the launch window says so in its own words"
+    );
+    format!("Can't reach this network's node at {endpoint}.")
+}
+
+/// A failed exchange with `rpc`, as the launch window says it. The client's
+/// `rpc_client` reason covers every exchange it could not complete — a request
+/// that never arrived and a reply it could not read alike — so the node is
+/// called unreachable only when the rows' own status read cannot reach it
+/// either. A node that answers keeps the failure's own sentence, and so does
+/// anything the node authored.
+pub(crate) async fn exchange_failure(rpc: &str, error: ducktape_rpc::Error) -> String {
+    let client_failed = error.reason() == "rpc_client";
+    if client_failed && probe_endpoint(rpc).await.is_err() {
+        return unreachable_node(rpc, error.message());
+    }
+    error.into()
 }
 
 /// Stamp a network's last-used time and — for an endpoint no workspace
@@ -1026,12 +1325,17 @@ mod tests {
             chain_id: "demo#a1b2".into(),
             name: "demo".into(),
             endpoint: "http://127.0.0.1:1".into(),
+            endpoint_override: String::new(),
             kind: "local".into(),
             last_used: 0,
             probed: false,
             live: false,
             height: -1,
             contract: 0,
+            another_network: false,
+            phase: String::new(),
+            behind_by: -1,
+            netstack_failure: String::new(),
         }];
         assert_eq!(
             selected_network_name(rows.clone(), "demo#a1b2".into()),
@@ -1040,9 +1344,314 @@ mod tests {
         assert_eq!(selected_network_name(rows, "gone".into()), "");
     }
 
-    /// A picked network's keystore decides the next step: rows unlock, an
-    /// empty keystore mints, and a keystore that could not be named (the
-    /// remote never answered) keeps the pick on screen — whatever rows it
+    /// a local workspace row, unprobed, on the port every workspace defaults to.
+    fn workspace_row(chain_id: &str) -> HubNetwork {
+        HubNetwork {
+            id: chain_id.into(),
+            chain_id: chain_id.into(),
+            name: display_name(chain_id, chain_id),
+            endpoint: "http://127.0.0.1:8844".into(),
+            endpoint_override: String::new(),
+            kind: "local".into(),
+            last_used: 0,
+            probed: false,
+            live: false,
+            height: -1,
+            contract: 0,
+            another_network: false,
+            phase: String::new(),
+            behind_by: -1,
+            netstack_failure: String::new(),
+        }
+    }
+
+    fn answer(id: &str, chain_id: &str) -> HubProbe {
+        HubProbe {
+            id: id.into(),
+            live: true,
+            height: 2033,
+            contract: EXPECTED_NODE_CONTRACT,
+            chain_id: chain_id.into(),
+            phase: "serving".into(),
+            behind_by: 0,
+            netstack_failure: String::new(),
+        }
+    }
+
+    /// AN ENDPOINT IS A PORT, NOT A NETWORK (#11). A workspace whose node died
+    /// shares its port with a sibling's healthy node; the sibling's answer is
+    /// not this row's reading — no height, not live, and no console opens on it.
+    #[test]
+    fn a_probe_from_another_network_is_not_the_rows_reading() {
+        let rows = vec![workspace_row("walk#37589218")];
+        let rows = apply_network_probe(rows, answer("walk#37589218", "walk#0e1b62f1"));
+        let row = &rows[0];
+        assert!(row.probed && !row.live && row.another_network);
+        assert_eq!((row.height, row.contract), (-1, 0));
+        assert_eq!(
+            network_row_label(row),
+            "walk · another network at this address"
+        );
+        assert!(contract_refuses(row));
+        assert!(selected_network_refuses(&rows, "walk#37589218"));
+        // a node serving no chain is not this row's node either.
+        let rows = apply_network_probe(rows, answer("walk#37589218", ""));
+        assert!(rows[0].another_network && !rows[0].live);
+        assert_eq!(update_carrier(&rows, "walk#37589218"), None);
+    }
+
+    /// THE UPDATE CHECK NEEDS NO CONSOLE (#101). The selected workspace row
+    /// whose own node answers carries the release channel even when its
+    /// contract refuses the console; a remote, a dead, an unprobed row and one
+    /// where another network answers carry nothing, nor does no selection.
+    #[test]
+    fn only_a_live_selected_workspace_row_carries_the_update_check() {
+        let id = "walk#0e1b62f1";
+        let unprobed = vec![workspace_row(id)];
+        assert_eq!(update_carrier(&unprobed, id), None);
+        let refused = apply_network_probe(
+            unprobed,
+            HubProbe {
+                contract: EXPECTED_NODE_CONTRACT + 1,
+                ..answer(id, id)
+            },
+        );
+        assert!(selected_network_refuses(&refused, id));
+        assert_eq!(
+            update_carrier(&refused, id).as_deref(),
+            Some("http://127.0.0.1:8844")
+        );
+        assert_eq!(update_carrier(&refused, ""), None);
+        let dead = apply_network_probe(
+            refused.clone(),
+            HubProbe {
+                live: false,
+                ..answer(id, "")
+            },
+        );
+        assert_eq!(update_carrier(&dead, id), None);
+        let sibling = apply_network_probe(refused.clone(), answer(id, "walk#37589218"));
+        assert!(sibling[0].another_network);
+        assert_eq!(update_carrier(&sibling, id), None);
+        let remote = vec![HubNetwork {
+            kind: "remote".into(),
+            ..refused[0].clone()
+        }];
+        assert_eq!(update_carrier(&remote, id), None);
+    }
+
+    /// The row's own node answering sets its reading; a saved remote has no
+    /// chain id to hold the answer to and takes it as it comes.
+    #[test]
+    fn a_probe_from_the_rows_own_network_sets_its_height() {
+        let rows = vec![workspace_row("walk#0e1b62f1")];
+        let rows = apply_network_probe(rows, answer("walk#0e1b62f1", "walk#0e1b62f1"));
+        let row = &rows[0];
+        assert!(row.probed && row.live && !row.another_network);
+        assert_eq!(row.height, 2033);
+        assert_eq!(network_row_label(row), "walk · block 2033");
+        assert!(!contract_refuses(row));
+
+        let remote = HubNetwork {
+            id: "http://203.0.113.9:18844".into(),
+            chain_id: String::new(),
+            kind: "remote".into(),
+            ..workspace_row("")
+        };
+        let rows = apply_network_probe(vec![remote], answer("http://203.0.113.9:18844", "team#1"));
+        assert!(rows[0].live && !rows[0].another_network);
+        assert_eq!(rows[0].height, 2033);
+    }
+
+    /// A ROW ON A NODE RPC URL SETTINGS STORED SAYS SO (#94): the override's
+    /// address comes ahead of the reading, and only such a local row offers
+    /// the way back to `node.toml` — Settings is inside the console, which does
+    /// not open while that node is down.
+    #[test]
+    fn an_overridden_row_says_where_it_reads_and_offers_node_toml() {
+        let plain = workspace_row("walk#0e1b62f1");
+        let overridden = HubNetwork {
+            endpoint: "http://100.92.85.92:28990".into(),
+            endpoint_override: "http://100.92.85.92:28990".into(),
+            ..plain.clone()
+        };
+        assert_eq!(network_row_label(&plain), "walk · checking");
+        assert_eq!(
+            network_row_label(&overridden),
+            "walk · via 100.92.85.92:28990 · checking"
+        );
+        let dead = HubNetwork {
+            probed: true,
+            ..overridden.clone()
+        };
+        assert_eq!(
+            network_row_label(&dead),
+            "walk · via 100.92.85.92:28990 · offline"
+        );
+        let rows = apply_network_probe(
+            vec![overridden.clone()],
+            answer("walk#0e1b62f1", "walk#0e1b62f1"),
+        );
+        assert_eq!(
+            network_row_label(&rows[0]),
+            "walk · via 100.92.85.92:28990 · block 2033"
+        );
+
+        assert!(!offers_node_toml(&plain));
+        assert!(offers_node_toml(&overridden));
+        let remote = HubNetwork {
+            chain_id: String::new(),
+            kind: "remote".into(),
+            ..overridden
+        };
+        assert!(!offers_node_toml(&remote));
+    }
+
+    /// A NODE THAT STOPPED FOLLOWING IS NOT `block N` (#16). The node's own
+    /// `behind` phase is the verdict; the row prints the gap it published, or
+    /// just `behind` before any peer answered its tip poll — and still opens,
+    /// because a behind node serves.
+    #[test]
+    fn a_behind_node_reads_as_behind_and_still_opens() {
+        let behind = HubProbe {
+            phase: "behind".into(),
+            behind_by: 7,
+            ..answer("walk#0e1b62f1", "walk#0e1b62f1")
+        };
+        let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], behind.clone());
+        assert_eq!(network_row_label(&rows[0]), "walk · behind by 7");
+        assert!(!contract_refuses(&rows[0]));
+        assert!(!selected_network_refuses(&rows, "walk#0e1b62f1"));
+
+        let unheard = HubProbe {
+            behind_by: -1,
+            ..behind.clone()
+        };
+        let rows = apply_network_probe(rows, unheard);
+        assert_eq!(network_row_label(&rows[0]), "walk · behind");
+
+        // a sibling's behind node on this row's port is still not this row's.
+        let rows = apply_network_probe(
+            rows,
+            HubProbe {
+                chain_id: "walk#37589218".into(),
+                ..behind
+            },
+        );
+        assert_eq!(
+            network_row_label(&rows[0]),
+            "walk · another network at this address"
+        );
+    }
+
+    /// A NODE WHOSE MESH IS DOWN IS NOT `block N` (#41). Its netstack plane
+    /// failed and stays failed for the boot, so the row names the failure in
+    /// words — ahead of a lag or a sync, which pass — and still opens; a node
+    /// that publishes no failure reads as before.
+    #[test]
+    fn a_node_whose_netstack_plane_failed_names_the_failure() {
+        for (phase, label) in [
+            ("validating", "walk · netstack guest unreadable"),
+            ("behind", "walk · netstack guest unreadable"),
+            ("syncing", "walk · netstack guest unreadable"),
+        ] {
+            let probe = HubProbe {
+                phase: phase.into(),
+                behind_by: 7,
+                netstack_failure: "netstack_guest_unreadable".into(),
+                ..answer("walk#0e1b62f1", "walk#0e1b62f1")
+            };
+            let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], probe);
+            assert_eq!(network_row_label(&rows[0]), label);
+            assert!(!contract_refuses(&rows[0]));
+        }
+
+        let healthy = apply_network_probe(
+            vec![workspace_row("walk#0e1b62f1")],
+            answer("walk#0e1b62f1", "walk#0e1b62f1"),
+        );
+        assert_eq!(network_row_label(&healthy[0]), "walk · block 2033");
+
+        // a sibling's failed node on this row's port is not this row's failure.
+        let sibling = HubProbe {
+            netstack_failure: "plane_exited".into(),
+            ..answer("walk#0e1b62f1", "walk#37589218")
+        };
+        let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], sibling);
+        assert_eq!(rows[0].netstack_failure, "");
+    }
+
+    /// A NODE WITH NO OVERLAY IS NOT `block N` (#69). Core reads `isolated`
+    /// for a serving node whose netstack plane is gone: the failure published
+    /// beside it names it, a bare `isolated` reads as the phase, and either
+    /// still opens — the node answers from its copy.
+    #[test]
+    fn an_isolated_node_reads_as_its_failure_or_its_phase() {
+        let isolated = HubProbe {
+            phase: "isolated".into(),
+            ..answer("walk#0e1b62f1", "walk#0e1b62f1")
+        };
+        let failed = HubProbe {
+            netstack_failure: "netstack_guest_unreadable".into(),
+            ..isolated.clone()
+        };
+        for (probe, label) in [
+            (failed, "walk · netstack guest unreadable"),
+            (isolated, "walk · isolated"),
+        ] {
+            let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], probe);
+            assert_eq!(network_row_label(&rows[0]), label);
+            assert!(!contract_refuses(&rows[0]));
+        }
+    }
+
+    /// A NODE THAT HAS NOT SERVED YET IS NOT `block 0` (#27). A joining or
+    /// syncing node names its phase; a serving or validating one, and a phase
+    /// core does not publish, keep the height. None of them refuses to open.
+    #[test]
+    fn a_node_before_serving_reads_as_its_phase() {
+        for (phase, label) in [
+            ("starting", "walk · starting"),
+            ("recovering", "walk · recovering"),
+            ("joining", "walk · joining"),
+            ("syncing", "walk · syncing"),
+            ("serving", "walk · block 2033"),
+            ("validating", "walk · block 2033"),
+            ("rebalancing", "walk · block 2033"),
+        ] {
+            let probe = HubProbe {
+                phase: phase.into(),
+                ..answer("walk#0e1b62f1", "walk#0e1b62f1")
+            };
+            let rows = apply_network_probe(vec![workspace_row("walk#0e1b62f1")], probe);
+            assert_eq!(network_row_label(&rows[0]), label);
+            assert!(!contract_refuses(&rows[0]));
+        }
+    }
+
+    /// `node init --name walk` twice is two networks: rows that share a human
+    /// name read their whole chain id, and a name no other row holds stays short.
+    #[test]
+    fn rows_sharing_a_human_name_read_their_chain_id() {
+        let rows = distinct_names(vec![
+            workspace_row("walk#37589218"),
+            workspace_row("walk#0e1b62f1"),
+            workspace_row("demo#a1b2"),
+        ]);
+        let labels: Vec<String> = rows.iter().map(network_row_label).collect();
+        assert_eq!(
+            labels,
+            [
+                "walk#37589218 · checking",
+                "walk#0e1b62f1 · checking",
+                "demo · checking"
+            ]
+        );
+    }
+
+    /// A picked network's keystore decides the next step: a node that did not
+    /// answer is offline, rows unlock, an empty keystore mints, and a keystore
+    /// that could not be named keeps the pick on screen — whatever rows it
     /// claims. No door opens the console read-only on its own.
     #[test]
     fn the_wallet_door_follows_the_picked_keystore() {
@@ -1050,7 +1659,8 @@ mod tests {
             wallet_door(&WalletList {
                 wallets: rows(&[("a", true)]),
                 error: String::new(),
-                keystore: true
+                keystore: true,
+                offline: false,
             }),
             crate::WalletDoor::Wallets
         ));
@@ -1058,17 +1668,29 @@ mod tests {
             wallet_door(&WalletList {
                 wallets: vec![],
                 error: String::new(),
-                keystore: true
+                keystore: true,
+                offline: false,
             }),
             crate::WalletDoor::Password
         ));
         assert!(matches!(
             wallet_door(&WalletList {
                 wallets: vec![],
-                error: "unreachable".into(),
-                keystore: false
+                error: "no network served".into(),
+                keystore: false,
+                offline: false,
             }),
             crate::WalletDoor::Unreached
+        ));
+        // a node that never answered is offline, whatever else the list says.
+        assert!(matches!(
+            wallet_door(&WalletList {
+                wallets: rows(&[("a", true)]),
+                error: "Can't reach this network's node at http://127.0.0.1:1.".into(),
+                keystore: true,
+                offline: true,
+            }),
+            crate::WalletDoor::Offline
         ));
     }
 
@@ -1084,7 +1706,7 @@ mod tests {
             keystore_root(rpc).is_err(),
             "an unreached remote names no keystore"
         );
-        note_remote_chain(rpc, "team#c0ffee");
+        note_served_chain(rpc, "team#c0ffee");
         let home = tempfile::tempdir().unwrap();
         let root = remote_keystore_root(home.path(), "team#c0ffee").unwrap();
         assert_eq!(root, home.path().join("remotes").join("team#c0ffee"));
@@ -1099,7 +1721,7 @@ mod tests {
         assert_eq!(root.file_name().unwrap(), "a-b#1");
         assert!(remote_keystore_root(home.path(), "..").is_err());
         // a node serving no chain records nothing.
-        note_remote_chain("http://203.0.113.11:1", "");
+        note_served_chain("http://203.0.113.11:1", "");
         assert!(keystore_root("http://203.0.113.11:1").is_err());
     }
 

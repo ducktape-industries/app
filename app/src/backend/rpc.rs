@@ -35,15 +35,24 @@ pub(crate) fn refused(error: ducktape_rpc::Error) -> view_wire::Refusal {
 /// The write lane's own two answers, which are NOT the same answer: a node
 /// that said no has decided, and re-sending the same op cannot change it; an
 /// exchange that never completed leaves the op's fate unknown, so the view
-/// must re-read before it retries. That difference is the reason a token
-/// exists, so it is the token.
-fn submit_refused(failure: ducktape_rpc::SubmitFailure) -> view_wire::Refusal {
+/// must re-read before it retries. A node that said no named its reason, so
+/// that refusal reaches the view exactly as a read's does ([`refused`]).
+/// The unresolved sentence is the host's: the client's detail is transport
+/// text ("error sending request for url …"), which goes to the log.
+pub(crate) fn submit_refused(failure: ducktape_rpc::SubmitFailure) -> view_wire::Refusal {
     match failure {
-        ducktape_rpc::SubmitFailure::Refused(detail) => {
-            view_wire::Refusal::new("rejected", detail)
-        }
+        ducktape_rpc::SubmitFailure::Refused(error) => refused(error),
         ducktape_rpc::SubmitFailure::Unresolved(detail) => {
-            view_wire::Refusal::new("unresolved", detail)
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "submit_unresolved",
+                error = %detail,
+                "a write got no answer from the node"
+            );
+            view_wire::Refusal::new(
+                "unresolved",
+                "The node did not confirm this change; it may still land. Reload before trying again.",
+            )
         }
     }
 }
@@ -82,6 +91,11 @@ pub(crate) async fn seated_write(
         };
         signer.sign_with_blob(target, next_sequence(), &payload, required_blob)
     };
+    // Ask the node before the frame leaves: a node that is restarting fails
+    // HERE, as `rpc_client`, which the kernel retries — the op never left.
+    // A frame that left and got no answer is `unresolved` and is never
+    // resent: the node does not dedupe one op sent twice.
+    rpc.status_json().await.map_err(refused)?;
     submit_raw_frame(rpc, target, frame)
         .await
         .map_err(submit_refused)
@@ -93,9 +107,7 @@ pub(crate) async fn seated_write(
 pub(crate) async fn seated_data_plane_signer(
     rpc: &RpcClient,
 ) -> Result<ducktape_rpc::WriteAuth, view_wire::Refusal> {
-    let status = rpc.status().await.map_err(refused)?;
-    let node_key = hex_decode(&status.public_key)
-        .map_err(|error| view_wire::Refusal::new("malformed_reply", error))?;
+    let node_key = node_public_key(rpc).await?;
     let key = {
         let session = SIGNER.lock().await;
         let Some(signer) = session.as_ref() else {
@@ -386,6 +398,17 @@ pub(crate) async fn seat_signer(
     Ok(pubkey)
 }
 
+/// The seat over a key made from `seed`: a test that signs, without a key
+/// file to unlock.
+#[cfg(test)]
+pub(crate) async fn seat_test_signer(seed: u64) {
+    use commonware_cryptography::Signer as _;
+    *SIGNER.lock().await = Some(Signer {
+        password: Zeroizing::new(String::new()),
+        key: commonware_cryptography::ed25519::PrivateKey::from_seed(seed),
+    });
+}
+
 /// Sign one data-plane request with the key ALREADY SEATED — the seat the
 /// action before this one opened under the person's password — or `None`
 /// while the seat is locked. For a caller that has no password of its own:
@@ -432,12 +455,10 @@ pub(crate) async fn seated_gateway_proof(
 /// This node's own public key — the bytes a data-plane signature is bound to, so
 /// a proof minted for one node cannot be replayed at another. Read off the
 /// node's own `status`, which is where every other signing caller reads it.
-pub(crate) async fn node_public_key(rpc: &str) -> Result<Vec<u8>, String> {
-    let status = crate::backend::rpc_client(rpc)?
-        .status()
-        .await
-        .map_err(|error| error.to_string())?;
-    crate::backend::hex_decode(&status.public_key)
+pub(crate) async fn node_public_key(rpc: &RpcClient) -> Result<Vec<u8>, view_wire::Refusal> {
+    let status = rpc.status().await.map_err(refused)?;
+    hex_decode(&status.public_key)
+        .map_err(|error| view_wire::Refusal::new("malformed_reply", error))
 }
 
 /// The session seat, when `password` is the one it was taken with. The lock
@@ -607,7 +628,7 @@ pub(crate) fn network_key(rpc: &str) -> String {
 /// launch window's key screens now open for a remote exactly as for a local
 /// network.
 ///
-/// A remote's chain id is what its `/v1/status` says; [`note_remote_chain`]
+/// A remote's chain id is what its `/v1/status` says; [`note_served_chain`]
 /// records it when the launch window loads the keystore, and until it has,
 /// the root is a refusal — "not yet reached", never a guess.
 pub(crate) fn keystore_root(rpc: &str) -> Result<PathBuf, String> {
@@ -615,9 +636,7 @@ pub(crate) fn keystore_root(rpc: &str) -> Result<PathBuf, String> {
         return Ok(workspace);
     }
     let endpoint = canonical_endpoint(rpc.to_string());
-    let chain_id = remote_chains()
-        .get(&endpoint)
-        .cloned()
+    let chain_id = served_chain(&endpoint)
         .ok_or_else(|| "this node has not answered which network it serves yet".to_string())?;
     remote_keystore_root(&workspace_config::ducktape_home()?, &chain_id)
 }
@@ -633,23 +652,37 @@ pub(crate) fn remote_keystore_root(home: &Path, chain_id: &str) -> Result<PathBu
     Ok(home.join("remotes").join(name))
 }
 
-/// Endpoint → chain id, for the remotes this session has reached. Learned
-/// once per endpoint from the node's own status, at the keystore load.
-static REMOTE_CHAINS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+/// Canonical endpoint → the chain id this session opens it as, learned at the
+/// keystore load: the picked row's chain id for a workspace on this device
+/// (two workspaces can be registered on one port, so the endpoint alone names
+/// neither), else what a remote node's own status says.
+static SERVED_CHAINS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
-fn remote_chains() -> std::sync::MutexGuard<'static, BTreeMap<String, String>> {
-    REMOTE_CHAINS
+fn served_chains() -> std::sync::MutexGuard<'static, BTreeMap<String, String>> {
+    SERVED_CHAINS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Record which network `rpc` serves, so [`keystore_root`] can name its
-/// keystore. An empty chain id (a node serving no chain yet) records nothing.
-pub(crate) fn note_remote_chain(rpc: &str, chain_id: &str) {
+/// The chain id recorded for an ALREADY-CANONICAL endpoint. Takes no
+/// [`canonical_endpoint`] of its own: it runs under the rpc client cache lock
+/// (`operator_token_for`).
+pub(crate) fn served_chain(endpoint: &str) -> Option<String> {
+    served_chains().get(endpoint).cloned()
+}
+
+/// Record which network `rpc` serves, so [`workspace_at`] and
+/// [`keystore_root`] resolve that network rather than whichever workspace
+/// shares its port. An empty chain id (a remote row nobody has asked, a node
+/// serving no chain yet) records nothing.
+pub(crate) fn note_served_chain(rpc: &str, chain_id: &str) {
     if chain_id.is_empty() {
         return;
     }
-    remote_chains().insert(canonical_endpoint(rpc.to_string()), chain_id.to_string());
+    // canonicalised BEFORE the table lock: canonicalising takes the client
+    // cache lock, which `operator_token_for` holds while it reads this table.
+    let endpoint = canonical_endpoint(rpc.to_string());
+    served_chains().insert(endpoint, chain_id.to_string());
 }
 
 /// One named wallet's key file inside a workspace's keystore — THE join, so

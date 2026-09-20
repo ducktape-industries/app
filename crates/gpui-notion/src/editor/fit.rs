@@ -134,11 +134,7 @@ impl InputFit {
 /// typed a text area can be a row short for one frame — long enough for the
 /// input to scroll — and nothing puts that scroll back once the area has
 /// caught up. Leaving it there hides the first row of the block.
-pub fn reset_scroll_when_text_fits(
-    state: &Entity<EditorState>,
-    text: Pixels,
-    cx: &mut App,
-) {
+pub fn reset_scroll_when_text_fits(state: &Entity<EditorState>, text: Pixels, cx: &mut App) {
     let (area, offset) = {
         let state = state.read(cx);
         (

@@ -1,5 +1,7 @@
 //! App state regressions and native UI/kernel contracts.
 use super::*;
+mod ax_contract;
+mod ax_door;
 mod bell;
 mod canary;
 mod connection;
@@ -21,7 +23,7 @@ fn message(seq: i64, body: &str, deleted: bool) -> backend::ChatMessage {
         meta: format!("#{seq}"),
         edit_body: body.into(),
         body: body.into(),
-        blocks: backend::paragraph_blocks(body),
+        blocks: backend::paragraph_blocks(body, &backend::test_chain()),
         pending: false,
         rev: 2,
         edited: false,
@@ -73,7 +75,6 @@ fn chat_data(active_channel: &str) -> backend::ChatData {
         huddle_roster: Vec::new(),
     }
 }
-
 
 fn workspace(active_channel: &str) -> backend::WorkspaceData {
     backend::WorkspaceData {

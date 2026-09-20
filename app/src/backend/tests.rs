@@ -17,6 +17,44 @@ mod shell;
 mod status;
 mod wire;
 
+/// The simulation set every sim test here boots: `$DUCKTAPE_MODULES_DIR`, else
+/// the set the core checkout this binary links staged for itself.
+///
+/// Never `workspace_config::sim_modules_dir()` (nor `modules_dir: None`, which
+/// calls it): that follows the profile directory's `.staged-modules` pointer,
+/// which ANY core checkout building into a shared target rewrites, and a sim
+/// composing another revision's wasm dies in genesis (#40). The set's name is
+/// core's own `staged_key` encoding of the checkout `build.rs` recorded, in
+/// the profile directory `crates/noded/build.rs` stages into — `OUT_DIR`'s
+/// third ancestor, the same relation it uses.
+fn sim_modules_dir() -> std::path::PathBuf {
+    use workspace_config::staged_key::{checkout_of_crate, staged_set_name};
+    if let Some(dir) = std::env::var_os("DUCKTAPE_MODULES_DIR") {
+        return dir.into();
+    }
+    let Some(noded) = option_env!("DUCKTAPE_CORE_NODED_DIR") else {
+        panic!(
+            "app/build.rs recorded no core noded checkout (its build warning says why); \
+             set DUCKTAPE_MODULES_DIR to the pinned core's sim-modules set"
+        );
+    };
+    let profile = std::path::Path::new(env!("OUT_DIR"))
+        .ancestors()
+        .nth(3)
+        .expect("OUT_DIR sits three levels under the profile dir");
+    let set = profile.join(staged_set_name(
+        "sim-modules",
+        &checkout_of_crate(std::path::Path::new(noded)),
+    ));
+    assert!(
+        set.is_dir(),
+        "no simulation set at {} — the build of {noded} stages it; \
+         or set DUCKTAPE_MODULES_DIR",
+        set.display()
+    );
+    set
+}
+
 /// A node that serves `GET /v1/status` EXACTLY ONCE and answers `500` to every
 /// later ask for it. `/v1/peers` answers every time — the pin is on the status
 /// document, not on the peer sample.
@@ -247,7 +285,7 @@ async fn load_messages(rpc: &RpcClient, channel_id: &str) -> Result<Vec<ChatMess
     let facts = ReaderFacts::current().await;
     let mut messages: Vec<ChatMessage> = roots
         .into_iter()
-        .map(|row| chat_message(row, facts.reader()))
+        .map(|row| chat_message(row, facts.reader(), &test_chain()))
         .collect();
     mark_message_groups(&mut messages);
     Ok(messages)

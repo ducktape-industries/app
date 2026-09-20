@@ -1,0 +1,53 @@
+{
+ "name": "huddle",
+ "about": "A fresh network has no channel: the walk makes its own (qa-huddle-<walk_tag>), then starts a huddle in it and leaves it, as the account new-account made. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json",
+  "new-account.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 call/src/panel.rs:398-416 — who is speaking is shown only by initials colour",
+  "ducktape-views@a2a73e1 call/src/panel.rs:305,382 — video tiles and the stage are unlabelled images: not in the tree",
+  "ducktape-views@a2a73e1 call — mute shows only as the name flip Mute / Unmute, no toggled state",
+  "app/src/shell.rs:3038-3052 — the voice dock says Voice connected, the time and the room in plain text: not in the tree; its Open button is a vague name",
+  "ducktape-views@a2a73e1 chat/src/ui/chat.rs:332-343 — Start a huddle lives in the room header and shows only while a channel is open: on a fresh network there is none until one is made"
+ ],
+ "steps": [
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Chat tab is selected and the chat view shows a New channel button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading and the rail's account button reads Account: followed by a name (Account: qa-{param:walk_tag}, or Account #<number>), not Account: Sign in"
+  },
+  {
+   "say": "press New channel in the chat sidebar",
+   "expect": "a Create a channel card shows: a Channel name field, Voice room: Off and Members only: Off buttons, and Cancel and Create channel buttons"
+  },
+  {
+   "say": "type the channel name into the Channel name field",
+   "text": "qa-huddle-{param:walk_tag}",
+   "expect": "the Channel name field's value is qa-huddle-{param:walk_tag} and Create channel is enabled (its state does not list disabled)"
+  },
+  {
+   "say": "press Create channel",
+   "settle_ms": 4000,
+   "expect": "the Create a channel card is gone and the channel list shows a button named for qa-huddle-{param:walk_tag} (a leading # is fine); no error sentence"
+  },
+  {
+   "say": "press the qa-huddle-{param:walk_tag} channel in the channel list",
+   "expect": "the room header's name label reads qa-huddle-{param:walk_tag} and the composer shows a Send button and, in the room header, a Start a huddle button that is enabled (its state does not list disabled)"
+  },
+  {
+   "say": "press Start a huddle",
+   "expect": "the huddle started: the chat header shows Leave huddle and Show huddle, or the rail shows Mute and Leave voice controls; no error",
+   "settle_ms": 6000
+  },
+  {
+   "say": "press Leave (the rail voice control) or Leave huddle",
+   "expect": "the huddle ended: the rail's Mute and Leave voice controls are gone and the chat header offers Start a huddle again",
+   "settle_ms": 4000
+  }
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ }
+}

@@ -54,10 +54,102 @@ pub(crate) fn workspaces_in(root: &Path) -> Vec<(String, PathBuf)> {
         .collect()
 }
 
-/// This workspace's app endpoint, from its `http_listen` — a wildcard bind is
-/// rewritten to loopback, the same as the CLI dials it.
-pub(crate) fn workspace_endpoint(dir: &Path) -> Option<String> {
-    workspace_config::http_base_in(dir).ok()
+/// This workspace's app endpoint — THE one answer to which node a workspace on
+/// this device talks to: the node RPC URL Settings stored for its chain
+/// ([`endpoint_override`]), else its `http_listen`, a wildcard bind rewritten
+/// to loopback the same as the CLI dials it. Either way the workspace stays
+/// itself: its keystore, its chain id and the own-node check ([`own_node`]).
+pub(crate) fn workspace_endpoint(chain_id: &str, dir: &Path) -> Option<String> {
+    workspace_endpoint_in(&read_prefs(), chain_id, dir)
+}
+
+/// [`workspace_endpoint`] against an already-read `prefs`.
+pub(crate) fn workspace_endpoint_in(
+    prefs: &serde_json::Value,
+    chain_id: &str,
+    dir: &Path,
+) -> Option<String> {
+    endpoint_override(prefs, chain_id).or_else(|| workspace_config::http_base_in(dir).ok())
+}
+
+/// The node RPC URL Settings stored for `chain_id`
+/// (`prefs.networks[<chain id>].endpoint`), when it is one ([`endpoint_origin`]);
+/// a hand-edited value that is not falls back to `node.toml`.
+pub(crate) fn endpoint_override(prefs: &serde_json::Value, chain_id: &str) -> Option<String> {
+    prefs["networks"][chain_id]["endpoint"]
+        .as_str()
+        .and_then(endpoint_origin)
+}
+
+/// What Settings says when a typed node RPC URL is not one.
+pub(crate) const ENDPOINT_REFUSAL: &str = "A node RPC URL is http:// or https:// followed by a host and an optional port, and nothing else.";
+
+/// A node RPC URL in the origin form the rpc client keys its connections by —
+/// `http` or `https`, a host (loopback too), an optional port and nothing else:
+/// no path, query, fragment or credentials. `None` for anything else. Parsed
+/// here rather than through [`canonical_endpoint`]: [`workspace_serving`] runs
+/// under the client cache lock that one takes.
+pub(crate) fn endpoint_origin(url: &str) -> Option<String> {
+    let url = reqwest::Url::parse(url.trim()).ok()?;
+    let origin = matches!(url.scheme(), "http" | "https")
+        && url.host_str().is_some()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none()
+        && matches!(url.path(), "" | "/");
+    origin.then(|| url.as_str().trim_end_matches('/').to_string())
+}
+
+/// Store `endpoint` — an [`endpoint_origin`] — as `chain_id`'s node RPC URL,
+/// or clear it back to `node.toml` when empty.
+pub(crate) fn store_endpoint_override(
+    prefs: &mut serde_json::Value,
+    chain_id: &str,
+    endpoint: &str,
+) {
+    if !endpoint.is_empty() {
+        prefs["networks"][chain_id]["endpoint"] = serde_json::json!(endpoint);
+        return;
+    }
+    let stored = prefs
+        .get_mut("networks")
+        .and_then(|networks| networks.get_mut(chain_id))
+        .and_then(serde_json::Value::as_object_mut);
+    if let Some(network) = stored {
+        network.remove("endpoint");
+    }
+}
+
+/// The node RPC URL facts Settings draws: the endpoint in use and the stored
+/// override, empty for none.
+#[derive(Clone, Debug, Default, Hash, PartialEq)]
+pub struct EndpointFacts {
+    pub endpoint: String,
+    pub endpoint_override: String,
+}
+
+pub(crate) fn endpoint_facts_in(
+    prefs: &serde_json::Value,
+    chain_id: &str,
+    dir: &Path,
+) -> EndpointFacts {
+    EndpointFacts {
+        endpoint: workspace_endpoint_in(prefs, chain_id, dir).unwrap_or_default(),
+        endpoint_override: endpoint_override(prefs, chain_id).unwrap_or_default(),
+    }
+}
+
+/// [`EndpointFacts`] for the session at `rpc`: a workspace on this device
+/// resolves its own; a remote has no override and uses what it was opened at.
+pub(crate) fn endpoint_facts(rpc: &str) -> EndpointFacts {
+    match workspace_at(rpc) {
+        Some((chain_id, dir)) => endpoint_facts_in(&read_prefs(), &chain_id, &dir),
+        None => EndpointFacts {
+            endpoint: canonical_endpoint(rpc.to_string()),
+            endpoint_override: String::new(),
+        },
+    }
 }
 
 /// The endpoint an EMPTY `rpc` means: the one workspace under the home, when
@@ -65,19 +157,39 @@ pub(crate) fn workspace_endpoint(dir: &Path) -> Option<String> {
 /// Two workspaces are a pick the launch window makes, never a default.
 pub(crate) fn lone_workspace_endpoint() -> Option<String> {
     let listed = workspaces();
-    let [(_, dir)] = listed.as_slice() else {
+    let [(chain_id, dir)] = listed.as_slice() else {
         return None;
     };
-    workspace_endpoint(dir)
+    workspace_endpoint(chain_id, dir)
 }
 
 /// The workspace on this device that serves an endpoint, matched on the
 /// endpoint the app is actually connected to. `None` is a remote.
 pub(crate) fn workspace_at(rpc: &str) -> Option<(String, PathBuf)> {
-    let endpoint = canonical_endpoint(rpc.to_string());
-    workspaces()
-        .into_iter()
-        .find(|(_, dir)| workspace_endpoint(dir).as_deref() == Some(endpoint.as_str()))
+    workspace_serving(
+        &read_prefs(),
+        &ducktape_home()?,
+        &canonical_endpoint(rpc.to_string()),
+    )
+}
+
+/// [`workspace_at`] under `root`, for an ALREADY-CANONICAL endpoint. Two
+/// workspaces can be registered on one port, so once the session knows which
+/// chain the endpoint is opened as ([`note_served_chain`]) only that chain's
+/// workspace answers — never its sibling's keystore, data dir or tokens. An
+/// endpoint nobody has named a chain for (`DUCKTAPE_NODE`, a typed address)
+/// takes the first workspace registered on it. A workspace serves the endpoint
+/// [`workspace_endpoint_in`] resolves for it under `prefs`.
+pub(crate) fn workspace_serving(
+    prefs: &serde_json::Value,
+    root: &Path,
+    endpoint: &str,
+) -> Option<(String, PathBuf)> {
+    let served = served_chain(endpoint);
+    workspaces_in(root).into_iter().find(|(chain_id, dir)| {
+        workspace_endpoint_in(prefs, chain_id, dir).as_deref() == Some(endpoint)
+            && served.as_ref().is_none_or(|served| served == chain_id)
+    })
 }
 
 /// What a join hands back: the network's id, where it materialized, and the
@@ -105,13 +217,21 @@ pub async fn join_network(blob: crate::secret::Secret) -> Result<WorkspaceInit, 
         if !valid {
             return Err("invite must be between 1 and 65536 bytes".into());
         }
+        // The envelope's own words ("unknown coordinator flag 138") name no
+        // fix; an invite minted by an older node reads exactly that way.
+        if let Err(error) = workspace_config::decode_invite(&blob) {
+            return Err(format!(
+                "This invite cannot be read here ({error}). An invite made by an older \
+                 Ducktape reads this way — ask for a fresh one."
+            ));
+        }
         let joining = tokio::task::spawn_blocking(move || {
             workspace_config::join_workspace(&blob, None, &Default::default())
         });
         let joined = joining
             .await
             .map_err(|_| "joining this network did not finish".to_string())??;
-        let rpc = workspace_endpoint(&joined.dir)
+        let rpc = workspace_endpoint(&joined.chain_id, &joined.dir)
             .ok_or_else(|| "the new workspace has no node.toml http_listen".to_string())?;
         Ok(WorkspaceInit {
             chain_id: joined.chain_id,
@@ -137,32 +257,54 @@ pub async fn join_network(blob: crate::secret::Secret) -> Result<WorkspaceInit, 
 ///
 /// The app takes no TTL: it mints the ONE default every other door mints
 /// (`workspace_config::DEFAULT_INVITE_TTL_DAYS`).
-pub async fn mint_invite(workspace: String) -> Result<String, AppError> {
-    let minted: Result<String, String> = async {
-        let endpoint = workspace_rpc(&workspace)?;
+pub async fn mint_invite(workspace: String) -> Result<Invitation, AppError> {
+    mint_invite_in(ducktape_home(), workspace).await
+}
+
+/// [`mint_invite`] for the workspaces under `home`.
+pub(crate) async fn mint_invite_in(
+    home: Option<PathBuf>,
+    workspace: String,
+) -> Result<Invitation, AppError> {
+    let minted: Result<Invitation, String> = async {
+        let endpoint = workspace_rpc(home.as_deref(), &workspace)?;
         let ttl = workspace_config::DEFAULT_INVITE_TTL_DAYS;
-        Ok(rpc_client(&endpoint)?.mint_invite(ttl).await?)
+        let minted = rpc_client(&endpoint)?.mint_invite(ttl).await?;
+        Ok(Invitation {
+            blob: minted.invite,
+            notes: minted.notes.into_iter().map(|note| note.sentence).collect(),
+        })
     }
     .await;
     minted.map_err(app_error)
 }
 
+/// A minted invite and what the node said the mint could not do — "reachable
+/// on this machine only", … — one sentence per note. Notes are facts beside
+/// the blob, never a refusal: the blob still admits a joiner.
+#[derive(Clone, Debug, Hash, PartialEq)]
+pub struct Invitation {
+    pub blob: String,
+    pub notes: Vec<String>,
+}
+
 /// The endpoint serving a workspace named by directory OR by chain id — the
 /// same two spellings the CLI's `-n` selector takes, because the callers that
 /// used to pass one to `-n` now need a URL instead.
-fn workspace_rpc(selector: &str) -> Result<String, String> {
+fn workspace_rpc(home: Option<&Path>, selector: &str) -> Result<String, String> {
     let selector = selector.trim();
     let matches_selector = |chain_id: &str, dir: &Path| {
         chain_id == selector || dir.file_name().is_some_and(|name| name == selector)
     };
-    workspaces()
+    home.map(workspaces_in)
+        .unwrap_or_default()
         .into_iter()
         .find(|(chain_id, dir)| matches_selector(chain_id, dir))
-        .and_then(|(_, dir)| workspace_endpoint(&dir))
+        .and_then(|(chain_id, dir)| workspace_endpoint(&chain_id, &dir))
         .ok_or_else(|| format!("no local workspace named {selector:?} to mint an invite from"))
 }
 
-/// One provisioning step. `state` is `done` | `running` | `pending` | `blocked`.
+/// One provisioning step. `state` is `done` | `waiting` | `blocked`.
 #[derive(Clone, Debug, Hash, PartialEq)]
 pub struct ProvisionStep {
     pub index: i64,
@@ -172,46 +314,86 @@ pub struct ProvisionStep {
     /// whether the phase advances BEFORE it moves the step into the reading,
     /// and reading `state` there would move the String out from under it.
     pub settled: bool,
+    /// A line under a blocked step saying what the member can do; empty otherwise.
+    pub hint: String,
+    /// The command a step names, for the screen's copy action; empty when none.
+    pub command: String,
+    /// Under the command, while the node has not answered: which other saved
+    /// workspace holds one of this one's ports, and how to stop its node
+    /// ([`ports_held`]); empty otherwise.
+    pub ports_held: String,
 }
+
+/// What the blocked wait says once patience runs out: what to run, and where
+/// the launcher and `<archive>` come from.
+pub(crate) const NODE_WAIT_HINT: &str = "This app does not run nodes. Run both lines in a terminal; this step continues when the node answers. ducktape-node-launcher ships inside the node release archive, beside ducktape: <archive> is the directory you unpacked that archive into.";
+/// Said too when this app has no release key to print in the command.
+pub(crate) const NODE_KEY_HINT: &str =
+    "<release key> is the release key your network's operator published.";
+/// What the command's `--release-key` pins, said with a key or without one: an
+/// install that pins no key trusts no signer, so its launcher never updates it.
+pub(crate) const NODE_PIN_HINT: &str = "--release-key pins which release signer this node trusts; installed without it, the node trusts no signer and does not update itself.";
+// core #2610: release 2's launcher predates modules seeding; drop this line once the next node release ships.
+pub(crate) const NODE_MODULES_HINT: &str = "If your archive's launcher is release 2, run with DUCKTAPE_MODULES_DIR='<archive>/modules' set.";
 
 /// The five provisioning steps. Steps 1-3 are facts of the materialized
 /// workspace; steps 4-5 are a REAL `/v1/status` poll, because the app attaches
-/// to a node it does not supervise — when nothing answers, the step goes
-/// `blocked` and its label says which command starts it.
+/// to a node it does not supervise — the step names the launcher command that
+/// runs it and goes `blocked` when nothing answers in time.
 pub fn provision_progress(
     workspace: String,
     rpc: String,
 ) -> futures::stream::BoxStream<'static, ProvisionStep> {
+    provision_progress_in(ducktape_home(), workspace, rpc)
+}
+
+/// [`provision_progress`] for the workspaces under `home`.
+pub(crate) fn provision_progress_in(
+    home: Option<PathBuf>,
+    workspace: String,
+    rpc: String,
+) -> futures::stream::BoxStream<'static, ProvisionStep> {
     struct State {
+        home: String,
         dir: Option<PathBuf>,
+        /// The network the join wrote: the found workspace's, else the selector.
         chain_id: String,
+        /// What the launcher is pointed at: the found directory, else the selector.
+        workspace: String,
         rpc: String,
         step: usize,
         attempts: u32,
+        /// Every workspace saved beside this one, for [`ports_held`].
+        saved: Vec<(String, PathBuf)>,
     }
-    let found = workspaces()
-        .into_iter()
-        .find(|(chain_id, dir)| *chain_id == workspace || dir.display().to_string() == workspace);
-    let (chain_id, dir) = match found {
-        Some((chain_id, dir)) => (chain_id, Some(dir)),
-        None => (workspace, None),
+    let saved = home.as_deref().map(workspaces_in).unwrap_or_default();
+    let found = saved
+        .iter()
+        .find(|(chain_id, dir)| *chain_id == workspace || dir.display().to_string() == workspace)
+        .cloned();
+    let (chain_id, workspace, dir) = match found {
+        Some((chain_id, dir)) => (chain_id, dir.display().to_string(), Some(dir)),
+        None => (workspace.clone(), workspace, None),
     };
     Box::pin(futures::stream::unfold(
         State {
+            home: home
+                .map(|home| home.display().to_string())
+                .unwrap_or_else(|| "~/.ducktape".into()),
             dir,
             chain_id,
+            workspace,
             rpc,
             step: 0,
             attempts: 0,
+            saved,
         },
         |mut state| async move {
             // the workspace's own facts, then the node's own answer.
             match state.step {
                 0 => {
                     state.step = 1;
-                    let home = ducktape_home()
-                        .map(|home| home.display().to_string())
-                        .unwrap_or_else(|| "~/.ducktape".into());
+                    let home = &state.home;
                     Some((
                         registered_step(
                             1,
@@ -248,42 +430,101 @@ pub fn provision_progress(
                 }
                 3 => {
                     // the app attaches to a node it does not supervise: the
-                    // only honest readiness signal is the node answering.
-                    let up = match rpc_client(&state.rpc) {
-                        Ok(client) => client.status().await.is_ok(),
-                        Err(_) => false,
+                    // only honest readiness signal is the node answering —
+                    // with a mesh, since a node whose netstack plane failed
+                    // answers too and keeps no overlay for the rest of its boot.
+                    let facts = match rpc_client(&state.rpc) {
+                        Ok(client) => client
+                            .status_json()
+                            .await
+                            .ok()
+                            .map(|status| node_facts(&status)),
+                        Err(_) => None,
                     };
-                    if up {
+                    // and the workspace's OWN node: a port is not an identity.
+                    let own = match (&facts, state.dir.as_deref()) {
+                        (Some(facts), Some(dir)) => own_node(dir, &state.chain_id, facts),
+                        _ => Ok(false),
+                    };
+                    // a node that is not this workspace's own, or none at all:
+                    // another saved workspace may hold the ports it needs.
+                    let held = match own {
+                        Ok(true) => String::new(),
+                        _ => state
+                            .dir
+                            .as_deref()
+                            .and_then(|dir| ports_held(dir, &state.saved))
+                            .unwrap_or_default(),
+                    };
+                    if let Err(answered) = own {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        let waiting = node_wait_step(
+                            &state.workspace,
+                            super::update::release_key_for(&state.chain_id).as_deref(),
+                            state.attempts,
+                            "",
+                        );
+                        return Some((
+                            ProvisionStep {
+                                state: "waiting".into(),
+                                hint: answered,
+                                ports_held: held,
+                                ..waiting
+                            },
+                            state,
+                        ));
+                    }
+                    let (up, plane_failure, phase) = match facts {
+                        Some(facts) => (
+                            facts.netstack_failure_reason.is_empty(),
+                            facts.netstack_failure_detail,
+                            facts.phase,
+                        ),
+                        None => (false, String::new(), String::new()),
+                    };
+                    // and serving: a node answers while it is still starting
+                    // or joining, before it holds the network's height or can
+                    // mint an invitation, so the wait names its phase as the
+                    // launch row does and polls on.
+                    if up && super::node::before_serving(&phase) {
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                        return Some((
+                            ProvisionStep {
+                                index: 4,
+                                label: format!("Waiting for your node · {phase}"),
+                                state: "waiting".into(),
+                                settled: false,
+                                hint: String::new(),
+                                command: String::new(),
+                                ports_held: String::new(),
+                            },
+                            state,
+                        ));
+                    }
+                    if up && own == Ok(true) {
                         state.step = 4;
-                        return Some((registered_step(4, "Local node starting", true), state));
+                        return Some((registered_step(4, "Your node answered", true), state));
                     }
                     state.attempts += 1;
                     tokio::time::sleep(Duration::from_secs(1)).await;
-                    let stalled = state.attempts >= PROVISION_PATIENCE;
-                    let step = match stalled {
-                        false => ProvisionStep {
-                            index: 4,
-                            label: "Local node starting".into(),
-                            state: "running".into(),
-                            settled: false,
+                    Some((
+                        ProvisionStep {
+                            ports_held: held,
+                            ..node_wait_step(
+                                &state.workspace,
+                                super::update::release_key_for(&state.chain_id).as_deref(),
+                                state.attempts,
+                                &plane_failure,
+                            )
                         },
-                        true => ProvisionStep {
-                            index: 4,
-                            label: format!(
-                                "Start the node · ducktape node run -n {}",
-                                state.chain_id
-                            ),
-                            state: "blocked".into(),
-                            settled: false,
-                        },
-                    };
-                    Some((step, state))
+                        state,
+                    ))
                 }
                 4 => {
                     let listen = state
                         .dir
                         .as_deref()
-                        .and_then(workspace_endpoint)
+                        .and_then(|dir| workspace_endpoint(&state.chain_id, dir))
                         .unwrap_or_else(|| state.rpc.clone());
                     state.step = 5;
                     Some((
@@ -292,6 +533,9 @@ pub fn provision_progress(
                             label: format!("Node API listening · {listen}"),
                             state: "done".into(),
                             settled: true,
+                            hint: String::new(),
+                            command: String::new(),
+                            ports_held: String::new(),
                         },
                         state,
                     ))
@@ -301,6 +545,102 @@ pub fn provision_progress(
             }
         },
     ))
+}
+
+/// Step 4 until the node answers. The app runs no nodes: `ducktape-node-launcher`
+/// does, because node releases flip through it. A join writes no `updates/`
+/// tree, so the step names two lines for this workspace from the first second,
+/// never "starting": the launcher's `install` from the unpacked archive (the
+/// app cannot know where that is, so `<archive>` is the member's to fill),
+/// then its `run`. `release_key` is the key this app pinned, else the one the
+/// network published at an open, the same network signer; without one the
+/// command says `<release key>`. After `PROVISION_PATIENCE` attempts the step
+/// goes `blocked` with [`NODE_WAIT_HINT`] while the poll goes on. A node that answered with its netstack plane failed
+/// (`plane_failure`, core's sentence; empty otherwise) is blocked at once with
+/// that sentence as the hint. Paths are single-quoted: a workspace directory
+/// carries the chain id's `#`, and a home may carry spaces.
+pub(crate) fn node_wait_step(
+    workspace: &str,
+    release_key: Option<&str>,
+    attempts: u32,
+    plane_failure: &str,
+) -> ProvisionStep {
+    let quote = |text: &str| format!("'{}'", text.replace('\'', r"'\''"));
+    let (dir, config) = (quote(workspace), quote(&format!("{workspace}/node.toml")));
+    let key = release_key.unwrap_or("<release key>");
+    let command = format!(
+        "<archive>/ducktape-node-launcher install --workspace {dir} --config {config} --from '<archive>/ducktape' --release-key {key}\n\
+         <archive>/ducktape-node-launcher run --workspace {dir} --config {config}"
+    );
+    let blocked = attempts >= PROVISION_PATIENCE || !plane_failure.is_empty();
+    ProvisionStep {
+        index: 4,
+        label: "Waiting for your node".into(),
+        state: match blocked {
+            true => "blocked".into(),
+            false => "waiting".into(),
+        },
+        settled: false,
+        hint: match (blocked, plane_failure.is_empty()) {
+            (true, false) => plane_failure.into(),
+            (true, true) if release_key.is_some() => {
+                format!("{NODE_WAIT_HINT} {NODE_PIN_HINT}\n{NODE_MODULES_HINT}")
+            }
+            (true, true) => {
+                format!("{NODE_WAIT_HINT} {NODE_PIN_HINT} {NODE_KEY_HINT}\n{NODE_MODULES_HINT}")
+            }
+            (false, _) => String::new(),
+        },
+        command,
+        ports_held: String::new(),
+    }
+}
+
+/// Why a joined workspace's node cannot bind (#137): `join` writes the same
+/// listen ports into every workspace, so a second network on one machine
+/// names the first one's. When another saved workspace's `node.toml` names
+/// one of `dir`'s TCP listen ports and something answers a connect on that
+/// port on loopback now, the waiting step names that workspace and how to
+/// stop its node. Nothing but loopback, and only the ports both `node.toml`s
+/// name, is probed. `None` when no port is shared or none is held.
+pub(crate) fn ports_held(dir: &Path, saved: &[(String, PathBuf)]) -> Option<String> {
+    let ports = |dir: &Path| -> Vec<u16> {
+        let Ok((config, _)) = workspace_config::load_node_toml(&dir.join("node.toml")) else {
+            return Vec::new();
+        };
+        [
+            config.listen,
+            config.http_listen,
+            config.rpc_listen,
+            config.gateway_listen,
+        ]
+        .iter()
+        .filter_map(|addr| addr.rsplit_once(':')?.1.parse().ok())
+        .filter(|port| *port != 0)
+        .collect()
+    };
+    let own = ports(dir);
+    saved
+        .iter()
+        .filter(|(_, other)| other != dir)
+        .find_map(|(chain_id, other)| {
+            let port = ports(other).into_iter().find(|port| {
+                let loopback = std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, *port));
+                own.contains(port)
+                    && std::net::TcpStream::connect_timeout(&loopback, Duration::from_millis(250))
+                        .is_ok()
+            })?;
+            let unit = other.file_name()?.to_string_lossy().replace('\'', r"'\''");
+            Some(format!(
+                "{chain_id}, another network saved on this machine, names port {port} in its \
+             node.toml too, and something is listening there now, so this network's node \
+             cannot start. Stop that network's node first. Rootless unit: systemctl --user \
+             disable --now \"ducktape-node-user@$(systemd-escape '{unit}')\". System unit: \
+             sudo systemctl disable --now \"ducktape-node@$(systemd-escape '{unit}')\". By \
+             hand: stop that workspace's ducktape-node-launcher with SIGTERM; it checkpoints \
+             and exits."
+            ))
+        })
 }
 
 /// A step whose fact is either established or missing.
@@ -313,7 +653,40 @@ fn registered_step(index: i64, label: &str, established: bool) -> ProvisionStep 
             false => "blocked".into(),
         },
         settled: established,
+        hint: String::new(),
+        command: String::new(),
+        ports_held: String::new(),
     }
+}
+
+/// The key a workspace's own node publishes as `/v1/status` `public_key`: the
+/// hex public half of the secret its `node.toml` `key_file` names
+/// (`identity.key`, as a join writes it).
+pub(crate) fn workspace_node_key(dir: &Path) -> Option<String> {
+    let (config, base) = workspace_config::load_node_toml(&dir.join("node.toml")).ok()?;
+    let secret = workspace_config::load_identity(&base.join(config.key_file)).ok()?;
+    Some(workspace_config::hex_bytes(secret.public_key().as_ref()))
+}
+
+/// Whether the node answering on a workspace's endpoint is that workspace's
+/// OWN: it serves `chain_id` and publishes the key [`workspace_node_key`]
+/// derives. The endpoint names a port, and another network's node — or
+/// another node of this one — can hold it, so every door that hands a session
+/// to the answerer asks this. `Ok(false)` is an answerer that has not
+/// published both yet; `Err` says what answered instead, naming nothing
+/// beyond its own public chain id.
+pub(crate) fn own_node(dir: &Path, chain_id: &str, facts: &NodeFacts) -> Result<bool, String> {
+    let key = workspace_node_key(dir).unwrap_or_default();
+    if !facts.chain_id.is_empty() && facts.chain_id != chain_id {
+        return Err(format!(
+            "another network's node ({}) answers on this port",
+            facts.chain_id
+        ));
+    }
+    if !facts.public_key.is_empty() && !facts.public_key.eq_ignore_ascii_case(&key) {
+        return Err("a node with another key answers on this port".into());
+    }
+    Ok(!facts.chain_id.is_empty() && !facts.public_key.is_empty())
 }
 
 /// The workspace's own node identity, short — `network.toml` seats it as the
@@ -468,4 +841,3 @@ pub(crate) fn now_seconds() -> i64 {
 pub fn current_wall_seconds() -> i64 {
     now_seconds()
 }
-

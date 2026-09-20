@@ -88,11 +88,7 @@ pub(crate) fn batch_live_updates(updates: Vec<LiveUpdate>) -> Vec<LiveUpdate> {
 /// Opening a workspace publishes the work it is waiting for before its result.
 /// The retry delay belongs to the same cancellable task as the reads; no detached
 /// worker may answer after the user has left this connection generation.
-pub fn connect(
-    rpc: String,
-    attempt: i64,
-    generation: i64,
-) -> view_wire::Task<crate::AppMessage> {
+pub fn connect(rpc: String, attempt: i64, generation: i64) -> view_wire::Task<crate::AppMessage> {
     use crate::AppMessage;
     use view_wire::Task;
 
@@ -108,25 +104,20 @@ pub fn connect(
         async move {
             let rpc = rpc_client(&rpc)?;
             // The views and workspace load concurrently, as they do on a warm
-            // connection. The next publication names the remaining view wait.
-            let views = crate::module_view::connected(&rpc);
-            let workspace = load_workspace(&rpc, None, generation).await?;
-            Ok::<_, String>((workspace, views))
+            // connection. The workspace opens without waiting for the views:
+            // each tab says how far its own has come, the shell counts them,
+            // and one that landed opens while the rest still load.
+            drop(crate::module_view::connected(&rpc));
+            load_workspace(&rpc, None, generation).await
         },
         |result| result,
     )
     .then(move |result| match result {
-        Ok((workspace, views)) => Task::done(AppMessage::ConnectionProgress(
+        Ok(workspace) => Task::done(AppMessage::ConnectionProgress(
             generation,
             "Preparing workspace screens…",
         ))
-        .chain(Task::perform(
-            async move {
-                views.settled().await;
-                workspace
-            },
-            AppMessage::WorkspaceConnected,
-        )),
+        .chain(Task::done(AppMessage::WorkspaceConnected(workspace))),
         Err(cause) => Task::done(AppMessage::ConnectFailed(HydrationError {
             generation,
             message: user_error(cause.to_string()),
@@ -599,8 +590,11 @@ pub async fn live_resync_load(
         if !load_chat {
             return Ok(refresh);
         }
-        let chat =
-            load_chat_data(&rpc, (!channel_id.is_empty()).then_some(channel_id.as_str())).await?;
+        let chat = load_chat_data(
+            &rpc,
+            (!channel_id.is_empty()).then_some(channel_id.as_str()),
+        )
+        .await?;
         refresh.chat_loaded = true;
         refresh.channels = chat.channels;
         refresh.active_channel = chat.active_channel;

@@ -1,0 +1,27 @@
+{
+ "name": "explorer",
+ "about": "Search the workspace from the explorer. The block list shows only blocks that carried operations among the last 100 (explorer/src/host.rs:22): a quiet network has none, and the explorer cannot make one, so inspecting a block is not walked here. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 explorer — a search hit cannot be opened (it has only Copy reference)"
+ ],
+ "steps": [
+  {
+   "say": "open the Explorer tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Explorer tab is selected and the explorer view shows a Search messages, pages, issues, files, runs… field, a Refresh button, a height label such as 'block 28,293', and either block rows (buttons named like 'Block 28263, 1 op') with the detail 'Select a block to inspect its operations and dispatch trace.', or an empty ledger ('No operations in the last 100 blocks' or 'No blocks yet', with a line saying blocks that carry operations appear here); no failure state (no failure title such as 'This network does not list this view', no 'Blocks not read', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "search the workspace: type qa and Enter into the search field",
+   "text": "qa\n",
+   "settle_ms": 4000,
+   "expect": "search results show: an All filter button with result rows, or 'No matching results.' (Searching… is a state, not an error)"
+  },
+  {
+   "say": "press Clear workspace search",
+   "expect": "the search results are gone"
+  }
+ ]
+}

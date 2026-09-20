@@ -2,7 +2,6 @@
 //! async actions await the result, so opening a window never reports success
 //! before the platform has actually opened it.
 
-use view_wire::Task;
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
@@ -12,6 +11,7 @@ use std::sync::{
     Mutex, OnceLock,
     atomic::{AtomicU64, Ordering},
 };
+use view_wire::Task;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WindowKey(u64);
@@ -143,6 +143,7 @@ use gpui_kit::{
     AppContext as _, AsyncApp, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, Window,
 };
+use gpui_notion::editor::ui::Control as _;
 use std::collections::{BTreeMap, HashMap};
 
 struct Desktop {
@@ -155,6 +156,29 @@ struct Desktop {
 }
 
 impl Desktop {
+    /// The windows the test door serves, named by kind; a second window of
+    /// one kind is `console2`.
+    fn ax_windows(&self, cx: &gpui_kit::App) -> Vec<(String, gpui_kit::AnyWindowHandle)> {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
+        self.windows
+            .iter()
+            .filter_map(|(key, handle)| {
+                let name = match self.views.get(key)?.upgrade()?.read(cx).kind {
+                    WindowKind::Onboarding => "onboarding",
+                    WindowKind::Console => "console",
+                    WindowKind::Huddle => "huddle",
+                };
+                let count = seen.entry(name).or_default();
+                *count += 1;
+                let name = match *count {
+                    1 => name.to_owned(),
+                    count => format!("{name}{count}"),
+                };
+                Some((name, *handle))
+            })
+            .collect()
+    }
+
     fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         // Native callbacks run on GPUI's thread, not a Tokio worker. Reducers
         // may construct effects which spawn immediately, before their first poll.
@@ -336,10 +360,12 @@ impl Desktop {
                     inputs: HashMap::new(),
                     input_step: None,
                     qr: None,
+                    bell_entry: None,
                     focus,
                     _activation: activation,
                     _observer: observer,
                     _keystrokes: keystrokes,
+                    _focus_lost: DesktopWindow::blur_what_leaves(window, cx),
                 }
             });
             opened_view = Some(view.downgrade());
@@ -496,14 +522,41 @@ pub(crate) struct DesktopWindow {
     input_step: Option<crate::HubStep>,
     qr: Option<(String, Entity<crate::view_tree::ViewTree>)>,
     focus: gpui_kit::FocusHandle,
+    /// Where focus enters the bell's popover while it is open.
+    bell_entry: Option<gpui_kit::FocusHandle>,
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
     _keystrokes: gpui_kit::Subscription,
+    _focus_lost: gpui_kit::Subscription,
 }
 
 struct NativeInput {
     state: Entity<gpui_kit::component::input::InputState>,
     subscription: gpui_kit::Subscription,
+}
+
+/// What Return in an onboarding field does (#144).
+#[derive(Clone, Copy)]
+enum Enter {
+    /// The message of the form's default button, sent as a click on it sends
+    /// it; the model refuses it when the button is disabled.
+    Submit(fn(&DesktopWindow, &gpui_kit::App) -> Message),
+    /// A field before a form's last one: on to the field named.
+    Next(&'static str),
+}
+
+fn password_submit(this: &DesktopWindow, cx: &gpui_kit::App) -> Message {
+    Message::PasswordSubmit(
+        this.value("password", cx),
+        this.value("password-confirm", cx),
+    )
+}
+
+fn restore_submit(this: &DesktopWindow, cx: &gpui_kit::App) -> Message {
+    Message::RestoreSubmit(
+        this.value("restore-name", cx),
+        this.value("restore-password", cx),
+    )
 }
 
 impl DesktopWindow {
@@ -536,6 +589,14 @@ impl DesktopWindow {
                 );
             });
         })
+    }
+
+    /// A focused element that leaves the tree — its tab left, its overlay
+    /// closed, its view reloading — takes the focus with it. Left behind, a
+    /// hidden view's editor still counts as focused and hears the next key
+    /// (#156). A click focuses it again once it is back.
+    fn blur_what_leaves(window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::Subscription {
+        cx.on_focus_lost(window, |_, window, cx| window.blur(cx))
     }
 
     fn global_key(&mut self, key: KeyPress, in_guest_editor: bool, cx: &mut Context<Self>) {
@@ -580,10 +641,16 @@ impl DesktopWindow {
         let palette = self.palette_module.clone();
         let seated = self.module.as_ref().map(|(_, view)| view.clone());
         let overlay = self.overlay_module.clone();
-        [palette, seated, overlay]
+        let landed = [palette, seated, overlay]
             .into_iter()
             .flatten()
-            .any(|view| view.update(cx, |view, cx| view.chord(&chord, cx)))
+            .any(|view| view.update(cx, |view, cx| view.chord(&chord, cx)));
+        // what the press opened may be a layer this window mounts only once
+        // it draws
+        if landed {
+            cx.notify();
+        }
+        landed
     }
 
     fn released(&mut self, cx: &mut gpui_kit::App) {
@@ -612,10 +679,7 @@ impl DesktopWindow {
             let model = self.model.clone();
             self.overlay_route = Some(cx.subscribe(&view, move |_, _, event, cx| {
                 model.update(cx, |model, cx| {
-                    model.dispatch(
-                        routed(Message::RegisteredViewEvent, event.clone()),
-                        cx,
-                    )
+                    model.dispatch(routed(Message::RegisteredViewEvent, event.clone()), cx)
                 });
             }));
             self.overlay_module = Some(view);
@@ -700,11 +764,7 @@ impl DesktopWindow {
             }
         });
     }
-    fn observe_module_window(
-        &mut self,
-        event: view_wire::events::Window,
-        cx: &mut gpui_kit::App,
-    ) {
+    fn observe_module_window(&mut self, event: view_wire::events::Window, cx: &mut gpui_kit::App) {
         let (Some((_, module)), Some(route)) = (&self.module, self.module_route) else {
             return;
         };
@@ -746,15 +806,17 @@ impl DesktopWindow {
             .unwrap_or_default()
     }
 
+    /// `enter`: what Return in the field does (#144).
     fn input(
         &mut self,
         key: &'static str,
         placeholder: &'static str,
         masked: bool,
+        enter: Option<Enter>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::input::{Input, InputEvent, InputState};
+        use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
         if !self.inputs.contains_key(key) {
             let state = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -762,19 +824,32 @@ impl DesktopWindow {
                     .masked(masked)
             });
             let model = self.model.clone();
-            let subscription = cx.subscribe(&state, move |_, input, event, cx| {
-                let InputEvent::Change = event else {
-                    return;
-                };
-                let secret_slot = matches!(key, "restore_words" | "join_invite");
-                if secret_slot {
-                    let text = input.read(cx).value().to_string();
-                    model.update(cx, |model, cx| {
-                        model.dispatch(Message::SecretTyped(key.into(), text), cx)
-                    });
-                }
-                cx.notify();
-            });
+            let subscription =
+                cx.subscribe_in(&state, window, move |this, input, event, window, cx| {
+                    match (event, enter) {
+                        (InputEvent::PressEnter { .. }, Some(Enter::Submit(message))) => {
+                            let message = message(this, cx);
+                            model.update(cx, |model, cx| model.dispatch(message, cx));
+                        }
+                        (InputEvent::PressEnter { .. }, Some(Enter::Next(next))) => {
+                            if let Some(next) = this.inputs.get(next) {
+                                next.state.update(cx, |next, cx| next.focus(window, cx));
+                            }
+                        }
+                        _ => {}
+                    }
+                    let InputEvent::Change = event else {
+                        return;
+                    };
+                    let secret_slot = matches!(key, "restore_words" | "join_invite");
+                    if secret_slot {
+                        let text = input.read(cx).value().to_string();
+                        model.update(cx, |model, cx| {
+                            model.dispatch(Message::SecretTyped(key.into(), text), cx)
+                        });
+                    }
+                    cx.notify();
+                });
             self.inputs.insert(
                 key,
                 NativeInput {
@@ -783,9 +858,36 @@ impl DesktopWindow {
                 },
             );
         }
-        Input::new(&self.inputs[key].state)
-            .aria_label(placeholder)
-            .into_any_element()
+        use gpui_kit::{Focusable as _, StatefulInteractiveElement as _};
+        // One node for the field (`ui::text_field`). A masked field is a
+        // password to assistive technology too, which keeps its value out of
+        // the accessibility tree.
+        let state = &self.inputs[key].state;
+        let input = Input::new(state).id(key);
+        let input = match masked {
+            true => input.content_type(InputContentType::Password),
+            false => input,
+        };
+        let field = gpui_notion::editor::ui::text_field(
+            gpui_kit::SharedString::from(format!("{key}/field")),
+            &state.read(cx).focus_handle(cx),
+            {
+                let state = state.clone();
+                move |value, window, cx| {
+                    state.update(cx, |state, cx| state.replace_all(value, window, cx))
+                }
+            },
+            input.role(gpui_kit::component::RoleOverride::Presentational),
+        )
+        .aria_label(placeholder);
+        match masked {
+            true => field.role(gpui_kit::Role::PasswordInput),
+            false if window.is_a11y_active() => field
+                .role(gpui_kit::Role::TextInput)
+                .aria_value(state.read(cx).value().to_string()),
+            false => field.role(gpui_kit::Role::TextInput),
+        }
+        .into_any_element()
     }
 
     fn action(
@@ -797,13 +899,14 @@ impl DesktopWindow {
     ) -> gpui_kit::component::button::Button {
         use gpui_kit::component::Disableable as _;
         let model = self.model.clone();
-        gpui_kit::component::button::Button::new(key)
+        let button = gpui_kit::component::button::Button::new(key)
             .label(label)
             .disabled(disabled)
             .on_click(move |_, _, cx| {
                 cx.stop_propagation();
                 model.update(cx, |model, cx| model.dispatch(message.clone(), cx))
-            })
+            });
+        gpui_notion::editor::ui::disabled(button, disabled)
     }
 
     fn submit(
@@ -815,7 +918,7 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::component::button::Button {
         use gpui_kit::component::Disableable as _;
-        gpui_kit::component::button::Button::new(key)
+        let button = gpui_kit::component::button::Button::new(key)
             .label(label)
             .disabled(disabled)
             .on_click(cx.listener(move |this, _, _, cx| {
@@ -823,7 +926,51 @@ impl DesktopWindow {
                 let message = message(this, cx);
                 this.model
                     .update(cx, |model, cx| model.dispatch(message, cx));
-            }))
+            }));
+        gpui_notion::editor::ui::disabled(button, disabled)
+    }
+
+    /// The toast, floating in the corner of its layout's positioned box until
+    /// it is dismissed or ages out. The workspace and the join screens draw
+    /// this one element, so a copy confirms itself on either.
+    fn toast(&self, cx: &gpui_kit::App) -> Option<gpui_kit::Stateful<gpui_kit::Div>> {
+        use gpui_kit::component::button::ButtonVariants as _;
+        use gpui_kit::*;
+        let toast = self.model.read(cx).state.toast.clone();
+        if toast.is_empty() {
+            return None;
+        }
+        let theme = gpui_kit::component::Theme::global(cx);
+        Some(
+            div()
+                .id("toast")
+                .role(Role::Status)
+                .absolute()
+                .bottom_4()
+                .right_4()
+                .max_w(px(420.))
+                .flex()
+                .items_center()
+                .gap_3()
+                .px_4()
+                .py_2p5()
+                .rounded(px(design::radius::CARD as f32))
+                .border_1()
+                .border_color(theme.color_tokens().border)
+                .bg(theme.popover)
+                .shadow_md()
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(12.5))
+                        .child(Text::new("toast-message".into(), toast.into())),
+                )
+                .child(
+                    self.action("toast-dismiss", "Dismiss", Message::DismissToast, false)
+                        .ghost()
+                        .h_7(),
+                ),
+        )
     }
 
     fn onboarding(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -835,6 +982,8 @@ impl DesktopWindow {
         let step = state.hub_step;
         let busy = state.mutation_phase != crate::MutationPhase::Idle;
         let error = state.onboarding_error.clone();
+        let invite_refusal = state.invite_refusal.clone();
+        let invite_notes = state.invite_notes.clone();
         let step_changed = self.input_step != Some(step);
         if step_changed {
             for (_, input) in std::mem::take(&mut self.inputs) {
@@ -845,22 +994,32 @@ impl DesktopWindow {
             }
             self.input_step = Some(step);
         }
+        // A heading is a node of its own, named by its words, so a screen
+        // reader and the test door find what a screen is (#114). The id is
+        // the heading's place, not its words.
+        let heading = |id: &'static str, level: usize, text: &'static str| {
+            div()
+                .id(id)
+                .role(gpui_kit::Role::Heading)
+                .aria_level(level)
+                .aria_label(text)
+                .child(text)
+        };
         let hero = |title: &'static str, subtitle: &'static str| {
             div()
                 .flex()
                 .flex_col()
                 .gap_1()
                 .child(
-                    div()
+                    heading("hero-title", 1, title)
                         .text_size(px(design::type_scale::TITLE as f32))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .child(title),
+                        .font_weight(FontWeight::SEMIBOLD),
                 )
                 .child(
                     div()
                         .text_size(px(13.5))
                         .text_color(colors.muted_foreground)
-                        .child(subtitle),
+                        .child(Text::new("hero-subtitle".into(), subtitle.into())),
                 )
         };
         let panel = || {
@@ -871,11 +1030,13 @@ impl DesktopWindow {
                 .rounded(px(design::radius::CARD as f32))
                 .overflow_hidden()
         };
+        // A hint says where the step stands, so a screen reader reads it
+        // too: the sentence is its own identity.
         let hint = |text: String| {
             div()
                 .text_size(px(12.5))
                 .text_color(colors.muted_foreground)
-                .child(text)
+                .child(Text::new(ElementId::Name(text.clone().into()), text.into()))
         };
         let mut body = div().flex().flex_col().gap_4().w_full();
         body = match step {
@@ -912,7 +1073,14 @@ impl DesktopWindow {
                             .flex_col()
                             .gap_2()
                             .p_2()
-                            .child(self.input("unlock", "Wallet password", true, window, cx))
+                            .child(self.input(
+                                "unlock",
+                                "Wallet password",
+                                true,
+                                Some(Enter::Submit(|this, cx| Message::UnlockSubmit(this.value("unlock", cx)))),
+                                window,
+                                cx,
+                            ))
                             .child(
                                 self.submit(
                                     "unlock-submit",
@@ -937,10 +1105,19 @@ impl DesktopWindow {
                             self.action(
                                 "wallet-create",
                                 "Create a wallet",
-                                Message::LoginSkip,
+                                Message::GoCreateWallet,
                                 busy,
                             )
                             .outline(),
+                        )
+                        .child(
+                            self.action(
+                                "wallet-skip",
+                                "Continue without a wallet",
+                                Message::LoginSkip,
+                                busy,
+                            )
+                            .ghost(),
                         )
                         .child(
                             self.action(
@@ -963,8 +1140,22 @@ impl DesktopWindow {
                         "Protect your wallet",
                         "A password encrypts the key on this device.",
                     ))
-                    .child(self.input("password", "Password", true, window, cx))
-                    .child(self.input("password-confirm", "Confirm password", true, window, cx));
+                    .child(self.input(
+                        "password",
+                        "Password",
+                        true,
+                        Some(Enter::Next("password-confirm")),
+                        window,
+                        cx,
+                    ))
+                    .child(self.input(
+                        "password-confirm",
+                        "Confirm password",
+                        true,
+                        Some(Enter::Submit(password_submit)),
+                        window,
+                        cx,
+                    ));
                 let problem = crate::backend::password_problem(
                     &self.value("password", cx),
                     &self.value("password-confirm", cx),
@@ -976,7 +1167,7 @@ impl DesktopWindow {
                             "password-submit",
                             "Create wallet",
                             invalid,
-                            |this, cx| Message::PasswordSubmit(this.value("password", cx)),
+                            password_submit,
                             cx,
                         )
                         .primary()
@@ -995,6 +1186,7 @@ impl DesktopWindow {
                 ));
                 let mut words = panel().flex().flex_col().p_3().gap_1();
                 for row in crate::backend::phrase_rows() {
+                    // shown on screen, so read aloud too: each word after its number
                     let word = |number: String, text: String| {
                         div()
                             .flex_1()
@@ -1006,9 +1198,21 @@ impl DesktopWindow {
                                     .text_size(px(12.))
                                     .map(mono_family)
                                     .text_color(colors.muted_foreground)
-                                    .child(number),
+                                    .child(Text::new(
+                                        ElementId::Name(format!("phrase-number/{number}").into()),
+                                        number.clone().into(),
+                                    )),
                             )
-                            .child(div().map(mono_family).child(text))
+                            .child(
+                                // private: the test door masks it (#114)
+                                div().map(mono_family).child(gpui_notion::editor::ui::ax_private(
+                                    div()
+                                        .id(ElementId::Name(format!("phrase-word/{number}").into()))
+                                        .role(gpui_kit::Role::Label)
+                                        .aria_value(text.clone())
+                                        .child(text),
+                                )),
+                            )
                     };
                     words = words.child(
                         div()
@@ -1039,6 +1243,7 @@ impl DesktopWindow {
                     "phrase-answer",
                     "Requested words, separated by spaces",
                     true,
+                    Some(Enter::Submit(|this, cx| Message::ConfirmPhraseSubmit(this.value("phrase-answer", cx)))),
                     window,
                     cx,
                 ))
@@ -1068,22 +1273,32 @@ impl DesktopWindow {
                     "Restore your wallet",
                     "The recovery phrase rebuilds the key on this device.",
                 ))
-                .child(self.input("restore-name", "Wallet name", false, window, cx))
-                .child(self.input("restore_words", "Recovery phrase", true, window, cx))
-                .child(self.input("restore-password", "New password", true, window, cx))
+                .child(self.input(
+                    "restore-name",
+                    "Wallet name",
+                    false,
+                    Some(Enter::Next("restore_words")),
+                    window,
+                    cx,
+                ))
+                .child(self.input(
+                    "restore_words",
+                    "Recovery phrase",
+                    true,
+                    Some(Enter::Next("restore-password")),
+                    window,
+                    cx,
+                ))
+                .child(self.input(
+                    "restore-password",
+                    "New password",
+                    true,
+                    Some(Enter::Submit(restore_submit)),
+                    window,
+                    cx,
+                ))
                 .child(
-                    self.submit(
-                        "restore-submit",
-                        "Restore",
-                        busy,
-                        |this, cx| {
-                            Message::RestoreSubmit(
-                                this.value("restore-name", cx),
-                                this.value("restore-password", cx),
-                            )
-                        },
-                        cx,
-                    )
+                    self.submit("restore-submit", "Restore", busy, restore_submit, cx)
                     .primary()
                     .w_full()
                     .h_8(),
@@ -1091,6 +1306,25 @@ impl DesktopWindow {
                 .child(
                     self.action("restore-back", "Back", Message::GoLogin, busy)
                         .ghost(),
+                ),
+            // the error line under the body says why — a node that did not
+            // answer, by its address.
+            HubStep::Offline => body
+                .child(hero(
+                    "Can't open this network",
+                    "Its node may be offline. Start it, then retry.",
+                ))
+                .child(
+                    self.action("offline-retry", "Retry", Message::RetryNetwork, busy)
+                        .loading(busy)
+                        .primary()
+                        .w_full()
+                        .h_8(),
+                )
+                .child(
+                    self.action("offline-back", "Back to networks", Message::GoNetworks, busy)
+                        .ghost()
+                        .w_full(),
                 ),
             HubStep::Networks => {
                 let state = &self.model.read(cx).state;
@@ -1107,10 +1341,9 @@ impl DesktopWindow {
                         .flex()
                         .justify_between()
                         .child(
-                            div()
+                            heading("networks-saved", 2, "Saved networks")
                                 .text_size(px(12.5))
-                                .font_weight(FontWeight::MEDIUM)
-                                .child("Saved networks"),
+                                .font_weight(FontWeight::MEDIUM),
                         )
                         .child(
                             div()
@@ -1129,10 +1362,21 @@ impl DesktopWindow {
                             .flex_col()
                             .gap_1()
                             .child(
-                                div()
+                                heading("networks-empty", 2, "No networks yet")
                                     .text_size(px(15.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .child("No networks yet"),
+                                    .font_weight(FontWeight::MEDIUM),
+                            )
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_wrap()
+                                    .gap_x_1()
+                                    .child(hint("In a terminal, found a network with".into()))
+                                    .child(
+                                        hint(FOUNDING_COMMAND.into())
+                                            .map(mono_family)
+                                            .whitespace_nowrap(),
+                                    ),
                             )
                             .child(hint(
                                 "Join a network or connect to a node below.".into(),
@@ -1140,9 +1384,16 @@ impl DesktopWindow {
                     );
                 }
                 let refused = crate::backend::selected_network_refuses(&networks, &selected);
+                // a refused row still carries the release channel (#101): the
+                // console's update strip, or the check itself, under the rows.
+                let update_strip = refused.then(|| state.launch_update_strip()).flatten();
+                let palette = design::palette(state.is_dark());
                 for network in networks {
                     let label = crate::backend::network_row_label(&network);
                     let picked = network.id == selected;
+                    let node_toml = crate::backend::offers_node_toml(&network);
+                    let silent = crate::backend::not_answering_line(&network);
+                    let new_invite = format!("new-invite/{}", network.id);
                     recent = recent.child(
                         div()
                             .flex()
@@ -1158,8 +1409,22 @@ impl DesktopWindow {
                                 )
                                 .ghost()
                                 .flex_1()
+                                .min_w_0()
+                                .truncate()
                                 .when(picked, |button| button.secondary()),
                             )
+                            .when(node_toml, |row| {
+                                row.child(
+                                    self.action(
+                                        format!("node-toml/{}", network.id),
+                                        "Use node.toml",
+                                        Message::ClearNetworkEndpoint(network.id.clone()),
+                                        busy,
+                                    )
+                                    .ghost()
+                                    .flex_shrink_0(),
+                                )
+                            })
                             .child(
                                 self.action(
                                     format!("forget/{}", network.id),
@@ -1167,13 +1432,45 @@ impl DesktopWindow {
                                     Message::ForgetNetworkSubmit(network.id),
                                     busy,
                                 )
-                                .ghost(),
+                                .ghost()
+                                .flex_shrink_0(),
                             ),
                     );
+                    // a silent node: what to do, and the way to a new invite
+                    // on the row itself — Forget is already beside its name.
+                    recent = recent.when_some(silent, |recent, line| {
+                        recent.child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .px_4()
+                                .pb_2()
+                                .child(div().flex_1().min_w_0().child(hint(line)))
+                                .child(
+                                    self.action(
+                                        new_invite,
+                                        "Join with a new invite",
+                                        Message::GoJoin,
+                                        busy,
+                                    )
+                                    .outline()
+                                    .flex_shrink_0(),
+                                ),
+                        )
+                    });
                 }
-                // a measured contract mismatch disables the open the way no
+                // a measured contract mismatch, or another network answering
+                // at the row's address, disables the open the way no
                 // selection does: the row's own line says why.
                 let no_selection = busy || selected.is_empty() || refused;
+                if let Some(strip) = update_strip {
+                    recent = recent.child(
+                        self.update_strip(strip, &colors, palette)
+                            .border_t_1()
+                            .border_color(colors.border),
+                    );
+                }
                 if !empty {
                     recent = recent.child(
                         div()
@@ -1214,6 +1511,9 @@ impl DesktopWindow {
                                             "remote",
                                             "Remote node address",
                                             false,
+                                            Some(Enter::Submit(|this, cx| {
+                                                Message::ConnectRemoteSubmit(this.value("remote", cx))
+                                            })),
                                             window,
                                             cx,
                                         )),
@@ -1267,7 +1567,14 @@ impl DesktopWindow {
                                 .font_weight(FontWeight::MEDIUM)
                                 .child("Network invitation"),
                         )
-                        .child(self.input("join_invite", "Invitation", true, window, cx))
+                        .child(self.input(
+                            "join_invite",
+                            "Invitation",
+                            true,
+                            Some(Enter::Submit(|_, _| Message::JoinNetworkSubmit)),
+                            window,
+                            cx,
+                        ))
                         .child(hint(
                             "Paste the invitation shared by a network member. It stays hidden on this screen."
                                 .into(),
@@ -1305,17 +1612,60 @@ impl DesktopWindow {
                     "This takes a moment on first launch.",
                 ));
                 let mut steps = panel().flex().flex_col().p_3().gap_2();
+                // a node that answers before it serves can wait for minutes:
+                // the way back is offered for as long as the wait is open
+                let mut waiting = false;
                 for step in &self.model.read(cx).state.provision_steps {
-                    steps = steps.child(
-                        div()
-                            .flex()
-                            .justify_between()
-                            .gap_3()
-                            .child(div().child(step.label.clone()))
-                            .child(hint(step.state.clone())),
-                    );
+                    waiting |= !step.settled;
+                    steps = steps
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap_3()
+                                .child(div().flex_1().min_w_0().child(step.label.clone()))
+                                .child(hint(step.state.clone()))
+                                .when(!step.command.is_empty(), |row| {
+                                    row.child(
+                                        self.action(
+                                            "copy-node-command",
+                                            "Copy command",
+                                            Message::CopyToClipboard(
+                                                step.command.clone(),
+                                                "Command copied".into(),
+                                            ),
+                                            false,
+                                        )
+                                        .outline(),
+                                    )
+                                }),
+                        )
+                        .when(!step.hint.is_empty(), |steps| {
+                            steps.child(hint(step.hint.clone()))
+                        })
+                        .when(!step.command.is_empty(), |steps| {
+                            steps.child(hint(step.command.clone()).map(mono_family))
+                        })
+                        // not an error: the step still waits, and this says
+                        // what holds its ports until the node comes up.
+                        .when(!step.ports_held.is_empty(), |steps| {
+                            steps.child(
+                                div()
+                                    .id("provision-ports-held")
+                                    .role(Role::Status)
+                                    .child(hint(step.ports_held.clone())),
+                            )
+                        });
                 }
-                body.child(steps)
+                // the wait keeps polling on this screen; leaving it drops the poll.
+                body.child(steps).when(waiting, |body| {
+                    body.child(
+                        self.action("provision-back", "Back to networks", Message::GoNetworks, busy)
+                            .ghost()
+                            .w_full(),
+                    )
+                })
             }
             HubStep::Live => body
                 .child(hero(
@@ -1333,6 +1683,10 @@ impl DesktopWindow {
                     .w_full()
                     .h_8(),
                 )
+                .when(!invite_refusal.is_empty(), |body| {
+                    body.child(hint(invite_refusal))
+                })
+                .children(invite_notes.into_iter().map(hint))
                 .child(
                     self.action("enter-console", "Open Ducktape", Message::EnterConsole, busy)
                         .primary()
@@ -1365,9 +1719,22 @@ impl DesktopWindow {
                         self.qr =
                             Some((payload, cx.new(|_| crate::view_tree::ViewTree::new(node))));
                     }
-                    body = body.child(self.qr.as_ref().expect("account QR").1.clone());
+                    body = body.child(
+                        div()
+                            .id("account-qr")
+                            .role(gpui_kit::Role::Image)
+                            .aria_label("Account QR code")
+                            .child(self.qr.as_ref().expect("account QR").1.clone()),
+                    );
                 }
-                body.child(self.input("account-name", "Account name", false, window, cx))
+                body.child(self.input(
+                    "account-name",
+                    "Account name",
+                    false,
+                    Some(Enter::Submit(|this, cx| Message::WelcomeCreateSubmit(this.value("account-name", cx)))),
+                    window,
+                    cx,
+                ))
                     .child(
                         self.submit(
                             "account-create",
@@ -1438,7 +1805,13 @@ impl DesktopWindow {
                         .items_center()
                         .gap_2()
                         .child(gpui_kit::component::spinner::Spinner::new())
-                        .child(hint(self.model.read(cx).state.connection_progress.clone())),
+                        .child(hint({
+                            let state = &self.model.read(cx).state;
+                            crate::backend::opening_progress(
+                                &state.node_phase,
+                                &state.connection_progress,
+                            )
+                        })),
                 )
                 .child(
                     self.action("connection-cancel", "Cancel", Message::GoNetworks, false)
@@ -1480,10 +1853,9 @@ impl DesktopWindow {
                                     .child("D"),
                             )
                             .child(
-                                div()
+                                heading("launch-title", 1, "Ducktape")
                                     .text_size(px(13.5))
-                                    .font_weight(FontWeight::SEMIBOLD)
-                                    .child("Ducktape"),
+                                    .font_weight(FontWeight::SEMIBOLD),
                             )
                             .on_mouse_down(gpui_kit::MouseButton::Left, |_, window, _| {
                                 window.start_window_move()
@@ -1497,27 +1869,43 @@ impl DesktopWindow {
                             .h_8(),
                     ),
             )
+            // the toast floats in the body's corner, as it does in the
+            // workspace's content box, never across the footer's hairline.
             .child(
                 div()
-                    .id("onboarding-body")
+                    .relative()
+                    .flex()
+                    .flex_col()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .p_5()
-                    .child(body)
-                    .when(!error.is_empty(), |element| {
-                        element.child(
-                            div()
-                                .mt_4()
-                                .p_3()
-                                .border_1()
-                                .rounded(px(design::radius::CONTROL as f32))
-                                .border_color(colors.destructive)
-                                .text_color(colors.destructive)
-                                .text_size(px(12.5))
-                                .child(error),
-                        )
-                    }),
+                    .child(
+                        div()
+                            .id("onboarding-body")
+                            .flex_1()
+                            .min_h_0()
+                            .overflow_y_scroll()
+                            .p_5()
+                            .child(body)
+                            .when(!error.is_empty(), |element| {
+                                element.child(
+                                    div()
+                                        .id("onboarding-error")
+                                        .role(gpui_kit::Role::Alert)
+                                        .mt_4()
+                                        .p_3()
+                                        .border_1()
+                                        .rounded(px(design::radius::CONTROL as f32))
+                                        .border_color(colors.destructive)
+                                        .text_color(colors.destructive)
+                                        .text_size(px(12.5))
+                                        .child(Text::new(
+                                            "onboarding-error-message".into(),
+                                            error.into(),
+                                        )),
+                                )
+                            }),
+                    )
+                    .children(self.toast(cx)),
             )
             .child(
                 div()
@@ -1561,6 +1949,12 @@ impl DesktopWindow {
         use gpui_kit::component::{Sizable as _, button::ButtonVariants as _};
         use gpui_kit::*;
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        // the connect's views landing in the background: nothing else wakes
+        // the rail that counts them
+        let views_loading = crate::module_view::views_loading();
+        if views_loading.is_some() {
+            window.request_animation_frame();
+        }
         let (spec, route) = self.model.read(cx).state.native_view();
         let module_changed = self
             .module
@@ -1587,10 +1981,7 @@ impl DesktopWindow {
             crate::module_view::tab_label(module, &crate::module_view::module_name(module))
         };
         let navigation = navigation_rows(&label);
-        let (sidebar, popover) = {
-            let theme = gpui_kit::component::Theme::global(cx);
-            (theme.sidebar, theme.popover)
-        };
+        let sidebar = gpui_kit::component::Theme::global(cx).sidebar;
         let state = &self.model.read(cx).state;
         let palette = design::palette(state.is_dark());
         let accent = hsla_of(palette.accent);
@@ -1601,6 +1992,7 @@ impl DesktopWindow {
         let faint = hsla_of(palette.faint);
         let live = state.connected;
         let bell_unread = state.bell_unread;
+        let bell_open = state.bell_open;
         // The voice dock's facts, read here so the rail below owns no borrow.
         let voice = state.huddle_joined.then(|| VoiceDock {
             room: state.huddle_channel_name.clone(),
@@ -1667,7 +2059,20 @@ impl DesktopWindow {
                                     .text_size(px(11.))
                                     .font_weight(FontWeight::NORMAL)
                                     .text_color(ink_muted)
-                                    .child(state.status.clone()),
+                                    .child(match &views_loading {
+                                        // ONE line for the connect's views,
+                                        // gone once every one has landed
+                                        Some((landed, asked)) => Text::new(
+                                            "views-loading".into(),
+                                            format!(
+                                                "Loading views from {} {landed}/{asked}",
+                                                state.network_name
+                                            )
+                                            .into(),
+                                        )
+                                        .into_any_element(),
+                                        None => state.status.clone().into_any_element(),
+                                    }),
                             ),
                     )
                     .child(
@@ -1700,9 +2105,14 @@ impl DesktopWindow {
             gpui_kit::component::Icon::new(gpui_kit::component::IconName::Search),
             "Search",
             ink,
-            false,
+            None,
             live,
         )
+        .aria_keyshortcuts(if cfg!(target_os = "macos") {
+            "Meta+K"
+        } else {
+            "Control+K"
+        })
         .child(
             div()
                 .flex_shrink_0()
@@ -1732,9 +2142,11 @@ impl DesktopWindow {
             gpui_kit::component::Icon::new(gpui_kit::component::IconName::Bell),
             bell_label,
             ink,
-            false,
+            None,
             live,
         )
+        // it opens a popover, and says whether it is open
+        .aria_expanded(bell_open)
         .when(bell_unread > 0, |row| {
             row.child(div().flex_shrink_0().size(px(6.)).rounded_full().bg(accent))
         })
@@ -1743,8 +2155,12 @@ impl DesktopWindow {
             this.model
                 .update(cx, |model, cx| model.dispatch(Message::ToggleBell, cx));
         }));
+        // The rail is the window's navigation: its sections are the tabs
+        // that seat a view, under their headings.
         let mut tabs = div()
             .id("workspace-rail")
+            .role(Role::Navigation)
+            .aria_label("Sections")
             .flex()
             .flex_col()
             .w(px(RAIL_WIDTH))
@@ -1780,6 +2196,12 @@ impl DesktopWindow {
             if let Some(heading) = section.heading {
                 tabs = tabs.child(
                     div()
+                        .id(gpui_kit::SharedString::from(format!(
+                            "rail-heading:{heading}"
+                        )))
+                        .role(Role::Heading)
+                        .aria_level(2)
+                        .aria_label(heading)
                         .px_2()
                         .pt_3()
                         .pb_1()
@@ -1790,7 +2212,7 @@ impl DesktopWindow {
                         .child(heading),
                 );
             }
-            for NavRow { view, label, bytes } in section.rows {
+            for NavRow { view, label } in section.rows {
                 let tab = ShellTab::View(view);
                 let selected = tab == selected_tab;
                 // a row's element id is the view's registry id, never its
@@ -1800,27 +2222,27 @@ impl DesktopWindow {
                     nav_icon(view),
                     label,
                     ink,
-                    selected,
+                    Some(selected),
                     true,
                 )
-                .when(bytes == TabBytes::Desktop, |row| {
-                    // WHERE THE BYTES COME FROM, on the row. Every other tab
-                    // is served by the connected node's registry and changes
-                    // when a deployment does; these ship with this app build,
-                    // and a reader deciding whether a tab is the network's or
-                    // the app's should not have to know a list by heart.
+                // which views can be opened as they are, while others load
+                .when_some(crate::module_view::rail_note(view), |row, note| {
                     row.child(
                         div()
                             .flex_shrink_0()
                             .text_size(px(9.5))
                             .text_color(ink.muted)
-                            .child("app"),
+                            .child(Text::new(
+                                ElementId::Name(format!("rail-note:{view}").into()),
+                                note.into(),
+                            )),
                     )
                 })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
-                    this.model
-                        .update(cx, |model, cx| model.dispatch(Message::SelectShellTab(tab), cx));
+                    this.model.update(cx, |model, cx| {
+                        model.dispatch(Message::SelectShellTab(tab), cx)
+                    });
                 }));
                 #[cfg(test)]
                 let row = {
@@ -1835,6 +2257,9 @@ impl DesktopWindow {
         // decides which (`on_open_account`); the row itself does not know.
         let account = div()
             .id("rail-account")
+            .control(Role::Button, format!("Account: {who}"))
+            .focusable()
+            .tab_stop(true)
             .flex()
             .items_center()
             .gap_2()
@@ -1895,7 +2320,6 @@ impl DesktopWindow {
         tabs = tabs.child(account);
         let state = &self.model.read(cx).state;
         let error = state.error.clone();
-        let toast = state.toast.clone();
         let update_strip = state.update_strip();
         let needs_account =
             state.connected && !state.account_exists && !state.account_banner_dismissed;
@@ -1912,6 +2336,8 @@ impl DesktopWindow {
             // A quiet one-line notice: the screen behind it stays the loudest thing.
             content = content.child(
                 div()
+                    .id("account-banner")
+                    .role(Role::Status)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -1926,7 +2352,10 @@ impl DesktopWindow {
                             .flex_1()
                             .text_size(px(12.))
                             .text_color(colors.muted_foreground)
-                            .child("Sign in to use your account on this network."),
+                            .child(Text::new(
+                                "account-banner-words".into(),
+                                "Sign in to use your account on this network.".into(),
+                            )),
                     )
                     .child(
                         self.action(
@@ -1954,11 +2383,17 @@ impl DesktopWindow {
             );
         }
         if let Some(strip) = update_strip {
-            content = content.child(self.update_strip(strip, &colors, palette));
+            content = content.child(
+                self.update_strip(strip, &colors, palette)
+                    .border_b_1()
+                    .border_color(colors.border),
+            );
         }
         if !error.is_empty() {
             content = content.child(
                 div()
+                    .id("error-plate")
+                    .role(Role::Alert)
                     .flex()
                     .items_center()
                     .gap_2()
@@ -1975,7 +2410,12 @@ impl DesktopWindow {
                         )
                         .xsmall(),
                     )
-                    .child(div().flex_1().text_size(px(12.5)).child(error))
+                    .child(
+                        div()
+                            .flex_1()
+                            .text_size(px(12.5))
+                            .child(Text::new("error-message".into(), error.into())),
+                    )
                     .child(
                         self.action("error-dismiss", "Dismiss", Message::DismissError, false)
                             .ghost()
@@ -1995,36 +2435,7 @@ impl DesktopWindow {
                 .w_full()
                 .overflow_hidden()
                 .child(view)
-                .when(!toast.is_empty(), |element| {
-                    element.child(
-                        div()
-                            .absolute()
-                            .bottom_4()
-                            .right_4()
-                            .max_w(px(420.))
-                            .flex()
-                            .items_center()
-                            .gap_3()
-                            .px_4()
-                            .py_2p5()
-                            .rounded(px(design::radius::CARD as f32))
-                            .border_1()
-                            .border_color(colors.border)
-                            .bg(popover)
-                            .shadow_md()
-                            .child(div().flex_1().text_size(px(12.5)).child(toast))
-                            .child(
-                                self.action(
-                                    "toast-dismiss",
-                                    "Dismiss",
-                                    Message::DismissToast,
-                                    false,
-                                )
-                                .ghost()
-                                .h_7(),
-                            ),
-                    )
-                }),
+                .children(self.toast(cx)),
         );
         let mut root = div()
             .relative()
@@ -2035,7 +2446,7 @@ impl DesktopWindow {
             .overflow_hidden()
             .child(tabs)
             .child(content);
-        if let Some(overlay) = self.overlay(cx) {
+        if let Some(overlay) = self.overlay(window, cx) {
             root = root.child(overlay);
         }
         // The palette is the topmost layer and its own overlay: it draws its
@@ -2048,56 +2459,85 @@ impl DesktopWindow {
 
     /// The update strip across the top of the console: the same quiet
     /// one-line band as the account notice. A staged release offers the
-    /// restart; a rollback says so until dismissed.
+    /// restart; one its own qualify refused says why and offers nothing (a
+    /// newer release supersedes it; Settings discards it); a rollback says
+    /// so until dismissed. The launch window draws this one band under a
+    /// contract-refused row, where `Check` offers the check. The caller
+    /// draws the hairline on the side the band meets its neighbour.
     fn update_strip(
         &self,
         strip: crate::backend::update::UpdateStrip,
         colors: &gpui_kit::component::ColorTokens,
         palette: &design::Palette,
-    ) -> gpui_kit::AnyElement {
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let (words, tone, action) = match strip {
             crate::backend::update::UpdateStrip::Ready { display } => (
                 format!("Ducktape {display} is ready"),
                 hsla_of(palette.accent_soft),
-                self.action(
-                    "update-restart",
-                    "Restart to update",
-                    Message::UpdateAction(crate::UpdateAction::RestartToUpdate),
-                    false,
+                Some(
+                    self.action(
+                        "update-restart",
+                        "Restart to update",
+                        Message::UpdateAction(crate::UpdateAction::RestartToUpdate),
+                        false,
+                    )
+                    .outline(),
                 ),
+            ),
+            crate::backend::update::UpdateStrip::Refused { display, reason } => (
+                format!("Ducktape {display} was refused ({reason})"),
+                hsla_of(palette.warning_soft),
+                None,
             ),
             crate::backend::update::UpdateStrip::RolledBack { failed, reason } => (
                 format!("Update {failed} was rolled back ({reason})"),
                 hsla_of(palette.warning_soft),
-                self.action(
-                    "update-rollback-dismiss",
-                    "Dismiss",
-                    Message::UpdateAction(crate::UpdateAction::DismissRollbackNotice),
-                    false,
+                // a dismissal, ghost like every other band's Dismiss; on a
+                // tinted band in the body colour, as the error band's is.
+                Some(
+                    self.action(
+                        "update-rollback-dismiss",
+                        "Dismiss",
+                        Message::UpdateAction(crate::UpdateAction::DismissRollbackNotice),
+                        false,
+                    )
+                    .ghost(),
+                ),
+            ),
+            crate::backend::update::UpdateStrip::Check { words, busy } => (
+                words,
+                hsla_of(palette.surface_raised),
+                Some(
+                    self.action(
+                        "update-check",
+                        "Check for updates",
+                        Message::UpdateAction(crate::UpdateAction::CheckNow),
+                        busy,
+                    )
+                    .ghost(),
                 ),
             ),
         };
         div()
             .id("update-strip")
+            .role(Role::Status)
             .flex()
             .items_center()
             .gap_2()
             .px_3()
             .h(px(32.))
             .flex_shrink_0()
-            .border_b_1()
-            .border_color(colors.border)
             .bg(tone)
             .child(
                 div()
                     .flex_1()
                     .text_size(px(12.))
                     .text_color(colors.foreground)
-                    .child(words),
+                    .child(Text::new("update-words".into(), words.into())),
             )
-            .child(action.outline().h_6().text_size(px(12.)))
-            .into_any_element()
+            .children(action.map(|action| action.h_6().text_size(px(12.))))
     }
 
     /// The bell's popover: a card beside the rail, at the bell row it hangs
@@ -2105,7 +2545,11 @@ impl DesktopWindow {
     /// `inbox` view and a view lays itself out for the width it is handed —
     /// a popover column, not the page the tab underneath draws. The height
     /// is this chrome's to cap; the guest scrolls inside it.
-    fn overlay(&mut self, cx: &mut Context<Self>) -> Option<gpui_kit::AnyElement> {
+    fn overlay(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<gpui_kit::AnyElement> {
         use gpui_kit::component::ActiveTheme as _;
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
@@ -2116,8 +2560,14 @@ impl DesktopWindow {
         // A bell that is not the topmost overlay gives its seat back.
         if topmost != "bell" {
             self.unseat_inbox(cx);
+            self.bell_entry = None;
             return None;
         }
+        let opened = self.bell_entry.is_none();
+        let entry = self
+            .bell_entry
+            .get_or_insert_with(|| cx.focus_handle())
+            .clone();
         // The seat is taken before the card is drawn: everything below
         // borrows the model, and seating writes to it.
         let inbox = self.seat_inbox(cx);
@@ -2132,6 +2582,10 @@ impl DesktopWindow {
             .pb_1p5()
             .child(
                 div()
+                    .id("bell-heading")
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .aria_label("Notifications")
                     .flex_1()
                     .text_size(px(13.))
                     .font_weight(FontWeight::SEMIBOLD)
@@ -2146,8 +2600,13 @@ impl DesktopWindow {
                     .w_6()
                     .px_0(),
             );
+        // a dialog called what its heading says; opening it puts the
+        // keyboard in it, and Escape closes it (`escape_target`)
         let panel = div()
             .id("shell-modal")
+            .role(Role::Dialog)
+            .aria_label("Notifications")
+            .child(crate::view_tree::dialog_entry(&entry, opened, window, cx))
             .flex()
             .flex_col()
             .w(px(BELL_POPOVER_WIDTH))
@@ -2167,6 +2626,7 @@ impl DesktopWindow {
                     .pb_2()
                     .child(inbox),
             );
+        let panel = gpui_notion::editor::ui::modal(panel);
         let model = self.model.clone();
         Some(
             // A popover dims nothing: the catcher is transparent and exists
@@ -2268,9 +2728,11 @@ pub(crate) fn test_window(
             input_step: None,
             qr: None,
             focus: cx.focus_handle(),
+            bell_entry: None,
             _activation: activation,
             _observer: observer,
             _keystrokes: keystrokes,
+            _focus_lost: DesktopWindow::blur_what_leaves(window, cx),
         }
     })
 }
@@ -2611,7 +3073,9 @@ mod close_tests {
         // A real guest frame replaces interest; explicitly rearm this host-only
         // fixture before exercising the actual native presenter's release hook.
         queue_close_intent("closed");
-        model.update(cx, |model, _| model.state.shell_tab = ShellTab::View("files"));
+        model.update(cx, |model, _| {
+            model.state.shell_tab = ShellTab::View("files")
+        });
         let weak = presenter.downgrade();
         drop(presenter);
         handle
@@ -2684,6 +3148,11 @@ fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
 /// leads the rail instead of following the built-in tabs.
 const HOME_VIEW: &str = "home";
 
+/// The command the empty network list tells a stranger to type: the CLI's
+/// own getting-started example, drawn as one unbroken code run. A concrete
+/// name, not a `<name>` placeholder a reader could take for punctuation.
+pub(crate) const FOUNDING_COMMAND: &str = "ducktape node init --name mynet";
+
 /// The ink rail's width. The bell's popover hangs off it, so the two share
 /// one number rather than agreeing by coincidence.
 const RAIL_WIDTH: f32 = 200.;
@@ -2739,7 +3208,6 @@ impl DesktopWindow {
             1 => "with 1 other".to_owned(),
             n => format!("with {n} others"),
         };
-        let mute = if voice.muted { "Unmute" } else { "Mute" };
         div()
             .id("rail-voice")
             .flex()
@@ -2763,13 +3231,13 @@ impl DesktopWindow {
                             .text_size(px(12.5))
                             .font_weight(FontWeight::MEDIUM)
                             .text_color(success)
-                            .child("Voice connected"),
+                            .child(Text::new("voice-state".into(), "Voice connected".into())),
                     )
                     .child(
                         div()
                             .text_size(px(11.))
                             .text_color(muted)
-                            .child(voice.elapsed),
+                            .child(Text::new("voice-elapsed".into(), voice.elapsed.into())),
                     ),
             )
             .child(
@@ -2777,7 +3245,10 @@ impl DesktopWindow {
                     .truncate()
                     .text_size(px(12.))
                     .text_color(fg)
-                    .child(format!("#{} · {with}", voice.room)),
+                    .child(Text::new(
+                        "voice-room".into(),
+                        format!("#{} · {with}", voice.room).into(),
+                    )),
             )
             .child(
                 div()
@@ -2785,9 +3256,14 @@ impl DesktopWindow {
                     .items_center()
                     .gap(px(4.))
                     .child(
-                        self.action("rail-voice-mute", mute, Message::ToggleCallMute, false)
+                        self.action("rail-voice-mute", "Mute", Message::ToggleCallMute, false)
                             .xsmall()
-                            .outline(),
+                            .outline()
+                            .map(|mute| {
+                                use gpui_kit::component::Selectable as _;
+                                mute.selected(voice.muted)
+                            })
+                            .toggled(voice.muted),
                     )
                     .child(
                         self.action("rail-voice-open", "Open", Message::ShowHuddle, false)
@@ -2806,25 +3282,12 @@ impl DesktopWindow {
     }
 }
 
-/// WHO SERVES A TAB'S BYTES.
-///
-/// A tab is a seated view, and a view either comes off the connected node's
-/// registry — where a deployment changes it at a block — or ships with this
-/// app build (`backend::view_source::DESKTOP_OWNED`, which holds the
-/// credential doors and the node's own instruments). The rail says which, on
-/// the row.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TabBytes {
-    Network,
-    Desktop,
-}
-
-/// One row of the rail: the view it seats, the name it draws, and who serves
-/// it. No row names a `ShellTab` arm — there are none to name.
+/// One row of the rail: the view it seats and the name it draws. Every
+/// row's bytes are the connected node's registry entry — nothing ships with
+/// this app build. No row names a `ShellTab` arm — there are none to name.
 struct NavRow {
     view: &'static str,
     label: String,
-    bytes: TabBytes,
 }
 
 /// A run of rows under one heading. `foot` pushes the run to the bottom of
@@ -2853,10 +3316,6 @@ fn navigation_rows(label: &dyn Fn(&'static str) -> String) -> Vec<NavSection> {
     let row = |view: &'static str| NavRow {
         view,
         label: label(view),
-        bytes: match crate::backend::view_source::desktop_owned(view) {
-            true => TabBytes::Desktop,
-            false => TabBytes::Network,
-        },
     };
     // the dashboard leads the rail, above every section: it is the network at
     // a glance, not a workspace tool or a network tool
@@ -2868,17 +3327,16 @@ fn navigation_rows(label: &dyn Fn(&'static str) -> String) -> Vec<NavSection> {
         .collect();
     // the registry's other entries are workspace tools: they follow the ones
     // this build arranges, in the registry's order, named by their manifests.
-    // `call` is seated by the huddle dock, not by a tab.
+    // `call` is seated by the huddle dock, `palette` over the window and
+    // `settings` at the foot, not by a workspace row.
     let arranged = |view: &&'static str| {
-        WORKSPACE_ARRANGEMENT.contains(view) || NETWORK_ARRANGEMENT.contains(view)
+        WORKSPACE_ARRANGEMENT.contains(view)
+            || NETWORK_ARRANGEMENT.contains(view)
+            || [HOME_VIEW, "call", "palette", "settings"].contains(view)
     };
     let workspace = WORKSPACE_ARRANGEMENT
         .into_iter()
-        .chain(
-            registered
-                .into_iter()
-                .filter(|view| *view != HOME_VIEW && *view != "call" && !arranged(view)),
-        )
+        .chain(registered.into_iter().filter(|view| !arranged(view)))
         .map(row)
         .collect();
     vec![
@@ -2905,19 +3363,37 @@ fn navigation_rows(label: &dyn Fn(&'static str) -> String) -> Vec<NavSection> {
     ]
 }
 
+/// One row of the rail, a control a keyboard reaches with Tab and presses
+/// with Enter or Space. `selected` is `Some` for a row that seats a view: a
+/// tab, reporting whether it is the open one. `None` is a row that acts: a
+/// button. Its label is its accessible name.
 fn rail_row(
     id: impl Into<gpui_kit::ElementId>,
     icon: gpui_kit::component::Icon,
     label: impl Into<gpui_kit::SharedString>,
     ink: RailInk,
-    selected: bool,
+    selected: Option<bool>,
     enabled: bool,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
     use gpui_kit::component::Sizable as _;
     use gpui_kit::*;
     let RailInk { fg, muted, raised } = ink;
-    div()
+    let label = label.into();
+    let row = div()
         .id(id)
+        .control(
+            if selected.is_some() {
+                Role::Tab
+            } else {
+                Role::Button
+            },
+            label.clone(),
+        )
+        .when_some(selected, |row, selected| row.aria_selected(selected))
+        .focusable()
+        .tab_stop(true);
+    let selected = selected.unwrap_or(false);
+    gpui_notion::editor::ui::disabled(row, !enabled)
         .flex()
         .items_center()
         .gap_2()
@@ -2937,7 +3413,7 @@ fn rail_row(
         .when(!enabled, |row| row.opacity(0.5))
         .hover(move |style| style.bg(raised).text_color(fg))
         .child(icon.small())
-        .child(div().flex_1().min_w_0().truncate().child(label.into()))
+        .child(div().flex_1().min_w_0().truncate().child(label))
 }
 
 /// A row's icon: the view's OWN `icons/tab.svg` once it is seated, else the
@@ -2967,7 +3443,7 @@ fn nav_icon(view: &'static str) -> gpui_kit::component::Icon {
 }
 
 /// The faces the app registers: ONE FILE PER FACE, each the vendor's own
-/// released static (`crates/design/assets/fonts/SOURCES`), never
+/// released static (`app/assets/fonts/SOURCES`), never
 /// a variable font. The text system keeps the requested weight only long
 /// enough to match a face — `gpui-pre-wgpu`'s `cosmic_text_system.rs` then
 /// shapes with the matched face's own `usWeightClass` and rasterizes from a
@@ -2992,25 +3468,29 @@ fn nav_icon(view: &'static str) -> gpui_kit::component::Icon {
 /// entry no box can resolve is dropped, and neither Latin family draws 한글.
 /// Both are upright only — no open Hangul font has an italic — so an italic
 /// run slants its Latin and leaves its Korean standing.
+// Bundled locally under app/assets/fonts/ rather than reached across the
+// design crate's path: design now arrives as a git dependency (the split
+// out of the monorepo), and a compile-time include_bytes! path cannot cross
+// a cargo git-dependency boundary. The app ships its own copy, matching the
+// "fonts ship with the widget" rule the terminal already follows.
 pub(crate) const BUNDLED_FACES: [&[u8]; 12] = [
-    include_bytes!("../../crates/design/assets/fonts/Inter-Regular.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/Inter-Bold.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/Inter-Italic.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/Inter-BoldItalic.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/JetBrainsMono-Regular.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/JetBrainsMono-Bold.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/JetBrainsMono-Italic.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/JetBrainsMono-BoldItalic.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/Pretendard-Regular.otf"),
-    include_bytes!("../../crates/design/assets/fonts/Pretendard-Bold.otf"),
-    include_bytes!("../../crates/design/assets/fonts/D2Coding-Regular.ttf"),
-    include_bytes!("../../crates/design/assets/fonts/D2Coding-Bold.ttf"),
+    include_bytes!("../assets/fonts/Inter-Regular.ttf"),
+    include_bytes!("../assets/fonts/Inter-Bold.ttf"),
+    include_bytes!("../assets/fonts/Inter-Italic.ttf"),
+    include_bytes!("../assets/fonts/Inter-BoldItalic.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Regular.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Bold.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-Italic.ttf"),
+    include_bytes!("../assets/fonts/JetBrainsMono-BoldItalic.ttf"),
+    include_bytes!("../assets/fonts/Pretendard-Regular.otf"),
+    include_bytes!("../assets/fonts/Pretendard-Bold.otf"),
+    include_bytes!("../assets/fonts/D2Coding-Regular.ttf"),
+    include_bytes!("../assets/fonts/D2Coding-Bold.ttf"),
 ];
 
 /// The emoji face, kept apart from [`BUNDLED_FACES`] because the two
 /// platforms differ on it (see the registration below).
-pub(crate) const EMOJI_FACE: &[u8] =
-    include_bytes!("../../crates/design/assets/fonts/NotoColorEmoji.ttf");
+pub(crate) const EMOJI_FACE: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 
 /// The families a run falls back to when the primary face has no glyph, after
 /// the bundled Hangul face each chain leads with. WITHOUT this list a Korean
@@ -3195,6 +3675,20 @@ pub(crate) fn run() {
             desktop.start(initial, cx).detach();
             desktop.subscriptions(cx);
         });
+        // the test door (#114), only when the launch asked for it
+        if let Some(calls) = crate::ax_door::open() {
+            let door_desktop = desktop.downgrade();
+            cx.spawn(async move |cx: &mut AsyncApp| {
+                let windows = move |cx: &gpui_kit::App| {
+                    door_desktop
+                        .upgrade()
+                        .map(|desktop| desktop.read(cx).ax_windows(cx))
+                        .unwrap_or_default()
+                };
+                crate::ax_door::serve(calls, windows, cx).await;
+            })
+            .detach();
+        }
         let command_desktop = desktop.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(pending) = commands.next().await {

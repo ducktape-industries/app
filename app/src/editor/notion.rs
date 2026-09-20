@@ -11,15 +11,15 @@ use gpui_kit::{
     Window, canvas, div, img, px,
 };
 use gpui_notion::NotionEditor;
-use gpui_notion::editor::input_rules::InputRuleMode;
-use gpui_notion::editor::comments::{AnnotationMode, AnnotationRequested};
 use gpui_notion::editor::block::{
     BlockAttrs, BlockCaps, BlockContent, BlockContext, BlockLayout, BlockRegistry, BlockSpec, types,
 };
+use gpui_notion::editor::comments::{AnnotationMode, AnnotationRequested};
+use gpui_notion::editor::input_rules::InputRuleMode;
 use gpui_notion::editor::mark::{HighlightColor, Mark, MarkKind, MarkList, TextColor};
+use gpui_notion::editor::slash::{ApplicationMenu, ApplicationMenuAnchor, MenuAction};
 use gpui_notion::editor::theme::{ActiveEditorTheme as _, EditorTheme};
 use gpui_notion::editor::toolbar::{ToolbarAction, ToolbarItem};
-use gpui_notion::editor::slash::{ApplicationMenu, ApplicationMenuAnchor, MenuAction};
 use gpui_notion::editor::view::{Caret, DocumentChanged, LinkPressed, SelectionChanged};
 use view_wire as wire;
 use wire::editor_presentation::EditorMargin;
@@ -137,7 +137,8 @@ impl BlockSpec for DocumentPage {
 const PICTURE_HEIGHT: Pixels = px(480.);
 
 /// The document's image block: gpui-notion's, with the one change that a
-/// `duck://files/…` address draws from the host picture store. A picture in a
+/// files address (`duck://<chain>/files/…`, or the older `duck://files/…`)
+/// draws from the host picture store. A picture in a
 /// page is a file on the network, not on the writer's disk — the guest puts
 /// it there and then asks `picture.load` for every address its page names, so
 /// what this draws is already decoded.
@@ -190,7 +191,7 @@ impl BlockSpec for DocumentImage {
         };
         // Until the guest's `picture.load` lands, the block holds its place
         // rather than collapsing the text around it.
-        let Some(picture) = crate::backend::stored_picture(crate::backend::PAGES_SURFACE, path)
+        let Some(picture) = crate::backend::stored_picture(crate::backend::PAGES_SURFACE, &path)
         else {
             return Some(plate(ctx, cx, "Loading the picture…").into_any_element());
         };
@@ -234,10 +235,17 @@ fn plate(ctx: &BlockContext, cx: &App, say: &'static str) -> impl IntoElement {
 
 /// The duckfs path behind a picture's address, or `None` when the address is
 /// not one of ours — a picture off the web, or a path on somebody's disk.
-fn duckfs_path(src: &str) -> Option<&str> {
+/// A page is stored content, so both spellings of a files address draw: the
+/// `duck://<chain>/files/<path…>` a page writes now, and the
+/// `duck://files/<path>` its older pictures carry, forever.
+fn duckfs_path(src: &str) -> Option<String> {
+    let link = crate::backend::classify_duck_link(src.to_owned());
+    if link.kind == crate::DuckKind::Files {
+        return Some(link.path);
+    }
     let path = src.strip_prefix("duck://files")?;
-    let plain = !path.is_empty() && !path.contains(['?', '#']);
-    plain.then_some(path)
+    let plain = path.starts_with('/') && !path.contains(['?', '#']);
+    plain.then(|| path.to_owned())
 }
 
 /// The badge's height: one marker slot.
@@ -310,7 +318,7 @@ impl RichWireEditor {
             cx.subscribe_in(&editor, window, |this, _, action: &MenuAction, _, cx| {
                 this.menu_action(action, cx);
             });
-        // A link in a page is as often `duck://page/…` as it is the web, and
+        // A link in a page is as often `duck://<chain>/pages/…` as the web, and
         // the app already knows what every `duck://` address names — so a
         // press goes to the one place that routes them all.
         let links = cx.subscribe(&editor, |_, _, pressed: &LinkPressed, _| {
@@ -358,6 +366,16 @@ impl RichWireEditor {
         }
         self.fills = fills;
         cx.notify();
+    }
+
+    /// The wire `label`, as the page's name; "Page" when the view gave none.
+    pub fn set_label(&mut self, label: Option<String>, cx: &mut Context<Self>) {
+        let name = SharedString::from(label.unwrap_or_else(|| "Page".into()));
+        self.editor.update(cx, |editor, cx| {
+            if editor.name() != &name {
+                editor.set_name(name, cx);
+            }
+        });
     }
 
     /// Install the projection when it settled on text this editor did not
@@ -583,7 +601,6 @@ impl RichWireEditor {
         cx.notify();
     }
 
-
     fn annotation(&mut self, event: &AnnotationRequested, cx: &mut Context<Self>) {
         let Some(line) = self.editor.read(cx).index_of(event.block) else {
             return;
@@ -718,16 +735,15 @@ impl RichWireEditor {
             return;
         }
         let key = super::key_state(keystroke);
-        let claimed = self
-            .store
-            .projection(&self.key)
-            .and_then(|projection| projection.options.binding)
-            .is_some_and(|binding| {
-                binding
-                    .claims
-                    .iter()
-                    .any(|claim| claim.command && claim.matches(&key, cfg!(target_os = "macos")))
-            });
+        let claimed =
+            self.store
+                .projection(&self.key)
+                .and_then(|projection| projection.options.binding)
+                .is_some_and(|binding| {
+                    binding.claims.iter().any(|claim| {
+                        claim.command && claim.matches(&key, cfg!(target_os = "macos"))
+                    })
+                });
         if !claimed {
             return;
         }
@@ -1014,6 +1030,42 @@ fn restore_cursor(
 mod tests {
     use super::*;
 
+    /// A page picture draws from the store under its duckfs path by either
+    /// spelling of its files address; nothing else is a stored picture.
+    #[test]
+    fn a_page_picture_is_found_by_either_spelling_of_its_files_address() {
+        let path = Some("/shared/attachments/u1/duck.png".to_owned());
+        assert_eq!(
+            duckfs_path("duck://files/shared/attachments/u1/duck.png"),
+            path
+        );
+        assert_eq!(
+            duckfs_path("duck://dognet-b5b6ea90/files/shared/attachments/u1/duck.png"),
+            path
+        );
+        assert_eq!(
+            duckfs_path(
+                "duck://dognet-b5b6ea90/files/shared/attachments/u1/%EC%98%A4%EB%A6%AC.png"
+            )
+            .as_deref(),
+            Some("/shared/attachments/u1/오리.png")
+        );
+        assert_eq!(
+            duckfs_path("duck://files-b5b6ea90/files/shared/a.png").as_deref(),
+            Some("/shared/a.png")
+        );
+        for other in [
+            "https://example.com/duck.png",
+            "/home/me/duck.png",
+            "duck://files/shared/duck.png?v=2",
+            "duck://files",
+            "duck://dognet-b5b6ea90/pages/pg-1",
+            "duck://dognet-b5b6ea90/files/shared/../etc",
+        ] {
+            assert_eq!(duckfs_path(other), None, "{other}");
+        }
+    }
+
     #[gpui_kit::test]
     fn rich_application_menu_returns_opaque_choice_through_the_document_queue(
         cx: &mut gpui_kit::TestAppContext,
@@ -1053,7 +1105,7 @@ mod tests {
     fn application_menu_request(cx: &mut gpui_kit::TestAppContext, gesture: MenuGesture) {
         use gpui_kit::test::TestWindowExt as _;
         use wire::editor_presentation::{
-            EditorMenu, EditorMenuAnchor, EditorMenuItem, EditorPresentation, EditorInteraction,
+            EditorInteraction, EditorMenu, EditorMenuAnchor, EditorMenuItem, EditorPresentation,
         };
         cx.update(gpui_kit::init);
         cx.update(init);
@@ -1167,15 +1219,15 @@ mod tests {
             window.render_frame(cx);
             match gesture {
                 MenuGesture::LinePick | MenuGesture::DividerPick => {
-                    let menu = window.find(("application-suggestion", 0usize)).bounds();
+                    let menu = window.find("application-suggestion/opaque-choice").bounds();
                     let block = window.find(("block", 3usize)).bounds();
                     assert!(
                         menu.top() >= block.bottom(),
                         "menu {menu:?} must follow the supplied block {block:?}"
                     );
-                    window.click(("application-suggestion", 0usize), cx);
+                    window.click("application-suggestion/opaque-choice", cx);
                 }
-                MenuGesture::Pick => window.click(("application-suggestion", 0usize), cx),
+                MenuGesture::Pick => window.click("application-suggestion/opaque-choice", cx),
                 MenuGesture::Dismiss => window.press("escape", cx),
                 MenuGesture::Move => window.press("left", cx),
             }

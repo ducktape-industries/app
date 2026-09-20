@@ -59,7 +59,7 @@ fn a_search_hits_author_is_not_reformatted_into_system() {
         updated_at: 0,
     };
     assert_eq!(
-        author_display("acct:7", &NameDirectory::from_accounts(&[program])),
+        author_display("acct:7", &directory_of(&[program])),
         "quackbot"
     );
 }
@@ -74,7 +74,7 @@ fn message_groups_collapse_consecutive_authors() {
         meta: format!("#{seq}"),
         edit_body: "body".into(),
         body: "body".into(),
-        blocks: paragraph_blocks("body"),
+        blocks: paragraph_blocks("body", &test_chain()),
         pending: false,
         rev: 0,
         edited: false,
@@ -117,6 +117,7 @@ async fn composer_markdown_round_trips_rich_spans() {
         "127.0.0.1:0".parse().unwrap(),
         simnode::SimOpts {
             auto: true,
+            modules_dir: Some(sim_modules_dir()),
             ..Default::default()
         },
     )

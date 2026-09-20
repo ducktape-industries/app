@@ -5,11 +5,10 @@
 //! that removes what no phase names any more.
 //!
 //! The archive holds the release directory's contents at its top level:
-//! Linux `ducktape-launcher`, `ducktape-app`, `views/*.wasm`; macOS
-//! `Ducktape.app/…`. Extraction accepts regular files, directories and
-//! symlinks whose target stays under the release directory (the bundle's
-//! `Contents/MacOS/views -> ../Resources/ice-bundle/views` is one); it refuses
-//! absolute paths, `..`, a symlink that would leave the directory, and hard
+//! Linux `ducktape-launcher`, `ducktape-app`; macOS `Ducktape.app/…`. No
+//! view ships in a release: every view is the network's. Extraction accepts
+//! regular files, directories and symlinks whose target stays under the
+//! release directory; it refuses absolute paths, `..`, a symlink that would leave the directory, and hard
 //! links. Every refusal is a stable snake_case token: it is the banner's
 //! "last refusal" and the log's `reason`.
 
@@ -20,7 +19,6 @@ use tracing::{debug, info, warn};
 
 pub(crate) const APP_EXE: &str = "ducktape-app";
 pub(crate) const LAUNCHER_EXE: &str = "ducktape-launcher";
-const VIEWS_DIR: &str = "views";
 const BUNDLE: &str = "Ducktape.app";
 const PARTIAL_SUFFIX: &str = ".partial";
 
@@ -170,7 +168,7 @@ fn symlink_stays_inside(root: &Path, link: &Path, target: &Path) -> bool {
     true
 }
 
-/// The executables and the views the launcher's `--qualify` will look for,
+/// The executables the launcher's `--qualify` will look for,
 /// named now so a truncated archive is a `release_incomplete`, not a later
 /// `qualify` mystery.
 fn require_whole(release_dir: &Path) -> Result<(), String> {
@@ -178,7 +176,6 @@ fn require_whole(release_dir: &Path) -> Result<(), String> {
     let whole = [
         bin_dir.join(APP_EXE).is_file(),
         bin_dir.join(LAUNCHER_EXE).is_file(),
-        bin_dir.join(VIEWS_DIR).is_dir(),
     ]
     .into_iter()
     .all(|present| present);
@@ -197,9 +194,10 @@ pub(crate) fn release_bin_dir(release_dir: &Path) -> PathBuf {
     }
 }
 
-/// macOS: the extracted bundle's signature, deep and strict, and the
-/// Gatekeeper assessment a double-click would face. What runs is what was
-/// checked: the same directory is flipped into place.
+/// macOS: the extracted bundle's code signature, deep and strict. The
+/// release manifest signature and archive digest establish release-channel
+/// trust; `spctl` is a separate Developer ID/Gatekeeper assessment and is not
+/// a qualification or launch proof for this managed path.
 #[cfg(target_os = "macos")]
 fn check_bundle(release_dir: &Path) -> Result<(), String> {
     let bundle = release_dir.join(BUNDLE);
@@ -208,8 +206,7 @@ fn check_bundle(release_dir: &Path) -> Result<(), String> {
         &["--verify", "--deep", "--strict"],
         &bundle,
         "codesign_rejected",
-    )?;
-    run_check("spctl", &["-a", "-t", "exec"], &bundle, "spctl_rejected")
+    )
 }
 
 #[cfg(target_os = "macos")]
@@ -520,6 +517,16 @@ pub(super) mod tests {
     fn a_truncated_release_is_incomplete() {
         let (_root, outcome) = staged(&[Item::File(APP_EXE, b"app".to_vec(), 0o755)]);
         assert_eq!(outcome, Err("release_incomplete".into()));
+    }
+
+    /// No view ships in a release: the two executables are the whole of it.
+    #[test]
+    fn a_release_of_the_two_executables_is_whole() {
+        let (_root, outcome) = staged(&[
+            Item::File(APP_EXE, b"app".to_vec(), 0o755),
+            Item::File(LAUNCHER_EXE, b"launcher".to_vec(), 0o755),
+        ]);
+        assert_eq!(outcome, Ok(()));
     }
 
     #[test]

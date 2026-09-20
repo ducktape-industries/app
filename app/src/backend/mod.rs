@@ -32,12 +32,19 @@ pub use ::chat::client::{ChatChannel, ChatReader, HuddleSeat, NameDirectory, sho
 // the app's own test helpers, which build message rows the way a send does.
 #[cfg(test)]
 pub use ::chat::client::{ChatMessage, author_display, author_name, paragraph_blocks};
-const DEFAULT_RPC: &str = "http://127.0.0.1:8844";
+
+/// The network a test's rendered rows name: chat links a mention to the
+/// account's address on a chain, and a fixture has no connection to take one
+/// from. The sim's `local` is no chain id the address grammar reads.
+#[cfg(test)]
+pub(crate) fn test_chain() -> duck_address::ChainId {
+    "dognet#b5b6ea90".parse().expect("a chain id")
+}
 /// How many one-second polls the provisioning screen waits before it says the
 /// node is not running and names the command that starts it.
 const PROVISION_PATIENCE: u32 = 8;
 
-#[derive(Clone, Debug, Hash, PartialEq, serde::Deserialize)]
+#[derive(Clone, Debug, Default, Hash, PartialEq, serde::Deserialize)]
 pub struct ChatData {
     /// The switch this window answers for. Every route that moves the reader
     /// bumps `chat_generation` and stamps it here, so a room she has already
@@ -185,6 +192,7 @@ pub mod view_source;
 pub use agent::*;
 pub use app_dirs::app_log_path;
 pub(crate) use app_dirs::cache_dir;
+pub(crate) use app_dirs::state_dir;
 pub use chat::*;
 pub use duck_uri::*;
 pub use explorer::*;

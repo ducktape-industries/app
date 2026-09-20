@@ -48,6 +48,74 @@ fn a_status_without_operations_produces_unmeasured_readings() {
     assert_eq!(facts.reachable_validators, None);
 }
 
+/// `operations.follow` IS OPTIONAL. A node publishes it only once a peer
+/// answered a tip poll; before that the three facts are absent, not a node at
+/// genesis with no gap — and the phase beside them reads the same either way.
+#[test]
+fn follow_facts_are_read_when_published_and_unmeasured_when_not() {
+    let behind = serde_json::json!({
+        "operations": {
+            "phase": "behind",
+            "follow": { "network_height": 756, "behind_by": 601, "heard_at": 1758078000 },
+        },
+    });
+    let facts = node_facts(&behind);
+    assert_eq!(facts.phase, "behind");
+    assert_eq!(
+        (facts.network_height, facts.behind_by, facts.heard_at),
+        (756, 601, 1758078000)
+    );
+
+    let unheard = serde_json::json!({ "operations": { "phase": "serving" } });
+    let facts = node_facts(&unheard);
+    assert_eq!(facts.phase, "serving");
+    assert_eq!(
+        (facts.network_height, facts.behind_by, facts.heard_at),
+        (UNMEASURED, UNMEASURED, UNMEASURED)
+    );
+}
+
+/// `operations.netstack`'s failure pair is ADDITIVE (#41): a node whose plane
+/// failed publishes the token and the sentence, and one whose plane is
+/// starting, running or stopped publishes neither — which reads as no failure,
+/// not as a failure with nothing to say.
+#[test]
+fn a_failed_netstack_plane_is_read_and_a_healthy_one_reads_as_none() {
+    let failed = serde_json::json!({
+        "operations": {
+            "phase": "validating",
+            "netstack": {
+                "backend": "failed",
+                "failure_reason": "netstack_guest_unreadable",
+                "failure_detail": "no founding set beside the binary",
+            },
+        },
+    });
+    let facts = node_facts(&failed);
+    assert_eq!(
+        (
+            facts.netstack_failure_reason.as_str(),
+            facts.netstack_failure_detail.as_str()
+        ),
+        (
+            "netstack_guest_unreadable",
+            "no founding set beside the binary"
+        )
+    );
+
+    let running = serde_json::json!({
+        "operations": { "phase": "validating", "netstack": { "backend": "guest" } },
+    });
+    let facts = node_facts(&running);
+    assert_eq!(
+        (
+            facts.netstack_failure_reason.as_str(),
+            facts.netstack_failure_detail.as_str()
+        ),
+        ("", "")
+    );
+}
+
 /// SYNC IS READ OFF `phase`, NEVER OFF THE PRESENCE OF `sync`.
 ///
 /// `operations.sync` is set by `begin_sync` and never cleared — no writer in
@@ -115,6 +183,32 @@ fn the_sync_label_shows_progress_only_while_catching_up() {
 
     // and a node that published no phase says NOTHING rather than guessing.
     assert_eq!(sync_label("", 412, 900), "");
+}
+
+/// THE OPEN WAIT NAMES WHAT IT WAITS ON (#27). A node that has not served yet
+/// holds every module read until it does, so the wait leads with its phase; a
+/// serving node, a phase core does not publish, or none at all leave the
+/// connection's own line alone.
+#[test]
+fn the_open_wait_names_a_node_that_has_not_served_yet() {
+    let loading = "Loading chat and workspace…";
+    assert_eq!(
+        opening_progress("syncing", loading),
+        "The node is syncing · Loading chat and workspace…"
+    );
+    assert_eq!(
+        opening_progress("joining", "Retrying automatically in 2s · retry 2"),
+        "The node is joining · Retrying automatically in 2s · retry 2"
+    );
+    for phase in ["starting", "recovering"] {
+        assert_eq!(
+            opening_progress(phase, loading),
+            format!("The node is {phase} · {loading}")
+        );
+    }
+    for phase in ["serving", "validating", "behind", "rebalancing", ""] {
+        assert_eq!(opening_progress(phase, loading), loading);
+    }
 }
 
 /// ONE CARD, ONE SAMPLE — AND THE SAMPLE IS THE WHOLE PAIR.
@@ -249,12 +343,17 @@ fn a_network_row_refuses_only_a_live_node_with_another_contract() {
         chain_id: "demo#a1b2".into(),
         name: "demo".into(),
         endpoint: "http://127.0.0.1:1".into(),
+        endpoint_override: String::new(),
         kind: "local".into(),
         last_used: 0,
         probed,
         live,
         height: 7,
         contract,
+        another_network: false,
+        phase: "serving".into(),
+        behind_by: 0,
+        netstack_failure: String::new(),
     };
     let expected = EXPECTED_NODE_CONTRACT;
 

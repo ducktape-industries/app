@@ -1,6 +1,6 @@
 //! `--qualify <state.json>`: the NEW launcher's self-check, run by the OLD
 //! one before the flip. A launcher that cannot parse the state, find its
-//! own `ducktape-app` and `views/`, or (macOS) pass its bundle's signature
+//! own `ducktape-app`, or (macOS) pass its bundle's signature
 //! check would crash at the boot after the flip — before it could roll
 //! back — so it is asked first. Prints one snake_case reason to stdout
 //! (`ok` on success); the exit status is the answer.
@@ -50,26 +50,21 @@ pub fn qualify(layout: &Layout, state_path: &Path) -> Result<(), Refusal> {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("/"));
     fs::require_executable(&bin_dir.join(APP_EXE))?;
-    fs::require_views(&bin_dir)?;
     match layout.platform {
         Platform::Linux => Ok(()),
         Platform::MacOs => verify_bundle(&layout.staged_bundle(staged.staged)),
     }
 }
 
-/// `codesign --verify --deep --strict` then `spctl -a -t exec`: what the
-/// app checked after extraction, checked again on what will run.
+/// `codesign --verify --deep --strict`: the code integrity check the app ran
+/// after extraction, checked again on what will run. Release-channel
+/// signatures and the archive digest establish trust; `spctl`'s Developer ID
+/// assessment is not part of the managed ad-hoc install/update contract.
 fn verify_bundle(bundle: &Path) -> Result<(), Refusal> {
     run_check(
         "codesign_refused",
         Command::new("/usr/bin/codesign")
             .args(["--verify", "--deep", "--strict"])
-            .arg(bundle),
-    )?;
-    run_check(
-        "gatekeeper_refused",
-        Command::new("/usr/sbin/spctl")
-            .args(["-a", "-t", "exec"])
             .arg(bundle),
     )
 }

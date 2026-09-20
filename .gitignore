@@ -43,3 +43,6 @@ HANDOFF.md
 
 # wrangler local state (ops/auth-page)
 .wrangler/
+
+.env
+__pycache__/

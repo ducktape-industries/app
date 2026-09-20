@@ -30,8 +30,17 @@ fn native_rich_text_uses_one_paragraph_with_actionable_links() {
 fn the_mention_plate_leaves_space_before_and_after_the_token() {
     use gpui_kit::{FontWeight, TextRun, font, px};
     let cx = crate::frame_probe::headless_context();
-    let blocks = chat::client::paragraph_blocks("before<@3>after");
+    let blocks = chat::client::paragraph_blocks("before<@3>after", &backend::test_chain());
     let spans = &blocks[0].spans;
+    // the plate is a destination on the network it was rendered for: the
+    // account's address on that chain, which the open plane opens there
+    let link = &spans[2].mention_link;
+    assert_eq!(link, "duck://dognet-b5b6ea90/identity/3");
+    let opened = backend::resolve_duck_link(link.clone(), "dognet#b5b6ea90".into());
+    assert_eq!(
+        (opened.kind, opened.account.as_str()),
+        (crate::DuckKind::Account, "3")
+    );
     let mut text = String::new();
     let mut runs = Vec::new();
     let mut bounds = Vec::new();

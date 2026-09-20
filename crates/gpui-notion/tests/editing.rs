@@ -184,10 +184,7 @@ fn markdown_rules_create_nodes(cx: &mut TestAppContext) {
 
     harness.press("enter", cx);
     harness.type_text("- item", cx);
-    assert_eq!(
-        harness.types(cx),
-        vec![types::HEADING, types::BULLET_LIST]
-    );
+    assert_eq!(harness.types(cx), vec![types::HEADING, types::BULLET_LIST]);
     assert_eq!(harness.texts(cx)[1], "item");
 
     harness.press("enter", cx);
@@ -239,8 +236,16 @@ fn inline_rules_apply_marks(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let editor = harness.editor.read(cx);
         let block = &editor.content()[0];
-        assert!(block.marks.has(&gpui_notion::editor::MarkKind::Bold, &(4..8)));
-        assert!(!block.marks.has(&gpui_notion::editor::MarkKind::Bold, &(9..12)));
+        assert!(
+            block
+                .marks
+                .has(&gpui_notion::editor::MarkKind::Bold, &(4..8))
+        );
+        assert!(
+            !block
+                .marks
+                .has(&gpui_notion::editor::MarkKind::Bold, &(9..12))
+        );
     });
 }
 
@@ -253,9 +258,11 @@ fn the_bold_shortcut_marks_the_selection(cx: &mut TestAppContext) {
 
     cx.update(|cx| {
         let editor = harness.editor.read(cx);
-        assert!(editor.content()[0]
-            .marks
-            .has(&gpui_notion::editor::MarkKind::Bold, &(0..5)));
+        assert!(
+            editor.content()[0]
+                .marks
+                .has(&gpui_notion::editor::MarkKind::Bold, &(0..5))
+        );
     });
 }
 
@@ -314,7 +321,11 @@ fn typing_after_bold_text_continues_the_mark(cx: &mut TestAppContext) {
 
     cx.update(|cx| {
         let block = &harness.editor.read(cx).content()[0];
-        assert!(block.marks.has(&gpui_notion::editor::MarkKind::Bold, &(0..3)));
+        assert!(
+            block
+                .marks
+                .has(&gpui_notion::editor::MarkKind::Bold, &(0..3))
+        );
     });
 }
 
@@ -325,8 +336,16 @@ fn typing_after_an_inline_rule_is_plain(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let block = &harness.editor.read(cx).content()[0];
         assert_eq!(block.text, "it rest");
-        assert!(block.marks.has(&gpui_notion::editor::MarkKind::Italic, &(0..2)));
-        assert!(!block.marks.has(&gpui_notion::editor::MarkKind::Italic, &(3..7)));
+        assert!(
+            block
+                .marks
+                .has(&gpui_notion::editor::MarkKind::Italic, &(0..2))
+        );
+        assert!(
+            !block
+                .marks
+                .has(&gpui_notion::editor::MarkKind::Italic, &(3..7))
+        );
     });
 }
 
@@ -407,7 +426,10 @@ fn undo_reverts_typing_and_redo_restores_it(cx: &mut TestAppContext) {
     harness.press("secondary-z", cx);
     assert_eq!(harness.texts(cx), vec![""]);
 
-    assert!(cx.update(|cx| harness.editor.read(cx).focused_id().is_some()), "focus after undo");
+    assert!(
+        cx.update(|cx| harness.editor.read(cx).focused_id().is_some()),
+        "focus after undo"
+    );
     harness.press("secondary-y", cx);
     assert_eq!(harness.texts(cx), vec!["hello"]);
 }
@@ -440,12 +462,20 @@ fn redo_through_the_api(cx: &mut TestAppContext) {
     let harness = setup(cx);
     harness.type_text("hello", cx);
     cx.update_window(harness.window, |_, window, cx| {
-        harness.editor.clone().update(cx, |editor, cx| editor.undo(window, cx));
-    }).unwrap();
+        harness
+            .editor
+            .clone()
+            .update(cx, |editor, cx| editor.undo(window, cx));
+    })
+    .unwrap();
     assert_eq!(harness.texts(cx), vec![""]);
     cx.update_window(harness.window, |_, window, cx| {
-        harness.editor.clone().update(cx, |editor, cx| editor.redo(window, cx));
-    }).unwrap();
+        harness
+            .editor
+            .clone()
+            .update(cx, |editor, cx| editor.redo(window, cx));
+    })
+    .unwrap();
     assert_eq!(harness.texts(cx), vec!["hello"]);
 }
 
@@ -486,9 +516,11 @@ fn the_toolbar_appears_over_a_selection(cx: &mut TestAppContext) {
     .unwrap();
 
     cx.update(|cx| {
-        assert!(harness.editor.read(cx).content()[0]
-            .marks
-            .has(&gpui_notion::editor::MarkKind::Bold, &(0..9)));
+        assert!(
+            harness.editor.read(cx).content()[0]
+                .marks
+                .has(&gpui_notion::editor::MarkKind::Bold, &(0..9))
+        );
     });
 }
 
@@ -509,10 +541,7 @@ fn the_link_editor_sets_a_link_on_the_selection(cx: &mut TestAppContext) {
         let block = &editor.content()[0];
         let mark = block
             .marks
-            .mark_at(
-                &gpui_notion::editor::MarkKind::Link(Default::default()),
-                0,
-            )
+            .mark_at(&gpui_notion::editor::MarkKind::Link(Default::default()), 0)
             .expect("link mark");
         match &mark.kind {
             gpui_notion::editor::MarkKind::Link(href) => {
@@ -531,9 +560,7 @@ fn setting_a_link_tells_the_host_the_document_changed(cx: &mut TestAppContext) {
     cx.update(|cx| {
         cx.subscribe(
             &harness.editor,
-            move |_, _: &gpui_notion::editor::DocumentChanged, _| {
-                counter.set(counter.get() + 1)
-            },
+            move |_, _: &gpui_notion::editor::DocumentChanged, _| counter.set(counter.get() + 1),
         )
         .detach()
     });
@@ -570,7 +597,10 @@ fn pressing_a_link_hands_its_href_to_the_host(cx: &mut TestAppContext) {
     harness.press("secondary-shift-k", cx);
     harness.type_text("tiptap.dev", cx);
     harness.press("enter", cx);
-    assert!(pressed.borrow().is_empty(), "writing a link is not pressing it");
+    assert!(
+        pressed.borrow().is_empty(),
+        "writing a link is not pressing it"
+    );
 
     harness.ui(cx, |window, cx| window.click(("block", 1usize), cx));
     assert_eq!(pressed.borrow().as_slice(), ["https://tiptap.dev"]);
@@ -763,10 +793,7 @@ fn arrow_down_leaves_a_code_block_at_the_end_of_the_document(cx: &mut TestAppCon
     harness.type_text("let x = 1;", cx);
     harness.press("down", cx);
 
-    assert_eq!(
-        harness.types(cx),
-        vec![types::CODE_BLOCK, types::PARAGRAPH]
-    );
+    assert_eq!(harness.types(cx), vec![types::CODE_BLOCK, types::PARAGRAPH]);
     assert_eq!(harness.caret(cx).map(|(ix, _)| ix), Some(1));
 }
 
@@ -839,7 +866,9 @@ fn an_image_block_takes_a_dropped_file(cx: &mut TestAppContext) {
     harness.press("enter", cx);
     assert_eq!(harness.types(cx)[0], types::IMAGE);
 
-    let id = cx.update(|cx| harness.editor.read(cx).block_id_at(0)).unwrap();
+    let id = cx
+        .update(|cx| harness.editor.read(cx).block_id_at(0))
+        .unwrap();
     cx.update(|cx| {
         harness.editor.clone().update(cx, |editor, cx| {
             editor.set_image_source(id, std::path::PathBuf::from("/tmp/picture.png"), cx)
@@ -869,7 +898,10 @@ fn dragging_across_blocks_selects_them(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
 
-    assert_eq!(cx.update(|cx| harness.editor.read(cx).selected_blocks().len()), 3);
+    assert_eq!(
+        cx.update(|cx| harness.editor.read(cx).selected_blocks().len()),
+        3
+    );
 
     // Backspace on that selection takes all three blocks away.
     harness.ui(cx, |window, cx| window.press("backspace", cx));
@@ -914,7 +946,10 @@ fn shift_clicking_another_block_selects_the_range(cx: &mut TestAppContext) {
     .unwrap();
     cx.run_until_parked();
 
-    assert_eq!(cx.update(|cx| harness.editor.read(cx).selected_blocks().len()), 3);
+    assert_eq!(
+        cx.update(|cx| harness.editor.read(cx).selected_blocks().len()),
+        3
+    );
 }
 
 #[gpui_kit::test]
@@ -924,7 +959,10 @@ fn typing_over_selected_blocks_replaces_them(cx: &mut TestAppContext) {
     harness.press("enter", cx);
     harness.type_text("two", cx);
     harness.press("shift-up", cx);
-    assert_eq!(cx.update(|cx| harness.editor.read(cx).selected_blocks().len()), 2);
+    assert_eq!(
+        cx.update(|cx| harness.editor.read(cx).selected_blocks().len()),
+        2
+    );
 
     harness.type_text("x", cx);
     assert_eq!(harness.texts(cx), vec!["x"]);
@@ -1002,7 +1040,11 @@ fn commenting_a_selection_opens_a_thread(cx: &mut TestAppContext) {
         let editor = harness.editor.read(cx);
         let id = editor.comment_threads()[0].id();
         let block = &editor.content()[0];
-        assert!(block.marks.has(&MarkKind::Comment(id), &(0..block.text.len())));
+        assert!(
+            block
+                .marks
+                .has(&MarkKind::Comment(id), &(0..block.text.len()))
+        );
     });
 
     // Typing into the draft and pressing Enter posts the comment.
@@ -1069,7 +1111,11 @@ fn the_slash_menu_inserts_a_table_and_tab_walks_its_cells(cx: &mut TestAppContex
         let editor = harness.editor.read(cx);
         let id = editor.block_id_at(0).expect("a table block");
         let grid = editor.grid(id).expect("a grid beside it");
-        (editor.content()[0].ty.to_string(), grid.rows(), grid.columns())
+        (
+            editor.content()[0].ty.to_string(),
+            grid.rows(),
+            grid.columns(),
+        )
     });
     assert_eq!(ty, types::TABLE);
     assert_eq!((rows, columns), (3, 3));
@@ -1169,7 +1215,10 @@ fn a_table_grows_and_shrinks_by_row_and_column(cx: &mut TestAppContext) {
         let grid = harness.editor.read(cx).grid(id).unwrap();
         (
             grid.rows(),
-            grid.cell(CellPosition::new(0, 0)).unwrap().text().to_string(),
+            grid.cell(CellPosition::new(0, 0))
+                .unwrap()
+                .text()
+                .to_string(),
         )
     });
     assert_eq!(rows, 3);
@@ -1254,7 +1303,10 @@ fn dragging_a_selected_block_moves_the_whole_selection(cx: &mut TestAppContext) 
         window.click(("block", 1usize), cx);
     });
     harness.press("shift-down", cx);
-    assert_eq!(cx.update(|cx| harness.editor.read(cx).selected_blocks().len()), 2);
+    assert_eq!(
+        cx.update(|cx| harness.editor.read(cx).selected_blocks().len()),
+        2
+    );
 
     cx.update_window(harness.window, |_, window, cx| {
         window.render_frame(cx);
@@ -1278,7 +1330,10 @@ fn duplicating_a_selection_copies_every_block_below_it(cx: &mut TestAppContext) 
 
     harness.press("secondary-d", cx);
     assert_eq!(harness.texts(cx), vec!["one", "two", "one", "two"]);
-    assert_eq!(cx.update(|cx| harness.editor.read(cx).selected_blocks().len()), 2);
+    assert_eq!(
+        cx.update(|cx| harness.editor.read(cx).selected_blocks().len()),
+        2
+    );
 }
 
 #[gpui_kit::test]
@@ -1388,7 +1443,10 @@ fn clicking_the_last_row_does_not_scroll_the_block(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn every_block_gets_a_text_area_that_fits_its_text(cx: &mut TestAppContext) {
     let harness = setup(cx);
-    harness.type_text("# A heading that is long enough to wrap once it reaches the end of the column", cx);
+    harness.type_text(
+        "# A heading that is long enough to wrap once it reaches the end of the column",
+        cx,
+    );
     harness.press("enter", cx);
     harness.type_text(
         "A paragraph long enough to wrap across three rows, which is the shape that makes a short text area show up as text jumping whenever the caret changes row.",
@@ -1428,9 +1486,8 @@ fn a_cell_grows_to_hold_text_that_wraps(cx: &mut TestAppContext) {
     harness.press("enter", cx);
     let id = cx.update(|cx| harness.editor.read(cx).block_id_at(0).unwrap());
 
-    let one_row = cx.update(|cx| {
-        f32::from(harness.editor.read(cx).grid(id).unwrap().row_text_height(0))
-    });
+    let one_row =
+        cx.update(|cx| f32::from(harness.editor.read(cx).grid(id).unwrap().row_text_height(0)));
 
     harness.type_text(
         "a cell with quite a lot of text in it, far more than one row can hold",
@@ -1827,7 +1884,6 @@ fn deleting_a_table_takes_its_cells_with_it(cx: &mut TestAppContext) {
     });
 }
 
-
 #[gpui_kit::test]
 fn typing_to_the_edge_of_the_column_never_leaves_a_block_short(cx: &mut TestAppContext) {
     let harness = setup(cx);
@@ -2078,9 +2134,7 @@ fn the_zoom_keys_resize_the_document(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_template_palette_survives_an_appearance_change(cx: &mut TestAppContext) {
     let harness = setup(cx);
-    cx.update(|cx| {
-        editor::theme::apply_template_palette(cx).expect("the template palette loaded")
-    });
+    cx.update(|cx| editor::theme::apply_template_palette(cx).expect("the template palette loaded"));
     harness.ui(cx, |window, cx| window.render_frame(cx));
 
     cx.update(|cx| {
@@ -2088,7 +2142,8 @@ fn the_template_palette_survives_an_appearance_change(cx: &mut TestAppContext) {
         assert!(!kit.mode.is_dark());
         assert_eq!(kit.background, gpui_kit::rgb(0xffffff).into(), "page");
         assert_eq!(
-            EditorTheme::global(cx).highlight_fill(Some(gpui_notion::editor::HighlightColor::Yellow)),
+            EditorTheme::global(cx)
+                .highlight_fill(Some(gpui_notion::editor::HighlightColor::Yellow)),
             gpui_kit::rgb(0xfef9c3).into(),
             "the template's yellow highlight"
         );
@@ -2102,7 +2157,8 @@ fn the_template_palette_survives_an_appearance_change(cx: &mut TestAppContext) {
         assert!(kit.mode.is_dark());
         assert_eq!(kit.background, gpui_kit::rgb(0x0e0e11).into(), "dark page");
         assert_eq!(
-            EditorTheme::global(cx).highlight_fill(Some(gpui_notion::editor::HighlightColor::Yellow)),
+            EditorTheme::global(cx)
+                .highlight_fill(Some(gpui_notion::editor::HighlightColor::Yellow)),
             gpui_kit::rgb(0x6b6524).into(),
             "the template's dark yellow highlight"
         );
@@ -2319,9 +2375,7 @@ fn a_block_names_its_own_placeholder(cx: &mut TestAppContext) {
     harness.ui(cx, |window, cx| {
         harness.editor.update(cx, |editor, cx| {
             let mut attrs = BlockAttrs::level(1);
-            attrs
-                .extra
-                .insert("placeholder".into(), "Untitled".into());
+            attrs.extra.insert("placeholder".into(), "Untitled".into());
             let named = BlockContent::new(types::HEADING, "").with_attrs(attrs);
             editor.insert_block(0, named, window, cx);
             let plain = BlockContent::new(types::HEADING, "").with_attrs(BlockAttrs::level(1));
@@ -2354,7 +2408,11 @@ fn the_gutter_stays_with_the_menu_it_opened(cx: &mut TestAppContext) {
     cx.run_until_parked();
 
     let holder = cx.update(|cx| harness.editor.read(cx).gutter_menu_for_test());
-    assert_eq!(holder, Some(BlockId(1)), "the handle's block holds the menu");
+    assert_eq!(
+        holder,
+        Some(BlockId(1)),
+        "the handle's block holds the menu"
+    );
 
     // The pointer walking to another line must not take the open menu's own
     // controls away — that is the whole defect.

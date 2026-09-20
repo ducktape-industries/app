@@ -13,8 +13,10 @@
 //!   installed launcher before it flips;
 //! - `--rollback`: the manual escape hatch, the Settings row's `UserRollback`
 //!   from a shell;
-//! - `install --from <built release>`: seed, flip, write state (`make
-//!   install-app`).
+//! - `install --from <built release> [--release-key HEX] [--replace]`: seed,
+//!   flip, write state, pin the release key (`make install-app`). A release
+//!   older than the pin, or one with no `release.json` over an installed one,
+//!   is only offered until `--replace` takes it.
 //!
 //! When the update machinery cannot be trusted (no state, a link where a
 //! file should be, a flip that refused) a boot still runs the app beside
@@ -34,7 +36,7 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use app_update::Event;
+use app_update::{Event, Phase};
 use tracing::{error, warn};
 
 use crate::executor::Outcome;
@@ -42,7 +44,7 @@ use crate::layout::{EnvInputs, Layout, Platform};
 use crate::refusal::Refusal;
 
 const TARGET: &str = "ducktape::update";
-const USAGE: &str = "usage: ducktape-launcher [app args...]\n       ducktape-launcher --qualify <state.json>\n       ducktape-launcher --rollback\n       ducktape-launcher install --from <built release dir or Ducktape.app>\n";
+const USAGE: &str = "usage: ducktape-launcher [app args...]\n       ducktape-launcher --qualify <state.json>\n       ducktape-launcher --rollback\n       ducktape-launcher install --from <built release dir or Ducktape.app> [--release-key HEX] [--replace]\n";
 
 /// Every way the launcher can be invoked; one match in `main`.
 #[derive(Debug, PartialEq, Eq)]
@@ -50,7 +52,11 @@ enum Mode {
     Boot(Vec<OsString>),
     Qualify(PathBuf),
     Rollback,
-    Install { from: PathBuf },
+    Install {
+        from: PathBuf,
+        release_key: Option<String>,
+        replace: bool,
+    },
     Help,
 }
 
@@ -76,12 +82,27 @@ fn parse(args: Vec<OsString>) -> Result<Mode, String> {
 }
 
 fn parse_install(args: Vec<OsString>) -> Result<Mode, String> {
-    match args.as_slice() {
-        [flag, from] if flag == "--from" => Ok(Mode::Install {
-            from: PathBuf::from(from),
-        }),
-        _ => Err("install needs exactly `--from <path>`".to_string()),
+    let usage = || "install needs `--from <path>` [--release-key HEX] [--replace]".to_string();
+    let (mut from, mut release_key, mut replace) = (None, None, false);
+    let mut args = args.into_iter();
+    while let Some(flag) = args.next() {
+        match flag.to_str() {
+            Some("--from") if from.is_none() => {
+                from = Some(PathBuf::from(args.next().ok_or_else(usage)?));
+            }
+            Some("--release-key") if release_key.is_none() => {
+                let key = args.next().ok_or_else(usage)?;
+                release_key = Some(key.to_string_lossy().into_owned());
+            }
+            Some("--replace") if !replace => replace = true,
+            _ => return Err(usage()),
+        }
     }
+    Ok(Mode::Install {
+        from: from.ok_or_else(usage)?,
+        release_key,
+        replace,
+    })
 }
 
 fn main() -> ExitCode {
@@ -97,7 +118,11 @@ fn main() -> ExitCode {
         Mode::Boot(args) => boot(&args),
         Mode::Qualify(state) => run_qualify(&state),
         Mode::Rollback => rollback(),
-        Mode::Install { from } => run_install(&from),
+        Mode::Install {
+            from,
+            release_key,
+            replace,
+        } => run_install(&from, release_key.as_deref(), replace),
         Mode::Help => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -153,6 +178,18 @@ fn rollback_through_state() -> Result<Refusal, Refusal> {
             format!("{} does not exist", layout.state_path().display()),
         )
     })?;
+    // The machine discards a staged release on `UserRollback`, but that
+    // collects its directory (`Gc`), which is the running app's to do.
+    if let Phase::Staged(staged) = &phase {
+        return Err(Refusal::new(
+            "rollback_unavailable",
+            format!(
+                "{} is staged, not running: discard it from the app's Settings (Updates)",
+                staged.display
+            ),
+        ));
+    }
+    let from = phase.current();
     let settled = executor::drive(&layout, phase, Event::UserRollback)?;
     let exec = match settled.outcome {
         Outcome::Exec(exec) => exec,
@@ -163,7 +200,7 @@ fn rollback_through_state() -> Result<Refusal, Refusal> {
             ));
         }
     };
-    let (from, to) = (settled.phase.current(), exec.sha);
+    let to = exec.sha;
     tracing::info!(target: TARGET, event = "app_update_rolled_back", %from, %to, reason = "user_rollback");
     Ok(executor::exec(&exec, &[]))
 }
@@ -183,9 +220,9 @@ fn run_qualify(state: &std::path::Path) -> ExitCode {
     }
 }
 
-fn run_install(from: &std::path::Path) -> ExitCode {
+fn run_install(from: &std::path::Path, release_key: Option<&str>, replace: bool) -> ExitCode {
     let result = host_layout().and_then(|layout| {
-        let sha = install::install(&layout, from)?;
+        let sha = install::install(&layout, from, release_key, replace)?;
         Ok((layout, sha))
     });
     match result {
@@ -211,13 +248,17 @@ fn host_layout() -> Result<Layout, Refusal> {
 }
 
 /// stderr only; `RUST_LOG` filters, default `info`. The launcher lives for
-/// milliseconds and the app's own log starts after `exec`.
+/// milliseconds and the app's own log starts after `exec`. An in-app
+/// restart points that stderr at `app.log`, so colour is for a terminal
+/// only: escapes in the file would break a grep for `event=`.
 fn init_logging() {
+    use std::io::IsTerminal as _;
     let filter = tracing_subscriber::EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(std::io::stderr)
+        .with_ansi(std::io::stderr().is_terminal())
         .with_target(true)
         .init();
 }
@@ -228,7 +269,7 @@ mod tests {
 
     #[test]
     fn everything_not_a_launcher_flag_passes_through_to_the_app() {
-        let url = OsString::from("duck://forge/ducktape/1?net=abc");
+        let url = OsString::from("duck://dognet-b5b6ea90/forge/core/app/1");
         assert_eq!(
             parse(vec![url.clone()]).unwrap(),
             Mode::Boot(vec![url.clone()])
@@ -246,8 +287,65 @@ mod tests {
         assert_eq!(parse(vec!["--rollback".into()]).unwrap(), Mode::Rollback);
         assert_eq!(
             parse(vec!["install".into(), "--from".into(), "/b".into()]).unwrap(),
-            Mode::Install { from: "/b".into() }
+            Mode::Install {
+                from: "/b".into(),
+                release_key: None,
+                replace: false,
+            }
+        );
+        let pinned = Mode::Install {
+            from: "/b".into(),
+            release_key: Some("ab".into()),
+            replace: false,
+        };
+        assert_eq!(
+            parse(vec![
+                "install".into(),
+                "--from".into(),
+                "/b".into(),
+                "--release-key".into(),
+                "ab".into(),
+            ])
+            .unwrap(),
+            pinned
+        );
+        assert_eq!(
+            parse(vec![
+                "install".into(),
+                "--release-key".into(),
+                "ab".into(),
+                "--from".into(),
+                "/b".into(),
+            ])
+            .unwrap(),
+            pinned
+        );
+        assert_eq!(
+            parse(vec![
+                "install".into(),
+                "--replace".into(),
+                "--from".into(),
+                "/b".into(),
+            ])
+            .unwrap(),
+            Mode::Install {
+                from: "/b".into(),
+                release_key: None,
+                replace: true,
+            }
+        );
+        assert!(parse(vec!["install".into(), "--from".into()]).is_err());
+        assert!(
+            parse(vec![
+                "install".into(),
+                "--from".into(),
+                "/b".into(),
+                "--from".into(),
+                "/c".into()
+            ])
+            .is_err()
         );
         assert!(parse(vec!["install".into()]).is_err());
+        assert!(parse(vec!["install".into(), "--release-key".into(), "ab".into()]).is_err());
     }
 }

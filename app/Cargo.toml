@@ -19,6 +19,9 @@ pulldown-cmark = "0.12.2"
 # and the account link a mention spells. One implementation, whether the
 # reader of it is this app or the chat view.
 chat.workspace = true
+chat-identity.workspace = true
+duck-address.workspace = true
+files-wire.workspace = true
 # the huddle media planes: the call-socket framing and voice/video wire.
 media-service.workspace = true
 design.workspace = true
@@ -143,6 +146,8 @@ x11rb = { version = "0.13", features = ["composite", "randr", "xfixes"] }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.6.1", features = ["test-support"] }
+# walks the AccessKit tree the ax_contract gate reads (the adapters' version)
+accesskit_consumer = "=0.38.0"
 syn = { version = "2", features = ["full", "visit"] }
 quote = "1"
 # the dependency line this app is held to is read off the manifests, not

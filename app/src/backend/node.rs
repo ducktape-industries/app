@@ -7,7 +7,7 @@ use super::*;
 /// surface change without one. Compared for EQUALITY against
 /// [`NodeFacts::contract`] before a console opens — never a window, never
 /// "one behind still works": that would be the compat the repository forbids.
-pub const EXPECTED_NODE_CONTRACT: u32 = 6;
+pub const EXPECTED_NODE_CONTRACT: u32 = 7;
 
 /// The one three-way reading of a node's contract number against
 /// [`EXPECTED_NODE_CONTRACT`]. Only `Match` opens a console; the other two
@@ -58,9 +58,24 @@ pub struct SettingsFacts {
     /// The viewer's full public-key hex, or empty without a local user key.
     /// Views resolve account membership from this key and the identity module.
     pub user_key: String,
+    /// The node RPC URL this session uses and the override Settings stored.
+    pub endpoint: EndpointFacts,
 }
 
-/// The NETWORK card's Data dir row.
+/// The Node overview's data directory: the directory of the workspace on this
+/// device that serves `endpoint` under `home`, else none. A remote node keeps
+/// its data on its own machine, and the ducktape home is no node's directory —
+/// naming it would tell the reader a path on this device is the node's.
+pub(crate) fn data_dir_serving(
+    prefs: &serde_json::Value,
+    home: Option<&std::path::Path>,
+    endpoint: &str,
+) -> String {
+    home.and_then(|home| workspace_serving(prefs, home, endpoint))
+        .map(|(_, dir)| dir.display().to_string())
+        .unwrap_or_default()
+}
+
 /// Load the settings facts: the local user key's location and state, and the
 /// workspace directory.
 pub async fn load_settings_facts(
@@ -74,10 +89,11 @@ pub async fn load_settings_facts(
             Err(_) => ("(unset)".to_string(), "unlocatable".to_string()),
             Ok(path) => (path.display().to_string(), key_state_of(&path)),
         };
-        let data_dir = workspace_at(&rpc)
-            .map(|(_, dir)| dir.display().to_string())
-            .or_else(|| ducktape_home().map(|home| home.display().to_string()))
-            .unwrap_or_default();
+        let data_dir = data_dir_serving(
+            &read_prefs(),
+            ducktape_home().as_deref(),
+            &canonical_endpoint(rpc.clone()),
+        );
         Ok::<_, String>(SettingsFacts {
             generation,
             key_path,
@@ -87,6 +103,7 @@ pub async fn load_settings_facts(
                 .await
                 .map(|key| hex_encode(&key))
                 .unwrap_or_default(),
+            endpoint: endpoint_facts(&rpc),
         })
     }
     .await
@@ -135,7 +152,9 @@ pub struct NodeFacts {
     /// for why a wire `0` lands here as [`UNMEASURED`].
     pub height: i64,
     /// The node's own lifecycle phase — `starting`, `recovering`, `joining`,
-    /// `syncing`, `validating`, `serving`, `draining`, `halted`.
+    /// `syncing`, `validating`, `serving`, `behind`, `draining`, `halted`.
+    /// `behind` is the node's own verdict (below a tip it heard, its height
+    /// unmoved for 36 s); the app sets no lag threshold of its own.
     ///
     /// THE ONLY TRUSTWORTHY DISCRIMINANT for whether a sync is happening. The
     /// `sync` block beside it is written by `begin_sync` and never cleared, so
@@ -156,6 +175,20 @@ pub struct NodeFacts {
     /// most recent attempt failed and nothing has moved since", which is a
     /// fact about now rather than a scar.
     pub sync_last_error: String,
+    /// `operations.follow`: the tip the last-polled peer answered, this node's
+    /// gap to it (floored at 0), and the unix seconds that answer landed. The
+    /// node omits the section until a peer has answered a tip poll, so all
+    /// three are [`UNMEASURED`] until then. A `heard_at` that stops moving
+    /// means the poll stopped answering — a different fault from a gap.
+    pub network_height: i64,
+    pub behind_by: i64,
+    pub heard_at: i64,
+    /// `operations.netstack.failure_reason` and `failure_detail`: why the node
+    /// has no mesh — a snake_case token and the sentence saying what an
+    /// operator does about it. Both empty while the plane is starting, running
+    /// or stopped; read these, not the `failed` backend beside them.
+    pub netstack_failure_reason: String,
+    pub netstack_failure_detail: String,
 }
 
 /// A DEFAULT IS A DOCUMENT NO NODE HAS PUBLISHED, so its three numbers are
@@ -191,6 +224,11 @@ impl Default for NodeFacts {
             sync_retries: 0,
             sync_failures: 0,
             sync_last_error: String::new(),
+            network_height: UNMEASURED,
+            behind_by: UNMEASURED,
+            heard_at: UNMEASURED,
+            netstack_failure_reason: String::new(),
+            netstack_failure_detail: String::new(),
         }
     }
 }
@@ -205,6 +243,8 @@ pub(crate) fn node_facts(status: &serde_json::Value) -> NodeFacts {
     let operations = &status["operations"];
     let consensus = &operations["consensus"];
     let sync = &operations["sync"];
+    let follow = &operations["follow"];
+    let netstack = &operations["netstack"];
     NodeFacts {
         public_key: status["public_key"]
             .as_str()
@@ -234,6 +274,17 @@ pub(crate) fn node_facts(status: &serde_json::Value) -> NodeFacts {
         sync_retries: sync["retries"].as_i64().unwrap_or(0),
         sync_failures: sync["failures"].as_i64().unwrap_or(0),
         sync_last_error: sync["last_error"].as_str().unwrap_or_default().to_string(),
+        network_height: follow["network_height"].as_i64().unwrap_or(UNMEASURED),
+        behind_by: follow["behind_by"].as_i64().unwrap_or(UNMEASURED),
+        heard_at: follow["heard_at"].as_i64().unwrap_or(UNMEASURED),
+        netstack_failure_reason: netstack["failure_reason"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        netstack_failure_detail: netstack["failure_detail"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
     }
 }
 
@@ -273,6 +324,24 @@ fn capitalized(word: &str) -> String {
 /// presence says a sync once happened — not that one is happening.
 pub(crate) fn sync_in_progress(phase: &str) -> bool {
     phase == "syncing"
+}
+
+/// Whether the node has not served yet: `starting`, `recovering`, `joining`,
+/// `syncing` — core's phases before `serving`/`validating`. Its height is not
+/// the network's then, so a reader names the phase instead of `block N`. Any
+/// other phase, known or not, is not this.
+pub(crate) fn before_serving(phase: &str) -> bool {
+    matches!(phase, "starting" | "recovering" | "joining" | "syncing")
+}
+
+/// The open wait's line: what the connection is doing, led by the node's
+/// phase while it has not served yet — its module reads wait on the sync, so
+/// the phase is what the wait is waiting for.
+pub fn opening_progress(phase: &str, progress: &str) -> String {
+    match before_serving(phase) {
+        true => format!("The node is {phase} · {progress}"),
+        false => progress.to_owned(),
+    }
 }
 
 pub async fn load_node_facts(rpc: String) -> Result<NodeFacts, AppError> {
@@ -426,9 +495,13 @@ pub async fn load_account(rpc: String, generation: i64) -> Result<AccountData, H
             return Ok(AccountData::none(generation));
         };
         let client = rpc_client(&rpc)?;
-        let reply: identity::IdentityReply = client
+        let reply: identity::IdentityReply = match client
             .query("identity", &identity::IdentityQuery::OfKey { key })
-            .await?;
+            .await
+        {
+            Ok(reply) => reply,
+            Err(error) => return Err(exchange_failure(&rpc, error).await),
+        };
         let account = match reply {
             identity::IdentityReply::Account(account) => account,
             identity::IdentityReply::Accounts(_)

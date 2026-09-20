@@ -188,6 +188,11 @@ mod macos {
         // inside `releases/<to>/`, which needs write on that directory.
         unseal_dir(parent_of(swap.staged)?)?;
         let swap_source = same_volume_copy(swap.staged, install_dir, swap.to)?;
+        // Moving a directory to another parent rewrites its `..`, which needs
+        // write on the directory itself: RENAME_SWAP moves both bundles, and
+        // `finish` moves the outgoing one again, to its park slot.
+        unseal_dir(&swap_source)?;
+        unseal_dir(swap.installed)?;
         let journal = Journal {
             to: swap.to,
             app_digest: fs::digest_file(&bundle_bin_dir(&swap_source).join(APP_EXE))?,
@@ -380,5 +385,72 @@ mod tests {
             fs::read_link(&previous.path).unwrap(),
             Some(std::path::PathBuf::from("releases/a"))
         );
+    }
+
+    /// The app seals a staged release `chmod -R a-w`; the swap, the park
+    /// and the swap back must still land. The installed bundle is sealed
+    /// too, as a cross-volume copy of a sealed stage leaves it.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sealed_bundles_swap_in_park_and_swap_back() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::path::Path;
+        use std::process::Command;
+
+        let root = tempfile::tempdir().unwrap();
+        let bundle = |dir: &Path, app: &[u8]| {
+            let bin = bundle_bin_dir(dir);
+            std::fs::create_dir_all(&bin).unwrap();
+            for (name, bytes) in [("ducktape-app", app), ("ducktape-launcher", b"l")] {
+                std::fs::write(bin.join(name), bytes).unwrap();
+                std::fs::set_permissions(bin.join(name), std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+            }
+        };
+        let chmod = |mode: &str, path: &Path| {
+            assert!(
+                Command::new("chmod")
+                    .args(["-R", mode])
+                    .arg(path)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        };
+        let path = |relative: &str| root.path().join(relative);
+        bundle(&path("apps/Ducktape.app"), b"app-a");
+        bundle(&path("releases/b/Ducktape.app"), b"app-b");
+        chmod("a-w", &path("releases/b"));
+        chmod("a-w", &path("apps/Ducktape.app"));
+        let swap = |to: &str, from: &str| {
+            let previous = Link {
+                path: path("previous"),
+                target: format!("releases/{from}").into(),
+            };
+            macos::swap_bundles(&BundleSwap {
+                to: Sha::digest(to.as_bytes()),
+                installed: &path("apps/Ducktape.app"),
+                staged: &path(&format!("releases/{to}/Ducktape.app")),
+                park: &path(&format!("releases/{from}/Ducktape.app")),
+                previous: &previous,
+                journal: &path("swap.json"),
+            })
+        };
+        let installed_app = || installed_app_digest(&path("apps/Ducktape.app")).unwrap();
+
+        let flipped = swap("b", "a");
+        let rolled_back = flipped.clone().and_then(|()| swap("a", "b"));
+        let parked_b =
+            fs::digest_file(&path("releases/b/Ducktape.app/Contents/MacOS/ducktape-app"));
+        chmod("u+w", root.path());
+        assert_eq!(flipped, Ok(()));
+        assert_eq!(rolled_back, Ok(()));
+        assert_eq!(installed_app(), Sha::digest(b"app-a"));
+        assert_eq!(parked_b.unwrap(), Sha::digest(b"app-b"));
+        assert_eq!(
+            fs::read_link(&path("previous")).unwrap(),
+            Some(std::path::PathBuf::from("releases/b"))
+        );
+        assert!(!path("swap.json").exists());
     }
 }

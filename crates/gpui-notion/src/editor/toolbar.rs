@@ -2,8 +2,8 @@
 //! opens: turn into, link and color.
 
 use gpui_kit::component::button::{Button, ButtonVariants as _};
-use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{ActiveTheme, Disableable as _, Selectable as _, Sizable as _, h_flex};
 use gpui_kit::{
     Anchor, AnyElement, App, AppContext as _, Context, Entity, FocusHandle, IntoElement,
@@ -96,7 +96,12 @@ impl super::view::NotionEditor {
             return false;
         }
         self.index_of(id)
-            .map(|ix| BlockRegistry::global(cx).get(&self.blocks[ix].ty).caps().marks)
+            .map(|ix| {
+                BlockRegistry::global(cx)
+                    .get(&self.blocks[ix].ty)
+                    .caps()
+                    .marks
+            })
             .unwrap_or(false)
     }
 
@@ -155,20 +160,13 @@ impl super::view::NotionEditor {
             .child(self.mark_button("bold", "Bold", MarkKind::Bold, cx))
             .child(self.mark_button("italic", "Italic", MarkKind::Italic, cx))
             .child(self.mark_button("underline", "Underline", MarkKind::Underline, cx))
-            .child(self.mark_button(
-                "strikethrough",
-                "Strikethrough",
-                MarkKind::Strike,
-                cx,
-            ))
+            .child(self.mark_button("strikethrough", "Strikethrough", MarkKind::Strike, cx))
             .child(self.mark_button("code", "Code", MarkKind::Code, cx))
             .child(separator(cx))
             .child(
-                Button::new("comment")
+                ui::icon_button("comment", "message-square-plus", "Comment")
                     .ghost()
                     .small()
-                    .icon(ui::Lucide("message-square-plus"))
-                    .tooltip("Comment")
                     .on_click(cx.listener(|this, _, window, cx| this.add_comment(window, cx))),
             )
             .child(self.render_link_button(cx))
@@ -222,12 +220,11 @@ impl super::view::NotionEditor {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let active = self.is_mark_active(&kind, cx);
-        Button::new(SharedString::from(format!("mark-{icon}")))
+        ui::icon_button(SharedString::from(format!("mark-{icon}")), icon, label)
             .ghost()
             .small()
-            .icon(Lucide(icon))
-            .tooltip(label)
             .selected(active)
+            .toggled(active)
             .on_click(cx.listener(move |this, _, window, cx| {
                 this.toggle_mark(kind.clone(), window, cx);
             }))
@@ -237,23 +234,25 @@ impl super::view::NotionEditor {
     fn render_turn_into(&self, focus: &FocusHandle, cx: &mut Context<Self>) -> impl IntoElement {
         let label = self.active_block_label(cx);
         let focus = focus.clone();
-        Button::new("turn-into")
-            .ghost()
-            .small()
-            .label(label)
-            .icon(Lucide("chevron-down"))
-            .dropdown_menu(move |menu, _window, _cx| {
-                menu.action_context(focus.clone())
-                    .menu("Text", Box::new(actions::SetParagraph))
-                    .menu("Heading 1", Box::new(actions::SetHeading1))
-                    .menu("Heading 2", Box::new(actions::SetHeading2))
-                    .menu("Heading 3", Box::new(actions::SetHeading3))
-                    .menu("Bulleted list", Box::new(actions::ToggleBulletList))
-                    .menu("Numbered list", Box::new(actions::ToggleOrderedList))
-                    .menu("To-do list", Box::new(actions::ToggleTaskList))
-                    .menu("Blockquote", Box::new(actions::ToggleBlockquote))
-                    .menu("Code block", Box::new(actions::ToggleCodeBlock))
-            })
+        ui::menu_trigger(
+            Button::new("turn-into")
+                .ghost()
+                .small()
+                .label(label)
+                .icon(Lucide("chevron-down")),
+        )
+        .dropdown_menu(move |menu, _window, _cx| {
+            menu.action_context(focus.clone())
+                .menu("Text", Box::new(actions::SetParagraph))
+                .menu("Heading 1", Box::new(actions::SetHeading1))
+                .menu("Heading 2", Box::new(actions::SetHeading2))
+                .menu("Heading 3", Box::new(actions::SetHeading3))
+                .menu("Bulleted list", Box::new(actions::ToggleBulletList))
+                .menu("Numbered list", Box::new(actions::ToggleOrderedList))
+                .menu("To-do list", Box::new(actions::ToggleTaskList))
+                .menu("Blockquote", Box::new(actions::ToggleBlockquote))
+                .menu("Code block", Box::new(actions::ToggleCodeBlock))
+        })
     }
 
     /// Label of the active block's node type, for the turn-into trigger.
@@ -262,34 +261,30 @@ impl super::view::NotionEditor {
             return "Text".into();
         };
         let block = &self.blocks[ix];
-        BlockRegistry::global(cx)
-            .get(&block.ty)
-            .label(&block.attrs)
+        BlockRegistry::global(cx).get(&block.ty).label(&block.attrs)
     }
 
     fn render_more_menu(&self, focus: &FocusHandle, _cx: &mut Context<Self>) -> impl IntoElement {
         let focus = focus.clone();
-        Button::new("more-marks")
-            .ghost()
-            .small()
-            .icon(Lucide("ellipsis"))
-            .tooltip("More formatting")
-            .dropdown_menu(move |menu, _window, _cx| {
-                menu.action_context(focus.clone())
-                    .menu("Superscript", Box::new(actions::ToggleSuperscript))
-                    .menu("Subscript", Box::new(actions::ToggleSubscript))
-                    .separator()
-                    .menu("Reset formatting", Box::new(actions::ClearMarks))
-            })
+        ui::menu_trigger(
+            ui::icon_button("more-marks", "ellipsis", "More formatting")
+                .ghost()
+                .small(),
+        )
+        .dropdown_menu(move |menu, _window, _cx| {
+            menu.action_context(focus.clone())
+                .menu("Superscript", Box::new(actions::ToggleSuperscript))
+                .menu("Subscript", Box::new(actions::ToggleSubscript))
+                .separator()
+                .menu("Reset formatting", Box::new(actions::ClearMarks))
+        })
     }
 
     fn render_link_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.link_at_caret(cx).is_some();
-        Button::new("link")
+        ui::icon_button("link", "link", "Link")
             .ghost()
             .small()
-            .icon(Lucide("link"))
-            .tooltip("Link")
             .selected(active)
             .on_click(cx.listener(|this, _, window, cx| this.open_link_editor(window, cx)))
     }
@@ -297,34 +292,35 @@ impl super::view::NotionEditor {
     /// Text and highlight swatches, as the template's color popover.
     fn render_color_menu(&self, focus: &FocusHandle, _cx: &mut Context<Self>) -> impl IntoElement {
         let focus = focus.clone();
-        Button::new("color")
-            .ghost()
-            .small()
-            .icon(Lucide("palette"))
-            .tooltip("Color")
+        ui::menu_trigger(ui::icon_button("color", "palette", "Color").ghost().small())
             .dropdown_menu(move |menu, _window, _cx| {
                 let mut menu = menu.action_context(focus.clone()).label("Text color");
                 for color in TextColor::ALL {
-                    menu = menu.menu_element(Box::new(actions::ApplyColor::Text(color)), move |_, cx| {
-                        swatch_row(
-                            color.label(),
-                            cx.editor_theme()
-                                .text_color(color)
-                                .unwrap_or(cx.theme().foreground),
-                            cx,
-                        )
-                    });
+                    menu = menu.menu_element(
+                        Box::new(actions::ApplyColor::Text(color)),
+                        move |_, cx| {
+                            swatch_row(
+                                color.label(),
+                                cx.editor_theme()
+                                    .text_color(color)
+                                    .unwrap_or(cx.theme().foreground),
+                                cx,
+                            )
+                        },
+                    );
                 }
                 menu = menu.separator().label("Highlight color");
                 for color in HighlightColor::ALL {
-                    menu = menu
-                        .menu_element(Box::new(actions::ApplyColor::Highlight(color)), move |_, cx| {
+                    menu = menu.menu_element(
+                        Box::new(actions::ApplyColor::Highlight(color)),
+                        move |_, cx| {
                             swatch_row(
                                 color.label(),
                                 cx.editor_theme().highlight_fill(Some(color)),
                                 cx,
                             )
-                        });
+                        },
+                    );
                 }
                 menu
             })
@@ -380,7 +376,12 @@ impl super::view::NotionEditor {
             return;
         };
         // Escape returns focus to the text it was opened from.
-        self.focus_block(editor.block, super::view::Caret::At(editor.range.end), window, cx);
+        self.focus_block(
+            editor.block,
+            super::view::Caret::At(editor.range.end),
+            window,
+            cx,
+        );
         cx.notify();
     }
 
@@ -447,21 +448,19 @@ impl super::view::NotionEditor {
                     .w(theme.rems(16.25)),
             )
             .child(
-                Button::new("apply-link")
+                ui::icon_button("apply-link", "corner-down-left", "Apply link")
                     .ghost()
                     .small()
-                    .icon(Lucide("corner-down-left"))
-                    .tooltip("Apply link")
                     .disabled(!has_link)
-                    .on_click(cx.listener(|this, _, window, cx| this.apply_link_editor(window, cx))),
+                    .on_click(
+                        cx.listener(|this, _, window, cx| this.apply_link_editor(window, cx)),
+                    ),
             )
             .child(separator(cx))
             .child(
-                Button::new("remove-link")
+                ui::icon_button("remove-link", "unlink", "Remove link")
                     .ghost()
                     .small()
-                    .icon(Lucide("unlink"))
-                    .tooltip("Remove link")
                     .on_click(cx.listener(|this, _, window, cx| {
                         if let Some(editor) = this.link_editor.as_ref() {
                             let (block, range) = (editor.block, editor.range.clone());
@@ -531,4 +530,3 @@ trait WhenNot: Sized {
 }
 
 impl<T: Sized> WhenNot for T {}
-

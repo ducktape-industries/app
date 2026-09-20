@@ -5,7 +5,7 @@ use gpui_kit::{self as gpui, Entity, TestAppContext, VisualTestContext};
 
 fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
     tests::can_the_chat_room();
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/chat_view.wasm");
+    let path = tests::staged("chat").expect("build current chat view first");
     let mut guest = Guest::load_from("chat", &path).expect("build current chat view first");
     let props = tests::chat_facts();
     guest.redraw(&None);
@@ -29,6 +29,7 @@ fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("chat", seat.clone());
     seat
@@ -148,7 +149,10 @@ fn shell_tab_switches_hide_and_restore_the_retained_guest() {
         "the previous tab remains hidden while another tab is rendered"
     );
     presenter.update(&mut cx, |view, cx| {
-        view.test_dispatch(crate::AppMessage::SelectShellTab(crate::ShellTab::View("chat")), cx)
+        view.test_dispatch(
+            crate::AppMessage::SelectShellTab(crate::ShellTab::View("chat")),
+            cx,
+        )
     });
     cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();
@@ -217,7 +221,7 @@ fn chat_native_overlays_are_visible_and_route_menu_and_emoji_presses(cx: &mut Te
                     "guest {focus} menu requests real native focus; queued commands: {:?}",
                     match &seat.lock().unwrap().slot {
                         Slot::Ready(guest) => guest.widget_commands.clone(),
-                        Slot::Failed(_) | Slot::Loading | Slot::Empty => Vec::new(),
+                        _ => Vec::new(),
                     }
                 );
             });
@@ -560,7 +564,7 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
         ("op.submit", serde_json::json!(1)),
     ]);
     let props = tests::pages_facts();
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/pages_view.wasm");
+    let path = tests::staged("pages").expect("build current Pages view first");
     let mut guest = Guest::load_from("pages", &path).expect("build current Pages view first");
     tests::settle_documents(&mut guest, &props);
     let seat = Arc::new(Mutex::new(Mounted {
@@ -575,6 +579,7 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("pages", seat.clone());
     cx.update(gpui_kit::init);
@@ -630,11 +635,12 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
     let row = menu
         .items
         .iter()
-        .position(|item| item.label.contains("Ada Lovelace"))
+        .find(|item| item.label.contains("Ada Lovelace"))
+        .map(|item| gpui_kit::SharedString::from(format!("application-suggestion/{}", item.tag)))
         .expect("the WASM supplies the account directory");
     native.update(|window, cx| {
         window.render_frame(cx);
-        window.click(("application-suggestion", row), cx);
+        window.click(row, cx);
     });
     settle_native_documents(&mut native, &seat);
     let (rich, paint) = projection();
@@ -722,7 +728,7 @@ fn settle_native_documents(native: &mut VisualTestContext, seat: &Arc<Mutex<Moun
 #[gpui_kit::test]
 fn call_panel_renders_staged_wasm_and_routes_native_control_clicks(cx: &mut TestAppContext) {
     let _turn = tests::blocking_connection_turn();
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/call_view.wasm");
+    let path = tests::staged("call").expect("build current Call view first");
     let mut guest = Guest::load_from("call", &path).expect("build current Call view first");
     let props = Some(br#"{"panel":{"status":"live","muted":false}}"#.to_vec());
     guest.redraw(&None);
@@ -740,6 +746,7 @@ fn call_panel_renders_staged_wasm_and_routes_native_control_clicks(cx: &mut Test
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("call", seat.clone());
     cx.update(gpui_kit::init);
@@ -848,7 +855,7 @@ fn forge_wasm_merges_through_the_real_service(cx: &mut TestAppContext) {
     else {
         panic!("Forge fixture must deploy its view");
     };
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/views/forge_view.wasm");
+    let path = tests::staged("forge").expect("build current Forge view first");
     assert_eq!(
         component,
         std::fs::read(path).unwrap(),
@@ -887,6 +894,7 @@ fn forge_wasm_merges_through_the_real_service(cx: &mut TestAppContext) {
         waiting_since: None,
         replacement: Replacement::Preserve,
         retry: None,
+        shown: None,
     }));
     registry().lock().unwrap().insert("forge", seat.clone());
     struct LivePump(tokio::task::JoinHandle<()>);
@@ -940,4 +948,134 @@ fn forge_wasm_merges_through_the_real_service(cx: &mut TestAppContext) {
             .is_some_and(|root| has_key(root, "forge/merged"))
     });
     native.update(|window, cx| window.render_frame(cx));
+}
+
+/// The editor the canvas draws for the note being written, once its frame
+/// has one: its key and the document it projects.
+fn note_editor(seat: &Arc<Mutex<Mounted>>) -> Option<(String, String)> {
+    fn find(node: &wire::Node) -> Option<(String, String)> {
+        match node {
+            wire::Node::Editor { key, document, .. } if key.starts_with("boards/editor/") => {
+                Some((key.clone(), document.document.clone()))
+            }
+            node => node.children().iter().find_map(find),
+        }
+    }
+    let locked = seat.lock().unwrap();
+    let Slot::Ready(guest) = &locked.slot else {
+        panic!("seated canvas");
+    };
+    assert!(guest.fault.is_none(), "{:?}", guest.fault);
+    find(guest.frame.root.as_ref()?)
+}
+
+/// Canvas opens a note's editor in the frame that draws the note, while the
+/// note's Create is still in flight, and asks for focus on it as soon as it
+/// is shown — before the host holds the note's document. The writer is
+/// already typing: the keys are the note's first words, so they have to land
+/// in its editor, in order, and not reach the view as keys pressed on the
+/// board, which a view with an editor open does not type into. The keys that
+/// come before the document itself are the store's to keep
+/// (`keys_typed_before_the_document_arrives_reach_the_guest_in_order`).
+#[gpui_kit::test]
+fn keys_typed_into_a_note_the_view_just_opened_reach_it_in_order(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    tests::can_reads([
+        (
+            "rpc.query",
+            serde_json::json!({"list": {"room": "Planning"}}),
+        ),
+        (
+            "get",
+            serde_json::json!({"board": {
+                "title": "Planning", "owner": "owner", "revision": 0, "shapes": {}
+            }}),
+        ),
+    ]);
+    tests::hold("op.submit");
+    let props = Some(br#"{"connected":true,"dark":false,"chain":"test"}"#.to_vec());
+    let path = tests::staged("canvas").expect("build current canvas view first");
+    let mut guest = Guest::load_from("canvas", &path).expect("build current canvas view first");
+    tests::settle_documents(&mut guest, &props);
+    let seat = Arc::new(Mutex::new(Mounted {
+        changes: tokio::sync::watch::channel(()).0,
+        slot: Slot::Ready(Box::new(guest)),
+        props,
+        generation: 1,
+        hash: None,
+        in_flight: false,
+        wanted: None,
+        tasting: None,
+        waiting_since: None,
+        replacement: Replacement::Preserve,
+        retry: None,
+        shown: None,
+    }));
+    registry().lock().unwrap().insert("canvas", seat.clone());
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |_, _| {
+        NativeModuleView::new("canvas")
+    });
+    let view = window.root(cx).unwrap();
+    let mut native = VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    settle_native_documents(&mut native, &seat);
+
+    native.update(|window, cx| window.click("boards/first-note", cx));
+    let mut frames = 0;
+    let (editor, document) = loop {
+        native.run_until_parked();
+        if let Some(editor) = note_editor(&seat) {
+            break editor;
+        }
+        frames += 1;
+        assert!(frames < 32, "Add a note opened no editor");
+        native.update(|window, cx| window.render_frame(cx));
+    };
+    let focused = native.update(|window, cx| {
+        let content = view.read(cx).content.clone().expect("a mounted tree");
+        content.update(cx, |tree, cx| {
+            tree.execute_widget_command(
+                wire::WidgetCommand::Focused {
+                    target: editor.clone(),
+                },
+                window,
+                cx,
+            )
+        })
+    });
+    assert!(
+        wire::decode::<bool>(&focused.unwrap()).unwrap(),
+        "the note's field does not hold focus yet, so the keys typed now are keys pressed on the board"
+    );
+
+    input::record_inputs();
+    for key in "kiwi mix".chars() {
+        native.update(|window, cx| {
+            let text = key.to_string();
+            let mut stroke = gpui::Keystroke::parse(&text).expect("a character is a keystroke");
+            stroke.key_char = Some(text);
+            window.dispatch_keystroke(stroke, cx);
+        });
+    }
+    settle_native_documents(&mut native, &seat);
+    let written: String = input::recorded_inputs()
+        .into_iter()
+        .filter_map(|event| match event {
+            wire::Event::EditorTransaction {
+                event:
+                    wire::EditorTransactionEvent::Commit {
+                        before, patches, ..
+                    },
+                ..
+            } if before.document == document => Some(patches),
+            _ => None,
+        })
+        .flatten()
+        .map(|patch| patch.replacement)
+        .collect();
+    assert_eq!(
+        written, "kiwi mix",
+        "the note's editor did not get every key, in order"
+    );
 }

@@ -35,8 +35,9 @@ pub use super::view_artifact::Error as FetchError;
 /// The BUILT-IN surfaces whose view is drawn by the module's own artifact:
 /// each has a props builder of its own and is asked of the connected node at
 /// connect and again at every block that moves its deployment. Every other
-/// view off the node is a registry-listed `Kind::View` entry, seated from
-/// `module_status` alone.
+/// view is a registry-listed `Kind::View` entry, seated from `module_status`
+/// alone — the chrome's own (`members`, `settings`, `palette`, …) included:
+/// nothing the app draws ships beside its binary.
 ///
 /// Most are tabs, with a `ShellTab` arm and an intent decoder each. `inbox`
 /// is not: it is the bell overlay's body, seated in the overlay's own slot
@@ -44,15 +45,6 @@ pub use super::view_artifact::Error as FetchError;
 /// lazily, because the count beside the rail is a headless run of this same
 /// view and it is wanted at connect.
 pub const MODULE_OWNED: [&str; 6] = ["governance", "files", "pages", "chat", "forge", "inbox"];
-
-/// The desktop's own views, staged beside the binary and asked for at boot.
-/// Every view that is not one of these comes off the connected node.
-pub const DESKTOP_OWNED: [&str; 6] =
-    ["members", "agents", "node", "explorer", "settings", "palette"];
-
-pub fn desktop_owned(module: &str) -> bool {
-    DESKTOP_OWNED.contains(&module)
-}
 
 /// The assets a deployment ships beside its view, by canonical relative
 /// path. Shared between the guest and the host surfaces that paint them,
@@ -64,13 +56,25 @@ pub enum Error {
     /// The registry could not be read as `module_status`, or does not name
     /// this module exactly once with a 32-byte active hash.
     Status(String),
+    /// The registry could not be asked at all.
+    Unreachable(String),
+    /// The registry does not list this module.
+    NotListed(String),
     Artifact(view_artifact::Error),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Status(error) => write!(formatter, "module status: {error}"),
+            Self::Status(error) | Self::Unreachable(error) => {
+                write!(formatter, "module status: {error}")
+            }
+            Self::NotListed(module) => {
+                write!(
+                    formatter,
+                    "module status: module {module:?} is not registered"
+                )
+            }
             Self::Artifact(error) => error.fmt(formatter),
         }
     }
@@ -119,7 +123,7 @@ struct ModuleCode {
     history: Vec<Activation>,
 }
 
-pub use super::view_artifact::Kind;
+pub use super::view_artifact::{Kind, Watch};
 
 /// One registry entry as the seat set reads it: what it is, its active
 /// code hash — `None` for an admission that has not reached its boundary —
@@ -175,10 +179,17 @@ struct Activation {
 /// admission that has not reached its boundary) — in one registry read,
 /// id-ordered as the registry lists them.
 pub async fn active_hashes(client: &Client) -> Result<BTreeMap<String, Entry>, Error> {
-    let reply: StatusReply = client
+    // asked as JSON first: a node that could not be asked is unreachable,
+    // one that answered in a shape this reader does not know is a status error
+    let reply: serde_json::Value = client
         .query("modules", &serde_json::json!("module_status"))
         .await
-        .map_err(|error| Error::Status(error.to_string()))?;
+        .map_err(|error| match error.reason() {
+            "rpc_client" => Error::Unreachable(error.to_string()),
+            _ => Error::Status(error.to_string()),
+        })?;
+    let reply: StatusReply =
+        serde_json::from_value(reply).map_err(|error| Error::Status(error.to_string()))?;
     let mut entries = BTreeMap::new();
     for entry in reply.module_status.modules {
         let module = entry.module_id;
@@ -225,16 +236,19 @@ pub async fn active_hash(client: &Client, module: &str) -> Result<Option<[u8; 32
         .await?
         .remove(module)
         .map(|entry| entry.hash)
-        .ok_or_else(|| Error::Status(format!("module {module:?} is not registered")))
+        .ok_or_else(|| Error::NotListed(module.to_owned()))
 }
 
 /// How long the node took over each question a resolve asks it.
 #[derive(Default)]
-pub struct Asked {
+pub struct Asked<'a> {
     /// the registry (`module_status`)
     pub status: Duration,
     /// the artifact blob
     pub fetch: Duration,
+    /// who watches the fetch, if anyone: its bytes as they come, and
+    /// whether a tab draws it
+    pub watch: view_artifact::Watch<'a>,
 }
 
 /// The module's view as the frame under `wanted` ships it — the tasted
@@ -244,7 +258,7 @@ pub async fn resolve(
     client: &Client,
     module: &str,
     wanted: Option<[u8; 32]>,
-    asked: &mut Asked,
+    asked: &mut Asked<'_>,
 ) -> Result<ViewSource, Error> {
     let hash = match wanted {
         Some(hash) => hash,
@@ -259,7 +273,7 @@ pub async fn resolve(
         }
     };
     let started = Instant::now();
-    let loaded = frame(client, hash).await;
+    let loaded = frame(client, hash, &asked.watch).await;
     asked.fetch = started.elapsed();
     match loaded.map_err(Error::Artifact)?.view.clone() {
         None => Ok(ViewSource::Missing { hash }),
@@ -282,15 +296,33 @@ fn frames() -> &'static Mutex<HashMap<[u8; 32], Arc<Frame>>> {
     FRAMES.get_or_init(Mutex::default)
 }
 
+/// This user's verified artifacts, by code hash (`view_artifact`), under
+/// the app's own cache directory. A test build keeps off the person's own:
+/// a test names its directory to `view_artifact::fetch`.
+fn user_cache() -> Option<std::path::PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    super::app_dirs::cache_dir()
+        .ok()
+        .map(|dir| dir.join("views"))
+}
+
 /// The verified frame under `hash`: the one held, else fetched off the
 /// node and verified — and NOT held: only the taste walk decides what is
 /// worth holding.
-pub async fn frame(client: &Client, hash: [u8; 32]) -> Result<Arc<Frame>, view_artifact::Error> {
+pub async fn frame(
+    client: &Client,
+    hash: [u8; 32],
+    watch: &view_artifact::Watch<'_>,
+) -> Result<Arc<Frame>, view_artifact::Error> {
     let held = frames().lock().expect("held frames").get(&hash).cloned();
     if let Some(frame) = held {
         return Ok(frame);
     }
-    view_artifact::fetch(client, hash).await.map(Arc::new)
+    view_artifact::fetch(user_cache().as_deref(), client, hash, watch)
+        .await
+        .map(Arc::new)
 }
 
 /// The verified frame under `hash`, held from now on.
@@ -298,7 +330,7 @@ pub async fn hold_frame(
     client: &Client,
     hash: [u8; 32],
 ) -> Result<Arc<Frame>, view_artifact::Error> {
-    let frame = frame(client, hash).await?;
+    let frame = frame(client, hash, &view_artifact::Watch::UNSEEN).await?;
     frames()
         .lock()
         .expect("held frames")
@@ -506,6 +538,8 @@ pub(crate) mod tests {
             files: Mutex::new(BTreeMap::new()),
             file_reads: Mutex::new(Vec::new()),
             index_views: Mutex::new(BTreeMap::new()),
+            release: Mutex::new(None),
+            invite: Mutex::new(None),
             chain: Mutex::new(chain_status(7)),
         };
         fake_node(Arc::new(deployment)).await
@@ -549,6 +583,10 @@ pub(crate) mod tests {
         /// What `/v1/status` answers: the chain id the taste preference is
         /// keyed by and the height a scheduled swap is judged against.
         pub chain: Mutex<serde_json::Value>,
+        /// What `/v1/release` answers; `None` is a node that predates it (404).
+        pub release: Mutex<Option<serde_json::Value>>,
+        /// What `POST /v1/invite` answers; `None` is a node that mints none (404).
+        pub invite: Mutex<Option<serde_json::Value>>,
     }
 
     /// A `/v1/status` document at `height` on the fake chain.
@@ -570,6 +608,8 @@ pub(crate) mod tests {
                 files: Mutex::new(BTreeMap::new()),
                 file_reads: Mutex::new(Vec::new()),
                 index_views: Mutex::new(BTreeMap::new()),
+                release: Mutex::new(None),
+                invite: Mutex::new(None),
                 chain: Mutex::new(chain_status(7)),
             })
         }
@@ -691,6 +731,16 @@ pub(crate) mod tests {
                         let (status_line, body) = if route == "/v1/status" {
                             let chain = deployment.chain.lock().unwrap().clone();
                             ("200 OK", chain.to_string().into_bytes())
+                        } else if route == "/v1/release" {
+                            match deployment.release.lock().unwrap().clone() {
+                                Some(doc) => ("200 OK", doc.to_string().into_bytes()),
+                                None => ("404 Not Found", Vec::new()),
+                            }
+                        } else if route == "/v1/invite" {
+                            match deployment.invite.lock().unwrap().clone() {
+                                Some(minted) => ("200 OK", minted.to_string().into_bytes()),
+                                None => ("404 Not Found", Vec::new()),
+                            }
                         } else if route == "/v1/query" {
                             let hold = deployment.hold_status.lock().unwrap().take();
                             if let Some(hold) = hold {
@@ -1002,10 +1052,6 @@ pub(crate) mod tests {
                     {"module_id": "files", "kind": "module", "active_code_hash": vec![8u8; 32], "pending": null, "history": []}
                 ]}}),
             ),
-            (
-                "not registered",
-                serde_json::json!({"module_status": {"modules": []}}),
-            ),
         ] {
             let client = node(status, Some(with_view()), None).await;
             assert!(
@@ -1016,6 +1062,17 @@ pub(crate) mod tests {
                 "{case}"
             );
         }
+        // a module the registry does not list is an error too, by that name
+        let unlisted = node(
+            serde_json::json!({"module_status": {"modules": []}}),
+            Some(with_view()),
+            None,
+        )
+        .await;
+        assert!(matches!(
+            resolve(&unlisted, "files", None, &mut Asked::default()).await,
+            Err(Error::NotListed(_))
+        ));
     }
 
     /// The taste set is every `(module, hash)` an open code ballot names
@@ -1148,10 +1205,10 @@ pub(crate) mod tests {
         assert!(held.view.is_some());
         // the node forgets the bytes: the held frame still answers
         node.artifacts.lock().unwrap().clear();
-        assert_eq!(frame(&client, hash).await.unwrap(), held);
+        assert_eq!(frame(&client, hash, &Watch::UNSEEN).await.unwrap(), held);
         retain_frames(&BTreeSet::new());
         assert!(matches!(
-            frame(&client, hash).await,
+            frame(&client, hash, &Watch::UNSEEN).await,
             Err(view_artifact::Error::NotHeld)
         ));
     }

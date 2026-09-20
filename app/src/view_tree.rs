@@ -2,6 +2,7 @@
 //! input state; interaction uses the same semantic events the guests consume.
 
 use gpui_kit::MouseUpEvent;
+use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::component::radio::Radio;
 use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
 use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
@@ -9,7 +10,7 @@ use gpui_kit::component::{
     Disableable, Selectable,
     button::{Button, ButtonVariants},
     checkbox::Checkbox,
-    input::{Input, InputEvent, InputState},
+    input::{Input, InputContentType, InputEvent, InputState},
 };
 use gpui_kit::component::{
     IndexPath,
@@ -20,17 +21,17 @@ use gpui_kit::{
     AnyElement, AnyView, App, AppContext as _, Bounds, BoxShadow, Context, CursorStyle, Div,
     Element, ElementId, Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable as _,
     FollowMode, FontWeight, GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, Image,
-    ImageFormat, InspectorElementId, InteractiveElement as _, IntoElement, LayoutId, ListAlignment,
-    ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit,
-    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement as _, StrikethroughStyle,
-    Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout, UnderlineStyle, Window,
-    auto, canvas, div, fill, img, point, px, relative, rgb, size, svg,
+    ImageFormat, InspectorElementId, InteractiveElement as _, IntoElement, KeyDownEvent, LayoutId,
+    ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
+    ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
+    StrikethroughStyle, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
+    UnderlineStyle, Window, auto, canvas, div, fill, img, point, px, relative, rgb, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use view_wire as wire;
 use unicode_segmentation::UnicodeSegmentation;
+use view_wire as wire;
 
 struct RichSelection {
     handle: gpui_kit::base::TextSelectionHandle,
@@ -237,6 +238,16 @@ impl EditorView {
         }
     }
 
+    /// The node's mapping, onto the field the editor draws: the node this
+    /// mount announces is a wrapper, not the text. A rich editor's blocks are
+    /// its own nodes, named by their kind; the label names its page.
+    fn announce(&self, accessible: Accessible, cx: &mut App) {
+        match self {
+            Self::Text(view) => view.update(cx, |editor, cx| editor.set_accessible(accessible, cx)),
+            Self::Rich(view) => view.update(cx, |editor, cx| editor.set_label(accessible.name, cx)),
+        }
+    }
+
     fn widget_command(&self, command: &wire::WidgetCommand, window: &mut Window, cx: &mut App) {
         match self {
             Self::Text(view) => view.update(cx, |editor, cx| {
@@ -387,6 +398,8 @@ pub struct ViewTree {
     scroll_positions: HashMap<String, (Point<Pixels>, Point<Pixels>)>,
     pickers: HashMap<String, Picker>,
     drags: HashMap<String, Point<Pixels>>,
+    /// The overlays showing a dialog, and where focus enters each.
+    dialogs: HashMap<String, FocusHandle>,
     containers: HashMap<String, [f64; 2]>,
     bounds: HashMap<String, Bounds<Pixels>>,
     sensors: HashMap<String, SensorState>,
@@ -651,6 +664,7 @@ impl ViewTree {
             scroll_positions: HashMap::new(),
             pickers: HashMap::new(),
             drags: HashMap::new(),
+            dialogs: HashMap::new(),
             containers: HashMap::new(),
             bounds: HashMap::new(),
             sensors: HashMap::new(),
@@ -837,7 +851,10 @@ impl ViewTree {
         // tag means.
         if let C::EditorAction { tag, .. } = command {
             let editor_mounted = self.editors.contains_key(target);
-            let Some(store) = editor_mounted.then_some(self.editor_store.as_ref()).flatten() else {
+            let Some(store) = editor_mounted
+                .then_some(self.editor_store.as_ref())
+                .flatten()
+            else {
                 return Err("editor action target is not a mounted editor".into());
             };
             store.act(target, tag.clone());
@@ -1010,6 +1027,7 @@ impl ViewTree {
         let mut scrolls = std::collections::HashSet::new();
         let mut pickers = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
+        let mut dialogs = std::collections::HashSet::new();
         let mut containers = std::collections::HashSet::new();
         let mut retained = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
@@ -1036,6 +1054,14 @@ impl ViewTree {
                 }
                 wire::Node::ResizeHandle { key, .. } => {
                     drags.insert(key.clone());
+                }
+                wire::Node::Overlay {
+                    key,
+                    label,
+                    children,
+                    ..
+                } if named_overlay(label, children) => {
+                    dialogs.insert(key.clone());
                 }
                 wire::Node::Responsive { key, .. } => {
                     containers.insert(key.clone());
@@ -1113,6 +1139,7 @@ impl ViewTree {
         self.scroll_positions.retain(|key, _| scrolls.contains(key));
         self.pickers.retain(|key, _| pickers.contains(key));
         self.drags.retain(|key, _| drags.contains(key));
+        self.dialogs.retain(|key, _| dialogs.contains(key));
         self.containers.retain(|key, _| containers.contains(key));
         self.ranges.retain(|key, _| retained.contains(key));
         self.editors.retain(|key, _| retained.contains(key));
@@ -1368,16 +1395,22 @@ impl ViewTree {
                 .state
                 .update(cx, |state, cx| state.set_masked(*secure, window, cx));
         }
-        let input = Input::new(&field.state)
+        // The field's one node is `ui::text_field`, carrying the mapping: an
+        // empty label is no name, left unset so it reads as missing; a secure
+        // field is a password, which keeps its value out of the tree.
+        let accessible = accessible(node);
+        let mut input = Input::new(&field.state)
             .id(key.clone())
-            .aria_label(options.label.clone())
             .disabled(options.disabled);
+        if accessible.role == Some(gpui_kit::Role::PasswordInput) {
+            input = input.content_type(InputContentType::Password);
+        }
         let face = match options.disabled {
             true => style.disabled.unwrap_or(style.active),
             false => style.active,
         };
         let mut input = decoration(
-            pad(dimensions(input, *width, None), options.padding),
+            pad(input, options.padding),
             style.utility.background.or(face.background),
             style.utility.border.or(face.border),
         );
@@ -1393,7 +1426,18 @@ impl ViewTree {
         if let Some(font) = &options.font {
             input = input.font_weight(font_weight(font.weight));
         }
-        input.into_any_element()
+        let field = gpui_notion::editor::ui::text_field(
+            SharedString::from(format!("{key}/field")),
+            &field.state.read(cx).focus_handle(cx),
+            {
+                let state = field.state.clone();
+                move |value, window, cx| {
+                    state.update(cx, |state, cx| state.replace_all(value, window, cx))
+                }
+            },
+            input.role(gpui_kit::component::RoleOverride::Presentational),
+        );
+        announce(dimensions(field, *width, None), accessible).into_any_element()
     }
 
     fn node(
@@ -1430,13 +1474,13 @@ impl ViewTree {
                 ..
             } => {
                 let message = *on_select;
-                Radio::new(key.clone())
+                let radio = Radio::new(key.clone())
                     .label(label.clone())
                     .checked(*selected)
                     .on_click(
                         cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(message))),
-                    )
-                    .into_any_element()
+                    );
+                announce(radio, accessible(node)).into_any_element()
             }
             Node::Rule {
                 axis,
@@ -1469,7 +1513,9 @@ impl ViewTree {
             Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
             Node::Svg { .. } => self.vector(node, window),
             Node::Canvas { .. } => self.drawing(node, cx),
-            Node::Qr { code, .. } => qr(code),
+            Node::Qr { key, code } => {
+                announce(div().id(key.clone()).child(qr(code)), accessible(node)).into_any_element()
+            }
             Node::Surface { key, name, .. } => match self.surfaces.get(key) {
                 Some(surface) => surface.clone().into_any_element(),
                 None => div()
@@ -1494,6 +1540,7 @@ impl ViewTree {
             font,
             align_x,
             options,
+            heading,
             ..
         } = node
         else {
@@ -1505,7 +1552,11 @@ impl ViewTree {
             *align_x,
             options,
         )
-        .child(content.clone());
+        // a Label: assistive technology reads its content as its name
+        .child(gpui_kit::Text::new(
+            key.clone().into(),
+            content.clone().into(),
+        ));
         let intrinsic_label = options.wrapping == Some(wire::Wrapping::None)
             && matches!(width, None | Some(wire::Length::Shrink));
         if intrinsic_label {
@@ -1525,6 +1576,10 @@ impl ViewTree {
         }
         #[cfg(not(test))]
         let _ = (key, cx);
+        if heading.is_some() {
+            return announce(element.id(format!("{key}/heading")), accessible(node))
+                .into_any_element();
+        }
         element.into_any_element()
     }
 
@@ -1899,6 +1954,29 @@ impl ViewTree {
                 cx.stop_propagation();
             }));
         }
+        // the kit button resolves its own role at render, over the one
+        // `announce` sets: a Tab is told so here or it is drawn a Button
+        let accessible = accessible(node);
+        if let Some(role) = accessible.role {
+            button = button.role(role);
+        }
+        // GPUI's generic Click action falls back to a centre-point pointer
+        // click. Register the semantic action on the button itself so an
+        // accessibility press does not depend on overlapping hit-test layers.
+        let button = if let Some(message) = *on_press {
+            let view = cx.entity().downgrade();
+            gpui_notion::editor::ui::aria(button, |node| {
+                node.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.user_activation.set(Some(message));
+                        cx.emit(wire::Event::Message(message));
+                    });
+                })
+            })
+        } else {
+            button
+        };
+        let button = announce(button, accessible);
         dimensions(pad(button, *padding), *width, *height).into_any_element()
     }
 
@@ -1938,7 +2016,7 @@ impl ViewTree {
                     cx.emit(wire::Event::Toggle { handler, on: *on })
                 }));
         }
-        checkbox.into_any_element()
+        announce(checkbox, accessible(node)).into_any_element()
     }
 
     fn resize_handle(
@@ -2416,7 +2494,7 @@ impl ViewTree {
         };
         let mut element = shadows(
             div()
-                .relative()
+                .absolute()
                 .bg(gpui_kit::component::Theme::global(cx)
                     .color_tokens()
                     .surface)
@@ -2457,6 +2535,7 @@ impl ViewTree {
 
     fn vector(&mut self, node: &wire::Node, window: &mut Window) -> AnyElement {
         let wire::Node::Svg {
+            key,
             hash,
             bytes,
             color,
@@ -2492,7 +2571,7 @@ impl ViewTree {
                 );
             }
         }
-        element.into_any_element()
+        announce(element.id(key.clone()), accessible(node)).into_any_element()
     }
 
     fn drawing(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
@@ -2595,6 +2674,7 @@ impl ViewTree {
     ) -> AnyElement {
         let wire::Node::Overlay {
             key,
+            label,
             children,
             backdrop,
             padding,
@@ -2610,55 +2690,109 @@ impl ViewTree {
             element = element.child(self.node(base, window, cx));
         }
         if let Some(modal) = children.get(1) {
+            let named = named_overlay(label, children);
+            let nested = has_named_overlay(modal);
+            if named && nested {
+                // The focus-trap registry keeps weak handles until another
+                // trap registers; drop an obscured ancestor before that pass.
+                self.dialogs.remove(key);
+            }
             let shade = div()
                 .id(format!("{key}/backdrop"))
                 .absolute()
                 .inset_0()
                 .bg(rgba(*backdrop));
-            let mut layer = div()
-                .id(format!("{key}/layer"))
-                .absolute()
-                .inset_0()
-                .flex()
-                .p(px(*padding));
+            let opened = named && !self.dialogs.contains_key(key);
+            let entry = (named && !nested).then(|| {
+                self.dialogs
+                    .entry(key.clone())
+                    .or_insert_with(|| cx.focus_handle())
+                    .clone()
+            });
+            let is_float = matches!(modal, wire::Node::Float { .. });
+            let mut layer = div().id(format!("{key}/layer")).absolute().inset_0();
+            if !is_float {
+                layer = layer.flex().p(px(*padding));
+            }
             if let Some(message) = on_dismiss {
                 let message = *message;
-                layer = layer.on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(message))),
+                layer = layer
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(message))),
+                    )
+                    .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+                        if event.keystroke.key == "escape" {
+                            cx.stop_propagation();
+                            cx.emit(wire::Event::Message(message));
+                        }
+                    }));
+            }
+            if !is_float {
+                layer = match align_x {
+                    wire::AlignX::Left => layer.justify_start(),
+                    wire::AlignX::Center => layer.justify_center(),
+                    wire::AlignX::Right => layer.justify_end(),
+                };
+                layer = match align_y {
+                    wire::AlignY::Top => layer.items_start(),
+                    wire::AlignY::Center => layer.items_center(),
+                    wire::AlignY::Bottom => layer.items_end(),
+                };
+            }
+            let content = if is_float {
+                self.node(modal, window, cx)
+            } else {
+                div()
+                    .bg(gpui_kit::component::Theme::global(cx)
+                        .color_tokens()
+                        .surface)
+                    .text_color(
+                        gpui_kit::component::Theme::global(cx)
+                            .color_tokens()
+                            .surface_foreground,
+                    )
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    // a dialog takes the keyboard when it opens; a
+                    // popup's view moves focus itself (widget commands)
+                    .children(
+                        entry
+                            .as_ref()
+                            .map(|entry| dialog_entry(entry, opened, window, cx)),
+                    )
+                    .child(self.node(modal, window, cx))
+                    .into_any_element()
+            };
+            if is_float {
+                layer = layer.children(
+                    entry
+                        .as_ref()
+                        .map(|entry| dialog_entry(entry, opened, window, cx)),
                 );
             }
-            layer = match align_x {
-                wire::AlignX::Left => layer.justify_start(),
-                wire::AlignX::Center => layer.justify_center(),
-                wire::AlignX::Right => layer.justify_end(),
+            layer = layer.child(content);
+            let layer = if named {
+                let layer = gpui_notion::editor::ui::modal(announce(layer, accessible(node)));
+                match (nested, entry.as_ref()) {
+                    (false, Some(entry)) => div()
+                        .absolute()
+                        .inset_0()
+                        .focus_trap(format!("{key}/focus-trap-container"), entry)
+                        .child(layer)
+                        .into_any_element(),
+                    _ => layer.into_any_element(),
+                }
+            } else {
+                layer.into_any_element()
             };
-            layer = match align_y {
-                wire::AlignY::Top => layer.items_start(),
-                wire::AlignY::Center => layer.items_center(),
-                wire::AlignY::Bottom => layer.items_end(),
-            };
-            element = element.child(shade).child(
-                layer.child(
-                    div()
-                        .bg(gpui_kit::component::Theme::global(cx)
-                            .color_tokens()
-                            .surface)
-                        .text_color(
-                            gpui_kit::component::Theme::global(cx)
-                                .color_tokens()
-                                .surface_foreground,
-                        )
-                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .child(self.node(modal, window, cx)),
-                ),
-            );
+            element = element.child(shade).child(layer);
         }
         element.into_any_element()
     }
 
     fn progress(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Progress {
+            key,
             value,
             min,
             max,
@@ -2684,18 +2818,17 @@ impl ViewTree {
                 .color_tokens()
                 .primary
         }));
-        match axis {
+        let track = match axis {
             wire::Axis::Row => decoration(dimensions(div(), *length, *girth), *background, *border)
-                .child(fill.w(relative(fraction)).h_full())
-                .into_any_element(),
+                .child(fill.w(relative(fraction)).h_full()),
             wire::Axis::Column => decoration(
                 dimensions(div().flex().flex_col().justify_end(), *girth, *length),
                 *background,
                 *border,
             )
-            .child(fill.h(relative(fraction)).w_full())
-            .into_any_element(),
-        }
+            .child(fill.h(relative(fraction)).w_full()),
+        };
+        announce(track.id(key.clone()), accessible(node)).into_any_element()
     }
 
     fn pin(
@@ -2793,6 +2926,7 @@ impl ViewTree {
         editor
             .view
             .fills(!matches!(height, Some(wire::Length::Shrink)), cx);
+        editor.view.announce(accessible(node), cx);
         editor.view.sync(window, cx);
         if let Some(command) = replaced_focus {
             editor.view.widget_command(&command, window, cx);
@@ -2856,6 +2990,8 @@ impl ViewTree {
             on_move,
             on_press_at,
             on_scroll,
+            role,
+            ..
         } = node
         else {
             unreachable!()
@@ -2964,6 +3100,26 @@ impl ViewTree {
                         pixels,
                     });
                 }));
+        }
+        // An area with no role is plumbing assistive technology skips. One
+        // with a role is a control: Tab reaches it, and Enter, Space or a
+        // screen reader's press is the pointer's press and release. A
+        // pointer's own click is already both.
+        if role.is_some() {
+            let (press, release) = (*on_press, *on_release);
+            if press.is_some() || release.is_some() {
+                element = gpui_notion::editor::ui::keyboard(element).on_click(cx.listener(
+                    move |_, event: &gpui_kit::ClickEvent, _, cx| {
+                        if !event.is_keyboard() {
+                            return;
+                        }
+                        for message in [press, release].into_iter().flatten() {
+                            cx.emit(wire::Event::Message(message));
+                        }
+                    },
+                ));
+            }
+            element = announce(element, accessible(node));
         }
         element
             .child(self.node(content, window, cx))
@@ -3183,7 +3339,7 @@ impl ViewTree {
                     StyledText::new(text.clone()).with_highlights([(0..text.len(), style)]);
                 let layout = styled.layout().clone();
                 let run_index = layouts.len();
-                layouts.push((text, layout.clone()));
+                layouts.push((text.clone(), layout.clone()));
                 let ranges = selections.clone();
                 let selection = canvas(
                     |_, _, _| (),
@@ -3200,6 +3356,9 @@ impl ViewTree {
                 if let (Some(handler), Some(link)) = (on_link, &span.link) {
                     let handler = *handler;
                     let link = link.clone();
+                    painted = gpui_notion::editor::ui::keyboard(
+                        painted.role(gpui_kit::Role::Link).aria_label(text.clone()),
+                    );
                     painted =
                         painted
                             .cursor_pointer()
@@ -3419,8 +3578,10 @@ impl ViewTree {
         if viewer.scale == 0.0 {
             viewer.scale = 1.0;
         }
-        let mut element =
-            dimensions(div().relative().overflow_hidden(), *width, *height).id(key.clone());
+        let mut element = announce(
+            dimensions(div().relative().overflow_hidden(), *width, *height).id(key.clone()),
+            accessible(node),
+        );
         if let Some(image) = frame {
             let original = image.size(0);
             let viewport = self
@@ -3501,6 +3662,7 @@ impl ViewTree {
 
     fn picture(&mut self, node: &wire::Node, window: &mut Window) -> AnyElement {
         let wire::Node::Image {
+            key,
             hash,
             data,
             width,
@@ -3520,7 +3682,7 @@ impl ViewTree {
         if let Some(image) = self.image_frame(*hash, data.as_ref()) {
             element = element.child(img(image.clone()).size_full().object_fit(object_fit(*fit)));
         }
-        element.into_any_element()
+        announce(element.id(key.clone()), accessible(node)).into_any_element()
     }
 
     fn picker(
@@ -3682,6 +3844,10 @@ impl ViewTree {
         let mut select = Select::new(&picker.state)
             .id(key.clone())
             .placeholder(placeholder.to_owned());
+        // the kit draws the picker's node itself; the wire `label` names it
+        if let Some(name) = accessible(node).name {
+            select = select.accessibility_label(name);
+        }
         if let Some(wire::Length::Fixed(height)) = menu_height {
             select = select.menu_max_h(px(height));
         }
@@ -3742,6 +3908,19 @@ fn native_cursor(cursor: Option<wire::mouse::Cursor>) -> CursorStyle {
 fn rgba(color: wire::Rgba) -> Hsla {
     let [r, g, b, a] = color.0;
     gpui_kit::Rgba { r, g, b, a }.into()
+}
+
+fn named_overlay(label: &Option<String>, children: &[wire::Node]) -> bool {
+    label.as_deref().is_some_and(|label| !label.is_empty()) && children.len() > 1
+}
+
+fn has_named_overlay(node: &wire::Node) -> bool {
+    match node {
+        wire::Node::Overlay {
+            label, children, ..
+        } if named_overlay(label, children) => true,
+        _ => node.children().iter().any(has_named_overlay),
+    }
 }
 
 fn content_dimensions(node: &wire::Node) -> (Option<wire::Length>, Option<wire::Length>) {
@@ -4172,6 +4351,321 @@ fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
         pixel.0.swap(0, 2);
     }
     Some(RenderImage::new(vec![image::Frame::new(pixels)]))
+}
+
+/// Where focus enters a dialog: a node-less element drawn first in it,
+/// tracking `entry`. The frame the dialog opens, focus that is still where
+/// it was at the end of that frame moves to the first Tab stop after this
+/// one — the dialog's first control — so a keyboard is in the dialog it
+/// opened, not behind it. Focus the dialog's own content took is left alone.
+pub(crate) fn dialog_entry(
+    entry: &FocusHandle,
+    opened: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> Stateful<Div> {
+    if opened {
+        let before = window.focused(cx);
+        let entry = entry.clone();
+        window.defer(cx, move |window, cx| {
+            if window.focused(cx) == before {
+                window.focus(&entry, cx);
+                window.focus_next(cx);
+            }
+        });
+    }
+    div().id("dialog-entry").track_focus(entry)
+}
+
+/// What one wire node is to assistive technology: the role it plays, the
+/// name it is called, and the value and states it reports.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Accessible {
+    pub role: Option<gpui_kit::Role>,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    /// Text a field holds. Never a secure field's.
+    pub value: Option<String>,
+    pub numeric: Option<f64>,
+    pub min: Option<f64>,
+    pub max: Option<f64>,
+    pub step: Option<f64>,
+    pub toggled: Option<bool>,
+    pub expanded: Option<bool>,
+    pub selected: Option<bool>,
+    /// A heading's level, 1 to 6.
+    pub level: Option<usize>,
+    /// How a change to text that is not focused is announced.
+    pub live: Option<wire::Live>,
+    /// A control with no handler: it is drawn, and does nothing.
+    pub disabled: bool,
+}
+
+/// The ONE mapping from a wire node to what assistive technology hears. The
+/// presenter builds every variant with it, so a view never names its own
+/// controls' roles: it says `label`, and the role follows from the variant.
+/// The node's accessibility id is its wire key under the module's view, the
+/// element id each variant is already built with.
+pub(crate) fn accessible(node: &wire::Node) -> Accessible {
+    use gpui_kit::Role;
+    use wire::Node;
+    let named = |text: &str| (!text.is_empty()).then(|| text.to_owned());
+    let numeric = |value: f32, min: f32, max: f32| Accessible {
+        numeric: Some(value.into()),
+        min: Some(min.into()),
+        max: Some(max.into()),
+        ..Default::default()
+    };
+    let role_of = |role: &wire::Role| match role {
+        wire::Role::Button => Role::Button,
+        wire::Role::Link => Role::Link,
+        wire::Role::Tab => Role::Tab,
+        wire::Role::MenuItem => Role::MenuItem,
+        wire::Role::Row => Role::Row,
+        wire::Role::Checkbox => Role::CheckBox,
+        wire::Role::Switch => Role::Switch,
+    };
+    let labelled = |role: Role, label: &Option<String>| Accessible {
+        role: Some(role),
+        name: label.as_deref().and_then(named),
+        ..Default::default()
+    };
+    match node {
+        Node::Text {
+            content,
+            heading,
+            live,
+            ..
+        } => Accessible {
+            role: Some(match heading {
+                Some(_) => Role::Heading,
+                None => Role::Label,
+            }),
+            name: named(content),
+            level: heading.map(usize::from),
+            live: *live,
+            ..Default::default()
+        },
+        Node::Button {
+            content,
+            label,
+            role,
+            checked,
+            expanded,
+            selected,
+            description,
+            on_press,
+            ..
+        } => Accessible {
+            role: Some(role.as_ref().map_or(Role::Button, role_of)),
+            selected: *selected,
+            name: label.as_deref().and_then(named).or(match content {
+                wire::ButtonContent::Label(text) => named(text),
+                wire::ButtonContent::Child(_) => None,
+            }),
+            description: description.as_deref().and_then(named),
+            toggled: *checked,
+            expanded: *expanded,
+            disabled: on_press.is_none(),
+            ..Default::default()
+        },
+        Node::Toggle {
+            kind,
+            label,
+            checked,
+            on_toggle,
+            ..
+        } => Accessible {
+            role: Some(match kind {
+                wire::ToggleKind::Checkbox => Role::CheckBox,
+                wire::ToggleKind::Switch => Role::Switch,
+            }),
+            name: named(label),
+            toggled: Some(*checked),
+            disabled: on_toggle.is_none(),
+            ..Default::default()
+        },
+        Node::Radio {
+            label, selected, ..
+        } => Accessible {
+            role: Some(Role::RadioButton),
+            name: named(label),
+            toggled: Some(*selected),
+            ..Default::default()
+        },
+        Node::Slider {
+            label,
+            value,
+            min,
+            max,
+            step,
+            ..
+        } => Accessible {
+            role: Some(Role::Slider),
+            name: label.as_deref().and_then(named),
+            step: Some((*step).into()),
+            ..numeric(*value, *min, *max)
+        },
+        Node::Progress {
+            value, min, max, ..
+        } => Accessible {
+            role: Some(Role::ProgressIndicator),
+            ..numeric(*value, *min, *max)
+        },
+        Node::Input {
+            options,
+            value,
+            secure,
+            ..
+        } => Accessible {
+            role: Some(match secure {
+                true => Role::PasswordInput,
+                false => Role::TextInput,
+            }),
+            name: named(&options.label),
+            description: options.description.as_deref().and_then(named),
+            value: (!secure).then(|| value.clone()),
+            disabled: options.disabled,
+            ..Default::default()
+        },
+        // the document is not on the node: the editor mount adds its text as
+        // the value (`TextEditor::render`)
+        Node::Editor {
+            label,
+            placeholder,
+            editable,
+            ..
+        } => {
+            let field = labelled(Role::MultilineTextInput, label);
+            Accessible {
+                description: field.name.is_none().then(|| named(placeholder)).flatten(),
+                disabled: !editable,
+                ..field
+            }
+        }
+        Node::ComboBox {
+            options,
+            selected,
+            label,
+            ..
+        }
+        | Node::PickList {
+            options,
+            selected,
+            label,
+            ..
+        } => Accessible {
+            value: selected.and_then(|index| options.get(index as usize).cloned()),
+            ..labelled(Role::ComboBox, label)
+        },
+        // an area is announced only as what its view says it is
+        Node::MouseArea {
+            role: Some(role),
+            label,
+            expanded,
+            selected,
+            checked,
+            on_press,
+            on_release,
+            ..
+        } => Accessible {
+            toggled: *checked,
+            expanded: *expanded,
+            selected: *selected,
+            disabled: on_press.is_none() && on_release.is_none(),
+            ..labelled(role_of(role), label)
+        },
+        // only an open named overlay is a dialog; a closed or unnamed one is layout
+        Node::Overlay {
+            label, children, ..
+        } if named_overlay(label, children) => labelled(Role::Dialog, label),
+        // the wire gives a code no label: it is read as what it is
+        Node::Qr { .. } => Accessible {
+            role: Some(Role::Image),
+            name: Some("QR code".into()),
+            ..Default::default()
+        },
+        // an unlabelled picture is decoration: it stays out of the tree
+        Node::Image { label, .. } | Node::ImageViewer { label, .. } | Node::Svg { label, .. } => {
+            match label.as_deref().and_then(named) {
+                Some(name) => Accessible {
+                    role: Some(Role::Image),
+                    name: Some(name),
+                    ..Default::default()
+                },
+                None => Accessible::default(),
+            }
+        }
+        _ => Accessible::default(),
+    }
+}
+
+/// Puts `accessible` on an element the presenter built. A kit widget draws
+/// its own role, name and value over these; the states it does not report
+/// itself (disabled, expanded, a description) are the ones this adds.
+pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
+    use gpui_notion::editor::ui;
+    let Accessible {
+        role,
+        name,
+        description,
+        value,
+        numeric,
+        min,
+        max,
+        step,
+        toggled,
+        expanded,
+        selected,
+        level,
+        // ponytail: the gpui-pre fork has no live-region setter; `live` is
+        // mapped and dropped here until it gains one
+        live: _,
+        disabled,
+    } = accessible;
+    let element = ui::aria(element, |mut node| {
+        if let Some(role) = role {
+            node = node.role(role);
+        }
+        if let Some(name) = name {
+            node = node.aria_label(name);
+        }
+        if let Some(description) = description {
+            node = node.aria_description(description);
+        }
+        if let Some(value) = value {
+            node = node.aria_value(value);
+        }
+        if let Some(numeric) = numeric {
+            node = node.aria_numeric_value(numeric);
+        }
+        if let Some(min) = min {
+            node = node.aria_min_numeric_value(min);
+        }
+        if let Some(max) = max {
+            node = node.aria_max_numeric_value(max);
+        }
+        if let Some(step) = step {
+            node = node.aria_numeric_value_step(step);
+        }
+        if let Some(toggled) = toggled {
+            node = node.aria_toggled(match toggled {
+                true => gpui_kit::Toggled::True,
+                false => gpui_kit::Toggled::False,
+            });
+        }
+        if let Some(expanded) = expanded {
+            node = node.aria_expanded(expanded);
+        }
+        if let Some(selected) = selected {
+            node = node.aria_selected(selected);
+        }
+        if let Some(level) = level {
+            node = node.aria_level(level);
+        }
+        node
+    });
+    ui::disabled(element, disabled)
 }
 
 fn qr(code: &wire::Qr) -> AnyElement {
@@ -4663,6 +5157,7 @@ mod tests {
         for key in ["another-app/body", "/pages/document"] {
             let mut root = wire::Node::Editor {
                 key: key.into(),
+                label: None,
                 document: wire::editor_document::EditorDocumentRef {
                     document: key.into(),
                     reset: 1,
@@ -4948,6 +5443,8 @@ mod tests {
         cx.update(gpui_kit::init);
         let text = |key: &str, content: String, width, wrapping| wire::Node::Text {
             key: key.into(),
+            heading: None,
+            live: None,
             content,
             width,
             size: Some(14.),
@@ -5036,6 +5533,8 @@ mod tests {
         };
         let root = wire::Node::Button {
             key: "wrapping-parent".into(),
+            role: None,
+            selected: None,
             content: wire::ButtonContent::Child(Box::new(root)),
             label: None,
             checked: None,
@@ -5096,8 +5595,8 @@ mod tests {
 
     #[gpui_kit::test]
     fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::TestAppContext) {
-        use view_wire::kit;
         use gpui_kit::InputEvent as _;
+        use view_wire::kit;
         cx.update(gpui_kit::init);
         let columns = kit::sized(
             kit::row(
@@ -5237,6 +5736,7 @@ mod tests {
         cx.update(gpui_kit::init);
         let combo = |reset, handler| wire::Node::ComboBox {
             key: "combo".into(),
+            label: None,
             state_key: "choices".into(),
             reset,
             options: vec!["Alpha".into(), "Beta".into()],
@@ -5394,6 +5894,8 @@ mod tests {
             tree.replace(
                 wire::Node::Button {
                     key: "watched".into(),
+                    role: None,
+                    selected: None,
                     content: wire::ButtonContent::Label("New action".into()),
                     label: None,
                     checked: None,
@@ -5418,14 +5920,23 @@ mod tests {
             "old hide ID 11 must not invoke the replacement action 11"
         );
         tree.update(&mut native, |tree, _| {
-            assert!(tree.take_user_activation(&wire::Event::Message(11)).is_none(),
-                "a generated event cannot grant device authority");
+            assert!(
+                tree.take_user_activation(&wire::Event::Message(11))
+                    .is_none(),
+                "a generated event cannot grant device authority"
+            );
         });
         native.update(|window, cx| window.click("watched", cx));
         tree.update(&mut native, |tree, _| {
-            assert!(tree.take_user_activation(&wire::Event::Message(11)).is_some());
-            assert!(tree.take_user_activation(&wire::Event::Message(11)).is_none(),
-                "one native click authorizes at most one session");
+            assert!(
+                tree.take_user_activation(&wire::Event::Message(11))
+                    .is_some()
+            );
+            assert!(
+                tree.take_user_activation(&wire::Event::Message(11))
+                    .is_none(),
+                "one native click authorizes at most one session"
+            );
         });
         assert_eq!(
             &*events.borrow(),
@@ -5445,6 +5956,7 @@ mod tests {
         ] {
             let root = wire::Node::Editor {
                 key: "document".into(),
+                label: None,
                 options: Box::default(),
                 placeholder: String::new(),
                 document: wire::editor_document::EditorDocumentRef {
@@ -5523,6 +6035,7 @@ mod tests {
         let leading = 20.;
         let root = wire::Node::Editor {
             key: "document".into(),
+            label: None,
             options: Box::new(wire::EditorOptions {
                 size: Some(14.),
                 line_height: Some(wire::LineHeight::Absolute(leading)),
@@ -5611,5 +6124,694 @@ mod tests {
         let image = decode_image(&pixels).expect("one valid pixel");
         assert_eq!(image.as_bytes(0), Some([20, 10, 255, 255].as_slice()));
         assert!(decode_image(&wire::ImageData::Encoded(vec![1, 2, 3])).is_none());
+    }
+
+    fn button(
+        content: wire::ButtonContent,
+        label: Option<&str>,
+        on_press: Option<u32>,
+    ) -> wire::Node {
+        wire::Node::Button {
+            key: "b".into(),
+            role: None,
+            selected: None,
+            content,
+            label: label.map(str::to_owned),
+            checked: None,
+            expanded: None,
+            description: None,
+            on_press,
+            width: None,
+            height: None,
+            padding: None,
+            style: Default::default(),
+        }
+    }
+
+    fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
+        wire::Node::Input {
+            options: wire::InputOptions {
+                label: label.into(),
+                description: Some("Shown to members".into()),
+                disabled,
+                ..Default::default()
+            },
+            key: "i".into(),
+            placeholder: "Type here".into(),
+            value: "hunter2".into(),
+            on_input: 1,
+            on_submit: None,
+            width: None,
+            secure,
+            style: Default::default(),
+        }
+    }
+
+    fn picture(label: Option<&str>) -> [wire::Node; 3] {
+        let label = label.map(str::to_owned);
+        [
+            wire::Node::Image {
+                key: "img".into(),
+                hash: 1,
+                data: None,
+                label: label.clone(),
+                fit: None,
+                opacity: None,
+                width: None,
+                height: None,
+            },
+            wire::Node::ImageViewer {
+                key: "viewer".into(),
+                hash: 1,
+                data: None,
+                label: label.clone(),
+                fit: None,
+                width: None,
+                height: None,
+                options: Default::default(),
+            },
+            wire::Node::Svg {
+                key: "svg".into(),
+                inherit_button_ink: false,
+                hash: 1,
+                bytes: None,
+                label,
+                color: None,
+                hover: None,
+                fit: None,
+                opacity: None,
+                width: None,
+                height: None,
+            },
+        ]
+    }
+
+    #[test]
+    fn text_is_a_label_its_content_names() {
+        let text = |content: &str| wire::Node::Text {
+            options: Default::default(),
+            key: "t".into(),
+            heading: None,
+            live: None,
+            content: content.into(),
+            size: None,
+            color: None,
+            font: Default::default(),
+            width: None,
+            align_x: None,
+        };
+        assert_eq!(
+            accessible(&text("Members")),
+            Accessible {
+                role: Some(gpui_kit::Role::Label),
+                name: Some("Members".into()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(accessible(&text("")).name, None);
+    }
+
+    #[test]
+    fn a_button_is_named_by_its_label_then_its_text_and_disabled_without_a_handler() {
+        use wire::ButtonContent::{Child, Label};
+        let glyph = || {
+            Child(Box::new(wire::Node::Space {
+                width: None,
+                height: None,
+            }))
+        };
+        let plain = accessible(&button(Label("Send".into()), None, Some(1)));
+        assert_eq!(
+            plain,
+            Accessible {
+                role: Some(gpui_kit::Role::Button),
+                name: Some("Send".into()),
+                ..Default::default()
+            }
+        );
+        let labelled = accessible(&button(Label("×".into()), Some("Close"), Some(1)));
+        assert_eq!(labelled.name.as_deref(), Some("Close"));
+        let named_icon = accessible(&button(glyph(), Some("Close"), Some(1)));
+        assert_eq!(named_icon.name.as_deref(), Some("Close"));
+        // an icon the view did not name has no name: the gap stays visible
+        assert_eq!(accessible(&button(glyph(), None, Some(1))).name, None);
+        assert_eq!(accessible(&button(glyph(), Some(""), Some(1))).name, None);
+        assert!(accessible(&button(Label("Send".into()), None, None)).disabled);
+        assert!(!plain.disabled);
+    }
+
+    #[test]
+    fn a_button_reports_checked_expanded_and_its_description() {
+        let mut node = button(wire::ButtonContent::Label("Bold".into()), None, Some(1));
+        let wire::Node::Button {
+            checked,
+            expanded,
+            description,
+            ..
+        } = &mut node
+        else {
+            unreachable!()
+        };
+        *checked = Some(true);
+        *expanded = Some(false);
+        *description = Some("Ctrl B".into());
+        let heard = accessible(&node);
+        assert_eq!(heard.toggled, Some(true));
+        assert_eq!(heard.expanded, Some(false));
+        assert_eq!(heard.description.as_deref(), Some("Ctrl B"));
+        let wire::Node::Button { checked, .. } = &mut node else {
+            unreachable!()
+        };
+        *checked = Some(false);
+        assert_eq!(accessible(&node).toggled, Some(false));
+    }
+
+    #[test]
+    fn a_toggle_is_a_checkbox_or_a_switch_reporting_checked() {
+        let toggle = |kind, label: &str, checked, on_toggle| wire::Node::Toggle {
+            key: "t".into(),
+            kind,
+            label: label.into(),
+            checked,
+            on_toggle,
+            width: None,
+            style: Default::default(),
+        };
+        let checkbox = accessible(&toggle(wire::ToggleKind::Checkbox, "Notify", true, Some(1)));
+        assert_eq!(
+            checkbox,
+            Accessible {
+                role: Some(gpui_kit::Role::CheckBox),
+                name: Some("Notify".into()),
+                toggled: Some(true),
+                ..Default::default()
+            }
+        );
+        let switch = accessible(&toggle(wire::ToggleKind::Switch, "Mute", false, None));
+        assert_eq!(switch.role, Some(gpui_kit::Role::Switch));
+        assert_eq!(switch.toggled, Some(false));
+        assert!(switch.disabled);
+        assert_eq!(
+            accessible(&toggle(wire::ToggleKind::Switch, "", false, None)).name,
+            None
+        );
+    }
+
+    #[test]
+    fn a_radio_reports_whether_it_is_the_selected_one() {
+        let radio = |selected| wire::Node::Radio {
+            key: "r".into(),
+            label: "Weekly".into(),
+            selected,
+            on_select: 1,
+            width: None,
+            style: Default::default(),
+        };
+        assert_eq!(
+            accessible(&radio(true)),
+            Accessible {
+                role: Some(gpui_kit::Role::RadioButton),
+                name: Some("Weekly".into()),
+                toggled: Some(true),
+                ..Default::default()
+            }
+        );
+        assert_eq!(accessible(&radio(false)).toggled, Some(false));
+    }
+
+    #[test]
+    fn a_slider_and_a_progress_report_their_value_in_range() {
+        let slider = wire::Node::Slider {
+            key: "s".into(),
+            label: None,
+            value: 30.,
+            min: 0.,
+            max: 100.,
+            step: 5.,
+            on_change: 1,
+            on_release: None,
+            axis: wire::Axis::Row,
+            width: None,
+            height: None,
+            style: Default::default(),
+        };
+        assert_eq!(
+            accessible(&slider),
+            Accessible {
+                role: Some(gpui_kit::Role::Slider),
+                numeric: Some(30.),
+                min: Some(0.),
+                max: Some(100.),
+                step: Some(5.),
+                ..Default::default()
+            }
+        );
+        let progress = wire::Node::Progress {
+            key: "p".into(),
+            value: 0.25,
+            min: 0.,
+            max: 1.,
+            axis: wire::Axis::Row,
+            length: None,
+            girth: None,
+            tone: None,
+            background: None,
+            bar: None,
+            border: None,
+        };
+        assert_eq!(
+            accessible(&progress),
+            Accessible {
+                role: Some(gpui_kit::Role::ProgressIndicator),
+                numeric: Some(0.25),
+                min: Some(0.),
+                max: Some(1.),
+                ..Default::default()
+            }
+        );
+    }
+
+    #[test]
+    fn an_input_is_named_by_its_label_and_a_secure_one_never_reports_its_value() {
+        assert_eq!(
+            accessible(&input("Room name", false, false)),
+            Accessible {
+                role: Some(gpui_kit::Role::TextInput),
+                name: Some("Room name".into()),
+                description: Some("Shown to members".into()),
+                value: Some("hunter2".into()),
+                ..Default::default()
+            }
+        );
+        let secure = accessible(&input("Password", true, true));
+        assert_eq!(secure.role, Some(gpui_kit::Role::PasswordInput));
+        assert_eq!(secure.value, None);
+        assert!(secure.disabled);
+        // the placeholder is not a name
+        assert_eq!(accessible(&input("", false, false)).name, None);
+    }
+
+    #[test]
+    fn an_editor_is_named_by_its_label_and_described_by_its_placeholder_without_one() {
+        let mut editor = wire::Node::Editor {
+            options: Box::default(),
+            key: "e".into(),
+            label: None,
+            placeholder: "Write something".into(),
+            document: wire::editor_document::EditorDocumentRef {
+                document: "e".into(),
+                reset: 1,
+                text_revision: 0,
+                revision: 0,
+                cursor: Default::default(),
+                byte_len: 0,
+            },
+            on_document: 0,
+            editable: true,
+            width: None,
+            height: None,
+            min_height: None,
+            max_height: None,
+        };
+        assert_eq!(
+            accessible(&editor),
+            Accessible {
+                role: Some(gpui_kit::Role::MultilineTextInput),
+                description: Some("Write something".into()),
+                ..Default::default()
+            }
+        );
+        let wire::Node::Editor { label, .. } = &mut editor else {
+            unreachable!()
+        };
+        *label = Some("Message".into());
+        let named = accessible(&editor);
+        assert_eq!(named.name.as_deref(), Some("Message"));
+        // the placeholder is not a name, nor a second one
+        assert_eq!(named.description, None);
+    }
+
+    /// #139: the field reads the text it holds, and one that takes no typing
+    /// says so and is offered none — the door reads the tree a screen reader
+    /// does.
+    #[gpui_kit::test]
+    fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let words = "no channel is open";
+        for editable in [true, false] {
+            let root = wire::Node::Editor {
+                key: "composer".into(),
+                label: Some("Message".into()),
+                options: Box::default(),
+                placeholder: String::new(),
+                document: wire::editor_document::EditorDocumentRef {
+                    document: "composer".into(),
+                    reset: 1,
+                    text_revision: 0,
+                    revision: 0,
+                    cursor: Default::default(),
+                    byte_len: words.len() as u32,
+                },
+                on_document: 0,
+                editable,
+                width: None,
+                height: None,
+                min_height: None,
+                max_height: None,
+            };
+            let store = crate::editor::wire::EditorStore::new(91);
+            store.replace(&root).unwrap();
+            seed_editor_text(&store, words);
+            let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+                let mut tree = ViewTree::new(root);
+                tree.set_editor_store(store, cx);
+                tree
+            });
+            let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            let nodes = native.update(|window, cx| {
+                window.activate_a11y();
+                window.render_frame(cx);
+                window.render_frame(cx);
+                crate::ax_door::snapshot("t", window, false)
+            });
+            let field = nodes
+                .iter()
+                .find(|node| node.role == "MultilineTextInput")
+                .expect("the editor's field is in the tree");
+            assert_eq!(field.value.as_deref(), Some(words), "editable: {editable}");
+            match editable {
+                true => {
+                    assert!(!field.state.contains(&"disabled"));
+                    assert!(field.actions.contains(&"type"));
+                    assert!(field.actions.contains(&"set_value"));
+                }
+                false => {
+                    assert!(field.state.contains(&"disabled"));
+                    assert!(field.actions.is_empty(), "{:?}", field.actions);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_picker_reports_the_chosen_option_as_its_value() {
+        let options = vec!["Low".to_owned(), "High".to_owned()];
+        let combo = |selected| wire::Node::ComboBox {
+            key: "c".into(),
+            label: None,
+            state_key: "c".into(),
+            options: options.clone(),
+            selected,
+            reset: 0,
+            placeholder: "Priority".into(),
+            on_select: 1,
+            width: None,
+            settings: Box::default(),
+        };
+        let pick = |selected| wire::Node::PickList {
+            settings: Box::default(),
+            key: "p".into(),
+            label: None,
+            options: options.clone(),
+            selected,
+            placeholder: Some("Priority".into()),
+            on_select: 1,
+            width: None,
+            style: Default::default(),
+        };
+        for node in [combo(Some(1)), pick(Some(1))] {
+            assert_eq!(
+                accessible(&node),
+                Accessible {
+                    role: Some(gpui_kit::Role::ComboBox),
+                    value: Some("High".into()),
+                    ..Default::default()
+                }
+            );
+        }
+        for node in [combo(None), pick(None), combo(Some(7)), pick(Some(7))] {
+            assert_eq!(accessible(&node).value, None);
+        }
+        for mut node in [combo(Some(1)), pick(Some(1))] {
+            assert_eq!(accessible(&node).name, None);
+            let (wire::Node::ComboBox { label, .. } | wire::Node::PickList { label, .. }) =
+                &mut node
+            else {
+                unreachable!()
+            };
+            *label = Some("Priority".into());
+            assert_eq!(accessible(&node).name.as_deref(), Some("Priority"));
+        }
+    }
+
+    #[test]
+    fn a_labelled_picture_is_an_image_and_an_unlabelled_one_is_decoration() {
+        for node in picture(Some("Ada's avatar")) {
+            assert_eq!(
+                accessible(&node),
+                Accessible {
+                    role: Some(gpui_kit::Role::Image),
+                    name: Some("Ada's avatar".into()),
+                    ..Default::default()
+                }
+            );
+        }
+        for node in picture(None).into_iter().chain(picture(Some(""))) {
+            assert_eq!(accessible(&node), Accessible::default());
+        }
+    }
+
+    #[test]
+    fn layout_is_not_in_the_accessibility_tree() {
+        let space = wire::Node::Space {
+            width: None,
+            height: None,
+        };
+        assert_eq!(accessible(&space), Accessible::default());
+    }
+
+    #[test]
+    fn a_slider_is_named_by_its_label() {
+        let slider = |label: Option<&str>| wire::Node::Slider {
+            key: "s".into(),
+            label: label.map(str::to_owned),
+            value: 1.,
+            min: 0.,
+            max: 2.,
+            step: 1.,
+            on_change: 1,
+            on_release: None,
+            axis: wire::Axis::Row,
+            width: None,
+            height: None,
+            style: Default::default(),
+        };
+        assert_eq!(
+            accessible(&slider(Some("Volume"))).name.as_deref(),
+            Some("Volume")
+        );
+        assert_eq!(accessible(&slider(Some(""))).name, None);
+        assert_eq!(accessible(&slider(None)).name, None);
+    }
+
+    #[test]
+    fn a_text_heading_has_its_level_and_a_live_text_its_politeness() {
+        let text = |heading, live| wire::Node::Text {
+            key: "t".into(),
+            content: "Members".into(),
+            width: None,
+            size: None,
+            color: None,
+            font: Default::default(),
+            align_x: None,
+            options: Default::default(),
+            heading,
+            live,
+        };
+        for level in 1..=6u8 {
+            assert_eq!(
+                accessible(&text(Some(level), None)),
+                Accessible {
+                    role: Some(gpui_kit::Role::Heading),
+                    name: Some("Members".into()),
+                    level: Some(level.into()),
+                    ..Default::default()
+                }
+            );
+        }
+        for live in [wire::Live::Polite, wire::Live::Assertive] {
+            assert_eq!(
+                accessible(&text(None, Some(live))),
+                Accessible {
+                    role: Some(gpui_kit::Role::Label),
+                    name: Some("Members".into()),
+                    live: Some(live),
+                    ..Default::default()
+                }
+            );
+        }
+    }
+
+    /// Every role a view can give a mouse area or a button, and what
+    /// assistive technology hears for it.
+    const ROLES: [(wire::Role, gpui_kit::Role); 7] = [
+        (wire::Role::Button, gpui_kit::Role::Button),
+        (wire::Role::Link, gpui_kit::Role::Link),
+        (wire::Role::Tab, gpui_kit::Role::Tab),
+        (wire::Role::MenuItem, gpui_kit::Role::MenuItem),
+        (wire::Role::Row, gpui_kit::Role::Row),
+        (wire::Role::Checkbox, gpui_kit::Role::CheckBox),
+        (wire::Role::Switch, gpui_kit::Role::Switch),
+    ];
+
+    #[test]
+    fn a_button_with_a_role_is_that_role_and_reports_selected() {
+        for (role, heard) in ROLES {
+            let mut tab = button(wire::ButtonContent::Label("Inbox".into()), None, Some(1));
+            let wire::Node::Button {
+                role: set,
+                selected,
+                ..
+            } = &mut tab
+            else {
+                unreachable!()
+            };
+            (*set, *selected) = (Some(role), Some(true));
+            let tab = accessible(&tab);
+            assert_eq!(tab.role, Some(heard));
+            assert_eq!(tab.selected, Some(true));
+            assert_eq!(tab.name.as_deref(), Some("Inbox"));
+        }
+    }
+
+    #[test]
+    fn a_mouse_area_is_announced_only_as_the_role_its_view_gives_it() {
+        let area = |role, label: Option<&str>| wire::Node::MouseArea {
+            key: "m".into(),
+            role,
+            label: label.map(str::to_owned),
+            expanded: Some(true),
+            selected: Some(false),
+            checked: Some(true),
+            on_press: Some(1),
+            on_release: None,
+            on_double_click: None,
+            on_right_press: None,
+            on_right_release: None,
+            on_middle_press: None,
+            on_middle_release: None,
+            on_enter: None,
+            on_exit: None,
+            on_move: None,
+            on_press_at: None,
+            on_scroll: None,
+            content: Box::new(wire::Node::empty()),
+        };
+        for (role, heard) in ROLES {
+            assert_eq!(
+                accessible(&area(Some(role), Some("Wrap lines"))),
+                Accessible {
+                    role: Some(heard),
+                    name: Some("Wrap lines".into()),
+                    toggled: Some(true),
+                    expanded: Some(true),
+                    selected: Some(false),
+                    ..Default::default()
+                }
+            );
+            assert_eq!(accessible(&area(Some(role), Some(""))).name, None);
+        }
+        assert_eq!(
+            accessible(&area(None, Some("Wrap lines"))),
+            Accessible::default()
+        );
+    }
+
+    #[test]
+    fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
+        let overlay = |label: Option<&str>, open| wire::Node::Overlay {
+            key: "o".into(),
+            label: label.map(str::to_owned),
+            padding: 0.,
+            backdrop: wire::Rgba([0.; 4]),
+            align_x: wire::AlignX::Center,
+            align_y: wire::AlignY::Center,
+            on_dismiss: None,
+            children: if open {
+                vec![wire::Node::empty(), wire::Node::empty()]
+            } else {
+                Vec::new()
+            },
+        };
+        assert_eq!(
+            accessible(&overlay(Some("Rename channel"), true)),
+            Accessible {
+                role: Some(gpui_kit::Role::Dialog),
+                name: Some("Rename channel".into()),
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            accessible(&overlay(Some("Rename channel"), false)),
+            Accessible::default()
+        );
+        assert_eq!(accessible(&overlay(None, true)), Accessible::default());
+    }
+
+    #[gpui_kit::test]
+    fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let card = wire::kit::sized(
+            wire::kit::container("float-card", wire::Node::empty()),
+            Some(wire::Length::Fixed(40.)),
+            Some(wire::Length::Fixed(20.)),
+        );
+        let root = wire::Node::Overlay {
+            key: "float-overlay".into(),
+            label: Some("Context menu".into()),
+            padding: 30.,
+            backdrop: wire::Rgba([0.; 4]),
+            align_x: wire::AlignX::Right,
+            align_y: wire::AlignY::Bottom,
+            on_dismiss: None,
+            children: vec![
+                wire::kit::spacer(),
+                wire::Node::Float {
+                    key: "float".into(),
+                    x: 37.,
+                    y: 29.,
+                    scale: 1.,
+                    shadow: Default::default(),
+                    radius: None,
+                    content: Box::new(card),
+                },
+            ],
+        };
+        let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
+        let tree = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        let card = tree
+            .read_with(&native, |tree, _| tree.measured_bounds("float-card"))
+            .expect("the floated card was measured");
+        assert_eq!(card.origin, point(px(37.), px(29.)));
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let quads = window.painted_quads();
+            let scale = window.scale_factor();
+            let card_surfaces = quads
+                .iter()
+                .filter(|quad| {
+                    quad.bounds.size.width.as_f32() == 40. * scale
+                        && quad.bounds.size.height.as_f32() == 20. * scale
+                })
+                .count();
+            assert_eq!(
+                card_surfaces, 1,
+                "the Float owns the card surface: {quads:?}"
+            );
+        });
     }
 }

@@ -71,7 +71,10 @@ async fn this_side_hears_and_sees_the_other_through_the_apps_own_leg() {
     let client = crate::backend::rpc_client(&node).expect("live node client");
     crate::module_view::connected(&client).settled().await;
     let joined_at = std::time::Instant::now();
-    let mut events = crate::call::call_session(node, channel);
+    let chain = crate::backend::chain_id_of(node.clone())
+        .await
+        .expect("the live node names its chain");
+    let mut events = crate::call::call_session(node, channel, chain);
 
     // What this side publishes. Both are one video flow and one tile at the
     // far end, so a screen is not a second stream — it is the other source.

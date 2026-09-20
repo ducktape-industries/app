@@ -1,0 +1,54 @@
+{
+ "name": "boards",
+ "about": "Create a board and put a note on it. A network with no board shows the new-board form; a used one opens straight onto its last board, so the walk opens the board list from the switcher. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "ducktape-views@a2a73e1 canvas/src/presentation.rs:1403 — the canvas is a MouseArea with no role: placing, drawing, selecting and its menu are pointer-only",
+  "ducktape-views@a2a73e1 canvas/src/presentation.rs:3581 — the note editor has no label",
+  "ducktape-views@a2a73e1 canvas/src/presentation.rs:2551 — markdown note text is RichText: not in the tree",
+  "ducktape-views@a2a73e1 canvas — a card has no node but its text label: an empty card and the selection are pixels only"
+ ],
+ "steps": [
+  {
+   "say": "open the Boards tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Boards tab is selected and the boards view shows either the new-board form (a Name a new board field and a Create board button: the network has no board yet) or the last board open (a board switcher button named for that board, a sync label such as Saved, a Board canvas button and the tool buttons); no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "bring up the new-board form: press the board switcher (the button at the top left named for the open board) to open the board list; if no board is open and the Name a new board field already shows, press the Boards tab in the rail instead, which keeps the form",
+   "expect": "a Name a new board field and a Create board button show"
+  },
+  {
+   "say": "type the board name into the Name a new board field",
+   "text": "QA board {param:walk_tag}",
+   "expect": "the Name a new board field holds QA board {param:walk_tag} and Create board is enabled"
+  },
+  {
+   "say": "press Create board",
+   "expect": "the new board opens: the board switcher button is named QA board {param:walk_tag}, and the Board menu dialog may remain open over the board",
+   "settle_ms": 4000
+  },
+  {
+   "say": "if the Board menu dialog is open, press the expanded board switcher named QA board {param:walk_tag} to dismiss it; otherwise leave the board as it is",
+   "expect": "the Board menu dialog is closed, the board switcher is named QA board {param:walk_tag}, and an Add a note button shows"
+  },
+  {
+   "say": "press Add a note",
+   "expect": "a note editor opens and a Done button shows"
+  },
+  {
+   "say": "type the note text into the new note",
+   "text": "qa note {param:walk_tag}"
+  },
+  {
+   "say": "press Done",
+   "expect": "the board shows a label reading qa note {param:walk_tag} and the sync label reads Saving 1 change… or Saved (not Not saved)",
+   "settle_ms": 4000
+  }
+ ]
+}

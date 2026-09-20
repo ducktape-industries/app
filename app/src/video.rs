@@ -200,7 +200,10 @@ pub(crate) fn use_source(next: Source) -> VideoSource {
 /// Turn the camera on or off. On ends any screen share.
 pub fn call_use_camera(on: bool) -> VideoSource {
     crate::call::set_video_source(if on { "camera" } else { "off" });
-    VideoSource { camera: on, sharing: false }
+    VideoSource {
+        camera: on,
+        sharing: false,
+    }
 }
 
 /// Start sharing `target`, or stop with `None`. Starting one turns the camera
@@ -210,11 +213,17 @@ pub fn call_use_camera(on: bool) -> VideoSource {
 pub fn call_use_screen(target: Option<ShareTarget>) -> VideoSource {
     let Some(target) = target else {
         crate::call::set_video_source("off");
-        return VideoSource { camera: false, sharing: false };
+        return VideoSource {
+            camera: false,
+            sharing: false,
+        };
     };
     *share_target().lock().expect("share target") = target;
     crate::call::set_video_source("screen");
-    VideoSource { camera: false, sharing: true }
+    VideoSource {
+        camera: false,
+        sharing: true,
+    }
 }
 
 /// Clear everything at session end — the next session must not open on the
@@ -255,8 +264,12 @@ pub(crate) fn store_image(peer: String, jpeg: Vec<u8>, alive: &std::sync::atomic
     let tile = decode_frame(&jpeg);
     let mut store = store().lock().expect("video store");
     store.decoding.remove(&peer);
-    if !alive.load(Ordering::Acquire) { return; }
-    let Some(tile) = tile else { return; };
+    if !alive.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(tile) = tile else {
+        return;
+    };
     let replaced = store.peers.insert(peer, tile);
     store.retire(replaced);
 }
@@ -269,8 +282,6 @@ pub(crate) fn forget_peer(node: &str) {
     let gone = store.peers.remove(node);
     store.retire(gone);
 }
-
-
 
 /// A peer's JPEG as a tile: refused before allocation over
 /// SCREEN_PIXEL_BUDGET (the larger receive-side budget — today the tile's,
@@ -307,14 +318,22 @@ pub(crate) fn encode_frame(bgra: &[u8], width: u32, height: u32) -> Option<Vec<u
     codec::encode_bgra(bgra, width, height)
 }
 
-fn encode_bounded(bgra: &[u8], mut width: u32, mut height: u32, max_bytes: usize) -> Option<Vec<u8>> {
+fn encode_bounded(
+    bgra: &[u8],
+    mut width: u32,
+    mut height: u32,
+    max_bytes: usize,
+) -> Option<Vec<u8>> {
     let mut pixels = std::borrow::Cow::Borrowed(bgra);
     loop {
         if let Some(encoded) = encode_frame(&pixels, width, height)
-            && encoded.len() <= max_bytes {
+            && encoded.len() <= max_bytes
+        {
             return Some(encoded);
         }
-        if width <= 1 || height <= 1 { return None; }
+        if width <= 1 || height <= 1 {
+            return None;
+        }
         let smaller = codec::halve(&pixels, width, height);
         pixels = std::borrow::Cow::Owned(smaller.pixels);
         width = smaller.width;
@@ -394,9 +413,7 @@ pub(crate) fn store_preview(bgra: Vec<u8>, width: u32, height: u32) {
 ///
 /// A refusal turns the toggle back off and surfaces as "live · camera: …"
 /// through the status fold; the caller has nothing to decide.
-fn open_camera(
-    events: &tokio::sync::mpsc::Sender<String>,
-) -> Option<nokhwa::Camera> {
+fn open_camera(events: &tokio::sync::mpsc::Sender<String>) -> Option<nokhwa::Camera> {
     use nokhwa::pixel_format::RgbAFormat;
     use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType, Resolution};
 
@@ -468,10 +485,7 @@ fn budget_format(
 /// A source that will not open: say why on the session's status line, and put
 /// the toggle back where the user can see it is off. The capture thread has
 /// nothing left to decide.
-fn refuse_source(
-    events: &tokio::sync::mpsc::Sender<String>,
-    message: String,
-) {
+fn refuse_source(events: &tokio::sync::mpsc::Sender<String>, message: String) {
     let _ = events.try_send(message);
     SOURCE.store(Source::Off.code(), Ordering::Relaxed);
 }
@@ -682,10 +696,7 @@ fn x11_monitors(
 /// WM's own list of the things a person thinks of as windows, so no menu,
 /// tooltip or override-redirect surface can end up in the picker.
 #[cfg(not(target_os = "macos"))]
-fn x11_windows(
-    connection: &x11rb::rust_connection::RustConnection,
-    root: u32,
-) -> Vec<ShareChoice> {
+fn x11_windows(connection: &x11rb::rust_connection::RustConnection, root: u32) -> Vec<ShareChoice> {
     use x11rb::protocol::xproto::{AtomEnum, ConnectionExt as _};
 
     let atom = |name: &str| -> Option<u32> {
@@ -704,7 +715,14 @@ fn x11_windows(
         return Vec::new();
     };
     let listed = connection
-        .get_property(false, root, client_list, AtomEnum::WINDOW, 0, MAX_LISTED_WINDOWS)
+        .get_property(
+            false,
+            root,
+            client_list,
+            AtomEnum::WINDOW,
+            0,
+            MAX_LISTED_WINDOWS,
+        )
         .ok()
         .and_then(|cookie| cookie.reply().ok())
         .and_then(|reply| reply.value32().map(|windows| windows.collect::<Vec<u32>>()))
@@ -729,7 +747,14 @@ fn x11_windows(
             .zip(utf8)
             .and_then(|(name, utf8)| x11_text(connection, window, name, utf8));
         let title = utf8_title
-            .or_else(|| x11_text(connection, window, AtomEnum::WM_NAME.into(), AtomEnum::STRING.into()))
+            .or_else(|| {
+                x11_text(
+                    connection,
+                    window,
+                    AtomEnum::WM_NAME.into(),
+                    AtomEnum::STRING.into(),
+                )
+            })
             .unwrap_or_else(|| "Untitled window".to_string());
         choices.push(ShareChoice {
             target: ShareTarget::Window(window),
@@ -786,9 +811,13 @@ const MAX_LABEL_CHARS: usize = 72;
 /// string becomes something this app draws.
 #[cfg(not(target_os = "macos"))]
 fn row_label(title: &str) -> String {
-    let printable = title
-        .chars()
-        .map(|character| if character.is_control() { ' ' } else { character });
+    let printable = title.chars().map(|character| {
+        if character.is_control() {
+            ' '
+        } else {
+            character
+        }
+    });
     let collapsed = printable.collect::<String>();
     let mut label: String = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
     let over = label.chars().count() > MAX_LABEL_CHARS;
@@ -823,7 +852,8 @@ pub fn call_share_targets() -> Result<Vec<ShareChoice>, String> {
         });
     }
     for (index, head) in heads.iter().enumerate() {
-        let name = x11_text_of_atom(&connection, head.name).unwrap_or_else(|| format!("Screen {}", index + 1));
+        let name = x11_text_of_atom(&connection, head.name)
+            .unwrap_or_else(|| format!("Screen {}", index + 1));
         let primary = if head.primary { " (primary)" } else { "" };
         choices.push(ShareChoice {
             target: ShareTarget::Monitor(index),
@@ -923,7 +953,10 @@ impl ScreenSource {
             .composite_query_version(0, 4)
             .map_err(|error| error.to_string())?
             .reply()
-            .map_err(|_| "this X server has no Composite extension, so a single window cannot be shared".to_string())?;
+            .map_err(|_| {
+                "this X server has no Composite extension, so a single window cannot be shared"
+                    .to_string()
+            })?;
         self.connection
             .composite_redirect_window(window, Redirect::AUTOMATIC)
             .map_err(|error| error.to_string())?
@@ -1157,10 +1190,9 @@ impl Drop for ScreenSource {
         let ShareTarget::Window(window) = self.target else {
             return;
         };
-        let _ = self.connection.composite_unredirect_window(
-            window,
-            x11rb::protocol::composite::Redirect::AUTOMATIC,
-        );
+        let _ = self
+            .connection
+            .composite_unredirect_window(window, x11rb::protocol::composite::Redirect::AUTOMATIC);
     }
 }
 
@@ -1187,10 +1219,7 @@ impl Open {
     }
 }
 
-fn open_source(
-    source: Source,
-    events: &tokio::sync::mpsc::Sender<String>,
-) -> Open {
+fn open_source(source: Source, events: &tokio::sync::mpsc::Sender<String>) -> Open {
     match source {
         Source::Off => Open::None,
         Source::Camera => open_camera(events).map_or(Open::None, Open::Camera),
@@ -1414,9 +1443,13 @@ mod tests {
             .expect("the atom")
             .atom;
         connection
-            .change_property32(PropMode::REPLACE, root, client_list, AtomEnum::WINDOW, &[
-                window,
-            ])
+            .change_property32(
+                PropMode::REPLACE,
+                root,
+                client_list,
+                AtomEnum::WINDOW,
+                &[window],
+            )
             .expect("publish the client list")
             .check()
             .expect("it is published");
@@ -1482,12 +1515,16 @@ mod tests {
                     .check()
                     .expect("the gc is created");
                 connection
-                    .poly_fill_rectangle(window, gc, &[Rectangle {
-                        x: 0,
-                        y: 0,
-                        width: EDGE,
-                        height: EDGE,
-                    }])
+                    .poly_fill_rectangle(
+                        window,
+                        gc,
+                        &[Rectangle {
+                            x: 0,
+                            y: 0,
+                            width: EDGE,
+                            height: EDGE,
+                        }],
+                    )
                     .expect("fill the window")
                     .check()
                     .expect("it is filled");
@@ -1807,7 +1844,11 @@ mod tests {
             .expect("video store")
             .decoding
             .insert(peer_hex.clone());
-        store_image(peer_hex.clone(), Vec::new(), &std::sync::atomic::AtomicBool::new(true));
+        store_image(
+            peer_hex.clone(),
+            Vec::new(),
+            &std::sync::atomic::AtomicBool::new(true),
+        );
         assert!(
             !store()
                 .lock()

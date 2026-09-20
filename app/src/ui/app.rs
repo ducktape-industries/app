@@ -27,12 +27,17 @@ pub(crate) enum HubStep {
     Provisioning,
     Live,
     Account,
+    /// The picked network could not be opened: its node did not answer the
+    /// open, before any wallet screen, or the account lookup after a finished
+    /// wallet ceremony failed. A retry and the way back.
+    Offline,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WalletDoor {
     Wallets,
     Password,
     Unreached,
+    Offline,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum WindowSummon {
@@ -94,8 +99,8 @@ pub(crate) enum DuckKind {
 /// A tab is a seated view and nothing else, so this carries an id and has no
 /// arm per view: ten arms meant a view the connected node's registry listed
 /// but this build had never heard of could not BE a tab, which is the whole
-/// point of a registry. The strip's rows come from the registry plus the ids
-/// whose bytes ship with the app (`backend::view_source::DESKTOP_OWNED`), and
+/// point of a registry. The strip's rows are the registry's, arranged by a
+/// local preference (`shell::navigation_rows`), and
 /// an id no arm anywhere names still seats, draws and routes
 /// (`ui::native_view`, `shell::navigation_rows`).
 ///
@@ -130,6 +135,8 @@ pub(crate) enum SettingsIntent {
     UpdateCheck,
     UpdateRestart,
     UpdateRollback,
+    /// Set the workspace's node RPC URL (`url` in the detail); empty clears it.
+    Endpoint,
 }
 /// The update controls the reader can press; each is one `app_update::Event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -232,6 +239,8 @@ pub struct Ducktape {
     pub(crate) mutation_phase: MutationPhase,
     pub(crate) error: String,
     pub(crate) startup_duck_link: String,
+    /// The console's first live catch-up since it connected has landed.
+    pub(crate) live_caught_up: bool,
     pub(crate) channels: Vec<crate::backend::ChatChannel>,
     pub(crate) chat_generation: i64,
     pub(crate) active_channel: String,
@@ -257,6 +266,11 @@ pub struct Ducktape {
     pub(crate) settings_key_state: String,
     pub(crate) settings_user_key: String,
     pub(crate) settings_generation: i64,
+    /// The node RPC URL this session uses, the override Settings stored ("" for
+    /// none), and the sentence after a refused set ("" otherwise).
+    pub(crate) rpc_endpoint: String,
+    pub(crate) rpc_endpoint_override: String,
+    pub(crate) rpc_endpoint_refusal: String,
     pub(crate) account_exists: bool,
     pub(crate) account_number: String,
     pub(crate) account_name: String,
@@ -311,10 +325,17 @@ pub struct Ducktape {
     pub(crate) console_entry: ConsoleEntry,
     pub(crate) connection_progress: String,
     pub(crate) invite_link: String,
+    /// Why the node did not mint the invitation asked for; said beside the button.
+    pub(crate) invite_refusal: String,
+    /// What the node said the minted invitation cannot do; said beside the button.
+    pub(crate) invite_notes: Vec<String>,
     pub(crate) provision_steps: Vec<crate::backend::ProvisionStep>,
     pub(crate) provision_index: i64,
     pub(crate) hub_chain_id: String,
     pub(crate) welcome_name_draft: String,
+    /// The account screen was opened from the workspace, not from a wallet
+    /// step: its Cancel goes back there.
+    pub(crate) welcome_from_console: bool,
     pub(crate) ceremony_phase: String,
     pub(crate) ceremony_qr: String,
     pub(crate) ceremony_detail: String,
@@ -443,6 +464,8 @@ pub(crate) enum AppMessage {
     SettingsViewEvent(crate::module_view::ModuleViewEvent),
     SettingsUnlocked(String),
     SettingsUnlockFailed(crate::backend::AppError),
+    SettingsEndpointSaved(crate::backend::EndpointFacts),
+    SettingsEndpointRefused(crate::backend::AppError),
     CopyToClipboard(String, String),
     DismissToast,
     ToastTick,
@@ -480,7 +503,8 @@ pub(crate) enum AppMessage {
     UnlockSubmit(String),
     KeyUnlocked(String),
     LoginSkip,
-    PasswordSubmit(String),
+    /// the password and its confirmation
+    PasswordSubmit(String, String),
     DeviceKeyCreated(String),
     PhraseWrittenDown,
     ShowPhraseAgain,
@@ -488,6 +512,9 @@ pub(crate) enum AppMessage {
     PhraseConfirmed(String),
     PhraseConfirmFailed(crate::backend::AppError),
     GoRestore,
+    /// A new wallet from the wallet list: the same ceremony an empty
+    /// keystore opens on.
+    GoCreateWallet,
     GoLogin,
     RestoreSubmit(String, String),
     KeyRestored(String),
@@ -495,6 +522,8 @@ pub(crate) enum AppMessage {
     PickNetwork(String),
     OpenNetworkSubmit,
     ConnectRemoteSubmit(String),
+    /// Ask the node the open is on again, from the offline step.
+    RetryNetwork,
     WalletsLoaded(crate::backend::WalletList),
     ChainNamed(String),
     ChainProbeFailed(crate::backend::AppError),
@@ -511,13 +540,15 @@ pub(crate) enum AppMessage {
     NetworkEntered,
     ConsoleOpened(crate::shell::WindowKey),
     ForgetNetworkSubmit(String),
+    ClearNetworkEndpoint(String),
     NetworkForgotten(bool),
     GoJoin,
     GoNetworks,
     JoinNetworkSubmit,
     WorkspaceMaterialized(crate::backend::WorkspaceInit),
     ProvisionStepped(crate::backend::ProvisionStep),
-    OnboardingInviteMinted(String),
+    OnboardingInviteMinted(crate::backend::Invitation),
+    OnboardingInviteRefused(crate::backend::AppError),
     CopyOnboardingInvite,
     EnterConsole,
     OnboardingFailed(crate::backend::AppError),
@@ -561,9 +592,29 @@ impl Ducktape {
     pub(crate) fn update_reading(&self) -> Option<crate::backend::update::UpdateReading> {
         self.updater.as_ref().map(|updater| updater.reading())
     }
+    /// The node the release channel is read through: the console's session
+    /// while one is connected, else the launch window's selected workspace
+    /// row whose own node answers, contract refused or not
+    /// ([`crate::backend::update_carrier`]). `None`: nothing to check through.
+    pub(crate) fn update_carrier(&self) -> Option<String> {
+        if self.connected {
+            return Some(self.connected_rpc.clone());
+        }
+        crate::backend::update_carrier(&self.hub_networks, &self.hub_selected)
+    }
     /// The console's update strip, if a phase draws one.
     pub(crate) fn update_strip(&self) -> Option<crate::backend::update::UpdateStrip> {
         crate::backend::update::strip_of(self.update_reading().as_ref())
+    }
+    /// The launch window's update strip, drawn under a refused row. The check
+    /// is offered only where it can run: a row another network answers for
+    /// carries nothing, so it gets the console's strip alone.
+    pub(crate) fn launch_update_strip(&self) -> Option<crate::backend::update::UpdateStrip> {
+        let reading = self.update_reading();
+        match self.update_carrier() {
+            Some(_) => crate::backend::update::launch_strip_of(reading.as_ref(), self.wall_now),
+            None => crate::backend::update::strip_of(reading.as_ref()),
+        }
     }
     /// The Settings "Updates" section's facts.
     pub(crate) fn update_facts(&self) -> crate::backend::update::UpdateFacts {
@@ -638,6 +689,7 @@ impl Ducktape {
             mutation_phase: MutationPhase::Idle,
             error: "".to_owned(),
             startup_duck_link: crate::backend::startup_duck_url(),
+            live_caught_up: false,
             channels: Vec::new(),
             chat_generation: 0,
             active_channel: "".to_owned(),
@@ -663,6 +715,9 @@ impl Ducktape {
             settings_key_state: "".to_owned(),
             settings_user_key: "".to_owned(),
             settings_generation: 0,
+            rpc_endpoint: "".to_owned(),
+            rpc_endpoint_override: "".to_owned(),
+            rpc_endpoint_refusal: "".to_owned(),
             account_exists: false,
             account_number: "".to_owned(),
             account_name: "".to_owned(),
@@ -714,10 +769,13 @@ impl Ducktape {
             console_entry: ConsoleEntry::Idle,
             connection_progress: String::new(),
             invite_link: "".to_owned(),
+            invite_refusal: "".to_owned(),
+            invite_notes: Vec::new(),
             provision_steps: Vec::new(),
             provision_index: 0,
             hub_chain_id: "".to_owned(),
             welcome_name_draft: "".to_owned(),
+            welcome_from_console: false,
             ceremony_phase: "".to_owned(),
             ceremony_qr: "".to_owned(),
             ceremony_detail: "".to_owned(),
@@ -757,6 +815,11 @@ impl Ducktape {
                 })
                 .map(AppMessage::LiveUpdated),
             );
+        }
+        // the open wait reads the node's phase off the same push the console
+        // holds, so a joining or syncing node says so before the console opens.
+        let entering = self.console_entry == ConsoleEntry::Entering;
+        if self.connected || entering {
             subscriptions.push(
                 Subscription::run_with(self.connected_rpc.clone(), |rpc: &String| {
                     crate::backend::node_status_live(rpc.clone())
@@ -771,10 +834,11 @@ impl Ducktape {
                     (
                         self.connected_rpc.clone(),
                         self.huddle_channel.clone(),
+                        self.network_chain_id.clone(),
                         self.connect_generation,
                     ),
-                    |data: &(String, String, i64)| {
-                        crate::call::call_session(data.0.clone(), data.1.clone())
+                    |data: &(String, String, String, i64)| {
+                        crate::call::call_session(data.0.clone(), data.1.clone(), data.2.clone())
                     },
                 )
                 .map(AppMessage::CallEvent),
@@ -783,7 +847,9 @@ impl Ducktape {
         if self.huddle_joined {
             subscriptions.push(Subscription::run(crate::shell::seconds).map(|()| AppMessage::Tick));
         }
-        if self.console_win.is_some() {
+        // the launch window keeps the wall tick too: its selected row can
+        // carry the update check a refused contract keeps the console from.
+        if self.console_win.is_some() || self.onboarding_win.is_some() {
             subscriptions
                 .push(Subscription::run(crate::shell::seconds).map(|()| AppMessage::WallTick));
         }
@@ -896,7 +962,9 @@ mod state_tests {
         let actual = state.shell_tab;
         let expected = ShellTab::View("agents");
         assert_eq!(actual, expected);
-        let reply_message = AppMessage::OpenMessageLink("duck://channel/general".to_owned());
+        state.network_chain_id = "testnet#abcd0123".to_owned();
+        let reply_message =
+            AppMessage::OpenMessageLink("duck://testnet-abcd0123/chat/general".to_owned());
         dispatch(&mut state, reply_message);
         let actual = state.shell_tab;
         let expected = ShellTab::View("chat");

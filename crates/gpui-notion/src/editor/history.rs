@@ -59,8 +59,7 @@ impl History {
         if step != Step::Typing || self.last_step != Some(Step::Typing) {
             return false;
         }
-        self.last_recorded
-            .is_some_and(|at| at.elapsed() < COALESCE)
+        self.last_recorded.is_some_and(|at| at.elapsed() < COALESCE)
     }
 }
 

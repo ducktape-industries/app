@@ -118,7 +118,7 @@ pub(crate) fn rpc_client(input: &str) -> Result<RpcClient, String> {
         std::env::var("DUCKTAPE_NODE")
             .ok()
             .or_else(super::shell::lone_workspace_endpoint)
-            .unwrap_or_else(|| DEFAULT_RPC.to_string())
+            .unwrap_or_else(|| workspace_config::DEFAULT_APP_RPC.to_string())
     } else {
         input.trim().to_string()
     };
@@ -164,9 +164,13 @@ pub(crate) fn rpc_client(input: &str) -> Result<RpcClient, String> {
 /// [`rpc_client`], which is where this runs, holding its cache lock. The
 /// bug that shape produced was not a slow test but a dead process.
 fn operator_token_for(origin: &str) -> Option<String> {
-    let (_, workspace) = super::shell::workspaces()
-        .into_iter()
-        .find(|(_, dir)| super::shell::workspace_endpoint(dir).as_deref() == Some(origin))?;
+    let home = super::shell::ducktape_home()?;
+    let (_, workspace) = super::shell::workspace_serving(&read_prefs(), &home, origin)?;
+    operator_token_in(&workspace)
+}
+
+/// The node's `admin.token` in `workspace`, when it holds a non-empty one.
+pub(crate) fn operator_token_in(workspace: &std::path::Path) -> Option<String> {
     let token = std::fs::read_to_string(workspace.join("admin.token")).ok()?;
     let token = token.trim().to_string();
     (!token.is_empty()).then_some(token)

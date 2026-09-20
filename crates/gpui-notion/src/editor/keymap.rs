@@ -92,9 +92,11 @@ impl NotionEditor {
                 cx.stop_propagation();
             }))
             // -------------------------------------------------------- commands
-            .on_action(cx.listener(|this, _: &actions::ToggleBold, window, cx| {
-                this.toggle_bold(window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleBold, window, cx| {
+                    this.toggle_bold(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &actions::ToggleItalic, window, cx| {
                 this.toggle_italic(window, cx)
             }))
@@ -106,9 +108,11 @@ impl NotionEditor {
             .on_action(cx.listener(|this, _: &actions::ToggleStrike, window, cx| {
                 this.toggle_strike(window, cx)
             }))
-            .on_action(cx.listener(|this, _: &actions::ToggleCode, window, cx| {
-                this.toggle_code(window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleCode, window, cx| {
+                    this.toggle_code(window, cx)
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &actions::ToggleHighlight, window, cx| {
                     this.toggle_highlight(Some(HighlightColor::Yellow), window, cx)
@@ -149,34 +153,40 @@ impl NotionEditor {
                     this.toggle_ordered_list(window, cx)
                 }),
             )
-            .on_action(cx.listener(|this, _: &actions::ToggleTaskList, window, cx| {
-                this.toggle_task_list(window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleTaskList, window, cx| {
+                    this.toggle_task_list(window, cx)
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &actions::ToggleBlockquote, window, cx| {
                     this.toggle_blockquote(window, cx)
                 }),
             )
-            .on_action(cx.listener(|this, _: &actions::ToggleCodeBlock, window, cx| {
-                this.toggle_code_block(window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &actions::ToggleCodeBlock, window, cx| {
+                    this.toggle_code_block(window, cx)
+                }),
+            )
             .on_action(
                 cx.listener(|this, _: &actions::SetHorizontalRule, window, cx| {
                     this.set_horizontal_rule(window, cx)
                 }),
             )
-            .on_action(cx.listener(|this, _: &actions::DuplicateBlock, window, cx| {
-                this.duplicate_block(window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &actions::DuplicateBlock, window, cx| {
+                    this.duplicate_block(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &actions::DeleteBlock, window, cx| {
                 this.delete_active_block(window, cx)
             }))
-            .on_action(cx.listener(|this, _: &actions::MoveBlockUp, _window, cx| {
-                this.move_block(-1, cx)
-            }))
-            .on_action(cx.listener(|this, _: &actions::MoveBlockDown, _window, cx| {
-                this.move_block(1, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &actions::MoveBlockUp, _window, cx| this.move_block(-1, cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::MoveBlockDown, _window, cx| this.move_block(1, cx)),
+            )
             .on_action(cx.listener(|this, _: &actions::OpenSlashMenu, window, cx| {
                 this.open_slash_menu(window, cx)
             }))
@@ -185,30 +195,40 @@ impl NotionEditor {
                     this.set_code_language(action.0, window, cx)
                 }),
             )
-            .on_action(cx.listener(|this, _: &actions::CopyBlock, _window, cx| {
-                this.copy_active_block(cx)
-            }))
-            .on_action(cx.listener(|this, _: &actions::InsertRowAbove, window, cx| {
-                this.insert_row_at_caret(false, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &actions::InsertRowBelow, window, cx| {
-                this.insert_row_at_caret(true, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &actions::InsertColumnLeft, window, cx| {
-                this.insert_column_at_caret(false, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &actions::InsertColumnRight, window, cx| {
-                this.insert_column_at_caret(true, window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &actions::CopyBlock, _window, cx| this.copy_active_block(cx)),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::InsertRowAbove, window, cx| {
+                    this.insert_row_at_caret(false, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::InsertRowBelow, window, cx| {
+                    this.insert_row_at_caret(true, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::InsertColumnLeft, window, cx| {
+                    this.insert_column_at_caret(false, window, cx)
+                }),
+            )
+            .on_action(
+                cx.listener(|this, _: &actions::InsertColumnRight, window, cx| {
+                    this.insert_column_at_caret(true, window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &actions::DeleteRow, window, cx| {
                 this.delete_row_at_caret(window, cx)
             }))
             .on_action(cx.listener(|this, _: &actions::DeleteColumn, window, cx| {
                 this.delete_column_at_caret(window, cx)
             }))
-            .on_action(cx.listener(|this, _: &actions::AddComment, window, cx| {
-                this.add_comment(window, cx)
-            }))
+            .on_action(
+                cx.listener(|this, _: &actions::AddComment, window, cx| {
+                    this.add_comment(window, cx)
+                }),
+            )
             .on_action(cx.listener(|this, _: &actions::OpenEmojiMenu, window, cx| {
                 this.open_suggestion(super::suggestion::Trigger::Emoji, window, cx)
             }))
@@ -223,14 +243,14 @@ impl NotionEditor {
             .on_action(cx.listener(|this, _: &actions::SetLink, window, cx| {
                 this.open_link_editor(window, cx)
             }))
-            .on_action(
-                cx.listener(|this, action: &actions::ApplyColor, window, cx| match action {
+            .on_action(cx.listener(
+                |this, action: &actions::ApplyColor, window, cx| match action {
                     actions::ApplyColor::Text(color) => this.set_color(*color, window, cx),
                     actions::ApplyColor::Highlight(color) => {
                         this.toggle_highlight(Some(*color), window, cx)
                     }
-                }),
-            )
+                },
+            ))
     }
 
     // ------------------------------------------------------------- handlers
@@ -254,7 +274,9 @@ impl NotionEditor {
             cx.stop_propagation();
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
 
         // Shift-Enter is a soft break: let the input insert the newline.
         if action.shift {
@@ -294,7 +316,9 @@ impl NotionEditor {
             cx.stop_propagation();
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let (start, _, collapsed) = self.caret(ix, cx);
         if !collapsed || start != 0 {
             return;
@@ -317,7 +341,9 @@ impl NotionEditor {
             cx.stop_propagation();
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let (start, _, collapsed) = self.caret(ix, cx);
         if !collapsed || start != self.blocks[ix].text.len() {
             return;
@@ -340,7 +366,9 @@ impl NotionEditor {
             cx.stop_propagation();
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if !self.caret_on_first_row(ix, cx) {
             return;
         }
@@ -363,7 +391,9 @@ impl NotionEditor {
             cx.stop_propagation();
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if !self.caret_on_last_row(ix, cx) {
             return;
         }
@@ -389,7 +419,9 @@ impl NotionEditor {
         if self.link_editor_is_open() || self.comment_draft_is_open() {
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let (start, _, collapsed) = self.caret(ix, cx);
         if !collapsed || start != 0 {
             return;
@@ -408,7 +440,9 @@ impl NotionEditor {
         if self.link_editor_is_open() || self.comment_draft_is_open() {
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         let (start, _, collapsed) = self.caret(ix, cx);
         if !collapsed || start != self.blocks[ix].text.len() {
             return;
@@ -434,7 +468,9 @@ impl NotionEditor {
             }
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if self.spec_at(ix, cx).caps().multiline {
             return;
         }
@@ -459,7 +495,9 @@ impl NotionEditor {
             }
             return;
         }
-        let Some(ix) = self.active_index() else { return };
+        let Some(ix) = self.active_index() else {
+            return;
+        };
         if self.spec_at(ix, cx).caps().multiline {
             return;
         }

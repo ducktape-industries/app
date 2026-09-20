@@ -248,12 +248,19 @@ async fn run(
         let loaded = {
             let state = source.lock().expect("session source");
             match &state.slot {
-                Slot::Loading => Ok(None),
+                Slot::Loading | Slot::Fetching { .. } | Slot::Verifying | Slot::Compiling => {
+                    Ok(None)
+                }
+                // an empty slot a load is on its way for may be a previous
+                // connection's: only the verdict of this one is the answer
+                Slot::Empty if state.in_flight => Ok(None),
                 Slot::Empty => Err(wire::Refusal::new(
                     "session_view_removed",
                     "session view was removed",
                 )),
-                Slot::Failed(error) => Err(wire::Refusal::new("session_load_failed", error.clone())),
+                Slot::Failed(error) => {
+                    Err(wire::Refusal::new("session_load_failed", error.to_string()))
+                }
                 Slot::Ready(guest) => {
                     let current = guest.connection_rev == revision;
                     if current {
@@ -384,8 +391,7 @@ mod tests {
     use super::*;
 
     fn call_guest() -> Guest {
-        let path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/views/call_view.wasm");
+        let path = super::super::tests::staged("call").expect("staged views");
         Guest::load_from("call", &path)
             .expect("stage the call guest with ops/build-views.sh -p call-view")
     }
@@ -408,7 +414,8 @@ mod tests {
             .expect("queued stale session refused before mounting");
         assert_eq!(
             source_error.reason, "stale_connection",
-            "{}", source_error.sentence
+            "{}",
+            source_error.sentence
         );
         assert!(
             !super::super::registry()

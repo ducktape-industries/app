@@ -14,12 +14,12 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Edges, Entity, EntityInputHandler as _, EventEmitter,
     Focusable as _, Hsla, InteractiveElement as _, IntoElement, Keystroke, MouseButton,
-    ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
 };
 use std::ops::Range;
 use std::sync::Arc;
-use view_wire as wire;
 use unicode_segmentation::UnicodeSegmentation;
+use view_wire as wire;
 
 /// The key context a guest editor sits in. The shell's keystroke interceptor
 /// runs before this editor's and cannot be stopped by it, so it reads this off
@@ -41,6 +41,8 @@ pub struct TextEditor {
     projection: Option<Projection>,
     painted: Option<wire::EditorOptions>,
     fills: bool,
+    /// the node's mapping; the field's text is added as its value
+    accessible: crate::view_tree::Accessible,
     ime: Option<crate::module_view::input::ImeState>,
     _observation: Subscription,
     _keystrokes: Subscription,
@@ -83,6 +85,7 @@ impl TextEditor {
             projection: None,
             painted: None,
             fills: true,
+            accessible: Default::default(),
             ime: None,
             _observation: observation,
             _keystrokes: keystrokes,
@@ -104,6 +107,18 @@ impl TextEditor {
         }
         self.fills = fills;
         cx.notify();
+    }
+
+    /// What assistive technology reads for the field, but its text.
+    pub fn set_accessible(
+        &mut self,
+        accessible: crate::view_tree::Accessible,
+        cx: &mut Context<Self>,
+    ) {
+        if self.accessible != accessible {
+            self.accessible = accessible;
+            cx.notify();
+        }
     }
 
     pub fn widget_command(
@@ -174,8 +189,9 @@ impl TextEditor {
             self.reset = Some(projection.reference.reset);
             self.install(window, cx);
         }
-        let editable =
-            projection.editable && projection.fault.is_none() && projection.text.is_some();
+        // A field the view just opened takes keys before its document is
+        // here: the store holds them and replays them once it arrives.
+        let editable = projection.editable && projection.fault.is_none();
         let input = self.input.clone();
         input.update(cx, |input, cx| {
             if input.is_editable() != editable {
@@ -418,6 +434,10 @@ impl Render for TextEditor {
             wire::FontFamily::Monospace => design::fonts::FAMILY_MONO.to_owned(),
             _ => design::fonts::FAMILY_UI.to_owned(),
         });
+        let accessible = crate::view_tree::Accessible {
+            value: Some(self.input.read(cx).value().to_string()),
+            ..self.accessible.clone()
+        };
         // The shell reads this context off a keystroke to yield the chords a
         // guest editor claims — Ctrl+K is a link here, not the search palette.
         div()
@@ -437,7 +457,22 @@ impl Render for TextEditor {
             .when_some(family, |element, family| {
                 crate::shell::with_family(element, family)
             })
-            .child(Textarea::new(&self.input))
+            .child(crate::view_tree::announce(
+                gpui_notion::editor::ui::text_field(
+                    SharedString::from(format!("{}/field", self.key)),
+                    &self.input.read(cx).focus_handle(cx),
+                    {
+                        let state = self.input.clone();
+                        move |value, window, cx| {
+                            state.update(cx, |state, cx| state.replace_all(value, window, cx))
+                        }
+                    },
+                    // the base Textarea draws no node of its own
+                    Textarea::new(&self.input),
+                )
+                .when(self.fills, |field| field.h_full()),
+                accessible,
+            ))
     }
 }
 
@@ -818,6 +853,114 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
             .any(|event| matches!(event, wire::Event::EditorRequest { .. })),
         "an arrow is the field's to answer: {unclaimed:?}"
     );
+}
+
+/// #156: a tab left with its editor focused. Under a shell window the editor
+/// stops being drawn, and no key pressed next — a character, Escape, Enter,
+/// Tab, Backspace — reaches it: no request, the document as it was. Shown and
+/// focused, the same editor hears every one: the claimed keys as requests,
+/// the rest as edits.
+#[cfg(test)]
+#[gpui_kit::test]
+fn keys_pressed_on_another_tab_never_reach_the_left_editor(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    use wire::keyboard::{Key, Named};
+    struct Seat {
+        editor: Entity<TextEditor>,
+        shown: bool,
+        _shell: Entity<crate::shell::DesktopWindow>,
+    }
+    impl Render for Seat {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .when(self.shown, |seat| seat.child(self.editor.clone()))
+        }
+    }
+    cx.update(gpui_kit::init);
+    let claim = |named| wire::EditorKeyClaim {
+        key: Key::Named(named),
+        modifiers: Default::default(),
+        command: false,
+    };
+    // one window per key: an unanswered request holds the next one back
+    let typed = |shown: bool, key: &str, cx: &mut gpui_kit::TestAppContext| {
+        let store = store_with(
+            "draft",
+            "draft",
+            vec![claim(Named::Escape), claim(Named::Enter)],
+            "",
+        );
+        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
+            let shell = crate::shell::test_window(
+                crate::Ducktape::initial_state(),
+                crate::shell::WindowKind::Console,
+                window,
+                cx,
+            );
+            let editor = cx.new(|cx| TextEditor::new("document".into(), store.clone(), window, cx));
+            Seat {
+                editor,
+                shown: true,
+                _shell: shell,
+            }
+        });
+        let seat = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let input = seat.read(cx).editor.read(cx).input.clone();
+            input.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+            seat.update(cx, |seat, _| seat.shown = shown);
+            window.render_frame(cx);
+        });
+        store.drain();
+        native.update(|window, cx| {
+            window.dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
+            window.render_frame(cx);
+        });
+        native.run_until_parked();
+        let events = store.drain();
+        let requested: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                wire::Event::EditorRequest { request, .. } => Some(&request.input),
+                _ => None,
+            })
+            .filter_map(|input| match input {
+                wire::EditorRequestInput::Key { key, .. } => Some(key.key.clone()),
+                _ => None,
+            })
+            .collect();
+        let text = native.update(|_, cx| {
+            seat.read(cx)
+                .editor
+                .read(cx)
+                .input
+                .read(cx)
+                .value()
+                .to_string()
+        });
+        (requested, text, events.len())
+    };
+    for key in ["k", "escape", "enter", "tab", "backspace"] {
+        let (requested, text, events) = typed(false, key, cx);
+        assert_eq!(
+            (requested.len(), text.as_str(), events),
+            (0, "draft", 0),
+            "{key} reached a left editor"
+        );
+        let (requested, text, events) = typed(true, key, cx);
+        let heard = match key {
+            "escape" | "enter" => requested.len() == 1 && text == "draft",
+            _ => requested.is_empty() && text != "draft",
+        };
+        assert!(
+            heard && events > 0,
+            "{key} on a shown editor: {requested:?} {text:?}"
+        );
+    }
 }
 
 /// A field the guest will not let anyone write in reports nothing, and keeps

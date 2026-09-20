@@ -107,11 +107,13 @@ pub fn plan(layout: &Layout, commands: Vec<Command>) -> Result<Vec<Op>, Refusal>
             Command::Exec(sha) => ops.push(Op::Exec(exec(layout, sha))),
             Command::Banner(_) => {}
             Command::Fetch
+            | Command::FetchDesignated(_)
             | Command::Download { .. }
             | Command::Verify(_)
             | Command::SealImmutable(_)
             | Command::PinSuccessor(_)
-            | Command::Gc { .. } => {
+            | Command::Gc { .. }
+            | Command::RecordWorld(_) => {
                 return Err(Refusal::new(
                     "app_only_command",
                     format!("a boot was told to {command:?}; that is the running app's job"),
@@ -196,6 +198,7 @@ mod tests {
             sequence: 1,
             display: "x".into(),
             node_contract: 1,
+            refused: None,
         });
         let (_, commands) = step(staged, Event::Boot);
         let ops = plan(&layout(Platform::Linux), commands.clone()).unwrap();
@@ -309,6 +312,13 @@ mod tests {
         });
         let (_, commands) = step(idle, Event::Tick);
         let refused = plan(&layout(Platform::Linux), commands).unwrap_err();
+        assert_eq!(refused.reason, "app_only_command");
+        // `record-world` is the node launcher's; an app boot never steps `Rendered`.
+        let refused = plan(
+            &layout(Platform::Linux),
+            vec![Command::RecordWorld(sha("b"))],
+        )
+        .unwrap_err();
         assert_eq!(refused.reason, "app_only_command");
         let ops = plan(
             &layout(Platform::Linux),

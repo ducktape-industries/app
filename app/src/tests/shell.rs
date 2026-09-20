@@ -24,6 +24,11 @@ fn a_pushed_status_moves_every_fact_it_carries() {
         sync_retries: 2,
         sync_failures: 1,
         sync_last_error: "peer hung up".into(),
+        network_height: 900,
+        behind_by: 12,
+        heard_at: 1_700_000_100,
+        netstack_failure_reason: String::new(),
+        netstack_failure_detail: String::new(),
     }));
 
     // ALL SEVENTEEN, because a field the handler forgot stays frozen at its
@@ -176,6 +181,7 @@ fn a_move_to_a_pane_that_does_not_draw_the_settings_facts_keeps_the_connect_load
         key_state: "encrypted".into(),
         data_dir: "/w".into(),
         user_key: "abcd".into(),
+        endpoint: Default::default(),
     }));
     assert_eq!(
         app.settings_user_key, "abcd",
@@ -187,6 +193,112 @@ fn a_move_to_a_pane_that_does_not_draw_the_settings_facts_keeps_the_connect_load
     assert_ne!(
         app.settings_generation, in_flight,
         "entering Settings must issue a fresh read"
+    );
+}
+
+/// A WORKSPACE'S NODE RPC URL IS SETTINGS' TO DRAW AND TO SET (#92). The view
+/// sends `endpoint` with the typed `url`; the app draws the URL in use, the
+/// stored override and — after a refused set, until the next kept one — the
+/// refusal's one sentence. A kept URL (or a clear) re-points the session and
+/// reconnects it the way Settings → Reconnect does.
+#[test]
+fn settings_draws_the_node_rpc_url_and_a_kept_one_reconnects_the_session() {
+    let (mut app, _) = Ducktape::boot();
+    app.shell_tab = ShellTab::View("settings");
+    let drawn = |app: &Ducktape| -> [serde_json::Value; 3] {
+        let (view, _) = app.native_view();
+        let props: serde_json::Value = serde_json::from_slice(&view.props).unwrap();
+        [
+            "rpc_endpoint",
+            "rpc_endpoint_override",
+            "rpc_endpoint_refusal",
+        ]
+        .map(|fact| props[fact].clone())
+    };
+    let editability = |app: &Ducktape| -> [serde_json::Value; 2] {
+        let (view, _) = app.native_view();
+        let props: serde_json::Value = serde_json::from_slice(&view.props).unwrap();
+        [
+            props["rpc_endpoint_editable"].clone(),
+            props["rpc_endpoint_editability_reason"].clone(),
+        ]
+    };
+    let event = crate::module_view::view_event(
+        "endpoint".into(),
+        r#"{"url":"http://100.92.85.92:28990"}"#.into(),
+    );
+    assert_eq!(
+        crate::module_view::settings_intent(&event),
+        SettingsIntent::Endpoint
+    );
+    assert_eq!(
+        crate::module_view::event_text(&event, "url"),
+        "http://100.92.85.92:28990"
+    );
+
+    let _ = app.update(AppMessage::SettingsLoaded(crate::backend::SettingsFacts {
+        generation: app.settings_generation,
+        key_path: "/w/user.key".into(),
+        key_state: "encrypted".into(),
+        data_dir: "/w".into(),
+        user_key: "abcd".into(),
+        endpoint: crate::backend::EndpointFacts {
+            endpoint: "http://127.0.0.1:8844".into(),
+            endpoint_override: String::new(),
+        },
+    }));
+    assert_eq!(drawn(&app), ["http://127.0.0.1:8844", "", ""]);
+    assert_eq!(
+        editability(&app),
+        [serde_json::json!(true), serde_json::json!("")]
+    );
+
+    let refusal = "A node RPC URL is http:// or https:// followed by a host and an optional port, and nothing else.";
+    let _ = app.update(AppMessage::SettingsEndpointRefused(
+        refusal.to_string().into(),
+    ));
+    assert_eq!(drawn(&app), ["http://127.0.0.1:8844", "", refusal]);
+
+    let remote = "http://100.92.85.92:28990";
+    let _ = app.update(AppMessage::SettingsEndpointSaved(
+        crate::backend::EndpointFacts {
+            endpoint: remote.into(),
+            endpoint_override: remote.into(),
+        },
+    ));
+    assert_eq!(drawn(&app), [remote, remote, ""]);
+    assert_eq!(app.connected_rpc, remote, "the session is re-pointed");
+    assert!(
+        handler_body("SettingsEndpointSaved").contains("Task::done(AppMessage::Reconnect)"),
+        "a kept URL reconnects through Settings → Reconnect's own message"
+    );
+
+    let _ = app.update(AppMessage::SettingsEndpointSaved(
+        crate::backend::EndpointFacts {
+            endpoint: "http://127.0.0.1:8844".into(),
+            endpoint_override: String::new(),
+        },
+    ));
+    assert_eq!(drawn(&app), ["http://127.0.0.1:8844", "", ""]);
+
+    let _ = app.update(AppMessage::SettingsLoaded(crate::backend::SettingsFacts {
+        generation: app.settings_generation,
+        key_path: "/w/user.key".into(),
+        key_state: "encrypted".into(),
+        data_dir: String::new(),
+        user_key: "abcd".into(),
+        endpoint: crate::backend::EndpointFacts {
+            endpoint: remote.into(),
+            endpoint_override: String::new(),
+        },
+    }));
+    assert_eq!(drawn(&app), [remote, "", ""]);
+    assert_eq!(
+        editability(&app),
+        [
+            serde_json::json!(false),
+            serde_json::json!("This connection has no local workspace."),
+        ]
     );
 }
 
@@ -504,7 +616,7 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
     });
     app.updater = Some(Updater::new(
         pending,
-        keys,
+        Some(keys),
         UpdatePaths::under(updates.path()),
     ));
     let (view, _) = app.native_view();
@@ -594,10 +706,11 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
         sequence: 5,
         display: "2026.09.3+abcdef0".into(),
         node_contract: 1,
+        refused: None,
     });
     app.updater = Some(Updater::new(
         staged,
-        app.updater.as_ref().unwrap().keys().clone(),
+        app.updater.as_ref().unwrap().keys().cloned(),
         UpdatePaths::under(updates.path()),
     ));
     assert_eq!(
@@ -614,7 +727,7 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
     });
     app.updater = Some(Updater::new(
         rolled_back,
-        app.updater.as_ref().unwrap().keys().clone(),
+        app.updater.as_ref().unwrap().keys().cloned(),
         UpdatePaths::under(updates.path()),
     ));
     assert_eq!(
@@ -638,6 +751,352 @@ fn update_facts_reach_settings_and_each_intent_is_one_action() {
     assert!(shell.contains("letupdate_strip=state.update_strip();"));
     assert!(shell.contains("Message::UpdateAction(crate::UpdateAction::RestartToUpdate)"));
     assert!(shell.contains("Message::UpdateAction(crate::UpdateAction::DismissRollbackNotice)"));
+}
+
+/// A launch-window row on this device whose live node speaks a contract the
+/// app refuses (#101).
+pub(super) fn refused_workspace_row(id: &str, endpoint: &str) -> backend::HubNetwork {
+    backend::HubNetwork {
+        id: id.into(),
+        chain_id: id.into(),
+        name: "walk".into(),
+        endpoint: endpoint.into(),
+        endpoint_override: String::new(),
+        kind: "local".into(),
+        last_used: 0,
+        probed: true,
+        live: true,
+        height: 2033,
+        contract: backend::EXPECTED_NODE_CONTRACT + 1,
+        another_network: false,
+        phase: "serving".into(),
+        behind_by: 0,
+        netstack_failure: String::new(),
+    }
+}
+
+/// An armed updater in `phase`, its files under `dir`.
+pub(super) fn armed_updater(
+    phase: app_update::Phase,
+    dir: &std::path::Path,
+) -> crate::backend::update::Updater {
+    use commonware_cryptography::{Signer as _, ed25519};
+    let keys = app_update::TrustedKeys {
+        pinned: app_update::PublicKey::of(&ed25519::PrivateKey::from_seed(1)),
+        successor: None,
+    };
+    crate::backend::update::Updater::new(
+        phase,
+        Some(keys),
+        crate::backend::update::UpdatePaths::under(dir),
+    )
+}
+
+/// THE UPDATE CHECK NEEDS NO CONSOLE (#101). With no console open the wall
+/// tick checks through the selected workspace row's own node even when its
+/// contract refuses the console — that refusal is what a newer release
+/// lifts. No selection, or a row another network answers for, carries
+/// nothing and nothing is checked.
+#[test]
+fn the_wall_tick_checks_through_a_refused_rows_node_without_a_console() {
+    let updates = tempfile::tempdir().unwrap();
+    let id = "walk#0e1b62f1";
+    let endpoint = "http://127.0.0.1:1";
+    let mut app = Ducktape::initial_state();
+    app.updater = Some(armed_updater(
+        app_update::Phase::Idle(app_update::Idle {
+            current: app_update::Sha::digest(b"installed"),
+            previous: None,
+            pinned_sequence: 2,
+        }),
+        updates.path(),
+    ));
+    assert!(!app.connected && app.console_win.is_none());
+    app.hub_networks = vec![refused_workspace_row(id, endpoint)];
+
+    // neither a console nor a selection: no carrier, no check
+    let _ = app.update(AppMessage::WallTick);
+    assert_eq!(app.update_carrier(), None);
+    assert!(!app.update_reading().unwrap().busy);
+
+    // a row where another network answers is never the carrier
+    app.hub_networks[0].another_network = true;
+    app.hub_networks[0].live = false;
+    app.hub_selected = id.into();
+    assert!(backend::selected_network_refuses(&app.hub_networks, id));
+    let _ = app.update(AppMessage::WallTick);
+    assert_eq!(app.update_carrier(), None);
+    assert!(!app.update_reading().unwrap().busy);
+
+    // the refused row's own node is: the tick starts the fetch through it
+    app.hub_networks = vec![refused_workspace_row(id, endpoint)];
+    assert!(backend::selected_network_refuses(&app.hub_networks, id));
+    assert_eq!(app.update_carrier().as_deref(), Some(endpoint));
+    let _ = app.update(AppMessage::WallTick);
+    assert!(app.update_reading().unwrap().busy, "a fetch is in flight");
+
+    // every job runs through the carrier, not the console's session alone
+    let jobs = rust_tokens(include_str!("../ui/app_update.rs"));
+    assert!(jobs.contains("run_job(self.update_carrier().unwrap_or_default(),"));
+    assert!(jobs.contains("updater.tick(self.wall_now,carrier)"));
+}
+
+/// A REFUSED ROW CARRIES THE OFFER (#101). The launch window draws the
+/// console's update strip under a row whose contract refuses the console: a
+/// staged release offers Restart to update there, and with nothing staged
+/// the strip offers the check itself. A row that opens draws no strip.
+#[test]
+fn a_refused_row_offers_the_update_on_the_launch_window() {
+    use gpui_kit::test::TestWindowExt as _;
+    let updates = tempfile::tempdir().unwrap();
+    let id = "walk#0e1b62f1";
+    let current = app_update::Sha::digest(b"installed");
+    let launch_window = |phase: app_update::Phase, contract: u32| {
+        let mut app = Ducktape::initial_state();
+        app.hub_step = HubStep::Networks;
+        app.hub_networks = vec![backend::HubNetwork {
+            contract,
+            ..refused_workspace_row(id, "http://127.0.0.1:1")
+        }];
+        app.hub_selected = id.into();
+        app.updater = Some(armed_updater(phase, updates.path()));
+        onboarding_window(app)
+    };
+    let staged = app_update::Phase::Staged(app_update::Staged {
+        current,
+        previous: None,
+        pinned_sequence: 2,
+        staged: app_update::Sha::digest(b"next"),
+        sequence: 3,
+        display: "2026.09.3+abcdef0".into(),
+        node_contract: backend::EXPECTED_NODE_CONTRACT + 1,
+        refused: None,
+    });
+    let idle = app_update::Phase::Idle(app_update::Idle {
+        current,
+        previous: None,
+        pinned_sequence: 2,
+    });
+    let refusing = backend::EXPECTED_NODE_CONTRACT + 1;
+
+    let (mut native, window, _) = launch_window(staged.clone(), refusing);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            let strip = window.within("update-strip");
+            assert!(strip.find("update-restart").visible());
+            assert!(strip.try_find("update-check").is_none());
+        })
+        .unwrap();
+
+    let (mut native, window, view) = launch_window(idle, refusing);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("update-restart").is_none());
+            assert!(window.within("update-strip").find("update-check").visible());
+            window.click("update-check", cx);
+            let reading = view.read(cx).test_state(cx).update_reading().unwrap();
+            assert!(reading.last_check.is_some(), "Check for updates checks");
+        })
+        .unwrap();
+
+    let (mut native, window, _) = launch_window(staged, backend::EXPECTED_NODE_CONTRACT);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("update-strip").is_none());
+        })
+        .unwrap();
+}
+
+/// A LONG ROW KEEPS ITS WAY OUT (#105). The row's label never shrank below
+/// its text, so a long one pushed Use node.toml and Forget out of the launch
+/// window. That happened exactly when they were needed: on an override that
+/// another network answers, where the console does not open. The label
+/// truncates, and the actions stay inside the window.
+#[test]
+fn a_long_row_label_keeps_its_actions_in_the_launch_window() {
+    use gpui_kit::test::TestWindowExt as _;
+    let id = "c6scratch-staging-east#0e1b62f1";
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Networks;
+    app.hub_networks = vec![backend::HubNetwork {
+        name: "c6scratch-staging-east".into(),
+        endpoint_override: "http://127.0.0.1:29489".into(),
+        live: false,
+        another_network: true,
+        ..refused_workspace_row(id, "http://127.0.0.1:29489")
+    }];
+    app.hub_selected = id.into();
+    let (mut native, window, _) = onboarding_window(app);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            let width = window.viewport_size().width;
+            for action in ["node-toml", "forget"] {
+                let bounds = window.find(format!("{action}/{id}")).bounds();
+                assert!(
+                    bounds.left() >= gpui_kit::px(0.) && bounds.right() <= width,
+                    "{action} {bounds:?} leaves the {width:?} window"
+                );
+            }
+        })
+        .unwrap();
+}
+
+/// A launch-window row whose node the probe measured silent: after a re-found
+/// (#137) every install still holds the dead chain's row.
+pub(super) fn silent_workspace_row(id: &str) -> backend::HubNetwork {
+    backend::HubNetwork {
+        name: "dognet".into(),
+        live: false,
+        height: -1,
+        contract: 0,
+        phase: String::new(),
+        behind_by: -1,
+        ..refused_workspace_row(id, "http://127.0.0.1:1")
+    }
+}
+
+/// A SAVED NETWORK THAT STOPPED ANSWERING (#137). A network re-founded under
+/// a new chain id leaves every install's row for the old one saying only
+/// offline. The row says the network has not answered and what to ask for —
+/// words true of an unreachable node too, since the app cannot tell the two
+/// apart — and offers Join with a new invite beside Forget, on the row. A row
+/// whose node answers carries neither.
+#[test]
+fn a_silent_network_row_says_so_and_offers_a_new_invite() {
+    use gpui_kit::test::TestWindowExt as _;
+    let (dead, live) = ("dognet#b5b6ea90", "dognet#88507a8b");
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Networks;
+    app.hub_networks = vec![
+        silent_workspace_row(dead),
+        backend::HubNetwork {
+            name: "dognet".into(),
+            contract: backend::EXPECTED_NODE_CONTRACT,
+            ..refused_workspace_row(live, "http://127.0.0.1:2")
+        },
+    ];
+    assert_eq!(
+        backend::not_answering_line(&app.hub_networks[0]).as_deref(),
+        Some("dognet has not answered. If it was re-founded, ask a member for a new invite.")
+    );
+    assert_eq!(backend::not_answering_line(&app.hub_networks[1]), None);
+    let (mut native, window, view) = onboarding_window(app);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find(format!("forget/{dead}")).visible());
+            assert!(window.find(format!("new-invite/{dead}")).visible());
+            assert!(window.try_find(format!("new-invite/{live}")).is_none());
+            window.click(format!("new-invite/{dead}"), cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).test_state(cx).hub_step, HubStep::Join);
+            assert!(window.find("join-submit").visible());
+        })
+        .unwrap();
+}
+
+/// `Rendered` is the launcher's contract, not the release channel's: an app
+/// the launcher started (`DUCKTAPE_RELEASE` + `DUCKTAPE_UPDATE_STATE`) on an
+/// install that pins no release key still settles a flipped release when
+/// its first window opens, and only the channel stays off. The env is the
+/// process's, so the app runs in a child of this test binary.
+#[test]
+fn a_launched_app_without_a_release_key_still_reports_it_rendered() {
+    use app_update::{Idle, PendingHealthy, Phase, Sha, state};
+
+    let root = tempfile::tempdir().unwrap();
+    let updates = root.path().join("cfg/ducktape/updates");
+    std::fs::create_dir_all(&updates).unwrap();
+    let state_path = updates.join("state.json");
+    let current = Sha::digest(b"flipped");
+    let previous = Sha::digest(b"before");
+    let pending = Phase::PendingHealthy(PendingHealthy {
+        current,
+        previous,
+        boots: 0,
+        pinned_sequence: 3,
+    });
+    std::fs::write(&state_path, state::encode(&pending)).unwrap();
+
+    let (_, module) = module_path!().split_once("::").unwrap();
+    let child = own_binary_copy_in(root.path())
+        .args(["--exact", "--ignored", "--nocapture"])
+        .arg(format!("{module}::launched_without_a_key_child"))
+        .env("DUCKTAPE_RELEASE", current.to_string())
+        .env("DUCKTAPE_UPDATE_STATE", &state_path)
+        .env("XDG_DATA_HOME", root.path().join("data"))
+        .output()
+        .unwrap();
+    let out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&child.stdout),
+        String::from_utf8_lossy(&child.stderr)
+    );
+    assert!(child.status.success(), "{out}");
+    assert!(out.contains("1 passed"), "the child ran: {out}");
+
+    let settled = state::decode(&std::fs::read_to_string(&state_path).unwrap()).unwrap();
+    assert_eq!(
+        settled,
+        Phase::Idle(Idle {
+            current,
+            previous: Some(previous),
+            pinned_sequence: 3,
+        })
+    );
+    assert!(
+        !updates.join("keys").exists(),
+        "no key was pinned on the way"
+    );
+}
+
+/// A command for this test binary, run from a private copy in `dir`: another
+/// `cargo test` sharing the target dir can relink the original mid-run, and
+/// from then on `current_exe()` names a deleted file.
+fn own_binary_copy_in(dir: &std::path::Path) -> std::process::Command {
+    // Linux's /proc/self/exe still opens the running image after the relink
+    // unlinked its path; elsewhere the path is all there is.
+    let running = if cfg!(target_os = "linux") {
+        std::path::PathBuf::from("/proc/self/exe")
+    } else {
+        std::env::current_exe().unwrap()
+    };
+    let copy = dir.join("self-test-binary");
+    std::fs::copy(running, &copy).unwrap();
+    std::process::Command::new(copy)
+}
+
+/// The app half of the test above, run only in its child.
+#[test]
+#[ignore = "run by a_launched_app_without_a_release_key_still_reports_it_rendered"]
+fn launched_without_a_key_child() {
+    let mut app = Ducktape::initial_state();
+    let reading = app
+        .update_reading()
+        .expect("the launcher env makes an updater with or without a key");
+    assert!(matches!(
+        reading.phase,
+        app_update::Phase::PendingHealthy(_)
+    ));
+
+    // the channel is off: neither the wall tick nor Check now starts a fetch
+    let now = app.wall_now;
+    assert_eq!(app.updater.as_mut().unwrap().tick(now, true), None);
+    let _ = app.update(AppMessage::UpdateAction(UpdateAction::CheckNow));
+    assert!(!app.update_reading().unwrap().busy, "nothing is fetched");
+    let facts = app.update_facts();
+    assert_eq!(facts.checked, "never");
+    assert_eq!(facts.note, "Updates are off: no release key is pinned.");
+
+    // the first window is the healthy signal all the same
+    let _ = app.update(AppMessage::OnboardingOpened(
+        crate::shell::WindowKey::unique(),
+    ));
+    assert_eq!(app.update_facts().state, "idle");
 }
 
 #[test]
@@ -716,4 +1175,540 @@ fn call_status_is_the_deployed_views_text() {
         ..Default::default()
     }));
     assert_eq!(app.call_status, "Custom session status");
+}
+
+/// THE FOUNDING HINT IS A COMMAND (#20). The empty network list is the one
+/// place the app says how to found a network; a `<name>` placeholder wrapped
+/// inside its own token and read as punctuation beside a sentence period.
+#[test]
+fn the_founding_command_is_typed_as_shown() {
+    let command = crate::shell::FOUNDING_COMMAND;
+    assert!(command.starts_with("ducktape node init --name "));
+    assert!(
+        !command.contains(['<', '>', '.']),
+        "{command} carries no placeholder brackets or sentence punctuation"
+    );
+}
+
+/// BACK OUT OF A JOIN'S WAIT (#18). The blocked wait offers Back to networks;
+/// the poll it leaves behind must not open the Live screen over the network
+/// list once the member's node answers.
+#[test]
+fn leaving_a_joins_wait_drops_its_poll() {
+    let (mut app, _) = Ducktape::boot();
+    let _ = app.update(AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
+        chain_id: "dognet#d2a0ec8f".into(),
+        workspace: "/nowhere/dognet#d2a0ec8f".into(),
+        rpc: "http://127.0.0.1:1".into(),
+    }));
+    assert_eq!(app.hub_step, crate::HubStep::Provisioning);
+    let waiting = app.provision_progress_generation;
+
+    let _ = app.update(AppMessage::GoNetworks);
+    let answered = backend::ProvisionStep {
+        index: 5,
+        label: "Node API listening · http://127.0.0.1:1".into(),
+        state: "done".into(),
+        settled: true,
+        hint: String::new(),
+        command: String::new(),
+        ports_held: String::new(),
+    };
+    let _ = app.update(AppMessage::ProvisionProgressReply(
+        waiting,
+        Some(Box::new(AppMessage::ProvisionStepped(answered))),
+    ));
+    assert_eq!(app.hub_step, crate::HubStep::Networks);
+}
+
+/// THE READY SCREEN MINTS WHEN ASKED (#9). It minted an invitation the moment
+/// it opened, and the node's refusal stayed under "Your network is ready" in
+/// red for an invitation nobody had asked for. Nothing is minted until Copy
+/// invitation is pressed; a refusal is a sentence beside the button, not the
+/// screen's error, and the next press asks again; a minted one is copied, and
+/// the node's notes on it (#69 — reachable on this machine only, …) are
+/// sentences beside the button too, never the screen's error.
+#[tokio::test(flavor = "current_thread")]
+async fn the_ready_screen_mints_an_invitation_only_when_asked() {
+    use futures::StreamExt as _;
+    use gpui_kit::test::TestWindowExt as _;
+    let (mut app, _) = Ducktape::boot();
+    let _ = app.update(AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
+        chain_id: "nowhere#00000009".into(),
+        workspace: "/nowhere/nowhere#00000009".into(),
+        rpc: "http://127.0.0.1:1".into(),
+    }));
+    let waiting = app.provision_progress_generation;
+    let answered = backend::ProvisionStep {
+        index: 5,
+        label: "Node API listening · http://127.0.0.1:1".into(),
+        state: "done".into(),
+        settled: true,
+        hint: String::new(),
+        command: String::new(),
+        ports_held: String::new(),
+    };
+    let ready = app.update(AppMessage::ProvisionProgressReply(
+        waiting,
+        Some(Box::new(AppMessage::ProvisionStepped(answered))),
+    ));
+    assert_eq!(app.hub_step, crate::HubStep::Live);
+    assert!(
+        ready.into_stream().next().await.is_none(),
+        "nothing is minted on arrival"
+    );
+
+    for press in ["first", "second"] {
+        let asked = app.update(AppMessage::CopyOnboardingInvite);
+        let Some(refused @ AppMessage::OnboardingInviteRefused(_)) =
+            asked.into_stream().next().await
+        else {
+            panic!("the {press} press asks for an invitation");
+        };
+        let _ = app.update(refused);
+        assert!(
+            app.invite_refusal
+                .starts_with("Your node did not make an invitation: "),
+            "{}",
+            app.invite_refusal
+        );
+        assert!(app.onboarding_error.is_empty(), "{}", app.onboarding_error);
+        assert_ne!(app.toast, "Invite copied");
+        assert_eq!(app.hub_step, crate::HubStep::Live);
+    }
+
+    // what the mint could not do rides beside the blob, in the node's words.
+    let reachable_here = "this invite is reachable on this machine only";
+    let _ = app.update(AppMessage::OnboardingInviteMinted(backend::Invitation {
+        blob: "minted-blob".into(),
+        notes: vec![reachable_here.into()],
+    }));
+    assert_eq!(app.invite_link, "minted-blob");
+    assert_eq!(app.invite_notes, [reachable_here]);
+    assert!(app.invite_refusal.is_empty());
+    assert!(app.onboarding_error.is_empty(), "{}", app.onboarding_error);
+    assert_eq!(app.toast, "Invite copied");
+
+    // … and the ready screen draws that toast (#75): it was the workspace's
+    // alone, so the copy confirmed nothing where the button is.
+    let (mut native, window, view) = onboarding_window(app);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.find("toast-dismiss").visible());
+
+            // the next network's ready screen starts with no notes of its own.
+            view.update(cx, |view, cx| {
+                view.test_dispatch(
+                    AppMessage::WorkspaceMaterialized(backend::WorkspaceInit {
+                        chain_id: "nowhere#0000000a".into(),
+                        workspace: "/nowhere/nowhere#0000000a".into(),
+                        rpc: "http://127.0.0.1:1".into(),
+                    }),
+                    cx,
+                )
+            });
+            assert!(view.read(cx).test_state(cx).invite_notes.is_empty());
+        })
+        .unwrap();
+}
+
+/// The join screens' window, holding `state`.
+fn onboarding_window(
+    state: Ducktape,
+) -> (
+    gpui_kit::HeadlessAppContext,
+    gpui_kit::AnyWindowHandle,
+    gpui_kit::Entity<crate::shell::DesktopWindow>,
+) {
+    use gpui_kit::AppContext as _;
+    let mut native = crate::frame_probe::headless_context();
+    let mut view = None;
+    let window = native
+        .open_window(
+            gpui_kit::size(gpui_kit::px(480.), gpui_kit::px(680.)),
+            |window, cx| {
+                let desktop = crate::shell::test_window(
+                    state,
+                    crate::shell::WindowKind::Onboarding,
+                    window,
+                    cx,
+                );
+                view = Some(desktop.clone());
+                cx.new(|cx| gpui_kit::component::Root::new(desktop, window, cx))
+            },
+        )
+        .expect("the join screens open");
+    (native, window.into(), view.expect("the window's view"))
+}
+
+/// COPY COMMAND SAYS SO (#75). The waiting step's Copy command put the node's
+/// command on the clipboard and drew nothing: its toast was drawn only by the
+/// workspace. The press confirms itself on the step.
+#[test]
+fn the_waiting_steps_copy_command_confirms_itself() {
+    use gpui_kit::test::TestWindowExt as _;
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Provisioning;
+    app.provision_steps = vec![backend::ProvisionStep {
+        index: 5,
+        label: "Node API listening".into(),
+        state: "waiting".into(),
+        settled: false,
+        hint: String::new(),
+        command: "ducktape node run".into(),
+        ports_held: String::new(),
+    }];
+    let (mut native, window, view) = onboarding_window(app);
+    window
+        .update(&mut native, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("toast-dismiss").is_none());
+            window.click("copy-node-command", cx);
+            window.render_frame(cx);
+            assert_eq!(view.read(cx).test_state(cx).toast, "Command copied");
+            assert!(window.find("toast-dismiss").visible());
+            // in the body's corner, as in the workspace's content box: not
+            // straddling the hairline of the 36px footer band below it.
+            let footer_top = window.viewport_size().height - gpui_kit::px(36.);
+            let toast = window.find("toast-dismiss").bounds();
+            assert!(toast.bottom() <= footer_top, "{toast:?} crosses the footer");
+        })
+        .unwrap();
+}
+
+/// THE WAIT'S COMMAND IS NOT ITS LABEL (#87). The node's two-line command was
+/// the step's label, set in the UI face beside the state word: it wrapped to
+/// some 25 lines, so the state, Copy command and the hint saying why the step
+/// is blocked fell below the fold of the join window, and Back to networks
+/// with them. The label stays a label; the command is its own block under it.
+#[test]
+fn the_waiting_steps_command_leaves_the_step_in_view() {
+    use gpui_kit::test::TestWindowExt as _;
+    let key = "ab".repeat(32);
+    for release_key in [Some(key.as_str()), None] {
+        let mut app = Ducktape::initial_state();
+        app.hub_step = HubStep::Provisioning;
+        // long past its patience: blocked, with the longest hint.
+        app.provision_steps = vec![backend::node_wait_step(
+            "/home/member/.ducktape/dognet#d2a0ec8f",
+            release_key,
+            u32::MAX,
+            "",
+        )];
+        let (mut native, window, _) = onboarding_window(app);
+        window
+            .update(&mut native, |_, window, cx| {
+                window.render_frame(cx);
+                let footer_top = window.viewport_size().height - gpui_kit::px(36.);
+                for id in ["copy-node-command", "provision-back"] {
+                    let bounds = window.find(id).bounds();
+                    assert!(
+                        bounds.bottom() <= footer_top,
+                        "{id} {bounds:?} is below the fold"
+                    );
+                }
+            })
+            .unwrap();
+    }
+}
+
+/// AN OFFLINE NETWORK SAYS SO FIRST (#19). A saved row reading `offline` still
+/// opened — by design — and the open then ran the whole wallet ceremony:
+/// password, 24 words, the confirm. Only the account lookup after it failed,
+/// in the HTTP client's words, under a Confirm heading whose instructions were
+/// gone and with no way back. The open asks the node before any wallet screen,
+/// and a node that does not answer is the offline step, with a retry and the
+/// way back; a lookup that fails after a ceremony wrote the key says the
+/// wallet is saved, on that step, never on the spent screen.
+#[tokio::test(flavor = "current_thread")]
+async fn an_offline_network_says_so_before_any_wallet_step() {
+    use futures::StreamExt as _;
+    /// Run a task's messages back through the app, as the runtime does, and
+    /// note every step the launch window passed through.
+    async fn settle(app: &mut Ducktape, task: view_wire::Task<AppMessage>) -> Vec<HubStep> {
+        let mut steps = Vec::new();
+        let mut pending = vec![task];
+        while let Some(task) = pending.pop() {
+            let mut messages = task.into_stream();
+            while let Some(message) = messages.next().await {
+                pending.push(app.update(message));
+                steps.push(app.hub_step);
+            }
+        }
+        steps
+    }
+    let wallet_screens = [
+        HubStep::Password,
+        HubStep::Phrase,
+        HubStep::Confirm,
+        HubStep::Wallets,
+        HubStep::Restore,
+        HubStep::Account,
+    ];
+    let dead = {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a free port");
+        format!("http://{}", listener.local_addr().expect("its address"))
+    };
+    let unreachable = format!("Can't reach this network's node at {dead}.");
+    let (mut app, _) = Ducktape::boot();
+    app.hub_step = HubStep::Networks;
+    app.hub_networks = vec![backend::HubNetwork {
+        id: "dognet#d2a0ec8f".into(),
+        chain_id: "dognet#d2a0ec8f".into(),
+        name: "dognet".into(),
+        endpoint: dead.clone(),
+        endpoint_override: String::new(),
+        kind: "local".into(),
+        last_used: 0,
+        probed: true,
+        live: false,
+        height: -1,
+        contract: 0,
+        another_network: false,
+        phase: String::new(),
+        behind_by: -1,
+        netstack_failure: String::new(),
+    }];
+    app.hub_selected = "dognet#d2a0ec8f".into();
+    assert_eq!(
+        backend::network_row_label(&app.hub_networks[0]),
+        "dognet · offline"
+    );
+
+    let open = app.update(AppMessage::OpenNetworkSubmit);
+    assert_eq!(
+        app.mutation_phase,
+        MutationPhase::Onboarding,
+        "a dead row still opens"
+    );
+    let steps = settle(&mut app, open).await;
+    assert!(
+        !steps.iter().any(|step| wallet_screens.contains(step)),
+        "{steps:?}"
+    );
+    assert_eq!(app.hub_step, HubStep::Offline);
+    assert_eq!(app.onboarding_error, unreachable);
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+
+    // Retry asks the same node again; still down, still offline.
+    let retry = app.update(AppMessage::RetryNetwork);
+    assert_eq!(app.mutation_phase, MutationPhase::Onboarding);
+    let steps = settle(&mut app, retry).await;
+    assert!(
+        !steps.iter().any(|step| wallet_screens.contains(step)),
+        "{steps:?}"
+    );
+    assert_eq!(app.hub_step, HubStep::Offline);
+    assert_eq!(app.onboarding_error, unreachable);
+
+    let _ = app.update(AppMessage::GoNetworks);
+    assert_eq!(app.hub_step, HubStep::Networks);
+    assert!(app.onboarding_error.is_empty());
+
+    // A CEREMONY THAT FINISHED, against a node that is gone by the lookup: the
+    // confirm sealed the key and seated it before the account was asked for
+    // (`confirm_recovery_phrase`), which is what these two lines stand in for —
+    // the seal itself writes into the real home, which is not a test's to touch.
+    app.rpc = dead.clone();
+    app.hub_step = HubStep::Confirm;
+    app.mutation_phase = MutationPhase::Onboarding;
+    backend::set_local_user_key(Some(vec![7; 32])).await;
+    let confirmed = app.update(AppMessage::PhraseConfirmed("07".repeat(32)));
+    let steps = settle(&mut app, confirmed).await;
+    backend::set_local_user_key(None).await;
+    assert!(!steps.contains(&HubStep::Account), "{steps:?}");
+    assert_eq!(
+        app.hub_step,
+        HubStep::Offline,
+        "the spent Confirm screen is left"
+    );
+    assert_eq!(
+        app.onboarding_error,
+        format!("Your wallet is saved. {unreachable}")
+    );
+    assert_eq!(
+        app.signer_key,
+        "07".repeat(32),
+        "the saved wallet is still the seat"
+    );
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+}
+
+/// CREATE A WALLET ON WELCOME BACK MAKES A WALLET (#24). The button sent the
+/// skip, so a keystore holding any wallet — one whose password is gone, say —
+/// could never reach the ceremony again: the workspace opened unsigned. It
+/// opens the same password step an empty keystore lands on, and the skip is
+/// its own button.
+#[test]
+fn create_a_wallet_on_welcome_back_opens_the_wallet_ceremony() {
+    use futures::StreamExt as _;
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(AppMessage::WalletsLoaded(backend::WalletList {
+        wallets: vec![backend::WalletInfo {
+            name: "zk-dev".into(),
+            pubkey: "07".repeat(32),
+            state: "encrypted".into(),
+            active: true,
+        }],
+        error: String::new(),
+        keystore: true,
+        offline: false,
+    }));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+
+    let create = app.update(AppMessage::GoCreateWallet);
+    let queued = futures::executor::block_on(create.into_stream().collect::<Vec<_>>());
+    assert!(queued.is_empty(), "creating never enters the workspace");
+    assert_eq!(app.hub_step, HubStep::Password);
+
+    let _ = app.update(AppMessage::GoLogin);
+    assert_eq!(app.hub_step, HubStep::Wallets, "Back returns to the list");
+    let skip = app.update(AppMessage::LoginSkip);
+    let queued = futures::executor::block_on(skip.into_stream().collect::<Vec<_>>());
+    assert!(
+        matches!(queued.as_slice(), [AppMessage::NetworkEntered]),
+        "the skip still enters the workspace"
+    );
+}
+
+/// CANCEL ON AN IDLE ACCOUNT SCREEN GOES BACK (#25). Cancel only stopped a
+/// ceremony, so with none running the press did nothing — and the workspace
+/// the banner's Sign in had closed stayed closed. A ceremony in flight is
+/// still what Cancel stops; an idle screen goes back where it was opened
+/// from: the workspace, or the wallet step the key was just opened on.
+#[test]
+fn cancel_on_an_idle_account_screen_goes_back() {
+    use futures::StreamExt as _;
+    let (mut app, _) = Ducktape::boot();
+    app.connected = true;
+    app.connected_rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(AppMessage::OpenAccountWelcome);
+    let _ = app.update(AppMessage::WelcomeReopened(
+        crate::shell::WindowKey::unique(),
+    ));
+    assert_eq!(app.hub_step, HubStep::Account);
+
+    app.mutation_phase = MutationPhase::Onboarding;
+    app.ceremony_phase = "working".into();
+    let cancel = app.update(AppMessage::WelcomeCancel);
+    let queued = futures::executor::block_on(cancel.into_stream().collect::<Vec<_>>());
+    assert!(
+        queued.is_empty(),
+        "a ceremony in flight is stopped, not left"
+    );
+    assert_eq!(app.hub_step, HubStep::Account);
+    assert!(app.ceremony_phase.is_empty());
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+
+    let cancel = app.update(AppMessage::WelcomeCancel);
+    let queued = futures::executor::block_on(cancel.into_stream().collect::<Vec<_>>());
+    assert!(
+        matches!(queued.as_slice(), [AppMessage::NetworkEntered]),
+        "opened from the workspace, Cancel returns to it"
+    );
+
+    // opened by a wallet step, before any workspace: back to that step, read
+    // again — a wallet minted on the way is not in the list loaded before it.
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    app.hub_step = HubStep::Wallets;
+    app.password = "a password".into();
+    let _ = app.update(AppMessage::AccountProbed(backend::AccountData {
+        generation: 0,
+        exists: false,
+        number: String::new(),
+        name: String::new(),
+        bio: String::new(),
+    }));
+    assert_eq!(app.hub_step, HubStep::Account);
+    let asked = app.wallets_load_generation;
+    let _ = app.update(AppMessage::WelcomeCancel);
+    assert_ne!(
+        app.wallets_load_generation, asked,
+        "the wallet step is asked"
+    );
+    assert!(app.password.is_empty());
+    let _ = app.update(AppMessage::WalletsLoadReply(
+        app.wallets_load_generation,
+        Box::new(AppMessage::WalletsLoaded(backend::WalletList {
+            wallets: vec![backend::WalletInfo {
+                name: "zk-dev".into(),
+                pubkey: "07".repeat(32),
+                state: "encrypted".into(),
+                active: true,
+            }],
+            error: String::new(),
+            keystore: true,
+            offline: false,
+        })),
+    ));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+}
+
+/// ENTERING WITHOUT A WALLET DROPS AN UNLOCKED KEY (#38). A key unlocked on
+/// the wallet step stayed seated after the account screen was left, so
+/// "Continue without a wallet" on the list it went back to opened a signed
+/// workspace. An entry with no password is unsigned, whichever way it came
+/// in; picking the wallet still enters signed.
+#[test]
+fn entering_without_a_wallet_drops_an_unlocked_key() {
+    use futures::StreamExt as _;
+    let key = "07".repeat(32);
+    let listed = || {
+        AppMessage::WalletsLoaded(backend::WalletList {
+            wallets: vec![backend::WalletInfo {
+                name: "zk-dev".into(),
+                pubkey: "07".repeat(32),
+                state: "encrypted".into(),
+                active: true,
+            }],
+            error: String::new(),
+            keystore: true,
+            offline: false,
+        })
+    };
+    let account = |exists| {
+        AppMessage::AccountProbed(backend::AccountData {
+            generation: 0,
+            exists,
+            number: String::new(),
+            name: String::new(),
+            bio: String::new(),
+        })
+    };
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(listed());
+    let _ = app.update(AppMessage::UnlockSubmit("a password".into()));
+    let _ = app.update(AppMessage::KeyUnlocked(key.clone()));
+    let _ = app.update(account(false));
+    assert_eq!(app.hub_step, HubStep::Account);
+    let _ = app.update(AppMessage::WelcomeCancel);
+    let _ = app.update(AppMessage::WalletsLoadReply(
+        app.wallets_load_generation,
+        Box::new(listed()),
+    ));
+    assert_eq!(app.hub_step, HubStep::Wallets);
+    let skip = app.update(AppMessage::LoginSkip);
+    let queued = futures::executor::block_on(skip.into_stream().collect::<Vec<_>>());
+    assert!(matches!(queued.as_slice(), [AppMessage::NetworkEntered]));
+    let _ = app.update(AppMessage::NetworkEntered);
+    assert_eq!(
+        backend::rail_identity(false, "", "", &app.signer_key).1,
+        "No signing key",
+        "the skip enters unsigned"
+    );
+
+    let (mut app, _) = Ducktape::boot();
+    app.rpc = "http://127.0.0.1:1".into();
+    let _ = app.update(listed());
+    let _ = app.update(AppMessage::UnlockSubmit("a password".into()));
+    let _ = app.update(AppMessage::KeyUnlocked(key.clone()));
+    let found = app.update(account(true));
+    let queued = futures::executor::block_on(found.into_stream().collect::<Vec<_>>());
+    assert!(matches!(queued.as_slice(), [AppMessage::NetworkEntered]));
+    let _ = app.update(AppMessage::NetworkEntered);
+    assert_eq!(app.signer_key, key, "the picked wallet enters signed");
 }

@@ -1,0 +1,35 @@
+{
+ "name": "chat-no-account",
+ "about": "The suite's setup continues without an account, so this walk has none: the chat view disables New channel and says the signing key holds no account, a room refuses writing and says how to get one, and the room header's Start a huddle is disabled (views#65). With no account the walk cannot make a room, so it opens one an earlier walk left (a qa- room) when the channel list has one, else it checks the chat view's refusal again. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "app/src/ax_door.rs:41-56 — the door's node carries no description, so the reason a disabled control gives (Start a huddle: 'Create an account to start a huddle', ducktape-views@3242af7 chat/src/ui/kit.rs:779-784) reaches a screen reader but not the walk: only the room's refusal line can say what to do next here"
+ ],
+ "steps": [
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Chat tab is selected and the chat view shows a New channel button that reports disabled, and beside it a line refusing for want of an account (such as 'Your signing key holds no account on this network, and every message here is posted by one…'); this line is this walk's expected state, not an error. No failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "kind": "wait",
+   "say": "New channel reports disabled: no account, no channel",
+   "wait": {
+    "role": "Button",
+    "name": "New channel",
+    "state": "disabled"
+   },
+   "deadline_ms": 5000
+  },
+  {
+   "say": "press a channel in the channel list whose name starts with qa- (a room an earlier walk left); if the list has no such channel, press the Chat tab in the rail instead",
+   "settle_ms": 4000,
+   "expect": "EITHER a qa- room opened: the room header's name label reads that channel's name; the room header's Start a huddle reports disabled; there is no message composer and no Send button, and in their place a line refuses writing for want of an account AND says what to do next (it names creating an account, such as 'Create an account to write'); a refusal that only says the key holds no account, with no next step, does not meet this. OR the list has no qa- channel and the Chat tab was pressed: the chat view still shows New channel reporting disabled and the line refusing for want of an account. Either way no failure state (no 'This view stopped' title, no Retry button)"
+  }
+ ]
+}

@@ -2,17 +2,38 @@
 mod app_state;
 pub(crate) use app_state::*;
 
+mod ax_door;
 mod backend;
 mod call;
 mod editor;
 mod module_view;
-mod shell;
 mod secret;
+mod shell;
 mod tray;
-mod view_tree;
 mod video;
+mod view_tree;
 
 fn main() {
+    // answered before the log, the fd limit or a window exists: a walk report
+    // quotes this beside `ducktape --version`, in the same
+    // `<cargo version>+<build stamp>` shape (`build.rs` stamps it).
+    match std::env::args().nth(1).as_deref() {
+        Some("--version" | "-V") => {
+            let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");
+            println!("ducktape-app {}+{build}", env!("CARGO_PKG_VERSION"));
+            return;
+        }
+        // the test door's client (#114); talks to a running app, opens nothing
+        Some("ax") => {
+            let args: Vec<String> = std::env::args().skip(2).collect();
+            std::process::exit(ax_door::cli(&args));
+        }
+        Some("--help" | "-h") => {
+            println!("usage: ducktape-app [--version]");
+            return;
+        }
+        _ => {}
+    }
     install_log();
     // macOS launches a GUI with a 256-fd soft limit; the app's own stores,
     // sockets and the node it hosts hit that as a bare EMFILE. raised AFTER
@@ -32,9 +53,10 @@ fn main() {
             "open-file limit left at the inherited default"
         ),
     }
-    // the desktop's own views are there before the window is: a tab's
-    // first draw never finds a load on its way
-    module_view::booted().joined();
+    // no view ships with the app: every one comes off the connected node.
+    // A view developer's DUCKTAPE_VIEWS_DIR supplies files in their place,
+    // and app.log says so for each one it supplies
+    module_view::override_views_from(std::env::var_os("DUCKTAPE_VIEWS_DIR").map(Into::into));
     shell::run();
 }
 

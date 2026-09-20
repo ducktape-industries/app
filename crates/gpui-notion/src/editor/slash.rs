@@ -4,8 +4,8 @@
 //! boundary opens it, the characters after it filter, Enter commits and
 //! Escape closes, leaving the typed text alone.
 
-use gpui_kit::component::ActiveTheme;
 use gpui_kit::TestSupportExt as _;
+use gpui_kit::component::ActiveTheme;
 use gpui_kit::{
     Anchor, AnyElement, App, Context, InteractiveElement as _, IntoElement, ParentElement as _,
     Point, SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div, px,
@@ -14,8 +14,8 @@ use gpui_kit::{
 use super::block::{BlockId, BlockRegistry};
 use super::mark::MarkKind;
 use super::suggestion::{EMOJI, Emoji, Mention, Trigger, default_mentions, matches};
-use super::toolbar::OVERLAY_PRIORITY;
 use super::theme::ActiveEditorTheme;
+use super::toolbar::OVERLAY_PRIORITY;
 use super::ui;
 use super::view::NotionEditor;
 
@@ -445,14 +445,18 @@ impl NotionEditor {
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                ui::menu_row(index == menu.selected, cx)
-                    .id(("application-suggestion", index))
-                    .test_support()
-                    .child(item.label.clone())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.run_suggestion_item(index, window, cx)
-                    }))
-                    .into_any_element()
+                ui::menu_row(
+                    SharedString::from(format!("application-suggestion/{}", item.tag)),
+                    item.label.clone(),
+                    index == menu.selected,
+                    cx,
+                )
+                .test_support()
+                .child(item.label.clone())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.run_suggestion_item(index, window, cx)
+                }))
+                .into_any_element()
             })
             .collect::<Vec<_>>();
         Some(
@@ -523,6 +527,10 @@ impl NotionEditor {
             }
 
             let selected = index == menu.selected;
+            let item_key = match item {
+                SuggestionItem::Mention(mention) => mention.id.clone(),
+                _ => item.title(),
+            };
             let leading = match item {
                 SuggestionItem::Block { icon, .. } => ui::icon(
                     icon,
@@ -553,14 +561,18 @@ impl NotionEditor {
             };
 
             rows.push(
-                ui::menu_row(selected, cx)
-                    .id(("suggestion", index))
-                    .child(leading)
-                    .child(item.title())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.run_suggestion_item(index, window, cx)
-                    }))
-                    .into_any_element(),
+                ui::menu_row(
+                    SharedString::from(format!("suggestion/{}/{}", item.group(), item_key)),
+                    item.title(),
+                    selected,
+                    cx,
+                )
+                .child(leading)
+                .child(item.title())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.run_suggestion_item(index, window, cx)
+                }))
+                .into_any_element(),
             );
         }
 

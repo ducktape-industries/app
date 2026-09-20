@@ -1,0 +1,41 @@
+{
+ "name": "files",
+ "about": "Make a small file and preview it. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "ducktape-views@a2a73e1 files/src/host.rs:1011, app_view.rs:416 — upload is drag-and-drop from the OS only ('Drop files here to upload'): no picker and no path field, so a file cannot be uploaded from the tree or by keys; the walk makes one with New file instead",
+  "ducktape-views@a2a73e1 files/src/inspector.rs:218-257 — a preview is a Surface: the file contents (text or picture) are not in the tree, only the facts and a size caption",
+  "ducktape-views@a2a73e1 files/src/inspector.rs:126-159 — the Edit editor has no label",
+  "ducktape-views@a2a73e1 files/src/listing.rs:275 — double-click to open is a MouseArea with no role"
+ ],
+ "steps": [
+  {
+   "say": "open the Files tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Files tab is selected and the files view shows a New file button and a file list or its empty state; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading"
+  },
+  {
+   "say": "press New file",
+   "expect": "a New file dialog shows a File name field and a Create file button"
+  },
+  {
+   "say": "type the file name into the File name field",
+   "text": "qa-{param:walk_tag}.txt",
+   "expect": "the File name field holds qa-{param:walk_tag}.txt and Create file is enabled"
+  },
+  {
+   "say": "press Create file",
+   "expect": "the dialog closes and the list has a row named File qa-{param:walk_tag}.txt; no error",
+   "settle_ms": 4000
+  },
+  {
+   "say": "press the File qa-{param:walk_tag}.txt row",
+   "expect": "the inspector shows a title label qa-{param:walk_tag}.txt with Path, Kind and Size facts"
+  }
+ ]
+}

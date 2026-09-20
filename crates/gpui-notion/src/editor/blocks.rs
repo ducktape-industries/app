@@ -5,14 +5,15 @@
 //! type the same way: implement [`BlockSpec`], call
 //! [`BlockRegistry::register`].
 
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::Editor;
 use gpui_kit::component::menu::DropdownMenu as _;
 use gpui_kit::component::{ActiveTheme, Sizable as _, h_flex, v_flex};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
-    AnyElement, App, FontWeight, InteractiveElement as _, IntoElement, ParentElement as _,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, img, px, relative,
+    AnyElement, App, Focusable as _, FontWeight, InteractiveElement as _, IntoElement,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Toggled,
+    Window, div, img, px, relative,
 };
 
 use gpui_kit::TestSupportExt as _;
@@ -22,6 +23,7 @@ use super::block::{
     BlockType, SlashItem, leading_slot, types,
 };
 use super::theme::EditorTheme;
+use super::ui::Control as _;
 
 /// Register the node types the Notion-like editor ships with.
 pub fn init(cx: &mut App) {
@@ -191,7 +193,12 @@ impl BlockSpec for BulletList {
         (types::BULLET_LIST.into(), BlockAttrs::default())
     }
 
-    fn render_leading(&self, ctx: &BlockContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_leading(
+        &self,
+        ctx: &BlockContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         // disc → circle → square, cycling every three levels.
         let glyph = match ctx.indent % 3 {
             0 => "•",
@@ -254,7 +261,12 @@ impl BlockSpec for OrderedList {
         (types::ORDERED_LIST.into(), BlockAttrs::default())
     }
 
-    fn render_leading(&self, ctx: &BlockContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_leading(
+        &self,
+        ctx: &BlockContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         // decimal → lower-alpha → lower-roman, cycling every three levels.
         let n = ctx.ordinal.max(1);
         let label = match ctx.indent % 3 {
@@ -370,7 +382,12 @@ impl BlockSpec for TaskList {
         (types::TASK_LIST.into(), BlockAttrs::default())
     }
 
-    fn render_leading(&self, ctx: &BlockContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_leading(
+        &self,
+        ctx: &BlockContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         let checked = ctx.attrs.checked;
         let id = ctx.id;
         let editor = ctx.editor.clone();
@@ -385,6 +402,13 @@ impl BlockSpec for TaskList {
             ctx,
             div()
                 .id(("check", id.0 as usize))
+                .control(Role::CheckBox, "Done")
+                .keyboard()
+                .aria_toggled(if checked {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
                 .size(ctx.theme.text_size)
                 .rounded(ctx.theme.radius_sm)
                 .border_1()
@@ -549,7 +573,21 @@ impl BlockSpec for CodeBlock {
         }
     }
 
-    fn wrap(&self, ctx: &BlockContext, content: AnyElement, _: &mut Window, cx: &mut App) -> AnyElement {
+    fn wrap(
+        &self,
+        ctx: &BlockContext,
+        content: AnyElement,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
+        // focus in the corner keeps it showing, as the caret in the block does
+        let corner = window
+            .use_keyed_state(("code-corner", ctx.id.0 as usize), cx, |_, cx| {
+                cx.focus_handle()
+            })
+            .read(cx)
+            .clone();
+        let showing = ctx.focused || corner.contains_focused(window, cx);
         let language = ctx
             .attrs
             .language
@@ -574,21 +612,26 @@ impl BlockSpec for CodeBlock {
                     .right(ctx.theme.rems(0.25))
                     .invisible()
                     .group_hover(super::view::group_name(ctx.id), |this| this.visible())
+                    .track_focus(&corner)
+                    .when(showing, |this| this.visible())
                     .child(
-                        Button::new(("code-language", ctx.id.0 as usize))
-                            .ghost()
-                            .xsmall()
-                            .label(language)
-                            .dropdown_menu(move |menu, _window, _cx| {
-                                let mut menu = menu.label("Language");
-                                for language in CODE_LANGUAGES {
-                                    menu = menu.menu(
-                                        *language,
-                                        Box::new(super::actions::SetCodeLanguage(language)),
-                                    );
-                                }
-                                menu
-                            }),
+                        super::ui::menu_trigger(
+                            Button::new(("code-language", ctx.id.0 as usize))
+                                .ghost()
+                                .xsmall()
+                                .accessibility_label(format!("Language: {language}"))
+                                .label(language),
+                        )
+                        .dropdown_menu(move |menu, _window, _cx| {
+                            let mut menu = menu.label("Language");
+                            for language in CODE_LANGUAGES {
+                                menu = menu.menu(
+                                    *language,
+                                    Box::new(super::actions::SetCodeLanguage(language)),
+                                );
+                            }
+                            menu
+                        }),
                     ),
             )
             .into_any_element()
@@ -599,7 +642,9 @@ impl BlockSpec for CodeBlock {
             BlockInputRule {
                 pattern: r"^```([a-zA-Z0-9+#-]+)?[\s]$",
                 build: |caps| {
-                    let language = caps.get(1).map(|m| SharedString::from(m.as_str().to_string()));
+                    let language = caps
+                        .get(1)
+                        .map(|m| SharedString::from(m.as_str().to_string()));
                     Some((
                         types::CODE_BLOCK.into(),
                         BlockAttrs {
@@ -612,7 +657,9 @@ impl BlockSpec for CodeBlock {
             BlockInputRule {
                 pattern: r"^~~~([a-zA-Z0-9+#-]+)?[\s]$",
                 build: |caps| {
-                    let language = caps.get(1).map(|m| SharedString::from(m.as_str().to_string()));
+                    let language = caps
+                        .get(1)
+                        .map(|m| SharedString::from(m.as_str().to_string()));
                     Some((
                         types::CODE_BLOCK.into(),
                         BlockAttrs {
@@ -726,6 +773,8 @@ impl BlockSpec for Image {
             return Some(
                 div()
                     .id(("image-drop", id.0 as usize))
+                    .control(Role::Button, "Add image")
+                    .keyboard()
                     .w_full()
                     .h(ctx.theme.rems(7.5))
                     .rounded(ctx.theme.radius)
@@ -810,7 +859,13 @@ impl BlockSpec for Callout {
         "Callout".into()
     }
 
-    fn wrap(&self, ctx: &BlockContext, content: AnyElement, _: &mut Window, cx: &mut App) -> AnyElement {
+    fn wrap(
+        &self,
+        ctx: &BlockContext,
+        content: AnyElement,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> AnyElement {
         // A document may carry its own emoji; without one the callout uses an
         // icon, which renders on every platform whether or not a color emoji
         // font is installed.
@@ -880,7 +935,12 @@ impl BlockSpec for Toggle {
         "Toggle".into()
     }
 
-    fn render_leading(&self, ctx: &BlockContext, _: &mut Window, cx: &mut App) -> Option<AnyElement> {
+    fn render_leading(
+        &self,
+        ctx: &BlockContext,
+        _: &mut Window,
+        cx: &mut App,
+    ) -> Option<AnyElement> {
         let id = ctx.id;
         let collapsed = ctx.attrs.collapsed;
         let editor = ctx.editor.clone();
@@ -888,6 +948,9 @@ impl BlockSpec for Toggle {
             ctx,
             div()
                 .id(("toggle", id.0 as usize))
+                .control(Role::Button, if collapsed { "Expand" } else { "Collapse" })
+                .keyboard()
+                .aria_expanded(!collapsed)
                 .size(ctx.theme.rems(1.25))
                 .flex()
                 .items_center()
@@ -911,7 +974,9 @@ impl BlockSpec for Toggle {
             keywords: &["toggle", "details", "collapse"],
             group: "Style",
             icon: "chevron-right",
-            run: |editor, window, cx| editor.toggle_node(types::TOGGLE, BlockAttrs::default(), window, cx),
+            run: |editor, window, cx| {
+                editor.toggle_node(types::TOGGLE, BlockAttrs::default(), window, cx)
+            },
         }]
     }
 }
@@ -919,9 +984,30 @@ impl BlockSpec for Toggle {
 /// Languages offered by a code block's language menu. The set a build can
 /// actually highlight comes from the `tree-sitter-*` features it enables.
 pub const CODE_LANGUAGES: &[&str] = &[
-    "bash", "c", "cpp", "css", "diff", "go", "html", "java", "javascript", "json", "kotlin", "lua",
-    "markdown", "php", "plain text", "python", "ruby", "rust", "sql", "swift", "toml", "tsx",
-    "typescript", "yaml",
+    "bash",
+    "c",
+    "cpp",
+    "css",
+    "diff",
+    "go",
+    "html",
+    "java",
+    "javascript",
+    "json",
+    "kotlin",
+    "lua",
+    "markdown",
+    "php",
+    "plain text",
+    "python",
+    "ruby",
+    "rust",
+    "sql",
+    "swift",
+    "toml",
+    "tsx",
+    "typescript",
+    "yaml",
 ];
 
 /// Line height helper shared by specs that size their own children.
@@ -933,7 +1019,6 @@ pub fn line_height(layout: &BlockLayout) -> gpui_kit::Pixels {
 pub fn relative_line_height(layout: &BlockLayout) -> gpui_kit::DefiniteLength {
     relative(layout.line_height)
 }
-
 
 // ---------------------------------------------------------------------- table
 
@@ -1026,7 +1111,7 @@ fn render_row(
     grid: &super::grid::CellGrid,
     row: usize,
     columns: usize,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
     let header = row == 0;
@@ -1045,15 +1130,35 @@ fn render_row(
                         this.border_r_1().border_color(cx.theme().border)
                     })
                     .child(
-                        Editor::new(cell.state())
-                            .appearance(false)
-                            .bordered(false)
-                            .h(cell.height(text_height))
-                            .text_size(ctx.theme.table_text_size)
-                            .line_height(relative(ctx.theme.table_line_height))
-                            .font_family(cx.theme().font_family.clone())
-                            .text_color(cx.theme().foreground)
-                            .when(header, |this| this.font_weight(FontWeight::SEMIBOLD)),
+                        // one node per cell, called by where it sits, as a
+                        // block's text is (`ui::text_field`)
+                        super::ui::text_field(
+                            SharedString::from(format!("cell/{}/{row}/{column}", ctx.id.0)),
+                            &cell.state().focus_handle(cx),
+                            {
+                                let state = cell.state().clone();
+                                move |value, window, cx| {
+                                    state.update(cx, |state, cx| {
+                                        state.replace_all(value, window, cx)
+                                    })
+                                }
+                            },
+                            Editor::new(cell.state())
+                                .role(gpui_kit::component::RoleOverride::Presentational)
+                                .appearance(false)
+                                .bordered(false)
+                                .h(cell.height(text_height))
+                                .text_size(ctx.theme.table_text_size)
+                                .line_height(relative(ctx.theme.table_line_height))
+                                .font_family(cx.theme().font_family.clone())
+                                .text_color(cx.theme().foreground)
+                                .when(header, |this| this.font_weight(FontWeight::SEMIBOLD)),
+                        )
+                        .role(Role::MultilineTextInput)
+                        .aria_label(format!("Row {}, column {}", row + 1, column + 1))
+                        .when(window.is_a11y_active(), |field| {
+                            field.aria_value(cell.state().read(cx).value().to_string())
+                        }),
                     )
                     .into_any_element(),
             )
@@ -1092,11 +1197,9 @@ fn row_control(
                 .group_hover(super::view::group_name(id), |this| this.visible())
         })
         .child(
-            Button::new(("drop-row", row))
+            super::ui::icon_button(("drop-row", row), "x", "Delete row")
                 .ghost()
                 .xsmall()
-                .icon(super::ui::Lucide("x"))
-                .tooltip("Delete row")
                 .on_click(move |_, window, cx| {
                     let _ = editor.update(cx, |editor, cx| editor.remove_row(id, row, window, cx));
                 }),
@@ -1127,6 +1230,8 @@ fn add_row_button(ctx: &BlockContext, cx: &mut App) -> AnyElement {
             cx.theme().muted_foreground,
         ))
         .id(("add-row", id.0 as usize))
+        .control(Role::Button, "Add row")
+        .keyboard()
         .test_support()
         .on_click(move |_, window, cx| {
             let _ = editor.update(cx, |editor, cx| {
@@ -1165,6 +1270,8 @@ fn add_column_button(ctx: &BlockContext, cx: &mut App) -> AnyElement {
             cx.theme().muted_foreground,
         ))
         .id(("add-column", id.0 as usize))
+        .control(Role::Button, "Add column")
+        .keyboard()
         .test_support()
         .on_click(move |_, window, cx| {
             let _ = editor.update(cx, |editor, cx| {

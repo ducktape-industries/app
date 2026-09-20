@@ -78,6 +78,7 @@ async fn a_huddles_roster_names_the_node_keys_its_media_is_admitted_by() {
         "127.0.0.1:0".parse().unwrap(),
         simnode::SimOpts {
             auto: true,
+            modules_dir: Some(sim_modules_dir()),
             ..Default::default()
         },
     )
@@ -203,6 +204,7 @@ async fn a_window_on_an_unseen_room_lands_instead_of_failing() {
         "127.0.0.1:0".parse().unwrap(),
         simnode::SimOpts {
             auto: true,
+            modules_dir: Some(sim_modules_dir()),
             ..Default::default()
         },
     )
@@ -258,20 +260,144 @@ async fn a_window_on_an_unseen_room_lands_instead_of_failing() {
     sim.shutdown();
 }
 
+/// A CHAT THAT SHIPS NO VIEW IS THE NETWORK'S FACT, NOT A FAILED OPEN (#45).
+///
+/// A member joined a network founded from a module set with no `.view.wasm`
+/// in it. Their node was serving, and "Opening workspace" retried for as long
+/// as anyone watched, on "session view was removed": the workspace load asked
+/// the deployed Chat view for its landing room, and a verified deployment
+/// without a view is not something a retry changes. The console never opened,
+/// so every other tab was out of reach too.
+///
+/// The sim's founding set less its `.view.wasm` files is such a set (core
+/// commits the founding views since ducktape#2629). The workspace opens on
+/// an empty chat plane and the Chat seat is the empty slot that says so, on
+/// the first open and on the next. The verdict is the network's, not the
+/// seat's: the next network, whose Chat ships its view, opens on its own
+/// rooms, not on the empty slot the last one left while this one's view is on
+/// its way.
+#[tokio::test(flavor = "current_thread")]
+async fn a_chat_that_ships_no_view_still_opens_the_workspace() {
+    async fn opened(origin: &str) -> WorkspaceData {
+        let mut opening = connect(origin.to_owned(), 0, 0).into_stream();
+        assert!(matches!(
+            opening.next().await,
+            Some(crate::AppMessage::ConnectionProgress(0, _))
+        ));
+        match opening.next().await {
+            Some(crate::AppMessage::ConnectionProgress(0, "Preparing workspace screens…")) => {}
+            Some(crate::AppMessage::ConnectFailed(error)) => {
+                panic!("the open failed: {}", error.message)
+            }
+            _ => panic!("the open must publish its screen preparation"),
+        }
+        let Some(crate::AppMessage::WorkspaceConnected(workspace)) = opening.next().await else {
+            panic!("the open connects the workspace");
+        };
+        workspace
+    }
+    /// A network founded from `modules`, its Chat artifact served for download.
+    async fn founded(
+        storage: &std::path::Path,
+        modules: std::path::PathBuf,
+        founder: &ed25519::PrivateKey,
+    ) -> (simnode::SimHandle, String) {
+        let artifact = workspace_config::read_module_artifact(&modules, "chat").unwrap();
+        let sim = simnode::boot(
+            storage,
+            "127.0.0.1:0".parse().unwrap(),
+            simnode::SimOpts {
+                auto: true,
+                valset_keys: vec![founder.public_key().as_ref().to_vec()],
+                modules_dir: Some(modules),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let origin = format!("http://{}", sim.addr());
+        let token = std::fs::read_to_string(storage.join("admin.token")).unwrap();
+        reqwest::Client::new()
+            .post(format!("{origin}/v1/admin/module-code/stage?fanout=false"))
+            .header("x-ducktape-admin-token", token.trim())
+            .body(artifact.encode())
+            .send()
+            .await
+            .unwrap()
+            .error_for_status()
+            .unwrap();
+        (sim, origin)
+    }
+    let _turn = crate::module_view::canary::connection_turn().await;
+    let founder = ed25519::PrivateKey::from_seed(7);
+
+    let storage = tempfile::tempdir().unwrap();
+    let modules = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(sim_modules_dir()).unwrap() {
+        let entry = entry.unwrap();
+        let is_view = entry.file_name().to_string_lossy().ends_with(".view.wasm");
+        if entry.path().is_file() && !is_view {
+            std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();
+        }
+    }
+    let (sim, origin) = founded(storage.path(), modules.path().into(), &founder).await;
+    for _ in 0..2 {
+        let workspace = opened(&origin).await;
+        assert!(
+            workspace.channels.is_empty() && workspace.active_channel.is_empty(),
+            "a Chat without a view has no rooms to land on: {workspace:?}"
+        );
+        assert!(
+            crate::module_view::ships_no_view("chat"),
+            "the Chat seat is the empty slot that says this network ships no view"
+        );
+    }
+    sim.shutdown();
+
+    let storage = tempfile::tempdir().unwrap();
+    let modules = tempfile::tempdir().unwrap();
+    for entry in std::fs::read_dir(sim_modules_dir()).unwrap() {
+        let entry = entry.unwrap();
+        if entry.path().is_file() {
+            std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();
+        }
+    }
+    let view = crate::module_view::tests::staged("chat").expect("staged views");
+    std::fs::copy(view, modules.path().join("chat.view.wasm")).unwrap();
+    let (sim, origin) = founded(storage.path(), modules.path().into(), &founder).await;
+    submit_test(
+        &RpcClient::new(&origin).unwrap(),
+        &founder,
+        1,
+        "chat",
+        chat::encode_msg(&ChatMsg::CreateChannel {
+            channel_id: "general".into(),
+            name: "General".into(),
+            post_policy: PostPolicy::Open,
+        }),
+    )
+    .await;
+    let workspace = opened(&origin).await;
+    assert_eq!(
+        workspace.active_channel_name, "General",
+        "a Chat that ships its view lands on its room: {workspace:?}"
+    );
+    assert!(!crate::module_view::ships_no_view("chat"));
+    sim.shutdown();
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn chat_round_trips_over_signed_frames() {
     let _turn = crate::module_view::canary::connection_turn().await;
     let _names = crate::backend::seed_names(crate::backend::NameDirectory::empty());
     let storage = tempfile::tempdir().unwrap();
     let modules = tempfile::tempdir().unwrap();
-    for entry in std::fs::read_dir(workspace_config::sim_modules_dir().unwrap()).unwrap() {
+    for entry in std::fs::read_dir(sim_modules_dir()).unwrap() {
         let entry = entry.unwrap();
         if entry.path().is_file() {
             std::fs::copy(entry.path(), modules.path().join(entry.file_name())).unwrap();
         }
     }
-    let view =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/views/chat_view.wasm");
+    let view = crate::module_view::tests::staged("chat").expect("staged views");
     std::fs::copy(view, modules.path().join("chat.view.wasm")).unwrap();
     let artifact = workspace_config::read_module_artifact(modules.path(), "chat").unwrap();
     let signer = ed25519::PrivateKey::from_seed(7);
@@ -527,7 +653,11 @@ fn the_live_stream_subscribes_to_every_plane_the_console_reads() {
     assert_eq!(crate::backend::live::subscribed_planes(&[]), built_in);
     // a registry-listed id rides after the built-in planes, once: a
     // registered view reads its module's plane through `rpc.live`
-    let registry = ["boards".to_string(), "canvas".to_string(), "chat".to_string()];
+    let registry = [
+        "boards".to_string(),
+        "canvas".to_string(),
+        "chat".to_string(),
+    ];
     let mut expected: Vec<&str> = built_in.to_vec();
     expected.extend(["boards", "canvas"]);
     assert_eq!(crate::backend::live::subscribed_planes(&registry), expected);
@@ -641,4 +771,25 @@ fn a_signed_write_records_the_block_that_took_it() {
         "the height is recorded from the RECEIPT, so there is nothing to \
          record until the node has answered with one"
     );
+}
+
+/// A write refusal reaches the view with the refusing module's OWN token, the
+/// way a read's does: the envelope is split once, in the rpc client, and the
+/// submit lane carries it through instead of stamping a constant over it.
+#[test]
+fn a_write_refusal_keeps_the_modules_token() {
+    let error = ducktape_rpc::refusal(
+        ducktape_rpc::StatusCode::BAD_REQUEST,
+        br#"{"error":"the text changed since you read it","reason":"stale_text"}"#,
+    );
+    let refusal = super::rpc::submit_refused(ducktape_rpc::SubmitFailure::Refused(error));
+    assert_eq!(
+        refusal,
+        view_wire::Refusal::new("stale_text", "the text changed since you read it")
+    );
+
+    // an exchange that never completed is still not a verdict
+    let unresolved =
+        super::rpc::submit_refused(ducktape_rpc::SubmitFailure::Unresolved("timed out".into()));
+    assert_eq!(unresolved.reason, "unresolved");
 }

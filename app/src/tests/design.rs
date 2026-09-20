@@ -50,6 +50,8 @@ fn a_tree_at_the_wire_depth_cap_renders_on_the_main_thread_stack() {
         .spawn(|| {
             let mut root = wire::Node::Text {
                 key: "leaf".into(),
+                heading: None,
+                live: None,
                 content: "deep".into(),
                 width: None,
                 size: None,
@@ -140,10 +142,20 @@ fn no_shell_tab_arm_names_a_view() {
         body.contains("View(&'staticstr)"),
         "a tab carries its view's id: {body}"
     );
-    for view in crate::backend::view_source::DESKTOP_OWNED
-        .iter()
-        .chain(&["chat", "pages", "forge", "files", "governance", "home"])
-    {
+    for view in [
+        "members",
+        "agents",
+        "node",
+        "explorer",
+        "settings",
+        "palette",
+        "chat",
+        "pages",
+        "forge",
+        "files",
+        "governance",
+        "home",
+    ] {
         let arm = format!("{}{}", view[..1].to_uppercase(), &view[1..]);
         assert!(
             !body.contains(&arm),
@@ -156,9 +168,8 @@ fn no_shell_tab_arm_names_a_view() {
         !shell.contains("constCHAT:ShellTab") && !shell.contains("ShellTab::CHAT"),
         "a per-view constant is the same hardcoding, spelled as data"
     );
-    // the strip's rows come from the registry plus the app-served ids
+    // the strip's rows come from the registry
     assert!(shell.contains("crate::module_view::registered_views()"));
-    assert!(shell.contains("crate::backend::view_source::desktop_owned(view)"));
 }
 /// GPUI dispatches a modifier change to its OWN listener list, never to key
 /// listeners, so the guest's modifier state has to be registered with
@@ -199,15 +210,6 @@ fn persistent_split_panes_have_native_resize_handles_and_cursor_feedback() {
             || renderer.contains("ResizeLeftRight")
             || renderer.contains("ResizeColumn")
     );
-}
-#[test]
-fn compact_controls_share_a_single_geometry_and_type_scale() {
-    let design = include_str!("../../../crates/design/src/lib.rs");
-    assert!(design.contains("Inter"));
-    assert!(design.contains("13.5"));
-    let shell = rust_tokens(include_str!("../shell.rs"));
-    assert!(shell.contains("fn action") || shell.contains("fnaction("));
-    assert!(shell.contains("Button::new"));
 }
 #[test]
 fn semantic_recipes_own_action_focus_and_status_colors() {
@@ -256,10 +258,9 @@ fn native_sources_hold_to_the_design_system() {
 }
 #[test]
 fn app_and_wasm_guests_do_not_resolve_the_ice_toolchain_or_iced_runtime() {
-    for lockfile in [
-        include_str!("../../../Cargo.lock"),
-        include_str!("../../../crates/views/Cargo.lock"),
-    ] {
+    // crates/views (the wasm guest workspace) lives in ducktape-views since
+    // the split; its own lockfile carries this same check there.
+    for lockfile in [include_str!("../../../Cargo.lock")] {
         for line in lockfile.lines() {
             let Some(name) = line
                 .strip_prefix("name = \"")

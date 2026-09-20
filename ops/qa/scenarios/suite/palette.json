@@ -1,0 +1,30 @@
+{
+ "name": "palette",
+ "about": "Open the palette, search, close it. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json"
+ ],
+ "gaps": [
+  "ducktape-views@a2a73e1 palette — there are no commands: the palette only searches messages and pages, so \"run a command\" cannot be walked",
+  "ducktape-views@a2a73e1 palette/src/lib.rs:141-146 — hit rows are unnamed buttons: a hit cannot be chosen by name",
+  "ducktape-views@a2a73e1 palette — the field is not focused when the palette opens: a keyboard user must move focus to it first",
+  "ducktape-views@a2a73e1 palette/src/presentation.rs:29-55 — no Close button: the scrim that closes it is an unnamed button that the door's tree does not show, and Escape does not close it (a Stack, not an Overlay with a dismiss); a pointer user closes it only by pressing Search again, a keyboard user by the chord again (FINDINGS-2026-09-19 P1)"
+ ],
+ "steps": [
+  {
+   "say": "press Search in the rail",
+   "expect": "the palette opens: a Search messages and pages field shows",
+   "settle_ms": 3000
+  },
+  {
+   "say": "type qa walk into the Search messages and pages field",
+   "text": "qa walk",
+   "settle_ms": 4000,
+   "expect": "the palette answers: hit rows show, or a note such as 'No messages or pages matched.' (Searching… is a state, not an error)"
+  },
+  {
+   "say": "press Search in the rail again to close the palette",
+   "expect": "the Search messages and pages field is gone"
+  }
+ ]
+}

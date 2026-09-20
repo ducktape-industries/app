@@ -3,10 +3,8 @@
 Native GPUI desktop shell with dynamically loaded, Rust-authored WASM views.
 
 ```bash
-# a node (ducktape-industries/ducktape) and the module views
-# (ducktape-industries/ducktape-views) are separate repos this app
-# consumes over RPC and DUCKTAPE_VIEWS_DIR; run a node and stage its
-# views first, then:
+# a node (ducktape-industries/ducktape) is a separate repo this app talks to
+# over RPC; run one to connect to, then:
 cargo run -p ducktape-app
 ```
 
@@ -52,17 +50,31 @@ reconnect action; an empty buffer is distinct from a refused connection.
 ## Module-owned views
 
 The Approvals, Members, Agents, Node, Explorer, Settings, Chat, Files,
-Pages and Forge tabs keep their state and behavior in WASM views built out
-of the `ducktape-industries/ducktape-views` repo
-(`governance`, `members`, `agents`, `node`, `explorer`, `settings`, `chat`, `files`,
-`pages`, `forge`). Rust cdylibs compile to `wasm32-unknown-unknown`; wasm-tools wraps their embedded WIT exports as components that the app
-loads from a file at runtime (`src/module_view.rs`).
-Building that repo stages each view as
-`target/views/<module>_view.wasm`, where a built binary looks for it
-(`DUCKTAPE_VIEWS_DIR` overrides; the native packaging script carries the
-directory into `Ducktape.app` as resources linked beside the executable, and
-the Linux install path stages it beside the binary in the release it seeds).
-A tab whose view is not staged says so in its place.
+Pages and Forge tabs, the palette and the bell keep their state and behavior
+in WASM views built out of the `ducktape-industries/ducktape-views` repo
+(`governance`, `members`, `agents`, `node`, `explorer`, `settings`,
+`palette`, `inbox`, `chat`, `files`, `pages`, `forge`). Rust cdylibs compile
+to `wasm32-unknown-unknown`; wasm-tools wraps their embedded WIT exports as
+components (`src/module_view.rs`).
+
+NO VIEW SHIPS WITH THE APP. Every one comes off the connected node's module
+registry, fetched and verified under its entry's active code hash
+(`src/backend/view_source.rs`): a module's own view out of its artifact
+(`governance`, `inbox`, `chat`, `files`, `pages`, `forge`), and every other
+view — `home`, `canvas`, `call` and the chrome's own `members`, `agents`,
+`node`, `explorer`, `settings` and `palette` — as a `Kind::View` registry
+entry. A release is the launcher and the app, nothing else, so a wasm change
+never needs an app release. Before a node is connected the app draws only
+native UI (the launch window); a tab whose view the connected network does
+not list says so in its place.
+
+Working on views, point `DUCKTAPE_VIEWS_DIR` at ducktape-views' built
+`target/views`: while it is set, `<id>_view.wasm` there is loaded for any
+view the connected network lists, in place of the network's artifact and
+unverified, and app.log says so for each one (`view_source` …
+`state=Overridden`). It is a view developer's override and nothing else —
+releases never set it. The test suite reads the same variable for its view
+fixtures, which it serves off a fake node's registry.
 
 Deployed views follow the module registry's active deployment hash on block
 events. The host fetches and verifies a candidate, compiles it away from the
@@ -136,22 +148,27 @@ their shared wire vocabulary.
 
 `cargo build --release -p ducktape-app -p app-launcher && ops/bundle-app-macos.sh`
 builds `Ducktape.app` and `Ducktape-<version>-<arch>.dmg` under
-`target/app-bundle/` and signs both **ad-hoc**, which runs on the machine that
-built it and nowhere else — Gatekeeper refuses an ad-hoc bundle that arrived
-over the network. A bundle that leaves this Mac is signed with a Developer ID
-identity and notarized by Apple. `ops/bundle-app-macos.sh` does both itself, off four
-environment variables exported into the shell before the build.
+`target/app-bundle/` and
+signs both **ad-hoc**. The shipped CLI installer preserves the code signature and
+recursively clears only `com.apple.quarantine` from its managed installed
+copy without following symlinks, so no manual xattr or Finder step is needed.
+Signed release-channel updates use the pinned release key and archive digest
+for provenance. For distribution through Gatekeeper-assessed download paths,
+Developer ID signing and Apple notarization are optional packaging choices;
+`ops/bundle-app-macos.sh` supports them through the variables below. They are
+not prerequisites for the managed CLI path. Test actual installed launch and
+update on the destination Mac.
 
 The bundle carries two executables in `Contents/MacOS`: `ducktape-launcher`,
 its `CFBundleExecutable` (`app/packaging/Info.plist`), reads the update state
 and `exec`s `ducktape-app` beside it — same PID, same bundle, so notifications,
-TCC grants and `duck://` events all belong to `dev.ducktape.app`. The views
-sit under `Contents/Resources/views` with a `MacOS/views` link, where
-`views_dir()` finds them beside the executable. The helper is nested code and
+TCC grants and `duck://` events all belong to `dev.ducktape.app`. No view
+ships in the bundle. The helper is nested code and
 is signed first, then the bundle, so `codesign --verify --deep --strict` — what
 `ducktape-launcher --qualify` runs on a staged release — passes on the bundle
 as built. `ducktape-launcher install --from target/app-bundle/Ducktape.app`
-takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
+copies that bundle with `ditto`, retaining its code signature, then applies
+the managed quarantine normalization above to the installed copy only.
 
 1. **The signing identity.** A "Developer ID Application" certificate from the
    Apple Developer Program, in the login keychain. The exact string is what
@@ -179,15 +196,15 @@ takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
    export DUCKTAPE_NOTARY_KEY_ID=XXXXXXXXXX
    export DUCKTAPE_NOTARY_ISSUER=00000000-0000-0000-0000-000000000000
    cargo build --release -p ducktape-app -p app-launcher
-   ops/bundle-app-macos.sh   # refuses if DUCKTAPE_CODESIGN_IDENTITY is unset
+   ops/bundle-app-macos.sh
    ```
 
    The three `DUCKTAPE_NOTARY_*` go together: all three set adds `xcrun notarytool
    submit --wait` on the DMG followed by `xcrun stapler staple`, so the ticket
    travels inside the image and a first launch with no network still passes.
    Set without `DUCKTAPE_CODESIGN_IDENTITY`, the packaging script refuses before the upload
-   rather than after Apple's wait. Set none and the build prints the identity
-   it used and says what to export to notarize.
+   rather than after Apple's wait. Set none and nothing is notarized: the
+   bundle and the DMG are signed with the identity, ad-hoc when it is unset.
 
 4. **Verify** — on the built artifacts, before shipping them:
 
@@ -197,15 +214,33 @@ takes that bundle unchanged: nothing is copied in, nothing is re-sealed.
    codesign -dv --verbose=4 target/app-bundle/Ducktape.app   # Authority + TeamIdentifier
    ```
 
-5. **Package and publish.** `make release-app` is `app-release` with all
+The `spctl` command is a Developer ID/notarization packaging check. The
+installed updater instead trusts the signed release manifest and archive
+digest, and checks bundle code integrity with `codesign`; it does not use
+`spctl` as launch proof.
+
+5. **Package and publish.** This step lives in the ducktape core repo
+   (`ducktape-industries/ducktape`): `ops/release/archive.sh` and
+   `ops/release/publish.sh` are its
+   [`ops/release/`](https://github.com/ducktape-industries/ducktape/tree/main/ops/release)
+   scripts, run from a core checkout. `make release-app` and
+   `make publish-app` were core Makefile targets the split removed: until they
+   return, run the two scripts directly; what follows is what each target
+   wrapped. `make release-app` is `app-release` with all
    three `DUCKTAPE_NOTARY_*` required (every release a network offers is
    notarized), the ticket stapled to the bundle, and `ops/release/archive.sh`
    packing it into `target/release-archive/Ducktape-<sha7>-macos-<arch>.tar.zst`
    — the name `app_update::layout::archive_name` gives the archive's own
    sha256. The script refuses by name an ad-hoc bundle (`adhoc_bundle_refused`)
-   or one Apple never notarized (`bundle_not_stapled`). On Linux the same
-   target packs `target/app-release/{ducktape-launcher, ducktape-app, views/}`
-   into `Ducktape-<sha7>-linux-<arch>.tar.zst`. Then `make publish-app` with
+   or one Apple never notarized (`bundle_not_stapled`). On Linux,
+   `ops/stage-release.sh target/app-release` builds and lays out
+   `target/app-release/{ducktape-launcher, ducktape-app}`, which the
+   same target packs into `Ducktape-<sha7>-linux-<arch>.tar.zst`. A GO needs
+   `ops/verify-release.sh target/app-release` to pass: it stages the release
+   twice, each into a fresh target dir, prints both binaries' two sha256s,
+   exits 1 naming a binary that differs, and leaves the first staging in
+   place. The build box has flipped bits before; two equal builds bind the
+   sha, one proves nothing. Then `make publish-app` with
    `NODE`, `RELEASE_KEY`, `SEQUENCE` and `DISPLAY` composes and signs the
    manifest and lands everything under `/shared/releases` on the network's
    duckfs (`ops/release/publish.sh`); its `ARCHIVES` defaults to what
@@ -222,11 +257,12 @@ The other signing path keeps the Developer ID off this Mac entirely: an
 airlock gateway (`bin/airlock-gateway`, in a confidential VM) holds the
 certificate, the PKCS#12 password and the App Store Connect key as an
 `apple-codesign` credential, and `POST /sign/macos-bundle` signs, notarizes
-and staples a bundle inside the enclave. `make release-app` takes it with
+and staples a bundle inside the enclave. `make release-app` (core's, step 5
+above) takes it with
 `DUCKTAPE_SIGN_VIA=airlock`; there is exactly ONE path per environment, and
 `DUCKTAPE_SIGN_VIA=airlock` set together with `DUCKTAPE_CODESIGN_IDENTITY` or
 any `DUCKTAPE_NOTARY_*` is refused as `sign_path_conflict` before anything
-builds (the Makefile and `ops/bundle-app-macos.sh` both check).
+builds (`ops/bundle-app-macos.sh` checks before building).
 
 1. **Enrol the identity** into the gateway, once, from any machine that holds
    the material. Only the TEE gateway mounts the signing route (the

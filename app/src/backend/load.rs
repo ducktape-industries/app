@@ -47,13 +47,18 @@ pub(crate) async fn load_chat_data(
         .await
         .map(|key| hex_encode(&key))
         .unwrap_or_default();
-    let result = chat_background(
+    let answer = chat_background(
         rpc.origin(),
         serde_json::json!({"kind":"workspace","requested":requested,"key":key}),
     )
-    .await
-    .map_err(|error| error.message)?;
-    let chat: ChatData = serde_json::from_value(result).map_err(|error| error.to_string())?;
+    .await;
+    let chat: ChatData = match answer {
+        Ok(result) => serde_json::from_value(result).map_err(|error| error.to_string())?,
+        // a deployment that verified without a view is the network's fact,
+        // not a read to retry: no rooms to land on, and the Chat seat says why
+        Err(_) if crate::module_view::ships_no_view("chat") => ChatData::default(),
+        Err(error) => return Err(error.message),
+    };
     note_active_channel(&chat.active_channel);
     Ok(chat)
 }

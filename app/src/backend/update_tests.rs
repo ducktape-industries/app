@@ -242,9 +242,13 @@ async fn tick_drives_fetch_then_download_while_connected() {
         previous: None,
         pinned_sequence: 0,
     });
-    let mut updater = Updater::new(idle.clone(), keys(), UpdatePaths::under(updates.path()));
+    let mut updater = Updater::new(
+        idle.clone(),
+        Some(keys()),
+        UpdatePaths::under(updates.path()),
+    );
 
-    assert_eq!(updater.tick(1_000, false), None, "not connected: no check");
+    assert_eq!(updater.tick(1_000, false), None, "no carrier: no check");
     assert_eq!(updater.tick(1_000, true), Some(Job::Fetch));
     assert_eq!(updater.tick(1_001, true), None, "a fetch is in flight");
 
@@ -310,7 +314,10 @@ async fn tick_drives_fetch_then_download_while_connected() {
         panic!("staged, not {:?}", reading.phase);
     };
     assert_eq!(staged.staged, sha);
-    assert_eq!(staged.pinned_sequence, 3, "the pin advanced");
+    // core #2690: the pin advances at the flip, never at the stage — a
+    // staged release this install never ran must not read as up to date.
+    assert_eq!(staged.sequence, 3);
+    assert_eq!(staged.pinned_sequence, 0, "the pin waits for the flip");
     assert_eq!(
         reading.banner,
         Some(UpdateBanner::Ready {
@@ -338,8 +345,8 @@ async fn tick_drives_fetch_then_download_while_connected() {
     );
     assert_eq!(
         updater.tick(1_000 + 2 * CHECK_INTERVAL_SECS, true),
-        None,
-        "Staged: a tick fetches nothing"
+        Some(Job::Fetch),
+        "a tick in Staged fetches"
     );
 }
 
@@ -364,7 +371,7 @@ async fn a_bad_archive_is_refused_at_verify_and_the_pin_stays() {
         node_contract: 1,
         successor_key: None,
     });
-    let mut updater = Updater::new(downloading, keys(), paths.clone());
+    let mut updater = Updater::new(downloading, Some(keys()), paths.clone());
 
     let reply = run_job(String::new(), keys(), paths.clone(), Job::Verify { sha }).await;
     assert_eq!(
@@ -415,7 +422,10 @@ fn rendered_clears_pending_healthy_and_collects() {
         boots: 1,
         pinned_sequence: 5,
     });
-    let mut updater = Updater::new(pending, keys(), paths.clone());
+    // core asks the world recorded first; the app does nothing and goes on.
+    let (_, commands) = app_update::step(pending.clone(), Event::Rendered);
+    assert_eq!(commands.first(), Some(&Command::RecordWorld(current)));
+    let mut updater = Updater::new(pending, Some(keys()), paths.clone());
 
     assert_eq!(updater.apply(Event::Rendered), None);
     let reading = updater.reading();
@@ -444,6 +454,126 @@ fn rendered_clears_pending_healthy_and_collects() {
     assert_eq!(updater.reading().phase, reading.phase);
 }
 
+/// The settle says so, once: `Rendered` in `PendingHealthy` logs
+/// `app_update_settled` with the release and its sequence; a second
+/// `Rendered`, in `Idle`, logs nothing.
+#[test]
+fn the_settle_logs_one_event() {
+    let updates = tempfile::tempdir().unwrap();
+    let paths = UpdatePaths::under(updates.path());
+    let current = Sha::digest(b"new");
+    let pending = Phase::PendingHealthy(app_update::PendingHealthy {
+        current,
+        previous: Sha::digest(b"old"),
+        boots: 1,
+        pinned_sequence: 5,
+    });
+    let log = logged(|| {
+        let mut updater = Updater::new(pending, Some(keys()), paths);
+        updater.apply(Event::Rendered);
+        updater.apply(Event::Rendered);
+    });
+    let settled: Vec<&str> = log
+        .lines()
+        .filter(|line| line.contains("app_update_settled"))
+        .collect();
+    assert_eq!(settled.len(), 1, "{log}");
+    assert!(settled[0].contains(&format!("release={current}")), "{log}");
+    assert!(settled[0].contains("pinned_sequence=5"), "{log}");
+}
+
+/// The relaunch's launcher appends its stderr to the app's log, after what
+/// is there; a log that does not open leaves it null and the launcher still
+/// starts. `sh` stands in for the launcher.
+#[test]
+fn the_launcher_logs_into_the_app_log() {
+    let dir = tempfile::tempdir().unwrap();
+    let log = dir.path().join("app.log");
+    std::fs::write(&log, "app_update_relaunch\n").unwrap();
+    let script = || ["-c".into(), "echo app_update_flipped >&2".into()];
+
+    let status = launcher_command(Path::new("/bin/sh"), script(), Ok(log.clone()))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "app_update_relaunch\napp_update_flipped\n"
+    );
+
+    let unopenable = log.join("app.log");
+    let status = launcher_command(Path::new("/bin/sh"), script(), Ok(unopenable))
+        .status()
+        .unwrap();
+    assert!(status.success());
+    let status = launcher_command(Path::new("/bin/sh"), script(), Err("no home".into()))
+        .status()
+        .unwrap();
+    assert!(status.success());
+}
+
+/// A staged release its own qualify refused (#57): the strip and the
+/// Settings facts say why instead of offering the restart, the channel still
+/// checks, and the Settings rollback discards it (sealed directory and all)
+/// back to `Idle` on what runs, the pin kept.
+#[test]
+fn a_refused_staged_release_says_why_and_stays_clearable() {
+    let updates = tempfile::tempdir().unwrap();
+    let paths = UpdatePaths::under(updates.path());
+    let current = Sha::digest(b"running");
+    let previous = Sha::digest(b"before");
+    let broken = Sha::digest(b"broken");
+    for sha in [current, previous, broken] {
+        let dir = paths.releases_dir.join(sha.to_string());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("ducktape-app"), b"app").unwrap();
+        stage::seal(&dir).unwrap();
+    }
+    let staged = Phase::Staged(app_update::Staged {
+        current,
+        previous: Some(previous),
+        pinned_sequence: 4,
+        staged: broken,
+        sequence: 4,
+        display: "0.1.0+qualify-fail".into(),
+        node_contract: 7,
+        refused: Some("qualify_exit_3".into()),
+    });
+    let mut updater = Updater::new(staged, Some(keys()), paths.clone());
+
+    let reading = updater.reading();
+    assert_eq!(
+        strip_of(Some(&reading)),
+        Some(UpdateStrip::Refused {
+            display: "0.1.0+qualify-fail".into(),
+            reason: "qualify_exit_3".into(),
+        })
+    );
+    let facts = facts_of(Some(&reading), 0);
+    assert_eq!(facts.state, "staged");
+    assert_eq!(facts.staged_display, "0.1.0+qualify-fail");
+    assert_eq!(facts.refused, "qualify_exit_3");
+    assert_eq!(updater.tick(1_000, true), Some(Job::Fetch), "not frozen");
+    assert_eq!(updater.reply(None), None);
+
+    assert_eq!(updater.apply(Event::UserRollback), None);
+    let reading = updater.reading();
+    let idle = Phase::Idle(app_update::Idle {
+        current,
+        previous: Some(previous),
+        pinned_sequence: 4,
+    });
+    assert_eq!(reading.phase, idle);
+    let persisted =
+        app_update::state::decode(&std::fs::read_to_string(&paths.state_path).unwrap()).unwrap();
+    assert_eq!(persisted, idle);
+    assert!(paths.releases_dir.join(current.to_string()).is_dir());
+    assert!(paths.releases_dir.join(previous.to_string()).is_dir());
+    assert!(!paths.releases_dir.join(broken.to_string()).exists());
+    assert_eq!(strip_of(Some(&reading)), None);
+    assert_eq!(facts_of(Some(&reading), 0).refused, "");
+}
+
 /// A rollback notice shows until dismissed; the dismissal keeps the failed
 /// release as `previous` so it can be retried.
 #[test]
@@ -458,7 +588,7 @@ fn the_rollback_notice_is_dismissed_into_idle() {
         reason: app_update::RollbackReason::NeverRendered,
         pinned_sequence: 5,
     });
-    let mut updater = Updater::new(rolled_back, keys(), paths);
+    let mut updater = Updater::new(rolled_back, Some(keys()), paths);
     assert_eq!(
         strip_of(Some(&updater.reading())),
         Some(UpdateStrip::RolledBack {
@@ -493,7 +623,7 @@ fn facts_without_a_launcher_are_unavailable_and_the_clock_reads_in_words() {
         previous: None,
         pinned_sequence: 0,
     });
-    let mut updater = Updater::new(idle, keys(), UpdatePaths::under(updates.path()));
+    let mut updater = Updater::new(idle, Some(keys()), UpdatePaths::under(updates.path()));
     assert_eq!(facts_of(Some(&updater.reading()), 100).checked, "never");
     assert_eq!(updater.check_now(1_000), Some(Job::Fetch));
     assert_eq!(updater.check_now(1_001), None, "a fetch is in flight");
@@ -528,7 +658,7 @@ async fn tick_reports_up_to_date_and_waits_out_the_interval() {
         previous: None,
         pinned_sequence: 0,
     });
-    let mut updater = Updater::new(idle, keys(), UpdatePaths::under(updates.path()));
+    let mut updater = Updater::new(idle, Some(keys()), UpdatePaths::under(updates.path()));
 
     assert_eq!(updater.tick(5_000, true), Some(Job::Fetch));
     let reply = run_job(rpc, keys(), UpdatePaths::under(updates.path()), Job::Fetch).await;
@@ -555,7 +685,11 @@ async fn an_unpublished_network_leaves_the_machine_untouched() {
         previous: None,
         pinned_sequence: 0,
     });
-    let mut updater = Updater::new(idle.clone(), keys(), UpdatePaths::under(updates.path()));
+    let mut updater = Updater::new(
+        idle.clone(),
+        Some(keys()),
+        UpdatePaths::under(updates.path()),
+    );
     assert_eq!(updater.tick(0, true), Some(Job::Fetch));
     let reply = run_job(rpc, keys(), UpdatePaths::under(updates.path()), Job::Fetch).await;
     assert_eq!(reply, None);
@@ -567,4 +701,134 @@ async fn an_unpublished_network_leaves_the_machine_untouched() {
         Some(Job::Fetch),
         "quiet again"
     );
+}
+
+/// Logs captured while `run` runs, as text.
+fn logged(run: impl FnOnce()) -> String {
+    #[derive(Clone, Default)]
+    struct Log(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let log = Log::default();
+    let writer = log.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    tracing::subscriber::with_default(subscriber, run);
+    String::from_utf8(log.0.lock().unwrap().clone()).unwrap()
+}
+
+fn idle() -> Phase {
+    Phase::Idle(app_update::Idle {
+        current: Sha::digest(b"running"),
+        previous: None,
+        pinned_sequence: 0,
+    })
+}
+
+/// #81: `/v1/release` names the network's signer; anything else is no key,
+/// never an error.
+#[tokio::test(flavor = "current_thread")]
+async fn the_network_release_key_is_read_off_v1_release() {
+    let node = deployment();
+    let rpc = fake_node(node.clone()).await.origin().to_string();
+    assert_eq!(
+        network_release_key(&rpc).await,
+        None,
+        "404: a node before #2646"
+    );
+    for doc in [
+        serde_json::json!({}),
+        serde_json::json!({"release_keys": {}}),
+        serde_json::json!({"release_keys": {"app": "not hex"}}),
+    ] {
+        *node.release.lock().unwrap() = Some(doc.clone());
+        assert_eq!(network_release_key(&rpc).await, None, "{doc}");
+    }
+    let key = PublicKey::of(&release_key());
+    *node.release.lock().unwrap() = Some(serde_json::json!({
+        "release_keys": {"app": key.to_string(), "node": "ab".repeat(32)},
+        "height": 9,
+    }));
+    assert_eq!(network_release_key(&rpc).await, Some(key));
+    assert_eq!(network_release_key("").await, None, "no endpoint");
+
+    // a bare run (no launcher env here) pins nothing but remembers the key
+    // for the node command of that network, and only that network.
+    adopt_network_key("keynet#81", &rpc).await;
+    assert_eq!(release_key_for("keynet#81"), Some(key.to_string()));
+    assert_eq!(release_key_for("othernet#81"), None);
+    let step = crate::backend::shell::node_wait_step(
+        "/ws",
+        release_key_for("keynet#81").as_deref(),
+        0,
+        "",
+    );
+    assert!(
+        step.command.contains(&format!("--release-key {key}")),
+        "{}",
+        step.command
+    );
+}
+
+/// #81: an install with no pin takes the network's key as `ducktape-launcher
+/// install --release-key` writes it, and the channel arms at the next check.
+#[test]
+fn an_unpinned_install_pins_the_networks_key_and_arms() {
+    let updates = tempfile::tempdir().unwrap();
+    let key = PublicKey::of(&release_key());
+    let mut updater = Updater::new(idle(), None, UpdatePaths::under(updates.path()));
+    assert_eq!(
+        updater.tick(1_000, true),
+        None,
+        "no key: the channel is off"
+    );
+
+    assert!(!pin_network_key(Some(updates.path()), key));
+    let pinned = std::fs::read_to_string(updates.path().join("keys/release.pub")).unwrap();
+    assert_eq!(pinned, format!("{key}\n"));
+    assert_eq!(updater.tick(1_001, true), Some(Job::Fetch));
+    assert!(updater.reading().armed);
+    assert!(
+        !facts_of(Some(&updater.reading()), 1_001)
+            .note
+            .contains(KEY_DIFFERS)
+    );
+}
+
+/// #81: a pin is never replaced. The same key is nothing; another is kept,
+/// logged `release_key_pinned_differs` and said once in Settings. A bare run
+/// (no updates dir) pins nothing.
+#[test]
+fn a_pinned_key_is_kept_and_a_differing_one_is_said() {
+    let updates = tempfile::tempdir().unwrap();
+    let path = updates.path().join("keys/release.pub");
+    let key = PublicKey::of(&release_key());
+    let other = PublicKey::of(&ed25519::PrivateKey::from_seed(42));
+
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, format!("{key}\n")).unwrap();
+    let log = logged(|| assert!(!pin_network_key(Some(updates.path()), key)));
+    assert!(!log.contains("release_key_pinned_differs"), "{log}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{key}\n"));
+
+    let log = logged(|| assert!(pin_network_key(Some(updates.path()), other)));
+    assert!(log.contains("release_key_pinned_differs"), "{log}");
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), format!("{key}\n"));
+    let reading = UpdateReading {
+        key_differs: true,
+        ..Updater::new(idle(), Some(keys()), UpdatePaths::under(updates.path())).reading()
+    };
+    assert_eq!(facts_of(Some(&reading), 0).note, KEY_DIFFERS);
+
+    let log = logged(|| assert!(!pin_network_key(None, other)));
+    assert!(log.is_empty(), "a bare run: {log}");
 }

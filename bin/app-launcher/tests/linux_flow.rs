@@ -6,9 +6,10 @@
 #![cfg(target_os = "linux")]
 
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 
 use app_update::{Idle, Phase, RollbackReason, Sha, Staged, state};
 
@@ -27,7 +28,8 @@ impl Rig {
         let rig = Rig {
             home: root.path().join("home"),
             config: root.path().join("cfg"),
-            data: root.path().join("data"),
+            // a space, so every flow runs where an unquoted `Exec` splits.
+            data: root.path().join("local share"),
             _root: root,
         };
         fs::create_dir_all(&rig.home).unwrap();
@@ -49,36 +51,30 @@ impl Rig {
         self.install_dir().join("releases").join(sha.to_string())
     }
 
-    /// A release source: `ducktape-app` is a script that prints its env and
-    /// argv, tagged with `build`; `views/` holds one wasm.
+    /// A release source: `ducktape-app` is a script that prints its pid, env
+    /// and argv, tagged with `build`.
     fn build(&self, build: &str) -> (PathBuf, Sha) {
         let dir = self.home.join(format!("build-{build}"));
-        fs::create_dir_all(dir.join("views")).unwrap();
+        fs::create_dir_all(&dir).unwrap();
         let script = format!(
-            "#!/bin/sh\necho build={build}\necho release=$DUCKTAPE_RELEASE\necho state=$DUCKTAPE_UPDATE_STATE\nfor a in \"$@\"; do echo arg=$a; done\n"
+            "#!/bin/sh\necho build={build}\necho release=$DUCKTAPE_RELEASE\necho state=$DUCKTAPE_UPDATE_STATE\necho pid=$$\nfor a in \"$@\"; do echo arg=$a; done\n"
         );
         let app = dir.join("ducktape-app");
         fs::write(&app, &script).unwrap();
         fs::set_permissions(&app, fs::Permissions::from_mode(0o755)).unwrap();
-        fs::write(dir.join("views").join("x_view.wasm"), b"\0asm").unwrap();
         (dir, Sha::digest(script.as_bytes()))
     }
 
-    /// Stage a release the way the app would: a complete `releases/<sha>`.
-    fn stage(&self, build: &str, with_views: bool) -> Sha {
+    /// Stage a release the way the app would: a complete `releases/<sha>`,
+    /// or — `with_app` false — one missing its app.
+    fn stage(&self, build: &str, with_app: bool) -> Sha {
         let (source, sha) = self.build(build);
         let dir = self.release_dir(sha);
         fs::create_dir_all(&dir).unwrap();
-        fs::copy(source.join("ducktape-app"), dir.join("ducktape-app")).unwrap();
-        fs::copy(LAUNCHER, dir.join("ducktape-launcher")).unwrap();
-        if with_views {
-            fs::create_dir_all(dir.join("views")).unwrap();
-            fs::copy(
-                source.join("views").join("x_view.wasm"),
-                dir.join("views").join("x_view.wasm"),
-            )
-            .unwrap();
+        if with_app {
+            fs::copy(source.join("ducktape-app"), dir.join("ducktape-app")).unwrap();
         }
+        fs::copy(LAUNCHER, dir.join("ducktape-launcher")).unwrap();
         sha
     }
 
@@ -115,6 +111,14 @@ impl Rig {
         fs::write(self.state_path(), state::encode(phase)).unwrap();
     }
 
+    fn release_key_path(&self) -> PathBuf {
+        self.config
+            .join("ducktape")
+            .join("updates")
+            .join("keys")
+            .join("release.pub")
+    }
+
     fn link(&self, name: &str) -> Option<PathBuf> {
         fs::read_link(self.install_dir().join(name)).ok()
     }
@@ -141,6 +145,7 @@ fn staged(current: Sha, staged: Sha) -> Phase {
         sequence: 1,
         display: "test".into(),
         node_contract: 1,
+        refused: None,
     })
 }
 
@@ -177,7 +182,7 @@ fn install_boot_update_crash_and_rollback() {
     .unwrap();
     assert!(
         entry.contains(&format!(
-            "Exec={} %u",
+            "Exec=\"{}\" %u",
             rig.install_dir()
                 .join("current/ducktape-launcher")
                 .display()
@@ -188,7 +193,7 @@ fn install_boot_update_crash_and_rollback() {
 
     // boot in Idle: exec A with the contract env and argv passed through;
     // the URL never reaches the launcher's own log.
-    let url = "duck://forge/ducktape/1?net=abc";
+    let url = "duck://dognet-b5b6ea90/forge/core/app/1";
     let booted = rig.installed_launcher(&[url]);
     assert!(booted.status.success(), "{}", stderr(&booted));
     let out = stdout(&booted);
@@ -256,7 +261,17 @@ fn install_boot_update_crash_and_rollback() {
     let manual = rig.installed_launcher(&["--rollback"]);
     assert!(manual.status.success(), "{}", stderr(&manual));
     assert!(stdout(&manual).contains("build=B"), "{}", stdout(&manual));
-    assert!(stderr(&manual).contains("app_update_rolled_back"));
+    // the event names both sides: rolled back FROM a, TO b.
+    let rolled_back_line = stderr(&manual)
+        .lines()
+        .find(|line| line.contains("app_update_rolled_back"))
+        .map(str::to_string)
+        .unwrap_or_else(|| panic!("{}", stderr(&manual)));
+    assert!(
+        rolled_back_line.contains(&sha_a.to_string())
+            && rolled_back_line.contains(&sha_b.to_string()),
+        "{rolled_back_line}"
+    );
     assert_eq!(rig.link("current"), Some(link_target(sha_b)));
     let Phase::PendingHealthy(pending) = rig.read_state() else {
         panic!("{:?}", rig.read_state());
@@ -296,8 +311,30 @@ fn a_staged_release_that_fails_to_qualify_stays_staged_and_the_current_one_runs(
     assert!(stdout(&booted).contains(&format!("release={sha_a}")));
     let err = stderr(&booted);
     assert!(err.contains("app_update_refused"), "{err}");
-    assert!(err.contains("views_missing"), "{err}");
-    assert_eq!(rig.read_state(), staged(sha_a, sha_c));
+    assert!(err.contains("executable_missing"), "{err}");
+    // the reason is persisted, so the app that comes up can say why (#57).
+    let Phase::Staged(after) = rig.read_state() else {
+        panic!("{:?}", rig.read_state());
+    };
+    assert_eq!(after.refused.as_deref(), Some("executable_missing"));
+    let unrefused = Staged {
+        refused: None,
+        ..after
+    };
+    assert_eq!(Phase::Staged(unrefused), staged(sha_a, sha_c));
+    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
+
+    // --rollback does not discard it (collecting its directory is the
+    // running app's): a refusal that says where, nothing touched.
+    let before = rig.read_state();
+    let rollback = rig.installed_launcher(&["--rollback"]);
+    assert!(!rollback.status.success());
+    let err = stderr(&rollback);
+    assert!(err.contains("rollback_unavailable"), "{err}");
+    assert!(err.contains("app's Settings"), "{err}");
+    assert!(!stdout(&rollback).contains("build="));
+    assert_eq!(rig.read_state(), before);
+    assert!(rig.release_dir(sha_c).is_dir());
     assert_eq!(rig.link("current"), Some(link_target(sha_a)));
 
     // the staged launcher, asked directly, names the same reason.
@@ -308,7 +345,7 @@ fn a_staged_release_that_fails_to_qualify_stays_staged_and_the_current_one_runs(
         .output()
         .unwrap();
     assert!(!qualify.status.success());
-    assert_eq!(stdout(&qualify).trim(), "views_missing");
+    assert_eq!(stdout(&qualify).trim(), "executable_missing");
 
     // a launcher outside the staged release may not qualify it.
     let elsewhere = rig
@@ -358,14 +395,9 @@ fn a_release_dir_that_is_a_symlink_is_refused_at_the_flip() {
     );
     let (source_b, sha_b) = rig.build("B");
     let outside = rig.home.join("outside");
-    fs::create_dir_all(outside.join("views")).unwrap();
+    fs::create_dir_all(&outside).unwrap();
     fs::copy(source_b.join("ducktape-app"), outside.join("ducktape-app")).unwrap();
     fs::copy(LAUNCHER, outside.join("ducktape-launcher")).unwrap();
-    fs::copy(
-        source_b.join("views/x_view.wasm"),
-        outside.join("views/x_view.wasm"),
-    )
-    .unwrap();
     std::os::unix::fs::symlink(&outside, rig.release_dir(sha_b)).unwrap();
     rig.write_state(&staged(sha_a, sha_b));
     let booted = rig.installed_launcher(&[]);
@@ -406,7 +438,16 @@ fn a_reinstall_of_a_newer_build_keeps_the_old_one_as_previous() {
             .success()
     );
     let (source_b, sha_b) = rig.build("B");
-    let again = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
+    // B names no release, so replacing A with it is an offer: nothing is
+    // written until the user takes it with --replace (#97).
+    let offered = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
+    assert!(!offered.status.success());
+    let err = stderr(&offered);
+    assert!(err.contains("release_unknown_provenance"), "{err}");
+    assert!(err.contains("--replace"), "{err}");
+    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
+    assert!(!rig.release_dir(sha_b).exists());
+    let again = rig.launcher(&["install", "--from", source_b.to_str().unwrap(), "--replace"]);
     assert!(again.status.success(), "{}", stderr(&again));
     assert_eq!(rig.link("current"), Some(link_target(sha_b)));
     assert_eq!(rig.link("previous"), Some(link_target(sha_a)));
@@ -424,13 +465,14 @@ fn a_reinstall_of_a_newer_build_keeps_the_old_one_as_previous() {
     assert_eq!(rig.link("previous"), Some(link_target(sha_a)));
 }
 
-/// The release as packaging stages it: `ops/release/archive.sh` packs
-/// `{ducktape-launcher, ducktape-app, views/}` into
-/// `Ducktape-<sha7>-linux-<arch>.tar.zst`; what comes back out of that
-/// archive installs under the launcher IT ships (byte for byte, never the
-/// one running `install`), and that launcher boots the app.
+/// The release as packaging stages it: the Linux archive holds
+/// `{ducktape-launcher, ducktape-app}` at its root, which is exactly
+/// the directory `install --from` takes. It installs under the launcher IT
+/// ships (byte for byte, never the one running `install`), and that launcher
+/// boots the app. Packing the archive is core's `ops/release/archive.sh` and
+/// is tested where the script lives.
 #[test]
-fn an_archived_release_installs_under_the_launcher_it_ships() {
+fn a_release_installs_under_the_launcher_it_ships() {
     let rig = Rig::new();
     let (source, sha) = rig.build("A");
     // the shipped launcher: distinguishable from the one running `install`
@@ -442,52 +484,18 @@ fn an_archived_release_installs_under_the_launcher_it_ships() {
         fs::Permissions::from_mode(0o755),
     )
     .unwrap();
-    let script = concat!(env!("CARGO_MANIFEST_DIR"), "/../../ops/release/archive.sh");
-    let out_dir = rig.home.join("archive");
-    let packed = Command::new("bash")
-        .arg(script)
-        .args(["--from", source.to_str().unwrap()])
-        .args(["--out-dir", out_dir.to_str().unwrap()])
-        .output()
-        .unwrap();
-    assert!(packed.status.success(), "{}", stderr(&packed));
-    let listed = fs::read_to_string(out_dir.join("archives.txt")).unwrap();
-    let (platform, archive) = listed.trim().split_once('=').unwrap();
-    assert_eq!(platform, format!("linux-{}", std::env::consts::ARCH));
-    let archive = PathBuf::from(archive);
-    let bytes = fs::read(&archive).unwrap();
-    let archive_sha = Sha::digest(&bytes);
-    assert_eq!(
-        archive.file_name().unwrap().to_str().unwrap(),
-        app_update::layout::archive_name(&archive_sha, platform)
-    );
-    assert!(stdout(&packed).contains(&format!("sha256:  {archive_sha}")));
-    assert!(stdout(&packed).contains(&format!("size:    {}", bytes.len())));
-
-    // out of the archive, exactly the release dir the launcher takes.
-    let unpacked = rig.home.join("unpacked");
-    fs::create_dir_all(&unpacked).unwrap();
-    let extracted = Command::new("tar")
-        .args(["--zstd", "-xf"])
-        .arg(&archive)
-        .arg("-C")
-        .arg(&unpacked)
-        .output()
-        .unwrap();
-    assert!(extracted.status.success(), "{}", stderr(&extracted));
-    assert!(unpacked.join("views").join("x_view.wasm").is_file());
 
     // `install` run by a launcher that is NOT the shipped one copies itself
     // in only when the source ships none; this source ships one, so the
     // installed launcher is the shipped file, byte for byte.
-    let installed = rig.launcher(&["install", "--from", unpacked.to_str().unwrap()]);
+    let installed = rig.launcher(&["install", "--from", source.to_str().unwrap()]);
     assert!(installed.status.success(), "{}", stderr(&installed));
     assert_eq!(
         fs::read_to_string(rig.release_dir(sha).join("ducktape-launcher")).unwrap(),
         shipped
     );
     assert_eq!(rig.link("current"), Some(link_target(sha)));
-    let booted = rig.installed_launcher(&["duck://forge/ducktape/1?net=abc"]);
+    let booted = rig.installed_launcher(&["duck://dognet-b5b6ea90/forge/core/app/1"]);
     assert!(booted.status.success(), "{}", stderr(&booted));
     assert!(stdout(&booted).contains("build=A"), "{}", stdout(&booted));
     assert!(
@@ -495,4 +503,187 @@ fn an_archived_release_installs_under_the_launcher_it_ships() {
         "{}",
         stdout(&booted)
     );
+}
+
+/// A flip moves the launcher too: the desktop entry runs
+/// `current/ducktape-launcher`, so the release a flip brings in is applied
+/// next time by its OWN launcher, never one the flip left behind (#80). B's
+/// launcher is the real binary plus a trailing line (the ELF loader ignores
+/// it and nothing hashes the launcher), so "moved" is a digest.
+#[test]
+fn a_flip_moves_the_launcher_that_applies_the_next_release() {
+    let rig = Rig::new();
+    let (source_a, sha_a) = rig.build("A");
+    assert!(
+        rig.launcher(&["install", "--from", source_a.to_str().unwrap()])
+            .status
+            .success()
+    );
+    let digest = |path: &Path| Sha::digest(&fs::read(path).unwrap());
+    let launcher_a = rig.release_dir(sha_a).join("ducktape-launcher");
+    let digest_a = digest(&launcher_a);
+
+    let sha_b = rig.stage("B", true);
+    let launcher_b = rig.release_dir(sha_b).join("ducktape-launcher");
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&launcher_b)
+        .unwrap()
+        .write_all(b"\nrelease B\n")
+        .unwrap();
+    let digest_b = digest(&launcher_b);
+    assert_ne!(digest_a, digest_b);
+
+    rig.write_state(&staged(sha_a, sha_b));
+    let flipped = rig.installed_launcher(&[]);
+    assert!(flipped.status.success(), "{}", stderr(&flipped));
+    assert!(stdout(&flipped).contains("build=B"), "{}", stdout(&flipped));
+    assert_eq!(rig.link("current"), Some(link_target(sha_b)));
+    let current = rig.install_dir().join("current").join("ducktape-launcher");
+    assert_eq!(
+        current.canonicalize().unwrap(),
+        launcher_b.canonicalize().unwrap()
+    );
+    assert_eq!(digest(&current), digest_b);
+
+    // the next boot goes through B's launcher and execs B's app in its PID.
+    let boot = rig
+        .command(&current)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let pid = boot.id();
+    let booted = boot.wait_with_output().unwrap();
+    assert!(booted.status.success(), "{}", stderr(&booted));
+    let out = stdout(&booted);
+    assert!(out.contains("build=B"), "{out}");
+    assert!(out.contains(&format!("release={sha_b}")), "{out}");
+    assert!(out.contains(&format!("pid={pid}\n")), "{out}");
+
+    // A's launcher stays where A shipped it, byte for byte.
+    assert_eq!(digest(&launcher_a), digest_a);
+}
+
+/// `install --release-key` pins the key the app's release channel verifies
+/// under, at `<updates>/keys/release.pub` where the app reads it. A malformed
+/// key, or one that differs from the key already pinned, is refused by name
+/// before the install touches anything; the same key again installs.
+#[test]
+fn install_pins_the_release_key_and_never_replaces_a_different_one() {
+    let rig = Rig::new();
+    let (source_a, sha_a) = rig.build("A");
+    let key = "ab".repeat(32);
+    let installed = rig.launcher(&[
+        "install",
+        "--from",
+        source_a.to_str().unwrap(),
+        "--release-key",
+        &key,
+    ]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert_eq!(
+        fs::read_to_string(rig.release_key_path()).unwrap(),
+        format!("{key}\n")
+    );
+
+    let (source_b, sha_b) = rig.build("B");
+    let source_b = source_b.to_str().unwrap();
+    let malformed = rig.launcher(&["install", "--from", source_b, "--release-key", "abc"]);
+    assert!(!malformed.status.success());
+    let err = stderr(&malformed);
+    assert!(err.contains("release_key_invalid"), "{err}");
+
+    let other = "cd".repeat(32);
+    let different = rig.launcher(&["install", "--from", source_b, "--release-key", &other]);
+    assert!(!different.status.success());
+    let err = stderr(&different);
+    assert!(err.contains("release_key_pinned"), "{err}");
+
+    // neither refusal installed B or touched the pin
+    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
+    assert!(!rig.release_dir(sha_b).exists());
+    assert_eq!(
+        fs::read_to_string(rig.release_key_path()).unwrap(),
+        format!("{key}\n")
+    );
+
+    let same = rig.launcher(&[
+        "install",
+        "--release-key",
+        &key,
+        "--from",
+        source_b,
+        "--replace",
+    ]);
+    assert!(same.status.success(), "{}", stderr(&same));
+    assert_eq!(rig.link("current"), Some(link_target(sha_b)));
+    assert_eq!(
+        fs::read_to_string(rig.release_key_path()).unwrap(),
+        format!("{key}\n")
+    );
+}
+
+/// A release that names itself in `release.json` pins that sequence, so the
+/// channel publishing the same sequence reads as what already runs (#97). An
+/// OLDER sequence over it is an offer, never a silent flip: nothing is written
+/// until `--replace` takes it, and the pin does not lower when it does. A
+/// `release.json` that is not exactly `{sequence, display}` is refused.
+#[test]
+fn a_release_json_pins_its_sequence_and_an_older_one_is_only_offered() {
+    let rig = Rig::new();
+    let identify =
+        |source: &Path, text: &str| fs::write(source.join("release.json"), text).unwrap();
+    let (source_a, sha_a) = rig.build("A");
+    identify(&source_a, "{\"sequence\":5,\"display\":\"0.1.0+aaaa\"}\n");
+    let installed = rig.launcher(&["install", "--from", source_a.to_str().unwrap()]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert_eq!(
+        rig.read_state(),
+        Phase::Idle(Idle {
+            current: sha_a,
+            previous: None,
+            pinned_sequence: 5,
+        })
+    );
+
+    let (source_b, sha_b) = rig.build("B");
+    identify(&source_b, "{\"sequence\":3,\"display\":\"0.1.0+bbbb\"}");
+    let offered = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
+    assert!(!offered.status.success());
+    let err = stderr(&offered);
+    assert!(err.contains("release_older"), "{err}");
+    assert!(err.contains("0.1.0+bbbb is sequence 3"), "{err}");
+    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
+    assert!(!rig.release_dir(sha_b).exists());
+
+    let taken = rig.launcher(&["install", "--replace", "--from", source_b.to_str().unwrap()]);
+    assert!(taken.status.success(), "{}", stderr(&taken));
+    assert_eq!(rig.link("current"), Some(link_target(sha_b)));
+    assert_eq!(
+        rig.read_state(),
+        Phase::Idle(Idle {
+            current: sha_b,
+            previous: Some(sha_a),
+            pinned_sequence: 5,
+        })
+    );
+
+    let (source_c, sha_c) = rig.build("C");
+    identify(
+        &source_c,
+        "{\"sequence\":6,\"display\":\"x\",\"sha256\":\"y\"}",
+    );
+    let refused = rig.launcher(&["install", "--from", source_c.to_str().unwrap()]);
+    assert!(!refused.status.success());
+    let err = stderr(&refused);
+    assert!(err.contains("release_identity_invalid"), "{err}");
+    assert!(!rig.release_dir(sha_c).exists());
+
+    // a newer sequence replaces what runs with no question, and pins itself.
+    identify(&source_c, "{\"sequence\":6,\"display\":\"0.1.0+cccc\"}");
+    let newer = rig.launcher(&["install", "--from", source_c.to_str().unwrap()]);
+    assert!(newer.status.success(), "{}", stderr(&newer));
+    assert_eq!(rig.read_state().pinned_sequence(), 6);
+    assert_eq!(rig.link("current"), Some(link_target(sha_c)));
 }

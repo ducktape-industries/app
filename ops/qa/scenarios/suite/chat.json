@@ -1,0 +1,67 @@
+{
+ "name": "chat",
+ "about": "A fresh network has no channel: the walk makes its own (qa-chat-<walk_tag>), sends a message in it, and checks that text typed and not sent is still in the composer after a trip to another room. It writes as the account new-account made. Starts from an open console and leaves it open.",
+ "include": [
+  "setup.json",
+  "new-account.json"
+ ],
+ "params": {
+  "walk_tag": "a short tag unique to this walk, e.g. the merge's short sha: it names what the walk makes so a later run can find it"
+ },
+ "gaps": [
+  "ducktape-views@a2a73e1 chat/src/ui/kit.rs:556-568 — a message body is RichText: the sent text is not in the tree, so a send is proven only by a new author label",
+  "ducktape-views@3242af7 chat/src/ui/chat.rs:729-800 with app/src/view_tree.rs hover() — Open thread, React with 👍, Manage reactions and More message actions are drawn only while the pointer hovers the row (or its menu is open); the row itself (a Row named 'author: text') presses to nothing without Shift and its menu is a right press: the message menu cannot be reached from the tree or by keys, so it is not walked",
+  "ducktape-views@a2a73e1 chat/src/ui/chat.rs:1752-1778, kit.rs:292-321 — every reaction cell and pill is named Add reaction / Remove reaction; the emoji is only the description",
+  "ducktape-views@a2a73e1 chat/src/ui/chat.rs:309-320,570-590 — with no channel (a fresh network) the room pane is a nameless room: the header is a bare # and 'This is the very beginning of #. Say hello', over a composer whose buttons are all disabled and nothing says to create a channel first (FINDINGS-2026-09-19 C1)"
+ ],
+ "steps": [
+  {
+   "say": "open the Chat tab in the rail",
+   "settle_ms": 4000,
+   "expect": "the Chat tab is selected and the chat view shows a New channel button; no failure state (no failure title such as 'This network does not list this view', no Retry button) and it is not still loading and the rail's account button reads Account: followed by a name (Account: qa-{param:walk_tag}, or Account #<number>), not Account: Sign in"
+  },
+  {
+   "say": "press New channel in the chat sidebar",
+   "expect": "a Create a channel card shows: a Channel name field, Voice room: Off and Members only: Off buttons, and Cancel and Create channel buttons"
+  },
+  {
+   "say": "type the channel name into the Channel name field",
+   "text": "qa-chat-{param:walk_tag}",
+   "expect": "the Channel name field's value is qa-chat-{param:walk_tag} and Create channel is enabled (its state does not list disabled)"
+  },
+  {
+   "say": "press Create channel",
+   "settle_ms": 4000,
+   "expect": "the Create a channel card is gone and the channel list shows a button named for qa-chat-{param:walk_tag} (a leading # is fine); no error sentence"
+  },
+  {
+   "say": "press the qa-chat-{param:walk_tag} channel in the channel list",
+   "expect": "the room header's name label reads qa-chat-{param:walk_tag}; a message composer (a text field named Message #qa-chat-{param:walk_tag}) shows with a Send button, and no line refuses writing for want of an account"
+  },
+  {
+   "say": "type a short message into the Message #qa-chat-{param:walk_tag} composer",
+   "text": "hello from the qa walk {param:walk_tag}",
+   "expect": "the Send button is enabled (its state does not list disabled)"
+  },
+  {
+   "say": "press Send",
+   "expect": "a new message card appears in the timeline with an author label (a pending 'sending…' label is fine) and the Send button reports disabled again; no error sentence",
+   "settle_ms": 4000
+  },
+  {
+   "say": "type into the Message #qa-chat-{param:walk_tag} composer, and do not send",
+   "text": "carried {param:walk_tag}",
+   "expect": "the Message #qa-chat-{param:walk_tag} composer's value is carried {param:walk_tag} and the Send button is enabled"
+  },
+  {
+   "say": "press a channel in the channel list other than qa-chat-{param:walk_tag} (qa-noacct-{param:walk_tag}, made earlier in this walk, or an older qa- channel)",
+   "settle_ms": 4000,
+   "expect": "the room header's name label reads that other channel's name and its composer is named Message #<that channel>; that composer's value is not carried {param:walk_tag}"
+  },
+  {
+   "say": "press the qa-chat-{param:walk_tag} channel in the channel list",
+   "settle_ms": 4000,
+   "expect": "the room header's name label reads qa-chat-{param:walk_tag} and the Message #qa-chat-{param:walk_tag} composer's value is still carried {param:walk_tag}"
+  }
+ ]
+}
