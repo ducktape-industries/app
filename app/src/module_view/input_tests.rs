@@ -3,6 +3,49 @@ use super::*;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{self as gpui, Entity, TestAppContext, VisualTestContext};
 
+struct NativeDragHarness {
+    guest: Entity<NativeModuleView>,
+}
+
+impl gpui::Render for NativeDragHarness {
+    fn render(
+        &mut self,
+        _: &mut gpui::Window,
+        _: &mut gpui::Context<Self>,
+    ) -> impl gpui::IntoElement {
+        use gpui::{InteractiveElement as _, ParentElement as _, Styled as _};
+        use gpui_kit::TestSupportExt as _;
+
+        gpui::div()
+            .id("native-drag-harness")
+            .size_full()
+            .p(gpui::px(32.))
+            .relative()
+            .flex()
+            .flex_col()
+            .child(
+                gpui::div()
+                    .id("native-guest-slot")
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(self.guest.clone()),
+            )
+            .child(
+                gpui::div()
+                    .id("native-sibling")
+                    .test_support()
+                    .absolute()
+                    .top(gpui::px(0.))
+                    .left(gpui::px(0.))
+                    .w_full()
+                    .h(gpui::px(40.))
+                    .debug_selector(|| "native-sibling".to_owned())
+                    .capture_any_mouse_down(|_, _, cx| cx.stop_propagation()),
+            )
+    }
+}
+
 fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
     tests::can_the_chat_room();
     let path = tests::staged("chat").expect("build current chat view first");
@@ -48,6 +91,19 @@ fn open(cx: &mut TestAppContext) -> (Entity<NativeModuleView>, VisualTestContext
         NativeModuleView::new("chat")
     });
     let view = window.root(cx).unwrap();
+    let mut native = VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    (view, native)
+}
+
+fn open_drag_harness(cx: &mut TestAppContext) -> (Entity<NativeModuleView>, VisualTestContext) {
+    cx.update(gpui_kit::init);
+    let view = cx.new(|_| NativeModuleView::new("chat"));
+    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |_, _| {
+        NativeDragHarness {
+            guest: view.clone(),
+        }
+    });
     let mut native = VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     (view, native)
@@ -471,6 +527,222 @@ fn a_native_pointer_drag_resizes_the_thread_and_release_ends_it(cx: &mut TestApp
     native.update(|window, cx| window.render_frame(cx));
     assert_eq!(thread_width(&seat), 430., "release ends the grab");
 }
+#[gpui_kit::test]
+fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
+    cx: &mut TestAppContext,
+) {
+    let _turn = tests::blocking_connection_turn();
+    let seat = seated(&[]);
+    let (_, mut native) = open_drag_harness(cx);
+    let bounds = gpui::Bounds {
+        origin: gpui::point(gpui::px(32.), gpui::px(32.)),
+        size: gpui::size(gpui::px(1136.), gpui::px(736.)),
+    };
+    assert!(
+        bounds.origin.x > gpui::px(0.) && bounds.origin.y > gpui::px(0.),
+        "the guest must be painted at a non-zero origin: {bounds:?}"
+    );
+
+    let local_start = gpui::point(gpui::px(100.), gpui::px(100.));
+    let start = bounds.origin + local_start;
+    let local_moves = [
+        gpui::point(gpui::px(110.), gpui::px(120.)),
+        gpui::point(gpui::px(125.), gpui::px(140.)),
+        gpui::point(gpui::px(145.), gpui::px(160.)),
+    ];
+    let moves: Vec<_> = local_moves
+        .iter()
+        .map(|local| bounds.origin + *local)
+        .collect();
+    // Prime the host's pointer-inside state while interest is off, so the
+    // drag sequence starts with its press instead of a CursorEntered event.
+    native.simulate_mouse_move(start, None, Default::default());
+    {
+        let mut locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            unreachable!()
+        };
+        guest.frame.mouse_interest = true;
+    }
+    input::record_inputs();
+    native.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: start,
+                button: gpui::MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        for position in moves.iter().copied() {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position,
+                    pressed_button: Some(gpui::MouseButton::Left),
+                    modifiers: Default::default(),
+                }),
+                cx,
+            );
+        }
+        window.dispatch_event(
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: *moves.last().unwrap(),
+                button: gpui::MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    });
+    let delivered = input::recorded_inputs();
+    assert_eq!(
+        delivered,
+        vec![
+            wire::Event::Mouse {
+                event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
+                captured: false,
+            },
+            wire::Event::Mouse {
+                event: wire::mouse::Event::CursorMoved { x: 145., y: 160. },
+                captured: false,
+            },
+            wire::Event::Mouse {
+                event: wire::mouse::Event::ButtonReleased(wire::mouse::Button::Left),
+                captured: false,
+            },
+        ],
+        "press/release survive while undrained moves coalesce to the newest local position"
+    );
+
+    // The guest's frame drains the first drag. Chat does not opt in itself,
+    // so restore the per-frame interest bit before the next native sequence.
+    native.update(|window, cx| window.render_frame(cx));
+    {
+        let mut locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            unreachable!()
+        };
+        guest.frame.mouse_interest = true;
+    }
+    let outside = gpui::point(
+        bounds.origin.x - gpui::px(12.),
+        bounds.origin.y + bounds.size.height + gpui::px(12.),
+    );
+    assert!(outside.x > gpui::px(0.) && outside.y < gpui::px(800.));
+    input::record_inputs();
+    native.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: start,
+                button: gpui::MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: outside,
+                pressed_button: Some(gpui::MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+        window.dispatch_event(
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                position: outside,
+                button: gpui::MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+            cx,
+        );
+    });
+    assert_eq!(
+        input::recorded_inputs(),
+        vec![
+            wire::Event::Mouse {
+                event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
+                captured: false,
+            },
+            wire::Event::Mouse {
+                event: wire::mouse::Event::CursorMoved {
+                    x: -12.,
+                    y: f32::from(bounds.size.height) + 12.,
+                },
+                captured: false,
+            },
+            wire::Event::Mouse {
+                event: wire::mouse::Event::ButtonReleased(wire::mouse::Button::Left),
+                captured: false,
+            },
+        ],
+        "window-level listeners keep the drag alive outside the guest bounds"
+    );
+
+    native.update(|window, cx| window.render_frame(cx));
+    {
+        let mut locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            unreachable!()
+        };
+        guest.frame.mouse_interest = true;
+    }
+    input::record_inputs();
+    native.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseExited(gpui::MouseExitEvent {
+                position: outside,
+                pressed_button: Some(gpui::MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+    });
+    assert_eq!(
+        input::recorded_inputs(),
+        vec![wire::Event::Mouse {
+            event: wire::mouse::Event::CursorLeft,
+            captured: false,
+        }],
+        "a window exit reports CursorLeft and does not synthesize a release"
+    );
+
+    // A native sibling consumes its press before the window listener's bubble
+    // phase. `captured: true` therefore describes native control consumption;
+    // guest-painted points above remain false.
+    let sibling = native.update(|window, _| {
+        let bounds = window.find("native-sibling").bounds();
+        assert!(bounds.size.height > gpui::px(0.));
+        bounds.center()
+    });
+    {
+        let mut locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            unreachable!()
+        };
+        guest.frame.mouse_interest = true;
+    }
+    input::record_inputs();
+    native.simulate_mouse_down(sibling, gpui::MouseButton::Left, Default::default());
+    let sibling_events = input::recorded_inputs();
+    assert!(
+        sibling_events.iter().any(|event| {
+            matches!(
+                event,
+                wire::Event::Mouse {
+                    event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
+                    captured: true,
+                }
+            )
+        }),
+        "native sibling events: {sibling_events:?}"
+    );
+}
+
 #[test]
 fn opted_in_mouse_moves_are_local_coalesced_and_keep_button_order() {
     let _turn = tests::blocking_connection_turn();

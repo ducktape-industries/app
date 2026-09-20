@@ -34,6 +34,25 @@ pub(super) fn deliver(guest: &mut Guest, event: wire::Event) -> bool {
     if admitted {
         RECORDED.with_borrow_mut(|events| {
             if let Some(events) = events {
+                // The recorder stands in for the guest's next tick; mirror
+                // input()'s adjacent-move replacement in its wire snapshot.
+                if matches!(
+                    observed,
+                    wire::Event::Mouse {
+                        event: wire::mouse::Event::CursorMoved { .. },
+                        ..
+                    }
+                ) {
+                    while matches!(
+                        events.last(),
+                        Some(wire::Event::Mouse {
+                            event: wire::mouse::Event::CursorMoved { .. },
+                            ..
+                        })
+                    ) {
+                        events.pop();
+                    }
+                }
                 events.push(observed);
             }
         });
