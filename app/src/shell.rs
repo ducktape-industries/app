@@ -907,6 +907,11 @@ impl DesktopWindow {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_module(&self) -> Option<Entity<crate::module_view::NativeModuleView>> {
+        self.module.as_ref().map(|(_, view)| view.clone())
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         self.model
             .update(cx, |model, cx| model.dispatch(message, cx));
