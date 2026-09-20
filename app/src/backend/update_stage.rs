@@ -194,9 +194,10 @@ pub(crate) fn release_bin_dir(release_dir: &Path) -> PathBuf {
     }
 }
 
-/// macOS: the extracted bundle's signature, deep and strict, and the
-/// Gatekeeper assessment a double-click would face. What runs is what was
-/// checked: the same directory is flipped into place.
+/// macOS: the extracted bundle's code signature, deep and strict. The
+/// release manifest signature and archive digest establish release-channel
+/// trust; `spctl` is a separate Developer ID/Gatekeeper assessment and is not
+/// a qualification or launch proof for this managed path.
 #[cfg(target_os = "macos")]
 fn check_bundle(release_dir: &Path) -> Result<(), String> {
     let bundle = release_dir.join(BUNDLE);
@@ -205,8 +206,7 @@ fn check_bundle(release_dir: &Path) -> Result<(), String> {
         &["--verify", "--deep", "--strict"],
         &bundle,
         "codesign_rejected",
-    )?;
-    run_check("spctl", &["-a", "-t", "exec"], &bundle, "spctl_rejected")
+    )
 }
 
 #[cfg(target_os = "macos")]
