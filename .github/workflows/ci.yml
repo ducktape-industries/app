@@ -8,6 +8,9 @@ on:
     branches: [dev]
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -22,6 +25,8 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - name: authenticate private git dependencies
+        run: git config --global url."https://x-access-token:${{ github.token }}@github.com/".insteadOf https://github.com/
       - name: apt deps (cpal/alsa needs ALSA headers)
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - uses: Swatinem/rust-cache@v2
