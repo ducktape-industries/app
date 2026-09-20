@@ -18,6 +18,19 @@ impl Ducktape {
         fn(crate::module_view::ModuleViewEvent) -> AppMessage,
     ) {
         let ShellTab::View(tab) = self.shell_tab;
+        self.native_view_for(tab)
+    }
+
+    /// The same registry-backed view factory for an internal layer. A layer
+    /// may stay mounted while another one is focused, so its props cannot be
+    /// derived from the currently selected tab alone.
+    pub(crate) fn native_view_for(
+        &self,
+        tab: &'static str,
+    ) -> (
+        crate::module_view::ViewSpec,
+        fn(crate::module_view::ModuleViewEvent) -> AppMessage,
+    ) {
         match tab {
             "chat" => (
                 crate::module_view::chat_view(
