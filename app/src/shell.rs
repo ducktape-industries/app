@@ -2570,6 +2570,11 @@ impl DesktopWindow {
                         .child(view),
                 );
             }
+            #[cfg(test)]
+            let layer = {
+                use gpui_kit::test::TestSupportExt as _;
+                layer.test_support()
+            };
             frame = frame.child(layer);
             for zone in zones {
                 frame = frame.child(zone);
@@ -2606,8 +2611,13 @@ impl DesktopWindow {
             }
             root = root.child(restore_bar);
         }
-        root.child(self.layer_gesture_capture(cx))
-            .into_any_element()
+        let root = root.child(self.layer_gesture_capture(cx));
+        #[cfg(test)]
+        let root = {
+            use gpui_kit::test::TestSupportExt as _;
+            root.test_support()
+        };
+        root.into_any_element()
     }
 
     fn console(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -3571,6 +3581,167 @@ mod os_mode_tests {
             assert_eq!(layer.bounds, geometry);
             assert_eq!(layer.restore_bounds, geometry);
         });
+    }
+
+    /// The console shell in a test window, with the first frame drawn.
+    fn open_console(
+        cx: &mut gpui_kit::TestAppContext,
+        width: f32,
+        height: f32,
+    ) -> (Entity<DesktopWindow>, gpui_kit::VisualTestContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let (mut state, _) = Ducktape::boot();
+        state.console_win = Some(WindowKey::unique());
+        state.connected = true;
+        state.shell_tab = ShellTab::View("chat");
+        cx.update(gpui_kit::init);
+        let mut presenter = None;
+        let handle = cx.open_window(
+            gpui_kit::size(gpui_kit::px(width), gpui_kit::px(height)),
+            |window, cx| {
+                let view = test_window(state, WindowKind::Console, window, cx);
+                presenter = Some(view.clone());
+                gpui_kit::component::Root::new(view, window, cx)
+            },
+        );
+        let mut native = gpui_kit::VisualTestContext::from_window(handle.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        (presenter.unwrap(), native)
+    }
+
+    /// Two frames: one lays the workspace out at the new window size, the
+    /// next re-clamps every layer to what that frame measured.
+    fn settle(native: &mut gpui_kit::VisualTestContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        native.update(|window, cx| window.render_frame(cx));
+        native.update(|window, cx| window.render_frame(cx));
+    }
+
+    /// The close control's painted rectangle must lie inside both the
+    /// window and the workspace root beside the rail.
+    fn assert_close_inside(native: &mut gpui_kit::VisualTestContext, module: &str, when: &str) {
+        use gpui_kit::test::TestWindowExt as _;
+        let (window_size, workspace, close) = native.update(|window, _| {
+            (
+                window.viewport_size(),
+                window.find("workspace-layers").bounds(),
+                window.find(format!("layer-close:{module}")).bounds(),
+            )
+        });
+        let inside = |outer: gpui_kit::Bounds<Pixels>| {
+            close.origin.x >= outer.origin.x
+                && close.origin.y >= outer.origin.y
+                && close.bottom_right().x <= outer.bottom_right().x
+                && close.bottom_right().y <= outer.bottom_right().y
+        };
+        assert!(
+            close.size.width > gpui_kit::px(0.)
+                && inside(gpui_kit::Bounds::new(gpui_kit::Point::default(), window_size))
+                && inside(workspace),
+            "{when}: close control {close:?} leaves window {window_size:?} / workspace {workspace:?}"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn maximized_layer_stays_closable_after_the_window_shrinks(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let _turn = crate::module_view::tests::blocking_connection_turn();
+        let (presenter, mut native) = open_console(cx, 1_400., 900.);
+        let (workspace, window_width) = native.update(|window, _| {
+            (
+                window.find("workspace-layers").bounds(),
+                window.viewport_size().width,
+            )
+        });
+        assert!(
+            workspace.origin.x > gpui_kit::px(0.) && workspace.size.width < window_width,
+            "the rail leaves the workspace narrower than the window: {workspace:?}"
+        );
+        presenter.update(&mut native, |view, cx| {
+            view.open_workspace_layer("files", cx);
+            view.layer_action("chat", LayerAction::Maximize, cx);
+        });
+        settle(&mut native);
+        let layer = native.update(|window, _| window.find("workspace-layer:chat").bounds());
+        assert_eq!(
+            layer.size.width,
+            workspace.size.width,
+            "maximized to the workspace, not the window"
+        );
+        assert_close_inside(&mut native, "chat", "maximized");
+
+        native.simulate_resize(gpui_kit::size(gpui_kit::px(760.), gpui_kit::px(560.)));
+        settle(&mut native);
+        assert_close_inside(&mut native, "chat", "maximized after shrink");
+        assert_close_inside(&mut native, "files", "plain layer after shrink");
+
+        presenter.update(&mut native, |view, cx| {
+            view.layer_action("chat", LayerAction::Restore, cx)
+        });
+        settle(&mut native);
+        assert_close_inside(&mut native, "chat", "restored after shrink");
+        presenter.read_with(&native, |view, _| {
+            assert!(!view.workspace_layers["chat"].maximized);
+        });
+
+        for (action, when) in [
+            (LayerAction::Collapse, "collapsed"),
+            (LayerAction::Restore, "expanded"),
+            (LayerAction::Minimize, "minimized"),
+            (LayerAction::Restore, "restored from the dock"),
+        ] {
+            presenter.update(&mut native, |view, cx| {
+                view.layer_action("chat", action, cx)
+            });
+            settle(&mut native);
+            if !matches!(action, LayerAction::Minimize) {
+                assert_close_inside(&mut native, "chat", when);
+            }
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_press_just_outside_the_layer_border_resizes_it(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::test::TestWindowExt as _;
+        let _turn = crate::module_view::tests::blocking_connection_turn();
+        let (presenter, mut native) = open_console(cx, 1_400., 900.);
+        let before = presenter.read_with(&native, |view, _| view.workspace_layers["chat"].bounds);
+        let painted = native.update(|window, _| window.find("workspace-layer:chat").bounds());
+        let outside = gpui_kit::px(6.);
+        let step = gpui_kit::px(40.);
+
+        // The right edge, 6 px past the border, grows the width.
+        let start = gpui_kit::point(painted.right() + outside, painted.center().y);
+        native.update(|window, cx| window.drag(start, start + gpui_kit::point(step, gpui_kit::px(0.)), cx));
+        let after = presenter.read_with(&native, |view, _| view.workspace_layers["chat"].bounds);
+        assert_eq!(after, LayerBounds::new(before.x, before.y, before.width + 40., before.height));
+
+        // The bottom-left corner, 6 px outside both borders, moves the
+        // origin and grows both sizes; release ends the gesture.
+        let painted = native.update(|window, _| window.find("workspace-layer:chat").bounds());
+        let start = gpui_kit::point(painted.left() - outside, painted.bottom() + outside);
+        native.update(|window, cx| window.drag(start, start + gpui_kit::point(-step, step), cx));
+        let corner = presenter.read_with(&native, |view, _| view.workspace_layers["chat"].bounds);
+        assert_eq!(
+            corner,
+            LayerBounds::new(after.x - 40., after.y, after.width + 40., after.height + 40.)
+        );
+        native.update(|window, cx| {
+            window.drag(
+                start + gpui_kit::point(-step, step),
+                start + gpui_kit::point(-step - step, step),
+                cx,
+            )
+        });
+        presenter.read_with(&native, |view, _| assert!(view.layer_gesture.is_none()));
+
+        // 6 px outside the top border while collapsed still finds the frame.
+        presenter.update(&mut native, |view, cx| {
+            view.layer_action("chat", LayerAction::Collapse, cx)
+        });
+        settle(&mut native);
+        let painted = native.update(|window, _| window.find("workspace-layer:chat").bounds());
+        assert_eq!(painted.size.height, gpui_kit::px(LAYER_TITLE_HEIGHT));
     }
 
     #[test]
