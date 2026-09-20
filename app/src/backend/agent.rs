@@ -7,6 +7,32 @@ use gpui_kit::{
 
 const LINK_TOKEN_BYTES: u64 = 4 * 1024;
 
+/// The module/resource address the shell hands to a generic layer when a run
+/// is opened outside the Agents tab. The run itself remains the view's
+/// domain identity; this is only the host key that lets close/minimize/restore
+/// find the same log layer again.
+pub(crate) const SESSION_LOG_MODULE: &str = "agents";
+
+#[derive(Clone, Debug, Hash, PartialEq, Eq)]
+pub(crate) struct SessionLogInstance {
+    /// The stable machine resource selected by the Agents view.
+    pub(crate) resource: String,
+}
+
+impl SessionLogInstance {
+    pub(crate) fn for_dispatch(dispatch: &str) -> Option<Self> {
+        (!dispatch.is_empty()).then(|| Self {
+            resource: format!("runs/{dispatch}"),
+        })
+    }
+
+    /// A layer identity is the module plus its resource, not an open counter.
+    /// Re-opening a run therefore restores its existing layer.
+    pub(crate) fn key(&self) -> String {
+        format!("{SESSION_LOG_MODULE}:{}", self.resource)
+    }
+}
+
 pub(crate) fn agent_ws_url(rpc: &str) -> String {
     let base = if let Some(rest) = rpc.strip_prefix("https://") {
         format!("wss://{rest}")
@@ -118,5 +144,25 @@ impl ImageCache for ParkedPictures {
                 image.use_render_image(window, cx).map(Ok)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_log_identity_is_stable_for_a_dispatch() {
+        let first = SessionLogInstance::for_dispatch("dispatch-1").expect("non-empty dispatch");
+        let second = SessionLogInstance::for_dispatch("dispatch-1").expect("non-empty dispatch");
+
+        assert_eq!(first, second);
+        assert_eq!(first.resource, "runs/dispatch-1");
+        assert_eq!(first.key(), "agents:runs/dispatch-1");
+    }
+
+    #[test]
+    fn an_empty_dispatch_does_not_open_a_log_layer() {
+        assert!(SessionLogInstance::for_dispatch("").is_none());
     }
 }
