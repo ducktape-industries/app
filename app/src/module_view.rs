@@ -4214,12 +4214,10 @@ impl gpui_kit::Render for NativeModuleView {
                         .id(self.ax_mark())
                         .key_context(context)
                         .size_full()
-                        .child(guest)
-                        .child(input::Observe::new(
-                            gpui_kit::div().absolute().inset_0().into_any_element(),
-                            self,
-                            cx,
-                        ))
+                        // Observe wraps the guest: its hitbox sits under the
+                        // guest's controls, a sibling after them would block
+                        // their clicks.
+                        .child(input::Observe::new(guest, self, cx))
                         .child(self.video_overlay(cx))
                         .into_any_element()
                 }

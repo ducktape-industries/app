@@ -758,6 +758,12 @@ fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
                 event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
                 captured: false,
             },
+            // Leaving the layer mid-drag reads as a window would: CursorLeft,
+            // then the captured moves and release keep coming.
+            wire::Event::Mouse {
+                event: wire::mouse::Event::CursorLeft,
+                captured: false,
+            },
             wire::Event::Mouse {
                 event: wire::mouse::Event::CursorMoved {
                     x: -12.,
@@ -770,7 +776,7 @@ fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
                 captured: false,
             },
         ],
-        "window-level listeners keep the drag alive outside the guest bounds"
+        "the captured drag keeps delivering outside the guest bounds"
     );
 
     native.update(|window, cx| window.render_frame(cx));
