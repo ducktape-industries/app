@@ -7,6 +7,7 @@ mod backend;
 mod call;
 mod editor;
 mod interfaces;
+mod media_access;
 mod module_view;
 mod secret;
 mod shell;
