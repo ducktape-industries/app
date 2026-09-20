@@ -103,6 +103,9 @@ pub(crate) struct VideoSurface {
     resource: String,
     fit: ContentFit,
     armed: bool,
+    /// The frame the last paint showed; a different handle in the store is
+    /// the one thing that dirties this surface.
+    painted: Option<Arc<RenderImage>>,
 }
 
 impl VideoSurface {
@@ -111,6 +114,7 @@ impl VideoSurface {
             resource,
             fit,
             armed: false,
+            painted: None,
         }
     }
 
@@ -124,11 +128,32 @@ impl VideoSurface {
     }
 }
 
+/// Keeps the frame clock alive while the surface lives and dirties ONLY this
+/// entity when the store holds a frame the last paint did not show. Pending
+/// next-frame callbacks keep GPUI's loop scheduled but never draw by
+/// themselves; without the notify a new peer frame would wait for some other
+/// change to dirty the window.
 fn schedule_surface_repaint(window: &mut Window, surface: gpui_kit::WeakEntity<VideoSurface>) {
     if surface.upgrade().is_none() {
         return;
     }
-    window.on_next_frame(move |window, _| schedule_surface_repaint(window, surface));
+    window.on_next_frame(move |window, cx| {
+        let Some(entity) = surface.upgrade() else {
+            return;
+        };
+        entity.update(cx, |surface, cx| {
+            let staged = stage_frame(&surface.resource).map(|(_, _, image)| image);
+            let same = match (&staged, &surface.painted) {
+                (Some(now), Some(then)) => Arc::ptr_eq(now, then),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same {
+                cx.notify();
+            }
+        });
+        schedule_surface_repaint(window, surface);
+    });
 }
 
 impl Render for VideoSurface {
@@ -142,12 +167,14 @@ impl Render for VideoSurface {
         }
         let mut element = div().size_full();
         let resource = self.resource.clone();
+        let staged = stage_frame(&resource).map(|(_, _, image)| image);
+        self.painted = staged.clone();
         element = element.child(
             img(move |window: &mut Window, _: &mut gpui_kit::App| {
                 for image in take_retired() {
                     let _ = window.drop_image(image);
                 }
-                stage_frame(&resource).map(|(_, _, image)| Ok(image))
+                staged.clone().map(Ok)
             })
             .size_full()
             .object_fit(match self.fit {
