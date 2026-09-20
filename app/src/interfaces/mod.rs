@@ -6,6 +6,5 @@
 
 pub(crate) mod chat;
 pub(crate) mod files;
-pub(crate) mod forge;
 pub(crate) mod gateway;
 pub(crate) mod identity;

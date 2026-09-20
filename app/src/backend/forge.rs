@@ -1,6 +1,18 @@
 use super::*;
-use crate::interfaces::forge as forge_wire;
 use std::net::IpAddr;
+
+const MAX_BLOB_PAGE_BYTES: usize = 1024 * 1024;
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BlobBytesReply {
+    rev: String,
+    #[serde(rename = "path")]
+    _path: String,
+    b64: String,
+    size: i64,
+    eof: bool,
+}
 
 /// Page one blob's bytes in through `blob_bytes` (1 MiB pages to eof).
 /// Page 1 asks by the caller's rev (a branch name or an oid); every later
@@ -25,14 +37,14 @@ async fn forge_blob_bytes(
             "rev": &rev,
             "path": path,
             "offset": bytes.len() as u64,
-            "len": forge_wire::MAX_BLOB_PAGE_BYTES as u64,
+            "len": MAX_BLOB_PAGE_BYTES as u64,
         }});
         let reply: serde_json::Value = client.query("forge", &query).await?;
         let page = reply
             .get("blob_bytes")
             .cloned()
             .ok_or_else(|| "the requested file was not found".to_string())?;
-        let page: forge_wire::BlobBytesReply =
+        let page: BlobBytesReply =
             serde_json::from_value(page).map_err(|error| error.to_string())?;
         rev = page.rev;
         let chunk = super::storage::base64_decode(&page.b64)
@@ -415,5 +427,27 @@ impl gpui_kit::Render for CodeView {
                     .min_h_0(),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod interface_tests {
+    use super::BlobBytesReply;
+
+    #[test]
+    fn blob_reply_requires_the_consumed_shape() {
+        let value =
+            serde_json::json!({"rev":"abc", "path":"note.txt", "b64":"aGk=", "size":2, "eof":true});
+        let page: BlobBytesReply = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            (page.rev.as_str(), page.b64.as_str(), page.size, page.eof),
+            ("abc", "aGk=", 2, true)
+        );
+        let mut missing = value.clone();
+        missing.as_object_mut().unwrap().remove("path");
+        assert!(serde_json::from_value::<BlobBytesReply>(missing).is_err());
+        let mut extra = value;
+        extra["unexpected"] = serde_json::json!(true);
+        assert!(serde_json::from_value::<BlobBytesReply>(extra).is_err());
     }
 }

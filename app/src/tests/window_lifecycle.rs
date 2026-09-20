@@ -153,6 +153,49 @@ fn returning_to_the_picker_cancels_welcome_authentication() {
     assert!(app.ceremony_phase.is_empty());
     assert!(app.ceremony_detail.is_empty());
 }
+
+#[test]
+fn initial_use_this_device_starts_local_registration_and_stays_on_error() {
+    use futures::StreamExt as _;
+
+    let handler = fn_body("on_welcome_desktop");
+    let create = handler
+        .find("crate::backend::create_account(")
+        .expect("initial named welcome uses the signed account-create helper");
+    let passkey = handler
+        .find("crate::backend::register_passkey(")
+        .expect("the QR continuation keeps passkey registration");
+    assert!(
+        create < passkey,
+        "initial create is not the phone continuation"
+    );
+    assert!(handler.contains("AppMessage::WelcomeFailed(error)"));
+
+    let mut app = Ducktape::initial_state();
+    app.hub_step = HubStep::Account;
+    app.hub_chain_id = "dognet#d2a0ec8f".into();
+    app.rpc = "http://127.0.0.1:1".into();
+    app.password = "device-password".into();
+
+    let task = app.update(AppMessage::WelcomeDesktop("desktop account".into()));
+    assert_eq!(app.mutation_phase, MutationPhase::Onboarding);
+    let replies = futures::executor::block_on(task.into_stream().collect::<Vec<_>>());
+    assert!(
+        !replies.is_empty(),
+        "the initial button must start registration"
+    );
+    for reply in replies {
+        let _ = app.update(reply);
+    }
+    assert_eq!(app.mutation_phase, MutationPhase::Idle);
+    assert_eq!(app.hub_step, HubStep::Account);
+    assert!(
+        !app.onboarding_error.is_empty(),
+        "registration failure is shown"
+    );
+    assert_eq!(app.console_entry, ConsoleEntry::Idle);
+}
+
 #[test]
 fn closing_a_window_exits_only_where_no_status_item_lives() {
     let mut app = Ducktape::initial_state();

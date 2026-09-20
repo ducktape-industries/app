@@ -1,0 +1,42 @@
+# Linux only; macOS runners are deliberately excluded.
+name: ci
+
+on:
+  push:
+    branches: [dev]
+  pull_request:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_JOBS: 3
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Native build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libclang-dev libasound2-dev \
+            libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libfontconfig1-dev libfreetype6-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: rustup show
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --locked --workspace --tests --no-deps -- -D warnings
+      # App binary tests, staged ducktape-views/core sim WASM, and the private
+      # cross-repo QA loader are left to the later nightly workflow.
+      - run: cargo test --locked --workspace --lib --no-fail-fast
+      - name: artifact and script checks
+        run: cargo test --locked -p ducktape-app --test ops_scripts --test view_artifact

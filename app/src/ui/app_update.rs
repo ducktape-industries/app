@@ -205,7 +205,7 @@ impl Ducktape {
             AppMessage::WelcomeCancel => self.on_welcome_cancel(),
             AppMessage::WelcomeCreateSubmit(name) => self.on_welcome_create_submit(name),
             AppMessage::WelcomeLoginSubmit => self.on_welcome_login_submit(),
-            AppMessage::WelcomeDesktop => self.on_welcome_desktop(),
+            AppMessage::WelcomeDesktop(name) => self.on_welcome_desktop(name),
             AppMessage::WelcomeDesktopDone(_ok) => self.on_welcome_desktop_done(_ok),
             AppMessage::CeremonyStepped(next) => self.on_ceremony_stepped(next),
             AppMessage::WelcomeFailed(cause) => self.on_welcome_failed(cause),
@@ -3590,6 +3590,7 @@ impl Ducktape {
         {
             return Task::none();
         }
+        self.welcome_name_draft = name.to_owned();
         self.onboarding_error = "".to_owned();
         self.mutation_phase = MutationPhase::Onboarding;
         let pending_task = Task::run(
@@ -3653,32 +3654,52 @@ impl Ducktape {
         }
         pending_task
     }
-    fn on_welcome_desktop(&mut self) -> Task<AppMessage> {
-        if self.ceremony_phase != "show_qr" {
+    fn on_welcome_desktop(&mut self, name: String) -> Task<AppMessage> {
+        if (self.mutation_phase != MutationPhase::Idle) || (self.hub_chain_id).is_empty() {
             return Task::none();
         }
+        self.welcome_name_draft = name;
+        let door = crate::backend::welcome_door(&self.welcome_name_draft);
+        let create_on_device =
+            matches!(door, WelcomeDoor::Create) && self.ceremony_phase.is_empty();
         self.welcome_qr_auth_generation = self.welcome_qr_auth_generation.wrapping_add(1);
         if let Some(previous_handle) = self.welcome_qr_auth_task.take() {
             previous_handle.abort();
         }
+        self.mutation_phase = MutationPhase::Onboarding;
         self.ceremony_phase = "working".to_owned();
         self.ceremony_qr = "".to_owned();
-        self.ceremony_detail = "Continue in the browser…".to_owned();
-        let door = crate::backend::welcome_door(&self.welcome_name_draft);
+        self.ceremony_detail = match create_on_device {
+            true => "Creating an account on this device…".to_owned(),
+            false => "Continue in the browser…".to_owned(),
+        };
         match door {
             WelcomeDoor::Create => {
-                let pending_task = Task::perform(
-                    crate::backend::register_passkey(
-                        self.rpc.to_owned(),
-                        self.password.to_owned(),
-                        self.hub_chain_id.to_owned(),
-                        "".to_owned(),
+                let pending_task = match create_on_device {
+                    true => Task::perform(
+                        crate::backend::create_account(
+                            self.rpc.to_owned(),
+                            self.password.to_owned(),
+                            self.welcome_name_draft.to_owned(),
+                        ),
+                        |result| match result {
+                            Ok(value) => AppMessage::WelcomeDesktopDone(value),
+                            Err(error) => AppMessage::WelcomeFailed(error),
+                        },
                     ),
-                    |result| match result {
-                        Ok(value) => AppMessage::WelcomeDesktopDone(value),
-                        Err(error) => AppMessage::WelcomeFailed(error),
-                    },
-                );
+                    false => Task::perform(
+                        crate::backend::register_passkey(
+                            self.rpc.to_owned(),
+                            self.password.to_owned(),
+                            self.hub_chain_id.to_owned(),
+                            "".to_owned(),
+                        ),
+                        |result| match result {
+                            Ok(value) => AppMessage::WelcomeDesktopDone(value),
+                            Err(error) => AppMessage::WelcomeFailed(error),
+                        },
+                    ),
+                };
                 self.welcome_desktop_auth_generation =
                     self.welcome_desktop_auth_generation.wrapping_add(1);
                 let request_generation = self.welcome_desktop_auth_generation;
