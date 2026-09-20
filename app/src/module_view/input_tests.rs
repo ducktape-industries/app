@@ -13,7 +13,10 @@ impl gpui::Render for NativeDragHarness {
         _: &mut gpui::Window,
         _: &mut gpui::Context<Self>,
     ) -> impl gpui::IntoElement {
-        use gpui::{InteractiveElement as _, ParentElement as _, Styled as _};
+        use gpui::{
+            InteractiveElement as _, ParentElement as _, StatefulInteractiveElement as _,
+            Styled as _,
+        };
         use gpui_kit::TestSupportExt as _;
 
         gpui::div()
@@ -26,6 +29,8 @@ impl gpui::Render for NativeDragHarness {
             .child(
                 gpui::div()
                     .id("native-guest-slot")
+                    // a node with bounds the test door can resolve an id to
+                    .role(gpui::Role::Group)
                     .flex_1()
                     .min_h_0()
                     .relative()
@@ -527,6 +532,85 @@ fn a_native_pointer_drag_resizes_the_thread_and_release_ends_it(cx: &mut TestApp
     native.update(|window, cx| window.render_frame(cx));
     assert_eq!(thread_width(&seat), 430., "release ends the grab");
 }
+/// A door drag with the guest slot's id: local coordinates are offset by
+/// the slot's painted origin before they reach the window, so the seated
+/// guest sees them back as the same local coordinates.
+#[gpui_kit::test]
+fn door_drag_by_node_id_reaches_the_guest_in_its_own_coordinates(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    let seat = seated(&[]);
+    let (_, mut native) = open_drag_harness(cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+    });
+    let slot = native.update(|window, _| {
+        crate::ax_door::snapshot("harness", window, true)
+            .into_iter()
+            .find(|node| node.id == "harness:native-guest-slot")
+            .expect("the guest slot is a door node")
+    });
+    let [x, y, ..] = slot.bounds.expect("painted bounds");
+    assert!(
+        x > 0 && y > 0,
+        "the guest is painted at a non-zero origin: {slot:?}"
+    );
+    let origin = gpui::point(gpui::px(x as f32), gpui::px(y as f32));
+
+    // Prime the host's pointer-inside state while interest is off, so the
+    // drag sequence starts with its press instead of a CursorEntered event.
+    native.simulate_mouse_move(
+        origin + gpui::point(gpui::px(100.), gpui::px(100.)),
+        None,
+        Default::default(),
+    );
+    {
+        let mut locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            unreachable!()
+        };
+        guest.frame.mouse_interest = true;
+    }
+    input::record_inputs();
+    let drag = serde_json::from_value::<crate::ax_door::Drag>(serde_json::json!({
+        "id": "harness:native-guest-slot",
+        "from": [100, 100],
+        "to": [145, 160],
+        "steps": 3,
+    }))
+    .unwrap();
+    let reply =
+        native.update(|window, cx| crate::ax_door::drag_by_id("harness", window, cx, &drag));
+    assert_eq!(
+        input::recorded_inputs(),
+        vec![
+            wire::Event::Mouse {
+                event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
+                captured: false,
+            },
+            wire::Event::Mouse {
+                event: wire::mouse::Event::CursorMoved { x: 145., y: 160. },
+                captured: false,
+            },
+            wire::Event::Mouse {
+                event: wire::mouse::Event::ButtonReleased(wire::mouse::Button::Left),
+                captured: false,
+            },
+        ],
+        "the guest reads the drag back in the local coordinates the door was asked for"
+    );
+    assert_eq!(reply.status(), 200, "{}", reply.body());
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(reply.body()).unwrap(),
+        serde_json::json!({
+            "from": [100. + x as f32, 100. + y as f32],
+            "to": [145. + x as f32, 160. + y as f32],
+            "steps": 3,
+        }),
+        "the window coordinates actually sent"
+    );
+}
+
 #[gpui_kit::test]
 fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
     cx: &mut TestAppContext,
