@@ -13,10 +13,9 @@
 //!   installed launcher before it flips;
 //! - `--rollback`: the manual escape hatch, the Settings row's `UserRollback`
 //!   from a shell;
-//! - `install --from <built release> [--release-key HEX] [--replace]`: seed,
-//!   flip, write state, pin the release key (`make install-app`). A release
-//!   older than the pin, or one with no `release.json` over an installed one,
-//!   is only offered until `--replace` takes it.
+//! - `install --from <built release> [--release-key HEX]`: lay down a clean
+//!   install and pin the release key (`make install`). It keeps nothing of
+//!   what was there and never refuses for it; updating is the other modes'.
 //!
 //! When the update machinery cannot be trusted (no state, a link where a
 //! file should be, a flip that refused) a boot still runs the app beside
@@ -44,7 +43,7 @@ use crate::layout::{EnvInputs, Layout, Platform};
 use crate::refusal::Refusal;
 
 const TARGET: &str = "ducktape::update";
-const USAGE: &str = "usage: ducktape-launcher [app args...]\n       ducktape-launcher --qualify <state.json>\n       ducktape-launcher --rollback\n       ducktape-launcher install --from <built release dir or Ducktape.app> [--release-key HEX] [--replace]\n";
+const USAGE: &str = "usage: ducktape-launcher [app args...]\n       ducktape-launcher --qualify <state.json>\n       ducktape-launcher --rollback\n       ducktape-launcher install --from <built release dir or Ducktape.app> [--release-key HEX]\n";
 
 /// Every way the launcher can be invoked; one match in `main`.
 #[derive(Debug, PartialEq, Eq)]
@@ -55,7 +54,6 @@ enum Mode {
     Install {
         from: PathBuf,
         release_key: Option<String>,
-        replace: bool,
     },
     Help,
 }
@@ -82,8 +80,8 @@ fn parse(args: Vec<OsString>) -> Result<Mode, String> {
 }
 
 fn parse_install(args: Vec<OsString>) -> Result<Mode, String> {
-    let usage = || "install needs `--from <path>` [--release-key HEX] [--replace]".to_string();
-    let (mut from, mut release_key, mut replace) = (None, None, false);
+    let usage = || "install needs `--from <path>` [--release-key HEX]".to_string();
+    let (mut from, mut release_key) = (None, None);
     let mut args = args.into_iter();
     while let Some(flag) = args.next() {
         match flag.to_str() {
@@ -94,14 +92,12 @@ fn parse_install(args: Vec<OsString>) -> Result<Mode, String> {
                 let key = args.next().ok_or_else(usage)?;
                 release_key = Some(key.to_string_lossy().into_owned());
             }
-            Some("--replace") if !replace => replace = true,
             _ => return Err(usage()),
         }
     }
     Ok(Mode::Install {
         from: from.ok_or_else(usage)?,
         release_key,
-        replace,
     })
 }
 
@@ -118,11 +114,7 @@ fn main() -> ExitCode {
         Mode::Boot(args) => boot(&args),
         Mode::Qualify(state) => run_qualify(&state),
         Mode::Rollback => rollback(),
-        Mode::Install {
-            from,
-            release_key,
-            replace,
-        } => run_install(&from, release_key.as_deref(), replace),
+        Mode::Install { from, release_key } => run_install(&from, release_key.as_deref()),
         Mode::Help => {
             print!("{USAGE}");
             ExitCode::SUCCESS
@@ -220,9 +212,9 @@ fn run_qualify(state: &std::path::Path) -> ExitCode {
     }
 }
 
-fn run_install(from: &std::path::Path, release_key: Option<&str>, replace: bool) -> ExitCode {
+fn run_install(from: &std::path::Path, release_key: Option<&str>) -> ExitCode {
     let result = host_layout().and_then(|layout| {
-        let sha = install::install(&layout, from, release_key, replace)?;
+        let sha = install::install(&layout, from, release_key)?;
         Ok((layout, sha))
     });
     match result {
@@ -290,13 +282,11 @@ mod tests {
             Mode::Install {
                 from: "/b".into(),
                 release_key: None,
-                replace: false,
             }
         );
         let pinned = Mode::Install {
             from: "/b".into(),
             release_key: Some("ab".into()),
-            replace: false,
         };
         assert_eq!(
             parse(vec![
@@ -320,19 +310,15 @@ mod tests {
             .unwrap(),
             pinned
         );
-        assert_eq!(
+        // The consent flag is gone with the offer it answered.
+        assert!(
             parse(vec![
                 "install".into(),
                 "--replace".into(),
                 "--from".into(),
                 "/b".into(),
             ])
-            .unwrap(),
-            Mode::Install {
-                from: "/b".into(),
-                release_key: None,
-                replace: true,
-            }
+            .is_err()
         );
         assert!(parse(vec!["install".into(), "--from".into()]).is_err());
         assert!(
