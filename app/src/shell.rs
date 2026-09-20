@@ -1764,11 +1764,14 @@ impl DesktopWindow {
                                 .outline(),
                             )
                             .child(
-                                self.action(
+                                self.submit(
                                     "account-desktop",
                                     "Use this device",
-                                    Message::WelcomeDesktop,
                                     busy,
+                                    |this, cx| {
+                                        Message::WelcomeDesktop(this.value("account-name", cx))
+                                    },
+                                    cx,
                                 )
                                 .outline(),
                             )
