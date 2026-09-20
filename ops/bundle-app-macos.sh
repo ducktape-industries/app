@@ -20,6 +20,14 @@
 # rest): `codesign --verify --deep --strict` — what `ducktape-launcher
 # --qualify` runs on a staged release — passes on the bundle as built, with
 # nothing added or re-sealed after the fact.
+#
+# The helper is signed WITH THE BUNDLE'S IDENTIFIER. It is the process that
+# runs after the launcher's exec, and usernoted names a notification client
+# by its code-signing identifier, not by the bundle it sits in: a helper left
+# to codesign's default (`ducktape-app-<hash>`) belongs to no app the
+# Notification Center knows, so every UNUserNotificationCenter call answers
+# UNErrorDomain 1 "not allowed for this application" and no consent prompt
+# is ever shown (observed on macOS 27, A2).
 set -euo pipefail
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 # The signing path is settled before anything else: a misconfigured
@@ -69,7 +77,9 @@ sign_locally() {
   if [[ "$identity" != - ]]; then sign+=(--timestamp --options runtime); fi
   local entitlements="$repo/app/packaging/entitlements.plist"
   # Inside-out: the nested helper first, then the bundle (= its main executable).
-  codesign "${sign[@]}" --entitlements "$entitlements" "$contents/MacOS/ducktape-app"
+  local bundle_id
+  bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$contents/Info.plist")
+  codesign "${sign[@]}" --identifier "$bundle_id" --entitlements "$entitlements" "$contents/MacOS/ducktape-app"
   codesign "${sign[@]}" --entitlements "$entitlements" "$app"
   codesign --verify --deep --strict "$app"
   mkdir "$stage/image"
