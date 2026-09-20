@@ -516,6 +516,10 @@ fn open_camera(events: &tokio::sync::mpsc::Sender<String>) -> Option<nokhwa::Cam
     use nokhwa::pixel_format::RgbAFormat;
     use nokhwa::utils::{CameraIndex, RequestedFormat, RequestedFormatType, Resolution};
 
+    if let Err(reason) = crate::media_access::gate(crate::media_access::Device::Camera) {
+        refuse_source(events, format!("camera: {reason}"));
+        return None;
+    }
     let vga = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::HighestResolution(
         Resolution::new(640, 480),
     ));
@@ -585,6 +589,7 @@ fn budget_format(
 /// the toggle back where the user can see it is off. The capture thread has
 /// nothing left to decide.
 fn refuse_source(events: &tokio::sync::mpsc::Sender<String>, message: String) {
+    tracing::warn!(target: "ducktape::app", reason = "capture_refused", %message, "a capture source will not open");
     let _ = events.try_send(message);
     SOURCE.store(Source::Off.code(), Ordering::Relaxed);
 }
@@ -648,6 +653,7 @@ impl ScreenSource {
     fn open(target: ShareTarget) -> Result<Self, String> {
         use core_graphics::display::CGDisplay;
 
+        crate::media_access::gate(crate::media_access::Device::Screen)?;
         let display = match target {
             // Every head at once is one `CGDisplayCreateImage` per head glued
             // into one picture; nothing offers it, so nothing implements it.
