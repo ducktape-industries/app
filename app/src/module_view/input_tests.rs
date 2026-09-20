@@ -575,6 +575,12 @@ fn native_pages_keyboard_creates_a_page_and_mounts_its_document(cx: &mut TestApp
         "Pages editor must align inside its measured pane: {document:?} vs {pane:?}"
     );
     let nodes = door_tree_for(&mut native, "pages");
+    for name in ["Heading 1", "Text"] {
+        assert!(
+            nodes.iter().any(|node| node.name == name),
+            "Pinned Pages editor must expose its native {name} field"
+        );
+    }
     assert!(
         nodes.iter().any(|node| node.name.contains("Untitled")),
         "Pages document is not observable through the door: {nodes:?}"
