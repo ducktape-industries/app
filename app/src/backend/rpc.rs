@@ -602,32 +602,6 @@ pub async fn save_appearance(mode: crate::Appearance) -> bool {
     write_prefs(&prefs)
 }
 
-/// The workspace navigation is a device preference, alongside appearance.
-/// Sidebar remains the default so a fresh install keeps the familiar rail.
-fn navigation_mode_from_prefs(prefs: &serde_json::Value) -> crate::NavigationMode {
-    match prefs["navigation_mode"].as_str() {
-        Some("dock") => crate::NavigationMode::Dock,
-        _ => crate::NavigationMode::Sidebar,
-    }
-}
-
-fn set_navigation_mode_pref(prefs: &mut serde_json::Value, mode: crate::NavigationMode) {
-    prefs["navigation_mode"] = serde_json::json!(match mode {
-        crate::NavigationMode::Sidebar => "sidebar",
-        crate::NavigationMode::Dock => "dock",
-    });
-}
-
-pub async fn load_navigation_mode() -> crate::NavigationMode {
-    navigation_mode_from_prefs(&read_prefs())
-}
-
-pub async fn save_navigation_mode(mode: crate::NavigationMode) -> bool {
-    let mut prefs = read_prefs();
-    set_navigation_mode_pref(&mut prefs, mode);
-    write_prefs(&prefs)
-}
-
 /// The prefs key a network's per-network readings (`networks[<key>]`: its
 /// last-used stamp) sit under: the chain id when the endpoint is served by a
 /// workspace on this device — the one name that survives a port change —
@@ -809,31 +783,8 @@ pub(crate) fn retry_delay(attempt: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::{navigation_mode_from_prefs, set_navigation_mode_pref, user_error};
+    use super::user_error;
     use commonware_cryptography::Signer as _;
-
-    #[test]
-    fn navigation_mode_preference_round_trips_through_existing_prefs() {
-        let mut prefs = serde_json::json!({});
-        assert_eq!(
-            navigation_mode_from_prefs(&prefs),
-            crate::NavigationMode::Sidebar
-        );
-
-        set_navigation_mode_pref(&mut prefs, crate::NavigationMode::Dock);
-        assert_eq!(prefs["navigation_mode"], "dock");
-        assert_eq!(
-            navigation_mode_from_prefs(&prefs),
-            crate::NavigationMode::Dock
-        );
-
-        set_navigation_mode_pref(&mut prefs, crate::NavigationMode::Sidebar);
-        assert_eq!(prefs["navigation_mode"], "sidebar");
-        assert_eq!(
-            navigation_mode_from_prefs(&prefs),
-            crate::NavigationMode::Sidebar
-        );
-    }
 
     #[test]
     fn seated_signer_binds_the_declared_blob_for_an_arbitrary_module() {

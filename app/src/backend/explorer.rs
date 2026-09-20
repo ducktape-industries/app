@@ -39,6 +39,24 @@ pub fn command_chord(logical: String, modifiers: gpui_kit::Modifiers) -> crate::
     crate::CommandChord::Ignored
 }
 
+/// Which layer chord this press is: ⌘W closes the focused layer, ⌘M
+/// minimizes it, ⇧⌘F maximizes it (Ctrl off a Mac), or none. ⌘W with no
+/// focused layer falls through to [`command_chord`] and closes the window.
+pub fn layer_chord(
+    logical: String,
+    modifiers: gpui_kit::Modifiers,
+) -> Option<crate::shell::LayerAction> {
+    if !command_held(modifiers) {
+        return None;
+    }
+    match (logical.to_ascii_lowercase().as_str(), modifiers.shift) {
+        ("w", false) => Some(crate::shell::LayerAction::Close),
+        ("m", false) => Some(crate::shell::LayerAction::Minimize),
+        ("f", true) => Some(crate::shell::LayerAction::Maximize),
+        _ => None,
+    }
+}
+
 /// The transient layer currently over the console's content — the TOPMOST one
 /// only — or `""` when the content itself is the frontmost thing on screen.
 /// The order IS the z-order.
