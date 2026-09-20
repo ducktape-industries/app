@@ -30,19 +30,9 @@ sdk = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "d
 view-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "view-wire" }
 # the `duck://` grammar, at the view-wire rev: the rest of the line's
 # duck-address (5fa05de) has no typed tails and no account address.
-# files-wire carries `FileAddress`.
+# `duck-address` is the platform address grammar; module tails stay in the app.
 duck-address = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "duck-address" }
-files-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "files-wire" }
 design = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "design" }
-# chat's client view model, at the view-wire rev: a mention links the
-# account's `duck://<chain>/identity/<n>`, which chat-wire at 5fa05de cannot
-# mint. Its `NameDirectory` reads the `AccountView` of the identity-wire it
-# links (`chat-identity`); the app's `identity` stays core's (5fa05de), and
-# `backend/roster.rs` hands the one record to the other — the shape did not move.
-chat = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "chat-wire" }
-chat-identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "identity-wire" }
-gateway = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "gateway-wire" }
-identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "identity-wire" }
 
 # --- node-side: ducktape-industries/ducktape ---
 node = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "node" }
@@ -68,6 +58,10 @@ futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "blocking"] }
 rand = "0.8"
 commonware-cryptography = "2026.9.0"
+commonware-codec = "2026.9.0"
+k256 = { version = "0.13", features = ["ecdsa"] }
+p256 = "0.13"
+unicode-normalization = "0.1"
 base64 = "0.22"
 tempfile = "3"
 zeroize = "1"

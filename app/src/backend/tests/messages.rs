@@ -146,7 +146,7 @@ async fn composer_markdown_round_trips_rich_spans() {
         chat::encode_msg(&ChatMsg::PostMessage {
             channel_id: "general".into(),
             message_id: "styled-1".into(),
-            blocks: ::chat::client::parse_message("say **hi** to _all_"),
+            blocks: crate::interfaces::chat::parse_message("say **hi** to _all_"),
             thread: None,
         }),
     )

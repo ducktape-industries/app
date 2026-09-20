@@ -13,9 +13,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 // does — so what is left of the module's vocabulary here is what the app's
 // own tests build rows with.
 #[cfg(test)]
-use ::chat::index::{ChatViewQuery, ChatViewReply};
+use crate::interfaces::chat::index::{ChatViewQuery, ChatViewReply};
 #[cfg(test)]
-use ::chat::{ChatMsg, PostPolicy};
+use crate::interfaces::chat::{ChatMsg, PostPolicy};
 // this device's signing key, opened in-process by `keystore` and signing op
 // frames through `::node::encode_frame` — see `rpc::Signer`.
 use commonware_cryptography::{Signer as _, ed25519};
@@ -24,14 +24,16 @@ use futures::{FutureExt as _, StreamExt as _};
 use tokio::sync::OwnedSemaphorePermit;
 use zeroize::Zeroizing;
 
+pub(crate) use crate::interfaces::{chat as chat_wire, gateway, identity};
+
 // chat's client view model is module-owned (`chat::client`) — the rendered
 // row types, the composer parsing, the optimistic merges, and the op-delta
 // splices. Re-exported here for app state handlers.
-pub use ::chat::client::{ChatChannel, ChatReader, HuddleSeat, NameDirectory, short_label};
+pub use chat_wire::client::{ChatChannel, ChatReader, HuddleSeat, NameDirectory, short_label};
 // the composer's block splitter is not called by the shipping binary — only by
 // the app's own test helpers, which build message rows the way a send does.
 #[cfg(test)]
-pub use ::chat::client::{ChatMessage, author_display, author_name, paragraph_blocks};
+pub use chat_wire::client::{ChatMessage, author_display, author_name, paragraph_blocks};
 
 /// The network a test's rendered rows name: chat links a mention to the
 /// account's address on a chain, and a fixture has no connection to take one

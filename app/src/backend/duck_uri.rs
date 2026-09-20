@@ -24,13 +24,13 @@
 //! rather than the wrong thing.
 
 pub(crate) use crate::DuckKind;
+use crate::interfaces::files::FileAddress;
 use duck_address::chat::MessageAddress;
 use duck_address::forge::{ForgeLocator, ForgeRepoAddress, ForgeTarget};
 use duck_address::identity::AccountAddress;
 use duck_address::pages::PageAddress;
 use duck_address::runs::RunAddress;
 use duck_address::{Address, ChainId, Refused};
-use files_wire::FileAddress;
 
 /// What a `duck://` link that is not the chain-id grammar is refused with.
 pub const OLD_FORM: &str = "this link uses an address form this app no longer reads";
@@ -437,7 +437,10 @@ mod tests {
             .expect("mints")
             .to_string();
         assert_eq!(minted, format!("{AT}/identity/7"));
-        assert_eq!(minted, ::chat::client::duck_account_link(&chain, 7));
+        assert_eq!(
+            minted,
+            crate::interfaces::chat::client::duck_account_link(&chain, 7)
+        );
         let account = resolve_duck_link(minted, HERE.into());
         assert_eq!(
             (account.kind, account.account.as_str(), account.chain),

@@ -106,6 +106,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use super::{Guest, ModuleViewEvent, Slot, wire};
+use crate::interfaces::gateway;
 // A refusal the NODE authored, carried through with the token the node gave
 // it: the rpc client split the envelope off, so no door here parses text.
 use crate::backend::refused;

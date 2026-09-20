@@ -30,7 +30,10 @@ fn native_rich_text_uses_one_paragraph_with_actionable_links() {
 fn the_mention_plate_leaves_space_before_and_after_the_token() {
     use gpui_kit::{FontWeight, TextRun, font, px};
     let cx = crate::frame_probe::headless_context();
-    let blocks = chat::client::paragraph_blocks("before<@3>after", &backend::test_chain());
+    let blocks = crate::interfaces::chat::client::paragraph_blocks(
+        "before<@3>after",
+        &backend::test_chain(),
+    );
     let spans = &blocks[0].spans;
     // the plate is a destination on the network it was rendered for: the
     // account's address on that chain, which the open plane opens there
