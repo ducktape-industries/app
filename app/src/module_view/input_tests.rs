@@ -779,6 +779,18 @@ fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
         "the captured drag keeps delivering outside the guest bounds"
     );
 
+    // The drag already left the layer; come back in so the exit has a layer
+    // to leave, then re-arm the interest bit the redraw's frame dropped.
+    native.update(|window, cx| {
+        window.dispatch_event(
+            gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                position: start,
+                pressed_button: None,
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+    });
     native.update(|window, cx| window.render_frame(cx));
     {
         let mut locked = seat.lock().unwrap();
@@ -809,11 +821,14 @@ fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
 
     // A native sibling consumes its press before the window listener's bubble
     // phase. `captured: true` therefore describes native control consumption;
-    // guest-painted points above remain false.
+    // guest-painted points above remain false. The press lands where the
+    // sibling overlaps the layer: outside it the guest sees nothing at all.
     let sibling = native.update(|window, _| {
-        let bounds = window.find("native-sibling").bounds();
-        assert!(bounds.size.height > gpui::px(0.));
-        bounds.center()
+        let sibling = window.find("native-sibling").bounds();
+        assert!(sibling.size.height > gpui::px(0.));
+        let point = gpui::point(sibling.center().x, sibling.bottom() - gpui::px(4.));
+        assert!(bounds.contains(&point));
+        point
     });
     {
         let mut locked = seat.lock().unwrap();
