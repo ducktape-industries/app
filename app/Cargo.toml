@@ -46,7 +46,7 @@ keystore.workspace = true
 # of holding the key in-process; `node::encode_frame` is the ONE encoder, and a
 # second implementation of a machine wire format is not a thing to write.
 node.workspace = true
-authpage.workspace = true
+keyscheme.workspace = true
 # the ed25519 signer `keystore` hands back and `node::encode_frame` signs with.
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -66,9 +66,9 @@ sdk.workspace = true
 # existence — so the app runs it here instead of shelling out to
 # `ducktape node join` and diffing the workspace registry to find out which
 # directory the child had created.
-workspace-config.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 # The huddle's media leg (`src/call.rs`): microphone/speaker streams and the
 # `/v1/call/ws` socket the node's call hub serves.
 cpal = "0.15"
@@ -145,7 +145,6 @@ syn = { version = "2", features = ["full", "visit"] }
 quote = "1"
 # the dependency line this app is held to is read off the manifests, not
 # asserted about from memory: `the_app_links_only_what_it_still_speaks_for`
-toml = "0.8"
 commonware-cryptography.workspace = true
 simnode.workspace = true
 tempfile.workspace = true

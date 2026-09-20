@@ -110,6 +110,7 @@ use crate::interfaces::gateway;
 // A refusal the NODE authored, carried through with the token the node gave
 // it: the rpc client split the envelope off, so no door here parses text.
 use crate::backend::refused;
+use crate::backend::workspace_config;
 
 /// The most blocks one `rpc.blocks` may ask for.
 const MAX_BLOCKS: usize = 1_000;

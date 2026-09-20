@@ -677,25 +677,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "authpage"
-version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?branch=dev#36f37ad8e14e5207a45c0babf48c93ce04e11826"
-dependencies = [
- "base64 0.22.1",
- "identity-wire",
- "keyscheme",
- "node",
- "qrcode",
- "rand 0.8.8",
- "reqwest 0.12.28",
- "sdk",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3109,7 +3090,6 @@ version = "0.1.0"
 dependencies = [
  "accesskit_consumer",
  "app-update",
- "authpage",
  "base64 0.22.1",
  "block2 0.5.1",
  "commonware-codec",
@@ -3127,6 +3107,7 @@ dependencies = [
  "gpui-notion",
  "image",
  "k256",
+ "keyscheme",
  "keystore",
  "media-service",
  "module-artifact",
@@ -3161,7 +3142,6 @@ dependencies = [
  "usvg 0.45.1",
  "view-wire 0.1.0 (git+https://github.com/ducktape-industries/ducktape-sdk?rev=81953e68d0e8ceb142c49d2ad5397d55c3322578)",
  "wasmtime",
- "workspace-config",
  "x11rb",
  "zbus",
  "zeroize",

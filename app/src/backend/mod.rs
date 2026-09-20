@@ -24,7 +24,10 @@ use futures::{FutureExt as _, StreamExt as _};
 use tokio::sync::OwnedSemaphorePermit;
 use zeroize::Zeroizing;
 
+pub(crate) use crate::authpage;
 pub(crate) use crate::interfaces::{chat as chat_wire, gateway, identity};
+
+pub(crate) mod workspace_config;
 
 // chat's client view model is module-owned (`chat::client`) — the rendered
 // row types, the composer parsing, the optimistic merges, and the op-delta
