@@ -110,7 +110,7 @@ fn click_before_frame(native: &mut VisualTestContext, key: String) {
     });
 }
 #[test]
-fn shell_tab_switches_hide_and_restore_the_retained_guest() {
+fn layer_minimize_hides_and_restore_shows_the_retained_guest() {
     let _turn = tests::blocking_connection_turn();
     let seat = seated(&[]);
     let mut cx = crate::frame_probe::headless_context();
@@ -144,19 +144,21 @@ fn shell_tab_switches_hide_and_restore_the_retained_guest() {
     });
     cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();
-    assert!(
-        !visible(),
-        "the previous tab remains hidden while another tab is rendered"
-    );
+    // OS mode: another tab opens another layer; the first stays on screen.
+    assert!(visible(), "a second layer leaves the first visible");
     presenter.update(&mut cx, |view, cx| {
-        view.test_dispatch(
-            crate::AppMessage::SelectShellTab(crate::ShellTab::View("chat")),
-            cx,
-        )
+        view.layer_action("chat", crate::shell::LayerAction::Minimize, cx)
     });
     cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();
-    assert!(visible());
+    assert!(
+        !visible(),
+        "a minimized layer's guest hears host.visible=false"
+    );
+    presenter.update(&mut cx, |view, cx| view.focus_workspace_layer("chat", cx));
+    cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(visible(), "restoring the layer shows the same guest again");
     cx.update_window(window.into(), |_, window, _| window.remove_window())
         .unwrap();
     drop(presenter);
