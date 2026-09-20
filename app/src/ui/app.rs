@@ -15,6 +15,11 @@ pub(crate) enum Appearance {
     Dark,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum NavigationMode {
+    Sidebar,
+    Dock,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum HubStep {
     Loading,
     Password,
@@ -213,6 +218,7 @@ pub struct Ducktape {
     pub(crate) provision_progress_generation: u64,
     pub(crate) provision_progress_task: Option<::view_wire::task::Handle>,
     pub(crate) appearance: Appearance,
+    pub(crate) navigation_mode: NavigationMode,
     /// What `Appearance::System` resolved to at the last sync: the OS
     /// appearance the kit theme picked up. `is_dark` answers from it.
     pub(crate) system_dark: bool,
@@ -404,6 +410,9 @@ pub(crate) enum AppMessage {
     AppearanceLoaded(Appearance),
     SetAppearance(Appearance),
     AppearanceSaved(bool),
+    NavigationModeLoaded(NavigationMode),
+    SetNavigationMode(NavigationMode),
+    NavigationModeSaved(bool),
     DesktopNotificationsLoaded(bool),
     DesktopNotificationsSaved(bool),
     Reconnect,
@@ -671,6 +680,7 @@ impl Ducktape {
             provision_progress_generation: 0,
             provision_progress_task: None,
             appearance: Appearance::System,
+            navigation_mode: NavigationMode::Sidebar,
             system_dark: false,
             desktop_notifications: true,
             wall_now: (crate::backend::current_wall_seconds()),

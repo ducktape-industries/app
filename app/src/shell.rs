@@ -140,8 +140,8 @@ pub(crate) fn open_link(url: String) {
 
 use crate::{AppMessage as Message, Ducktape, ShellTab};
 use gpui_kit::{
-    AppContext as _, AsyncApp, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Window,
+    AppContext as _, AsyncApp, Context, Entity, IntoElement, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Point, Render, Size, Styled as _, Window, canvas,
 };
 use gpui_notion::editor::ui::Control as _;
 use std::collections::{BTreeMap, HashMap};
@@ -305,7 +305,11 @@ impl Desktop {
             crate::shell::WindowKind::Huddle => gpui_kit::size(px(360.), px(560.)),
         };
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
+            window_bounds: Some(if kind == crate::shell::WindowKind::Console {
+                WindowBounds::Fullscreen(Bounds::centered(None, size, cx))
+            } else {
+                WindowBounds::Windowed(Bounds::centered(None, size, cx))
+            }),
             titlebar,
             window_min_size: Some(minimum),
             is_resizable: kind != crate::shell::WindowKind::Onboarding,
@@ -357,6 +361,13 @@ impl Desktop {
                     palette_module: None,
                     overlay_route: None,
                     palette_route: None,
+                    workspace_layers: BTreeMap::new(),
+                    closed_layers: std::collections::HashSet::new(),
+                    workspace_z: 0,
+                    active_layer: None,
+                    last_shell_tab: None,
+                    layer_gesture: None,
+                    workspace_size: gpui_kit::size(gpui_kit::px(1024.), gpui_kit::px(768.)),
                     inputs: HashMap::new(),
                     input_step: None,
                     qr: None,
@@ -502,6 +513,97 @@ fn routed(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LayerBounds {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+}
+
+const LAYER_MIN_WIDTH: f32 = 360.;
+const LAYER_MIN_HEIGHT: f32 = 220.;
+const LAYER_TITLE_HEIGHT: f32 = 36.;
+
+impl LayerBounds {
+    fn new(x: f32, y: f32, width: f32, height: f32) -> Self {
+        Self {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    fn constrained(self, viewport: Size<Pixels>) -> Self {
+        let viewport_width = f32::from(viewport.width).max(LAYER_MIN_WIDTH);
+        let viewport_height = f32::from(viewport.height).max(LAYER_MIN_HEIGHT);
+        let width = self
+            .width
+            .clamp(LAYER_MIN_WIDTH, viewport_width.max(LAYER_MIN_WIDTH));
+        let height = self
+            .height
+            .clamp(LAYER_MIN_HEIGHT, viewport_height.max(LAYER_MIN_HEIGHT));
+        Self {
+            x: self.x.clamp(0., (viewport_width - width).max(0.)),
+            y: self.y.clamp(0., (viewport_height - height).max(0.)),
+            width,
+            height,
+        }
+    }
+
+    fn moved(self, dx: f32, dy: f32, viewport: Size<Pixels>) -> Self {
+        Self {
+            x: self.x + dx,
+            y: self.y + dy,
+            ..self
+        }
+        .constrained(viewport)
+    }
+
+    fn resized(self, dw: f32, dh: f32, viewport: Size<Pixels>) -> Self {
+        Self {
+            width: self.width + dw,
+            height: self.height + dh,
+            ..self
+        }
+        .constrained(viewport)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum LayerGesture {
+    Move {
+        module: &'static str,
+        last: Point<Pixels>,
+    },
+    Resize {
+        module: &'static str,
+        last: Point<Pixels>,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum LayerAction {
+    Close,
+    Minimize,
+    Collapse,
+    Maximize,
+    Restore,
+}
+
+struct WorkspaceLayer {
+    view: Entity<crate::module_view::NativeModuleView>,
+    route: fn(crate::module_view::ModuleViewEvent) -> Message,
+    _route_subscription: gpui_kit::Subscription,
+    bounds: LayerBounds,
+    restore_bounds: LayerBounds,
+    z: u64,
+    minimized: bool,
+    collapsed: bool,
+    maximized: bool,
+}
+
 pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
     kind: WindowKind,
@@ -518,6 +620,13 @@ pub(crate) struct DesktopWindow {
     /// until it is opened, and an empty tree is not stacked over the window.
     palette_module: Option<Entity<crate::module_view::NativeModuleView>>,
     palette_route: Option<gpui_kit::Subscription>,
+    workspace_layers: BTreeMap<&'static str, WorkspaceLayer>,
+    closed_layers: std::collections::HashSet<&'static str>,
+    workspace_z: u64,
+    active_layer: Option<&'static str>,
+    last_shell_tab: Option<&'static str>,
+    layer_gesture: Option<LayerGesture>,
+    workspace_size: Size<Pixels>,
     inputs: HashMap<&'static str, NativeInput>,
     input_step: Option<crate::HubStep>,
     qr: Option<(String, Entity<crate::view_tree::ViewTree>)>,
@@ -787,11 +896,14 @@ impl DesktopWindow {
 
     /// The two seats: the tab's module id, and whether the overlay holds one.
     #[cfg(test)]
+    /// The seated tab: the active workspace layer in OS mode, else the single
+    /// tab presenter.
     pub(crate) fn test_seats(&self) -> (Option<&'static str>, bool) {
-        (
-            self.module.as_ref().map(|(module, _)| *module),
-            self.overlay_module.is_some(),
-        )
+        let tab = self
+            .active_layer
+            .or_else(|| self.workspace_layers.keys().next().copied())
+            .or_else(|| self.module.as_ref().map(|(module, _)| *module));
+        (tab, self.overlay_module.is_some())
     }
 
     #[cfg(test)]
@@ -1949,6 +2061,455 @@ impl DesktopWindow {
         view.into_any_element()
     }
 
+    fn open_workspace_layer(&mut self, module: &'static str, cx: &mut Context<Self>) {
+        self.closed_layers.remove(module);
+        if let Some(layer) = self.workspace_layers.get_mut(module) {
+            layer.minimized = false;
+            self.workspace_z = self.workspace_z.wrapping_add(1);
+            layer.z = self.workspace_z;
+            self.active_layer = Some(module);
+            return;
+        }
+        let (spec, route) = self.model.read(cx).state.native_view_for(module);
+        let view = cx.new(|_| crate::module_view::NativeModuleView::new(spec.module));
+        let model = self.model.clone();
+        let subscription = cx.subscribe(&view, move |_, _, event, cx| {
+            model.update(cx, |model, cx| {
+                model.dispatch(routed(route, event.clone()), cx)
+            });
+        });
+        self.workspace_z = self.workspace_z.wrapping_add(1);
+        let offset = self.workspace_layers.len() as f32 * 28.;
+        let bounds = LayerBounds::new(32. + offset, 28. + offset, 900., 620.)
+            .constrained(self.workspace_size);
+        self.workspace_layers.insert(
+            module,
+            WorkspaceLayer {
+                view,
+                route,
+                _route_subscription: subscription,
+                bounds,
+                restore_bounds: bounds,
+                z: self.workspace_z,
+                minimized: false,
+                collapsed: false,
+                maximized: false,
+            },
+        );
+        self.active_layer = Some(module);
+    }
+
+    pub(crate) fn focus_workspace_layer(&mut self, module: &'static str, cx: &mut Context<Self>) {
+        self.open_workspace_layer(module, cx);
+    }
+
+    pub(crate) fn layer_action(
+        &mut self,
+        module: &'static str,
+        action: LayerAction,
+        cx: &mut Context<Self>,
+    ) {
+        match action {
+            LayerAction::Close => {
+                let Some(layer) = self.workspace_layers.remove(module) else {
+                    return;
+                };
+                self.closed_layers.insert(module);
+                if self.active_layer == Some(module) {
+                    self.active_layer = None;
+                }
+                self.hide_layer_view(&layer.view, layer.route, cx);
+            }
+            LayerAction::Minimize => {
+                let Some(layer) = self.workspace_layers.get_mut(module) else {
+                    return;
+                };
+                layer.minimized = true;
+                if self.active_layer == Some(module) {
+                    self.active_layer = None;
+                }
+                // A minimized layer is not painted, so the guest must hear
+                // host.visible=false now; the next paint shows it again.
+                let (view, route) = (layer.view.clone(), layer.route);
+                self.hide_layer_view(&view, route, cx);
+            }
+            LayerAction::Collapse => {
+                if let Some(layer) = self.workspace_layers.get_mut(module) {
+                    layer.collapsed = !layer.collapsed;
+                }
+            }
+            LayerAction::Maximize => {
+                if let Some(layer) = self.workspace_layers.get_mut(module) {
+                    if layer.maximized {
+                        layer.bounds = layer.restore_bounds.constrained(self.workspace_size);
+                        layer.maximized = false;
+                    } else {
+                        layer.restore_bounds = layer.bounds;
+                        layer.bounds = LayerBounds::new(
+                            0.,
+                            0.,
+                            f32::from(self.workspace_size.width),
+                            f32::from(self.workspace_size.height),
+                        )
+                        .constrained(self.workspace_size);
+                        layer.maximized = true;
+                    }
+                }
+            }
+            LayerAction::Restore => {
+                if let Some(layer) = self.workspace_layers.get_mut(module) {
+                    layer.minimized = false;
+                    layer.collapsed = false;
+                    if layer.maximized {
+                        layer.bounds = layer.restore_bounds.constrained(self.workspace_size);
+                        layer.maximized = false;
+                    }
+                    self.workspace_z = self.workspace_z.wrapping_add(1);
+                    layer.z = self.workspace_z;
+                    self.active_layer = Some(module);
+                }
+            }
+        }
+    }
+
+    /// Tells a layer's guest it is no longer shown (`host.visible` false) and
+    /// routes whatever intents the hide produced. The instance is retained.
+    fn hide_layer_view(
+        &self,
+        view: &Entity<crate::module_view::NativeModuleView>,
+        route: fn(crate::module_view::ModuleViewEvent) -> Message,
+        cx: &mut Context<Self>,
+    ) {
+        let intents = view.update(cx, |view, _| view.hide());
+        let model = self.model.clone();
+        cx.defer(move |cx| {
+            for intent in intents {
+                model.update(cx, |model, cx| model.dispatch(routed(route, intent), cx));
+            }
+        });
+    }
+
+    fn layer_gesture_capture(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        let view = cx.entity().downgrade();
+        canvas(
+            |_, _, _| (),
+            move |_, _, window, _| {
+                let moving = view.clone();
+                let viewport = window.viewport_size();
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase != gpui_kit::DispatchPhase::Capture
+                        || event.pressed_button != Some(gpui_kit::MouseButton::Left)
+                    {
+                        return;
+                    }
+                    let _ = moving.update(cx, |this, cx| {
+                        let Some(gesture) = this.layer_gesture.as_mut() else {
+                            return;
+                        };
+                        let (module, last, resize) = match gesture {
+                            LayerGesture::Move { module, last } => (*module, last, false),
+                            LayerGesture::Resize { module, last } => (*module, last, true),
+                        };
+                        let delta = event.position - *last;
+                        *last = event.position;
+                        let dx = f32::from(delta.x);
+                        let dy = f32::from(delta.y);
+                        if let Some(layer) = this.workspace_layers.get_mut(module) {
+                            layer.bounds = if resize {
+                                layer.bounds.resized(dx, dy, viewport)
+                            } else {
+                                layer.bounds.moved(dx, dy, viewport)
+                            };
+                            cx.notify();
+                        }
+                    });
+                });
+                let releasing = view.clone();
+                window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+                    if phase == gpui_kit::DispatchPhase::Capture
+                        && event.button == gpui_kit::MouseButton::Left
+                    {
+                        let _ = releasing.update(cx, |this, _| this.layer_gesture = None);
+                    }
+                });
+            },
+        )
+        .absolute()
+        .inset_0()
+        .into_any_element()
+    }
+
+    fn layer_button(
+        &self,
+        key: String,
+        label: &'static str,
+        icon: gpui_kit::component::IconName,
+        module: &'static str,
+        action: LayerAction,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::component::button::Button {
+        use gpui_kit::component::button::ButtonVariants as _;
+        gpui_kit::component::button::Button::new(key)
+            .icon(icon)
+            .ghost()
+            .h_6()
+            .w_6()
+            .px_0()
+            .accessibility_label(label)
+            .on_click(cx.listener(move |this, _, _, cx| {
+                cx.stop_propagation();
+                this.layer_action(module, action, cx);
+            }))
+    }
+
+    fn workspace_layers(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::component::ActiveTheme as _;
+        use gpui_kit::component::button::ButtonVariants as _;
+        use gpui_kit::*;
+        let ShellTab::View(selected) = self.model.read(cx).state.shell_tab;
+        self.workspace_size = window.viewport_size();
+        if self.active_layer.is_none() && self.last_shell_tab.is_none() {
+            self.open_workspace_layer(selected, cx);
+        }
+        if self.last_shell_tab != Some(selected) {
+            self.last_shell_tab = Some(selected);
+            if !self.closed_layers.contains(selected) {
+                self.focus_workspace_layer(selected, cx);
+            }
+        }
+        let modules: Vec<_> = self.workspace_layers.keys().copied().collect();
+        for module in modules.iter().copied() {
+            let (spec, _) = self.model.read(cx).state.native_view_for(module);
+            if let Some(layer) = self.workspace_layers.get(&module) {
+                layer
+                    .view
+                    .update(cx, |view, cx| view.set_props(spec.props.clone(), cx));
+            }
+        }
+        let mut ordered: Vec<_> = self
+            .workspace_layers
+            .iter()
+            .map(|(module, layer)| (*module, layer.z))
+            .collect();
+        ordered.sort_by_key(|(_, z)| *z);
+        let colors = cx.theme().color_tokens();
+        let palette = design::palette(self.model.read(cx).state.is_dark());
+        let mut root = div()
+            .id("workspace-layers")
+            .relative()
+            .size_full()
+            .overflow_hidden()
+            .bg(colors.background);
+        let minimized: Vec<_> = self
+            .workspace_layers
+            .iter()
+            .filter_map(|(module, layer)| layer.minimized.then_some(*module))
+            .collect();
+        for (module, _) in ordered {
+            let Some(layer) = self.workspace_layers.get(&module) else {
+                continue;
+            };
+            if layer.minimized {
+                continue;
+            }
+            let bounds = layer.bounds.constrained(self.workspace_size);
+            let view = layer.view.clone();
+            let collapsed = layer.collapsed;
+            let maximized = layer.maximized;
+            let focused = self.active_layer == Some(module);
+            let title = crate::module_view::module_name(module);
+            let header = div()
+                .id(format!("layer-title:{module}"))
+                .h(px(LAYER_TITLE_HEIGHT))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap_1()
+                .px_2()
+                .bg(if focused {
+                    hsla_of(palette.surface_raised)
+                } else {
+                    hsla_of(palette.surface)
+                })
+                .border_b_1()
+                .border_color(colors.border)
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                        this.workspace_z = this.workspace_z.wrapping_add(1);
+                        if let Some(layer) = this.workspace_layers.get_mut(module) {
+                            layer.z = this.workspace_z;
+                        }
+                        this.active_layer = Some(module);
+                        this.model.update(cx, |model, cx| {
+                            model.dispatch(Message::SelectShellTab(ShellTab::View(module)), cx)
+                        });
+                        this.layer_gesture = Some(LayerGesture::Move {
+                            module,
+                            last: event.position,
+                        });
+                        cx.stop_propagation();
+                        cx.notify();
+                    }),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(12.))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(colors.foreground)
+                        .truncate()
+                        .child(title),
+                )
+                .child(self.layer_button(
+                    format!("layer-minimize:{module}"),
+                    "Minimize",
+                    gpui_kit::component::IconName::Minus,
+                    module,
+                    LayerAction::Minimize,
+                    cx,
+                ))
+                .child(self.layer_button(
+                    format!("layer-collapse:{module}"),
+                    if collapsed { "Expand" } else { "Collapse" },
+                    if collapsed {
+                        gpui_kit::component::IconName::ChevronDown
+                    } else {
+                        gpui_kit::component::IconName::ChevronUp
+                    },
+                    module,
+                    LayerAction::Collapse,
+                    cx,
+                ))
+                .child(self.layer_button(
+                    format!("layer-maximize:{module}"),
+                    if maximized { "Restore" } else { "Maximize" },
+                    if maximized {
+                        gpui_kit::component::IconName::Minimize
+                    } else {
+                        gpui_kit::component::IconName::Maximize
+                    },
+                    module,
+                    LayerAction::Maximize,
+                    cx,
+                ))
+                .child(self.layer_button(
+                    format!("layer-close:{module}"),
+                    "Close",
+                    gpui_kit::component::IconName::Close,
+                    module,
+                    LayerAction::Close,
+                    cx,
+                ));
+            let resize = div()
+                .id(format!("layer-resize:{module}"))
+                .absolute()
+                .right_0()
+                .bottom_0()
+                .w(px(14.))
+                .h(px(14.))
+                .cursor(gpui_kit::CursorStyle::ResizeUpLeftDownRight)
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(move |this, event: &gpui_kit::MouseDownEvent, _, cx| {
+                        this.active_layer = Some(module);
+                        this.layer_gesture = Some(LayerGesture::Resize {
+                            module,
+                            last: event.position,
+                        });
+                        cx.stop_propagation();
+                    }),
+                );
+            let mut layer = div()
+                .id(format!("workspace-layer:{module}"))
+                .absolute()
+                .left(px(bounds.x))
+                .top(px(bounds.y))
+                .w(px(bounds.width))
+                .h(px(if collapsed {
+                    LAYER_TITLE_HEIGHT
+                } else {
+                    bounds.height
+                }))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .bg(colors.background)
+                .border_1()
+                .border_color(if focused {
+                    hsla_of(palette.accent)
+                } else {
+                    colors.border
+                })
+                .shadow_lg()
+                .on_mouse_down(
+                    gpui_kit::MouseButton::Left,
+                    cx.listener(move |this, _, _, cx| {
+                        this.workspace_z = this.workspace_z.wrapping_add(1);
+                        if let Some(layer) = this.workspace_layers.get_mut(module) {
+                            layer.z = this.workspace_z;
+                        }
+                        this.active_layer = Some(module);
+                        this.model.update(cx, |model, cx| {
+                            model.dispatch(Message::SelectShellTab(ShellTab::View(module)), cx)
+                        });
+                        cx.notify();
+                    }),
+                )
+                .child(header)
+                .child(resize);
+            if !collapsed {
+                layer = layer.child(
+                    div()
+                        .id(format!("layer-content:{module}"))
+                        .flex_1()
+                        .min_h_0()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .child(view),
+                );
+            }
+            root = root.child(layer);
+        }
+        if !minimized.is_empty() {
+            let mut restore_bar = div()
+                .id("minimized-layers")
+                .absolute()
+                .left(px(12.))
+                .bottom(px(12.))
+                .flex()
+                .items_center()
+                .gap_1()
+                .p_1()
+                .rounded(px(design::radius::CONTROL as f32))
+                .bg(hsla_of(palette.surface_raised))
+                .border_1()
+                .border_color(colors.border);
+            for module in minimized {
+                let title = crate::module_view::module_name(module);
+                let button =
+                    gpui_kit::component::button::Button::new(format!("restore-layer:{module}"))
+                        .label(title)
+                        .ghost()
+                        .h_6()
+                        .text_size(px(11.))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            cx.stop_propagation();
+                            this.layer_action(module, LayerAction::Restore, cx);
+                        }));
+                restore_bar = restore_bar.child(button);
+            }
+            root = root.child(restore_bar);
+        }
+        root.child(self.layer_gesture_capture(cx))
+            .into_any_element()
+    }
+
     fn console(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         use gpui_kit::component::{Sizable as _, button::ButtonVariants as _};
         use gpui_kit::*;
@@ -1959,25 +2520,6 @@ impl DesktopWindow {
         if views_loading.is_some() {
             window.request_animation_frame();
         }
-        let (spec, route) = self.model.read(cx).state.native_view();
-        let module_changed = self
-            .module
-            .as_ref()
-            .is_none_or(|(module, _)| *module != spec.module);
-        if module_changed {
-            self.hide_module(cx);
-            let view = cx.new(|_| crate::module_view::NativeModuleView::new(spec.module));
-            let model = self.model.clone();
-            self.route = Some(cx.subscribe(&view, move |_, _, event, cx| {
-                model.update(cx, |model, cx| {
-                    model.dispatch(routed(route, event.clone()), cx)
-                });
-            }));
-            self.module = Some((spec.module, view));
-            self.module_route = Some(route);
-        }
-        let view = self.module.as_ref().expect("module seated").1.clone();
-        view.update(cx, |view, cx| view.set_props(spec.props, cx));
         let selected_tab = self.model.read(cx).state.shell_tab;
         // every tab by its module: a seat tasting a proposed view says so
         // on its label
@@ -1987,6 +2529,7 @@ impl DesktopWindow {
         let navigation = navigation_rows(&label);
         let sidebar = gpui_kit::component::Theme::global(cx).sidebar;
         let state = &self.model.read(cx).state;
+        let dock_mode = state.navigation_mode == crate::NavigationMode::Dock;
         let palette = design::palette(state.is_dark());
         let accent = hsla_of(palette.accent);
         let ink_fg = hsla_of(palette.sidebar_foreground);
@@ -2159,6 +2702,30 @@ impl DesktopWindow {
             this.model
                 .update(cx, |model, cx| model.dispatch(Message::ToggleBell, cx));
         }));
+        let mode_label = if dock_mode { "Use sidebar" } else { "Use dock" };
+        let next_mode = if dock_mode {
+            crate::NavigationMode::Sidebar
+        } else {
+            crate::NavigationMode::Dock
+        };
+        let mode_switch = rail_row(
+            "rail-navigation-mode",
+            gpui_kit::component::Icon::new(if dock_mode {
+                gpui_kit::component::IconName::PanelLeftOpen
+            } else {
+                gpui_kit::component::IconName::PanelBottomOpen
+            }),
+            mode_label,
+            ink,
+            None,
+            true,
+        )
+        .on_click(cx.listener(move |this, _, _, cx| {
+            cx.stop_propagation();
+            this.model.update(cx, |model, cx| {
+                model.dispatch(Message::SetNavigationMode(next_mode), cx)
+            });
+        }));
         // The rail is the window's navigation: its sections are the tabs
         // that seat a view, under their headings.
         let mut tabs = div()
@@ -2192,12 +2759,22 @@ impl DesktopWindow {
             .child(network)
             .child(div().h_2().flex_shrink_0())
             .child(search)
-            .child(bell);
+            .child(bell)
+            .child(mode_switch)
+            .when(dock_mode, |tabs| {
+                tabs.w_full()
+                    .h(px(56.))
+                    .flex_row()
+                    .items_center()
+                    .border_r_0()
+                    .border_t_1()
+                    .border_color(ink_border)
+            });
         for section in navigation {
-            if section.foot {
+            if section.foot && !dock_mode {
                 tabs = tabs.child(div().flex_1().min_h_4());
             }
-            if let Some(heading) = section.heading {
+            if let Some(heading) = section.heading.filter(|_| !dock_mode) {
                 tabs = tabs.child(
                     div()
                         .id(gpui_kit::SharedString::from(format!(
@@ -2244,6 +2821,7 @@ impl DesktopWindow {
                 })
                 .on_click(cx.listener(move |this, _, _, cx| {
                     cx.stop_propagation();
+                    this.focus_workspace_layer(view, cx);
                     this.model.update(cx, |model, cx| {
                         model.dispatch(Message::SelectShellTab(tab), cx)
                     });
@@ -2438,12 +3016,13 @@ impl DesktopWindow {
                 .min_w_0()
                 .w_full()
                 .overflow_hidden()
-                .child(view)
+                .child(self.workspace_layers(window, cx))
                 .children(self.toast(cx)),
         );
         let mut root = div()
             .relative()
             .flex()
+            .when(dock_mode, |root| root.flex_col())
             .size_full()
             .min_h_0()
             .min_w_0()
@@ -2728,6 +3307,13 @@ pub(crate) fn test_window(
             palette_module: None,
             overlay_route: None,
             palette_route: None,
+            workspace_layers: BTreeMap::new(),
+            closed_layers: std::collections::HashSet::new(),
+            workspace_z: 0,
+            active_layer: None,
+            last_shell_tab: None,
+            layer_gesture: None,
+            workspace_size: gpui_kit::size(gpui_kit::px(1024.), gpui_kit::px(768.)),
             inputs: HashMap::new(),
             input_step: None,
             qr: None,
@@ -2798,6 +3384,85 @@ mod call_control_tests {
             "not a row".to_owned(),
         ));
         assert!(matches!(nonsense, Message::CloseSharePicker));
+    }
+}
+
+#[cfg(test)]
+mod os_mode_tests {
+    use super::*;
+
+    #[test]
+    fn layer_motion_and_resize_stay_inside_the_workspace() {
+        let viewport = gpui_kit::size(gpui_kit::px(800.), gpui_kit::px(600.));
+        let bounds = LayerBounds::new(40., 50., 500., 400.);
+        assert_eq!(
+            bounds.moved(-500., -500., viewport),
+            LayerBounds::new(0., 0., 500., 400.)
+        );
+        assert_eq!(
+            bounds.resized(1_000., 1_000., viewport),
+            LayerBounds::new(0., 0., 800., 600.)
+        );
+        assert_eq!(
+            LayerBounds::new(20., 30., 100., 100.).constrained(viewport),
+            LayerBounds::new(20., 30., LAYER_MIN_WIDTH, LAYER_MIN_HEIGHT)
+        );
+    }
+
+    #[test]
+    fn layer_minimize_restore_keeps_geometry_for_the_mounted_seat() {
+        use gpui_kit::test::TestWindowExt as _;
+
+        let mut native = crate::frame_probe::headless_context();
+        let mut presenter = None;
+        let handle = native
+            .open_window(
+                gpui_kit::size(gpui_kit::px(1_120.), gpui_kit::px(720.)),
+                |window, cx| {
+                    let mut state = Ducktape::initial_state();
+                    state.connected = true;
+                    state.shell_tab = ShellTab::View("chat");
+                    let view = test_window(state, WindowKind::Console, window, cx);
+                    presenter = Some(view.clone());
+                    cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
+                },
+            )
+            .unwrap();
+        let presenter = presenter.unwrap();
+        native
+            .update_window(handle.into(), |_, window, cx| window.render_frame(cx))
+            .unwrap();
+
+        let geometry =
+            presenter.update(&mut native, |view, _| view.workspace_layers["chat"].bounds);
+        presenter.update(&mut native, |view, cx| {
+            view.open_workspace_layer("files", cx);
+            let files_z = view.workspace_layers["files"].z;
+            view.layer_action("chat", LayerAction::Minimize, cx);
+            view.focus_workspace_layer("chat", cx);
+            let layer = &view.workspace_layers["chat"];
+            assert!(!layer.minimized);
+            assert!(layer.z > files_z);
+            assert_eq!(view.active_layer, Some("chat"));
+            assert_eq!(layer.bounds, geometry);
+            assert_eq!(layer.restore_bounds, geometry);
+        });
+    }
+
+    #[test]
+    fn fresh_shell_defaults_to_sidebar_and_setting_switches_persisted_mode_in_state() {
+        let (mut state, _) = Ducktape::boot();
+        assert_eq!(state.navigation_mode, crate::NavigationMode::Sidebar);
+        let _ = state.update(Message::SetNavigationMode(crate::NavigationMode::Dock));
+        assert_eq!(state.navigation_mode, crate::NavigationMode::Dock);
+    }
+
+    #[test]
+    fn console_open_bounds_use_fullscreen_by_default() {
+        let source = include_str!("shell.rs").replace(' ', "").replace('\n', "");
+        assert!(
+            source.contains("kind==crate::shell::WindowKind::Console{WindowBounds::Fullscreen")
+        );
     }
 }
 

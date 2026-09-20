@@ -74,6 +74,9 @@ impl Ducktape {
             AppMessage::AppearanceLoaded(mode) => self.on_appearance_loaded(mode),
             AppMessage::SetAppearance(mode) => self.on_set_appearance(mode),
             AppMessage::AppearanceSaved(_written) => self.on_appearance_saved(_written),
+            AppMessage::NavigationModeLoaded(mode) => self.on_navigation_mode_loaded(mode),
+            AppMessage::SetNavigationMode(mode) => self.on_set_navigation_mode(mode),
+            AppMessage::NavigationModeSaved(_written) => self.on_navigation_mode_saved(_written),
             AppMessage::DesktopNotificationsLoaded(enabled) => {
                 self.on_desktop_notifications_loaded(enabled)
             }
@@ -540,6 +543,20 @@ impl Ducktape {
         })
     }
     fn on_appearance_saved(&mut self, _written: bool) -> Task<AppMessage> {
+        Task::none()
+    }
+    fn on_navigation_mode_loaded(&mut self, mode: NavigationMode) -> Task<AppMessage> {
+        self.navigation_mode = mode;
+        Task::none()
+    }
+    fn on_set_navigation_mode(&mut self, mode: NavigationMode) -> Task<AppMessage> {
+        self.navigation_mode = mode;
+        Task::perform(
+            crate::backend::save_navigation_mode(mode),
+            AppMessage::NavigationModeSaved,
+        )
+    }
+    fn on_navigation_mode_saved(&mut self, _written: bool) -> Task<AppMessage> {
         Task::none()
     }
     fn on_desktop_notifications_loaded(&mut self, enabled: bool) -> Task<AppMessage> {
@@ -3003,6 +3020,10 @@ impl Ducktape {
                     AppMessage::AppearanceLoadReply(request_generation, Box::new(reply_message))
                 })
             },
+            Task::perform(
+                crate::backend::load_navigation_mode(),
+                AppMessage::NavigationModeLoaded,
+            ),
             {
                 let pending_task =
                     Task::perform(crate::backend::load_desktop_notifications(), |value| {
