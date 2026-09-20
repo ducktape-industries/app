@@ -321,7 +321,7 @@ fn audio_thread(
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     let host = cpal::default_host();
-    let mut notes = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
 
     // The pump's mic arm must stay pending — never closed — in listen-only
     // sessions: this keepalive holds the channel open even when no input
@@ -329,7 +329,15 @@ fn audio_thread(
     // session.
     let mic_keepalive = mic.clone();
 
-    let input_stream = host.default_input_device().and_then(|device| {
+    // The consent gate comes first: a microphone whose prompt is unanswered
+    // parks `default_input_config` inside coreaudiod, and this thread's join
+    // would park the window with it.
+    let gate = crate::media_access::gate(crate::media_access::Device::Microphone);
+    let input_device = match &gate {
+        Ok(()) => host.default_input_device(),
+        Err(_) => None,
+    };
+    let input_stream = input_device.and_then(|device| {
         let mic = mic.clone();
         let config = device.default_input_config().ok()?;
         let channels = config.channels() as usize;
@@ -373,7 +381,7 @@ fn audio_thread(
         Some(stream)
     });
     if input_stream.is_none() {
-        notes.push("no microphone");
+        notes.push(gate.err().unwrap_or_else(|| "no microphone".to_owned()));
     }
 
     let output_stream = host.default_output_device().and_then(|device| {
@@ -437,7 +445,7 @@ fn audio_thread(
         Some(stream)
     });
     if output_stream.is_none() {
-        notes.push("no speaker");
+        notes.push("no speaker".to_owned());
     }
 
     let _ = ready.send(notes.join(" · "));

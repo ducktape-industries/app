@@ -57,6 +57,19 @@ fn seated(opened: &[&str]) -> Arc<Mutex<Mounted>> {
 /// The staged chat view seated under `module`: a second copy makes a second layer.
 fn seated_as(module: &'static str, opened: &[&str]) -> Arc<Mutex<Mounted>> {
     tests::can_the_chat_room();
+    tests::can_reads([(
+        "channels",
+        serde_json::json!({
+            "channels": {
+                "channels": [{
+                    "id": "channel-a", "name": "general", "created_at": 1,
+                    "post_policy": "open", "owner": "acct:7", "archived": false,
+                    "hooks": [], "huddle": [], "head_seq": 1
+                }],
+                "has_more": false, "next_after": null
+            }
+        }),
+    )]);
     let path = tests::staged("chat").expect("build current chat view first");
     let mut guest = Guest::load_from(module, &path).expect("build current chat view first");
     let props = tests::chat_facts();
@@ -103,6 +116,262 @@ fn open(cx: &mut TestAppContext) -> (Entity<NativeModuleView>, VisualTestContext
     let mut native = VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     (view, native)
+}
+
+fn open_console(
+    cx: &mut TestAppContext,
+    module: &'static str,
+) -> (Entity<crate::shell::DesktopWindow>, VisualTestContext) {
+    cx.update(gpui_kit::init);
+    cx.update(crate::editor::wire::init_notion);
+    let mut state = crate::Ducktape::initial_state();
+    state.connected = true;
+    state.connected_rpc = "http://127.0.0.1:1".into();
+    state.network_name = "testnet".into();
+    state.network_chain_id = "testnet#abcd".into();
+    state.status = "Live".into();
+    state.block_height = 84_912;
+    state.account_number = "7".into();
+    state.account_exists = true;
+    state.account_name = "mallard".into();
+    state.settings_user_key = "aa".into();
+    state.active_channel = "channel-a".into();
+    state.active_channel_name = "general".into();
+    state.shell_tab = crate::ShellTab::View(module);
+    let mut presenter = None;
+    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |window, cx| {
+        let view = crate::shell::test_window(state, crate::shell::WindowKind::Console, window, cx);
+        presenter = Some(view.clone());
+        gpui_kit::component::Root::new(view, window, cx)
+    });
+    let presenter = presenter.unwrap();
+    let mut native = VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    native.update(|window, cx| window.render_frame(cx));
+    (presenter, native)
+}
+
+fn console_module(
+    presenter: &Entity<crate::shell::DesktopWindow>,
+    native: &VisualTestContext,
+    module: &str,
+) -> Entity<NativeModuleView> {
+    presenter
+        .read_with(native, |presenter, _| presenter.test_module(module))
+        .expect("console module")
+}
+
+fn assert_chat_fixture_geometry(
+    view: &Entity<NativeModuleView>,
+    native: &VisualTestContext,
+    nodes: &[crate::ax_door::AxNode],
+) {
+    let bounds = view.read_with(native, |view, cx| {
+        view.content.as_ref().map(|content| {
+            [
+                "ChatView/@sensor:906",
+                "ChatView/chat/press-area",
+                "ChatView",
+                "ChatView/chat",
+                "ChatView/chat/room",
+                "ChatView/chat/message-stream",
+                "ChatView/chat/composer-room",
+            ]
+            .map(|key| (key, content.read(cx).measured_bounds(key)))
+        })
+    });
+    assert!(
+        bounds
+            .as_ref()
+            .and_then(|bounds| {
+                bounds
+                    .iter()
+                    .find(|(key, _)| *key == "ChatView/chat/message-stream")
+                    .and_then(|(_, bounds)| *bounds)
+            })
+            .is_some_and(|bounds| {
+                bounds.size.width > gpui::px(0.) && bounds.size.height > gpui::px(0.)
+            }),
+        "Chat message-stream needs a positive production-sized viewport: {bounds:?}"
+    );
+    assert!(
+        nodes.iter().any(|node| {
+            node.name.contains("first light")
+                || node
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| value.contains("first light"))
+                || node
+                    .description
+                    .as_deref()
+                    .is_some_and(|description| description.contains("first light"))
+        }),
+        "the initial committed message row is missing from AX: {nodes:?}"
+    );
+    assert!(
+        nodes.iter().any(|node| {
+            node.name == "mallard"
+                || node.value.as_deref() == Some("mallard")
+                || node.description.as_deref() == Some("mallard")
+        }),
+        "the initial message author is missing from AX: {nodes:?}"
+    );
+}
+
+fn door_tree_for(native: &mut VisualTestContext, scope: &str) -> Vec<crate::ax_door::AxNode> {
+    native.update(|window, cx| {
+        window.activate_a11y();
+        let mut seen = crate::ax_door::Seen::default();
+        crate::ax_door::current(scope, window, cx, false, &mut seen)
+    })
+}
+
+fn door_tree(native: &mut VisualTestContext) -> Vec<crate::ax_door::AxNode> {
+    door_tree_for(native, "chat")
+}
+
+fn composer_is_cleared(nodes: &[crate::ax_door::AxNode]) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.name.starts_with("Message #") && node.value.as_deref() == Some(""))
+}
+
+fn send_is_disabled(nodes: &[crate::ax_door::AxNode]) -> bool {
+    nodes
+        .iter()
+        .any(|node| node.name == "Send" && node.state.contains(&"disabled"))
+}
+
+fn wake_chat_live(seat: &Arc<Mutex<Mounted>>) {
+    let mut locked = seat.lock().unwrap();
+    let Slot::Ready(guest) = &mut locked.slot else {
+        panic!("seated view");
+    };
+    let live_ids: Vec<_> = guest
+        .live_subscriptions
+        .iter()
+        .filter(|(_, plane)| plane == "chat")
+        .map(|(id, _)| *id)
+        .collect();
+    assert!(
+        !live_ids.is_empty(),
+        "Chat fixture has no chat live subscription"
+    );
+    for id in live_ids {
+        guest.pending.push(wire::Event::Response {
+            id,
+            result: Ok(b"{}".to_vec()),
+            done: false,
+        });
+    }
+}
+
+#[gpui_kit::test]
+fn door_observation_advances_chat_after_an_async_host_answer(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    tests::can_bytes("host.id", b"message-committed".to_vec());
+    tests::can_reads([("op.submit", serde_json::json!(1))]);
+    let seat = seated(&[]);
+    let (presenter, mut native) = open_console(cx, "chat");
+    let view = console_module(&presenter, &native, "chat");
+    settle_native_documents(&mut native, &seat);
+    let initial = door_tree(&mut native);
+    assert_chat_fixture_geometry(&view, &native, &initial);
+    let field = initial
+        .iter()
+        .find(|node| node.name.starts_with("Message #") && node.actions.contains(&"type"))
+        .unwrap_or_else(|| panic!("Chat composer input: {initial:?}"))
+        .id
+        .clone();
+    native.update(|window, cx| {
+        assert!(crate::ax_door::perform_by_id(
+            "chat",
+            window,
+            cx,
+            &field,
+            "type",
+            "door regression"
+        ));
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        window.render_frame(cx);
+    });
+    let ready = door_tree(&mut native);
+    let send = ready
+        .iter()
+        .find(|node| node.name == "Send" && node.actions.contains(&"press"))
+        .unwrap_or_else(|| panic!("enabled Chat Send: {ready:?}"))
+        .id
+        .clone();
+    native.update(|window, cx| {
+        assert!(crate::ax_door::perform_by_id(
+            "chat", window, cx, &send, "press", ""
+        ));
+    });
+    let mut committed = tests::chat_row_of(2, "door regression", None);
+    committed["message_id"] = serde_json::json!("message-committed");
+    tests::can_reads([
+        (
+            "channel",
+            serde_json::json!({ "channel": {
+                "id": "channel-a", "name": "general", "created_at": 1,
+                "post_policy": "open", "owner": "acct:7", "archived": false,
+                "hooks": [], "huddle": [], "head_seq": 2
+            }}),
+        ),
+        (
+            "roots",
+            serde_json::json!({
+                "roots": {
+                    "roots": [
+                        tests::chat_row(1),
+                        committed,
+                    ],
+                    "has_more": false
+                }
+            }),
+        ),
+    ]);
+    native.update(|window, cx| {
+        assert!(window.simulate_next_frame(cx) > 0, "Send requested a frame");
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        window.render_frame(cx);
+    });
+    native.run_until_parked();
+    wake_chat_live(&seat);
+    native.update(|window, cx| {
+        window.render_frame(cx);
+    });
+    settle_native_documents(&mut native, &seat);
+    let observed = door_tree(&mut native);
+    assert!(
+        composer_is_cleared(&observed),
+        "accepted Send did not clear the composer"
+    );
+    assert!(
+        send_is_disabled(&observed),
+        "accepted Send did not disable the control"
+    );
+    assert!(
+        observed.iter().any(|node| {
+            node.name.contains("door regression")
+                || node.value.as_deref() == Some("door regression")
+                || node.description.as_deref() == Some("door regression")
+        }),
+        "door missed the committed message text: {observed:?}"
+    );
+    assert!(
+        observed.iter().any(|node| {
+            node.name.contains("mallard")
+                || node.value.as_deref() == Some("mallard")
+                || node.description.as_deref() == Some("mallard")
+        }),
+        "door missed the committed message author: {observed:?}"
+    );
 }
 
 fn open_drag_harness(cx: &mut TestAppContext) -> (Entity<NativeModuleView>, VisualTestContext) {
@@ -590,6 +859,13 @@ fn door_drag_by_node_id_reaches_the_guest_in_its_own_coordinates(cx: &mut TestAp
     assert_eq!(
         input::recorded_inputs(),
         vec![
+            // the priming move lands on Chat's own sensor, which fills the
+            // seat, and reads back in the same local coordinates
+            wire::Event::Pointer {
+                handler: 0,
+                x: 100.,
+                y: 100.,
+            },
             wire::Event::Mouse {
                 event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
                 captured: false,
@@ -690,6 +966,13 @@ fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
     assert_eq!(
         delivered,
         vec![
+            // the priming move lands on Chat's own sensor, which fills the
+            // seat, and reads back in the same local coordinates
+            wire::Event::Pointer {
+                handler: 0,
+                x: 100.,
+                y: 100.,
+            },
             wire::Event::Mouse {
                 event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
                 captured: false,
@@ -754,6 +1037,11 @@ fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
     assert_eq!(
         input::recorded_inputs(),
         vec![
+            wire::Event::Pointer {
+                handler: 0,
+                x: 100.,
+                y: 100.,
+            },
             wire::Event::Mouse {
                 event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
                 captured: false,
