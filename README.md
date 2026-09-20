@@ -28,6 +28,18 @@ reply shapes, no module logic). `ducktape-modules`, `ducktape-app` and
 `ducktape-views` each depend on `ducktape-sdk` directly and never depend on
 one another.
 
+## Install
+
+`make install` builds the release app and launcher, installs both entrypoints
+under `${CARGO_HOME:-$HOME/.cargo}/bin`, and runs the shipped launcher installer.
+On Linux it also installs the managed desktop entry and `ducktape.svg` under
+`${XDG_DATA_HOME:-$HOME/.local/share}`; `DUCKTAPE_INSTALL_DIR` is not used for
+that layout. On macOS the existing bundle script builds and ad-hoc-signs
+`Ducktape.app`, which is installed under `$HOME/Applications` by default (or a
+non-empty `DUCKTAPE_INSTALL_DIR`). The target honors `CARGO`,
+`CARGO_TARGET_DIR`, `CARGO_BUILD_JOBS`, and the XDG variables; it never uses
+`sudo` or forces `--replace`.
+
 ## Consumption
 
 This repo is a cargo workspace of three path crates (`app`, `bin/app-launcher`,
