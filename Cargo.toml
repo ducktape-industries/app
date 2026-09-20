@@ -24,6 +24,7 @@ gpui-notion = { path = "crates/gpui-notion" }
 
 # --- sdk-line: ducktape-sdk (types-only wire/platform crates) ---
 sdk = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "sdk" }
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "keyscheme" }
 # view-wire is pinned apart from the rest of the sdk line: the host and
 # presenter speak epoch 10 (81953e6). Core's noded links its own view-wire
 # privately (bindgen + manifest), so no type crosses between them.
@@ -40,9 +41,7 @@ media-service = { git = "https://github.com/ducktape-industries/ducktape", branc
 ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "ducktape-rpc" }
 module-artifact = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "module-artifact" }
 keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "keystore" }
-authpage = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "authpage" }
 run-envelope = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "run-envelope" }
-workspace-config = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "workspace-config" }
 app-update = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "app-update" }
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "ducktape-home" }
 simnode = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "simnode" }
