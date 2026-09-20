@@ -30,12 +30,23 @@ install_entrypoints() {
   install_binary "$source_dir/ducktape-launcher" ducktape-launcher
 }
 
+# `--replace` is this install's consent, and `make install` is where it belongs.
+# A bundle built from source carries no release.json, so the launcher cannot
+# tell whether it is older than the release already installed and refuses to
+# replace one without being told to — which made every `make install` after the
+# first one fail. Building from source IS the instruction to install THIS
+# build, so the refusal has nothing left to protect. It costs nothing either:
+# consented_pin returns the pin unchanged for a release with no identity, so
+# installing over a real release leaves the channel on that sequence and the
+# next real release still installs. Stamping a release.json instead would be
+# worse: the pin never lowers, so a made-up sequence would shut out the real
+# releases that follow it.
 case "$host" in
   Linux)
     "$cargo" build --locked --release -p ducktape-app -p app-launcher
     release_bin="${CARGO_TARGET_DIR:-target}/release"
     install_entrypoints "$release_bin"
-    "$bin_dir/ducktape-launcher" install --from "$release_bin"
+    "$bin_dir/ducktape-launcher" install --from "$release_bin" --replace
 
     data_home=${XDG_DATA_HOME:-$HOME/.local/share}
     icon_dir="$data_home/icons/hicolor/scalable/apps"
@@ -67,7 +78,7 @@ case "$host" in
 
     mac_install_dir=${DUCKTAPE_INSTALL_DIR:-$HOME/Applications}
     DUCKTAPE_INSTALL_DIR="$mac_install_dir" \
-      "$bin_dir/ducktape-launcher" install --from "$bundle"
+      "$bin_dir/ducktape-launcher" install --from "$bundle" --replace
 
     [[ -x "$mac_install_dir/Ducktape.app/Contents/MacOS/ducktape-app" ]] || {
       echo "launcher did not install the macOS app bundle" >&2

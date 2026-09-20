@@ -22,8 +22,11 @@ chmod 0755 "$fake_uname"
 fake_linux_launcher=$root/linux-launcher
 printf '%s\n' \
   '#!/bin/sh' \
-  'printf "%s|%s|%s\\n" "${DUCKTAPE_INSTALL_DIR-}" "$2" "$3" >>"$LAUNCHER_LOG"' \
+  'printf "%s|%s|%s|%s\\n" "${DUCKTAPE_INSTALL_DIR-}" "$2" "$3" "$*" >>"$LAUNCHER_LOG"' \
   'if [ "${LAUNCHER_FAIL-0}" = 1 ]; then exit 7; fi' \
+  'case " $* " in *" --replace "*) consented=1 ;; *) consented=0 ;; esac' \
+  'if [ -e "$XDG_DATA_HOME/ducktape/current" ] && [ "$consented" = 0 ]; then' \
+  '  echo "install refused: release_unknown_provenance" >&2; exit 1; fi' \
   'mkdir -p "$XDG_DATA_HOME/ducktape/current" "$XDG_DATA_HOME/applications"' \
   'touch "$XDG_DATA_HOME/ducktape/current/ducktape-app" "$XDG_DATA_HOME/ducktape/current/ducktape-launcher" "$XDG_DATA_HOME/applications/dev.ducktape.app.desktop"' \
   'chmod 0755 "$XDG_DATA_HOME/ducktape/current/ducktape-app" "$XDG_DATA_HOME/ducktape/current/ducktape-launcher"' \
@@ -33,8 +36,11 @@ chmod 0755 "$fake_linux_launcher"
 fake_mac_launcher=$root/mac-launcher
 printf '%s\n' \
   '#!/bin/sh' \
-  'printf "%s|%s\\n" "$DUCKTAPE_INSTALL_DIR" "$3" >>"$LAUNCHER_LOG"' \
+  'printf "%s|%s|%s\\n" "$DUCKTAPE_INSTALL_DIR" "$3" "$*" >>"$LAUNCHER_LOG"' \
   'if [ "${LAUNCHER_FAIL-0}" = 1 ]; then exit 7; fi' \
+  'case " $* " in *" --replace "*) consented=1 ;; *) consented=0 ;; esac' \
+  'if [ -e "$DUCKTAPE_INSTALL_DIR/Ducktape.app" ] && [ "$consented" = 0 ]; then' \
+  '  echo "install refused: release_unknown_provenance" >&2; exit 1; fi' \
   'mkdir -p "$DUCKTAPE_INSTALL_DIR/Ducktape.app/Contents/MacOS"' \
   'touch "$DUCKTAPE_INSTALL_DIR/Ducktape.app/Contents/MacOS/ducktape-app" "$DUCKTAPE_INSTALL_DIR/Ducktape.app/Contents/MacOS/ducktape-launcher"' \
   'chmod 0755 "$DUCKTAPE_INSTALL_DIR/Ducktape.app/Contents/MacOS/ducktape-app" "$DUCKTAPE_INSTALL_DIR/Ducktape.app/Contents/MacOS/ducktape-launcher"' \
@@ -83,6 +89,17 @@ run_linux() {
   grep -F -- "$case_root/target dir/release" "$case_root/launcher.log" >/dev/null || fail "Linux source path was not preserved"
   grep -F -- 'build --locked --release -p ducktape-app -p app-launcher' "$case_root/cargo.log" >/dev/null || fail "Linux build flags missing"
   grep -F -- '|4' "$case_root/cargo.log" >/dev/null || fail "CARGO_BUILD_JOBS was not preserved"
+  grep -F -- '--replace' "$case_root/launcher.log" >/dev/null || fail "Linux install withheld --replace"
+  # Installing over an existing install is the common case, not the odd one:
+  # without --replace the launcher refuses a source build as unknown
+  # provenance, so `make install` worked once and never again.
+  PATH="$root:$PATH" FAKE_UNAME=Linux \
+    CARGO="$fake_cargo" CARGO_HOME="$case_root/cargo home" \
+    CARGO_TARGET_DIR="$case_root/target dir" CARGO_BUILD_JOBS=4 \
+    FAKE_CARGO_LOG="$case_root/cargo.log" FAKE_LINUX_LAUNCHER="$fake_linux_launcher" \
+    HOME="$case_root/home root" XDG_DATA_HOME="$case_root/xdg data" \
+    XDG_CONFIG_HOME="$case_root/xdg config" LAUNCHER_LOG="$case_root/launcher.log" \
+    make -C "$fixture" install || fail "Linux reinstall over an existing install was refused"
 }
 
 run_macos() {
@@ -97,6 +114,14 @@ run_macos() {
   assert_exec "$case_root/home root/Applications/Ducktape.app/Contents/MacOS/ducktape-app"
   assert_file "$case_root/bundle.log"
   grep -F -- "$case_root/home root/Applications" "$case_root/launcher.log" >/dev/null || fail "macOS default path was not passed"
+  grep -F -- '--replace' "$case_root/launcher.log" >/dev/null || fail "macOS install withheld --replace"
+  # The second install is the one that broke: ~/Applications/Ducktape.app is
+  # already there, and a source bundle carries no release.json to compare.
+  PATH="$root:$PATH" FAKE_UNAME=Darwin \
+    CARGO_HOME="$case_root/cargo home" HOME="$case_root/home root" \
+    FAKE_BUNDLE_LOG="$case_root/bundle.log" FAKE_MAC_LAUNCHER="$fake_mac_launcher" \
+    LAUNCHER_LOG="$case_root/launcher.log" make -C "$fixture" install \
+    || fail "macOS reinstall over an existing bundle was refused"
 
   rm -rf "$fixture/target" "$case_root/cargo home/bin" "$case_root/home root/Applications" "$case_root/launcher.log"
   override="$case_root/custom apps"
