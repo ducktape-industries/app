@@ -41,7 +41,6 @@ design = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch =
 # `backend/roster.rs` hands the one record to the other — the shape did not move.
 chat = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "chat-wire" }
 chat-identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "identity-wire" }
-forge = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "forge-wire" }
 gateway = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "gateway-wire" }
 identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "identity-wire" }
 

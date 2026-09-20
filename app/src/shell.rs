@@ -1722,6 +1722,7 @@ impl DesktopWindow {
                 let payload = state.ceremony_qr.clone();
                 body = body
                     .child(hero("Your account", "One account, every device you sign in from."))
+                    .child(hint("Enter a name to create an account with this device’s wallet, or use a phone to set up a passkey with two QR scans.".into()))
                     .when(!detail.is_empty(), |body| body.child(hint(detail)))
                     .when(!left.is_empty(), |body| body.child(hint(left)));
                 if !payload.is_empty() {
@@ -1760,7 +1761,7 @@ impl DesktopWindow {
                     .child(
                         self.submit(
                             "account-create",
-                            "Create account",
+                            "Create with phone",
                             busy,
                             |this, cx| {
                                 Message::WelcomeCreateSubmit(this.value("account-name", cx))
@@ -1786,11 +1787,14 @@ impl DesktopWindow {
                                 .outline(),
                             )
                             .child(
-                                self.action(
+                                self.submit(
                                     "account-desktop",
                                     "Use this device",
-                                    Message::WelcomeDesktop,
                                     busy,
+                                    |this, cx| {
+                                        Message::WelcomeDesktop(this.value("account-name", cx))
+                                    },
+                                    cx,
                                 )
                                 .outline(),
                             )

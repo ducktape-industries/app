@@ -533,7 +533,7 @@ pub(crate) enum AppMessage {
     WelcomeCancel,
     WelcomeCreateSubmit(String),
     WelcomeLoginSubmit,
-    WelcomeDesktop,
+    WelcomeDesktop(String),
     WelcomeDesktopDone(bool),
     CeremonyStepped(crate::backend::CeremonyStep),
     WelcomeFailed(crate::backend::AppError),

@@ -38,7 +38,12 @@ that layout. On macOS the existing bundle script builds and ad-hoc-signs
 `Ducktape.app`, which is installed under `$HOME/Applications` by default (or a
 non-empty `DUCKTAPE_INSTALL_DIR`). The target honors `CARGO`,
 `CARGO_TARGET_DIR`, `CARGO_BUILD_JOBS`, and the XDG variables; it never uses
-`sudo` or forces `--replace`.
+`sudo`.
+
+An install lays down a clean set: it keeps nothing of the install it finds (no
+rollback copy, no staged release) and never refuses because of it, so running it
+again is always safe. Updating an installed app is the launcher's other job and
+starts from the state an install leaves.
 
 ## Consumption
 

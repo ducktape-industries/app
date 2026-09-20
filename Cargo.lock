@@ -3159,7 +3159,6 @@ dependencies = [
  "ducktape-home",
  "ducktape-rpc",
  "files-wire",
- "forge-wire",
  "futures",
  "gateway-wire",
  "gethostname",

@@ -428,8 +428,13 @@ fn an_unwritable_install_root_is_refused_by_name() {
     assert!(!rig.state_path().exists());
 }
 
+/// An install is not an update: a second one over the first lays down a clean
+/// set. It asks nothing, keeps no `previous` to roll back to, and leaves
+/// `releases/` holding only what it placed — including when the update path
+/// had a release staged. `make install` run twice is this, and it used to
+/// refuse the second time.
 #[test]
-fn a_reinstall_of_a_newer_build_keeps_the_old_one_as_previous() {
+fn a_second_install_leaves_a_clean_set() {
     let rig = Rig::new();
     let (source_a, sha_a) = rig.build("A");
     assert!(
@@ -437,32 +442,39 @@ fn a_reinstall_of_a_newer_build_keeps_the_old_one_as_previous() {
             .status
             .success()
     );
-    let (source_b, sha_b) = rig.build("B");
-    // B names no release, so replacing A with it is an offer: nothing is
-    // written until the user takes it with --replace (#97).
-    let offered = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
-    assert!(!offered.status.success());
-    let err = stderr(&offered);
-    assert!(err.contains("release_unknown_provenance"), "{err}");
-    assert!(err.contains("--replace"), "{err}");
-    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
-    assert!(!rig.release_dir(sha_b).exists());
-    let again = rig.launcher(&["install", "--from", source_b.to_str().unwrap(), "--replace"]);
-    assert!(again.status.success(), "{}", stderr(&again));
-    assert_eq!(rig.link("current"), Some(link_target(sha_b)));
-    assert_eq!(rig.link("previous"), Some(link_target(sha_a)));
+    // the update path staged C and had B as its rollback; none of it survives.
+    let sha_b = rig.stage("B", true);
+    let sha_c = rig.stage("C", true);
+    rig.write_state(&staged(sha_a, sha_c));
+    std::os::unix::fs::symlink(link_target(sha_b), rig.install_dir().join("previous")).unwrap();
+
+    let (source_d, sha_d) = rig.build("D");
+    let installed = rig.launcher(&["install", "--from", source_d.to_str().unwrap()]);
+    assert!(installed.status.success(), "{}", stderr(&installed));
+    assert_eq!(rig.link("current"), Some(link_target(sha_d)));
+    assert_eq!(rig.link("previous"), None);
     assert_eq!(
         rig.read_state(),
         Phase::Idle(Idle {
-            current: sha_b,
-            previous: Some(sha_a),
+            current: sha_d,
+            previous: None,
             pinned_sequence: 0,
         })
     );
+    for gone in [sha_a, sha_b, sha_c] {
+        assert!(!rig.release_dir(gone).exists(), "{gone} survived");
+    }
+    assert!(rig.release_dir(sha_d).exists());
+
     // and the same build again changes nothing.
-    let same = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
+    let same = rig.launcher(&["install", "--from", source_d.to_str().unwrap()]);
     assert!(same.status.success(), "{}", stderr(&same));
-    assert_eq!(rig.link("previous"), Some(link_target(sha_a)));
+    assert_eq!(rig.link("current"), Some(link_target(sha_d)));
+    assert!(rig.release_dir(sha_d).exists());
+
+    // the consent flag went with the offer it answered.
+    let flagged = rig.launcher(&["install", "--from", source_d.to_str().unwrap(), "--replace"]);
+    assert!(!flagged.status.success());
 }
 
 /// The release as packaging stages it: the Linux archive holds
@@ -608,14 +620,7 @@ fn install_pins_the_release_key_and_never_replaces_a_different_one() {
         format!("{key}\n")
     );
 
-    let same = rig.launcher(&[
-        "install",
-        "--release-key",
-        &key,
-        "--from",
-        source_b,
-        "--replace",
-    ]);
+    let same = rig.launcher(&["install", "--release-key", &key, "--from", source_b]);
     assert!(same.status.success(), "{}", stderr(&same));
     assert_eq!(rig.link("current"), Some(link_target(sha_b)));
     assert_eq!(
@@ -625,12 +630,12 @@ fn install_pins_the_release_key_and_never_replaces_a_different_one() {
 }
 
 /// A release that names itself in `release.json` pins that sequence, so the
-/// channel publishing the same sequence reads as what already runs (#97). An
-/// OLDER sequence over it is an offer, never a silent flip: nothing is written
-/// until `--replace` takes it, and the pin does not lower when it does. A
+/// channel publishing the same sequence reads as what already runs (#97). The
+/// pin is the installed release's own and nothing else's: an install carries
+/// no sequence over from what it replaced, whichever way the numbers run. A
 /// `release.json` that is not exactly `{sequence, display}` is refused.
 #[test]
-fn a_release_json_pins_its_sequence_and_an_older_one_is_only_offered() {
+fn a_release_json_pins_its_own_sequence() {
     let rig = Rig::new();
     let identify =
         |source: &Path, text: &str| fs::write(source.join("release.json"), text).unwrap();
@@ -649,23 +654,15 @@ fn a_release_json_pins_its_sequence_and_an_older_one_is_only_offered() {
 
     let (source_b, sha_b) = rig.build("B");
     identify(&source_b, "{\"sequence\":3,\"display\":\"0.1.0+bbbb\"}");
-    let offered = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
-    assert!(!offered.status.success());
-    let err = stderr(&offered);
-    assert!(err.contains("release_older"), "{err}");
-    assert!(err.contains("0.1.0+bbbb is sequence 3"), "{err}");
-    assert_eq!(rig.link("current"), Some(link_target(sha_a)));
-    assert!(!rig.release_dir(sha_b).exists());
-
-    let taken = rig.launcher(&["install", "--replace", "--from", source_b.to_str().unwrap()]);
-    assert!(taken.status.success(), "{}", stderr(&taken));
+    let older = rig.launcher(&["install", "--from", source_b.to_str().unwrap()]);
+    assert!(older.status.success(), "{}", stderr(&older));
     assert_eq!(rig.link("current"), Some(link_target(sha_b)));
     assert_eq!(
         rig.read_state(),
         Phase::Idle(Idle {
             current: sha_b,
-            previous: Some(sha_a),
-            pinned_sequence: 5,
+            previous: None,
+            pinned_sequence: 3,
         })
     );
 
@@ -680,7 +677,8 @@ fn a_release_json_pins_its_sequence_and_an_older_one_is_only_offered() {
     assert!(err.contains("release_identity_invalid"), "{err}");
     assert!(!rig.release_dir(sha_c).exists());
 
-    // a newer sequence replaces what runs with no question, and pins itself.
+    // the refusal wrote nothing; a well-formed one installs and pins itself.
+    assert_eq!(rig.link("current"), Some(link_target(sha_b)));
     identify(&source_c, "{\"sequence\":6,\"display\":\"0.1.0+cccc\"}");
     let newer = rig.launcher(&["install", "--from", source_c.to_str().unwrap()]);
     assert!(newer.status.success(), "{}", stderr(&newer));
