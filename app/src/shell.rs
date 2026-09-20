@@ -907,8 +907,13 @@ impl DesktopWindow {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_module(&self) -> Option<Entity<crate::module_view::NativeModuleView>> {
-        self.module.as_ref().map(|(_, view)| view.clone())
+    pub(crate) fn test_module(
+        &self,
+        module: &str,
+    ) -> Option<Entity<crate::module_view::NativeModuleView>> {
+        self.workspace_layers
+            .get(module)
+            .map(|layer| layer.view.clone())
     }
 
     #[cfg(test)]

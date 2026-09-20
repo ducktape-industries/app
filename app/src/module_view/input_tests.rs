@@ -151,9 +151,10 @@ fn open_console(
 fn console_module(
     presenter: &Entity<crate::shell::DesktopWindow>,
     native: &VisualTestContext,
+    module: &str,
 ) -> Entity<NativeModuleView> {
     presenter
-        .read_with(native, |presenter, _| presenter.test_module())
+        .read_with(native, |presenter, _| presenter.test_module(module))
         .expect("console module")
 }
 
@@ -269,7 +270,7 @@ fn door_observation_advances_chat_after_an_async_host_answer(cx: &mut TestAppCon
     tests::can_reads([("op.submit", serde_json::json!(1))]);
     let seat = seated(&[]);
     let (presenter, mut native) = open_console(cx, "chat");
-    let view = console_module(&presenter, &native);
+    let view = console_module(&presenter, &native, "chat");
     settle_native_documents(&mut native, &seat);
     let initial = door_tree(&mut native);
     assert_chat_fixture_geometry(&view, &native, &initial);
