@@ -855,6 +855,13 @@ fn door_drag_by_node_id_reaches_the_guest_in_its_own_coordinates(cx: &mut TestAp
     assert_eq!(
         input::recorded_inputs(),
         vec![
+            // the priming move lands on Chat's own sensor, which fills the
+            // seat, and reads back in the same local coordinates
+            wire::Event::Pointer {
+                handler: 0,
+                x: 100.,
+                y: 100.,
+            },
             wire::Event::Mouse {
                 event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
                 captured: false,
@@ -955,6 +962,13 @@ fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
     assert_eq!(
         delivered,
         vec![
+            // the priming move lands on Chat's own sensor, which fills the
+            // seat, and reads back in the same local coordinates
+            wire::Event::Pointer {
+                handler: 0,
+                x: 100.,
+                y: 100.,
+            },
             wire::Event::Mouse {
                 event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
                 captured: false,
@@ -1019,6 +1033,11 @@ fn native_pointer_drag_delivers_the_host_contract_through_window_listeners(
     assert_eq!(
         input::recorded_inputs(),
         vec![
+            wire::Event::Pointer {
+                handler: 0,
+                x: 100.,
+                y: 100.,
+            },
             wire::Event::Mouse {
                 event: wire::mouse::Event::ButtonPressed(wire::mouse::Button::Left),
                 captured: false,
