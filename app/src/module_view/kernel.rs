@@ -101,6 +101,7 @@
 //! view's next redraw; reply notifications wake the native presenter.
 
 pub(super) mod media;
+mod voice;
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -528,6 +529,10 @@ pub(super) fn answer(
     }
     if capability == "media" {
         media::answer(guest, operation, id, payload);
+        return true;
+    }
+    if capability == voice::CAPABILITY {
+        voice::answer(guest, operation, id, payload);
         return true;
     }
     if capability == "session" {
@@ -1424,6 +1429,29 @@ fn application_stream(guest: &mut Guest, id: u64, payload: &[u8]) {
         );
         return;
     }
+    hold_exchange(guest, id, None, move |client| {
+        let request = request.clone();
+        Box::pin(async move { application_open(&client, &request).await })
+    });
+}
+
+type NodeSocket =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+type Opening =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<NodeSocket, wire::Refusal>> + Send>>;
+
+/// One bidirectional node socket held for the view as [`Standing`] holds a
+/// topic: `open` upgrades it, [`exchange`] runs it against the view's
+/// `net.send` frames, and the task is registered under `id` so a send finds
+/// it and dropping the subscription aborts it. `ready` is a text frame the
+/// HOST synthesizes as the first item of every successful open, for a socket
+/// whose far end sends none of its own.
+fn hold_exchange(
+    guest: &mut Guest,
+    id: u64,
+    ready: Option<&'static str>,
+    open: impl Fn(ducktape_rpc::Client) -> Opening + Send + 'static,
+) {
     let Some(client) = connected(guest, id) else {
         return;
     };
@@ -1435,34 +1463,7 @@ fn application_stream(guest: &mut Guest, id: u64, payload: &[u8]) {
     let (outgoing, mut receiver) = tokio::sync::mpsc::channel(1);
     let task = runtime().spawn(async move {
         let _counted = counted;
-        let mut standing = Standing::default();
-        loop {
-            // an open the node never finished is one it did not answer
-            let opened = tokio::time::timeout(
-                std::time::Duration::from_secs(30),
-                application_open(&client, &request),
-            )
-            .await
-            .unwrap_or_else(|_| {
-                Err(wire::Refusal::new(
-                    "rpc_client",
-                    "application stream open timed out",
-                ))
-            });
-            let failed = match opened {
-                Ok(socket) => {
-                    standing.opened();
-                    let Some(failed) = exchange(&replies, id, socket, &mut receiver).await else {
-                        return;
-                    };
-                    failed
-                }
-                Err(failed) => failed,
-            };
-            if !standing.reopens(&replies, id, failed).await {
-                return;
-            }
-        }
+        held_exchange(&replies, id, ready, client, open, &mut receiver).await;
     });
     guest.tasks.push((
         id,
@@ -1473,15 +1474,54 @@ fn application_stream(guest: &mut Guest, id: u64, payload: &[u8]) {
     ));
 }
 
+/// [`hold_exchange`]'s task: open, exchange, reopen as [`Standing`] says, until
+/// the subscription ends — one way or the other.
+async fn held_exchange(
+    replies: &Replies,
+    id: u64,
+    ready: Option<&'static str>,
+    client: ducktape_rpc::Client,
+    open: impl Fn(ducktape_rpc::Client) -> Opening,
+    receiver: &mut tokio::sync::mpsc::Receiver<tokio_tungstenite::tungstenite::Message>,
+) {
+    let mut standing = Standing::default();
+    loop {
+        // an open the node never finished is one it did not answer
+        let opened = tokio::time::timeout(std::time::Duration::from_secs(30), open(client.clone()))
+            .await
+            .unwrap_or_else(|_| {
+                Err(wire::Refusal::new(
+                    "rpc_client",
+                    "application stream open timed out",
+                ))
+            });
+        let failed = match opened {
+            Ok(socket) => {
+                standing.opened();
+                if let Some(text) = ready {
+                    let item = serde_json::to_vec(&OutboundFrame::Text(text.to_owned()))
+                        .expect("text frame encodes");
+                    replies.item(id, Ok(item), false);
+                }
+                let Some(failed) = exchange(replies, id, socket, receiver).await else {
+                    return;
+                };
+                failed
+            }
+            Err(failed) => failed,
+        };
+        if !standing.reopens(replies, id, failed).await {
+            return;
+        }
+    }
+}
+
 /// One upgrade to a published application route, through the node's
 /// gateway: the route's head, proven by the seated key, on the upgrade.
 async fn application_open(
     client: &ducktape_rpc::Client,
     request: &ApplicationRequest,
-) -> Result<
-    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    wire::Refusal,
-> {
+) -> Result<NodeSocket, wire::Refusal> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest as _;
     let head = application_head(client, request, true).await?;
     let encoded = gateway::encode_proxy_request_head(&head).map_err(host_fault)?;
@@ -1858,7 +1898,7 @@ fn target_of(ask: &serde_json::Value) -> Result<String, wire::Refusal> {
 
 /// A view names a logical route. Publisher, revision and caller identity are
 /// resolved or signed by the host, never accepted from guest bytes.
-#[derive(serde::Deserialize)]
+#[derive(Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ApplicationRequest {
     account: u64,

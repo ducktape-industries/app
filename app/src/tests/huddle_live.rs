@@ -2,10 +2,12 @@
 //! second person, and the camera and microphone this box may not have.
 //!
 //! The deployed call guest drives this side's native camera and microphone
-//! through the generic media resources. The independently installed media
-//! service must be published for the room owner's account, and the registry
-//! must deploy the `call` view. The process and guest unit suites cover
-//! authentication, protocol, and lifecycle without physical devices.
+//! through the generic media resources, and joins the room through the
+//! NODE'S OWN CALL HUB — the host's `voice.hub` subscription over
+//! `/v1/call/ws` on the data plane (ruling 2026-09-20), not an installed
+//! media service on a gateway route. The registry must deploy the `call`
+//! view. The process and guest unit suites cover authentication, protocol,
+//! and lifecycle without physical devices.
 //!
 //! ONE PROCESS IS ONE PERSON, which is the whole reason this is not a
 //! two-session test: identity is process-global (`DUCKTAPE_HOME`/
