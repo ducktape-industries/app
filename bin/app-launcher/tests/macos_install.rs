@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use app_update::{Phase, Sha, Staged, state};
+use app_update::{Idle, Phase, Sha, Staged, state};
 
 const LAUNCHER: &str = env!("CARGO_BIN_EXE_ducktape-launcher");
 const INFO_PLIST: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -141,6 +141,63 @@ fn install_clears_nested_quarantine_but_keeps_code_and_other_attributes() {
         ));
         assert_eq!(has_xattr(&source, "com.apple.quarantine"), quarantined);
     }
+}
+
+/// An install is not an update: a second one over the first lays down a clean
+/// set. It asks nothing, keeps no bundle to roll back to, and leaves the
+/// update root holding only a fresh state — whatever the update path had
+/// staged or journalled there. `make install` run twice is this, and it used
+/// to refuse the second time.
+#[test]
+fn a_second_install_leaves_a_clean_set() {
+    let rig = Rig::new();
+    let first = rig.source("first", false);
+    assert!(rig.install(&first, "clean").status.success());
+
+    let updates = rig.root.path().join("clean-config/ducktape/updates");
+    let leftover = updates
+        .join("releases")
+        .join(Sha::digest(b"staged").to_string());
+    fs::create_dir_all(leftover.join("Ducktape.app")).unwrap();
+    std::os::unix::fs::symlink(&leftover, updates.join("previous")).unwrap();
+    fs::write(updates.join("swap.json"), "{}").unwrap();
+
+    // a different build: its executable's digest is what names a local release.
+    let second = rig.source("second", false);
+    let app = second.join("Contents/MacOS/ducktape-app");
+    fs::write(&app, "#!/bin/sh\necho second\n").unwrap();
+    codesign(&app);
+    codesign(&second);
+    let sha = Sha::digest(&fs::read(&app).unwrap());
+
+    let installed = rig.install(&second, "clean");
+    assert!(
+        installed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&installed.stderr)
+    );
+    let bundle = rig.root.path().join("clean-install/Ducktape.app");
+    assert_eq!(
+        fs::read(bundle.join("Contents/MacOS/ducktape-app")).unwrap(),
+        fs::read(&app).unwrap()
+    );
+    let state = fs::read_to_string(updates.join("state.json")).unwrap();
+    assert_eq!(
+        state::decode(&state).unwrap(),
+        Phase::Idle(Idle {
+            current: sha,
+            previous: None,
+            pinned_sequence: 0,
+        })
+    );
+    assert!(fs::symlink_metadata(updates.join("previous")).is_err());
+    assert!(!updates.join("swap.json").exists());
+    assert_eq!(fs::read_dir(updates.join("releases")).unwrap().count(), 0);
+    let install_dir: Vec<_> = fs::read_dir(rig.root.path().join("clean-install"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(install_dir, ["Ducktape.app"], "a bundle was left aside");
 }
 
 #[test]
