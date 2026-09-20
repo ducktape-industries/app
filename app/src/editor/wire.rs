@@ -114,7 +114,7 @@ struct Outgoing {
     sender: EditorTransferSender,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Projection {
     reference: EditorDocumentRef,
     text: Option<Arc<str>>,
@@ -214,6 +214,23 @@ impl EditorStore {
         let mut store = self.lock();
         store.pump();
         std::mem::take(&mut store.events)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn seed_test_document(&self, document: &str, text: &str) {
+        let mut store = self.lock();
+        let document = store
+            .documents
+            .get_mut(document)
+            .expect("test editor document");
+        document.text = Some(Arc::from(text));
+        document.queue.clear();
+        document.queued_bytes = 0;
+        document.phase = Phase::Ready;
+        store.incoming = None;
+        store.outgoing = None;
+        store.events.clear();
+        store.fault = None;
     }
 
     pub fn ready(&self) -> Result<bool, String> {
