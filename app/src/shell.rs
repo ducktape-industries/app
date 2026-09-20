@@ -2110,23 +2110,20 @@ impl DesktopWindow {
                 if self.active_layer == Some(module) {
                     self.active_layer = None;
                 }
-                let intents = layer.view.update(cx, |view, _| view.hide());
-                let model = self.model.clone();
-                cx.defer(move |cx| {
-                    for intent in intents {
-                        model.update(cx, |model, cx| {
-                            model.dispatch(routed(layer.route, intent), cx)
-                        });
-                    }
-                });
+                self.hide_layer_view(&layer.view, layer.route, cx);
             }
             LayerAction::Minimize => {
-                if let Some(layer) = self.workspace_layers.get_mut(module) {
-                    layer.minimized = true;
-                    if self.active_layer == Some(module) {
-                        self.active_layer = None;
-                    }
+                let Some(layer) = self.workspace_layers.get_mut(module) else {
+                    return;
+                };
+                layer.minimized = true;
+                if self.active_layer == Some(module) {
+                    self.active_layer = None;
                 }
+                // A minimized layer is not painted, so the guest must hear
+                // host.visible=false now; the next paint shows it again.
+                let (view, route) = (layer.view.clone(), layer.route);
+                self.hide_layer_view(&view, route, cx);
             }
             LayerAction::Collapse => {
                 if let Some(layer) = self.workspace_layers.get_mut(module) {
@@ -2165,6 +2162,23 @@ impl DesktopWindow {
                 }
             }
         }
+    }
+
+    /// Tells a layer's guest it is no longer shown (`host.visible` false) and
+    /// routes whatever intents the hide produced. The instance is retained.
+    fn hide_layer_view(
+        &self,
+        view: &Entity<crate::module_view::NativeModuleView>,
+        route: fn(crate::module_view::ModuleViewEvent) -> Message,
+        cx: &mut Context<Self>,
+    ) {
+        let intents = view.update(cx, |view, _| view.hide());
+        let model = self.model.clone();
+        cx.defer(move |cx| {
+            for intent in intents {
+                model.update(cx, |model, cx| model.dispatch(routed(route, intent), cx));
+            }
+        });
     }
 
     fn layer_gesture_capture(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
