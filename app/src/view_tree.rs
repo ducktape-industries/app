@@ -3934,6 +3934,7 @@ fn content_dimensions(node: &wire::Node) -> (Option<wire::Length>, Option<wire::
         | wire::Node::Scroll { width, height, .. }
         | wire::Node::Stack { width, height, .. }
         | wire::Node::Responsive { width, height, .. } => (*width, *height),
+        wire::Node::MouseArea { content, .. } => content_dimensions(content),
         // an overlay always renders full-size (see its arm)
         wire::Node::Overlay { .. } => (Some(wire::Length::Fill), Some(wire::Length::Fill)),
         _ => (None, None),

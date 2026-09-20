@@ -74,7 +74,7 @@ fn pages_seated() -> Arc<Mutex<Mounted>> {
 }
 
 fn settle(guest: &mut Guest, props: &Option<Vec<u8>>) {
-    for _ in 0..256 {
+    for _ in 0..32 {
         if !guest.redraw(props) {
             return;
         }
@@ -121,23 +121,36 @@ impl gpui_kit::Render for SizedNativePane {
     }
 }
 
-fn open_module(
+fn open_module_at(
     cx: &mut TestAppContext,
     module: &'static str,
+    width: f32,
+    height: f32,
 ) -> (Entity<NativeModuleView>, VisualTestContext) {
     cx.update(gpui_kit::init);
     cx.update(crate::editor::wire::init_notion);
     let mut view = None;
-    let window = cx.open_window(gpui::size(gpui::px(1200.), gpui::px(800.)), |window, cx| {
-        let native = cx.new(|_| NativeModuleView::new(module));
-        view = Some(native.clone());
-        let pane = cx.new(|_| SizedNativePane(native));
-        gpui_kit::component::Root::new(pane, window, cx)
-    });
+    let window = cx.open_window(
+        gpui::size(gpui::px(width), gpui::px(height)),
+        |window, cx| {
+            let native = cx.new(|_| NativeModuleView::new(module));
+            view = Some(native.clone());
+            let pane = cx.new(|_| SizedNativePane(native));
+            gpui_kit::component::Root::new(pane, window, cx)
+        },
+    );
+    let handle: gpui_kit::AnyWindowHandle = window.into();
     let view = view.unwrap();
-    let mut native = VisualTestContext::from_window(window.into(), cx);
+    let mut native = VisualTestContext::from_window(handle, cx);
     native.update(|window, cx| window.render_frame(cx));
     (view, native)
+}
+
+fn open_module(
+    cx: &mut TestAppContext,
+    module: &'static str,
+) -> (Entity<NativeModuleView>, VisualTestContext) {
+    open_module_at(cx, module, 1200., 800.)
 }
 
 fn open(cx: &mut TestAppContext) -> (Entity<NativeModuleView>, VisualTestContext) {
@@ -185,6 +198,48 @@ fn console_module(
     presenter
         .read_with(native, |presenter, _| presenter.test_module())
         .expect("console module")
+}
+
+fn console_overlay_module(
+    presenter: &Entity<crate::shell::DesktopWindow>,
+    native: &VisualTestContext,
+) -> Entity<NativeModuleView> {
+    presenter
+        .read_with(native, |presenter, _| presenter.test_overlay_module())
+        .expect("inbox overlay module")
+}
+
+fn console_palette_module(
+    presenter: &Entity<crate::shell::DesktopWindow>,
+    native: &VisualTestContext,
+) -> Entity<NativeModuleView> {
+    presenter
+        .read_with(native, |presenter, _| presenter.test_palette_module())
+        .expect("palette module")
+}
+
+fn real_seated(module: &'static str) -> Arc<Mutex<Mounted>> {
+    let path = tests::staged(module).expect("build current overlay view first");
+    let mut guest = Guest::load_from(module, &path).expect("load current overlay view first");
+    guest.redraw(&None);
+    guest.frame.requests.clear();
+    guest.frame.cancels.clear();
+    let seat = Arc::new(Mutex::new(Mounted {
+        changes: tokio::sync::watch::channel(()).0,
+        slot: Slot::Ready(Box::new(guest)),
+        props: None,
+        generation: 1,
+        hash: None,
+        in_flight: false,
+        wanted: None,
+        tasting: None,
+        waiting_since: None,
+        replacement: Replacement::Preserve,
+        retry: None,
+        shown: None,
+    }));
+    registry().lock().unwrap().insert(module, seat.clone());
+    seat
 }
 
 fn assert_chat_fixture_geometry(
@@ -290,29 +345,6 @@ fn wake_chat_live(seat: &Arc<Mutex<Mounted>>) {
             done: false,
         });
     }
-}
-
-fn suppress_viewport_observations(seat: &Arc<Mutex<Mounted>>) {
-    // The drag assertion covers pointer capture; production viewport sizing is
-    // exercised by the console/door fixture separately.
-    let mut locked = seat.lock().unwrap();
-    let Slot::Ready(guest) = &mut locked.slot else {
-        panic!("seated view");
-    };
-    guest
-        .frame
-        .root
-        .as_mut()
-        .unwrap()
-        .for_each_mut(&mut |node| {
-            if let wire::Node::Sensor {
-                on_show, on_resize, ..
-            } = node
-            {
-                *on_show = None;
-                *on_resize = None;
-            }
-        });
 }
 
 #[gpui_kit::test]
@@ -447,7 +479,7 @@ fn native_pages_keyboard_creates_a_page_and_mounts_its_document(cx: &mut TestApp
     let _turn = tests::blocking_connection_turn();
     let pages = pages_seated();
     let (presenter, mut native) = open_console(cx, "pages");
-    let _view = console_module(&presenter, &native);
+    let view = console_module(&presenter, &native);
     settle_native_documents(&mut native, &pages);
     let key = button(&pages, "New page");
     let mut focused = false;
@@ -502,10 +534,135 @@ fn native_pages_keyboard_creates_a_page_and_mounts_its_document(cx: &mut TestApp
         has_document,
         "Pages did not mount the document after create resolved"
     );
+    let (root, pane, document) = view.read_with(&native, |view, cx| {
+        let content = view.content.as_ref().expect("mounted Pages tree").read(cx);
+        (
+            content
+                .measured_bounds("NativeModuleView/root")
+                .expect("Pages native root bounds"),
+            content
+                .measured_bounds("PagesView/root/pages/pane-measure")
+                .expect("Pages pane bounds"),
+            content
+                .measured_bounds("PagesView/root/pages/document")
+                .expect("Pages document bounds"),
+        )
+    });
+    assert!(
+        root.size.width > gpui::px(0.) && root.size.height > gpui::px(0.),
+        "Pages native root must be measurable: {root:?}"
+    );
+    assert!(
+        pane.origin.x >= root.origin.x
+            && pane.origin.y >= root.origin.y
+            && pane.right() <= root.right()
+            && pane.bottom() <= root.bottom(),
+        "Pages pane must be inside its measured native root: {pane:?} vs {root:?}"
+    );
+    assert!(
+        pane.size.width > gpui::px(0.) && pane.size.height > gpui::px(0.),
+        "Pages pane must receive native Fill geometry: {pane:?}"
+    );
+    assert!(
+        document.size.width > gpui::px(0.) && document.size.height > gpui::px(0.),
+        "Pages editor must receive native Fill geometry: {document:?}"
+    );
+    assert!(
+        document.origin.x >= pane.origin.x
+            && document.origin.y >= pane.origin.y
+            && document.right() <= pane.right()
+            && document.bottom() <= pane.bottom(),
+        "Pages editor must align inside its measured pane: {document:?} vs {pane:?}"
+    );
     let nodes = door_tree_for(&mut native, "pages");
     assert!(
         nodes.iter().any(|node| node.name.contains("Untitled")),
         "Pages document is not observable through the door: {nodes:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn native_inbox_popover_gives_its_view_the_card_width_and_alignment(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    let chat = seated(&[]);
+    let inbox_seat = real_seated("inbox");
+    let (presenter, mut native) = open_console(cx, "chat");
+    let _chat_view = console_module(&presenter, &native);
+    settle_native_documents(&mut native, &chat);
+    presenter.update(&mut native, |presenter, cx| presenter.test_open_bell(cx));
+    native.update(|window, cx| window.render_frame(cx));
+    let inbox = console_overlay_module(&presenter, &native);
+    settle_native_documents(&mut native, &inbox_seat);
+    let viewport = native.update(|window, _| window.viewport_size());
+    let root = inbox.read_with(&native, |view, cx| {
+        let content = view.content.as_ref().expect("mounted inbox tree").read(cx);
+        content
+            .measured_bounds("NativeModuleView/root")
+            .expect("inbox native root bounds")
+    });
+    assert!(
+        root.size.width > gpui::px(300.) && root.size.height > gpui::px(300.),
+        "inbox root must fill the mounted popover content: {root:?}"
+    );
+    assert!(
+        root.origin.x >= gpui::px(200.)
+            && root.origin.y >= gpui::px(88.)
+            && root.size.width <= gpui::px(380.)
+            && root.size.height <= gpui::px(420.)
+            && root.right() <= viewport.width
+            && root.bottom() <= viewport.height,
+        "inbox root must align inside the shell popover: {root:?} vs {viewport:?}"
+    );
+}
+
+#[gpui_kit::test]
+fn native_palette_overlay_fills_the_console_and_centers_its_card(cx: &mut TestAppContext) {
+    let _turn = tests::blocking_connection_turn();
+    let chat = seated(&[]);
+    let palette_seat = real_seated("palette");
+    let (presenter, mut native) = open_console(cx, "chat");
+    let _chat_view = console_module(&presenter, &native);
+    settle_native_documents(&mut native, &chat);
+    let palette = console_palette_module(&presenter, &native);
+    settle_native_documents(&mut native, &palette_seat);
+    let command = if cfg!(target_os = "macos") {
+        "cmd-k"
+    } else {
+        "ctrl-k"
+    };
+    native.update(|window, cx| window.press(command, cx));
+    native.run_until_parked();
+    native.update(|window, cx| window.render_frame(cx));
+    settle_native_documents(&mut native, &palette_seat);
+    let viewport = native.update(|window, _| window.viewport_size());
+    let (root, card) = palette.read_with(&native, |view, cx| {
+        let content = view
+            .content
+            .as_ref()
+            .expect("mounted palette tree")
+            .read(cx);
+        (
+            content
+                .measured_bounds("NativeModuleView/root")
+                .expect("palette native root bounds"),
+            content
+                .measured_bounds("palette/card")
+                .expect("palette card bounds"),
+        )
+    });
+    assert_eq!(root.size, viewport, "palette root must fill the console");
+    assert!(
+        card.size.width > gpui::px(0.) && card.size.height > gpui::px(0.),
+        "palette card must be visible: {card:?}"
+    );
+    assert!(
+        (f32::from(card.center().x) - f32::from(root.center().x)).abs() <= 1.,
+        "palette card must stay centered: {card:?} vs {root:?}"
+    );
+    assert!(
+        card.origin.y >= root.origin.y + gpui::px(96.)
+            && card.origin.y <= root.origin.y + gpui::px(120.),
+        "palette card must keep its drop alignment: {card:?} vs {root:?}"
     );
 }
 
@@ -886,6 +1043,10 @@ fn a_retained_control_cannot_address_a_new_frames_handler_table(cx: &mut TestApp
     );
 }
 fn thread_width(seat: &Arc<Mutex<Mounted>>) -> f32 {
+    fixed_width(seat, "/thread-pane")
+}
+
+fn fixed_width(seat: &Arc<Mutex<Mounted>>, suffix: &str) -> f32 {
     let locked = seat.lock().unwrap();
     let Slot::Ready(guest) = &locked.slot else {
         unreachable!()
@@ -903,19 +1064,19 @@ fn thread_width(seat: &Arc<Mutex<Mounted>>) -> f32 {
             width: Some(wire::Length::Fixed(value)),
             ..
         } = node
-            && key.ends_with("/thread-pane")
+            && key.ends_with(suffix)
         {
             width = Some(*value);
         }
     });
-    width.expect("thread pane")
+    width.expect("fixed pane")
 }
 #[gpui_kit::test]
-fn a_native_pointer_drag_resizes_the_thread_and_release_ends_it(cx: &mut TestAppContext) {
+fn a_native_pointer_drag_observes_the_narrow_pane_and_real_thread_clamp(cx: &mut TestAppContext) {
     let _turn = tests::blocking_connection_turn();
     let seat = seated(&["Open thread"]);
-    suppress_viewport_observations(&seat);
-    let (_, mut native) = open(cx);
+    let (view, mut native) = open_module_at(cx, "chat", 856., 800.);
+    settle_native_documents(&mut native, &seat);
     let key = {
         let locked = seat.lock().unwrap();
         let Slot::Ready(guest) = &locked.slot else {
@@ -933,12 +1094,117 @@ fn a_native_pointer_drag_resizes_the_thread_and_release_ends_it(cx: &mut TestApp
         });
         key.unwrap()
     };
+    let viewport = native.update(|window, _| window.viewport_size());
+    let chat = view.read_with(&native, |view, cx| {
+        let content = view.content.as_ref().expect("mounted Chat tree").read(cx);
+        content
+            .measured_bounds("ChatView/@sensor:906")
+            .expect("Chat pane bounds")
+    });
+    let sidebar = fixed_width(&seat, "/channel-sidebar");
+    let thread = fixed_width(&seat, "/thread-pane");
+    assert!(
+        chat.size.width > gpui::px(0.) && chat.size.height > gpui::px(0.),
+        "Chat pane must observe production geometry: {chat:?}"
+    );
+    assert!(
+        sidebar > 0.,
+        "Chat sidebar must have an observed production width: {sidebar}"
+    );
+    assert!(
+        chat.size.width <= viewport.width,
+        "Chat pane must stay inside the native viewport: {chat:?} vs {viewport:?}"
+    );
+    let maximum = (f64::from(f32::from(chat.size.width)) - f64::from(sidebar) - 20. - 320.)
+        .clamp(280., 640.) as f32;
+    assert_eq!(thread, maximum);
+    assert_eq!(thread_width(&seat), maximum);
+    let bounds = native.update(|window, _| window.find(key.clone()).bounds());
+    assert!(
+        bounds.size.width >= gpui::px(10.)
+            && bounds.size.height > gpui::px(100.)
+            && bounds.size.height <= chat.size.height,
+        "native divider observes the Chat pane: {bounds:?} vs {chat:?}"
+    );
+    let start = bounds.center();
+    let end = start - gpui::point(gpui::px(100.), gpui::px(0.));
+    native.update(|window, cx| window.drag(start, end, cx));
+    assert_eq!(thread_width(&seat), maximum, "narrow pane clamps the drag");
+    native.simulate_mouse_move(start, None, Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    assert_eq!(
+        thread_width(&seat),
+        maximum,
+        "release ends the clamped grab"
+    );
+}
+
+#[gpui_kit::test]
+fn a_native_pointer_drag_resizes_the_thread_and_release_ends_it_in_a_wide_pane(
+    cx: &mut TestAppContext,
+) {
+    let _turn = tests::blocking_connection_turn();
+    let seat = seated(&[]);
+    let (view, mut native) = open_module_at(cx, "chat", 1800., 800.);
+    settle_native_documents(&mut native, &seat);
+    {
+        let mut locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            unreachable!()
+        };
+        guest
+            .pending
+            .push(wire::Event::Message(tests::button_message(
+                guest,
+                "Open thread",
+            )));
+    }
+    settle_native_documents(&mut native, &seat);
+    let key = {
+        let locked = seat.lock().unwrap();
+        let Slot::Ready(guest) = &locked.slot else {
+            unreachable!()
+        };
+        let mut root = guest.frame.root.clone().unwrap();
+        let mut key = None;
+        root.for_each_mut(&mut |node| {
+            if node
+                .key()
+                .is_some_and(|key| key.ends_with("/thread-resize"))
+            {
+                key = node.key().map(str::to_owned);
+            }
+        });
+        key.unwrap()
+    };
+    let (root, chat) = view.read_with(&native, |view, cx| {
+        let content = view.content.as_ref().expect("mounted Chat tree").read(cx);
+        (
+            content
+                .measured_bounds("NativeModuleView/root")
+                .expect("native root"),
+            content
+                .measured_bounds("ChatView/@sensor:906")
+                .expect("Chat pane"),
+        )
+    });
+    let sidebar = fixed_width(&seat, "/channel-sidebar");
+    let thread = fixed_width(&seat, "/thread-pane");
+    let viewport = native.update(|window, _| window.viewport_size());
+    let maximum = (f64::from(f32::from(chat.size.width)) - f64::from(sidebar) - 20. - 320.)
+        .clamp(280., 640.) as f32;
+    assert!(
+        maximum > 430.,
+        "wide pane must leave room for a real resize: root={root:?}, chat={chat:?}, {sidebar:?}, {viewport:?}"
+    );
+    assert_eq!(root.size, viewport, "wide native root must fill the window");
+    assert_eq!(thread, 330.);
+    assert_eq!(thread_width(&seat), 330.);
     let bounds = native.update(|window, _| window.find(key.clone()).bounds());
     assert!(
         bounds.size.width >= gpui::px(10.) && bounds.size.height > gpui::px(100.),
-        "native divider fills its pane: {bounds:?}"
+        "native divider fills its wide pane: {bounds:?}"
     );
-    assert_eq!(thread_width(&seat), 330.);
     let start = bounds.center();
     let end = start - gpui::point(gpui::px(100.), gpui::px(0.));
     native.update(|window, cx| window.drag(start, end, cx));
@@ -1049,9 +1315,9 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
         window.press("end", cx);
         window.input(" ", cx);
     });
-    settle_native_documents(&mut native, &seat);
+    settle_pages_input(&mut native);
     native.update(|window, cx| window.input("@", cx));
-    settle_native_documents(&mut native, &seat);
+    settle_pages_input(&mut native);
     let projection = || {
         let locked = seat.lock().unwrap();
         let Slot::Ready(guest) = &locked.slot else {
@@ -1094,7 +1360,7 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
     native.update(|window, cx| {
         window.click(row, cx);
     });
-    settle_native_documents(&mut native, &seat);
+    settle_pages_input(&mut native);
     let (rich, paint) = projection();
     assert!(
         paint.affordances.menu.is_none(),
@@ -1120,10 +1386,10 @@ fn pages_wasm_owns_native_menu_and_input_rules(cx: &mut TestAppContext) {
         ("(c)", "paragraph", "©"),
     ] {
         native.update(|window, cx| window.press("enter", cx));
-        settle_native_documents(&mut native, &seat);
+        settle_pages_input(&mut native);
         for character in source.chars() {
             native.update(|window, cx| window.input(&character.to_string(), cx));
-            settle_native_documents(&mut native, &seat);
+            settle_pages_input(&mut native);
         }
         let (rich, _) = projection();
         let block = &rich.document.blocks[rich.document.cursor.position.line as usize];
@@ -1174,6 +1440,13 @@ fn settle_native_documents(native: &mut VisualTestContext, seat: &Arc<Mutex<Moun
             guest.ticks > ticks,
             "a requested native frame must advance the guest"
         );
+    }
+}
+
+fn settle_pages_input(native: &mut VisualTestContext) {
+    for _ in 0..2 {
+        native.run_until_parked();
+        native.update(|window, cx| window.render_frame(cx));
     }
 }
 

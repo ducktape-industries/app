@@ -795,9 +795,31 @@ impl DesktopWindow {
     }
 
     #[cfg(test)]
+    pub(crate) fn test_overlay_module(
+        &self,
+    ) -> Option<Entity<crate::module_view::NativeModuleView>> {
+        self.overlay_module.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_palette_module(
+        &self,
+    ) -> Option<Entity<crate::module_view::NativeModuleView>> {
+        self.palette_module.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn test_dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         self.model
             .update(cx, |model, cx| model.dispatch(message, cx));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_open_bell(&mut self, cx: &mut Context<Self>) {
+        self.model.update(cx, |model, cx| {
+            model.state.bell_open = true;
+            cx.notify();
+        });
     }
     fn value(&self, key: &'static str, cx: &gpui_kit::App) -> String {
         self.inputs
