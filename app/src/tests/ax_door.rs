@@ -965,6 +965,44 @@ fn door_wait_answers_at_its_deadline() {
 }
 
 #[test]
+fn door_drag_request_takes_local_or_window_px_and_refuses_bad_ones() {
+    let drag = |body: serde_json::Value| serde_json::from_value::<ax_door::Drag>(body);
+    let local =
+        drag(serde_json::json!({ "id": "console:view:chat", "from": [1, 2], "to": [3.5, 4] }))
+            .unwrap();
+    assert_eq!(
+        local.checked().map_err(|reply| reply.status()),
+        Ok(4),
+        "4 steps unless given"
+    );
+    let window = drag(
+        serde_json::json!({ "from": [0, 0], "to": [10, 10], "steps": 9, "window": "console" }),
+    )
+    .unwrap();
+    assert_eq!(window.checked().map_err(|reply| reply.status()), Ok(9));
+    assert!(
+        drag(serde_json::json!({ "from": [1, 2] })).is_err(),
+        "no destination"
+    );
+    assert!(
+        drag(serde_json::json!({ "from": [1, 2, 3], "to": [1, 2] })).is_err(),
+        "not a pair"
+    );
+    assert!(
+        drag(serde_json::json!({ "from": ["1", "2"], "to": [1, 2] })).is_err(),
+        "not numbers"
+    );
+    for body in [
+        serde_json::json!({ "from": [-1, 0], "to": [1, 2] }),
+        serde_json::json!({ "from": [0, 0], "to": [1, -2] }),
+        serde_json::json!({ "from": [0, 0], "to": [1, 2], "steps": 0 }),
+    ] {
+        let status = drag(body.clone()).unwrap().checked().unwrap_err().status();
+        assert_eq!(status, 400, "{body}");
+    }
+}
+
+#[test]
 fn door_binds_loopback_only_and_is_absent_without_the_env() {
     assert_eq!(ax_door::door_port(None), Ok(None));
     assert_eq!(ax_door::door_port(Some("")), Ok(None));
@@ -1037,6 +1075,22 @@ fn door_round_trip_over_loopback() {
     assert!(body.contains(r#"keys: \"shift-tab\""#), "{body}");
     let (status, body) = ax_door::call(&door, "GET", "/keys?window=console", "").unwrap();
     assert_eq!((status, body.contains("Keys")), (200, true), "{body}");
+    let drag = r#"{"id":"console:view:chat","from":[1,2],"to":[3,4]}"#;
+    let (status, body) = ax_door::call(&door, "POST", "/drag", drag).unwrap();
+    assert_eq!(
+        (
+            status,
+            body.contains(r#"Drag(Drag { id: Some(\"console:view:chat\")"#)
+        ),
+        (200, true),
+        "{body}"
+    );
+    assert_eq!(
+        ax_door::call(&door, "POST", "/drag", r#"{"from":[1]}"#)
+            .unwrap()
+            .0,
+        400
+    );
     // without DUCKTAPE_AX_DOOR_PRIVATE=1 there is no reveal at all
     let ask = r#"{"id":"onboarding:phrase-word/1"}"#;
     let (status, body) = ax_door::call(&door, "POST", "/reveal", ask).unwrap();

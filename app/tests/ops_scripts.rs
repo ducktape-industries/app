@@ -71,6 +71,29 @@ fn the_documented_scripts_run_from_a_clean_checkout() {
     );
 }
 
+/// The exec'd helper carries the bundle's own code-signing identifier.
+/// usernoted names a notification client by that identifier; a helper signed
+/// under codesign's default (`ducktape-app-<hash>`) is no app it knows, and
+/// every notification call answers UNErrorDomain 1 with no consent prompt.
+#[test]
+fn the_helper_is_signed_with_the_bundle_identifier() {
+    let script = std::fs::read_to_string(root().join("ops/bundle-app-macos.sh")).unwrap();
+    let helper_sign = script
+        .lines()
+        .find(|line| {
+            line.trim_start().starts_with("codesign") && line.contains("MacOS/ducktape-app\"")
+        })
+        .expect("the bundle script signs Contents/MacOS/ducktape-app");
+    assert!(
+        helper_sign.contains("--identifier \"$bundle_id\""),
+        "the helper must be signed --identifier <CFBundleIdentifier>: {helper_sign}"
+    );
+    assert!(
+        script.contains("bundle_id=$(/usr/libexec/PlistBuddy -c \"Print :CFBundleIdentifier\""),
+        "bundle_id is read from the staged Info.plist, not restated"
+    );
+}
+
 /// Every `ops/*.sh` parses: a script only a release runs is not first read
 /// by the release.
 #[test]

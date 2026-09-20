@@ -177,6 +177,9 @@ impl TextEditor {
         let Some(projection) = self.store.projection(&self.key) else {
             return;
         };
+        if self.projection.as_ref() == Some(&projection) {
+            return;
+        }
         let reset = self.reset != Some(projection.reference.reset);
         let settled = !projection.pending;
         let canonical = projection.text.clone().unwrap_or_else(|| Arc::from(""));

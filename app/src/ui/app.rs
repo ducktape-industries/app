@@ -261,6 +261,10 @@ pub struct Ducktape {
     pub(crate) shell_tab: ShellTab,
     pub(crate) gov_open: i64,
     pub(crate) agents_open_run: String,
+    /// The generic layer key for the selected machine-hosted session log.
+    /// This is stable per dispatch; `agents_opened` remains a navigation
+    /// serial so the view can refresh when the same run is opened again.
+    pub(crate) agents_open_instance: Option<crate::backend::SessionLogInstance>,
     pub(crate) agents_opened: i64,
     pub(crate) agents_live: bool,
     pub(crate) forge_note_pending: String,
@@ -714,6 +718,7 @@ impl Ducktape {
             shell_tab: ShellTab::View("chat"),
             gov_open: 0,
             agents_open_run: "".to_owned(),
+            agents_open_instance: None,
             agents_opened: 0,
             agents_live: false,
             forge_note_pending: "".to_owned(),
@@ -997,5 +1002,26 @@ mod state_tests {
         assert!(actual);
         let actual = (state.account_ceremony_qr).is_empty();
         assert!(actual);
+    }
+
+    #[test]
+    fn a_run_link_selects_a_stable_session_log_layer_resource() {
+        let (mut state, _) = Ducktape::fixture_seated_chat_session();
+        state.network_chain_id = "testnet#abcd0123".to_owned();
+        let dispatch_id = "ab".repeat(32);
+        let url = format!("duck://testnet-abcd0123/runs/{dispatch_id}");
+
+        dispatch(&mut state, AppMessage::OpenMessageLink(url.clone()));
+        let first = state
+            .agents_open_instance
+            .clone()
+            .expect("run link opens a session-log layer");
+        assert_eq!(state.shell_tab, ShellTab::View("agents"));
+        assert_eq!(state.agents_open_run, dispatch_id);
+        assert_eq!(first.key(), format!("agents:runs/{dispatch_id}"));
+
+        dispatch(&mut state, AppMessage::OpenMessageLink(url));
+        assert_eq!(state.agents_open_instance, Some(first));
+        assert_eq!(state.agents_opened, 2);
     }
 }

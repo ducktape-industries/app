@@ -3624,6 +3624,7 @@ pub(crate) struct NativeModuleView {
     replies_changed: Option<gpui_kit::Task<()>>,
     deadline: Option<(Instant, gpui_kit::Task<()>)>,
     surfaces: HashMap<String, surfaces::Surface>,
+    video_surfaces: HashMap<String, gpui_kit::Entity<crate::video::VideoSurface>>,
     observers: Vec<gpui_kit::Subscription>,
     hovered_files: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     pointer_inside: std::rc::Rc<std::cell::Cell<bool>>,
@@ -3706,6 +3707,7 @@ impl NativeModuleView {
             replies_changed: None,
             deadline: None,
             surfaces: HashMap::new(),
+            video_surfaces: HashMap::new(),
             observers: Vec::new(),
             hovered_files: Default::default(),
             pointer_inside: Default::default(),
@@ -3927,6 +3929,7 @@ impl NativeModuleView {
                 (Some(content), true) => content.update(cx, |tree, cx| tree.replace(root, cx)),
                 _ => {
                     self.surfaces.clear();
+                    self.video_surfaces.clear();
                     self.generation = generation;
                     self.alive = Some(guest.alive.clone());
                     let mut changes = guest.replies.changes();
@@ -4029,6 +4032,68 @@ impl NativeModuleView {
 }
 
 impl NativeModuleView {
+    fn video_overlay(&mut self, cx: &mut gpui_kit::Context<Self>) -> gpui_kit::AnyElement {
+        use gpui_kit::{IntoElement as _, ParentElement as _, Styled as _, div, px};
+
+        let placements = self
+            .content
+            .as_ref()
+            .map(|content| content.read(cx).video_placements())
+            .unwrap_or_default();
+        let live: std::collections::HashSet<_> = placements
+            .iter()
+            .map(|placement| placement.slot.clone())
+            .collect();
+        self.video_surfaces.retain(|slot, _| live.contains(slot));
+
+        let children = placements
+            .into_iter()
+            .map(|placement| {
+                let surface = if let Some(surface) = self.video_surfaces.get(&placement.slot) {
+                    surface.clone()
+                } else {
+                    let surface = cx.new(|_| {
+                        crate::video::VideoSurface::new(placement.resource.clone(), placement.fit)
+                    });
+                    self.video_surfaces
+                        .insert(placement.slot.clone(), surface.clone());
+                    surface
+                };
+                surface.update(cx, |surface, cx| {
+                    surface.set_props(placement.resource.clone(), placement.fit, cx)
+                });
+
+                let container = placement.clip.unwrap_or(placement.bounds);
+                let inner = div()
+                    .absolute()
+                    .left(px(f32::from(
+                        placement.bounds.origin.x - container.origin.x,
+                    )))
+                    .top(px(f32::from(
+                        placement.bounds.origin.y - container.origin.y,
+                    )))
+                    .w(px(f32::from(placement.bounds.size.width)))
+                    .h(px(f32::from(placement.bounds.size.height)))
+                    .child(div().size_full().child(surface));
+                div()
+                    .absolute()
+                    .left(px(f32::from(container.origin.x)))
+                    .top(px(f32::from(container.origin.y)))
+                    .w(px(f32::from(container.size.width)))
+                    .h(px(f32::from(container.size.height)))
+                    .opacity(placement.opacity)
+                    .overflow_hidden()
+                    .child(inner)
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>();
+        div()
+            .absolute()
+            .inset_0()
+            .children(children)
+            .into_any_element()
+    }
+
     /// THE ONE STAND-IN every tab draws where its view is not, native, so it
     /// draws before any wasm exists: a loading view says its stage over a
     /// skeleton laid out as a view lays itself out — a heading, then rows,
@@ -4125,6 +4190,20 @@ impl gpui_kit::Render for NativeModuleView {
         match self.frame(window, cx) {
             Ok(()) => match &self.content {
                 Some(content) => {
+                    let content = content.clone();
+                    // GPUI rebuilds the accessibility tree from prepaint on
+                    // every frame and a cached view replays paint without
+                    // it, so a cached guest tree has no nodes and no
+                    // focus for a screen reader. While one is listening,
+                    // render the tree in full each frame as before.
+                    let guest = if window.is_a11y_active() {
+                        content.clone().into_any_element()
+                    } else {
+                        content
+                            .clone()
+                            .cached(gpui_kit::StyleRefinement::default().size_full())
+                            .into_any_element()
+                    };
                     let mut context = gpui_kit::KeyContext::default();
                     context.set(
                         "ducktape_guest",
@@ -4135,11 +4214,13 @@ impl gpui_kit::Render for NativeModuleView {
                         .id(self.ax_mark())
                         .key_context(context)
                         .size_full()
+                        .child(guest)
                         .child(input::Observe::new(
-                            content.clone().into_any_element(),
+                            gpui_kit::div().absolute().inset_0().into_any_element(),
                             self,
                             cx,
                         ))
+                        .child(self.video_overlay(cx))
                         .into_any_element()
                 }
                 None => gpui_kit::div().size_full().into_any_element(),
@@ -4189,6 +4270,255 @@ pub(crate) mod tests {
         seat.generation = 1;
         seat.slot = Slot::Ready(Box::new(guest));
         view
+    }
+
+    const LIVE_VIDEO_PEER: &str = "repaint-stability-peer";
+
+    /// A governance guest showing one live video tile over a native text
+    /// editor, seated and drawn twice in a 640x480 window.
+    fn mount_live_video_guest(
+        cx: &mut TestAppContext,
+    ) -> (
+        gpui_kit::Entity<NativeModuleView>,
+        gpui_kit::VisualTestContext,
+        gpui_kit::AnyWindowHandle,
+    ) {
+        cx.update(gpui_kit::init);
+        cx.update(crate::editor::wire::init_notion);
+
+        let resource = LIVE_VIDEO_PEER;
+        let alive = std::sync::atomic::AtomicBool::new(true);
+        let pixels = [0xff, 0x20, 0x40, 0xff].repeat(4);
+        let jpeg = crate::video::encode_frame(&pixels, 2, 2).expect("test video frame");
+        crate::video::store_image(resource.to_owned(), jpeg, &alive);
+
+        let root = wire::Node::Linear {
+            key: "root".into(),
+            axis: wire::Axis::Column,
+            width: Some(wire::Length::Fill),
+            height: Some(wire::Length::Fill),
+            max_width: None,
+            clip: false,
+            wrap: None,
+            spacing: None,
+            padding: None,
+            align: None,
+            background: None,
+            border: None,
+            children: vec![
+                wire::Node::Image {
+                    key: "video".into(),
+                    hash: 1,
+                    data: Some(wire::ImageData::Resource(resource.into())),
+                    label: None,
+                    fit: None,
+                    opacity: None,
+                    width: Some(wire::Length::Fixed(320.)),
+                    height: Some(wire::Length::Fixed(180.)),
+                },
+                wire::Node::Editor {
+                    key: "editor".into(),
+                    label: None,
+                    options: Box::default(),
+                    placeholder: String::new(),
+                    document: wire::editor_document::EditorDocumentRef {
+                        document: "repaint-document".into(),
+                        reset: 1,
+                        text_revision: 0,
+                        revision: 0,
+                        cursor: Default::default(),
+                        byte_len: 0,
+                    },
+                    on_document: 0,
+                    editable: true,
+                    width: Some(320.),
+                    height: Some(wire::Length::Fixed(120.)),
+                    min_height: None,
+                    max_height: None,
+                },
+            ],
+        };
+
+        let path = staged("governance").expect("staged views");
+        let mut guest = Guest::load_from("governance", &path).expect("fixture guest");
+        guest.installed_generation = Some(1);
+        guest.redraw(&None);
+        assert!(guest.fault.is_none(), "{:?}", guest.fault);
+        guest.inputs = EditorStore::new(501);
+        guest.inputs.replace(&root).expect("editor store schema");
+        guest
+            .inputs
+            .seed_test_document("repaint-document", "retained me");
+        assert!(guest.inputs.ready().expect("editor store ready"));
+        guest.frame.busy = false;
+        guest.frame.requests.clear();
+        guest.frame.cancels.clear();
+        guest.pending.clear();
+        guest.ticks = 1;
+        guest.staged = false;
+        guest.frame.root = Some(root);
+        guest.frame_rev += 1;
+
+        let seat = fresh("governance");
+        let mut seat = seat.lock().expect("module view lock");
+        seat.generation = 1;
+        seat.slot = Slot::Ready(Box::new(guest));
+        drop(seat);
+
+        let mut module_entity = None;
+        let window = cx.open_window(gpui::size(gpui::px(640.), gpui::px(480.)), |window, cx| {
+            let module = cx.new(|_| NativeModuleView::new("governance"));
+            module_entity = Some(module.clone());
+            gpui_kit::component::Root::new(module, window, cx)
+        });
+        let module = module_entity.expect("module entity");
+        let handle = window.into();
+        let mut native = gpui_kit::VisualTestContext::from_window(handle, cx);
+        native.update(|window, cx| window.draw(cx).clear(cx));
+        native.update(|window, cx| window.draw(cx).clear(cx));
+        (module, native, handle)
+    }
+
+    #[gpui_kit::test]
+    fn live_video_keeps_guest_editor_mounted_through_native_bounds_changes(
+        cx: &mut TestAppContext,
+    ) {
+        let (module, mut native, handle) = mount_live_video_guest(cx);
+
+        let (tree_identity, editor_identity, before) = module.read_with(&native, |view, cx| {
+            let tree = view.content.as_ref().expect("guest tree");
+            (
+                tree.entity_id().as_u64(),
+                tree.read(cx)
+                    .editor_identity("editor")
+                    .expect("native editor mount"),
+                tree.read(cx).render_count(),
+            )
+        });
+
+        // The live surface may paint on these frames, but the guest tree is
+        // cached at its definite full-window size and must not be rebuilt.
+        for _ in 0..6 {
+            native.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+        for (index, (width, height)) in [(700., 500.), (760., 520.), (680., 460.)]
+            .into_iter()
+            .enumerate()
+        {
+            native.simulate_resize(gpui::size(gpui::px(width), gpui::px(height)));
+            native.simulate_window_visual_viewport_change(
+                handle,
+                gpui_kit::Bounds::new(
+                    gpui_kit::point(
+                        gpui_kit::px(8. * (index + 1) as f32),
+                        gpui_kit::px(12. * (index + 1) as f32),
+                    ),
+                    gpui::size(gpui::px(width - 16.), gpui::px(height - 24.)),
+                ),
+            );
+            native.update(|window, cx| {
+                window.simulate_next_frame(cx);
+                window.draw(cx).clear(cx);
+            });
+        }
+
+        let (after_tree_identity, after_editor_identity, after) =
+            module.read_with(&native, |view, cx| {
+                let tree = view.content.as_ref().expect("guest tree");
+                (
+                    tree.entity_id().as_u64(),
+                    tree.read(cx)
+                        .editor_identity("editor")
+                        .expect("native editor mount"),
+                    tree.read(cx).render_count(),
+                )
+            });
+        assert_eq!(after_tree_identity, tree_identity);
+        assert_eq!(after_editor_identity, editor_identity);
+        // Each step delivers one real resize and one visual-viewport
+        // observation; both may legitimately invalidate geometry once.
+        assert!(
+            after.saturating_sub(before) <= 6,
+            "guest tree rebuilt {} times during three native resize/viewport changes",
+            after.saturating_sub(before)
+        );
+
+        crate::video::forget_peer(LIVE_VIDEO_PEER);
+        drop(crate::video::take_retired());
+    }
+
+    /// A screen reader reads the guest off every frame's accessibility tree,
+    /// which GPUI builds from prepaint; a cached guest replays paint alone
+    /// and vanishes from it. With one listening, the guest keeps its nodes
+    /// and its focus across a native bounds change.
+    #[gpui_kit::test]
+    fn guest_keeps_accessibility_nodes_and_focus_through_native_bounds_changes(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::accesskit::Action;
+
+        let (_module, mut native, handle) = mount_live_video_guest(cx);
+        native.update(|window, _| window.activate_a11y());
+        native.update(|window, cx| window.draw(cx).clear(cx));
+
+        let focused = |native: &mut gpui_kit::VisualTestContext| {
+            native.update(|window, cx| {
+                window.focus_next(cx);
+                window.draw(cx).clear(cx);
+                let update = window
+                    .last_a11y_tree_update()
+                    .expect("an active window sends its tree");
+                let root = update.tree.as_ref().expect("tree root").root;
+                let focus = update.focus;
+                let node = update
+                    .nodes
+                    .iter()
+                    .find(|(id, _)| *id == focus)
+                    .map(|(_, node)| node.clone());
+                (focus != root, node)
+            })
+        };
+
+        let (has_node, node) = focused(&mut native);
+        assert!(has_node, "tab stop focuses an element with no node");
+        assert!(
+            node.is_some_and(|node| node.supports_action(Action::Focus)),
+            "focused node is not focusable"
+        );
+
+        native.simulate_resize(gpui::size(gpui::px(700.), gpui::px(500.)));
+        native.simulate_window_visual_viewport_change(
+            handle,
+            gpui_kit::Bounds::new(
+                gpui_kit::point(gpui_kit::px(8.), gpui_kit::px(12.)),
+                gpui::size(gpui::px(684.), gpui::px(476.)),
+            ),
+        );
+        native.update(|window, cx| {
+            window.simulate_next_frame(cx);
+            window.draw(cx).clear(cx);
+        });
+        // A frame nothing invalidated: what a cached guest would replay.
+        native.update(|window, cx| window.draw(cx).clear(cx));
+        let update = native.update(|window, _| {
+            window
+                .last_a11y_tree_update()
+                .expect("an active window sends its tree")
+        });
+        let root = update.tree.as_ref().expect("tree root").root;
+        assert_ne!(update.focus, root, "focus lost its node after a resize");
+
+        let (has_node, _) = focused(&mut native);
+        assert!(
+            has_node,
+            "tab stop focuses an element with no node after a resize"
+        );
+
+        crate::video::forget_peer(LIVE_VIDEO_PEER);
+        drop(crate::video::take_retired());
     }
 
     pub(crate) fn queue_close_intent(detail: &str) {

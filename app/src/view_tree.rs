@@ -290,7 +290,7 @@ impl EditorView {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ViewerState {
     scale: f32,
     offset: Point<Pixels>,
@@ -409,10 +409,30 @@ pub struct ViewTree {
     viewers: HashMap<String, ViewerState>,
     vectors: HashMap<u64, Arc<[u8]>>,
     surfaces: HashMap<String, AnyView>,
+    video_placements: HashMap<String, VideoPlacementSpec>,
     editor_store: Option<crate::editor::wire::EditorStore>,
     editors: HashMap<String, EditorMount>,
     mounted: std::collections::HashSet<String>,
     presentation: NativePresentation,
+    #[cfg(test)]
+    renders: u64,
+}
+
+struct VideoPlacementSpec {
+    resource: String,
+    fit: wire::ContentFit,
+    opacity: f32,
+    viewer: bool,
+    padding: f32,
+}
+
+pub(crate) struct VideoPlacement {
+    pub(crate) slot: String,
+    pub(crate) resource: String,
+    pub(crate) fit: wire::ContentFit,
+    pub(crate) opacity: f32,
+    pub(crate) bounds: Bounds<Pixels>,
+    pub(crate) clip: Option<Bounds<Pixels>>,
 }
 
 impl EventEmitter<wire::Event> for ViewTree {}
@@ -674,10 +694,26 @@ impl ViewTree {
             viewers: HashMap::new(),
             vectors: HashMap::new(),
             surfaces: HashMap::new(),
+            video_placements: HashMap::new(),
             editor_store: None,
             editors: HashMap::new(),
             mounted: Default::default(),
             presentation: NativePresentation::default(),
+            #[cfg(test)]
+            renders: 0,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn render_count(&self) -> u64 {
+        self.renders
+    }
+
+    #[cfg(test)]
+    pub(crate) fn editor_identity(&self, key: &str) -> Option<u64> {
+        match &self.editors.get(key)?.view {
+            EditorView::Text(view) => Some(view.entity_id().as_u64()),
+            EditorView::Rich(view) => Some(view.entity_id().as_u64()),
         }
     }
 
@@ -1509,7 +1545,7 @@ impl ViewTree {
             Node::Hover { .. } => self.hover(node, window, cx),
             Node::Tooltip { .. } => self.tooltip(node, window, cx),
             Node::Float { .. } => self.float(node, window, cx),
-            Node::Image { .. } => self.picture(node, window),
+            Node::Image { .. } => self.picture(node, cx),
             Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
             Node::Svg { .. } => self.vector(node, window),
             Node::Canvas { .. } => self.drawing(node, cx),
@@ -3516,12 +3552,6 @@ impl ViewTree {
         outer.child(element).into_any_element()
     }
 
-    fn refresh_resource(&self, data: Option<&wire::ImageData>, window: &mut Window) {
-        if let Some(wire::ImageData::Resource(_)) = data {
-            window.request_animation_frame();
-        }
-    }
-
     fn remember_image(&mut self, hash: u64, data: &wire::ImageData) {
         if matches!(data, wire::ImageData::Resource(_)) {
             return;
@@ -3542,6 +3572,80 @@ impl ViewTree {
             }
             _ => self.images.get(&hash).cloned(),
         }
+    }
+
+    fn video_placement(
+        &mut self,
+        key: &str,
+        resource: &str,
+        fit: wire::ContentFit,
+        opacity: f32,
+        viewer: bool,
+        padding: f32,
+    ) {
+        self.video_placements.insert(
+            key.to_owned(),
+            VideoPlacementSpec {
+                resource: resource.to_owned(),
+                fit,
+                opacity,
+                viewer,
+                padding,
+            },
+        );
+    }
+
+    pub(crate) fn video_placements(&self) -> Vec<VideoPlacement> {
+        self.video_placements
+            .iter()
+            .filter_map(|(key, spec)| {
+                let container = *self.bounds.get(key)?;
+                if !spec.viewer {
+                    return Some(VideoPlacement {
+                        slot: key.clone(),
+                        resource: spec.resource.clone(),
+                        fit: spec.fit,
+                        opacity: spec.opacity,
+                        bounds: container,
+                        clip: None,
+                    });
+                }
+
+                let inner = crate::video::stage_frame(&spec.resource)
+                    .map(|(width, height, _)| {
+                        let viewer = self.viewers.get(key).cloned().unwrap_or_default();
+                        let inset = spec.padding;
+                        let ratio = ((f32::from(container.size.width) - inset)
+                            / width.max(1) as f32)
+                            .min((f32::from(container.size.height) - inset) / height.max(1) as f32)
+                            .max(0.0);
+                        let scale = if viewer.scale == 0.0 {
+                            1.0
+                        } else {
+                            viewer.scale
+                        };
+                        let width = width as f32 * ratio * scale;
+                        let height = height as f32 * ratio * scale;
+                        let x = (f32::from(container.size.width) - width) / 2.0
+                            + f32::from(viewer.offset.x);
+                        let y = (f32::from(container.size.height) - height) / 2.0
+                            + f32::from(viewer.offset.y);
+                        Bounds::new(
+                            point(container.origin.x + px(x), container.origin.y + px(y)),
+                            size(px(width), px(height)),
+                        )
+                    })
+                    .unwrap_or(container);
+                Some(VideoPlacement {
+                    slot: key.clone(),
+                    resource: spec.resource.clone(),
+                    fit: spec.fit,
+                    opacity: spec.opacity,
+                    bounds: inner,
+                    clip: Some(container),
+                })
+            })
+            .collect()
     }
 
     fn remember_vector(&mut self, hash: u64, bytes: &[u8]) {
@@ -3569,9 +3673,18 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        self.refresh_resource(data.as_ref(), window);
         if let Some(data) = data {
             self.remember_image(*hash, data);
+        }
+        if let Some(wire::ImageData::Resource(resource)) = data {
+            self.video_placement(
+                key,
+                resource,
+                wire::ContentFit::Fill,
+                1.0,
+                true,
+                options.padding.unwrap_or_default() * 2.0,
+            );
         }
         let frame = self.image_frame(*hash, data.as_ref());
         let viewer = self.viewers.entry(key.clone()).or_default();
@@ -3596,14 +3709,17 @@ impl ViewTree {
             let height = u32::from(original.height) as f32 * ratio * viewer.scale;
             let x = (f32::from(viewport.width) - width) / 2.0 + f32::from(viewer.offset.x);
             let y = (f32::from(viewport.height) - height) / 2.0 + f32::from(viewer.offset.y);
-            element = element.child(
-                img(image.clone())
-                    .absolute()
-                    .left(px(x))
-                    .top(px(y))
-                    .w(px(width))
-                    .h(px(height)),
-            );
+            if !matches!(data, Some(wire::ImageData::Resource(_))) {
+                element = element.child(
+                    div()
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .w(px(width))
+                        .h(px(height))
+                        .child(img(image.clone())),
+                );
+            }
         }
         let (minimum, maximum) = options.scale_bounds.unwrap_or((0.25, 10.0));
         let step = options.scale_step.unwrap_or(0.1);
@@ -3660,7 +3776,7 @@ impl ViewTree {
         element.child(self.measure(key, cx)).into_any_element()
     }
 
-    fn picture(&mut self, node: &wire::Node, window: &mut Window) -> AnyElement {
+    fn picture(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Image {
             key,
             hash,
@@ -3674,13 +3790,28 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        self.refresh_resource(data.as_ref(), window);
         if let Some(data) = data {
             self.remember_image(*hash, data);
         }
         let mut element = dimensions(div(), *width, *height).opacity(opacity.unwrap_or(1.0));
-        if let Some(image) = self.image_frame(*hash, data.as_ref()) {
-            element = element.child(img(image.clone()).size_full().object_fit(object_fit(*fit)));
+        match data {
+            Some(wire::ImageData::Resource(resource)) => {
+                self.video_placement(
+                    key,
+                    resource,
+                    fit.unwrap_or(wire::ContentFit::Contain),
+                    opacity.unwrap_or(1.0),
+                    false,
+                    0.0,
+                );
+                element = element.child(self.measure(key, cx));
+            }
+            _ => {
+                if let Some(image) = self.image_frame(*hash, data.as_ref()) {
+                    element =
+                        element.child(img(image.clone()).size_full().object_fit(object_fit(*fit)));
+                }
+            }
         }
         announce(element.id(key.clone()), accessible(node)).into_any_element()
     }
@@ -3862,9 +3993,11 @@ impl ViewTree {
 
 impl Render for ViewTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        for image in crate::video::take_retired() {
-            let _ = window.drop_image(image);
+        #[cfg(test)]
+        {
+            self.renders += 1;
         }
+        self.video_placements.clear();
         self.mounted.clear();
         let node = self.node(&self.root.clone(), window, cx);
         // Only controls mounted by this replacement frame may recover focus.

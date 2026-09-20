@@ -6,7 +6,11 @@ use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use gpui_kit::RenderImage;
+use gpui_kit::{
+    Context, IntoElement, ObjectFit, ParentElement, Render, RenderImage, Styled, StyledImage,
+    Window, div, img,
+};
+use view_wire::ContentFit;
 #[derive(serde::Serialize)]
 pub(crate) struct CapturedImage {
     pub preview: &'static str,
@@ -88,6 +92,101 @@ fn store() -> &'static Mutex<VideoStore> {
 /// The handles replaced since the last paint, for `Window::drop_image`.
 pub(crate) fn take_retired() -> Vec<Arc<RenderImage>> {
     std::mem::take(&mut store().lock().expect("video store").retired)
+}
+
+/// The native live surface for one guest video resource.
+///
+/// The old iced renderer had the same boundary: a video surface asked for its
+/// next frame from its own draw pass. Keeping that request at the window paint
+/// boundary lets a host window move or resize reuse the guest/editor tree.
+pub(crate) struct VideoSurface {
+    resource: String,
+    fit: ContentFit,
+    armed: bool,
+    /// The frame the last paint showed; a different handle in the store is
+    /// the one thing that dirties this surface.
+    painted: Option<Arc<RenderImage>>,
+}
+
+impl VideoSurface {
+    pub(crate) fn new(resource: String, fit: ContentFit) -> Self {
+        Self {
+            resource,
+            fit,
+            armed: false,
+            painted: None,
+        }
+    }
+
+    pub(crate) fn set_props(&mut self, resource: String, fit: ContentFit, cx: &mut Context<Self>) {
+        if self.resource == resource && self.fit == fit {
+            return;
+        }
+        self.resource = resource;
+        self.fit = fit;
+        cx.notify();
+    }
+}
+
+/// Keeps the frame clock alive while the surface lives and dirties ONLY this
+/// entity when the store holds a frame the last paint did not show. Pending
+/// next-frame callbacks keep GPUI's loop scheduled but never draw by
+/// themselves; without the notify a new peer frame would wait for some other
+/// change to dirty the window.
+fn schedule_surface_repaint(window: &mut Window, surface: gpui_kit::WeakEntity<VideoSurface>) {
+    if surface.upgrade().is_none() {
+        return;
+    }
+    window.on_next_frame(move |window, cx| {
+        let Some(entity) = surface.upgrade() else {
+            return;
+        };
+        entity.update(cx, |surface, cx| {
+            let staged = stage_frame(&surface.resource).map(|(_, _, image)| image);
+            let same = match (&staged, &surface.painted) {
+                (Some(now), Some(then)) => Arc::ptr_eq(now, then),
+                (None, None) => true,
+                _ => false,
+            };
+            if !same {
+                cx.notify();
+            }
+        });
+        schedule_surface_repaint(window, surface);
+    });
+}
+
+impl Render for VideoSurface {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // VideoStore has no GPUI entity of its own. Like the old LiveSurface,
+        // keep the clock at the window paint boundary: request_animation_frame
+        // would notify this entity and dirty every ancestor view.
+        if !self.armed {
+            self.armed = true;
+            schedule_surface_repaint(window, cx.entity().downgrade());
+        }
+        let mut element = div().size_full();
+        let resource = self.resource.clone();
+        let staged = stage_frame(&resource).map(|(_, _, image)| image);
+        self.painted = staged.clone();
+        element = element.child(
+            img(move |window: &mut Window, _: &mut gpui_kit::App| {
+                for image in take_retired() {
+                    let _ = window.drop_image(image);
+                }
+                staged.clone().map(Ok)
+            })
+            .size_full()
+            .object_fit(match self.fit {
+                ContentFit::Contain => ObjectFit::Contain,
+                ContentFit::Cover => ObjectFit::Cover,
+                ContentFit::Fill => ObjectFit::Fill,
+                ContentFit::None => ObjectFit::None,
+                ContentFit::ScaleDown => ObjectFit::ScaleDown,
+            }),
+        );
+        element
+    }
 }
 
 /// A BGRA picture as one renderer image. The renderer reads BGRA out of an

@@ -681,6 +681,7 @@ impl Ducktape {
             self.onboarding_error.clear();
         }
         self.agents_open_run = "".to_owned();
+        self.agents_open_instance = None;
         self.agents_live = false;
         self.account_generation += 1;
         self.settings_generation += 1;
@@ -1806,6 +1807,9 @@ impl Ducktape {
         Task::none()
     }
     fn on_open_run_panel(&mut self, dispatch_id: String) -> Task<AppMessage> {
+        let Some(instance) = crate::backend::SessionLogInstance::for_dispatch(&dispatch_id) else {
+            return Task::none();
+        };
         self.account_qr_auth_generation = self.account_qr_auth_generation.wrapping_add(1);
         if let Some(previous_handle) = self.account_qr_auth_task.take() {
             previous_handle.abort();
@@ -1821,6 +1825,7 @@ impl Ducktape {
         self.account_ceremony_left = "".to_owned();
         self.shell_tab = ShellTab::View("agents");
         self.agents_open_run = dispatch_id.to_owned();
+        self.agents_open_instance = Some(instance);
         self.agents_opened += 1;
         Task::none()
     }

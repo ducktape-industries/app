@@ -302,7 +302,7 @@ impl Desktop {
         let minimum = match kind {
             crate::shell::WindowKind::Onboarding => size,
             crate::shell::WindowKind::Console => gpui_kit::size(px(1040.), px(540.)),
-            crate::shell::WindowKind::Huddle => gpui_kit::size(px(320.), px(340.)),
+            crate::shell::WindowKind::Huddle => gpui_kit::size(px(360.), px(560.)),
         };
         let options = WindowOptions {
             window_bounds: Some(if kind == crate::shell::WindowKind::Console {
