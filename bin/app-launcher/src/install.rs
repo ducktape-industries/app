@@ -1,9 +1,17 @@
-//! `install --from <built release>`: seed `releases/<sha>`, flip the install
-//! path to it, write `state.json` as `Idle`, and on Linux register the
-//! desktop entry that points the session at the launcher. What `make
-//! install-app` runs; also how a dev puts a local build under the launcher.
-//! `--release-key HEX` also pins the key the app's release channel verifies
-//! under; without a pinned key the app fetches no update.
+//! `install --from <built release>`: lay down a CLEAN install. Seed
+//! `releases/<sha>`, put it at the install path, write `state.json` as a
+//! fresh `Idle`, and on Linux register the desktop entry that points the
+//! session at the launcher. What `make install` runs; also how a dev puts a
+//! local build under the launcher. `--release-key HEX` also pins the key the
+//! app's release channel verifies under; without a pinned key the app fetches
+//! no update.
+//!
+//! An install is not an update. It keeps nothing of what it found: no
+//! `previous` to roll back to, no staged release, no swap journal, and the
+//! state it writes knows only the release it just placed. Offering, staging,
+//! flipping and rolling back are the update path's, which starts from the
+//! state this leaves. So an install never refuses for what is already there —
+//! running it again is how a machine gets back to a known set.
 //!
 //! A locally built release has no archive, so its identity is the sha256 of
 //! its `ducktape-app` executable. A release already seeded under that sha
@@ -12,11 +20,8 @@
 //!
 //! A release says which it is in `release.json` at its archive root
 //! ([`ReleaseIdentity`]): its sequence becomes the pin, so the channel
-//! publishing that same sequence reads as what already runs. Replacing what
-//! runs with an OLDER sequence, or with a release that carries no identity (a
-//! developer's build, of unknown provenance), is never done silently: the
-//! install refuses before it writes, naming `--replace`, the user's action
-//! that takes the offer.
+//! publishing that same sequence reads as what already runs. A directory
+//! without the file (a developer's build) pins sequence 0.
 
 use std::fs as std_fs;
 use std::path::{Path, PathBuf};
@@ -24,28 +29,22 @@ use std::path::{Path, PathBuf};
 use app_update::{Idle, Phase, PublicKey, ReleaseIdentity, Sha, state};
 use tracing::info;
 
-use crate::flip;
 use crate::fs;
 use crate::layout::{APP_EXE, BUNDLE, LAUNCHER_EXE, Layout, Platform, bundle_bin_dir};
-use crate::plan::{self, Link};
+use crate::plan::Link;
 use crate::refusal::Refusal;
 
 const TARGET: &str = "ducktape::update";
 const DESKTOP_TEMPLATE: &str = include_str!("../../../app/packaging/dev.ducktape.app.desktop");
 
-pub fn install(
-    layout: &Layout,
-    from: &Path,
-    release_key: Option<&str>,
-    replace: bool,
-) -> Result<Sha, Refusal> {
+pub fn install(layout: &Layout, from: &Path, release_key: Option<&str>) -> Result<Sha, Refusal> {
     let pin = release_key
         .map(|hex| pinnable_key(layout, hex))
         .transpose()?;
     let identity = release_identity(&identity_path(layout.platform, from))?;
     let sha = match layout.platform {
-        Platform::Linux => install_linux(layout, from, identity.as_ref(), replace),
-        Platform::MacOs => install_macos(layout, from, identity.as_ref(), replace),
+        Platform::Linux => install_linux(layout, from, identity.as_ref()),
+        Platform::MacOs => install_macos(layout, from, identity.as_ref()),
     }?;
     if let Some(key) = pin {
         fs::persist(&layout.release_key_path(), &format!("{key}\n"))?;
@@ -104,73 +103,39 @@ fn release_identity(path: &Path) -> Result<Option<ReleaseIdentity>, Refusal> {
     }
 }
 
-/// The pin this install leaves, or the offer it makes instead: a release
-/// older than the pin, or one of unknown provenance replacing an installed
-/// one, flips only with `replace`. The pin never lowers.
-fn consented_pin(
-    outgoing: &Outgoing,
-    identity: Option<&ReleaseIdentity>,
-    replace: bool,
-) -> Result<u64, Refusal> {
-    let pinned = outgoing.pinned_sequence;
-    let offer = match identity {
-        Some(identity) if identity.sequence < pinned => Some((
-            "release_older",
-            format!(
-                "{} is sequence {}, older than the pinned sequence {pinned}",
-                identity.display, identity.sequence
-            ),
-        )),
-        None if outgoing.previous.is_some() => Some((
-            "release_unknown_provenance",
-            format!(
-                "it carries no {}, so whether it is older than the release it replaces is unknown",
-                ReleaseIdentity::FILE
-            ),
-        )),
-        Some(_) | None => None,
-    };
-    match (offer, replace) {
-        (Some((reason, why)), false) => Err(Refusal::new(
-            reason,
-            format!("{why}; nothing was installed — run it again with --replace to install it"),
-        )),
-        _ => Ok(identity.map_or(pinned, |identity| identity.sequence.max(pinned))),
-    }
+/// The state a clean install leaves: this release, nothing to roll back to,
+/// and the release's own sequence (0 for a build that names none).
+fn fresh_idle(sha: Sha, identity: Option<&ReleaseIdentity>) -> Phase {
+    Phase::Idle(Idle {
+        current: sha,
+        previous: None,
+        pinned_sequence: identity.map_or(0, |identity| identity.sequence),
+    })
 }
 
 fn install_linux(
     layout: &Layout,
     from: &Path,
     identity: Option<&ReleaseIdentity>,
-    replace: bool,
 ) -> Result<Sha, Refusal> {
     let source_app = from.join(APP_EXE);
     fs::require_executable(&source_app)
         .map_err(|refusal| Refusal::new("source_app_missing", refusal.detail))?;
     let sha = fs::digest_file(&source_app)?;
-    let outgoing = outgoing_release(layout, sha)?;
-    let pinned_sequence = consented_pin(&outgoing, identity, replace)?;
     std_fs::create_dir_all(&layout.install_dir)
         .map_err(|error| Refusal::io("install_root_not_writable", &layout.install_dir, &error))?;
     fs::require_writable_install_dir(&layout.install_dir)?;
     seed_linux(layout, from, sha)?;
-    if let Some(from) = outgoing.previous {
-        fs::replace_symlink(&Link {
-            path: layout.previous_link(),
-            target: Layout::link_target(from),
-        })?;
-    }
     fs::replace_symlink(&Link {
         path: layout.current_link(),
         target: Layout::link_target(sha),
     })?;
-    let idle = Phase::Idle(Idle {
-        current: sha,
-        previous: outgoing.previous,
-        pinned_sequence,
-    });
-    fs::persist(&layout.state_path(), &state::encode(&idle))?;
+    remove_leftover(&layout.previous_link())?;
+    fs::persist(
+        &layout.state_path(),
+        &state::encode(&fresh_idle(sha, identity)),
+    )?;
+    keep_only(&layout.releases_dir(), Some(sha))?;
     write_desktop_entry(layout)?;
     info!(target: TARGET, event = "app_update_installed", release = %sha);
     Ok(sha)
@@ -197,7 +162,6 @@ fn install_macos(
     layout: &Layout,
     from: &Path,
     identity: Option<&ReleaseIdentity>,
-    replace: bool,
 ) -> Result<Sha, Refusal> {
     let source_bin = bundle_bin_dir(from);
     fs::require_executable(&source_bin.join(APP_EXE))
@@ -205,34 +169,26 @@ fn install_macos(
     let sha = fs::digest_file(&source_bin.join(APP_EXE))?;
     let installed = layout.installed_bundle();
     fs::refuse_symlink(&installed)?;
-    let outgoing = outgoing_release(layout, sha)?;
-    let pinned_sequence = consented_pin(&outgoing, identity, replace)?;
     std_fs::create_dir_all(layout.releases_dir())
         .map_err(|error| Refusal::io("seed_failed", &layout.releases_dir(), &error))?;
     fs::require_writable_install_dir(&layout.install_dir)?;
     seed_macos(layout, from, sha)?;
-    let has_installed_bundle = installed.exists();
-    let previous = match (has_installed_bundle, outgoing.previous) {
-        (false, _) => {
-            fs::move_tree(&layout.staged_bundle(sha), &installed)?;
-            let _ = std_fs::remove_dir(layout.release_dir(sha));
-            None
-        }
-        (true, None) => {
-            let _ = std_fs::remove_dir_all(layout.release_dir(sha));
-            None
-        }
-        (true, Some(outgoing_sha)) => {
-            flip::perform(&plan::flip(layout, outgoing_sha, sha))?;
-            Some(outgoing_sha)
-        }
-    };
-    let idle = Phase::Idle(Idle {
-        current: sha,
-        previous,
-        pinned_sequence,
-    });
-    fs::persist(&layout.state_path(), &state::encode(&idle))?;
+    // The installed bundle IS the current release on macOS, so the old one is
+    // set aside only for the instant the new one takes its name.
+    let aside = fs::tmp_name(&installed);
+    remove_leftover(&aside)?;
+    if installed.exists() {
+        fs::move_tree(&installed, &aside)?;
+    }
+    fs::move_tree(&layout.staged_bundle(sha), &installed)?;
+    remove_leftover(&aside)?;
+    remove_leftover(&layout.previous_link())?;
+    remove_leftover(&layout.journal_path())?;
+    fs::persist(
+        &layout.state_path(),
+        &state::encode(&fresh_idle(sha, identity)),
+    )?;
+    keep_only(&layout.releases_dir(), None)?;
     info!(target: TARGET, event = "app_update_installed", release = %sha);
     Ok(sha)
 }
@@ -259,42 +215,37 @@ fn seed_macos(layout: &Layout, from: &Path, sha: Sha) -> Result<(), Refusal> {
         .map_err(|error| Refusal::io("seed_failed", &release_dir, &error))
 }
 
-/// What the install replaces: the state's `current` (when it is not this
-/// very release), and the pin it must not lower. On macOS an installed
-/// bundle with no state (a DMG drag from before the launcher) is identified
-/// by its executable's digest, like any locally built release.
-struct Outgoing {
-    previous: Option<Sha>,
-    pinned_sequence: u64,
+/// Remove a file, link or tree an earlier install or update left at `path`.
+/// Nothing there is the clean case, not a failure.
+fn remove_leftover(path: &Path) -> Result<(), Refusal> {
+    let Ok(meta) = std_fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    let removed = match meta.is_dir() {
+        true => std_fs::remove_dir_all(path),
+        false => std_fs::remove_file(path),
+    };
+    removed.map_err(|error| Refusal::io("leftover_not_removed", path, &error))
 }
 
-fn outgoing_release(layout: &Layout, incoming: Sha) -> Result<Outgoing, Refusal> {
-    let current = match fs::read_state(&layout.state_path())? {
-        Some(phase) => Some((phase.current(), phase.pinned_sequence())),
-        None => installed_without_state(layout)?.map(|sha| (sha, 0)),
+/// Empty `releases/` of everything but `keep`: older releases, a release the
+/// update path staged, a seed an interrupted install abandoned.
+fn keep_only(releases_dir: &Path, keep: Option<Sha>) -> Result<(), Refusal> {
+    let kept = keep.map(|sha| sha.to_string());
+    let entries = match std_fs::read_dir(releases_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(Refusal::io("leftover_not_removed", releases_dir, &error)),
     };
-    let Some((current, pinned_sequence)) = current else {
-        return Ok(Outgoing {
-            previous: None,
-            pinned_sequence: 0,
-        });
-    };
-    let is_reinstall = current == incoming;
-    Ok(Outgoing {
-        previous: (!is_reinstall).then_some(current),
-        pinned_sequence,
-    })
-}
-
-fn installed_without_state(layout: &Layout) -> Result<Option<Sha>, Refusal> {
-    let installed_app = match layout.platform {
-        Platform::Linux => return Ok(None),
-        Platform::MacOs => bundle_bin_dir(&layout.installed_bundle()).join(APP_EXE),
-    };
-    match installed_app.exists() {
-        true => fs::digest_file(&installed_app).map(Some),
-        false => Ok(None),
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| Refusal::io("leftover_not_removed", releases_dir, &error))?;
+        let is_kept = kept.as_deref() == entry.file_name().to_str();
+        if !is_kept {
+            remove_leftover(&entry.path())?;
+        }
     }
+    Ok(())
 }
 
 /// The launcher a release ships: the source's own, else this executable.
