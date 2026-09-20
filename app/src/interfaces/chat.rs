@@ -65,40 +65,77 @@ impl Block {
 }
 
 pub fn parse_message(input: &str) -> Vec<Block> {
-    let lines: Vec<_> = input.lines().collect();
+    let lines: Vec<&str> = input.lines().collect();
     let mut blocks = Vec::new();
     let mut index = 0;
     while index < lines.len() {
         let line = lines[index];
         let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            let lang = trimmed.trim_start_matches('`').trim();
-            let mut end = index + 1;
-            while end < lines.len() && lines[end].trim() != "```" {
-                end += 1;
-            }
-            blocks.push(Block::Code {
-                lang: (!lang.is_empty()).then_some(lang.to_owned()),
-                text: lines[index + 1..end].join("\n"),
-            });
-            index = if end < lines.len() { end + 1 } else { end };
-        } else if matches!(trimmed, "---" | "***") {
+        let opens_fence = trimmed.starts_with("```");
+        let is_divider = trimmed == "---" || trimmed == "***";
+        let is_quote = trimmed.starts_with('>');
+        let is_blank = trimmed.is_empty();
+        if opens_fence {
+            index = push_code_block(&lines, index, trimmed, &mut blocks);
+        } else if is_divider {
             blocks.push(Block::Divider);
             index += 1;
-        } else if let Some(quote) = trimmed.strip_prefix('>') {
-            blocks.push(Block::Quote(inline_spans(quote.trim_start())));
-            index += 1;
-        } else if trimmed.is_empty() {
+        } else if is_quote {
+            index = push_quote_block(&lines, index, &mut blocks);
+        } else if is_blank {
             index += 1;
         } else {
-            blocks.push(Block::Paragraph(inline_spans(trimmed)));
-            index += 1;
+            index = push_paragraph_block(&lines, index, &mut blocks);
         }
     }
     if blocks.is_empty() {
-        blocks.push(Block::paragraph(input.trim().to_owned()));
+        blocks.push(Block::paragraph(input.trim().to_string()));
     }
     blocks
+}
+
+fn push_code_block(lines: &[&str], start: usize, opener: &str, blocks: &mut Vec<Block>) -> usize {
+    let lang = opener.trim_start_matches('`').trim().to_string();
+    let mut index = start + 1;
+    let mut code = Vec::new();
+    while index < lines.len() && lines[index].trim() != "```" {
+        code.push(lines[index]);
+        index += 1;
+    }
+    let closed = index < lines.len();
+    blocks.push(Block::Code {
+        lang: (!lang.is_empty()).then_some(lang),
+        text: code.join("\n"),
+    });
+    if closed { index + 1 } else { index }
+}
+
+fn push_quote_block(lines: &[&str], start: usize, blocks: &mut Vec<Block>) -> usize {
+    let mut index = start;
+    while index < lines.len() && lines[index].trim().starts_with('>') {
+        let stripped = lines[index].trim().trim_start_matches('>').trim_start();
+        blocks.push(Block::Quote(inline_spans(stripped)));
+        index += 1;
+    }
+    index
+}
+
+fn push_paragraph_block(lines: &[&str], start: usize, blocks: &mut Vec<Block>) -> usize {
+    let mut index = start;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        let breaks = trimmed.is_empty()
+            || trimmed.starts_with('>')
+            || trimmed.starts_with("```")
+            || trimmed == "---"
+            || trimmed == "***";
+        if breaks {
+            break;
+        }
+        blocks.push(Block::Paragraph(inline_spans(trimmed)));
+        index += 1;
+    }
+    index
 }
 
 pub fn inline_spans(text: &str) -> Vec<Span> {
