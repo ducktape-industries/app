@@ -76,7 +76,7 @@ mod tests {
 
     #[test]
     fn file_address_preserves_path_byte_and_depth_bounds() {
-        let mut address = Address::parse("duck://testnet-abcd/files/a").unwrap();
+        let mut address = Address::parse("duck://testnet-abcd0001/files/a").unwrap();
         address.path = vec!["a".into(); 128];
         assert!(FileAddress::try_from(&address).is_ok());
         address.path.push("a".into());
