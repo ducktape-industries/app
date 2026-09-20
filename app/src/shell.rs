@@ -584,7 +584,7 @@ enum LayerGesture {
 }
 
 #[derive(Clone, Copy)]
-enum LayerAction {
+pub(crate) enum LayerAction {
     Close,
     Minimize,
     Collapse,
@@ -896,11 +896,14 @@ impl DesktopWindow {
 
     /// The two seats: the tab's module id, and whether the overlay holds one.
     #[cfg(test)]
+    /// The seated tab: the active workspace layer in OS mode, else the single
+    /// tab presenter.
     pub(crate) fn test_seats(&self) -> (Option<&'static str>, bool) {
-        (
-            self.module.as_ref().map(|(module, _)| *module),
-            self.overlay_module.is_some(),
-        )
+        let tab = self
+            .active_layer
+            .or_else(|| self.workspace_layers.keys().next().copied())
+            .or_else(|| self.module.as_ref().map(|(module, _)| *module));
+        (tab, self.overlay_module.is_some())
     }
 
     #[cfg(test)]
@@ -2096,11 +2099,16 @@ impl DesktopWindow {
         self.active_layer = Some(module);
     }
 
-    fn focus_workspace_layer(&mut self, module: &'static str, cx: &mut Context<Self>) {
+    pub(crate) fn focus_workspace_layer(&mut self, module: &'static str, cx: &mut Context<Self>) {
         self.open_workspace_layer(module, cx);
     }
 
-    fn layer_action(&mut self, module: &'static str, action: LayerAction, cx: &mut Context<Self>) {
+    pub(crate) fn layer_action(
+        &mut self,
+        module: &'static str,
+        action: LayerAction,
+        cx: &mut Context<Self>,
+    ) {
         match action {
             LayerAction::Close => {
                 let Some(layer) = self.workspace_layers.remove(module) else {
