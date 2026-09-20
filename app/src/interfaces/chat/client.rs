@@ -103,9 +103,6 @@ impl NameDirectory {
     pub fn name_of(&self, key_hex: &str) -> Option<&str> {
         self.accounts.get(key_hex).map(|a| a.name.as_str())
     }
-    pub fn account_of(&self, key_hex: &str) -> Option<u64> {
-        self.accounts.get(key_hex).map(|a| a.number)
-    }
     pub fn member_label(&self, key_hex: &str) -> String {
         let handle = if key_hex.contains(':') {
             key_hex.to_owned()
@@ -114,16 +111,6 @@ impl NameDirectory {
         };
         self.of_handle(&handle)
             .map_or_else(|| short_label(key_hex), str::to_owned)
-    }
-    pub fn handle_of(&self, key: &[u8]) -> String {
-        index::party_handle(&self.party_of(key))
-    }
-    pub fn party_of(&self, key: &[u8]) -> Party {
-        self.account_of(&hex_encode(key))
-            .map_or_else(|| Party::Key(key.to_vec()), Party::Account)
-    }
-    pub fn owns_handle(&self, handle: &str, key: &[u8]) -> bool {
-        handle == self.handle_of(key) || handle == index::party_handle(&Party::Key(key.to_vec()))
     }
     fn of_handle(&self, handle: &str) -> Option<&str> {
         match handle.split_once(':') {
@@ -138,15 +125,6 @@ impl NameDirectory {
 pub struct ChatReader<'a> {
     pub key: Option<&'a [u8]>,
     pub names: &'a NameDirectory,
-}
-impl ChatReader<'static> {
-    pub fn nobody() -> Self {
-        static EMPTY: NameDirectory = NameDirectory::empty();
-        Self {
-            key: None,
-            names: &EMPTY,
-        }
-    }
 }
 impl<'a> ChatReader<'a> {
     pub fn new(key: Option<&'a [u8]>, names: &'a NameDirectory) -> Self {

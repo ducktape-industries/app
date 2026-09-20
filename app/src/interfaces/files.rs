@@ -21,6 +21,19 @@ impl TryFrom<&Address> for FileAddress {
                 "A file address needs at least one path segment.",
             ));
         }
+        if address.path.len() > 128
+            || address
+                .path
+                .iter()
+                .map(|segment| segment.len() + 1)
+                .sum::<usize>()
+                > 4096
+        {
+            return Err(Refused::new(
+                "invalid_input",
+                "A file address exceeds the 128-segment or 4096-byte path limit.",
+            ));
+        }
         if address
             .path
             .iter()
@@ -54,5 +67,23 @@ impl FileAddress {
         let address = Address::new(chain, "files", self.path.clone())?;
         Self::try_from(&address)?;
         Ok(address)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_address_preserves_path_byte_and_depth_bounds() {
+        let mut address = Address::parse("duck://testnet-abcd/files/a").unwrap();
+        address.path = vec!["a".into(); 128];
+        assert!(FileAddress::try_from(&address).is_ok());
+        address.path.push("a".into());
+        assert!(FileAddress::try_from(&address).is_err());
+        address.path = vec!["a".repeat(255); 16];
+        assert!(FileAddress::try_from(&address).is_ok());
+        address.path.push("a".into());
+        assert!(FileAddress::try_from(&address).is_err());
     }
 }

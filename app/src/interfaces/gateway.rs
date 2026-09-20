@@ -158,14 +158,6 @@ pub fn encode_proxy_request_head(head: &ProxyRequestHead) -> Result<Vec<u8>, Str
     }
     Ok(bytes)
 }
-pub fn decode_proxy_request_head(bytes: &[u8]) -> Result<ProxyRequestHead, String> {
-    if bytes.len() > MAX_PROXY_HEAD_BYTES {
-        return Err(format!("proxy: head exceeds {MAX_PROXY_HEAD_BYTES} bytes"));
-    }
-    let head = serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
-    validate_proxy_request_head(&head)?;
-    Ok(head)
-}
 pub fn validate_origin_form(value: &str) -> Result<(), String> {
     if value.is_empty()
         || !value.starts_with('/')

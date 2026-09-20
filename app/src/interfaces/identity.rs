@@ -22,14 +22,6 @@ impl KeyScheme {
             Self::Secp256r1 => 2,
         }
     }
-    pub const fn from_tag(tag: u8) -> Option<Self> {
-        match tag {
-            0 => Some(Self::Ed25519),
-            1 => Some(Self::Secp256k1),
-            2 => Some(Self::Secp256r1),
-            _ => None,
-        }
-    }
     pub fn pubkey_wellformed(self, pubkey: &[u8]) -> bool {
         match self {
             Self::Ed25519 => pubkey.len() == 32,
@@ -256,13 +248,6 @@ pub fn encode_msg(message: &IdentityMsg) -> Vec<u8> {
 pub fn decode_msg(bytes: &[u8]) -> Result<IdentityMsg, String> {
     sdk::wire::decode(bytes)
 }
-pub fn encode_query(query: &IdentityQuery) -> Vec<u8> {
-    sdk::wire::encode(query)
-}
-pub fn decode_reply(bytes: &[u8]) -> Result<IdentityReply, String> {
-    sdk::wire::decode(bytes)
-}
-
 pub fn add_key_preimage(
     chain_id: &str,
     scheme: KeyScheme,
