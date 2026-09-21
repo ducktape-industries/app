@@ -409,30 +409,12 @@ pub struct ViewTree {
     viewers: HashMap<String, ViewerState>,
     vectors: HashMap<u64, Arc<[u8]>>,
     surfaces: HashMap<String, AnyView>,
-    video_placements: HashMap<String, VideoPlacementSpec>,
     editor_store: Option<crate::editor::wire::EditorStore>,
     editors: HashMap<String, EditorMount>,
     mounted: std::collections::HashSet<String>,
     presentation: NativePresentation,
     #[cfg(test)]
     renders: u64,
-}
-
-struct VideoPlacementSpec {
-    resource: String,
-    fit: wire::ContentFit,
-    opacity: f32,
-    viewer: bool,
-    padding: f32,
-}
-
-pub(crate) struct VideoPlacement {
-    pub(crate) slot: String,
-    pub(crate) resource: String,
-    pub(crate) fit: wire::ContentFit,
-    pub(crate) opacity: f32,
-    pub(crate) bounds: Bounds<Pixels>,
-    pub(crate) clip: Option<Bounds<Pixels>>,
 }
 
 impl EventEmitter<wire::Event> for ViewTree {}
@@ -648,30 +630,6 @@ impl ViewTree {
         self.bounds.get(key).copied()
     }
 
-    #[cfg(test)]
-    pub(crate) fn input_presentation(
-        &self,
-        key: &str,
-        window: &Window,
-        cx: &App,
-    ) -> Option<(String, usize, std::ops::Range<usize>, bool)> {
-        let input = self.fields.get(key)?.state.read(cx);
-        Some((
-            input.value().to_string(),
-            input.cursor(),
-            input.selected_range(),
-            input.focus_handle(cx).is_focused(window),
-        ))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn scroll_offset(&self, key: &str) -> Option<Point<Pixels>> {
-        self.lists
-            .get(key)
-            .map(|list| list.state.scroll_px_offset_for_scrollbar())
-            .or_else(|| self.scrolls.get(key).map(ScrollHandle::offset))
-    }
-
     pub fn new(root: wire::Node) -> Self {
         Self {
             user_activation: Default::default(),
@@ -694,26 +652,12 @@ impl ViewTree {
             viewers: HashMap::new(),
             vectors: HashMap::new(),
             surfaces: HashMap::new(),
-            video_placements: HashMap::new(),
             editor_store: None,
             editors: HashMap::new(),
             mounted: Default::default(),
             presentation: NativePresentation::default(),
             #[cfg(test)]
             renders: 0,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn render_count(&self) -> u64 {
-        self.renders
-    }
-
-    #[cfg(test)]
-    pub(crate) fn editor_identity(&self, key: &str) -> Option<u64> {
-        match &self.editors.get(key)?.view {
-            EditorView::Text(view) => Some(view.entity_id().as_u64()),
-            EditorView::Rich(view) => Some(view.entity_id().as_u64()),
         }
     }
 
@@ -725,27 +669,6 @@ impl ViewTree {
         self.editors.clear();
         self.editor_store = Some(store);
         cx.notify();
-    }
-
-    pub fn set_surface(&mut self, key: String, surface: AnyView, cx: &mut Context<Self>) {
-        self.surfaces.insert(key, surface);
-        cx.notify();
-    }
-
-    pub fn surface_requests(&self) -> Vec<(String, String, Vec<wire::SurfaceValue>, Option<u32>)> {
-        let mut requests = Vec::new();
-        self.root.clone().for_each_mut(&mut |node| {
-            if let wire::Node::Surface {
-                key,
-                name,
-                args,
-                on_event,
-            } = node
-            {
-                requests.push((key.clone(), name.clone(), args.clone(), *on_event));
-            }
-        });
-        requests
     }
 
     pub fn execute_widget_command(
@@ -3567,85 +3490,9 @@ impl ViewTree {
 
     fn image_frame(&self, hash: u64, data: Option<&wire::ImageData>) -> Option<Arc<RenderImage>> {
         match data {
-            Some(wire::ImageData::Resource(key)) => {
-                crate::video::stage_frame(key).map(|(_, _, image)| image)
-            }
+            Some(wire::ImageData::Resource(_)) => None,
             _ => self.images.get(&hash).cloned(),
         }
-    }
-
-    fn video_placement(
-        &mut self,
-        key: &str,
-        resource: &str,
-        fit: wire::ContentFit,
-        opacity: f32,
-        viewer: bool,
-        padding: f32,
-    ) {
-        self.video_placements.insert(
-            key.to_owned(),
-            VideoPlacementSpec {
-                resource: resource.to_owned(),
-                fit,
-                opacity,
-                viewer,
-                padding,
-            },
-        );
-    }
-
-    pub(crate) fn video_placements(&self) -> Vec<VideoPlacement> {
-        self.video_placements
-            .iter()
-            .filter_map(|(key, spec)| {
-                let container = *self.bounds.get(key)?;
-                if !spec.viewer {
-                    return Some(VideoPlacement {
-                        slot: key.clone(),
-                        resource: spec.resource.clone(),
-                        fit: spec.fit,
-                        opacity: spec.opacity,
-                        bounds: container,
-                        clip: None,
-                    });
-                }
-
-                let inner = crate::video::stage_frame(&spec.resource)
-                    .map(|(width, height, _)| {
-                        let viewer = self.viewers.get(key).cloned().unwrap_or_default();
-                        let inset = spec.padding;
-                        let ratio = ((f32::from(container.size.width) - inset)
-                            / width.max(1) as f32)
-                            .min((f32::from(container.size.height) - inset) / height.max(1) as f32)
-                            .max(0.0);
-                        let scale = if viewer.scale == 0.0 {
-                            1.0
-                        } else {
-                            viewer.scale
-                        };
-                        let width = width as f32 * ratio * scale;
-                        let height = height as f32 * ratio * scale;
-                        let x = (f32::from(container.size.width) - width) / 2.0
-                            + f32::from(viewer.offset.x);
-                        let y = (f32::from(container.size.height) - height) / 2.0
-                            + f32::from(viewer.offset.y);
-                        Bounds::new(
-                            point(container.origin.x + px(x), container.origin.y + px(y)),
-                            size(px(width), px(height)),
-                        )
-                    })
-                    .unwrap_or(container);
-                Some(VideoPlacement {
-                    slot: key.clone(),
-                    resource: spec.resource.clone(),
-                    fit: spec.fit,
-                    opacity: spec.opacity,
-                    bounds: inner,
-                    clip: Some(container),
-                })
-            })
-            .collect()
     }
 
     fn remember_vector(&mut self, hash: u64, bytes: &[u8]) {
@@ -3675,16 +3522,6 @@ impl ViewTree {
         };
         if let Some(data) = data {
             self.remember_image(*hash, data);
-        }
-        if let Some(wire::ImageData::Resource(resource)) = data {
-            self.video_placement(
-                key,
-                resource,
-                wire::ContentFit::Fill,
-                1.0,
-                true,
-                options.padding.unwrap_or_default() * 2.0,
-            );
         }
         let frame = self.image_frame(*hash, data.as_ref());
         let viewer = self.viewers.entry(key.clone()).or_default();
@@ -3795,15 +3632,7 @@ impl ViewTree {
         }
         let mut element = dimensions(div(), *width, *height).opacity(opacity.unwrap_or(1.0));
         match data {
-            Some(wire::ImageData::Resource(resource)) => {
-                self.video_placement(
-                    key,
-                    resource,
-                    fit.unwrap_or(wire::ContentFit::Contain),
-                    opacity.unwrap_or(1.0),
-                    false,
-                    0.0,
-                );
+            Some(wire::ImageData::Resource(_)) => {
                 element = element.child(self.measure(key, cx));
             }
             _ => {
@@ -3997,7 +3826,6 @@ impl Render for ViewTree {
         {
             self.renders += 1;
         }
-        self.video_placements.clear();
         self.mounted.clear();
         let node = self.node(&self.root.clone(), window, cx);
         // Only controls mounted by this replacement frame may recover focus.
@@ -4074,9 +3902,9 @@ fn content_dimensions(node: &wire::Node) -> (Option<wire::Length>, Option<wire::
         // around a press area around a Fill row is still a Fill row. Under a
         // cached guest mount nothing stretches an auto-sized wrapper, so a
         // wrapper that stops here leaves every Fill below it content-tall.
-        wire::Node::MouseArea { content, .. }
-        | wire::Node::ResizeHandle { content, .. }
-        | wire::Node::Lazy { content, .. } => content_dimensions(content),
+        wire::Node::ResizeHandle { content, .. } | wire::Node::Lazy { content, .. } => {
+            content_dimensions(content)
+        }
         wire::Node::Sensor { child, .. } => content_dimensions(child),
         _ => (None, None),
     }
@@ -5269,22 +5097,6 @@ fn append_arc_to(
 }
 
 #[cfg(test)]
-pub(crate) fn assert_released_image_is_not_cached(key: &str) {
-    let mut tree = ViewTree::new(wire::Node::empty());
-    let resource = wire::ImageData::Resource(key.into());
-    tree.remember_image(7, &resource);
-    let image = tree.image_frame(7, Some(&resource)).expect("live resource");
-    let released = Arc::downgrade(&image);
-    drop(image);
-    crate::video::forget_peer(key);
-    drop(crate::video::take_retired());
-    assert!(tree.image_frame(7, Some(&resource)).is_none());
-    assert!(
-        released.upgrade().is_none(),
-        "the renderer must not retain a released resource"
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5296,7 +5108,7 @@ mod tests {
     ) {
         cx.update(gpui_kit::init);
         cx.update(crate::editor::wire::init_notion);
-        for key in ["another-app/body", "/pages/document"] {
+        for key in ["another-app/body", "/p1/document"] {
             let mut root = wire::Node::Editor {
                 key: key.into(),
                 label: None,
@@ -5632,7 +5444,7 @@ mod tests {
         let mut header = row.clone();
         if let wire::Node::Linear { children, .. } = &mut header {
             *children = vec![
-                text("label", "Pages".into(), None, Some(wire::Wrapping::None)),
+                text("label", "Header".into(), None, Some(wire::Wrapping::None)),
                 wire::Node::Space {
                     width: Some(wire::Length::Fill),
                     height: None,
@@ -5653,7 +5465,7 @@ mod tests {
             *height = None;
             *children = vec![text(
                 "reference",
-                "Pages".into(),
+                "Header".into(),
                 None,
                 Some(wire::Wrapping::None),
             )];
@@ -6937,7 +6749,7 @@ mod tests {
         );
         let chat = kit::sized(
             kit::row(
-                "chat",
+                "workspace",
                 [
                     kit::pane("sidebar", wire::Node::empty(), wire::Length::Fixed(236.)),
                     kit::vertical_divider("sidebar-resize"),

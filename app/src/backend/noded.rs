@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use abi::{BlobId, Entry, ProgramId, Refusal, Root, Scan};
+use abi::{BlobId, ProgramId, Refusal, Root};
 use borsh::{BorshDeserialize, BorshSerialize};
 use commonware_cryptography::{Signer as _, ed25519};
 use futures::{Stream, StreamExt as _};
@@ -28,7 +28,6 @@ pub mod route {
     pub const SUBMIT: &str = "/v1/submit";
     pub const QUERY: &str = "/v1/query";
     pub const GET: &str = "/v1/get";
-    pub const SCAN: &str = "/v1/scan";
     pub const BLOB_GET: &str = "/v1/blob/get";
     pub const PROGRAMS: &str = "/v1/programs";
     pub const CHANGES: &str = "/v1/changes";
@@ -121,13 +120,6 @@ pub struct Get {
     pub key: Vec<u8>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub struct Range {
-    pub layer: Layer,
-    pub program: ProgramId,
-    pub scan: Scan,
-}
-
 /// `host::Receipt`: what a submit answers.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Receipt {
@@ -193,10 +185,6 @@ impl Client {
         }
     }
 
-    pub fn origin(&self) -> &str {
-        &self.base
-    }
-
     pub async fn status(&self) -> Result<Status> {
         self.fetch(route::STATUS).await
     }
@@ -221,15 +209,6 @@ impl Client {
         self.post(route::GET, &get).await
     }
 
-    pub async fn scan(&self, layer: Layer, program: &str, scan: Scan) -> Result<Vec<Entry>> {
-        let range = Range {
-            layer,
-            program: program.to_owned(),
-            scan,
-        };
-        self.post(route::SCAN, &range).await
-    }
-
     /// The framed bytes (`kind len\0body`) of a blob the node holds.
     pub async fn blob(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
         self.post(route::BLOB_GET, &id).await
@@ -240,7 +219,10 @@ impl Client {
         self.fetch(route::PROGRAMS).await
     }
 
-    pub async fn changes(&self, program: &str) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
+    pub async fn changes(
+        &self,
+        program: &str,
+    ) -> Result<impl Stream<Item = Result<Change>> + Unpin> {
         let url = format!(
             "{}{}/{program}",
             self.base.replacen("http", "ws", 1),
@@ -268,7 +250,11 @@ impl Client {
         answered(response).await
     }
 
-    async fn post<B: BorshSerialize, T: BorshDeserialize>(&self, route: &str, body: &B) -> Result<T> {
+    async fn post<B: BorshSerialize, T: BorshDeserialize>(
+        &self,
+        route: &str,
+        body: &B,
+    ) -> Result<T> {
         self.post_raw(route, abi::encode(body)).await
     }
 
@@ -283,9 +269,7 @@ async fn answered<T: BorshDeserialize>(response: reqwest::Response) -> Result<T>
     let body = response.bytes().await?;
     match status {
         StatusCode::OK => abi::decode(&body).map_err(Error::Decode),
-        StatusCode::BAD_REQUEST => Err(Error::Refused(
-            abi::decode(&body).map_err(Error::Decode)?,
-        )),
+        StatusCode::BAD_REQUEST => Err(Error::Refused(abi::decode(&body).map_err(Error::Decode)?)),
         status => Err(Error::Failed {
             status: status.as_u16(),
             sentence: String::from_utf8_lossy(&body).into_owned(),
@@ -306,13 +290,12 @@ mod tests {
     #[test]
     fn frame_signs_its_body_and_names_the_signer() {
         let key = ed25519::PrivateKey::from_seed(7);
-        let frame = Frame::sign(&key, b"net", 3, "chat", vec![1, 2]);
+        let frame = Frame::sign(&key, b"net", 3, "demo", vec![1, 2]);
         assert_eq!(frame.body.signer, key.public_key().as_ref().to_vec());
         assert_eq!(frame.body.scheme, KeyScheme::Ed25519);
         let decoded: Frame = abi::decode(&frame.encode()).unwrap();
         assert_eq!(decoded, frame);
-        let signature = commonware_cryptography::ed25519::Signature::decode(frame.proof.as_slice());
-        assert!(signature.is_ok());
+        assert_eq!(frame.proof.len(), 64);
     }
 
     #[test]

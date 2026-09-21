@@ -137,8 +137,8 @@ impl BlockSpec for DocumentPage {
 const PICTURE_HEIGHT: Pixels = px(480.);
 
 /// The document's image block: gpui-notion's, with the one change that a
-/// files address (`duck://<chain>/files/…`, or the older `duck://files/…`)
-/// draws from the host picture store. A picture in a
+/// `duck://<chain>/<program>/<path…>` address draws from the host picture
+/// store. A picture in a
 /// page is a file on the network, not on the writer's disk — the guest puts
 /// it there and then asks `picture.load` for every address its page names, so
 /// what this draws is already decoded.
@@ -191,27 +191,11 @@ impl BlockSpec for DocumentImage {
         };
         // Until the guest's `picture.load` lands, the block holds its place
         // rather than collapsing the text around it.
-        let Some(picture) = crate::backend::stored_picture(crate::backend::PAGES_SURFACE, &path)
-        else {
-            return Some(plate(ctx, cx, "Loading the picture…").into_any_element());
-        };
-        Some(framed(drawn(&picture)))
+        // ponytail: a picture inside a document is fetched by the view that
+        // owns the document; the host draws a plate until a door for it exists.
+        let _ = path;
+        Some(plate(ctx, cx, "Picture").into_any_element())
     }
-}
-
-/// The picture at its own size, so a small one is not blown up to the column:
-/// BOTH dimensions are stated, because an image given only one takes its size
-/// from the aspect ratio gpui hands it and overflows whatever box it is in.
-/// The bounds then keep it inside the column and off the next paragraph, and
-/// `Contain` keeps a bounded one in proportion.
-fn drawn(picture: &crate::backend::Picture) -> AnyElement {
-    img(picture.source())
-        .w(px(picture.width as f32))
-        .h(px(picture.height as f32))
-        .max_w_full()
-        .max_h(PICTURE_HEIGHT)
-        .object_fit(ObjectFit::Contain)
-        .into_any_element()
 }
 
 /// The dashed box an image block draws while it has no picture to draw.
@@ -235,17 +219,10 @@ fn plate(ctx: &BlockContext, cx: &App, say: &'static str) -> impl IntoElement {
 
 /// The duckfs path behind a picture's address, or `None` when the address is
 /// not one of ours — a picture off the web, or a path on somebody's disk.
-/// A page is stored content, so both spellings of a files address draw: the
-/// `duck://<chain>/files/<path…>` a page writes now, and the
-/// `duck://files/<path>` its older pictures carry, forever.
+/// The path is the link's tail; which program serves it is the view's business.
 fn duckfs_path(src: &str) -> Option<String> {
-    let link = crate::backend::classify_duck_link(src.to_owned());
-    if link.kind == crate::DuckKind::Files {
-        return Some(link.path);
-    }
-    let path = src.strip_prefix("duck://files")?;
-    let plain = path.starts_with('/') && !path.contains(['?', '#']);
-    plain.then(|| path.to_owned())
+    let link = ducklink::Link::parse(src).ok()?;
+    (!link.tail.is_empty()).then(|| format!("/{}", link.tail.join("/")))
 }
 
 /// The badge's height: one marker slot.
@@ -318,7 +295,7 @@ impl RichWireEditor {
             cx.subscribe_in(&editor, window, |this, _, action: &MenuAction, _, cx| {
                 this.menu_action(action, cx);
             });
-        // A link in a page is as often `duck://<chain>/pages/…` as the web, and
+        // A link in a page is as often `duck://<chain>/<program>/…` as the web, and
         // the app already knows what every `duck://` address names — so a
         // press goes to the one place that routes them all.
         let links = cx.subscribe(&editor, |_, _, pressed: &LinkPressed, _| {
@@ -1030,37 +1007,25 @@ fn restore_cursor(
 mod tests {
     use super::*;
 
-    /// A page picture draws from the store under its duckfs path by either
-    /// spelling of its files address; nothing else is a stored picture.
+    /// A page picture draws from the store under its link's tail; nothing
+    /// else is a stored picture.
     #[test]
-    fn a_page_picture_is_found_by_either_spelling_of_its_files_address() {
-        let path = Some("/shared/attachments/u1/duck.png".to_owned());
+    fn a_page_picture_is_the_tail_of_its_duck_address() {
         assert_eq!(
-            duckfs_path("duck://files/shared/attachments/u1/duck.png"),
-            path
+            duckfs_path("duck://dognet-b5b6ea90/p1/shared/attachments/u1/duck.png").as_deref(),
+            Some("/shared/attachments/u1/duck.png")
         );
         assert_eq!(
-            duckfs_path("duck://dognet-b5b6ea90/files/shared/attachments/u1/duck.png"),
-            path
-        );
-        assert_eq!(
-            duckfs_path(
-                "duck://dognet-b5b6ea90/files/shared/attachments/u1/%EC%98%A4%EB%A6%AC.png"
-            )
-            .as_deref(),
+            duckfs_path("duck://dognet-b5b6ea90/p1/shared/attachments/u1/%EC%98%A4%EB%A6%AC.png")
+                .as_deref(),
             Some("/shared/attachments/u1/오리.png")
-        );
-        assert_eq!(
-            duckfs_path("duck://files-b5b6ea90/files/shared/a.png").as_deref(),
-            Some("/shared/a.png")
         );
         for other in [
             "https://example.com/duck.png",
             "/home/me/duck.png",
-            "duck://files/shared/duck.png?v=2",
-            "duck://files",
-            "duck://dognet-b5b6ea90/pages/pg-1",
-            "duck://dognet-b5b6ea90/files/shared/../etc",
+            "duck://dognet-b5b6ea90/p1/shared/duck.png?v=2",
+            "duck://dognet-b5b6ea90/p1",
+            "duck://dognet-b5b6ea90/p1/shared/../etc",
         ] {
             assert_eq!(duckfs_path(other), None, "{other}");
         }
