@@ -24,7 +24,9 @@ use crate::{AppMessage as Message, Ducktape, Screen};
 mod screens;
 mod theme;
 
-use theme::{BUNDLED_FACES, EMOJI_FACE, RAIL_WIDTH, configure_native_theme, hsla_of};
+#[cfg(not(target_os = "macos"))]
+use theme::EMOJI_FACE;
+use theme::{BUNDLED_FACES, RAIL_WIDTH, configure_native_theme, hsla_of};
 pub(crate) use theme::{fallback_chain, mono_family, with_family};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]

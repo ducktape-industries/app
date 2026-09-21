@@ -19,6 +19,9 @@ const SEPARATORS: [usize; 3] = [2, 4, 9];
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SUBMENU: (usize, [usize; 3]) = (5, [6, 7, 8]);
 const QUIT: usize = 10;
+/// every row the menu lists directly: not the submenu's children, not Quit
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const TOP_LEVEL: [usize; 7] = [0, 1, 2, 3, 4, 5, 9];
 
 impl Snapshot {
     fn of(state: &Ducktape) -> Self {
