@@ -6,7 +6,9 @@
 //! - `rpc.query` `{target, query}` — one query on the connected node: the
 //!   JSON `query` is the payload of a signed frame to `target`, and the
 //!   bytes the program `Respond`ed come back as they are. `rpc.view` is the
-//!   same door (a program answers its own views).
+//!   same door (a program answers its own views). `rpc.query_bytes`
+//!   `{target, body_b64}` — the same with an exact binary request, for a
+//!   program whose query contract is not JSON (the boot set speaks borsh).
 //! - `op.submit` `{target, payload}` — one JSON op, signed with the SEATED
 //!   key at the signer's next sequence and submitted; answered with the
 //!   receipt's output, or the program's refusal. `op.submit_bytes`
@@ -371,6 +373,7 @@ pub(super) fn answer(
             });
         }
         ("rpc", "query" | "view") => spawn(guest, id, payload, query),
+        ("rpc", "query_bytes") => spawn(guest, id, payload, query_bytes),
         ("op", "submit") => spawn(guest, id, payload, submit),
         ("op", "submit_bytes") => spawn(guest, id, payload, submit_bytes),
         ("blob", "get") => spawn(guest, id, payload, blob_get),
@@ -719,6 +722,29 @@ fn query(node: Node, ask: serde_json::Value) -> Answered {
     })
 }
 
+fn query_bytes(node: Node, ask: serde_json::Value) -> Answered {
+    Box::pin(async move {
+        let target = target_of(&ask)?;
+        let payload = body_b64(&ask)?;
+        let frame = backend::query_frame(&node.network, &target, payload).await;
+        node.client
+            .query(backend::Layer::Preconfirmed, frame)
+            .await
+            .map_err(refused)
+    })
+}
+
+/// The exact bytes a `*_bytes` request carries.
+fn body_b64(ask: &serde_json::Value) -> Result<Vec<u8>, wire::Refusal> {
+    let encoded = ask["body_b64"]
+        .as_str()
+        .ok_or_else(|| malformed("body_b64 must be a string"))?;
+    use base64::Engine as _;
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|_| malformed("invalid base64 body"))
+}
+
 fn submit(node: Node, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let target = target_of(&ask)?;
@@ -730,13 +756,7 @@ fn submit(node: Node, ask: serde_json::Value) -> Answered {
 fn submit_bytes(node: Node, ask: serde_json::Value) -> Answered {
     Box::pin(async move {
         let target = target_of(&ask)?;
-        let encoded = ask["body_b64"]
-            .as_str()
-            .ok_or_else(|| malformed("body_b64 must be a string"))?;
-        use base64::Engine as _;
-        let payload = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .map_err(|_| malformed("invalid operation base64"))?;
+        let payload = body_b64(&ask)?;
         submitted(node, target, payload).await
     })
 }
