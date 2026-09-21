@@ -87,6 +87,7 @@ impl Ducktape {
                 self.connected_rpc = origin;
                 self.network = status.network.clone();
                 self.connected = true;
+                self.browsing = false;
                 self.screen = Screen::Console;
                 self.apply_status(&status);
                 drop(crate::module_view::connected(&client, &self.network));
@@ -129,6 +130,10 @@ impl Ducktape {
                 self.active = None;
                 self.status = "Not connected".into();
                 self.screen = Screen::Connect;
+                self.browsing = false;
+                self.password.clear();
+                self.phrase.clear();
+                self.unlock_error.clear();
                 self.push_props();
                 Task::none()
             }
@@ -207,6 +212,10 @@ impl Ducktape {
                 if self.unlock_busy {
                     return Task::none();
                 }
+                if self.password.chars().count() < 8 {
+                    self.unlock_error = "The password needs at least 8 characters.".into();
+                    return Task::none();
+                }
                 let password = zeroize::Zeroizing::new(std::mem::take(&mut self.password));
                 let network = self.network.clone();
                 self.unlock_busy = true;
@@ -219,18 +228,40 @@ impl Ducktape {
                     })
                     .await
                     .unwrap_or_else(|_| Err("creating the wallet did not finish".into()));
-                    if let Err(error) = created {
-                        return Message::UnlockFailed(error);
-                    }
+                    let phrase = match created {
+                        Ok(phrase) => phrase,
+                        Err(error) => return Message::UnlockFailed(error),
+                    };
                     let path = match backend::session_key_path(&network) {
                         Ok(path) => path,
                         Err(error) => return Message::UnlockFailed(error),
                     };
                     match backend::seat_signer(path, password).await {
-                        Ok(pubkey) => Message::Unlocked(pubkey),
+                        Ok(pubkey) => Message::WalletCreated { pubkey, phrase },
                         Err(error) => Message::UnlockFailed(backend::user_error(error)),
                     }
                 })
+            }
+            Message::WalletCreated { pubkey, phrase } => {
+                self.unlock_busy = false;
+                self.signer_key = pubkey;
+                self.phrase = phrase;
+                self.push_props();
+                Task::none()
+            }
+            Message::PhraseWrittenDown => {
+                self.phrase.clear();
+                Task::none()
+            }
+            Message::BrowseWithoutKey => {
+                self.browsing = true;
+                self.password.clear();
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::SignIn => {
+                self.browsing = false;
+                Task::none()
             }
             Message::Unlocked(pubkey) => {
                 self.unlock_busy = false;
@@ -245,6 +276,7 @@ impl Ducktape {
             }
             Message::Lock => {
                 self.signer_key.clear();
+                self.browsing = false;
                 self.push_props();
                 Task::future(async {
                     backend::lock_signer().await;

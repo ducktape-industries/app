@@ -16,6 +16,8 @@ pub(crate) struct Facts {
     pub(crate) signer_key: String,
     pub(crate) unlock_error: String,
     pub(crate) unlock_busy: bool,
+    pub(crate) browsing: bool,
+    pub(crate) phrase: String,
     pub(crate) active: Option<&'static str>,
     pub(crate) badges: BTreeMap<&'static str, i64>,
 }
@@ -35,6 +37,8 @@ impl Ducktape {
             signer_key: self.signer_key.clone(),
             unlock_error: self.unlock_error.clone(),
             unlock_busy: self.unlock_busy,
+            browsing: self.browsing,
+            phrase: self.phrase.clone(),
             active: self.active,
             badges: self.badges.clone(),
         }
@@ -299,7 +303,8 @@ impl DesktopWindow {
     }
 
     /// Inside a node: the rail of its programs on the left, the open one's
-    /// view on the right, and the key's lock at the foot.
+    /// view on the right, and the key's lock at the foot. Reached with a
+    /// seated key or by choosing to read without one (`sign_in`).
     pub(super) fn console(
         &mut self,
         window: &mut Window,
@@ -380,6 +385,7 @@ impl DesktopWindow {
         });
         let rows: Vec<_> = rows.collect();
         let unlocked = !state.signer_key.is_empty();
+        // The key's lock; signing in itself is a screen of its own (sign_in.rs).
         let foot = match unlocked {
             true => div()
                 .flex()
@@ -400,63 +406,21 @@ impl DesktopWindow {
                         .ghost()
                         .w_full(),
                 ),
-            false => {
-                let password = self.input(
-                    "password",
-                    "Password",
-                    true,
-                    "",
-                    Message::PasswordTyped,
-                    || Message::UnlockSubmit,
-                    window,
-                    cx,
-                );
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(ink_muted)
-                            .child("Sign in to write"),
-                    )
-                    .child(password)
-                    .child(
-                        div()
-                            .flex()
-                            .gap_1()
-                            .child(
-                                self.action(
-                                    "unlock",
-                                    "Unlock",
-                                    || Message::UnlockSubmit,
-                                    state.unlock_busy,
-                                )
-                                .primary()
-                                .flex_1(),
-                            )
-                            .child(
-                                self.action(
-                                    "create-wallet",
-                                    "New key",
-                                    || Message::CreateWalletSubmit,
-                                    state.unlock_busy,
-                                )
-                                .ghost(),
-                            ),
-                    )
-                    .when(!state.unlock_error.is_empty(), |foot| {
-                        foot.child(
-                            div()
-                                .id("unlock-error")
-                                .role(Role::Alert)
-                                .text_size(px(11.))
-                                .text_color(hsla_of(design::palette(state.dark).danger))
-                                .child(state.unlock_error.clone()),
-                        )
-                    })
-            }
+            false => div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .text_color(ink_muted)
+                        .child("Reading without a key"),
+                )
+                .child(
+                    self.action("sign-in", "Sign in", || Message::SignIn, false)
+                        .primary()
+                        .w_full(),
+                ),
         };
         let sidebar = div()
             .id("rail")
