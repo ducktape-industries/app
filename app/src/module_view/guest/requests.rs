@@ -276,9 +276,8 @@ impl Guest {
         let bytes = wire::encode(&events);
         arm(&mut self.store);
         let outcome = self
-            .tick
-            .call(&mut self.store, (bytes,))
-            .map(|(frame,)| frame)
+            .exports
+            .tick(&mut self.store, &bytes)
             .map_err(|error| first_line(&error))
             .and_then(|frame| shape(&frame));
         match outcome {

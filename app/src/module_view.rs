@@ -52,10 +52,9 @@ use crate::editor::wire::EditorStore;
 use gpui_kit::AppContext as _;
 use pictures::Pictures;
 use view_wire as wire;
-use wasmtime::component::{Component, Linker, TypedFunc};
 use wasmtime::{
-    Cache, CacheConfig, Config, Engine, OptLevel, Store, StoreContextMut, StoreLimits,
-    StoreLimitsBuilder,
+    Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store,
+    StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
 
 /// What a module view asked the app to do: `kind` is the operation
@@ -80,7 +79,7 @@ const MAX_OP_BYTES: usize = 16 << 20;
 /// The gap before the first re-attempt at a candidate whose load failed,
 /// and the longest that gap widens to. A load fetches the artifact,
 /// instantiates it, restores the snapshot and verifies the first tree —
-/// and compiles the component too, whenever `compiled_view` does not
+/// and compiles the view too, whenever `compiled_view` does not
 /// already hold it. A deployment that cannot load fails that way every
 /// time, so trying it once a block buys nothing and never stops. Widening
 /// the gap rather than giving up keeps a fetch that failed on the
@@ -193,7 +192,7 @@ pub(crate) mod input;
 #[path = "module_view/pictures.rs"]
 mod pictures;
 
-/// The name a component's manifest gives it; "" for one whose manifest
+/// The name a view's manifest gives it; "" for one whose manifest
 /// cannot be read (`compile` refuses those before a seat).
 fn manifest_name(bytes: &[u8]) -> String {
     view_wire::manifest::read_manifest(bytes)

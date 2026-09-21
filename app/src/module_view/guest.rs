@@ -12,8 +12,97 @@ pub(super) struct HostState {
     panic: Option<String>,
 }
 
-/// The guest's `restore(state, macos)` export.
-pub(super) type Restore = TypedFunc<(Vec<u8>, bool), (Result<(), String>,)>;
+/// The guest's exports and the memory their bytes cross in (`wire::abi`).
+pub(super) struct Exports {
+    memory: Memory,
+    alloc: TypedFunc<u32, u32>,
+    init: TypedFunc<u32, ()>,
+    tick: TypedFunc<(u32, u32), u64>,
+    snapshot: TypedFunc<(), u64>,
+    restore: TypedFunc<(u32, u32, u32), u64>,
+}
+
+impl Exports {
+    pub(super) fn bind(
+        store: &mut Store<HostState>,
+        instance: &wasmtime::Instance,
+    ) -> wasmtime::Result<Self> {
+        Ok(Self {
+            memory: instance
+                .get_memory(&mut *store, "memory")
+                .ok_or_else(|| wasmtime::Error::msg("the view exports no memory"))?,
+            alloc: instance.get_typed_func(&mut *store, "alloc")?,
+            init: instance.get_typed_func(&mut *store, "init")?,
+            tick: instance.get_typed_func(&mut *store, "tick")?,
+            snapshot: instance.get_typed_func(&mut *store, "snapshot")?,
+            restore: instance.get_typed_func(&mut *store, "restore")?,
+        })
+    }
+
+    /// `bytes` in a buffer the guest allocated and owns from the next call on.
+    fn give(&self, store: &mut Store<HostState>, bytes: &[u8]) -> wasmtime::Result<(u32, u32)> {
+        let len = u32::try_from(bytes.len())?;
+        let ptr = self.alloc.call(&mut *store, len)?;
+        self.memory.write(&mut *store, ptr as usize, bytes)?;
+        Ok((ptr, len))
+    }
+
+    /// The bytes an answer names, copied out before the guest is entered
+    /// again; nothing about the pair is trusted.
+    fn answer(&self, store: &Store<HostState>, packed: u64) -> wasmtime::Result<Vec<u8>> {
+        let (ptr, len) = wire::abi::unpack(packed);
+        let start = ptr as usize;
+        self.memory
+            .data(store)
+            .get(start..start.saturating_add(len as usize))
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| wasmtime::Error::msg("the view answered outside its memory"))
+    }
+
+    fn result(
+        &self,
+        store: &Store<HostState>,
+        packed: u64,
+    ) -> wasmtime::Result<Result<Vec<u8>, String>> {
+        wire::abi::decode_result(&self.answer(store, packed)?)
+            .ok_or_else(|| wasmtime::Error::msg("the view's answer is not a result"))
+    }
+
+    pub(super) fn init(&self, store: &mut Store<HostState>, macos: bool) -> wasmtime::Result<()> {
+        self.init.call(store, u32::from(macos))
+    }
+
+    pub(super) fn tick(
+        &self,
+        store: &mut Store<HostState>,
+        events: &[u8],
+    ) -> wasmtime::Result<Vec<u8>> {
+        let (ptr, len) = self.give(store, events)?;
+        let packed = self.tick.call(&mut *store, (ptr, len))?;
+        self.answer(store, packed)
+    }
+
+    pub(super) fn snapshot(
+        &self,
+        store: &mut Store<HostState>,
+    ) -> wasmtime::Result<Result<Vec<u8>, String>> {
+        let packed = self.snapshot.call(&mut *store, ())?;
+        self.result(store, packed)
+    }
+
+    pub(super) fn restore(
+        &self,
+        store: &mut Store<HostState>,
+        state: &[u8],
+        macos: bool,
+    ) -> wasmtime::Result<Result<(), String>> {
+        let (ptr, len) = self.give(store, state)?;
+        let packed = self
+            .restore
+            .call(&mut *store, (ptr, len, u32::from(macos)))?;
+        Ok(self.result(store, packed)?.map(|_| ()))
+    }
+}
 
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
@@ -32,7 +121,7 @@ pub(super) struct Guest {
     /// The manifest's name: what a registered view's tab is called.
     pub(crate) name: String,
     pub(crate) store: Store<HostState>,
-    pub(crate) tick: TypedFunc<(Vec<u8>,), (Vec<u8>,)>,
+    pub(crate) exports: Exports,
     /// The guest's events for its next tick.
     pub(crate) pending: Vec<wire::Event>,
     /// Requests wait for the native layout of a frame that still mounts
@@ -96,9 +185,6 @@ pub(super) struct Guest {
     /// A replacement's first tree is in `frame` with its requests still
     /// to dispatch — the first redraw does that, without another tick.
     pub(crate) staged: bool,
-    pub(crate) snapshot: TypedFunc<(), (Result<Vec<u8>, String>,)>,
-    pub(crate) restore: Restore,
-    pub(crate) init: TypedFunc<(bool,), ()>,
 }
 
 /// The asset at `path` in a deployment's map: the canonical relative path,
@@ -118,16 +204,16 @@ pub(super) struct ViewCodeCache {
 pub(super) struct CompiledView {
     hash: [u8; 32],
     source_bytes: usize,
-    component: Arc<Component>,
+    module: Arc<Module>,
 }
 
 impl ViewCodeCache {
-    fn get(&mut self, hash: &[u8; 32]) -> Option<Arc<Component>> {
+    fn get(&mut self, hash: &[u8; 32]) -> Option<Arc<Module>> {
         let index = self.entries.iter().position(|entry| &entry.hash == hash)?;
         let entry = self.entries.remove(index)?;
-        let component = entry.component.clone();
+        let module = entry.module.clone();
         self.entries.push_back(entry);
-        Some(component)
+        Some(module)
     }
 
     fn insert(&mut self, entry: CompiledView) {
@@ -150,7 +236,7 @@ impl ViewCodeCache {
     }
 }
 
-pub(super) fn compiled_view(bytes: &[u8]) -> Result<Arc<Component>, String> {
+pub(super) fn compiled_view(bytes: &[u8]) -> Result<Arc<Module>, String> {
     static CODE: OnceLock<Mutex<ViewCodeCache>> = OnceLock::new();
     compile_view(engine(), CODE.get_or_init(Mutex::default), bytes)
 }
@@ -162,13 +248,13 @@ pub(super) fn compile_view(
     engine: &Engine,
     cache: &Mutex<ViewCodeCache>,
     bytes: &[u8],
-) -> Result<Arc<Component>, String> {
+) -> Result<Arc<Module>, String> {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(bytes).into();
-    if let Some(component) = cache.lock().expect("view code cache").get(&hash) {
-        return Ok(component);
+    if let Some(module) = cache.lock().expect("view code cache").get(&hash) {
+        return Ok(module);
     }
-    let component = Arc::new(Component::new(engine, bytes).map_err(|error| error.to_string())?);
+    let module = Arc::new(Module::new(engine, bytes).map_err(|error| error.to_string())?);
     let mut cache = cache.lock().expect("view code cache");
     if let Some(existing) = cache.get(&hash) {
         return Ok(existing);
@@ -176,9 +262,9 @@ pub(super) fn compile_view(
     cache.insert(CompiledView {
         hash,
         source_bytes: bytes.len(),
-        component: component.clone(),
+        module: module.clone(),
     });
-    Ok(component)
+    Ok(module)
 }
 
 pub(super) fn engine() -> &'static Engine {
@@ -295,4 +381,57 @@ pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {
             wire::WIRE_EPOCH
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn label(guest: &Guest) -> (String, u32) {
+        match guest.frame.root.as_ref().expect("a tree") {
+            wire::Node::Button {
+                content: wire::ButtonContent::Label(label),
+                on_press: Some(press),
+                ..
+            } => (label.clone(), *press),
+            other => panic!("not the probe's button: {other:?}"),
+        }
+    }
+
+    /// Every export of a real view, through guest memory. The bytes are
+    /// view-guest's `exported_view` example built for wasm32 by modules'
+    /// `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
+    #[test]
+    #[ignore = "needs DUCKTAPE_VIEW_PROBE=<exported_view.wasm>"]
+    fn a_core_module_view_inits_ticks_snapshots_and_restores() {
+        let path = std::env::var("DUCKTAPE_VIEW_PROBE").expect("DUCKTAPE_VIEW_PROBE");
+        let bytes = std::fs::read(path).expect("probe bytes");
+        let mut guest = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
+        assert_eq!(guest.name, "Exported");
+        guest.tick();
+        assert_eq!(guest.fault, None);
+        let (text, press) = label(&guest);
+        assert_eq!(text, "0");
+
+        guest.pending.push(wire::Event::Message(press));
+        guest.tick();
+        assert_eq!(label(&guest).0, "1");
+
+        let state = guest.snapshot().expect("settled");
+        let code = Guest::compile(&bytes, "probe")
+            .map_err(|f| f.to_string())
+            .expect("compiles");
+        let mut next = Guest::instantiate("probe", &code, "probe").expect("instantiates");
+        assert!(matches!(
+            next.restore(&state, "probe"),
+            Ok(Restored::Carried)
+        ));
+        assert!(matches!(
+            next.restore(b"not json", "probe"),
+            Ok(Restored::Refused(_))
+        ));
+        next.tick();
+        assert_eq!(next.fault, None);
+        assert_eq!(label(&next).0, "1");
+    }
 }
