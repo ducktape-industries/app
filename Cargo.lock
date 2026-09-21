@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#9f3024c151ab10fdbdfe88a0c28492761d14b87a"
+source = "git+https://github.com/ducktape-industries/modules?branch=main#9eeeb953e7c22e72c016f2455306f317afadb57f"
 dependencies = [
  "borsh",
 ]
@@ -2082,7 +2082,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#9f3024c151ab10fdbdfe88a0c28492761d14b87a"
+source = "git+https://github.com/ducktape-industries/modules?branch=main#9eeeb953e7c22e72c016f2455306f317afadb57f"
 
 [[package]]
 name = "digest"
@@ -2232,7 +2232,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#9f3024c151ab10fdbdfe88a0c28492761d14b87a"
+source = "git+https://github.com/ducktape-industries/modules?branch=main#9eeeb953e7c22e72c016f2455306f317afadb57f"
 dependencies = [
  "abi",
 ]
@@ -9319,7 +9319,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape-sdk?branch=dev#9f3024c151ab10fdbdfe88a0c28492761d14b87a"
+source = "git+https://github.com/ducktape-industries/modules?branch=main#9eeeb953e7c22e72c016f2455306f317afadb57f"
 dependencies = [
  "bincode",
  "design",

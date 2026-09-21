@@ -24,11 +24,11 @@ version = "0.1.0"
 # --- the editor the host draws multiline text with ---
 gpui-notion = { git = "https://github.com/ducktape-industries/gpui-notion", branch = "main" }
 
-# --- sdk-line: ducktape-sdk dev (abi, view-wire, ducklink, design) ---
-abi = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "design" }
+# --- sdk-line: modules main, crates/sdk (abi, view-wire, ducklink, design) ---
+abi = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "design" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
