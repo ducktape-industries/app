@@ -86,7 +86,7 @@ impl Guest {
                 return Err(before_any_candidate(failure));
             }
         };
-        let Some(component_bytes) = bytes else {
+        let Some(view_bytes) = bytes else {
             let hash = code_digest(&code);
             logged(Some(&hash), "Missing", "");
             timing.log(module, Some(&hash), started, "Missing");
@@ -94,7 +94,7 @@ impl Guest {
         };
         let hash: [u8; 32] = {
             use sha2::Digest as _;
-            sha2::Sha256::digest(&component_bytes).into()
+            sha2::Sha256::digest(&view_bytes).into()
         };
         let shown = format!("{module} view @ {}", hex_short(&hash));
         let outcome = (|| -> Result<Loaded, Failure> {
@@ -114,14 +114,14 @@ impl Guest {
             }
             show(Slot::Compiling);
             let compiled = Instant::now();
-            let component = Self::compile(&component_bytes, &shown);
+            let code = Self::compile(&view_bytes, &shown);
             timing.compile = compiled.elapsed();
-            let component = component?;
+            let code = code?;
             let seated = Instant::now();
-            let name = manifest_name(&component_bytes);
+            let name = manifest_name(&view_bytes);
             let prepared = (|| -> Result<Self, Failure> {
                 let mut fresh =
-                    Self::instantiate(module, &component, &shown).map_err(Failure::Refused)?;
+                    Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
                 fresh.name = name.clone();
                 fresh.deployed(hash);
                 match &mut against {
@@ -245,22 +245,17 @@ impl Guest {
 
     pub(crate) fn snapshot(&mut self) -> Result<Vec<u8>, String> {
         arm(&mut self.store);
-        self.snapshot
-            .call(&mut self.store, ())
+        self.exports
+            .snapshot(&mut self.store)
             .map_err(|error| first_line(&error))?
-            .0
     }
 
     pub(crate) fn restore(&mut self, snapshot: &[u8], shown: &str) -> Result<Restored, String> {
         arm(&mut self.store);
         let answered = self
-            .restore
-            .call(
-                &mut self.store,
-                (snapshot.to_vec(), cfg!(target_os = "macos")),
-            )
-            .map_err(|error| format!("{shown}: restore trapped: {}", first_line(&error)))?
-            .0;
+            .exports
+            .restore(&mut self.store, snapshot, cfg!(target_os = "macos"))
+            .map_err(|error| format!("{shown}: restore trapped: {}", first_line(&error)))?;
         Ok(match answered {
             Ok(()) => Restored::Carried,
             Err(refusal) => Restored::Refused(refusal),
@@ -271,8 +266,8 @@ impl Guest {
     pub(crate) fn init(&mut self, shown: &str) -> Result<(), String> {
         arm(&mut self.store);
         if let Err(error) = self
-            .init
-            .call(&mut self.store, (cfg!(target_os = "macos"),))
+            .exports
+            .init(&mut self.store, cfg!(target_os = "macos"))
         {
             let trap = format!("{shown}: init trapped: {}", first_line(&error));
             return Err(panic_message(&mut self.store).unwrap_or(trap));
@@ -335,22 +330,22 @@ impl Guest {
         Self::from_bytes(module, &bytes, &shown)
     }
 
-    /// The component instantiated and mounted; `shown` names it in errors.
+    /// The view instantiated and mounted; `shown` names it in errors.
     pub(crate) fn from_bytes(
         module: &'static str,
         bytes: &[u8],
         shown: &str,
     ) -> Result<Self, String> {
-        let component = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
-        let mut guest = Self::instantiate(module, &component, shown)?;
+        let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
+        let mut guest = Self::instantiate(module, &code, shown)?;
         guest.name = manifest_name(bytes);
         guest.init(shown)?;
         Ok(guest)
     }
 
-    /// The component's bytes checked and compiled — the cranelift stage of
+    /// The view's bytes checked and compiled — the cranelift stage of
     /// a load, measured on its own.
-    pub(crate) fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Component>, Failure> {
+    pub(crate) fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Module>, Failure> {
         if bytes.len() as u64 > MAX_MODULE_BYTES {
             return Err(Failure::Refused(format!(
                 "{shown}: past the {MAX_MODULE_BYTES} byte module limit"
@@ -358,30 +353,28 @@ impl Guest {
         }
         // its preferred size is for placing a new window; the tab embeds
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
-            Failure::Refused(format!("{shown}: the component's manifest cannot be read"))
+            Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
         wire_epoch(manifest.wire_epoch)
             .map_err(|error| Failure::WireEpoch(format!("{shown}: {error}")))?;
-        let component =
-            compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))?;
-        Ok(component)
+        compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))
     }
 
-    /// The component instantiated, its exports bound, nothing run yet: a
+    /// The module instantiated, its exports bound, nothing run yet: a
     /// fresh view is `init`ed, a replacement `restore`d.
     pub(crate) fn instantiate(
         module: &'static str,
-        component: &Component,
+        code: &Module,
         shown: &str,
     ) -> Result<Self, String> {
         let engine = engine();
         // Tables are allocated eagerly at their declared minimum, before any
-        // fuel or memory limit is consulted; a component is several core
-        // instances — the guest and its component bindings — and one memory.
+        // fuel or memory limit is consulted; a view is one core instance
+        // and one memory.
         let limits = StoreLimitsBuilder::new()
             .memory_size(MEMORY_LIMIT)
             .memories(1)
-            .instances(8)
+            .instances(1)
             .tables(4)
             .table_elements(1 << 20)
             .trap_on_grow_failure(true)
@@ -394,46 +387,46 @@ impl Guest {
             },
         );
         store.limiter(|state| &mut state.limits);
-        // The `ducktape:view` world's one import is the panic hook's; anything
-        // else the component asks for traps if it is ever called.
+        // A view's one import is the panic hook's (`wire::abi`); anything
+        // else the module asks for traps if it is ever called.
         let mut linker = Linker::<HostState>::new(engine);
         linker
-            .root()
             .func_wrap(
+                wire::abi::IMPORT_MODULE,
                 "panicked",
-                |mut store: StoreContextMut<'_, HostState>, (message,): (String,)| {
+                |mut caller: Caller<'_, HostState>, ptr: u32, len: u32| {
+                    let message = caller
+                        .get_export("memory")
+                        .and_then(|export| export.into_memory())
+                        .and_then(|memory| {
+                            let start = ptr as usize;
+                            let bytes = memory
+                                .data(&caller)
+                                .get(start..start.saturating_add(len.min(1024) as usize))?;
+                            Some(String::from_utf8_lossy(bytes).into_owned())
+                        })
+                        .unwrap_or_default();
                     let line = message.lines().next().unwrap_or_default();
-                    store.data_mut().panic = Some(line.chars().take(1024).collect());
-                    Ok(())
+                    caller.data_mut().panic = Some(line.chars().take(1024).collect());
                 },
             )
             .map_err(|error| error.to_string())?;
         linker
-            .define_unknown_imports_as_traps(component)
+            .define_unknown_imports_as_traps(code)
             .map_err(|error| error.to_string())?;
         arm(&mut store);
         let instance = linker
-            .instantiate(&mut store, component)
+            .instantiate(&mut store, code)
             .map_err(|error| format!("{shown}: {}", first_line(&error)))?;
-        let init = instance
-            .get_typed_func::<(bool,), ()>(&mut store, "init")
-            .map_err(|error| format!("{shown}: {error}"))?;
-        let tick = instance
-            .get_typed_func::<(Vec<u8>,), (Vec<u8>,)>(&mut store, "tick")
-            .map_err(|error| format!("{shown}: {error}"))?;
-        let snapshot = instance
-            .get_typed_func::<(), (Result<Vec<u8>, String>,)>(&mut store, "snapshot")
-            .map_err(|error| format!("{shown}: {error}"))?;
-        let restore = instance
-            .get_typed_func::<(Vec<u8>, bool), (Result<(), String>,)>(&mut store, "restore")
-            .map_err(|error| format!("{shown}: {error}"))?;
+        let exports =
+            Exports::bind(&mut store, &instance).map_err(|error| format!("{shown}: {error}"))?;
         Ok(Self {
             connection_rev: connection().lock().expect("views rpc").rev,
             user_activation: None,
             module,
             name: String::new(),
             store,
-            tick,
+            exports,
             pending: Vec::new(),
             widget_commands: Vec::new(),
             frame: wire::Frame::default(),
@@ -464,9 +457,6 @@ impl Guest {
             hash: None,
             alive: Arc::new(()),
             staged: false,
-            snapshot,
-            restore,
-            init,
         })
     }
 
