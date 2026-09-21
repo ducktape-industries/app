@@ -48,7 +48,7 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
 
 `ducktape-industries/modules` (`main`, `crates/sdk`): `abi`, `view-wire`, `ducklink`, `design`.
 `ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
-`ducktape-industries/gpui-notion` (`main`): the block editor.
+`ducktape-industries/gpui-pages` (`main`): the block editor.
 
 Out until their upstreams settle: the self-update lane (`app-update`,
 `bin/app-launcher`) — the kernel branch names `keyscheme` at an sdk revision
