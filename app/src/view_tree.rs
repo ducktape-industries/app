@@ -36,6 +36,7 @@ use view_wire as wire;
 mod accessibility;
 mod canvas;
 mod commands;
+mod deferred;
 mod inputs;
 mod layout;
 mod pickers;
@@ -46,7 +47,6 @@ mod style;
 mod surfaces;
 mod text;
 
-#[cfg(test)]
 #[cfg(test)]
 mod tests;
 
@@ -251,6 +251,14 @@ impl Render for ViewTree {
         let node = self.node(&self.root.clone(), window, cx);
         // Only controls mounted by this replacement frame may recover focus.
         self.presentation = NativePresentation::default();
-        node
+        // This boundary belongs to the host, never to guest style. It also
+        // supplies the mask captured by deferred guest draws.
+        div()
+            .relative()
+            .size_full()
+            .min_w_0()
+            .min_h_0()
+            .overflow_hidden()
+            .child(node)
     }
 }
