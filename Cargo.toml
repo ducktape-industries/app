@@ -1,17 +1,19 @@
-# ducktape-app — the native GPUI desktop shell.
+# app — the native GPUI desktop shell.
 #
-# Split out of the ducktape monorepo: the app crate itself, its boot-time
-# launcher (bin/app-launcher) and the gpui-notion editor it embeds are
-# source here; everything else it links (the module wire crates, view-wire
-# and design from ducktape-sdk; the node-side platform crates from
-# ducktape-industries/ducktape) arrives as a cargo git dependency.
+# The app is a BLIND HOST: it connects to a node, reads the roster, fetches
+# each program's view and renders it. It knows no program by name; every
+# view request names its own target and the app relays the bytes. Source
+# here is the app crate and its boot-time launcher (to return);
+# everything else arrives as a cargo git dependency.
+#
+# The self-update lane (app-update, bin/app-launcher, backend/update*) is
+# OUT until the kernel branch stops naming `keyscheme` at sdk `dev`, where it
+# no longer exists; cargo refuses a same-source patch. First thing back.
 
 [workspace]
 resolver = "2"
 members = [
     "app",
-    "bin/app-launcher",
-    "crates/gpui-notion",
 ]
 
 [workspace.package]
@@ -19,56 +21,30 @@ edition = "2024"
 version = "0.1.0"
 
 [workspace.dependencies]
-# --- source in this repo ---
-gpui-notion = { path = "crates/gpui-notion" }
+# --- the editor the host draws multiline text with ---
+gpui-notion = { git = "https://github.com/ducktape-industries/gpui-pages", branch = "main" }
 
-# --- sdk-line: ducktape-sdk (types-only wire/platform crates) ---
-sdk = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "sdk" }
-# view-wire is pinned apart from the rest of the sdk line: the host and
-# presenter speak epoch 10 (81953e6). Core's noded links its own view-wire
-# privately (bindgen + manifest), so no type crosses between them.
-view-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "view-wire" }
-# the `duck://` grammar, at the view-wire rev: the rest of the line's
-# duck-address (5fa05de) has no typed tails and no account address.
-# files-wire carries `FileAddress`.
-duck-address = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "duck-address" }
-files-wire = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "files-wire" }
-design = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "design" }
-# chat's client view model, at the view-wire rev: a mention links the
-# account's `duck://<chain>/identity/<n>`, which chat-wire at 5fa05de cannot
-# mint. Its `NameDirectory` reads the `AccountView` of the identity-wire it
-# links (`chat-identity`); the app's `identity` stays core's (5fa05de), and
-# `backend/roster.rs` hands the one record to the other — the shape did not move.
-chat = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "chat-wire" }
-chat-identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "81953e68d0e8ceb142c49d2ad5397d55c3322578", package = "identity-wire" }
-forge = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "forge-wire" }
-gateway = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "gateway-wire" }
-identity = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "identity-wire" }
+# --- sdk-line: modules main, crates/sdk (abi, view-wire, ducklink, design) ---
+abi = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "design" }
 
-# --- node-side: ducktape-industries/ducktape ---
-node = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "node" }
-media-service = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "media-service" }
-ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "ducktape-rpc" }
-module-artifact = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "module-artifact" }
-keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "keystore" }
-authpage = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "authpage" }
-run-envelope = { git = "https://github.com/ducktape-industries/ducktape-sdk", branch = "dev", package = "run-envelope" }
-workspace-config = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "workspace-config" }
-app-update = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "app-update" }
-ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "ducktape-home" }
-simnode = { git = "https://github.com/ducktape-industries/ducktape", branch = "dev", package = "simnode" }
+# --- node-side: ducktape-industries/ducktape on the kernel branch ---
+ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
+keystore = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "keystore" }
 
 # --- external ---
+borsh = { version = "1", default-features = false, features = ["derive", "std"] }
 tracing = "0.1"
 sha2 = "0.10"
-tar = "0.4"
-zstd = "0.13"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "blocking"] }
 rand = "0.8"
 commonware-cryptography = "2026.9.0"
+commonware-codec = "2026.9.0"
 base64 = "0.22"
 tempfile = "3"
 zeroize = "1"
@@ -77,13 +53,6 @@ zeroize = "1"
 wasmtime = "=46.0.3"
 libc = "0.2"
 
-# gpui-pre 0.3.5 + the headless accessibility tree, rev 021b436617db8bf377ad384b464cd1b34692f35e
-# of the private ducktape-industries/gpui-pre: the test window keeps the tree
-# it is sent and a window can be switched to build one with no assistive tech
-# attached, which the #114 `ax_contract` gate needs; a window's last tree, the
-# element behind each node and the adapter's action path are public at run
-# time, which the #114 test door (`app/src/ax_door.rs`) reads. Dies when the upstream
-# PR (pending; described in that repo's README) lands and gpui-kit takes it.
 [patch.crates-io]
 gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "021b436617db8bf377ad384b464cd1b34692f35e" }
 
@@ -187,10 +156,6 @@ opt-level = 2
 [profile.dev.package.usvg]
 opt-level = 2
 
-# The native document readers parse Markdown on their presentation path.
-[profile.dev.package.pulldown-cmark]
-opt-level = 2
-
 [profile.dev.package.regex-automata]
 opt-level = 2
 
@@ -212,33 +177,3 @@ opt-level = 3
 [profile.dev.package.argon2]
 opt-level = 3
 
-# The huddle's per-frame video codecs; see media-service's own module docs.
-[profile.dev.package.media-service]
-opt-level = 3
-
-[profile.dev.package.jpeg-encoder]
-opt-level = 3
-
-[profile.dev.package.zune-jpeg]
-opt-level = 3
-
-[profile.dev.package.zune-core]
-opt-level = 3
-
-[profile.dev.package.mozjpeg]
-opt-level = 3
-
-[profile.dev.package.mozjpeg-sys]
-opt-level = 3
-
-[profile.dev.package.nokhwa]
-opt-level = 2
-
-[profile.dev.package.nokhwa-core]
-opt-level = 2
-
-[profile.dev.package.nokhwa-bindings-linux]
-opt-level = 2
-
-[profile.dev.package.nokhwa-bindings-macos]
-opt-level = 2

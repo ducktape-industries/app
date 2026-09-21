@@ -290,7 +290,7 @@ impl EditorView {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct ViewerState {
     scale: f32,
     offset: Point<Pixels>,
@@ -413,6 +413,8 @@ pub struct ViewTree {
     editors: HashMap<String, EditorMount>,
     mounted: std::collections::HashSet<String>,
     presentation: NativePresentation,
+    #[cfg(test)]
+    renders: u64,
 }
 
 impl EventEmitter<wire::Event> for ViewTree {}
@@ -628,30 +630,6 @@ impl ViewTree {
         self.bounds.get(key).copied()
     }
 
-    #[cfg(test)]
-    pub(crate) fn input_presentation(
-        &self,
-        key: &str,
-        window: &Window,
-        cx: &App,
-    ) -> Option<(String, usize, std::ops::Range<usize>, bool)> {
-        let input = self.fields.get(key)?.state.read(cx);
-        Some((
-            input.value().to_string(),
-            input.cursor(),
-            input.selected_range(),
-            input.focus_handle(cx).is_focused(window),
-        ))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn scroll_offset(&self, key: &str) -> Option<Point<Pixels>> {
-        self.lists
-            .get(key)
-            .map(|list| list.state.scroll_px_offset_for_scrollbar())
-            .or_else(|| self.scrolls.get(key).map(ScrollHandle::offset))
-    }
-
     pub fn new(root: wire::Node) -> Self {
         Self {
             user_activation: Default::default(),
@@ -678,6 +656,8 @@ impl ViewTree {
             editors: HashMap::new(),
             mounted: Default::default(),
             presentation: NativePresentation::default(),
+            #[cfg(test)]
+            renders: 0,
         }
     }
 
@@ -689,27 +669,6 @@ impl ViewTree {
         self.editors.clear();
         self.editor_store = Some(store);
         cx.notify();
-    }
-
-    pub fn set_surface(&mut self, key: String, surface: AnyView, cx: &mut Context<Self>) {
-        self.surfaces.insert(key, surface);
-        cx.notify();
-    }
-
-    pub fn surface_requests(&self) -> Vec<(String, String, Vec<wire::SurfaceValue>, Option<u32>)> {
-        let mut requests = Vec::new();
-        self.root.clone().for_each_mut(&mut |node| {
-            if let wire::Node::Surface {
-                key,
-                name,
-                args,
-                on_event,
-            } = node
-            {
-                requests.push((key.clone(), name.clone(), args.clone(), *on_event));
-            }
-        });
-        requests
     }
 
     pub fn execute_widget_command(
@@ -1509,7 +1468,7 @@ impl ViewTree {
             Node::Hover { .. } => self.hover(node, window, cx),
             Node::Tooltip { .. } => self.tooltip(node, window, cx),
             Node::Float { .. } => self.float(node, window, cx),
-            Node::Image { .. } => self.picture(node, window),
+            Node::Image { .. } => self.picture(node, cx),
             Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
             Node::Svg { .. } => self.vector(node, window),
             Node::Canvas { .. } => self.drawing(node, cx),
@@ -3516,12 +3475,6 @@ impl ViewTree {
         outer.child(element).into_any_element()
     }
 
-    fn refresh_resource(&self, data: Option<&wire::ImageData>, window: &mut Window) {
-        if let Some(wire::ImageData::Resource(_)) = data {
-            window.request_animation_frame();
-        }
-    }
-
     fn remember_image(&mut self, hash: u64, data: &wire::ImageData) {
         if matches!(data, wire::ImageData::Resource(_)) {
             return;
@@ -3537,9 +3490,7 @@ impl ViewTree {
 
     fn image_frame(&self, hash: u64, data: Option<&wire::ImageData>) -> Option<Arc<RenderImage>> {
         match data {
-            Some(wire::ImageData::Resource(key)) => {
-                crate::video::stage_frame(key).map(|(_, _, image)| image)
-            }
+            Some(wire::ImageData::Resource(_)) => None,
             _ => self.images.get(&hash).cloned(),
         }
     }
@@ -3569,7 +3520,6 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        self.refresh_resource(data.as_ref(), window);
         if let Some(data) = data {
             self.remember_image(*hash, data);
         }
@@ -3596,14 +3546,17 @@ impl ViewTree {
             let height = u32::from(original.height) as f32 * ratio * viewer.scale;
             let x = (f32::from(viewport.width) - width) / 2.0 + f32::from(viewer.offset.x);
             let y = (f32::from(viewport.height) - height) / 2.0 + f32::from(viewer.offset.y);
-            element = element.child(
-                img(image.clone())
-                    .absolute()
-                    .left(px(x))
-                    .top(px(y))
-                    .w(px(width))
-                    .h(px(height)),
-            );
+            if !matches!(data, Some(wire::ImageData::Resource(_))) {
+                element = element.child(
+                    div()
+                        .absolute()
+                        .left(px(x))
+                        .top(px(y))
+                        .w(px(width))
+                        .h(px(height))
+                        .child(img(image.clone())),
+                );
+            }
         }
         let (minimum, maximum) = options.scale_bounds.unwrap_or((0.25, 10.0));
         let step = options.scale_step.unwrap_or(0.1);
@@ -3660,7 +3613,7 @@ impl ViewTree {
         element.child(self.measure(key, cx)).into_any_element()
     }
 
-    fn picture(&mut self, node: &wire::Node, window: &mut Window) -> AnyElement {
+    fn picture(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Image {
             key,
             hash,
@@ -3674,13 +3627,20 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        self.refresh_resource(data.as_ref(), window);
         if let Some(data) = data {
             self.remember_image(*hash, data);
         }
         let mut element = dimensions(div(), *width, *height).opacity(opacity.unwrap_or(1.0));
-        if let Some(image) = self.image_frame(*hash, data.as_ref()) {
-            element = element.child(img(image.clone()).size_full().object_fit(object_fit(*fit)));
+        match data {
+            Some(wire::ImageData::Resource(_)) => {
+                element = element.child(self.measure(key, cx));
+            }
+            _ => {
+                if let Some(image) = self.image_frame(*hash, data.as_ref()) {
+                    element =
+                        element.child(img(image.clone()).size_full().object_fit(object_fit(*fit)));
+                }
+            }
         }
         announce(element.id(key.clone()), accessible(node)).into_any_element()
     }
@@ -3862,8 +3822,9 @@ impl ViewTree {
 
 impl Render for ViewTree {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        for image in crate::video::take_retired() {
-            let _ = window.drop_image(image);
+        #[cfg(test)]
+        {
+            self.renders += 1;
         }
         self.mounted.clear();
         let node = self.node(&self.root.clone(), window, cx);
@@ -3934,8 +3895,17 @@ fn content_dimensions(node: &wire::Node) -> (Option<wire::Length>, Option<wire::
         | wire::Node::Scroll { width, height, .. }
         | wire::Node::Stack { width, height, .. }
         | wire::Node::Responsive { width, height, .. } => (*width, *height),
+        wire::Node::MouseArea { content, .. } => content_dimensions(content),
         // an overlay always renders full-size (see its arm)
         wire::Node::Overlay { .. } => (Some(wire::Length::Fill), Some(wire::Length::Fill)),
+        // layout-transparent wrappers take their content's size: a sensor
+        // around a press area around a Fill row is still a Fill row. Under a
+        // cached guest mount nothing stretches an auto-sized wrapper, so a
+        // wrapper that stops here leaves every Fill below it content-tall.
+        wire::Node::ResizeHandle { content, .. } | wire::Node::Lazy { content, .. } => {
+            content_dimensions(content)
+        }
+        wire::Node::Sensor { child, .. } => content_dimensions(child),
         _ => (None, None),
     }
 }
@@ -5127,22 +5097,6 @@ fn append_arc_to(
 }
 
 #[cfg(test)]
-pub(crate) fn assert_released_image_is_not_cached(key: &str) {
-    let mut tree = ViewTree::new(wire::Node::empty());
-    let resource = wire::ImageData::Resource(key.into());
-    tree.remember_image(7, &resource);
-    let image = tree.image_frame(7, Some(&resource)).expect("live resource");
-    let released = Arc::downgrade(&image);
-    drop(image);
-    crate::video::forget_peer(key);
-    drop(crate::video::take_retired());
-    assert!(tree.image_frame(7, Some(&resource)).is_none());
-    assert!(
-        released.upgrade().is_none(),
-        "the renderer must not retain a released resource"
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5154,7 +5108,7 @@ mod tests {
     ) {
         cx.update(gpui_kit::init);
         cx.update(crate::editor::wire::init_notion);
-        for key in ["another-app/body", "/pages/document"] {
+        for key in ["another-app/body", "/p1/document"] {
             let mut root = wire::Node::Editor {
                 key: key.into(),
                 label: None,
@@ -5490,7 +5444,7 @@ mod tests {
         let mut header = row.clone();
         if let wire::Node::Linear { children, .. } = &mut header {
             *children = vec![
-                text("label", "Pages".into(), None, Some(wire::Wrapping::None)),
+                text("label", "Header".into(), None, Some(wire::Wrapping::None)),
                 wire::Node::Space {
                     width: Some(wire::Length::Fill),
                     height: None,
@@ -5511,7 +5465,7 @@ mod tests {
             *height = None;
             *children = vec![text(
                 "reference",
-                "Pages".into(),
+                "Header".into(),
                 None,
                 Some(wire::Wrapping::None),
             )];
@@ -6669,7 +6623,7 @@ mod tests {
     #[test]
     fn a_button_with_a_role_is_that_role_and_reports_selected() {
         for (role, heard) in ROLES {
-            let mut tab = button(wire::ButtonContent::Label("Inbox".into()), None, Some(1));
+            let mut tab = button(wire::ButtonContent::Label("Tab".into()), None, Some(1));
             let wire::Node::Button {
                 role: set,
                 selected,
@@ -6682,7 +6636,7 @@ mod tests {
             let tab = accessible(&tab);
             assert_eq!(tab.role, Some(heard));
             assert_eq!(tab.selected, Some(true));
-            assert_eq!(tab.name.as_deref(), Some("Inbox"));
+            assert_eq!(tab.name.as_deref(), Some("Tab"));
         }
     }
 
@@ -6758,6 +6712,144 @@ mod tests {
             Accessible::default()
         );
         assert_eq!(accessible(&overlay(None, true)), Accessible::default());
+    }
+
+    /// A room column's refusal shape: a bordered, washed notice holding
+    /// one long wrapped line, then a Fill space, then the composer. The sidebar
+    /// beside it must keep its surface and rule, and the composer must sit at
+    /// the bottom of the column.
+    #[gpui_kit::test]
+    fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use view_wire::kit;
+        cx.update(gpui_kit::init);
+        let refusal = "Couldn’t read this room: indexer: view: unknown field `viewer_handles`, \
+             expected one of `channel_id`, `before_seq`, `limit` at line 1 column 118";
+        let room = kit::sized(
+            kit::column(
+                "room",
+                [
+                    kit::divider("header-rule"),
+                    kit::notice(
+                        "error",
+                        kit::wrapping(kit::text("error-text", refusal)),
+                        kit::Tone::Danger,
+                    ),
+                    kit::space(None, Some(wire::Length::Fill)),
+                    kit::sized(
+                        kit::container("composer", wire::Node::empty()),
+                        Some(wire::Length::Fill),
+                        Some(wire::Length::Fixed(60.)),
+                    ),
+                ],
+            ),
+            Some(wire::Length::Fill),
+            Some(wire::Length::Fill),
+        );
+        let room = kit::sized(
+            kit::row(
+                "workspace",
+                [
+                    kit::pane("sidebar", wire::Node::empty(), wire::Length::Fixed(236.)),
+                    kit::vertical_divider("sidebar-resize"),
+                    room,
+                ],
+            ),
+            Some(wire::Length::Fill),
+            Some(wire::Length::Fill),
+        );
+        // A room's real root: a viewport sensor around the press area.
+        let root = wire::Node::Sensor {
+            key: "viewport".into(),
+            reset: None,
+            on_show: None,
+            on_resize: Some(1),
+            on_hide: None,
+            anticipate: None,
+            delay: None,
+            child: Box::new(wire::Node::MouseArea {
+                key: "press-area".into(),
+                role: None,
+                label: None,
+                expanded: None,
+                selected: None,
+                checked: None,
+                on_press: Some(2),
+                on_release: None,
+                on_double_click: None,
+                on_right_press: None,
+                on_right_release: None,
+                on_middle_press: None,
+                on_middle_release: None,
+                on_enter: None,
+                on_exit: None,
+                on_move: None,
+                on_press_at: None,
+                on_scroll: None,
+                content: Box::new(room),
+            }),
+        };
+        // Mounted the way a module seat mounts a guest: a cached view under a
+        // full-size div, not as the window root (which gpui stretches).
+        struct Seat(Entity<ViewTree>);
+        impl Render for Seat {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size_full().child(
+                    self.0
+                        .clone()
+                        .cached(gpui_kit::StyleRefinement::default().size_full()),
+                )
+            }
+        }
+        let window = cx.open_window(size(px(800.), px(600.)), |_, cx| {
+            Seat(cx.new(|_| ViewTree::new(root)))
+        });
+        let tree = window
+            .root(cx)
+            .unwrap()
+            .read_with(cx, |seat, _| seat.0.clone());
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+        });
+        let bounds = |key: &str| {
+            tree.read_with(&native, |tree, _| tree.measured_bounds(key))
+                .unwrap_or_else(|| panic!("{key} was measured"))
+        };
+        let (sidebar, error, composer) = (bounds("sidebar"), bounds("error"), bounds("composer"));
+        assert_eq!(sidebar.size, size(px(236.), px(600.)), "{sidebar:?}");
+        assert!(
+            error.size.height < px(200.) && error.size.height > px(20.),
+            "the notice wraps to a few lines: {error:?}"
+        );
+        assert_eq!(
+            composer.origin.y,
+            px(540.),
+            "the Fill space pushes the composer to the bottom: {composer:?}"
+        );
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let quads = window.painted_quads();
+            let scale = window.scale_factor();
+            let surface = |w: f32, h: f32| {
+                quads
+                    .iter()
+                    .filter(|quad| {
+                        quad.bounds.size.width.as_f32() == w * scale
+                            && quad.bounds.size.height.as_f32() == h * scale
+                    })
+                    .count()
+            };
+            assert_eq!(surface(236., 600.), 1, "the sidebar surface: {quads:?}");
+            let rules = quads
+                .iter()
+                .filter(|quad| quad.bounds.size.height.as_f32() == 600. * scale)
+                .filter(|quad| quad.bounds.size.width.as_f32() <= scale)
+                .count();
+            assert_eq!(rules, 1, "the sidebar-resize rule: {quads:?}");
+        });
     }
 
     #[gpui_kit::test]

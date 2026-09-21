@@ -17,7 +17,8 @@
 //! masked here, before anything leaves the process. Only a rig that also sets
 //! `DUCKTAPE_AX_DOOR_PRIVATE=1` may ask for one private node's text ([`reveal`]).
 //! A keyboard-only walk sends keys through the window's own key dispatch
-//! ([`press_keys`]) and reads the bindings it can reach ([`shortcuts`]).
+//! ([`press_keys`]) and reads the bindings it can reach ([`shortcuts`]); a
+//! pointer drag goes through its mouse dispatch ([`drag_by_id`]).
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
 use futures::StreamExt as _;
@@ -550,6 +551,46 @@ pub(crate) struct Key {
     deadline_ms: Option<u64>,
 }
 
+/// `POST /drag`: what a mouse sends to one window — a left press at `from`,
+/// `steps` moves with the button held, a release at `to`. Logical px; with
+/// `id`, local to that node's painted bounds, else window coordinates.
+#[derive(Debug, Deserialize, PartialEq)]
+pub(crate) struct Drag {
+    #[serde(default)]
+    id: Option<String>,
+    from: [f32; 2],
+    to: [f32; 2],
+    /// moves between press and release, 4 unless given, never 0
+    #[serde(default)]
+    steps: Option<u32>,
+    /// without `id`: the window that gets it; else as `/key` picks one
+    #[serde(default)]
+    window: Option<String>,
+    #[serde(default)]
+    deadline_ms: Option<u64>,
+}
+
+impl Drag {
+    /// The move count once the request is checked: 400 for a coordinate
+    /// that is not a finite position on the window, or zero steps.
+    pub(crate) fn checked(&self) -> Result<u32, Reply> {
+        let refuse = |error: &str| Reply::new(400, json!({ "error": error }));
+        if self
+            .from
+            .iter()
+            .chain(&self.to)
+            .any(|edge| !edge.is_finite() || *edge < 0.)
+        {
+            return Err(refuse("coordinates are finite logical px, 0 or more"));
+        }
+        match self.steps {
+            Some(0) => Err(refuse("steps is 1 or more")),
+            Some(steps) => Ok(steps),
+            None => Ok(4),
+        }
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum Request {
     Tree {
@@ -563,6 +604,7 @@ pub(crate) enum Request {
     Reveal(Reveal),
     Key(Key),
     Keys(Filter),
+    Drag(Drag),
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -630,21 +672,6 @@ impl Reply {
             revision: Some(revision),
             ..self
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn status(&self) -> u16 {
-        self.status
-    }
-
-    #[cfg(test)]
-    pub(crate) fn body(&self) -> &str {
-        &self.body
-    }
-
-    #[cfg(test)]
-    pub(crate) fn revision(&self) -> Option<u64> {
-        self.revision
     }
 }
 
@@ -753,6 +780,45 @@ async fn answer(
             }
             let after = settle(&before, key.deadline_ms, windows, seen, cx).await;
             Reply::ok(json!(delta(&before, &after)))
+        }
+        Request::Drag(drag) => {
+            if let Err(reply) = drag.checked() {
+                return reply;
+            }
+            let before = read(windows, &all, false, seen, cx);
+            let handle = match &drag.id {
+                Some(id) => {
+                    if !before.iter().any(|node| node.id == *id) {
+                        return Reply::new(
+                            404,
+                            json!({ "error": "no such node", "nearest": nearest(id, &before) }),
+                        );
+                    }
+                    keyboard_window(
+                        id.split_once(':').map(|(name, _)| name),
+                        &before,
+                        windows,
+                        cx,
+                    )
+                }
+                None => keyboard_window(drag.window.as_deref(), &before, windows, cx),
+            };
+            let Some(handle) = handle else {
+                return Reply::new(404, json!({ "error": "no such window" }));
+            };
+            let name = cx
+                .update(|cx| windows(cx))
+                .into_iter()
+                .find_map(|(name, other)| (other == handle).then_some(name))
+                .unwrap_or_default();
+            let sent = handle
+                .update(cx, |_, window, cx| drag_by_id(&name, window, cx, &drag))
+                .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })));
+            if sent.status != 200 {
+                return sent;
+            }
+            settle(&before, drag.deadline_ms, windows, seen, cx).await;
+            sent
         }
         Request::Keys(filter) => {
             let before = read(windows, &all, false, seen, cx);
@@ -864,6 +930,79 @@ pub(crate) fn press_keys(
     }
     type_text(window, cx, text);
     Ok(())
+}
+
+/// Sends `drag` to `window` (name `name`): with an id, `from` and `to` are
+/// offset by that node's painted origin, as its tree reports it. Answers
+/// the window coordinates actually sent; 404 when the node is not showing.
+pub(crate) fn drag_by_id(name: &str, window: &mut Window, cx: &mut App, drag: &Drag) -> Reply {
+    let steps = match drag.checked() {
+        Ok(steps) => steps,
+        Err(reply) => return reply,
+    };
+    let origin = match &drag.id {
+        Some(id) => {
+            let bounds = snapshot(name, window, true)
+                .into_iter()
+                .find(|node| node.id == *id)
+                .and_then(|node| node.bounds);
+            let Some([x, y, ..]) = bounds else {
+                return Reply::new(404, json!({ "error": "no such node" }));
+            };
+            [x as f32, y as f32]
+        }
+        None => [0., 0.],
+    };
+    let from = [drag.from[0] + origin[0], drag.from[1] + origin[1]];
+    let to = [drag.to[0] + origin[0], drag.to[1] + origin[1]];
+    drag_pointer(window, cx, from, to, steps);
+    Reply::ok(json!({ "from": from, "to": to, "steps": steps }))
+}
+
+/// A left-button drag through the window's own event dispatch, as a mouse's
+/// arrives: press at `from`, `steps` held moves along the line, the last
+/// exactly at `to`, release at `to`. Logical window px.
+fn drag_pointer(window: &mut Window, cx: &mut App, from: [f32; 2], to: [f32; 2], steps: u32) {
+    use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
+    let at = |[x, y]: [f32; 2]| gpui_kit::point(gpui_kit::px(x), gpui_kit::px(y));
+    window.dispatch_event(
+        PlatformInput::MouseDown(MouseDownEvent {
+            position: at(from),
+            button: MouseButton::Left,
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        }),
+        cx,
+    );
+    for step in 1..=steps {
+        let position = if step == steps {
+            to
+        } else {
+            let t = step as f32 / steps as f32;
+            [
+                from[0] + (to[0] - from[0]) * t,
+                from[1] + (to[1] - from[1]) * t,
+            ]
+        };
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: at(position),
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        );
+    }
+    window.dispatch_event(
+        PlatformInput::MouseUp(MouseUpEvent {
+            position: at(to),
+            button: MouseButton::Left,
+            modifiers: Default::default(),
+            click_count: 1,
+        }),
+        cx,
+    );
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -1267,6 +1406,7 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
         ("POST", "reveal") if private => parse(body).map(Request::Reveal),
         ("POST", "key") => parse(body).map(Request::Key),
         ("GET", "keys") => Ok(Request::Keys(filter)),
+        ("POST", "drag") => parse(body).map(Request::Drag),
         _ => {
             let mut endpoints = vec![
                 "GET /tree",
@@ -1275,6 +1415,7 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
                 "POST /wait",
                 "POST /key",
                 "GET /keys",
+                "POST /drag",
             ];
             if private {
                 endpoints.push("POST /reveal");
@@ -1322,8 +1463,15 @@ const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--comp
        ducktape-app ax act <id> <press|focus|set_value|type|scroll_into_view> [value]
        ducktape-app ax key <keys> [--text T] [--window W]   (keys: tab, shift-tab, enter, ctrl-k …)
        ducktape-app ax keys [--window W]
+       ducktape-app ax drag <x1,y1> <x2,y2> [--id ID] [--steps N] [--window W]   (px; local to ID's bounds when given)
        ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]
        ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)";
+
+/// `x,y` as the CLI takes a position.
+fn point(word: &str) -> Option<[f32; 2]> {
+    let (x, y) = word.split_once(',')?;
+    Some([x.trim().parse().ok()?, y.trim().parse().ok()?])
+}
 
 /// `ducktape-app ax …`: prints the door's JSON. Exit 0 answered, 1 not
 /// found, refused or timed out, 2 the door is not open.
@@ -1364,6 +1512,18 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             json!({ "keys": keys.first().copied().unwrap_or_default(), "text": flags.get("text").copied().unwrap_or_default(), "window": flags.get("window") }).to_string(),
         ),
         (Some("keys"), []) => ("GET", format!("/keys?{}", query(&["window"])), String::new()),
+        (Some("drag"), [from, to]) if point(from).is_some() && point(to).is_some() => (
+            "POST",
+            "/drag".to_owned(),
+            json!({
+                "id": flags.get("id"),
+                "from": point(from),
+                "to": point(to),
+                "steps": flags.get("steps").and_then(|steps| steps.parse::<u32>().ok()),
+                "window": flags.get("window"),
+            })
+            .to_string(),
+        ),
         (Some("wait"), []) => (
             "POST",
             "/wait".to_owned(),

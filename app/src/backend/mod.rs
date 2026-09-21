@@ -1,215 +1,113 @@
-use std::collections::BTreeMap;
-use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+//! The app's side of the wire: a node's daemon ([`noded`]), the device's
+//! key and preferences ([`session`]), and where views come from ([`views`]).
+//! Nothing here names a program.
 
-// No `ChatQuery`/`ChatReply` here on purpose: every chat read in this app goes
-// through `/v1/index/chat/view`, off the node's select loop. A dispatch query
-// import reappearing is the signal that one crawled back onto it.
-//
-// The shipping binary reads no chat rows of its own any more — the chat view
-// does — so what is left of the module's vocabulary here is what the app's
-// own tests build rows with.
-#[cfg(test)]
-use ::chat::index::{ChatViewQuery, ChatViewReply};
-#[cfg(test)]
-use ::chat::{ChatMsg, PostPolicy};
-// this device's signing key, opened in-process by `keystore` and signing op
-// frames through `::node::encode_frame` — see `rpc::Signer`.
-use commonware_cryptography::{Signer as _, ed25519};
-use ducktape_rpc::{Client as RpcClient, ModuleEvent, Status as NodeStatus};
-use futures::{FutureExt as _, StreamExt as _};
-use tokio::sync::OwnedSemaphorePermit;
-use zeroize::Zeroizing;
-
-// chat's client view model is module-owned (`chat::client`) — the rendered
-// row types, the composer parsing, the optimistic merges, and the op-delta
-// splices. Re-exported here for app state handlers.
-pub use ::chat::client::{ChatChannel, ChatReader, HuddleSeat, NameDirectory, short_label};
-// the composer's block splitter is not called by the shipping binary — only by
-// the app's own test helpers, which build message rows the way a send does.
-#[cfg(test)]
-pub use ::chat::client::{ChatMessage, author_display, author_name, paragraph_blocks};
-
-/// The network a test's rendered rows name: chat links a mention to the
-/// account's address on a chain, and a fixture has no connection to take one
-/// from. The sim's `local` is no chain id the address grammar reads.
-#[cfg(test)]
-pub(crate) fn test_chain() -> duck_address::ChainId {
-    "dognet#b5b6ea90".parse().expect("a chain id")
-}
-/// How many one-second polls the provisioning screen waits before it says the
-/// node is not running and names the command that starts it.
-const PROVISION_PATIENCE: u32 = 8;
-
-#[derive(Clone, Debug, Default, Hash, PartialEq, serde::Deserialize)]
-pub struct ChatData {
-    /// The switch this window answers for. Every route that moves the reader
-    /// bumps `chat_generation` and stamps it here, so a room she has already
-    /// clicked past cannot land on top of the one she is looking at. Thread,
-    /// history, and search reads own separate compiler delivery lanes.
-    pub generation: i64,
-    pub channels: Vec<ChatChannel>,
-    pub active_channel: String,
-    pub active_channel_name: String,
-    pub active_channel_archived: bool,
-    /// the huddle's roster, not just its length — the faces and the tiles.
-    pub huddle_roster: Vec<HuddleParticipant>,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq)]
-pub struct WorkspaceData {
-    pub generation: i64,
-    pub rpc: String,
-    pub status: String,
-    pub height: i64,
-    pub channels: Vec<ChatChannel>,
-    pub active_channel: String,
-    pub active_channel_name: String,
-    pub active_channel_archived: bool,
-    pub huddle_roster: Vec<HuddleParticipant>,
-}
-
-#[derive(Clone, Debug, Hash, PartialEq)]
-pub struct AppError {
-    pub message: String,
-    pub committed: bool,
-}
-
-impl From<String> for AppError {
-    fn from(message: String) -> Self {
-        Self {
-            message: user_error(message),
-            committed: false,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Hash, PartialEq)]
-pub struct HydrationError {
-    pub generation: i64,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct LiveUpdate {
-    /// `ready` (topics subscribed — run the catch-up resync), `retry`
-    /// (stream down, reconnecting), `chat` (one ordered bounded delta batch),
-    /// `pages` (one folded delta), `resync` (this module's replay lagged —
-    /// reload its slices).
-    pub kind: crate::LiveKind,
-    pub status: String,
-    pub height: i64,
-    /// the module needing a scoped resync (`kind == LiveKind::Resync`).
-    pub module: String,
-    /// whether the handler must reload the chat slices (`ready` after the
-    /// subscribe→hydrate ordering race, or a `resync` of the chat plane).
-    /// chat deltas set it false: they fold.
-    pub load_chat: bool,
-    /// trail 100ms so a burst of ops coalesces into one reload.
-    pub debounce: bool,
-    /// Ordered chat deltas. Consecutive, already-ready chat frames are
-    /// published together so one network burst costs one reducer pass and one
-    /// view rebuild per bounded batch, not one of each per operation.
-    pub chat: Vec<ChatDelta>,
-    /// Subscription backpressure, not UI state. The next socket publication
-    /// cannot be read until the app message carrying this token has
-    /// finished its update and all of its clones have been dropped.
-    pub(crate) permit: LivePermit,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct LivePermit(Option<Arc<OwnedSemaphorePermit>>);
-
-impl LivePermit {
-    pub(crate) fn held(permit: OwnedSemaphorePermit) -> Self {
-        Self(Some(Arc::new(permit)))
-    }
-
-    #[cfg(test)]
-    pub(crate) fn is_held(&self) -> bool {
-        self.0.is_some()
-    }
-}
-
-impl std::fmt::Debug for LivePermit {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter
-            .debug_tuple("LivePermit")
-            .field(&self.0.is_some())
-            .finish()
-    }
-}
-
-impl PartialEq for LivePermit {
-    fn eq(&self, _other: &Self) -> bool {
-        // The permit changes scheduling only; it is not part of a publication's
-        // domain value and must not perturb reducer/test equality.
-        true
-    }
-}
-
-impl Default for LiveUpdate {
-    fn default() -> Self {
-        Self {
-            kind: crate::LiveKind::Retry,
-            status: String::new(),
-            height: 0,
-            module: String::new(),
-            load_chat: false,
-            debounce: false,
-            chat: Vec::new(),
-            permit: LivePermit::default(),
-        }
-    }
-}
-
-mod agent;
 mod app_dirs;
-mod chat;
-mod duck_uri;
-mod explorer;
-mod forge;
-mod hub;
-mod inbox;
-mod live;
-mod load;
-mod model;
-mod node;
-mod notify;
-mod picture;
-mod roster;
-mod rpc;
-mod shell;
-mod storage;
-mod style;
-pub mod update;
-mod view_artifact;
-pub mod view_source;
+pub(crate) mod noded;
+mod session;
+pub(crate) mod views;
 
-pub use agent::*;
 pub use app_dirs::app_log_path;
-pub(crate) use app_dirs::cache_dir;
-pub(crate) use app_dirs::state_dir;
-pub use chat::*;
-pub use duck_uri::*;
-pub use explorer::*;
-pub use forge::*;
-pub use hub::*;
-pub use inbox::*;
-pub use live::*;
-pub(crate) use load::*;
-pub use model::*;
-pub use node::*;
-pub use notify::*;
-pub use picture::*;
-use roster::*;
-pub use rpc::*;
-pub use shell::*;
-pub(crate) use storage::*;
-pub(crate) use style::*;
+pub(crate) use app_dirs::{cache_dir, config_dir, state_dir};
+pub(crate) use noded::{Client as RpcClient, Layer, Status as NodeStatus};
+pub(crate) use session::*;
+
+use std::time::Duration;
+
+/// A refusal the NODE or the PROGRAM authored, carried through with its
+/// own token; a transport failure gets the app's.
+pub(crate) fn refused(error: noded::Error) -> view_wire::Refusal {
+    use noded::Error;
+    match error {
+        Error::Refused(refusal) => view_wire::Refusal::new(refusal.reason, refusal.sentence),
+        Error::Decode(refusal) => view_wire::Refusal::new("malformed_reply", refusal.sentence),
+        Error::Failed { status, sentence } => {
+            view_wire::Refusal::new("node_failed", format!("{status}: {sentence}"))
+        }
+        Error::Transport(sentence) => view_wire::Refusal::new("rpc_client", sentence),
+    }
+}
+
+/// A sentence for the person, off an error the code produced.
+pub(crate) fn user_error(message: String) -> String {
+    let password_refused = message.contains("corrupt or wrong password");
+    if password_refused {
+        return "That password did not open this device's key. Check it and try again.".into();
+    }
+    let node_slow = message.contains("timed out");
+    if node_slow {
+        return "The node did not answer in time. Retry in a moment.".into();
+    }
+    message
+}
+
+/// One id, unique on this device, for a record a view mints.
+pub(crate) fn fresh_id(prefix: &str) -> String {
+    format!("{prefix}-{:x}-{}", epoch_nanos(), next_sequence())
+}
+
+fn epoch_nanos() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|since| since.as_nanos())
+        .unwrap_or_default()
+}
+
+/// The next frame sequence this device signs with: time-ordered, so a
+/// restart never re-uses one the node has seen.
+pub(crate) fn next_sequence() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = (epoch_nanos() / 1_000) as u64;
+    LAST.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |last| {
+        Some(now.max(last + 1))
+    })
+    .unwrap_or(now)
+        + 1
+}
+
+pub(crate) fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+pub(crate) fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
+    if !value.len().is_multiple_of(2) {
+        return Err("odd-length hex".into());
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&value[at..at + 2], 16).map_err(|error| error.to_string()))
+        .collect()
+}
+
+/// One second, doubling to sixteen, for a request that retries.
+pub(crate) fn retry_delay(attempt: u32) -> Duration {
+    let exponent = attempt.saturating_sub(1).min(4);
+    Duration::from_secs(1_u64 << exponent)
+}
+
+/// Whether `modifiers` hold the platform command key (⌘ on a Mac, Ctrl
+/// elsewhere).
+pub(crate) fn command_held(modifiers: gpui_kit::Modifiers) -> bool {
+    match cfg!(target_os = "macos") {
+        true => modifiers.platform,
+        false => modifiers.control,
+    }
+}
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sequences_climb_and_hex_round_trips() {
+        let first = next_sequence();
+        let second = next_sequence();
+        assert!(second > first);
+        assert_eq!(
+            hex_decode(&hex_encode(&[0, 255, 16])).unwrap(),
+            vec![0, 255, 16]
+        );
+        assert!(hex_decode("abc").is_err());
+    }
+}

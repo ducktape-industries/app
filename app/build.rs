@@ -24,54 +24,9 @@ fn main() {
             println!("cargo:rerun-if-changed={resolved}");
         }
     }
-    // a core pin bump moves noded to another checkout.
-    println!("cargo:rerun-if-changed=../Cargo.lock");
 
     if let Some(build) = build_id() {
         println!("cargo:rustc-env=DUCKTAPE_APP_BUILD={build}");
-    }
-
-    // Missing is not a build error: only the sim tests read it, and they fail
-    // naming this warning's reason when it is not there.
-    match noded_dir() {
-        Ok(dir) => println!("cargo:rustc-env=DUCKTAPE_CORE_NODED_DIR={dir}"),
-        Err(reason) => println!("cargo:warning=no core noded checkout recorded: {reason}"),
-    }
-}
-
-/// The directory of the `noded` package this build links, as cargo resolved it
-/// for this lockfile — a git pin's checkout under `$CARGO_HOME/git/checkouts`.
-/// A git dependency's source is keyed by its revision, so unlike a core
-/// checkout's own build, this path cannot be shared with another revision.
-fn noded_dir() -> Result<String, String> {
-    let var = |name: &str| std::env::var(name).map_err(|error| format!("{name}: {error}"));
-    let out = Command::new(var("CARGO")?)
-        .args(["metadata", "--format-version", "1", "--offline", "--locked"])
-        .args(["--filter-platform", &var("TARGET")?, "--manifest-path"])
-        .arg(format!("{}/Cargo.toml", var("CARGO_MANIFEST_DIR")?))
-        .output()
-        .map_err(|error| format!("cargo metadata: {error}"))?;
-    if !out.status.success() {
-        return Err(format!(
-            "cargo metadata: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    // no JSON parser without a build-dependency; a manifest path is a plain
-    // string field, and only one package's ends in `crates/noded/Cargo.toml`.
-    let metadata = String::from_utf8_lossy(&out.stdout);
-    let noded: Vec<&str> = metadata
-        .split("\"manifest_path\":\"")
-        .skip(1)
-        .filter_map(|rest| rest.split('"').next())
-        .filter_map(|path| path.strip_suffix("/crates/noded/Cargo.toml"))
-        .collect();
-    match noded[..] {
-        [checkout] => Ok(format!("{checkout}/crates/noded")),
-        _ => Err(format!(
-            "cargo metadata names {} noded packages",
-            noded.len()
-        )),
     }
 }
 

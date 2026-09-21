@@ -114,7 +114,7 @@ struct Outgoing {
     sender: EditorTransferSender,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 struct Projection {
     reference: EditorDocumentRef,
     text: Option<Arc<str>>,
@@ -1178,7 +1178,7 @@ fn native_key(
         // Escape, a cut with nothing selected, and any key the host has no
         // native default for do nothing — committed with no patch, so the
         // guest's editor is not left waiting. Stopping the view over a key it
-        // handed the host stopped Chat's composer on an ordinary keystroke.
+        // handed the host stopped a view's composer on an ordinary keystroke.
         _ => return (Vec::new(), cursor),
     };
     let mut next = text[..start].to_owned();
@@ -1588,7 +1588,7 @@ mod rich_tests {
         }
     }
 
-    /// NO KEY STOPS A VIEW — the class, not the one key Chat hit. Every named
+    /// NO KEY STOPS A VIEW — the class, not the one key a view hit. Every named
     /// key the wire defines (read off serde's own variant list, so a key the
     /// wire adds is tried too) and a sample of characters under each modifier
     /// set, over empty, one-line, multi-line, CRLF and combining text with the
