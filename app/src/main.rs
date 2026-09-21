@@ -2,18 +2,13 @@
 mod app_state;
 pub(crate) use app_state::*;
 
-mod authpage;
 mod ax_door;
 mod backend;
-mod call;
 mod editor;
-mod interfaces;
-mod media_access;
 mod module_view;
 mod secret;
 mod shell;
 mod tray;
-mod video;
 mod view_tree;
 
 fn main() {

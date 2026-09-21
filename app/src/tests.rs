@@ -2,17 +2,11 @@
 use super::*;
 mod ax_contract;
 mod ax_door;
-mod bell;
 mod canary;
 mod connection;
 mod design;
 mod font_fallback;
-mod huddle_live;
-mod messages;
-mod rooms;
-mod sends;
 mod shell;
-mod stream;
 mod window_lifecycle;
 fn message(seq: i64, body: &str, deleted: bool) -> backend::ChatMessage {
     backend::ChatMessage {

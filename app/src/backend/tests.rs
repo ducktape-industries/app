@@ -9,10 +9,7 @@ use futures::StreamExt as _;
 use super::*;
 use crate::ShellTab;
 
-mod docs;
 
-mod messages;
-mod repos;
 mod shell;
 mod status;
 mod wire;

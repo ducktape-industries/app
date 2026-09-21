@@ -18,7 +18,6 @@
 pub(crate) mod background;
 mod filesystem;
 mod kernel;
-mod taste;
 
 pub(crate) use kernel::chord_of;
 pub use kernel::{

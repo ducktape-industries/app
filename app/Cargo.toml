@@ -10,21 +10,15 @@ authors = ["Ducktape contributors"]
 gpui-kit = { version = "=0.6.1", features = ["tree-sitter-languages"] }
 # the pages document editor: Notion-shaped blocks, marks, slash menu and
 # toolbar on the same gpui-kit; the guest keeps the markdown canonical.
-gpui-notion = { path = "../crates/gpui-notion" }
+gpui-notion.workspace = true
 unicode-segmentation = "1"
 qrcode = { version = "0.14", default-features = false }
 futures.workspace = true
-pulldown-cmark = "0.12.2"
-duck-address.workspace = true
 # the huddle media planes: the call-socket framing and voice/video wire.
-media-service.workspace = true
 design.workspace = true
-ducktape-rpc.workspace = true
 # the desktop app's self-update machine; `backend/update.rs` is its executor.
-app-update.workspace = true
 tar.workspace = true
 zstd.workspace = true
-module-artifact.workspace = true
 # the `b64` pages the node's read lane answers with
 base64.workspace = true
 sha2.workspace = true
@@ -32,7 +26,6 @@ sha2.workspace = true
 # /forge/{repo} smart-HTTP bridge + the scratch merge commit MergePr CASes.
 # forge's exact pin (vendored, no TLS transports — the bridge speaks plain
 # http on loopback/LAN; probed against a live node before adoption).
-git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
 # THE ducktape home resolution (`$DUCKTAPE_HOME` else `~/.ducktape`), in a
 # zero-dependency leaf so every reader of that root agrees about it.
 ducktape-home.workspace = true
@@ -45,22 +38,15 @@ keystore.workspace = true
 # the signed op frame `/v1/submit/frame` takes. Signing one is the other half
 # of holding the key in-process; `node::encode_frame` is the ONE encoder, and a
 # second implementation of a machine wire format is not a thing to write.
-node.workspace = true
-keyscheme.workspace = true
 # the ed25519 signer `keystore` hands back and `node::encode_frame` signs with.
 commonware-cryptography.workspace = true
-commonware-codec.workspace = true
-k256.workspace = true
-p256.workspace = true
 unicode-normalization.workspace = true
 # the run envelope a durable agent run is scheduled with — the SCHEMA only.
 # Reaching the composer through `compute-service` would link provider-host
 # and the microVM sandbox into a GUI.
-run-envelope.workspace = true
 # the 32 random bytes of a fresh dispatch id.
 rand.workspace = true
 # Consensus payloads and authenticated origin types used by signed writes.
-sdk.workspace = true
 # The join ceremony, linked rather than spawned. Joining is the one node
 # operation with no daemon to ask — it is what BRINGS a workspace into
 # existence — so the app runs it here instead of shelling out to
@@ -71,16 +57,12 @@ serde_json = "1"
 toml = "0.8"
 # The huddle's media leg (`src/call.rs`): microphone/speaker streams and the
 # `/v1/call/ws` socket the node's call hub serves.
-cpal = "0.15"
-tokio-tungstenite = "0.24"
 # The camera leg (`src/video.rs`): capture. The JPEG codec it feeds is
 # `media_service::video::codec`, deliberately NOT a dep here (see that module).
-nokhwa = { version = "0.10", features = ["input-native"] }
 # The picture viewer (`src/backend/picture.rs`) decodes to RGBA off-thread;
 # GPUI receives the decoded pixels.
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # The same viewer validates and measures an SVG before native rendering.
-usvg = "0.45"
 # A web picture in forge Markdown is one capped GET (`web_picture_bytes`);
 # the workspace's reqwest is already in the binary under rpc-client.
 reqwest.workspace = true
@@ -94,13 +76,16 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # the device key's name is the host's (`device_key_name`); a kernel call
 # works on every OS the app runs on.
-gethostname = "1"
 zeroize.workspace = true
 # The module-owned views (`src/module_view.rs`): the wire a view's tree and
 # events cross on, and the runtime that executes the view's component. The
 # same wasmtime pin as the node — a view is not consensus, but one runtime
 # in one binary is one set of semantics to reason about.
 view-wire = { workspace = true, features = ["manifest"] }
+abi.workspace = true
+borsh.workspace = true
+ducklink.workspace = true
+tokio-tungstenite = "0.24"
 wasmtime.workspace = true
 
 # The native notification leg (`src/backend/notify.rs`): being @mentioned or
@@ -135,7 +120,6 @@ zbus = "5"
 # wherever something overlaps it. `randr` (the heads) and `xfixes` (the pointer)
 # are already on through gpui; naming them here keeps the picker from silently
 # losing them if gpui ever stops asking.
-x11rb = { version = "0.13", features = ["composite", "randr", "xfixes"] }
 
 [dev-dependencies]
 gpui-kit = { version = "=0.6.1", features = ["test-support"] }
@@ -146,5 +130,4 @@ quote = "1"
 # the dependency line this app is held to is read off the manifests, not
 # asserted about from memory: `the_app_links_only_what_it_still_speaks_for`
 commonware-cryptography.workspace = true
-simnode.workspace = true
 tempfile.workspace = true
