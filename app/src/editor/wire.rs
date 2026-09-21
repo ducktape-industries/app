@@ -216,23 +216,6 @@ impl EditorStore {
         std::mem::take(&mut store.events)
     }
 
-    #[cfg(test)]
-    pub(crate) fn seed_test_document(&self, document: &str, text: &str) {
-        let mut store = self.lock();
-        let document = store
-            .documents
-            .get_mut(document)
-            .expect("test editor document");
-        document.text = Some(Arc::from(text));
-        document.queue.clear();
-        document.queued_bytes = 0;
-        document.phase = Phase::Ready;
-        store.incoming = None;
-        store.outgoing = None;
-        store.events.clear();
-        store.fault = None;
-    }
-
     pub fn ready(&self) -> Result<bool, String> {
         let store = self.lock();
         store.check()?;
@@ -1195,7 +1178,7 @@ fn native_key(
         // Escape, a cut with nothing selected, and any key the host has no
         // native default for do nothing — committed with no patch, so the
         // guest's editor is not left waiting. Stopping the view over a key it
-        // handed the host stopped Chat's composer on an ordinary keystroke.
+        // handed the host stopped a view's composer on an ordinary keystroke.
         _ => return (Vec::new(), cursor),
     };
     let mut next = text[..start].to_owned();
@@ -1605,7 +1588,7 @@ mod rich_tests {
         }
     }
 
-    /// NO KEY STOPS A VIEW — the class, not the one key Chat hit. Every named
+    /// NO KEY STOPS A VIEW — the class, not the one key a view hit. Every named
     /// key the wire defines (read off serde's own variant list, so a key the
     /// wire adds is tried too) and a sample of characters under each modifier
     /// set, over empty, one-line, multi-line, CRLF and combining text with the

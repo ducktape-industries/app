@@ -1,5 +1,5 @@
-//! Where the app keeps what is ITS OWN — its preferences, its log, its forge
-//! mirrors — as distinct from a network's files, which live in that network's
+//! Where the app keeps what is ITS OWN — its preferences, its log, its
+//! caches — as distinct from a network's files, which live in that network's
 //! workspace under the ducktape home. Nothing of the app's is stored under the
 //! home: the home holds workspaces and nothing else, so two networks on one
 //! machine share no file, and the app's state outlives any one of them.
@@ -26,20 +26,9 @@ pub(crate) fn state_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_STATE_HOME", ".local/state", "Library/Logs")
 }
 
-/// rebuildable mirrors (a forge remote's bare clone).
+/// rebuildable caches (the view bytes read out of program blobs).
 pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_CACHE_HOME", ".cache", "Library/Caches")
-}
-
-/// what the launcher installs: `releases/`, `current`, `previous`
-/// (`$XDG_DATA_HOME`, else `~/.local/share`; Linux only — macOS keeps
-/// releases beside the update state).
-pub(crate) fn data_dir() -> Result<PathBuf, String> {
-    platform_dir(
-        "XDG_DATA_HOME",
-        ".local/share",
-        "Library/Application Support",
-    )
 }
 
 /// the app's rotating log, under the state directory.

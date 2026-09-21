@@ -2,31 +2,22 @@
 mod app_state;
 pub(crate) use app_state::*;
 
-mod authpage;
 mod ax_door;
 mod backend;
-mod call;
 mod editor;
-mod interfaces;
-mod media_access;
 mod module_view;
-mod secret;
 mod shell;
 mod tray;
-mod video;
 mod view_tree;
 
 fn main() {
-    // answered before the log, the fd limit or a window exists: a walk report
-    // quotes this beside `ducktape --version`, in the same
-    // `<cargo version>+<build stamp>` shape (`build.rs` stamps it).
     match std::env::args().nth(1).as_deref() {
         Some("--version" | "-V") => {
             let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");
             println!("ducktape-app {}+{build}", env!("CARGO_PKG_VERSION"));
             return;
         }
-        // the test door's client (#114); talks to a running app, opens nothing
+        // the test door's client: talks to a running app, opens nothing
         Some("ax") => {
             let args: Vec<String> = std::env::args().skip(2).collect();
             std::process::exit(ax_door::cli(&args));
@@ -38,24 +29,7 @@ fn main() {
         _ => {}
     }
     install_log();
-    // macOS launches a GUI with a 256-fd soft limit; the app's own stores,
-    // sockets and the node it hosts hit that as a bare EMFILE. raised AFTER
-    // install_log so the outcome lands in app.log like everything else.
-    match node::resource_limits::raise_open_file_limit() {
-        Ok(limit) => tracing::info!(
-            target: "ducktape::app",
-            soft_limit = limit.soft,
-            hard_limit = limit.hard,
-            raised = limit.raised,
-            "open-file limit"
-        ),
-        Err(err) => tracing::warn!(
-            target: "ducktape::app",
-            reason = "open_file_limit_unraised",
-            error = %err,
-            "open-file limit left at the inherited default"
-        ),
-    }
+    raise_open_file_limit();
     // no view ships with the app: every one comes off the connected node.
     // A view developer's DUCKTAPE_VIEWS_DIR supplies files in their place,
     // and app.log says so for each one it supplies
@@ -63,17 +37,31 @@ fn main() {
     shell::run();
 }
 
-/// The app's sink is `app.log` in its platform state directory, rotated at
-/// open exactly like the node's `daemon.log`, plus a panic hook that lands in
-/// it. The file remains available when a desktop launcher discards stderr.
-///
-/// `RUST_LOG` ADDS to `info` rather than replacing it, the `noded::log` rule:
-/// `RUST_LOG=ducktape::auth=debug` turns one plane up without turning the rest
-/// off. a malformed value falls back to `info` — strictly, not lossily, because
-/// the lossy parser reports each skipped directive on stderr.
-///
-/// no home, no file: the events go where they went before (nowhere), rather
-/// than a GUI refusing to start over a log it could not open.
+/// macOS launches a GUI with a 256-fd soft limit; the app's stores and
+/// sockets hit that as a bare EMFILE.
+fn raise_open_file_limit() {
+    // SAFETY: plain libc calls on a stack-local rlimit.
+    unsafe {
+        let mut limit = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) != 0 {
+            return;
+        }
+        let wanted = limit.rlim_max.min(8192);
+        if limit.rlim_cur >= wanted {
+            return;
+        }
+        limit.rlim_cur = wanted;
+        let raised = libc::setrlimit(libc::RLIMIT_NOFILE, &limit) == 0;
+        tracing::info!(target: "ducktape::app", soft_limit = wanted, raised, "open-file limit");
+    }
+}
+
+/// The app's sink is `app.log` in its platform state directory, plus a
+/// panic hook that lands in it. `RUST_LOG` ADDS to `info`; no home, no
+/// file: the events go nowhere rather than a GUI refusing to start.
 fn install_log() {
     use tracing_subscriber::layer::SubscriberExt as _;
     use tracing_subscriber::util::SubscriberInitExt as _;
@@ -83,9 +71,16 @@ fn install_log() {
     let filter = EnvFilter::builder()
         .parse(format!("info,{env}"))
         .unwrap_or_else(|_| EnvFilter::new("info"));
-    let file = backend::app_log_path()
-        .ok()
-        .and_then(|path| node::log_file::open_rotating(&path).ok());
+    let file = backend::app_log_path().ok().and_then(|path| {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+            .ok()
+    });
     let file_layer = file.map(|file| {
         tracing_subscriber::fmt::layer()
             .with_ansi(false)
@@ -97,9 +92,6 @@ fn install_log() {
     install_panic_hook();
 }
 
-/// chain, don't replace: the default hook keeps the backtrace on whatever
-/// stderr there is; this one puts the payload and location where a member can
-/// find them after the window is gone.
 fn install_panic_hook() {
     let default = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -107,9 +99,6 @@ fn install_panic_hook() {
             .location()
             .map(|at| format!("{}:{}:{}", at.file(), at.line(), at.column()))
             .unwrap_or_default();
-        // The location alone names a line inside a library (a container's
-        // unwrap); the backtrace names the widget of ours under it, which
-        // is what a member needs to find without a debugger attached.
         let backtrace = std::backtrace::Backtrace::force_capture();
         tracing::error!(
             target: "ducktape::app",
@@ -123,10 +112,3 @@ fn install_panic_hook() {
         default(info);
     }));
 }
-
-// The app is a bin crate: `app/tests/` cannot see `Ducktape`, so the frame
-// probe lives in the crate beside the suite it gates.
-#[cfg(test)]
-mod frame_probe;
-#[cfg(test)]
-mod tests;

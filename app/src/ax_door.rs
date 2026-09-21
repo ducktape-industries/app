@@ -673,21 +673,6 @@ impl Reply {
             ..self
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn status(&self) -> u16 {
-        self.status
-    }
-
-    #[cfg(test)]
-    pub(crate) fn body(&self) -> &str {
-        &self.body
-    }
-
-    #[cfg(test)]
-    pub(crate) fn revision(&self) -> Option<u64> {
-        self.revision
-    }
 }
 
 /// The tree the door last read of each window, and the revision: how many
