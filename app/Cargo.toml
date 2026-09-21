@@ -7,7 +7,7 @@ description = "A local-first consensus workspace for people and agents"
 authors = ["Ducktape contributors"]
 
 [dependencies]
-gpui-kit = { version = "=0.6.1", features = ["tree-sitter-languages"] }
+gpui-kit = "=0.6.1"
 unicode-segmentation = "1"
 qrcode = { version = "0.14", default-features = false }
 futures.workspace = true
@@ -23,7 +23,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 reqwest.workspace = true
-tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zeroize.workspace = true

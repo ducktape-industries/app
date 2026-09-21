@@ -18,8 +18,8 @@ use gpui_kit::component::{
     select::{SearchableVec, Select, SelectEvent, SelectState},
 };
 use gpui_kit::{
-    AnyElement, AnyView, App, AppContext as _, Bounds, BoxShadow, Context, CursorStyle, Div,
-    Element, ElementId, Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable as _,
+    AnyElement, App, AppContext as _, Bounds, BoxShadow, Context, CursorStyle, Div, Element,
+    ElementId, Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable as _,
     FollowMode, FontWeight, GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, Image,
     ImageFormat, InspectorElementId, InteractiveElement as _, IntoElement, KeyDownEvent, LayoutId,
     ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -395,7 +395,6 @@ pub struct ViewTree {
     images: HashMap<u64, Arc<RenderImage>>,
     viewers: HashMap<String, ViewerState>,
     vectors: HashMap<u64, Arc<[u8]>>,
-    surfaces: HashMap<String, AnyView>,
     editor_store: Option<crate::editor::wire::EditorStore>,
     editors: HashMap<String, EditorMount>,
     mounted: std::collections::HashSet<String>,
@@ -638,7 +637,6 @@ impl ViewTree {
             images: HashMap::new(),
             viewers: HashMap::new(),
             vectors: HashMap::new(),
-            surfaces: HashMap::new(),
             editor_store: None,
             editors: HashMap::new(),
             mounted: Default::default(),
@@ -1091,7 +1089,6 @@ impl ViewTree {
         self.editors.retain(|key, _| retained.contains(key));
         self.viewers.retain(|key, _| retained.contains(key));
         self.hovered.retain(|key| retained.contains(key));
-        self.surfaces.retain(|key, _| retained.contains(key));
         // on_hide observes viewport exit while mounted, not destruction.
         // Removed nodes own old-frame IDs; emitting one now could activate
         // an unrelated route in the replacement frame's handler table.
@@ -1462,12 +1459,10 @@ impl ViewTree {
             Node::Qr { key, code } => {
                 announce(div().id(key.clone()).child(qr(code)), accessible(node)).into_any_element()
             }
-            Node::Surface { key, name, .. } => match self.surfaces.get(key) {
-                Some(surface) => surface.clone().into_any_element(),
-                None => div()
-                    .child(format!("Unavailable host surface: {name}"))
-                    .into_any_element(),
-            },
+            // the host registers no surface: the slot says so where it would be
+            Node::Surface { name, .. } => div()
+                .child(format!("Unavailable host surface: {name}"))
+                .into_any_element(),
             Node::Stack { .. } => self.stack(node, window, cx),
             Node::Overlay { .. } => self.overlay(node, window, cx),
             Node::Progress { .. } => self.progress(node, cx),
