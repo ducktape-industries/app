@@ -1,4 +1,4 @@
-# ducktape-app
+# app
 
 The native desktop client, and a blind host: it reaches a node, reads the
 roster of programs that node runs, fetches each program's view out of its

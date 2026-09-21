@@ -2246,6 +2246,7 @@ dependencies = [
  "base64 0.22.1",
  "block2 0.5.1",
  "borsh",
+ "commonware-codec",
  "commonware-cryptography",
  "core-graphics 0.24.0",
  "design",

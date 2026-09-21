@@ -85,8 +85,11 @@ pub(crate) async fn query_frame(network: &str, target: &str, payload: Vec<u8>) -
 fn reader_key() -> &'static ed25519::PrivateKey {
     static KEY: std::sync::OnceLock<ed25519::PrivateKey> = std::sync::OnceLock::new();
     KEY.get_or_init(|| {
+        use commonware_codec::DecodeExt as _;
         use rand::RngCore as _;
-        ed25519::PrivateKey::from_seed(rand::thread_rng().next_u64())
+        let mut seed = [0u8; 32];
+        rand::rngs::OsRng.fill_bytes(&mut seed);
+        ed25519::PrivateKey::decode(seed.as_slice()).expect("32 random bytes decode")
     })
 }
 

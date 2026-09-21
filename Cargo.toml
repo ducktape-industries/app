@@ -1,4 +1,4 @@
-# ducktape-app — the native GPUI desktop shell.
+# app — the native GPUI desktop shell.
 #
 # The app is a BLIND HOST: it connects to a node, reads the roster, fetches
 # each program's view and renders it. It knows no program by name; every
@@ -44,6 +44,7 @@ futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream", "blocking"] }
 rand = "0.8"
 commonware-cryptography = "2026.9.0"
+commonware-codec = "2026.9.0"
 base64 = "0.22"
 tempfile = "3"
 zeroize = "1"
