@@ -105,14 +105,24 @@ mod tests {
         let window = cx.open_window(size(px(200.), px(200.)), |_, _| Clipped);
         cx.update_window(window.into(), |_, window, cx| {
             window.draw(cx).clear(cx);
-            let quads: Vec<_> = window.painted_quads().into_iter()
+            let quads: Vec<_> = window
+                .painted_quads()
+                .into_iter()
                 .filter(|quad| quad.background.as_solid() == Some(rgb(0xff00ff).into()))
                 .collect();
             assert!(!quads.is_empty(), "the deferred guest child must paint");
             let bound = gpui_kit::ScaledPixels(40. * window.scale_factor());
             for quad in quads {
-                assert!(quad.content_mask.bounds.size.width <= bound, "{:?}", quad.content_mask);
-                assert!(quad.content_mask.bounds.size.height <= bound, "{:?}", quad.content_mask);
+                assert!(
+                    quad.content_mask.bounds.size.width <= bound,
+                    "{:?}",
+                    quad.content_mask
+                );
+                assert!(
+                    quad.content_mask.bounds.size.height <= bound,
+                    "{:?}",
+                    quad.content_mask
+                );
             }
         })
         .unwrap();
