@@ -6623,7 +6623,7 @@ mod tests {
     #[test]
     fn a_button_with_a_role_is_that_role_and_reports_selected() {
         for (role, heard) in ROLES {
-            let mut tab = button(wire::ButtonContent::Label("Inbox".into()), None, Some(1));
+            let mut tab = button(wire::ButtonContent::Label("Tab".into()), None, Some(1));
             let wire::Node::Button {
                 role: set,
                 selected,
@@ -6636,7 +6636,7 @@ mod tests {
             let tab = accessible(&tab);
             assert_eq!(tab.role, Some(heard));
             assert_eq!(tab.selected, Some(true));
-            assert_eq!(tab.name.as_deref(), Some("Inbox"));
+            assert_eq!(tab.name.as_deref(), Some("Tab"));
         }
     }
 
@@ -6714,7 +6714,7 @@ mod tests {
         assert_eq!(accessible(&overlay(None, true)), Accessible::default());
     }
 
-    /// The chat room column's refusal shape: a bordered, washed notice holding
+    /// A room column's refusal shape: a bordered, washed notice holding
     /// one long wrapped line, then a Fill space, then the composer. The sidebar
     /// beside it must keep its surface and rule, and the composer must sit at
     /// the bottom of the column.
@@ -6747,7 +6747,7 @@ mod tests {
             Some(wire::Length::Fill),
             Some(wire::Length::Fill),
         );
-        let chat = kit::sized(
+        let room = kit::sized(
             kit::row(
                 "workspace",
                 [
@@ -6759,7 +6759,7 @@ mod tests {
             Some(wire::Length::Fill),
             Some(wire::Length::Fill),
         );
-        // Chat's real root: a viewport sensor around the press area.
+        // A room's real root: a viewport sensor around the press area.
         let root = wire::Node::Sensor {
             key: "viewport".into(),
             reset: None,
@@ -6787,7 +6787,7 @@ mod tests {
                 on_move: None,
                 on_press_at: None,
                 on_scroll: None,
-                content: Box::new(chat),
+                content: Box::new(room),
             }),
         };
         // Mounted the way a module seat mounts a guest: a cached view under a
