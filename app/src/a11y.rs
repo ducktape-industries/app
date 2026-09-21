@@ -92,3 +92,10 @@ pub fn text_field(
 /// door masks them before they leave the process. Assistive technology
 /// still reads them — they are on the screen.
 pub const AX_PRIVATE: &str = "ax_private";
+
+/// Marks the element's accessible node [`AX_PRIVATE`]: the recovery phrase.
+pub fn private<E: InteractiveElement>(element: E) -> E {
+    aria(element, |node| {
+        node.a11y_synthetic_children(|tree| tree.parent_node().set_class_name(AX_PRIVATE))
+    })
+}

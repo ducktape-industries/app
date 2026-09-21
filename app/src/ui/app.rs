@@ -43,6 +43,10 @@ pub struct Ducktape {
     pub(crate) password: String,
     pub(crate) unlock_error: String,
     pub(crate) unlock_busy: bool,
+    /// Reading without a key: the console opens, writes are refused.
+    pub(crate) browsing: bool,
+    /// A freshly minted key's recovery phrase, shown once until written down.
+    pub(crate) phrase: String,
     /// The program whose view is open.
     pub(crate) active: Option<&'static str>,
     pub(crate) badges: BTreeMap<&'static str, i64>,
@@ -86,7 +90,14 @@ pub(crate) enum AppMessage {
     UnlockSubmit,
     CreateWalletSubmit,
     Unlocked(String),
+    WalletCreated {
+        pubkey: String,
+        phrase: String,
+    },
+    PhraseWrittenDown,
     UnlockFailed(String),
+    BrowseWithoutKey,
+    SignIn,
     Lock,
     ShowToast(String),
     DismissToast,
@@ -129,6 +140,8 @@ impl Ducktape {
             password: String::new(),
             unlock_error: String::new(),
             unlock_busy: false,
+            browsing: false,
+            phrase: String::new(),
             active: None,
             badges: BTreeMap::new(),
             toast: String::new(),

@@ -22,6 +22,7 @@ use view_wire::Task;
 use crate::{AppMessage as Message, Ducktape, Screen};
 
 mod screens;
+mod sign_in;
 mod theme;
 
 #[cfg(not(target_os = "macos"))]
@@ -505,7 +506,17 @@ impl Render for DesktopWindow {
         use gpui_kit::component::ActiveTheme as _;
         let content = match self.model.read(cx).state.screen {
             Screen::Connect => self.connect(window, cx),
-            Screen::Console => self.console(window, cx),
+            Screen::Console => {
+                let state = self.model.read(cx).state.clone_facts();
+                match (
+                    !state.phrase.is_empty(),
+                    state.signer_key.is_empty() && !state.browsing,
+                ) {
+                    (true, _) => self.phrase(&state, cx),
+                    (_, true) => self.unlock(&state, window, cx),
+                    _ => self.console(window, cx),
+                }
+            }
         };
         let mut root = gpui_kit::div();
         root.text_style().font_fallbacks = Some(fallback_chain());
