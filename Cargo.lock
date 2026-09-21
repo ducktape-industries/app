@@ -2254,7 +2254,6 @@ dependencies = [
  "ducktape-home",
  "futures",
  "gpui-kit",
- "gpui-notion",
  "image",
  "keystore",
  "libc",
@@ -3301,20 +3300,6 @@ dependencies = [
  "rust-embed",
  "wasm-bindgen",
  "wasm-bindgen-futures",
-]
-
-[[package]]
-name = "gpui-notion"
-version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/gpui-pages?branch=main#a023c2f3190b4dd0b78fe679e873e5d337d683f7"
-dependencies = [
- "anyhow",
- "gpui-kit",
- "regex",
- "serde",
- "serde_json",
- "smallvec",
- "unicode-segmentation",
 ]
 
 [[package]]

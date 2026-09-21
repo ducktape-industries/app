@@ -216,14 +216,12 @@ fn drain_editor(store: &crate::editor::wire::EditorStore, cx: &mut Context<ViewT
 /// Native editor primitives selected by the guest's explicit projection.
 enum EditorView {
     Text(Entity<crate::editor::wire::TextEditor>),
-    Rich(Entity<crate::editor::wire::RichWireEditor>),
 }
 
 impl EditorView {
     fn sync(&self, window: &mut Window, cx: &mut App) {
         match self {
             Self::Text(view) => view.update(cx, |editor, cx| editor.sync(window, cx)),
-            Self::Rich(view) => view.update(cx, |editor, cx| editor.sync(window, cx)),
         }
     }
 
@@ -234,7 +232,6 @@ impl EditorView {
     fn fills(&self, fills: bool, cx: &mut App) {
         match self {
             Self::Text(view) => view.update(cx, |editor, cx| editor.set_fills(fills, cx)),
-            Self::Rich(view) => view.update(cx, |editor, cx| editor.set_fills(fills, cx)),
         }
     }
 
@@ -244,7 +241,6 @@ impl EditorView {
     fn announce(&self, accessible: Accessible, cx: &mut App) {
         match self {
             Self::Text(view) => view.update(cx, |editor, cx| editor.set_accessible(accessible, cx)),
-            Self::Rich(view) => view.update(cx, |editor, cx| editor.set_label(accessible.name, cx)),
         }
     }
 
@@ -253,20 +249,13 @@ impl EditorView {
             Self::Text(view) => view.update(cx, |editor, cx| {
                 editor.widget_command(command, window, cx);
             }),
-            Self::Rich(view) => view.update(cx, |editor, cx| {
-                editor.widget_command(command, window, cx);
-            }),
         }
     }
 
     /// The guest echoes which editor held focus when the frame was built, so
-    /// the field it named takes the caret back. The notion editor is one
-    /// persistent entity: it keeps its own focus, and re-focusing it here
-    /// would steal the caret from whatever the guest focused this frame.
+    /// the field it named takes the caret back.
     fn restore_focus(&self, key: &str, window: &mut Window, cx: &mut App) {
-        let Self::Text(view) = self else {
-            return;
-        };
+        let Self::Text(view) = self;
         let focus = wire::WidgetCommand::Focus {
             target: key.to_owned(),
         };
@@ -278,14 +267,12 @@ impl EditorView {
     fn is_focused(&self, window: &Window, cx: &App) -> bool {
         match self {
             Self::Text(view) => view.read(cx).is_focused(window, cx),
-            Self::Rich(view) => view.read(cx).is_focused(window, cx),
         }
     }
 
     fn element(&self) -> AnyElement {
         match self {
             Self::Text(view) => view.clone().into_any_element(),
-            Self::Rich(view) => view.clone().into_any_element(),
         }
     }
 }
@@ -1385,7 +1372,7 @@ impl ViewTree {
         if let Some(font) = &options.font {
             input = input.font_weight(font_weight(font.weight));
         }
-        let field = gpui_notion::editor::ui::text_field(
+        let field = crate::a11y::text_field(
             SharedString::from(format!("{key}/field")),
             &field.state.read(cx).focus_handle(cx),
             {
@@ -1924,7 +1911,7 @@ impl ViewTree {
         // accessibility press does not depend on overlapping hit-test layers.
         let button = if let Some(message) = *on_press {
             let view = cx.entity().downgrade();
-            gpui_notion::editor::ui::aria(button, |node| {
+            crate::a11y::aria(button, |node| {
                 node.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
                     let _ = view.update(cx, |this, cx| {
                         this.user_activation.set(Some(message));
@@ -2731,7 +2718,7 @@ impl ViewTree {
             }
             layer = layer.child(content);
             let layer = if named {
-                let layer = gpui_notion::editor::ui::modal(announce(layer, accessible(node)));
+                let layer = crate::a11y::modal(announce(layer, accessible(node)));
                 match (nested, entry.as_ref()) {
                     (false, Some(entry)) => div()
                         .absolute()
@@ -2833,45 +2820,14 @@ impl ViewTree {
         let Some(store) = self.editor_store.clone() else {
             return div().child("Editor host is unavailable").into_any_element();
         };
-        let rich = matches!(node, wire::Node::Editor { options, .. } if options.rich.is_some());
-        let changed_renderer = self
-            .editors
-            .get(key)
-            .is_some_and(|mount| matches!(mount.view, EditorView::Rich(_)) != rich);
-        let replaced_focus = self
-            .editors
-            .get(key)
-            .filter(|_| changed_renderer)
-            .and_then(|mount| {
-                mount
-                    .view
-                    .is_focused(window, cx)
-                    .then(|| wire::WidgetCommand::Focus {
-                        target: key.clone(),
-                    })
-            });
-        if changed_renderer {
-            self.editors.remove(key);
-        }
         if !self.editors.contains_key(key) {
             let events = store.clone();
-            let (view, subscription) = match rich {
-                true => {
-                    let view = cx.new(|cx| {
-                        crate::editor::wire::RichWireEditor::new(key.clone(), store, window, cx)
-                    });
-                    let subscription =
-                        cx.subscribe(&view, move |_, _, _: &(), cx| drain_editor(&events, cx));
-                    (EditorView::Rich(view), subscription)
-                }
-                false => {
-                    let view = cx.new(|cx| {
-                        crate::editor::wire::TextEditor::new(key.clone(), store, window, cx)
-                    });
-                    let subscription =
-                        cx.subscribe(&view, move |_, _, _: &(), cx| drain_editor(&events, cx));
-                    (EditorView::Text(view), subscription)
-                }
+            let (view, subscription) = {
+                let view = cx
+                    .new(|cx| crate::editor::wire::TextEditor::new(key.clone(), store, window, cx));
+                let subscription =
+                    cx.subscribe(&view, move |_, _, _: &(), cx| drain_editor(&events, cx));
+                (EditorView::Text(view), subscription)
             };
             self.editors.insert(
                 key.clone(),
@@ -2887,9 +2843,6 @@ impl ViewTree {
             .fills(!matches!(height, Some(wire::Length::Shrink)), cx);
         editor.view.announce(accessible(node), cx);
         editor.view.sync(window, cx);
-        if let Some(command) = replaced_focus {
-            editor.view.widget_command(&command, window, cx);
-        }
         if self.presentation.editors.remove(key).as_ref() == Some(document) {
             editor.view.restore_focus(key, window, cx);
         }
@@ -3067,7 +3020,7 @@ impl ViewTree {
         if role.is_some() {
             let (press, release) = (*on_press, *on_release);
             if press.is_some() || release.is_some() {
-                element = gpui_notion::editor::ui::keyboard(element).on_click(cx.listener(
+                element = crate::a11y::keyboard(element).on_click(cx.listener(
                     move |_, event: &gpui_kit::ClickEvent, _, cx| {
                         if !event.is_keyboard() {
                             return;
@@ -3315,7 +3268,7 @@ impl ViewTree {
                 if let (Some(handler), Some(link)) = (on_link, &span.link) {
                     let handler = *handler;
                     let link = link.clone();
-                    painted = gpui_notion::editor::ui::keyboard(
+                    painted = crate::a11y::keyboard(
                         painted.role(gpui_kit::Role::Link).aria_label(text.clone()),
                     );
                     painted =
@@ -4574,7 +4527,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
 /// its own role, name and value over these; the states it does not report
 /// itself (disabled, expanded, a description) are the ones this adds.
 pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
-    use gpui_notion::editor::ui;
+    use crate::a11y as ui;
     let Accessible {
         role,
         name,
@@ -5101,74 +5054,6 @@ fn append_arc_to(
 mod tests {
     use super::*;
     use gpui_kit::test::TestWindowExt as _;
-
-    #[gpui_kit::test]
-    fn rich_editor_selection_uses_the_contract_and_replaces_a_changed_primitive(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        cx.update(gpui_kit::init);
-        cx.update(crate::editor::wire::init_notion);
-        for key in ["another-app/body", "/p1/document"] {
-            let mut root = wire::Node::Editor {
-                key: key.into(),
-                label: None,
-                document: wire::editor_document::EditorDocumentRef {
-                    document: key.into(),
-                    reset: 1,
-                    text_revision: 0,
-                    revision: 0,
-                    cursor: Default::default(),
-                    byte_len: 0,
-                },
-                on_document: 0,
-                editable: true,
-                placeholder: String::new(),
-                width: None,
-                height: None,
-                min_height: None,
-                max_height: None,
-                options: Box::new(wire::EditorOptions {
-                    rich: Some(Box::new(wire::editor_rich::RichPresentation {
-                        document: wire::editor_rich::RichDocument {
-                            blocks: vec![wire::editor_rich::RichBlock {
-                                kind: "paragraph".into(),
-                                ..Default::default()
-                            }],
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })),
-                    ..Default::default()
-                }),
-            };
-            let store = crate::editor::wire::EditorStore::new(99);
-            store.replace(&root).unwrap();
-            let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-                let mut tree = ViewTree::new(root.clone());
-                tree.set_editor_store(store, cx);
-                tree
-            });
-            let tree = window.root(cx).unwrap();
-            let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-            native.update(|window, cx| {
-                window.render_frame(cx);
-                assert!(matches!(
-                    tree.read(cx).editors.get(key).unwrap().view,
-                    EditorView::Rich(_)
-                ));
-                let wire::Node::Editor { options, .. } = &mut root else {
-                    unreachable!()
-                };
-                options.rich = None;
-                tree.update(cx, |tree, cx| tree.replace(root.clone(), cx));
-                window.render_frame(cx);
-                assert!(matches!(
-                    tree.read(cx).editors.get(key).unwrap().view,
-                    EditorView::Text(_)
-                ));
-            });
-        }
-    }
 
     #[gpui_kit::test]
     fn primitive_canvas_paints_in_the_first_frame_and_after_a_move(
