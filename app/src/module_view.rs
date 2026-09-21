@@ -14,8 +14,11 @@
 
 mod filesystem;
 mod kernel;
+mod media;
+mod notify;
 
 pub(crate) use kernel::chord_of;
+pub(crate) use media::capturing;
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
 /// threads can compile or join child loads between requests; their own parked
@@ -922,6 +925,9 @@ struct Guest {
     /// the kernel opened for it: retired with the cancel, and with the guest.
     tasks: Vec<(u64, kernel::NodeTask)>,
     filesystem: filesystem::Filesystem,
+    /// The capture and playout devices this guest holds, and the one consent
+    /// answer they all wait on.
+    media: media::Media,
     /// The guest's `clock.ticks` subscriptions: the period it asked for and
     /// the instant its next item is due. A module has no clock of its own,
     /// so periodic guest subscriptions use this list — driven from the window
@@ -1080,6 +1086,7 @@ impl Guest {
         let ids: Vec<_> = self.tasks.iter().map(|(id, _)| *id).collect();
         self.tasks.clear();
         self.filesystem = Default::default();
+        self.media = Default::default();
         for id in ids {
             self.refuse(id, "stale_connection", "network connection changed");
         }
@@ -1523,6 +1530,7 @@ impl Guest {
             live_subscriptions: Vec::new(),
             tasks: Vec::new(),
             filesystem: Default::default(),
+            media: Default::default(),
             clocks: Vec::new(),
             chords: Vec::new(),
             fault: None,
@@ -1645,6 +1653,7 @@ impl Guest {
         self.user_activation = None;
         for id in std::mem::take(&mut self.frame.cancels) {
             self.filesystem.cancel(id);
+            self.media.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);
             if self.props_subscription == Some(id) {
                 self.props_subscription = None;
@@ -2196,6 +2205,7 @@ impl NativeModuleView {
         };
         let again = guest.redraw(props);
         filesystem::mount(guest, cx);
+        media::mount(guest, cx);
         let intents = std::mem::take(&mut guest.intents);
         drop(locked);
         for intent in intents {
@@ -2318,6 +2328,7 @@ impl NativeModuleView {
         guest.set_visible(true);
         let again = guest.redraw(props);
         filesystem::mount(guest, cx);
+        media::mount(guest, cx);
         if again {
             window.request_animation_frame();
         }

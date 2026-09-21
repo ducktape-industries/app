@@ -36,6 +36,11 @@ wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true
 sha1 = "0.10"
+# The raw devices behind the `audio.*`/`video.*` doors (`src/module_view/media.rs`).
+# cpal is the platform audio host (ALSA, CoreAudio, WASAPI); nokhwa is the
+# camera (v4l2, AVFoundation, MSMF) and decodes MJPEG to RGBA for the view.
+cpal = "0.15"
+nokhwa = { version = "0.10", features = ["input-native"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24", default-features = false }

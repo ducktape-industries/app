@@ -20,7 +20,10 @@
 //!   doors: visibility, the tab badge, the one way out (a `duck://` link),
 //!   a claimed command chord, a minted id, a clock, the log, a widget
 //!   command.
-//! - `fs.*`, `clipboard.*` — device files and the clipboard, in `filesystem`.
+//! - `fs.*`, `clipboard.*` — device file grants and the clipboard, in
+//!   `filesystem`.
+//! - `media.*`, `audio.*`, `video.*` — the raw capture and playout devices,
+//!   in `media`; `notify.show` — one desktop notice, in `notify`.
 //!
 //! A query and a submit go to the node off the window thread, on the
 //! kernel's own runtime, and their answers wait in [`Replies`] for the
@@ -344,7 +347,10 @@ pub(super) fn answer(
     id: u64,
     payload: &[u8],
 ) -> bool {
-    if super::filesystem::answer(guest, capability, operation, id, payload) {
+    if super::filesystem::answer(guest, capability, operation, id, payload)
+        || super::media::answer(guest, capability, operation, id, payload)
+        || super::notify::answer(guest, capability, operation, id, payload)
+    {
         return true;
     }
     match (capability, operation) {
@@ -515,6 +521,62 @@ fn spawn(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
         let _counted = counted;
         let result = until_answered(NODE_RETRY_BUDGET, || call(node.clone(), ask.clone())).await;
         replies.item(id, result, true);
+    });
+    guest
+        .tasks
+        .retain(|(_, pending)| !pending.task.is_finished());
+    guest.tasks.push((id, NodeTask { task }));
+}
+
+/// One SUBSCRIPTION's writing end, handed to a host-fed stream the way the
+/// node's own socket loop writes: every item goes through the same backlog
+/// park, so a device that outruns the redraw holds its own frames instead of
+/// growing the reply queue into a fault.
+pub(super) struct Items {
+    replies: std::sync::Arc<Replies>,
+    drained: tokio::sync::watch::Receiver<()>,
+    id: u64,
+}
+
+impl Items {
+    /// One more item. `false` when the view is gone and the subscription
+    /// should end — the caller returns, and everything it holds is dropped.
+    pub(super) async fn send(&mut self, result: Answer) -> bool {
+        self.replies
+            .subscription_item(&mut self.drained, self.id, result)
+            .await
+    }
+
+    /// The LAST item, which ends the subscription for the guest: a device
+    /// that will not open, or one that stopped answering. Without it a dead
+    /// source would look to the view like a source that is merely quiet.
+    pub(super) fn end(self, result: Answer) {
+        self.replies.item(self.id, result, true);
+    }
+}
+
+/// A subscription the HOST feeds — a device rather than a node socket. The
+/// body owns whatever the stream holds open, so dropping the task releases
+/// it: a cancel drops the [`NodeTask`], and so do a guest's teardown, swap
+/// and trap, which drop the whole `tasks` list.
+pub(super) fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body)
+where
+    Body: FnOnce(Items) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let replies = guest.replies.clone();
+    let Some(counted) = replies.admit() else {
+        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
+        return;
+    };
+    let items = Items {
+        drained: replies.drains(),
+        replies,
+        id,
+    };
+    let task = runtime().spawn(async move {
+        let _counted = counted;
+        body(items).await;
     });
     guest
         .tasks

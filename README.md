@@ -26,7 +26,10 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
 - **Relay.** A view asks through the kernel contract (`app/src/module_view/kernel.rs`):
   `rpc.query`/`rpc.view` `{target, query}`, `op.submit` `{target, payload}`,
   `rpc.live <program>`, `blob.get`, and the app's own doors (`host.*`,
-  `clock.ticks`, `fs.*`, `clipboard.*`). The app forwards the bytes to the
+  `clock.ticks`, `fs.*`, `clipboard.*`, plus the raw devices —
+  `media.devices`, `audio.capture`/`play`/`write`/`stop`, `video.capture`,
+  `notify.show` — behind a per-program consent prompt and an indicator the
+  view cannot hide). The app forwards the bytes to the
   program the view names and signs writes with the seated key; it never
   reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's

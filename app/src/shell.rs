@@ -971,6 +971,24 @@ impl DesktopWindow {
                     .py_2()
                     .border_t_1()
                     .border_color(ink_border)
+                    // THE HOST'S OWN WORD ON WHAT IS RECORDING: a seated view
+                    // draws inside its seat and can neither paint here nor
+                    // decline to be listed.
+                    .when_some(crate::module_view::capturing(), |rail, recording| {
+                        rail.child(
+                            div()
+                                .id("capture-indicator")
+                                .role(Role::Status)
+                                .mb_1()
+                                .px_1p5()
+                                .py_0p5()
+                                .rounded_full()
+                                .bg(hsla_of(palette.danger))
+                                .text_size(px(10.))
+                                .text_color(hsla_of(palette.background))
+                                .child(recording),
+                        )
+                    })
                     .child(foot)
                     .child(
                         self.action("disconnect", "Switch node", || Message::Disconnect, false)
