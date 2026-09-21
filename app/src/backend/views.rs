@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use abi::BlobId;
 
+use super::noded::Layer;
 use super::{RpcClient, cache_dir};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
@@ -48,12 +49,23 @@ impl std::fmt::Display for Fetch {
     }
 }
 
-/// The roster, in the node's (name) order.
-pub async fn programs(client: &RpcClient) -> Result<Vec<Program>, Fetch> {
-    let listed = client.programs().await.map_err(unreachable)?;
-    Ok(listed
+/// The roster, in the order the registry program answers it: asked of that
+/// program through the same query path every view's request takes.
+pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
+    use abi::roster::{PROGRAM, Query, Reply};
+    let frame = super::query_frame(network, PROGRAM, abi::encode(&Query::At(0))).await;
+    let answer = client
+        .query(Layer::Preconfirmed, frame)
+        .await
+        .map_err(unreachable)?;
+    let Reply::Programs(entries) =
+        abi::decode(&answer).map_err(|refusal| Fetch::Refused(refusal.sentence))?;
+    Ok(entries
         .into_iter()
-        .map(|(name, code)| Program { name, code })
+        .map(|entry| Program {
+            name: entry.program,
+            code: entry.code,
+        })
         .collect())
 }
 

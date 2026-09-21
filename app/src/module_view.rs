@@ -312,18 +312,19 @@ fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle<()> {
         let Some(client) = asked_of.client.as_ref() else {
             return;
         };
-        let programs = match runtime().block_on(crate::backend::views::programs(client)) {
-            Ok(programs) => programs,
-            Err(error) => {
-                tracing::warn!(
-                    target: "ducktape::app",
-                    reason = "roster_unreadable",
-                    error = %error,
-                    "the node's programs were not listed"
-                );
-                return;
-            }
-        };
+        let programs =
+            match runtime().block_on(crate::backend::views::programs(client, &asked_of.network)) {
+                Ok(programs) => programs,
+                Err(error) => {
+                    tracing::warn!(
+                        target: "ducktape::app",
+                        reason = "roster_unreadable",
+                        error = %error,
+                        "the node's programs were not listed"
+                    );
+                    return;
+                }
+            };
         let loads = {
             let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
             if node_since_left {

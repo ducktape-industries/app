@@ -11,8 +11,6 @@
 //! Nothing here knows a program. A target is whatever string the caller
 //! hands over.
 
-use std::collections::BTreeMap;
-
 use abi::{BlobId, ProgramId, Refusal, Root};
 use borsh::{BorshDeserialize, BorshSerialize};
 use commonware_cryptography::{Signer as _, ed25519};
@@ -29,7 +27,6 @@ pub mod route {
     pub const QUERY: &str = "/v1/query";
     pub const GET: &str = "/v1/get";
     pub const BLOB_GET: &str = "/v1/blob/get";
-    pub const PROGRAMS: &str = "/v1/programs";
     pub const CHANGES: &str = "/v1/changes";
 }
 
@@ -212,11 +209,6 @@ impl Client {
     /// The framed bytes (`kind len\0body`) of a blob the node holds.
     pub async fn blob(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
         self.post(route::BLOB_GET, &id).await
-    }
-
-    /// Every program the roster seats, with the code blob each runs.
-    pub async fn programs(&self) -> Result<BTreeMap<ProgramId, BlobId>> {
-        self.fetch(route::PROGRAMS).await
     }
 
     pub async fn changes(
