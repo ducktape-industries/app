@@ -41,14 +41,13 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
 | `app/src/backend/views.rs` | roster → blob → `ducktape.view` section |
 | `app/src/backend/session.rs` | the seated key, its frames, preferences |
 | `app/src/module_view.rs`, `module_view/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
-| `app/src/view_tree.rs`, `editor/` | the wire tree presenter and the native editors |
+| `app/src/view_tree.rs`, `editor/` | the wire tree presenter and the one native text field (IME, caret, clipboard) |
 | `app/src/shell.rs`, `ui/` | the window, the two native screens, the state and reducer |
 
 ## Dependency line
 
 `ducktape-industries/modules` (`main`, `crates/sdk`): `abi`, `view-wire`, `ducklink`, `design`.
 `ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
-`ducktape-industries/gpui-pages` (`main`): the block editor.
 
 Out until their upstreams settle: the self-update lane (`app-update`,
 `bin/app-launcher`) — the kernel branch names `keyscheme` at an sdk revision

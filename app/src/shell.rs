@@ -2,6 +2,7 @@
 //! reach a node and unlock a key, a rail of whatever programs that node
 //! runs, and one seat that draws the open program's view.
 
+use crate::a11y::Control as _;
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
@@ -11,7 +12,6 @@ use gpui_kit::{
     AppContext as _, AsyncApp, Context, Entity, IntoElement, ParentElement as _, Render,
     Styled as _, Window,
 };
-use gpui_notion::editor::ui::Control as _;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{
     Mutex, OnceLock,
@@ -567,7 +567,7 @@ impl DesktopWindow {
             true => input.content_type(InputContentType::Password),
             false => input,
         };
-        let field = gpui_notion::editor::ui::text_field(
+        let field = crate::a11y::text_field(
             gpui_kit::SharedString::from(format!("{key}/field")),
             &state.read(cx).focus_handle(cx),
             {
@@ -602,7 +602,7 @@ impl DesktopWindow {
                 cx.stop_propagation();
                 model.update(cx, |model, cx| model.dispatch(message(), cx))
             });
-        gpui_notion::editor::ui::disabled(button, disabled)
+        crate::a11y::disabled(button, disabled)
     }
 
     fn toast(&self, cx: &gpui_kit::App) -> Option<gpui_kit::Stateful<gpui_kit::Div>> {
@@ -1202,7 +1202,6 @@ pub(crate) fn run() {
     });
     application.run(move |cx| {
         gpui_kit::init(cx);
-        crate::editor::wire::init_notion(cx);
         let fonts: Vec<std::borrow::Cow<'static, [u8]>> = BUNDLED_FACES
             .iter()
             .copied()

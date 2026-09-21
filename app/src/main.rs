@@ -1,3 +1,4 @@
+mod a11y;
 #[path = "ui/app.rs"]
 mod app_state;
 pub(crate) use app_state::*;

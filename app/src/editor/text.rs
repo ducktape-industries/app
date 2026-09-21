@@ -461,7 +461,7 @@ impl Render for TextEditor {
                 crate::shell::with_family(element, family)
             })
             .child(crate::view_tree::announce(
-                gpui_notion::editor::ui::text_field(
+                crate::a11y::text_field(
                     SharedString::from(format!("{}/field", self.key)),
                     &self.input.read(cx).focus_handle(cx),
                     {

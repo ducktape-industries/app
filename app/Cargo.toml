@@ -8,7 +8,6 @@ authors = ["Ducktape contributors"]
 
 [dependencies]
 gpui-kit = { version = "=0.6.1", features = ["tree-sitter-languages"] }
-gpui-notion.workspace = true
 unicode-segmentation = "1"
 qrcode = { version = "0.14", default-features = false }
 futures.workspace = true

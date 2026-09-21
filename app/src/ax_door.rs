@@ -13,7 +13,7 @@
 //! (`rail.view:chat`) only while another node in the window shares it. Entity,
 //! focus-handle and the kit's type-path segments never count: they change per
 //! run or say nothing. Never an AccessKit NodeId, never a position. A password field's value and a node marked
-//! [`gpui_notion::editor::ui::AX_PRIVATE`] (the recovery-phrase words) are
+//! [`crate::a11y::AX_PRIVATE`] (the recovery-phrase words) are
 //! masked here, before anything leaves the process. Only a rig that also sets
 //! `DUCKTAPE_AX_DOOR_PRIVATE=1` may ask for one private node's text ([`reveal`]).
 //! A keyboard-only walk sends keys through the window's own key dispatch
@@ -136,7 +136,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             continue;
         }
         let role = node.role();
-        let private = node.class_name() == Some(gpui_notion::editor::ui::AX_PRIVATE);
+        let private = node.class_name() == Some(crate::a11y::AX_PRIVATE);
         let secret = private || role == Role::PasswordInput;
         let name = match (private, node.label()) {
             (true, Some(_)) => MASK.to_owned(),
@@ -614,7 +614,7 @@ pub(crate) struct Reveal {
 
 /// `POST /reveal`, served only with `DUCKTAPE_AX_DOOR_PRIVATE=1`: the text a
 /// person reads on the showing node `id` of window `name`, which must be
-/// marked [`gpui_notion::editor::ui::AX_PRIVATE`]. A secure input is refused:
+/// marked [`crate::a11y::AX_PRIVATE`]. A secure input is refused:
 /// dots are all a person ever sees of it.
 pub(crate) fn reveal(name: &str, window: &Window, id: &str) -> Reply {
     let shown = snapshot(name, window, false);
@@ -633,14 +633,12 @@ pub(crate) fn reveal(name: &str, window: &Window, id: &str) -> Reply {
             403,
             json!({ "error": "a secure input is never shown on screen" }),
         ),
-        Some(node) if node.class_name() == Some(gpui_notion::editor::ui::AX_PRIVATE) => {
-            Reply::ok(json!({
-                "id": id,
-                "role": found.role,
-                "name": node.label().unwrap_or_default(),
-                "value": node.value(),
-            }))
-        }
+        Some(node) if node.class_name() == Some(crate::a11y::AX_PRIVATE) => Reply::ok(json!({
+            "id": id,
+            "role": found.role,
+            "name": node.label().unwrap_or_default(),
+            "value": node.value(),
+        })),
         _ => Reply::new(400, json!({ "error": "not private: the tree shows it" })),
     }
 }
