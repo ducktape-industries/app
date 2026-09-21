@@ -52,7 +52,7 @@ impl std::fmt::Display for Fetch {
 /// The roster, in the order the registry program answers it: asked of that
 /// program through the same query path every view's request takes.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
-    use abi::roster::{PROGRAM, Query, Reply};
+    use abi::module_registry::{PROGRAM, Query, Reply};
     let frame = super::query_frame(network, PROGRAM, abi::encode(&Query::At(0))).await;
     let answer = client
         .query(Layer::Preconfirmed, frame)
