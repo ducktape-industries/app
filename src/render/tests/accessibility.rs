@@ -38,6 +38,12 @@ fn a_button_is_named_by_its_label_then_its_text_and_disabled_without_a_handler()
     // an icon the view did not name has no name: the gap stays visible
     assert_eq!(accessible(&button(glyph(), None, Some(1))).name, None);
     assert_eq!(accessible(&button(glyph(), Some(""), Some(1))).name, None);
+    // a text child with no explicit label names the button by that text
+    let worded = Child(Box::new(text("t", "+ New channel")));
+    assert_eq!(
+        accessible(&button(worded, None, Some(1))).name.as_deref(),
+        Some("+ New channel")
+    );
     assert!(accessible(&button(Label("Send".into()), None, None)).disabled);
     assert!(!plain.disabled);
 }
@@ -480,6 +486,13 @@ fn a_mouse_area_is_announced_only_as_the_role_its_view_gives_it() {
         );
         assert_eq!(accessible(&area(Some(role), Some(""))).name, None);
     }
+    // a clickable with a text child and no explicit label is named by it too
+    let mut worded = area(Some(wire::Role::Button), None);
+    let wire::Node::MouseArea { content, .. } = &mut worded else {
+        unreachable!()
+    };
+    **content = text("t", "+ New channel");
+    assert_eq!(accessible(&worded).name.as_deref(), Some("+ New channel"));
     assert_eq!(
         accessible(&area(None, Some("Wrap lines"))),
         Accessible::default()

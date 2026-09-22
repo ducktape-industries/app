@@ -189,11 +189,20 @@ impl DesktopWindow {
         use gpui_kit::component::ActiveTheme as _;
         use gpui_kit::*;
         let hover = cx.theme().secondary;
+        // The action drives the element id and the dispatch below (stable
+        // for the AX door and tests); the AX name is a phrase a screen
+        // reader can announce on its own, not the bare verb.
+        let name = match action {
+            "split" => "Split pane",
+            "popout" => "Open in new window",
+            "popin" => "Move to main window",
+            _ => "Close pane",
+        };
         crate::a11y::disabled(
             crate::a11y::keyboard(
                 div()
                     .id(SharedString::from(format!("pane/{index}/{action}")))
-                    .control(Role::Button, action)
+                    .control(Role::Button, name)
                     .size(px(22.))
                     .flex()
                     .items_center()
@@ -229,10 +238,13 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         let palette = design::palette(self.model.read(cx).state.dark());
-        let border = hsla_of(palette.sidebar_border);
+        // Content-area tokens: a pane sits beside the rail, not on it, and
+        // the sidebar_* colors (built for the always-dark rail) read as
+        // near-invisible text on the pane's own background.
+        let border = hsla_of(palette.border);
         let accent = hsla_of(palette.accent);
-        let fg = hsla_of(palette.sidebar_foreground);
-        let muted = hsla_of(palette.sidebar_muted);
+        let fg = hsla_of(palette.foreground);
+        let muted = hsla_of(palette.muted);
         if self.layout.panes.is_empty() {
             return div()
                 .size_full()
@@ -277,6 +289,10 @@ impl DesktopWindow {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.resize = None),
             );
+        // A single pane has nothing to be focused relative to: no frame at
+        // all. With two or more, focus is the title's colour, not a border
+        // thick enough to fight the rail next door.
+        let multi = self.layout.panes.len() > 1;
         for (index, pane) in self.layout.panes.iter().enumerate() {
             let focused = index == self.layout.focused;
             let view = self.mounted[&pane.instance].view.clone();
@@ -297,6 +313,7 @@ impl DesktopWindow {
                 .child(
                     div()
                         .font_weight(FontWeight::BOLD)
+                        .when(focused && multi, |title| title.text_color(accent))
                         .child(label(pane.module)),
                 )
                 .child(
@@ -357,8 +374,8 @@ impl DesktopWindow {
                     .min_w_0()
                     .h_full()
                     .rounded(px(8.))
-                    .border(px(if focused { 1.5 } else { 1. }))
-                    .border_color(if focused { accent } else { border })
+                    .border(px(1.))
+                    .border_color(border)
                     .bg(hsla_of(palette.background))
                     .overflow_hidden()
                     .capture_any_mouse_down(cx.listener(move |this, _, window, cx| {

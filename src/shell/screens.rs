@@ -49,6 +49,19 @@ impl Ducktape {
     }
 }
 
+/// A raw program id read as a rail label before its manifest arrives, or
+/// after it failed to: hyphens to spaces, first letter capitalised —
+/// "module-registry" reads "Module registry" instead of flashing the kebab
+/// id and then the manifest name.
+fn prettify(id: &str) -> String {
+    let spaced = id.replace('-', " ");
+    let mut chars = spaced.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => spaced,
+    }
+}
+
 impl DesktopWindow {
     /// A native text field; Enter dispatches `on_enter`, every change
     /// dispatches `on_change` with the text. Its accessible name is
@@ -348,6 +361,12 @@ impl DesktopWindow {
         let ink_border = hsla_of(palette.sidebar_border);
         let accent = hsla_of(palette.accent);
         let faint = hsla_of(palette.faint);
+        // The kit's `ghost()` variant reads its text in the page's theme
+        // foreground, which is dark for the light content area — invisible
+        // on this always-dark rail. Same rail row colours, hover included.
+        let rail_button = gpui_kit::component::button::ButtonCustomVariant::new(cx)
+            .foreground(ink_muted)
+            .hover(ink_raised);
         let rail = crate::runtime::rail();
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
@@ -367,13 +386,21 @@ impl DesktopWindow {
             let module = row.module;
             let selected = active == Some(module);
             let badge = state.badges.get(module).copied().unwrap_or(0);
-            let label = match row.note {
-                Some(note) => format!("{} · {note}", row.label),
+            // Before the manifest lands (or if it never does) the label is
+            // the program's own id: shown prettified, with a small dot for
+            // status rather than a "· Loading" suffix that would otherwise
+            // flash and vanish once the real name arrives.
+            let shown = match row.note {
+                Some(_) => prettify(&row.label),
                 None => row.label.clone(),
+            };
+            let name = match row.note {
+                Some(note) => format!("{shown} · {note}"),
+                None => shown.clone(),
             };
             div()
                 .id(SharedString::from(format!("rail/{module}")))
-                .control(Role::Tab, SharedString::from(label.clone()))
+                .control(Role::Tab, SharedString::from(name))
                 .aria_selected(selected)
                 .focusable()
                 .tab_stop(true)
@@ -404,7 +431,25 @@ impl DesktopWindow {
                     };
                     this.pane_message(message, window, cx);
                 }))
-                .child(div().flex_1().min_w_0().truncate().child(label))
+                .child(div().flex_1().min_w_0().truncate().child(shown))
+                .when(row.note == Some("Loading"), |row| {
+                    row.child(
+                        div()
+                            .size(px(6.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(ink_muted),
+                    )
+                })
+                .when(row.note == Some("Failed"), |row| {
+                    row.child(
+                        div()
+                            .size(px(6.))
+                            .flex_shrink_0()
+                            .rounded_full()
+                            .bg(hsla_of(palette.danger)),
+                    )
+                })
                 .when(badge > 0, |row| {
                     row.child(
                         div()
@@ -437,7 +482,7 @@ impl DesktopWindow {
                 )
                 .child(
                     self.action("lock", "Lock", || Message::Lock, false)
-                        .ghost()
+                        .custom(rail_button)
                         .w_full(),
                 ),
             false => div()
@@ -550,7 +595,7 @@ impl DesktopWindow {
                     .child(foot)
                     .child(
                         self.action("disconnect", "Switch node", || Message::Disconnect, false)
-                            .ghost()
+                            .custom(rail_button)
                             .w_full()
                             .mt_1(),
                     ),

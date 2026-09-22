@@ -56,6 +56,13 @@ impl ViewTree {
         }
         if let Some(value) = &interactivity.aria.label {
             element = element.aria_label(value.clone());
+        } else if interactivity.role.is_some()
+            && let Some(text) = descendant_text(node)
+        {
+            // A role with no explicit label: a view styling its own button
+            // out of a container still gets a name, taken from the text it
+            // drew inside — not left silent with its label one level down.
+            element = element.aria_label(text);
         }
         if let Some(value) = &interactivity.aria.description {
             element = element.aria_description(value.clone());

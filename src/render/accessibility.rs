@@ -24,6 +24,21 @@ pub(crate) struct Accessible {
     pub disabled: bool,
 }
 
+fn named(text: &str) -> Option<String> {
+    (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// The first text a node's descendants carry, depth first: a button or a
+/// clickable drawn with a text child but no explicit label is named by it,
+/// so nothing in the tree is announced with an empty name while its label
+/// sits one level down as a twin node.
+pub(crate) fn descendant_text(node: &wire::Node) -> Option<String> {
+    if let wire::Node::Text(view_wire::TextNode { content, .. }) = node {
+        return named(content);
+    }
+    node.children().iter().find_map(descendant_text)
+}
+
 /// The ONE mapping from a wire node to what assistive technology hears. The
 /// presenter builds every variant with it, so a view never names its own
 /// controls' roles: it says `label`, and the role follows from the variant.
@@ -32,7 +47,6 @@ pub(crate) struct Accessible {
 pub(crate) fn accessible(node: &wire::Node) -> Accessible {
     use gpui_kit::Role;
     use wire::Node;
-    let named = |text: &str| (!text.is_empty()).then(|| text.to_owned());
     let numeric = |value: f32, min: f32, max: f32| Accessible {
         numeric: Some(value.into()),
         min: Some(min.into()),
@@ -82,9 +96,9 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
         } => Accessible {
             role: Some(role.as_ref().map_or(Role::Button, role_of)),
             selected: *selected,
-            name: label.as_deref().and_then(named).or(match content {
+            name: label.as_deref().and_then(named).or_else(|| match content {
                 wire::ButtonContent::Label(text) => named(text),
-                wire::ButtonContent::Child(_) => None,
+                wire::ButtonContent::Child(_) => descendant_text(node),
             }),
             description: description.as_deref().and_then(named),
             toggled: *checked,
@@ -196,6 +210,10 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             expanded: *expanded,
             selected: *selected,
             disabled: on_press.is_none() && on_release.is_none(),
+            name: label
+                .as_deref()
+                .and_then(named)
+                .or_else(|| descendant_text(node)),
             ..labelled(role_of(role), label)
         },
         // only an open named overlay is a dialog; a closed or unnamed one is layout
