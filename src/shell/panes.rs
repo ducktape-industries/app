@@ -16,6 +16,19 @@ pub(super) fn label(module: &str) -> String {
         .unwrap_or_else(|| module.to_owned())
 }
 
+/// What an empty pane strip says: the rail lists what the network runs, so
+/// an empty pane list beside a non-empty rail means every pane here was
+/// closed or popped out, not that the network has nothing to show — that
+/// reused the "no program" sentence and read as if Chat/Forge/Settings had
+/// vanished from the rail right beside it.
+fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> &'static str {
+    if rail.iter().any(|row| !row.empty) {
+        "No pane is open here. Pick a tab to open one."
+    } else {
+        "This network runs no program with a view."
+    }
+}
+
 impl DesktopWindow {
     pub(super) fn focused_view(&self) -> Option<Entity<crate::runtime::NativeModuleView>> {
         self.layout
@@ -252,7 +265,7 @@ impl DesktopWindow {
                 .items_center()
                 .justify_center()
                 .text_color(muted)
-                .child("This network runs no program with a view.")
+                .child(empty_panes_message(&crate::runtime::rail()))
                 .into_any_element();
         }
         let props = self.model.read(cx).state.view_props();
@@ -388,5 +401,37 @@ impl DesktopWindow {
             );
         }
         stage.into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod empty_panes_message_tests {
+    use super::empty_panes_message;
+    use crate::runtime::RailRow;
+
+    fn row(empty: bool) -> RailRow {
+        RailRow {
+            module: "chat",
+            label: "Chat".into(),
+            note: None,
+            empty,
+        }
+    }
+
+    #[test]
+    fn names_the_network_only_when_the_rail_itself_is_empty() {
+        assert_eq!(
+            empty_panes_message(&[]),
+            "This network runs no program with a view."
+        );
+        assert_eq!(
+            empty_panes_message(&[row(true)]),
+            "This network runs no program with a view.",
+            "a rail of empty-slot rows still has nothing to open"
+        );
+        assert_eq!(
+            empty_panes_message(&[row(true), row(false)]),
+            "No pane is open here. Pick a tab to open one."
+        );
     }
 }
