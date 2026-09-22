@@ -10,11 +10,17 @@
 # OUT until the kernel branch stops naming `keyscheme` at sdk `dev`, where it
 # no longer exists; cargo refuses a same-source patch. First thing back.
 
+[package]
+name = "ducktape-app"
+edition.workspace = true
+version.workspace = true
+publish = false
+description = "A local-first consensus workspace for people and agents"
+authors = ["Ducktape contributors"]
+
+
 [workspace]
 resolver = "2"
-members = [
-    "app",
-]
 
 [workspace.package]
 edition = "2024"
@@ -50,6 +56,85 @@ zeroize = "1"
 # executes in the same wasm semantics the kernel does.
 wasmtime = "=46.0.3"
 libc = "0.2"
+
+[dependencies]
+gpui-kit = "=0.6.1"
+gpui-base = "=0.6.4"
+unicode-segmentation = "1"
+qrcode = { version = "0.14", default-features = false }
+futures.workspace = true
+design.workspace = true
+base64.workspace = true
+sha2.workspace = true
+ducktape-home.workspace = true
+ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", rev = "75fce331d60b942ab2f20b7d7bce9f53b3f9de8b" }
+keystore.workspace = true
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+rand.workspace = true
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+reqwest.workspace = true
+tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+zeroize.workspace = true
+view-wire = { workspace = true, features = ["manifest"] }
+abi.workspace = true
+borsh.workspace = true
+ducklink.workspace = true
+tokio-tungstenite = "0.24"
+wasmtime.workspace = true
+wasmparser = "0.251"
+libc.workspace = true
+sha1 = "0.10"
+# The raw devices behind the `audio.*`/`video.*` doors (`src/runtime/media.rs`).
+# cpal is the platform audio host (ALSA, CoreAudio, WASAPI); nokhwa is the
+# camera (v4l2, AVFoundation, MSMF) and decodes MJPEG to RGBA for the view.
+cpal = "0.15"
+nokhwa = { version = "0.10", features = ["input-native"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+tray-icon = { version = "0.24", default-features = false }
+# The screen-share leg (`src/video.rs`): the main display through
+# `CGDisplayCreateImage`. Already in this binary's graph under gpui.
+core-graphics = "0.24"
+block2 = "0.5"
+objc2 = "0.5"
+objc2-foundation = { version = "0.2", default-features = false, features = ["std", "NSBundle", "NSString", "NSError"] }
+objc2-user-notifications = { version = "0.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger"] }
+
+# Everywhere else the notifier is the freedesktop notifications service, one
+# `Notify` call on the session bus. zbus is already in this binary's graph
+# under the accessibility stack; this only names it.
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+zbus = "5"
+# The screen-share leg (`src/video.rs`): a root-window grab over X11. Already
+# in this binary under winit, and pure Rust — the portal/pipewire route would
+# put a build-time system library on every machine that builds this app. A
+# Wayland session's X root holds X clients only, so the share refuses there
+# rather than grab a black desktop (`ScreenSource::open`).
+# `composite` for the window shares: an unredirected window cannot be named as
+# a pixmap, and reading the window drawable itself returns undefined bytes
+# wherever something overlaps it. `randr` (the heads) and `xfixes` (the pointer)
+# are already on through gpui; naming them here keeps the picker from silently
+# losing them if gpui ever stops asking.
+
+[dev-dependencies]
+gpui-kit = { version = "=0.6.1", features = ["test-support"] }
+# walks the AccessKit tree the ax_contract gate reads (the adapters' version)
+accesskit_consumer = "=0.38.0"
+syn = { version = "2", features = ["full", "visit"] }
+quote = "1"
+# the dependency line this app is held to is read off the manifests, not
+# asserted about from memory: `the_app_links_only_what_it_still_speaks_for`
+commonware-cryptography.workspace = true
+commonware-codec.workspace = true
+tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.5" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "7067cdfacd77d19fc6f78d03142987f90dfa59af" }
