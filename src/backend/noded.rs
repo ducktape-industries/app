@@ -37,14 +37,9 @@ pub enum Layer {
     Preconfirmed,
 }
 
-/// `keyscheme::KeyScheme`, as a frame body encodes it. Only the first
-/// variant is ever produced here; the others keep the borsh discriminants.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
-pub enum KeyScheme {
-    Ed25519,
-    Secp256k1,
-    Secp256r1,
-}
+/// The signer's scheme, as a frame body encodes it: the device key is
+/// `Ed25519`, a passkey `Secp256r1` (`backend::passkey`).
+pub use keyscheme::KeyScheme;
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Body {
@@ -54,6 +49,13 @@ pub struct Body {
     pub seq: u64,
     pub target: String,
     pub payload: Vec<u8>,
+}
+
+impl Body {
+    /// What the signer signs under [`FRAME_NAMESPACE`].
+    pub fn preimage(&self) -> Vec<u8> {
+        abi::encode(self)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -79,7 +81,7 @@ impl Frame {
             payload,
         };
         let proof = key
-            .sign(FRAME_NAMESPACE, &abi::encode(&body))
+            .sign(FRAME_NAMESPACE, &body.preimage())
             .as_ref()
             .to_vec();
         Frame { body, proof }
@@ -292,6 +294,12 @@ mod tests {
         let decoded: Frame = abi::decode(&frame.encode()).unwrap();
         assert_eq!(decoded, frame);
         assert_eq!(frame.proof.len(), 64);
+        assert!(KeyScheme::Ed25519.verify(
+            &frame.body.signer,
+            FRAME_NAMESPACE,
+            &frame.body.preimage(),
+            &frame.proof
+        ));
     }
 
     #[test]

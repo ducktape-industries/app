@@ -141,6 +141,9 @@ impl Ducktape {
                 self.restore_phrase.clear();
                 self.restore_password.clear();
                 self.restore_confirm_password.clear();
+                self.account_name.clear();
+                self.passkey_task = None;
+                self.unlock_busy = false;
                 self.push_props();
                 Task::none()
             }
@@ -374,7 +377,34 @@ impl Ducktape {
                 self.push_props();
                 Task::none()
             }
+            Message::AccountNameTyped(text) => {
+                self.account_name = text;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::PasskeyCreateSubmit => self.passkey(true),
+            Message::PasskeySignInSubmit => self.passkey(false),
+            Message::PasskeyCancel => {
+                self.passkey_task = None;
+                self.unlock_busy = false;
+                self.key_exists = backend::key_exists(&self.network);
+                Task::future(async {
+                    backend::lock_signer().await;
+                    Message::ShowToast("Passkey step cancelled".into())
+                })
+            }
+            Message::PasskeyDone(pubkey) => {
+                self.passkey_task = None;
+                self.unlock_busy = false;
+                self.signer_key = pubkey;
+                self.key_exists = true;
+                self.account_name.clear();
+                self.push_props();
+                Task::none()
+            }
             Message::UnlockFailed(error) => {
+                self.passkey_task = None;
+                self.key_exists = backend::key_exists(&self.network);
                 self.unlock_busy = false;
                 self.unlock_error = error;
                 Task::none()
@@ -501,6 +531,70 @@ use futures::StreamExt as _;
 
 /// The one password rule enforced before minting or restoring a key: long
 /// enough (the keystore's own floor), and its confirmation matches.
+impl Ducktape {
+    /// A passkey creates an account (`create`) or admits this device into
+    /// one. Either way this device's key signs the writes: an existing key
+    /// is unlocked with the password, else one is minted under it. The
+    /// minted key's recovery phrase is not shown — the passkey admits a
+    /// fresh device key whenever this one is lost.
+    fn passkey(&mut self, create: bool) -> Task<Message> {
+        if self.unlock_busy {
+            return Task::none();
+        }
+        let name = self.account_name.trim().to_owned();
+        if create && name.is_empty() {
+            self.unlock_error = "Name your account first.".into();
+            return Task::none();
+        }
+        let mint = !self.key_exists;
+        if mint && let Some(error) = weak_password(&self.password, &self.confirm_password) {
+            self.unlock_error = error;
+            return Task::none();
+        }
+        let password = zeroize::Zeroizing::new(std::mem::take(&mut self.password));
+        self.confirm_password.clear();
+        let network = self.network.clone();
+        let client = backend::RpcClient::new(self.connected_rpc.clone());
+        self.unlock_busy = true;
+        self.unlock_error.clear();
+        let (task, handle) = Task::future(async move {
+            if mint {
+                let minted = tokio::task::spawn_blocking({
+                    let (network, password) = (network.clone(), password.clone());
+                    move || backend::create_wallet(&network, "default", &password)
+                })
+                .await
+                .unwrap_or_else(|_| Err("creating this device's key did not finish".into()));
+                if let Err(error) = minted {
+                    return Message::UnlockFailed(backend::user_error(error));
+                }
+            }
+            let seated = match backend::session_key_path(&network) {
+                Ok(path) => backend::seat_signer(path, password).await,
+                Err(error) => Err(error),
+            };
+            let pubkey = match seated {
+                Ok(pubkey) => pubkey,
+                Err(error) => return Message::UnlockFailed(backend::user_error(error)),
+            };
+            let joined = match create {
+                true => backend::passkey::create_account(&client, &network, &name).await,
+                false => backend::passkey::sign_in(&client, &network).await,
+            };
+            match joined {
+                Ok(()) => Message::PasskeyDone(pubkey),
+                Err(error) => {
+                    backend::lock_signer().await;
+                    Message::UnlockFailed(error)
+                }
+            }
+        })
+        .abortable();
+        self.passkey_task = Some(handle.abort_on_drop());
+        task
+    }
+}
+
 fn weak_password(password: &str, confirm: &str) -> Option<String> {
     if keystore::userkey::check_password_len(password).is_err() {
         return Some(format!(

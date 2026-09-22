@@ -55,6 +55,11 @@ pub struct Ducktape {
     pub(crate) restore_phrase: String,
     pub(crate) restore_password: String,
     pub(crate) restore_confirm_password: String,
+    /// The name a new passkey account takes.
+    pub(crate) account_name: String,
+    /// A passkey ceremony in flight (the browser has it); dropping the
+    /// handle cancels it.
+    pub(crate) passkey_task: Option<view_wire::task::Handle>,
     /// A freshly minted key's recovery phrase, shown once until written down.
     pub(crate) phrase: String,
     /// The program whose view is open.
@@ -121,6 +126,11 @@ pub(crate) enum AppMessage {
     RestoreConfirmPasswordTyped(String),
     RestoreSubmit,
     Restored(String),
+    AccountNameTyped(String),
+    PasskeyCreateSubmit,
+    PasskeySignInSubmit,
+    PasskeyCancel,
+    PasskeyDone(String),
     ForgetEndpoint(String),
     Lock,
     ShowToast(String),
@@ -171,6 +181,8 @@ impl Ducktape {
             restore_phrase: String::new(),
             restore_password: String::new(),
             restore_confirm_password: String::new(),
+            account_name: String::new(),
+            passkey_task: None,
             phrase: String::new(),
             active: None,
             badges: BTreeMap::new(),
