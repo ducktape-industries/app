@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 #[derive(Clone, Copy)]
 pub(super) enum ScrollRequest {
@@ -240,11 +241,7 @@ impl ViewTree {
             .relative()
             .min_h_0()
             .refine_style(style)
-            .id(path
-                .last()
-                .unwrap()
-                .to_gpui()
-                .expect("sanitized scroll identity"))
+            .id(native_id(path.last().unwrap()))
             .child(native)
             .child(retain_estimates)
             .child(self.measure(path, cx))
@@ -293,11 +290,7 @@ impl ViewTree {
         let element = div()
             .relative()
             .refine_style(style)
-            .id(path
-                .last()
-                .unwrap()
-                .to_gpui()
-                .expect("sanitized scroll identity"))
+            .id(native_id(path.last().unwrap()))
             .track_scroll(&handle);
         let element = match direction {
             wire::ScrollDirection::Vertical => element.overflow_y_scroll(),

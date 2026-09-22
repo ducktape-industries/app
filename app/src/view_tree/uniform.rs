@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 use gpui_kit::UniformListDecoration;
 use std::ops::Range;
 
@@ -144,7 +145,7 @@ impl ViewTree {
             }
         }
 
-        let native_id = id.to_gpui().expect("validated uniform-list identity");
+        let native_id = native_id(id);
         let scroll = state.scroll.clone();
         if let Some(request) = scroll_request {
             let strategy = match request.strategy {

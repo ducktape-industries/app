@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 #[derive(Clone)]
 pub(super) struct Choice {
@@ -209,7 +210,7 @@ impl ViewTree {
             });
         }
         let mut select = Select::new(&picker.state)
-            .id(id.to_gpui().expect("sanitized picker identity"))
+            .id(native_id(id))
             .placeholder(placeholder.to_owned());
         // the kit draws the picker's node itself; the wire `label` names it
         if let Some(name) = accessible(node).name {

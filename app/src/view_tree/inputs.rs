@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 pub(super) struct RangeControl {
     pub(super) state: Entity<SliderState>,
@@ -243,7 +244,7 @@ impl ViewTree {
         // empty label is no name, left unset so it reads as missing; a secure
         // field is a password, which keeps its value out of the tree.
         let accessible = accessible(node);
-        let native_id = id.to_gpui().expect("validated input ID must lower to GPUI");
+        let native_id = native_id(id);
         let field_id = ElementId::NamedChild(Arc::new(native_id.clone()), "field".into());
         let mut input = Input::new(&field.state)
             .id(native_id)
@@ -284,7 +285,7 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let mut button = Button::new(id.to_gpui().expect("sanitized button identity"))
+        let mut button = Button::new(native_id(id))
             .refine_style(style)
             .disabled(on_press.is_none())
             .selected(checked.unwrap_or(false));
@@ -344,13 +345,11 @@ impl ViewTree {
             unreachable!()
         };
         if *kind == wire::ToggleKind::Switch {
-            let mut toggle = gpui_kit::component::switch::Switch::new(
-                id.to_gpui().expect("sanitized toggle identity"),
-            )
-            .refine_style(style)
-            .label(label.clone())
-            .checked(*checked)
-            .disabled(on_toggle.is_none());
+            let mut toggle = gpui_kit::component::switch::Switch::new(native_id(id))
+                .refine_style(style)
+                .label(label.clone())
+                .checked(*checked)
+                .disabled(on_toggle.is_none());
             if let Some(handler) = on_toggle {
                 let handler = *handler;
                 toggle = toggle.on_click(cx.listener(move |_, on, _, cx| {
@@ -359,7 +358,7 @@ impl ViewTree {
             }
             return toggle.into_any_element();
         }
-        let mut checkbox = Checkbox::new(id.to_gpui().expect("sanitized toggle identity"))
+        let mut checkbox = Checkbox::new(native_id(id))
             .refine_style(style)
             .label(label.clone())
             .checked(*checked)
@@ -405,9 +404,7 @@ impl ViewTree {
                 .child(fill.h(relative(fraction)).w_full()),
         };
         announce(
-            track
-                .id(id.to_gpui().expect("sanitized progress identity"))
-                .refine_style(style),
+            track.id(native_id(id)).refine_style(style),
             accessible(node),
         )
         .into_any_element()
@@ -459,9 +456,7 @@ impl ViewTree {
             editor.view.restore_focus(&path, window, cx);
         }
         let view = editor.view.element();
-        let mut element = div()
-            .relative()
-            .id(id.to_gpui().expect("sanitized editor identity"));
+        let mut element = div().relative().id(native_id(id));
         *element.style() = style.clone();
         element
             .child(view)
@@ -550,7 +545,7 @@ impl ViewTree {
             wire::Axis::Column => Slider::new(&control.state).vertical(),
         };
         div()
-            .id(id.to_gpui().expect("sanitized slider identity"))
+            .id(native_id(id))
             .refine_style(style)
             .child(slider)
             .into_any_element()

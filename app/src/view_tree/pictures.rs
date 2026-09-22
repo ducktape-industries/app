@@ -1,5 +1,6 @@
 use super::picture_resources::{cache_fits, decode_image};
 use super::*;
+use crate::view_tree::native_id;
 
 #[derive(Clone, Default)]
 pub(super) struct ViewerState {
@@ -278,7 +279,7 @@ impl ViewTree {
                 .relative()
                 .overflow_hidden()
                 .refine_style(style)
-                .id(id.to_gpui().expect("sanitized image viewer identity")),
+                .id(native_id(id)),
             accessible(node),
         );
         if let Some(image) = frame {
@@ -436,13 +437,11 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_hover(group.group.clone(), move |_| style);
         }
-        let native_id = id
-            .map(|id| id.to_gpui().expect("sanitized portable primitive ID"))
-            .unwrap_or_else(|| {
-                let index = self.render_index;
-                self.render_index += 1;
-                ElementId::NamedInteger("guest-primitive".into(), index)
-            });
+        let native_id = id.map(native_id).unwrap_or_else(|| {
+            let index = self.render_index;
+            self.render_index += 1;
+            ElementId::NamedInteger("guest-primitive".into(), index)
+        });
         let mut element = element.id(native_id);
         if let Some(style) = &interactivity.active {
             let style = style.clone();

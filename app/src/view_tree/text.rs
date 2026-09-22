@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 fn rich_tooltip_content(
     node: &wire::Node,
@@ -178,14 +179,11 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let native_id = id
-            .as_ref()
-            .map(|id| id.to_gpui().expect("sanitized portable element ID"))
-            .unwrap_or_else(|| {
-                let index = self.render_index;
-                self.render_index += 1;
-                ElementId::NamedInteger("guest-text".into(), index)
-            });
+        let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
+            let index = self.render_index;
+            self.render_index += 1;
+            ElementId::NamedInteger("guest-text".into(), index)
+        });
         let mut element = div();
         *element.style() = style.clone();
         crate::shell::refine_fallbacks(element.style());
@@ -225,9 +223,7 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let native_id = id
-            .as_ref()
-            .map(|id| id.to_gpui().expect("sanitized portable element ID"));
+        let native_id = id.as_ref().map(native_id);
         let shared: SharedString = text.clone().into();
         let mut styled = StyledText::new(shared.clone());
         styled = match runs {

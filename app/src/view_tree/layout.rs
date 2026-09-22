@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 impl ViewTree {
     pub(super) fn container(
@@ -19,14 +20,11 @@ impl ViewTree {
         let mut element = div();
         *element.style() = style.clone();
         crate::shell::refine_fallbacks(element.style());
-        let native_id = id
-            .as_ref()
-            .map(|id| id.to_gpui().expect("sanitized portable element ID"))
-            .unwrap_or_else(|| {
-                let index = self.render_index;
-                self.render_index += 1;
-                ElementId::NamedInteger("guest-container".into(), index)
-            });
+        let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
+            let index = self.render_index;
+            self.render_index += 1;
+            ElementId::NamedInteger("guest-container".into(), index)
+        });
         let mut element = element.id(native_id);
         if let Some(group) = &interactivity.group {
             element = element.group(group.clone());
@@ -223,10 +221,7 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let mut element = div()
-            .id(id.to_gpui().expect("sanitized condition identity"))
-            .flex()
-            .flex_col();
+        let mut element = div().id(native_id(id)).flex().flex_col();
         if condition.matches(&self.containers) {
             for child in children {
                 element = element.child(self.node(child, window, cx));

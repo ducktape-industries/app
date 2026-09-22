@@ -75,6 +75,12 @@ use variable_list::{VariableList, VariableListKey};
 
 pub(crate) type AuthoredPath = Vec<wire::ElementIdWire>;
 
+/// The gpui id for a sanitized wire id. Sanitize refuses every id that
+/// cannot lower, so a frame that reached the renderer holds none.
+pub(crate) fn native_id(id: &wire::ElementIdWire) -> ElementId {
+    id.to_gpui().expect("sanitized element ids lower to gpui")
+}
+
 /// Pushes the node's identity onto `path` when it has one; the caller pops
 /// on the way out when this answers `true`.
 pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {
@@ -218,7 +224,7 @@ impl ViewTree {
                 ..
             } => {
                 let message = *on_select;
-                let radio = Radio::new(id.to_gpui().expect("sanitized radio identity"))
+                let radio = Radio::new(native_id(id))
                     .label(label.clone())
                     .checked(*selected)
                     .on_click(
@@ -230,16 +236,14 @@ impl ViewTree {
             Node::Rule {
                 id, axis, style, ..
             } => {
-                let element = div()
-                    .id(id.to_gpui().expect("sanitized rule identity"))
-                    .refine_style(style);
+                let element = div().id(native_id(id)).refine_style(style);
                 match axis {
                     wire::Axis::Column => element.h_full().into_any_element(),
                     wire::Axis::Row => element.w_full().into_any_element(),
                 }
             }
             Node::Lazy { id, content, .. } => div()
-                .id(id.to_gpui().expect("sanitized lazy identity"))
+                .id(native_id(id))
                 .child(self.node(content, window, cx))
                 .into_any_element(),
             Node::Deferred { .. } => self.deferred(node, window, cx),
@@ -257,10 +261,7 @@ impl ViewTree {
             Node::Svg { .. } => self.vector(node, window, cx),
             Node::Canvas { .. } => self.drawing(node, cx),
             Node::Qr { id, code, style } => announce(
-                div()
-                    .id(id.to_gpui().expect("sanitized QR identity"))
-                    .refine_style(style)
-                    .child(qr(code)),
+                div().id(native_id(id)).refine_style(style).child(qr(code)),
                 accessible(node),
             )
             .into_any_element(),
@@ -268,7 +269,7 @@ impl ViewTree {
             Node::Surface {
                 id, name, style, ..
             } => div()
-                .id(id.to_gpui().expect("sanitized surface identity"))
+                .id(native_id(id))
                 .refine_style(style)
                 .child(format!("Unavailable host surface: {name}"))
                 .into_any_element(),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 impl ViewTree {
     pub(super) fn tooltip(
@@ -21,7 +22,7 @@ impl ViewTree {
             return div().into_any_element();
         };
         let mut element = div()
-            .id(id.to_gpui().expect("sanitized tooltip identity"))
+            .id(native_id(id))
             .refine_style(style)
             .tooltip_show_delay(std::time::Duration::from_millis(*delay_ms))
             .child(self.node(content, window, cx));
@@ -71,7 +72,7 @@ impl ViewTree {
         // Authored floating rails use unit scale; their measurement is
         // outside the translated child to avoid positional feedback.
         div()
-            .id(id.to_gpui().expect("sanitized float identity"))
+            .id(native_id(id))
             .relative()
             .child(element.child(self.node(content, window, cx)))
             .child(self.measure(&self.authored_path, cx))
@@ -95,10 +96,7 @@ impl ViewTree {
             unreachable!()
         };
         let path = self.authored_path.clone();
-        let mut element = div()
-            .id(id.to_gpui().expect("sanitized overlay identity"))
-            .relative()
-            .size_full();
+        let mut element = div().id(native_id(id)).relative().size_full();
         if let Some(base) = children.first() {
             element = element.child(self.node(base, window, cx));
         }

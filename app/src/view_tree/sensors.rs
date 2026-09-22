@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 pub(super) struct SensorState {
     pub(super) reset: Option<wire::SurfaceValue>,
@@ -85,7 +86,7 @@ impl ViewTree {
         .inset_0();
         let element = div()
             .refine_style(style)
-            .id(id.to_gpui().expect("sanitized resize identity"))
+            .id(native_id(id))
             .relative()
             .cursor(native_cursor(*cursor))
             .on_mouse_down(
@@ -242,7 +243,7 @@ impl ViewTree {
         // A sensor is layout-transparent. In particular, a fill spacer
         // must not collapse inside an auto-sized measurement wrapper.
         div()
-            .id(id.to_gpui().expect("sanitized sensor identity"))
+            .id(native_id(id))
             .relative()
             .refine_style(style)
             .child(self.node(child, window, cx))
@@ -280,9 +281,7 @@ impl ViewTree {
         // A mouse area is layout-transparent, like a sensor: a fill-sized
         // child must not collapse inside an auto-sized wrapper.
         let path = self.authored_path.clone();
-        let mut element = div()
-            .id(id.to_gpui().expect("sanitized mouse-area identity"))
-            .relative();
+        let mut element = div().id(native_id(id)).relative();
         for (button, down, up) in [
             (MouseButton::Left, *on_press, *on_release),
             (MouseButton::Right, *on_right_press, *on_right_release),
