@@ -8,11 +8,14 @@ pub(super) struct RichSelection {
 // Layout and hit-testing stay native. One participant receives every span's
 // measured glyph run so copying concatenates source text, never visual padding.
 pub(super) struct RichParagraph {
-    pub(super) id: ElementId,
+    pub(super) id: Option<ElementId>,
     pub(super) content: AnyElement,
-    pub(super) layouts: Vec<(SharedString, TextLayout)>,
-    pub(super) handle: gpui_kit::base::TextSelectionHandle,
-    pub(super) selections: std::rc::Rc<std::cell::RefCell<Vec<Option<std::ops::Range<usize>>>>>,
+    pub(super) text: SharedString,
+    pub(super) layout: TextLayout,
+    pub(super) fallback: RichSelection,
+    pub(super) active_handle:
+        std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
+    pub(super) selection: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
 }
 
 impl IntoElement for RichParagraph {
@@ -26,7 +29,7 @@ impl Element for RichParagraph {
     type RequestLayoutState = ();
     type PrepaintState = ();
     fn id(&self) -> Option<ElementId> {
-        Some(self.id.clone())
+        self.id.clone()
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -42,7 +45,7 @@ impl Element for RichParagraph {
     }
     fn prepaint(
         &mut self,
-        _: Option<&GlobalElementId>,
+        id: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut (),
@@ -53,16 +56,37 @@ impl Element for RichParagraph {
         // Register the containing hitbox before link hitboxes, so selectable
         // paragraph geometry cannot cover its own interactive spans.
         self.content.prepaint(window, cx);
-        self.handle.register(
-            gpui_kit::base::TextSelectionRegistration::new(hitbox, bounds).with_text_bounds(
-                self.layouts
-                    .iter()
-                    .map(|(_, layout)| layout.bounds())
-                    .collect(),
-            ),
-            window,
-            cx,
-        );
+        let text = self.text.clone();
+        let layout_bounds = self.layout.bounds();
+        let active = self.active_handle.clone();
+        window.with_optional_element_state::<RichSelection, _>(id, |state, window| {
+            let state = match state {
+                Some(state) => state.unwrap_or_else(|| {
+                    let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
+                    let refresh = handle.refresh_window_on_change(window, cx);
+                    RichSelection { handle, _refresh: refresh }
+                }),
+                None => {
+                    *active.borrow_mut() = Some(self.fallback.handle.clone());
+                    self.fallback.handle.register(
+                        gpui_kit::base::TextSelectionRegistration::new(hitbox.clone(), bounds)
+                            .with_text_bounds(vec![layout_bounds]),
+                        window,
+                        cx,
+                    );
+                    return ((), None);
+                }
+            };
+            state.handle.set_fallback_copy_text(text.to_string(), cx);
+            *active.borrow_mut() = Some(state.handle.clone());
+            state.handle.register(
+                gpui_kit::base::TextSelectionRegistration::new(hitbox.clone(), bounds)
+                    .with_text_bounds(vec![layout_bounds]),
+                window,
+                cx,
+            );
+            ((), Some(state))
+        });
     }
     fn paint(
         &mut self,
@@ -74,17 +98,15 @@ impl Element for RichParagraph {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let runs = self
-            .layouts
-            .iter()
-            .enumerate()
-            .map(|(index, (text, layout))| {
-                gpui_kit::base::TextSelectionRun::new(text.clone(), layout.clone(), layout.bounds())
-                    .with_document_order(index as u64)
-            })
-            .collect::<Vec<_>>();
-        let projection = self.handle.update_runs(&runs, cx);
-        *self.selections.borrow_mut() = projection.ranges().to_vec();
+        let run = gpui_kit::base::TextSelectionRun::new(
+            self.text.clone(),
+            self.layout.clone(),
+            self.layout.bounds(),
+        );
+        if let Some(handle) = self.active_handle.borrow().as_ref() {
+            let projection = handle.update_runs(&[run], cx);
+            *self.selection.borrow_mut() = projection.ranges().first().cloned().flatten();
+        }
         self.content.paint(window, cx);
     }
 }
@@ -167,183 +189,87 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::RichText {
-            key,
-            spans,
-            size,
-            color,
-            font,
-            width,
-            align_x,
-            options,
-            on_link,
+            id,
+            style,
+            text,
+            runs,
+            font_family_overrides,
+            clickable_ranges,
+            on_click,
+            on_hover,
         } = node
         else {
             unreachable!()
         };
-        let canonical = spans
-            .iter()
-            .map(|span| span.content.as_str())
-            .collect::<String>();
-        let selection = self.rich_selections.entry(key.clone()).or_insert_with(|| {
-            let handle = gpui_kit::base::TextSelectionHandle::new(canonical.clone(), cx);
-            let refresh = handle.refresh_window_on_change(window, cx);
-            RichSelection {
-                handle,
-                _refresh: refresh,
+        let native_id = id.as_ref().map(|id| id.to_gpui().expect("sanitized portable element ID"));
+        let shared: SharedString = text.clone().into();
+        let mut styled = StyledText::new(shared.clone());
+        styled = match runs {
+            wire::RichTextRuns::Highlights(highlights) => styled.with_highlights(
+                highlights.iter().cloned().map(|(range, style)| (range, style.into())),
+            ),
+            wire::RichTextRuns::Runs(runs) => {
+                styled.with_runs(runs.iter().cloned().map(Into::into).collect())
             }
-        });
-        selection.handle.set_fallback_copy_text(canonical, cx);
-        let handle = selection.handle.clone();
-        let mut content = text_options(
-            dimensions(div().flex().flex_col(), *width, options.height),
-            *font,
-            *align_x,
-            options,
-        );
-        if let Some(size) = size {
-            content = content.text_size(px(*size));
-        }
-        if let Some(color) = color {
-            content = content.text_color(rgba(*color));
-        }
-        let base_size = size
-            .map(px)
-            .unwrap_or_else(|| window.text_style().font_size.to_pixels(window.rem_size()));
-        let line_height = match options.line_height {
-            Some(wire::LineHeight::Absolute(height)) => px(height),
-            Some(wire::LineHeight::Relative(height)) => base_size * height,
-            None => window
-                .text_style()
-                .line_height
-                .to_pixels(base_size.into(), window.rem_size()),
         };
-        let native_row = || {
-            let mut row = div().flex().flex_row().items_baseline().min_h(line_height);
-            if options.wrapping != Some(wire::Wrapping::None) {
-                row = row.flex_wrap();
-            }
-            horizontal_align(row, *align_x)
-        };
-        let mut row = native_row();
-        let mut layouts = Vec::new();
-        let selections = std::rc::Rc::new(std::cell::RefCell::new(Vec::<
-            Option<std::ops::Range<usize>>,
-        >::new()));
-        // ONE SPAN IS ONE PARAGRAPH, laid out by the text system: it wraps
-        // where a plain label would, with the same spacing, and the whole
-        // run is one selection layout. Only a paragraph of SEVERAL spans is
-        // cut into word fragments, so native flex can wrap across the style
-        // changes — the cut is what made a long plain message read
-        // differently from every other text on screen.
-        let whole = spans.len() == 1;
-        for (span_index, span) in spans.iter().enumerate() {
-            // Native flex wraps at Unicode word boundaries; padding is paint
-            // geometry only, while every copied fragment retains source bytes.
-            let fragments = if whole {
-                vec![span.content.as_str()]
-            } else {
-                span.content.split_word_bounds().collect::<Vec<_>>()
-            };
-            for (index, fragment) in fragments.iter().enumerate() {
-                let mut run_options = options.clone();
-                run_options.font = span.font.clone().or_else(|| options.font.clone());
-                run_options.line_height = span.line_height.or(options.line_height);
-                let plate = if whole {
-                    div().min_w_0().w_full()
-                } else {
-                    div().flex_shrink_0().max_w_full()
-                };
-                let mut paint = text_options(plate, *font, None, &run_options);
-                if let Some(size) = span.size {
-                    paint = paint.text_size(px(size));
-                }
-                if let Some(color) = span.color {
-                    paint = paint.text_color(rgba(color));
-                }
-                let mut padding = span.padding.unwrap_or_default();
-                if index > 0 {
-                    padding.left = 0.;
-                }
-                if index + 1 < fragments.len() {
-                    padding.right = 0.;
-                }
-                paint = decoration(pad(paint, Some(padding)), span.background, span.border);
-                let mut style = HighlightStyle::default();
-                if span.underline {
-                    style.underline = Some(UnderlineStyle {
-                        thickness: px(1.),
-                        color: span.color.map(rgba),
-                        wavy: false,
+        styled = styled.with_font_family_overrides(font_family_overrides.iter().cloned());
+        let layout = styled.layout().clone();
+        let rich_id: ElementId = "rich-text".into();
+        let mut interactive = InteractiveText::new(rich_id, styled);
+        if let Some(handler) = on_click {
+            let handler = *handler;
+            let view = cx.entity().downgrade();
+            interactive = interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
+                if !gpui_kit::base::TextSelection::has_selection(window, cx) {
+                    let _ = view.update(cx, |_, cx| {
+                        cx.emit(wire::Event::Select { handler, index: index as u32 });
                     });
                 }
-                if span.strikethrough {
-                    style.strikethrough = Some(StrikethroughStyle {
-                        thickness: px(1.),
-                        color: span.color.map(rgba),
-                    });
-                }
-                let text: SharedString = (*fragment).to_owned().into();
-                let styled =
-                    StyledText::new(text.clone()).with_highlights([(0..text.len(), style)]);
-                let layout = styled.layout().clone();
-                let run_index = layouts.len();
-                layouts.push((text.clone(), layout.clone()));
-                let ranges = selections.clone();
-                let selection = canvas(
-                    |_, _, _| (),
-                    move |_, (), window, cx| {
-                        if let Some(Some(range)) = ranges.borrow().get(run_index) {
-                            paint_rich_selection(&layout, range, window, cx);
-                        }
+            });
+        }
+        if let Some(handler) = on_hover {
+            let handler = *handler;
+            let view = cx.entity().downgrade();
+            interactive = interactive.on_hover(move |index, event, _, cx| {
+                let event = wire::Event::RichTextHover {
+                    handler,
+                    event: wire::RichTextHover {
+                        index: index.and_then(|index| u32::try_from(index).ok()),
+                        position: event.position,
+                        pressed_button: event.pressed_button.map(Into::into),
+                        modifiers: event.modifiers,
                     },
-                )
-                .absolute()
-                .size_full();
-                let id = format!("{key}-span-{span_index}-{index}");
-                let mut painted = paint.id(id).child(selection).child(styled);
-                if let (Some(handler), Some(link)) = (on_link, &span.link) {
-                    let handler = *handler;
-                    let link = link.clone();
-                    painted = crate::a11y::keyboard(
-                        painted.role(gpui_kit::Role::Link).aria_label(text.clone()),
-                    );
-                    painted =
-                        painted
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |_, _, window, cx| {
-                                if gpui_kit::base::TextSelection::has_selection(window, cx) {
-                                    return;
-                                }
-                                cx.emit(wire::Event::Input {
-                                    handler,
-                                    text: link.clone(),
-                                });
-                            }));
-                }
-                // a whole paragraph keeps its newlines: the text system
-                // breaks the lines, and the selection layout spans them
-                let newline = !whole && fragment.contains('\n');
-                if newline {
-                    // Explicit source line breaks remain real measured text, not
-                    // injected spaces in the selection/copy representation.
-                    // One native row per explicit source line preserves empty
-                    // lines too. The newline participates in copy, not sizing.
-                    painted = painted.w(px(0.)).h(px(0.));
-                    row = row.child(painted);
-                    content = content.child(row);
-                    row = native_row();
-                    continue;
-                }
-                row = row.child(painted);
-            }
+                };
+                let _ = view.update(cx, |_, cx| {
+                    cx.emit(event);
+                });
+            });
         }
-        content = content.child(row);
+        let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let selection_for_paint = selection_range.clone();
+        let selection_layout = layout.clone();
+        let selection = canvas(
+            |_, _, _| (),
+            move |_, (), window, cx| {
+                if let Some(range) = selection_for_paint.borrow().as_ref() {
+                    paint_rich_selection(&selection_layout, range, window, cx);
+                }
+            },
+        )
+        .absolute()
+        .size_full();
+        let mut content = div().relative().child(selection).child(interactive);
+        *content.style() = style.clone();
+        let handle = gpui_kit::base::TextSelectionHandle::new(text.clone(), cx);
+        let refresh = handle.refresh_window_on_change(window, cx);
         RichParagraph {
-            id: key.clone().into(),
+            id: native_id,
             content: content.into_any_element(),
-            layouts,
-            handle,
-            selections,
+            text: shared,
+            layout,
+            fallback: RichSelection { handle, _refresh: refresh },
+            active_handle: Default::default(),
+            selection: selection_range,
         }
         .into_any_element()
     }

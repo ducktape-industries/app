@@ -21,18 +21,17 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, BoxShadow, Context, CursorStyle, Div, Element,
     ElementId, Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable as _,
-    FollowMode, FontWeight, GlobalElementId, HighlightStyle, HitboxBehavior, Hsla, Image,
+    FollowMode, FontWeight, GlobalElementId, HitboxBehavior, Hsla, Image,
     ImageFormat, InspectorElementId, InteractiveElement as _, IntoElement, KeyDownEvent, LayoutId,
     ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
     ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
-    StrikethroughStyle, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
-    Transformation, UnderlineStyle, Window, canvas, div, fill, img, point, px, radians, relative,
+    InteractiveText, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
+    Transformation, Window, canvas, div, fill, img, point, px, radians, relative,
     rgb, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
-use unicode_segmentation::UnicodeSegmentation;
 use view_wire as wire;
 
 mod accessibility;
@@ -71,9 +70,8 @@ use variable_list::{VariableList, VariableListKey};
 use sensors::SensorState;
 use style::{
     button_style, content_dimensions, cross_align, decoration, dimensions, has_named_overlay,
-    horizontal_align, named_overlay, native_cursor, object_fit, pad, rgba, shadows, text_options,
+    named_overlay, native_cursor, object_fit, pad, rgba, shadows,
 };
-use text::RichSelection;
 use uniform::UniformListHostState;
 
 type AuthoredPath = Vec<wire::ElementIdWire>;
@@ -108,7 +106,6 @@ pub struct ViewTree {
     focus_targets: HashMap<String, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
     fields: HashMap<AuthoredPath, Field>,
     authored_path: AuthoredPath,
-    rich_selections: HashMap<String, RichSelection>,
     scrolls: HashMap<String, ScrollHandle>,
     lists: HashMap<String, VirtualScroll>,
     uniform_lists: HashMap<Vec<wire::ElementIdWire>, UniformListHostState>,
@@ -145,7 +142,6 @@ impl ViewTree {
             focus_targets: HashMap::new(),
             fields: HashMap::new(),
             authored_path: Vec::new(),
-            rich_selections: HashMap::new(),
             scrolls: HashMap::new(),
             lists: HashMap::new(),
             uniform_lists: HashMap::new(),

@@ -450,8 +450,6 @@ impl ViewTree {
         self.focus_targets
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
         self.fields.retain(|key, _| inputs.contains(key));
-        self.rich_selections
-            .retain(|key, _| live_keys.contains(key));
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.lists.retain(|key, _| scrolls.contains(key));
         self.uniform_lists
