@@ -49,6 +49,7 @@ mod sensors;
 mod style;
 mod surfaces;
 mod text;
+mod tooltip_containment;
 mod uniform;
 mod variable_list;
 
@@ -101,6 +102,7 @@ struct InputPresentation {
 
 pub struct ViewTree {
     user_activation: std::cell::Cell<Option<u32>>,
+    slot_mask: tooltip_containment::SlotMask,
     root: wire::Node,
     // Structural nodes enter the native focus path only on an explicit Focus request.
     focus_targets: HashMap<String, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
@@ -138,6 +140,7 @@ impl ViewTree {
     pub fn new(root: wire::Node) -> Self {
         Self {
             user_activation: Default::default(),
+            slot_mask: Default::default(),
             root,
             focus_targets: HashMap::new(),
             fields: HashMap::new(),
@@ -277,6 +280,7 @@ impl Render for ViewTree {
         let node = self.node(&self.root.clone(), window, cx);
         // Only controls mounted by this replacement frame may recover focus.
         self.presentation = NativePresentation::default();
+        let slot_mask = self.slot_mask.clone();
         // This boundary belongs to the host, never to guest style. It also
         // supplies the mask captured by deferred guest draws.
         div()
@@ -285,6 +289,7 @@ impl Render for ViewTree {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
+            .child(canvas(move |_, window, _| slot_mask.set(window.content_mask()), |_, _, _, _| {}).absolute().size_0())
             .child(node)
     }
 }
