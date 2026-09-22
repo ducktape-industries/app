@@ -120,7 +120,10 @@ fn label(guest: &Guest) -> (String, u32) {
             let [wire::Node::Text(wire::TextNode { content, .. })] = children.as_slice() else {
                 panic!("the probe's click element must contain its counter text");
             };
-            (content.clone(), interactivity.on_click.expect("click route"))
+            (
+                content.clone(),
+                interactivity.on_click.expect("click route"),
+            )
         }
         other => panic!("not the probe's button: {other:?}"),
     }
