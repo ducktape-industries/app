@@ -21,8 +21,8 @@ fn sized_style(
     height: Option<gpui_kit::Length>,
 ) -> gpui_kit::StyleRefinement {
     let mut style = gpui_kit::StyleRefinement::default();
-    style.size.width = width.clone();
-    style.size.height = height.clone();
+    style.size.width = width;
+    style.size.height = height;
     if let Some(width) = width {
         style.min_size.width = Some(match width {
             gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Fraction(_)) => px(0.).into(),

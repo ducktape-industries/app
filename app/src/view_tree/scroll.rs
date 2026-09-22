@@ -37,15 +37,6 @@ pub(super) fn virtual_rows(node: &wire::Node) -> Option<Vec<VirtualRow>> {
     }
 }
 
-pub(super) fn has_virtual_column(node: &wire::Node) -> bool {
-    match node {
-        wire::Node::Container(view_wire::ContainerNode { children, .. }) => {
-            children.len() == 1 && has_virtual_column(&children[0])
-        }
-        _ => false,
-    }
-}
-
 pub(super) fn wrap_virtual_rows(node: &wire::Node, rows: Vec<VirtualRow>) -> Vec<VirtualRow> {
     let mut shell = node.clone();
     match &mut shell {
@@ -409,10 +400,12 @@ impl ViewTree {
         let Some(scrollbar) = scrollbar else {
             return content.into_any_element();
         };
-        let mut frame_style = gpui_kit::StyleRefinement::default();
-        frame_style.size = style.size.clone();
-        frame_style.min_size = style.min_size.clone();
-        frame_style.max_size = style.max_size.clone();
+        let frame_style = gpui_kit::StyleRefinement {
+            size: style.size.clone(),
+            min_size: style.min_size.clone(),
+            max_size: style.max_size.clone(),
+            ..Default::default()
+        };
         div()
             .relative()
             .refine_style(&frame_style)

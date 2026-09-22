@@ -293,9 +293,7 @@ impl ViewTree {
             let request = tooltip.request;
             let parent = cx.entity().downgrade();
             interactive = interactive.tooltip(move |index, _, cx| {
-                let Some(character_index) = u32::try_from(index).ok() else {
-                    return None;
-                };
+                let character_index = u32::try_from(index).ok()?;
                 let content = parent
                     .update(cx, |this, cx| {
                         let content = rich_tooltip_content(&this.root, request, character_index);

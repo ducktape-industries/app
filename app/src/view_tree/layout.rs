@@ -123,7 +123,7 @@ impl ViewTree {
         }
         let focus_handle = interactivity.focus_handle.as_ref().map(|id| {
             self.guest_focus_targets
-                .entry(id.clone())
+                .entry(*id)
                 .or_insert_with(|| cx.focus_handle())
                 .clone()
         });

@@ -178,12 +178,12 @@ impl ViewTree {
         .into_any_element()
     }
 
-    fn image_state<'a>(
+    fn image_state(
         loading: bool,
         fallback: bool,
-        children: &'a [wire::Node],
+        children: &[wire::Node],
         want_fallback: bool,
-    ) -> Option<&'a wire::Node> {
+    ) -> Option<&wire::Node> {
         match (want_fallback, loading, fallback) {
             (false, true, _) => children.first(),
             (true, true, true) => children.get(1),

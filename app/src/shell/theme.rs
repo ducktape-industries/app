@@ -80,36 +80,10 @@ pub(crate) fn fallback_chain() -> gpui_kit::FontFallbacks {
     CHAIN.clone()
 }
 
-pub(crate) fn mono_fallback_chain() -> gpui_kit::FontFallbacks {
-    static CHAIN: std::sync::LazyLock<gpui_kit::FontFallbacks> =
-        std::sync::LazyLock::new(|| chain_led_by(design::fonts::FAMILY_MONO_HANGUL));
-    CHAIN.clone()
-}
-
 pub(super) fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
     gpui_kit::FontFallbacks::from_fonts(
         std::iter::once(hangul.to_string())
             .chain(FALLBACK_FAMILIES.iter().map(|name| name.to_string()))
             .collect(),
     )
-}
-
-pub(crate) fn with_family<E: gpui_kit::Styled>(
-    mut element: E,
-    family: impl Into<gpui_kit::SharedString>,
-) -> E {
-    let family = family.into();
-    let is_code_face = family == design::fonts::FAMILY_MONO;
-    let style = element.text_style();
-    style.font_fallbacks = Some(if is_code_face {
-        mono_fallback_chain()
-    } else {
-        fallback_chain()
-    });
-    style.font_family = Some(family);
-    element
-}
-
-pub(crate) fn mono_family<E: gpui_kit::Styled>(element: E) -> E {
-    with_family(element, design::fonts::FAMILY_MONO)
 }

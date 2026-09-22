@@ -457,10 +457,12 @@ impl ViewTree {
             } => {
                 self.remember_image(*hash, data);
             }
-            wire::Node::ImageViewer { hash, data, .. } => {
-                if let Some(data) = data {
-                    self.remember_image(*hash, data);
-                }
+            wire::Node::ImageViewer {
+                hash,
+                data: Some(data),
+                ..
+            } => {
+                self.remember_image(*hash, data);
             }
             wire::Node::Svg {
                 source:
@@ -504,33 +506,5 @@ impl ViewTree {
         self.sensors.retain(|key, _| sensors.contains(key));
         self.root = root;
         cx.notify();
-    }
-
-    pub(super) fn focusable_container(
-        &mut self,
-        node: &wire::Node,
-        element: Div,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let path = self.authored_path.clone();
-        let kind = std::mem::discriminant(node);
-        let restore = self
-            .presentation
-            .focused_container
-            .as_ref()
-            .is_some_and(|(saved, saved_kind)| saved == &path && *saved_kind == kind);
-        if restore {
-            self.presentation.focused_container = None;
-            let (_, handle) = self
-                .focus_targets
-                .entry(path.clone())
-                .or_insert_with(|| (kind, cx.focus_handle()));
-            handle.focus(window, cx);
-        }
-        match self.focus_targets.get(&path) {
-            Some((_, handle)) => element.track_focus(handle).into_any_element(),
-            None => element.into_any_element(),
-        }
     }
 }

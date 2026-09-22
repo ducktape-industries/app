@@ -61,7 +61,7 @@ fn native_rich_text_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppC
     let root = wire::Node::RichText {
         id: Some(named_id("link")), style: Default::default(), text: "Open link".into(),
         runs: wire::RichTextRuns::Highlights(Vec::new()), font_family_overrides: Vec::new(),
-        clickable_ranges: vec![0..9], on_click: Some(72), on_hover: None, tooltip: None,
+        clickable_ranges: std::iter::once(0..9).collect(), on_click: Some(72), on_hover: None, tooltip: None,
     };
     let window = cx.open_window(size(px(120.), px(80.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();

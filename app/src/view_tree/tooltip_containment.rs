@@ -115,8 +115,10 @@ mod tests {
 
     fn node(size: f32, handler: Option<u32>) -> wire::Node {
         let mut element = div().size(px(size)).bg(rgb(TOOLTIP_COLOR));
-        let mut interactivity = wire::Interactivity::default();
-        interactivity.on_click = handler;
+        let interactivity = wire::Interactivity {
+            on_click: handler,
+            ..Default::default()
+        };
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("tooltip-content".into())),
             style: element.style().clone(),

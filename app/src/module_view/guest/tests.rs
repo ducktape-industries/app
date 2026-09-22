@@ -1,13 +1,15 @@
 use super::*;
 
 fn tooltip_route(request: u32) -> wire::Node {
-    let mut interactivity = wire::Interactivity::default();
-    interactivity.tooltip = Some(wire::Tooltip {
-        request,
-        content: None,
-        hoverable: false,
-        delay_ms: 250,
-    });
+    let interactivity = wire::Interactivity {
+        tooltip: Some(wire::Tooltip {
+            request,
+            content: None,
+            hoverable: false,
+            delay_ms: 250,
+        }),
+        ..Default::default()
+    };
     wire::Node::Container(view_wire::ContainerNode {
         id: None,
         style: Default::default(),
