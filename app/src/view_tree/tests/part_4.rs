@@ -256,7 +256,9 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
         id: Some(named_id("interactive")),
         style: base.style().clone(),
         interactivity: wire::Interactivity {
-            id: None,
+            role: Some(gpui_kit::Role::Button),
+            aria: Default::default(),
+            focusable: true,
             group: Some("card".into()),
             hover: Some(hover.style().clone()),
             active: Some(active.style().clone()),
@@ -289,6 +291,6 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
     assert!(events
         .borrow()
         .iter()
-        .any(|event| matches!(event, wire::Event::Message(42))));
+        .any(|event| matches!(event, wire::Event::Click { handler: 42, event: wire::click::Click::Mouse { .. } })));
     assert!(tree.read_with(&native, |tree, _| tree.mounted.contains("interactive")));
 }
