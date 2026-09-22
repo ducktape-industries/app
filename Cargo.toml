@@ -52,7 +52,9 @@ wasmtime = "=46.0.3"
 libc = "0.2"
 
 [patch.crates-io]
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "021b436617db8bf377ad384b464cd1b34692f35e" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "4b4207b341a6ea2655a883d91b3001e74d7b8dfd" }
+gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "4b4207b341a6ea2655a883d91b3001e74d7b8dfd" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "4b4207b341a6ea2655a883d91b3001e74d7b8dfd" }
 
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator
