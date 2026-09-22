@@ -51,6 +51,14 @@ impl ViewTree {
         };
         let mut element = div()
             .absolute()
+            .bg(gpui_kit::component::Theme::global(cx)
+                .color_tokens()
+                .surface)
+            .text_color(
+                gpui_kit::component::Theme::global(cx)
+                    .color_tokens()
+                    .surface_foreground,
+            )
             .refine_style(style)
             .left(px(*x))
             .top(px(*y));
@@ -115,7 +123,15 @@ impl ViewTree {
                     .clone()
             });
             let is_float = matches!(modal, wire::Node::Float { .. });
-            let mut layer = div().id("layer").absolute().inset_0().refine_style(style);
+            let mut layer_style = style.clone();
+            if is_float {
+                layer_style.padding = Default::default();
+            }
+            let mut layer = div()
+                .id("layer")
+                .absolute()
+                .inset_0()
+                .refine_style(&layer_style);
             if !is_float {
                 layer = layer.flex();
             }

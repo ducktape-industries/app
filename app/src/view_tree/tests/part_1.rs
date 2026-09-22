@@ -272,20 +272,33 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
     native.update(|window, cx| window.render_frame(cx));
     let button_bounds = native.update(|window, _| window.find("wrapping-parent").bounds());
     tree.read_with(&native, |tree, _| {
-        let paragraph = tree.measured_bounds(&[named_id("paragraph")]).unwrap();
-        let hash = tree.measured_bounds(&[named_id("hash")]).unwrap();
+        let column = named_id("column");
+        let row = named_id("row");
+        let paragraph = tree
+            .measured_bounds(&[column.clone(), named_id("paragraph")])
+            .unwrap();
+        let hash = tree
+            .measured_bounds(&[column.clone(), row.clone(), named_id("hash")])
+            .unwrap();
         assert!(
             button_bounds.bottom() >= hash.bottom(),
             "auto-height button must show every wrapped line"
         );
-        let count = tree.measured_bounds(&[named_id("count")]).unwrap();
-        assert!(tree.measured_bounds(&[named_id("height")]).unwrap().right() <= hash.left());
+        let count = tree
+            .measured_bounds(&[column.clone(), row.clone(), named_id("count")])
+            .unwrap();
+        assert!(
+            tree.measured_bounds(&[column.clone(), row.clone(), named_id("height")])
+                .unwrap()
+                .right()
+                <= hash.left()
+        );
         assert_eq!(
-            tree.measured_bounds(&[named_id("label")])
+            tree.measured_bounds(&[column.clone(), row.clone(), named_id("label")])
                 .unwrap()
                 .size
                 .width,
-            tree.measured_bounds(&[named_id("reference")])
+            tree.measured_bounds(&[column.clone(), row.clone(), named_id("reference")])
                 .unwrap()
                 .size
                 .width,
@@ -300,7 +313,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         assert!(
             hash.size.height
                 > tree
-                    .measured_bounds(&[named_id("reference")])
+                    .measured_bounds(&[column, row, named_id("reference")])
                     .unwrap()
                     .size
                     .height,
@@ -421,14 +434,20 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
-        let folders = vec![named_id("main"), named_id("folders")];
+        let folders = vec![
+            named_id("main"),
+            named_id("main-column"),
+            named_id("folders"),
+        ];
         assert_eq!(tree.scrolls[&folders].max_offset().x, px(520.));
         assert_eq!(tree.scrolls[&folders].bounds().size.height, px(152.));
         assert_eq!(
             tree.measured_bounds(&[
                 named_id("main"),
+                named_id("main-column"),
                 named_id("folders"),
                 named_id("columns-box"),
+                named_id("columns"),
                 named_id("column-0"),
             ])
             .unwrap()
@@ -499,7 +518,7 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
             }
             content
         }),
-        style: gpui_kit::StyleRefinement::default(),
+        style: sized_style(Some(fill()), Some(fill())),
     };
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();

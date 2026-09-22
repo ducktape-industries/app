@@ -113,7 +113,7 @@ fn combo_search_reset_and_routes_use_fresh_native_state(cx: &mut gpui_kit::TestA
             input: Some(44),
             ..Default::default()
         }),
-        style: gpui_kit::StyleRefinement::default(),
+        style: sized_style(Some(fixed(200.)), None),
     };
     let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(combo(0, 7)));
     let tree = window.root(cx).unwrap();
@@ -229,7 +229,7 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
                     child: Box::new(wire::Node::Space {
                         style: sized_style(Some(fixed(20.)), Some(fixed(20.))),
                     }),
-                    style: gpui_kit::StyleRefinement::default(),
+                    style: sized_style(Some(fixed(20.)), Some(fixed(20.))),
                 }],
             }],
         );
@@ -259,13 +259,14 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
         })
     });
     native.update(|window, cx| window.render_frame(cx));
+    let watched = vec![named_id("host"), named_id("position"), named_id("watched")];
     tree.read_with(&native, |tree, _| {
-        assert!(tree.sensors[&vec![named_id("watched")]].size.is_some())
+        assert!(tree.sensors[&watched].size.is_some())
     });
     tree.update(&mut native, |tree, cx| {
         tree.replace(sensor(200., 23), cx);
         assert_eq!(
-            tree.sensors[&vec![named_id("watched")]].on_hide,
+            tree.sensors[&watched].on_hide,
             Some(23),
             "routes refresh before native draw or delayed measurement"
         );

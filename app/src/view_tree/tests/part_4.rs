@@ -92,7 +92,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         on_hide: None,
         anticipate: None,
         delay: None,
-        style: gpui_kit::StyleRefinement::default(),
+        style: sized_style(Some(fill()), Some(fill())),
         child: Box::new(wire::Node::MouseArea {
             id: named_id("press-area"),
             role: None,
@@ -144,9 +144,11 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
             named_id("viewport"),
             named_id("press-area"),
             named_id("workspace"),
+            named_id("workspace-row"),
         ];
         if key != "sidebar" {
             path.push(named_id("room"));
+            path.push(named_id("room-column"));
         }
         path.push(named_id(key));
         tree.read_with(&native, |tree, _| tree.measured_bounds(&path))
