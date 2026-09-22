@@ -484,10 +484,11 @@ impl NativeModuleView {
     }
     pub(super) fn bind_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.observers.is_empty() {
-            self.observers.push(cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
-                this.turn(cx);
-                cx.notify();
-            }));
+            self.observers
+                .push(cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
+                    this.turn(cx);
+                    cx.notify();
+                }));
             let window_id = window.window_handle().window_id();
             let view = cx.entity().downgrade();
             self.observers.push(cx.on_window_closed(move |cx, closed| {

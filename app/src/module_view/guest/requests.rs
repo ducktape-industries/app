@@ -6,7 +6,8 @@ impl Guest {
             self.theme_dark = Some(dark);
             // Theme is driver state, shared by every view regardless of its
             // product-specific props stream. Latest appearance wins per tick.
-            self.pending.retain(|event| !matches!(event, wire::Event::Theme { .. }));
+            self.pending
+                .retain(|event| !matches!(event, wire::Event::Theme { .. }));
             self.pending.push(wire::Event::Theme { dark });
         }
     }

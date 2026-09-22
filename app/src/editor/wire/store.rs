@@ -13,7 +13,10 @@ impl Store {
         self.serial
     }
 
-    pub(super) fn validate_budget(&self, fields: &HashMap<AuthoredPath, Field>) -> Result<(), String> {
+    pub(super) fn validate_budget(
+        &self,
+        fields: &HashMap<AuthoredPath, Field>,
+    ) -> Result<(), String> {
         let mut logical = HashMap::new();
         let mut projections = 0usize;
         for field in fields.values() {
@@ -209,5 +212,4 @@ impl Store {
             self.pump_document(&name);
         }
     }
-
 }

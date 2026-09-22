@@ -341,9 +341,9 @@ fn collect(node: &wire::Node, fields: &mut HashMap<AuthoredPath, Field>) -> Resu
     walk(node, &mut Vec::new(), fields)
 }
 
-mod store;
-mod protocol;
 mod native;
+mod protocol;
+mod store;
 use native::*;
 
 #[path = "text.rs"]
