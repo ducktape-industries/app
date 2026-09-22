@@ -42,6 +42,7 @@ mod deferred;
 mod inputs;
 mod layout;
 mod pickers;
+mod picture_resources;
 mod pictures;
 mod scroll;
 mod sensors;
@@ -61,7 +62,8 @@ pub(crate) use commands::dialog_entry;
 use inputs::{EditorMount, Field, RangeControl};
 use pickers::Picker;
 #[cfg(test)]
-use pictures::decode_image;
+#[cfg(test)]
+use picture_resources::decode_image;
 use pictures::{ViewerState, qr};
 use scroll::{ScrollRequest, VirtualScroll};
 use sensors::SensorState;
