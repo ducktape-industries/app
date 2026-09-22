@@ -136,6 +136,22 @@ mod tests {
         })
     }
 
+    fn ordinary_source(request: u32, content: Option<wire::Node>) -> wire::Node {
+        let mut interactivity = wire::Interactivity::default();
+        interactivity.tooltip = Some(wire::Tooltip {
+            request,
+            content: content.map(Box::new),
+            hoverable: false,
+            delay_ms: 10,
+        });
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name("ordinary-source".into())),
+            style: div().size(px(40.)).style().clone(),
+            interactivity,
+            children: Vec::new(),
+        })
+    }
+
     struct TooltipFixture {
         parent: Entity<ViewTree>,
         tooltip: wire::Node,
@@ -239,6 +255,81 @@ mod tests {
         parent.read_with(&native, |parent, _| {
             assert!(parent.take_user_activation(clicks[0]).is_some());
             assert!(parent.take_user_activation(clicks[0]).is_none());
+        });
+    }
+
+    #[gpui_kit::test]
+    fn ordinary_lazy_tooltip_opens_after_one_pointer_move(cx: &mut gpui_kit::TestAppContext) {
+        struct Host {
+            tree: Entity<ViewTree>,
+            requests: Rc<Cell<usize>>,
+            _subscription: Subscription,
+        }
+        impl Render for Host {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .size(px(40.))
+                    .overflow_hidden()
+                    .child(self.tree.clone())
+            }
+        }
+
+        cx.update(gpui_kit::init);
+        let requests = Rc::new(Cell::new(0));
+        let observed = requests.clone();
+        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| {
+            let tree = cx.new(|_| ViewTree::new(ordinary_source(71, None)));
+            let subscription = cx.subscribe(&tree, move |_, source, event: &wire::Event, cx| {
+                if !matches!(
+                    event,
+                    wire::Event::TooltipRequest {
+                        request: 71,
+                        character_index: None
+                    }
+                ) {
+                    return;
+                }
+                observed.set(observed.get() + 1);
+                let source = source.downgrade();
+                cx.defer(move |cx| {
+                    let _ = source.update(cx, |tree, cx| {
+                        tree.replace(ordinary_source(71, Some(node(120., None))), cx)
+                    });
+                });
+            });
+            Host {
+                tree,
+                requests: requests.clone(),
+                _subscription: subscription,
+            }
+        });
+        let host = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+
+        native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
+        native.run_until_parked();
+        native.update(|window, cx| window.render_frame(cx));
+        native.executor().advance_clock(Duration::from_millis(11));
+        native.run_until_parked();
+        native.update(|window, cx| window.render_frame(cx));
+
+        assert_eq!(host.read_with(&native, |host, _| host.requests.get()), 1);
+        native.update(|window, _| {
+            let quads: Vec<_> = window
+                .painted_quads()
+                .into_iter()
+                .filter(|quad| quad.background.as_solid() == Some(rgb(TOOLTIP_COLOR).into()))
+                .collect();
+            assert!(!quads.is_empty(), "lazy tooltip did not paint");
+            let bound = gpui_kit::ScaledPixels(40. * window.scale_factor());
+            assert!(quads.iter().all(|quad| {
+                let mask = quad.content_mask.bounds;
+                mask.origin.x >= gpui_kit::ScaledPixels(0.)
+                    && mask.origin.y >= gpui_kit::ScaledPixels(0.)
+                    && mask.origin.x + mask.size.width <= bound
+                    && mask.origin.y + mask.size.height <= bound
+            }));
         });
     }
 }

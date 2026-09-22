@@ -18,6 +18,77 @@ fn tooltip_route(request: u32) -> wire::Node {
     })
 }
 
+fn primitive_tooltip_route(kind: &str, request: u32) -> wire::Node {
+    let mut interactivity = wire::Interactivity::default();
+    interactivity.tooltip = Some(wire::Tooltip {
+        request,
+        content: None,
+        hoverable: false,
+        delay_ms: 250,
+    });
+    match kind {
+        "container" => wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: Default::default(),
+            interactivity,
+            children: Vec::new(),
+        }),
+        "uniform-list" => wire::Node::UniformList {
+            id: wire::ElementIdWire::Name("list".into()),
+            path: vec![wire::ElementIdWire::Name("list".into())],
+            route: 90,
+            style: Default::default(),
+            interactivity,
+            count: 0,
+            measure_index: 0,
+            sizing: Default::default(),
+            horizontal_sizing: Default::default(),
+            y_flipped: false,
+            scroll_request: None,
+            indices: Vec::new(),
+            children: Vec::new(),
+        },
+        "image" => wire::Node::Image {
+            id: Some(wire::ElementIdWire::Name("image".into())),
+            hash: 0,
+            data: None,
+            label: None,
+            image_style: wire::ImageStyle {
+                grayscale: false,
+                object_fit: wire::ImageObjectFit::Contain,
+            },
+            loading: false,
+            fallback: false,
+            state_children: Vec::new(),
+            style: Default::default(),
+            interactivity,
+        },
+        "svg" => wire::Node::Svg {
+            id: Some(wire::ElementIdWire::Name("svg".into())),
+            source: wire::SvgSource::None,
+            transformation: wire::SvgTransformation {
+                scale: [1.0, 1.0],
+                translate: [0.0, 0.0],
+                rotate: 0.0,
+            },
+            label: None,
+            style: Default::default(),
+            interactivity,
+        },
+        _ => unreachable!(),
+    }
+}
+
+fn primitive_tooltip(node: &wire::Node) -> &wire::Tooltip {
+    match node {
+        wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
+        | wire::Node::UniformList { interactivity, .. }
+        | wire::Node::Image { interactivity, .. }
+        | wire::Node::Svg { interactivity, .. } => interactivity.tooltip.as_ref().unwrap(),
+        _ => unreachable!(),
+    }
+}
+
 fn rich_tooltip_route(request: u32) -> wire::Node {
     wire::Node::RichText {
         id: Some(wire::ElementIdWire::Name("rich".into())),
@@ -72,6 +143,62 @@ fn tooltip_response_only_attaches_to_its_current_frame_route() {
         panic!("container")
     };
     assert!(interactivity.tooltip.unwrap().content.is_some());
+}
+
+#[test]
+fn tooltip_responses_merge_into_every_interactive_primitive_kind() {
+    for kind in ["container", "uniform-list", "image", "svg"] {
+        let mut held = Some(primitive_tooltip_route(kind, 7));
+        let mut frame = wire::Frame {
+            unchanged: true,
+            tooltip_responses: vec![wire::TooltipResponse {
+                request: 7,
+                character_index: None,
+                content: Some(Box::new(wire::Node::empty())),
+            }],
+            ..Default::default()
+        };
+        assert!(merge(&mut held, &mut frame).unwrap().0, "{kind}");
+        assert!(
+            primitive_tooltip(frame.root.as_ref().unwrap())
+                .content
+                .is_some(),
+            "{kind}"
+        );
+    }
+}
+
+#[test]
+fn duplicate_tooltip_routes_across_primitive_kinds_are_refused_before_mutating() {
+    let mut held = Some(wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: Default::default(),
+        interactivity: Default::default(),
+        children: vec![
+            primitive_tooltip_route("uniform-list", 7),
+            primitive_tooltip_route("image", 7),
+            primitive_tooltip_route("svg", 7),
+        ],
+    }));
+    let mut frame = wire::Frame {
+        unchanged: true,
+        tooltip_responses: vec![wire::TooltipResponse {
+            request: 7,
+            character_index: None,
+            content: Some(Box::new(wire::Node::empty())),
+        }],
+        ..Default::default()
+    };
+    assert_eq!(
+        merge(&mut held, &mut frame),
+        Err("duplicate tooltip request route")
+    );
+    assert!(
+        held.unwrap()
+            .children()
+            .iter()
+            .all(|node| primitive_tooltip(node).content.is_none())
+    );
 }
 
 #[test]
