@@ -116,7 +116,7 @@ struct Outgoing {
 }
 
 #[derive(Clone, PartialEq)]
-struct Projection {
+pub(crate) struct Projection {
     reference: EditorDocumentRef,
     text: Option<Arc<str>>,
     options: wire::EditorOptions,
@@ -234,7 +234,12 @@ impl EditorStore {
                 .any(|d| !d.queue.is_empty() || !matches!(d.phase, Phase::Ready))
     }
 
-    fn projection(&self, key: &[wire::ElementIdWire]) -> Option<Projection> {
+    /// `pub(crate)`, not private: a regression test outside this module
+    /// checks that the `AuthoredPath` the renderer mounts a native editor
+    /// under (walked from `native_root`'s wrapped tree) is the one this
+    /// resolves — the exact contract that broke when the wrapper carried
+    /// an id of its own.
+    pub(crate) fn projection(&self, key: &[wire::ElementIdWire]) -> Option<Projection> {
         let store = self.lock();
         let field = store.fields.get(key)?;
         let document = store.documents.get(&field.reference.document)?;
