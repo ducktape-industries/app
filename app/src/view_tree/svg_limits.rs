@@ -136,7 +136,10 @@ mod tests {
     fn raster_budget_counts_device_scale_smoothing_rgba_and_alpha() {
         assert!(svg_raster_fits(100.0, 100.0, 2.0));
         assert!(!svg_raster_fits(8192.0, 8192.0, 1.0));
-        assert!(!svg_raster_fits(1000.0, 1.0, 1.0), "a narrow source aspect ratio can inflate the raster height");
+        assert!(
+            !svg_raster_fits(1000.0, 1.0, 1.0),
+            "a narrow source aspect ratio can inflate the raster height"
+        );
         assert!(!svg_raster_fits(f32::INFINITY, 1.0, 1.0));
     }
 
