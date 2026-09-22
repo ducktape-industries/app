@@ -44,6 +44,13 @@ pub(super) fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
 }
 
 pub(super) const RAIL_WIDTH: f32 = 200.;
+/// Below this window width the rail collapses to `RAIL_COMPACT_WIDTH`: at
+/// 200px fixed, a ~380px window left the open program's pane narrower than
+/// `layout::MIN_PANE_WIDTH`, squeezed into an unreadable column.
+pub(super) const NARROW_WINDOW_WIDTH: f32 = 720.;
+/// Wide enough for a row's initial and the connection dot; narrow enough to
+/// give most of a small window back to the pane.
+pub(super) const RAIL_COMPACT_WIDTH: f32 = 52.;
 
 pub(super) const BUNDLED_FACES: &[&[u8]] = &[
     include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
