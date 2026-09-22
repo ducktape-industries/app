@@ -46,30 +46,6 @@ impl Ducktape {
 }
 
 impl DesktopWindow {
-    /// The seat draws `module`'s view; a change of program re-seats.
-    pub(super) fn seat(
-        &mut self,
-        module: &'static str,
-        cx: &mut Context<Self>,
-    ) -> Entity<crate::module_view::NativeModuleView> {
-        if let Some((seated, view)) = &self.seat
-            && *seated == module
-        {
-            return view.clone();
-        }
-        self.unseat(cx);
-        let view = cx.new(|_| crate::module_view::NativeModuleView::new(module));
-        let model = self.model.clone();
-        self.route = Some(cx.subscribe(&view, move |_, _, event, cx| {
-            let event = event.clone();
-            model.update(cx, |model, cx| {
-                model.dispatch(Message::ViewEvent(module, event), cx)
-            });
-        }));
-        self.seat = Some((module, view.clone()));
-        view
-    }
-
     /// A native text field; Enter dispatches `on_enter`, every change
     /// dispatches `on_change` with the text.
     #[allow(clippy::too_many_arguments, reason = "one call site per field")]
@@ -313,9 +289,9 @@ impl DesktopWindow {
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let state = self.model.read(cx).state.clone_facts();
-        let (sidebar_bg, colors) = {
+        let sidebar_bg = {
             let theme = gpui_kit::component::Theme::global(cx);
-            (theme.sidebar, theme.color_tokens())
+            theme.sidebar
         };
         let palette = design::palette(state.dark);
         let ink_fg = hsla_of(palette.sidebar_foreground);
@@ -328,12 +304,19 @@ impl DesktopWindow {
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
         }
-        let active = state
-            .active
-            .or_else(|| rail.iter().find(|row| !row.empty).map(|row| row.module));
+        self.initialize_panes(
+            state
+                .active
+                .or_else(|| rail.iter().find(|row| !row.empty).map(|row| row.module)),
+            cx,
+        );
+        let active = self
+            .layout
+            .panes
+            .get(self.layout.focused)
+            .map(|pane| pane.module);
         let rows = rail.iter().filter(|row| !row.empty).map(|row| {
             let module = row.module;
-            let model = self.model.clone();
             let selected = active == Some(module);
             let badge = state.badges.get(module).copied().unwrap_or(0);
             let label = match row.note {
@@ -365,11 +348,14 @@ impl DesktopWindow {
                 })
                 .when(selected, |row| row.bg(ink_raised))
                 .hover(move |style| style.bg(ink_raised).text_color(ink_fg))
-                .on_click(move |_, _, cx| {
-                    model.update(cx, |model, cx| {
-                        model.dispatch(Message::SelectView(module), cx)
-                    })
-                })
+                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                    let message = if event.modifiers().shift {
+                        Message::SplitView(module)
+                    } else {
+                        Message::SelectView(module)
+                    };
+                    this.pane_message(message, window, cx);
+                }))
                 .child(div().flex_1().min_w_0().truncate().child(label))
                 .when(badge > 0, |row| {
                     row.child(
@@ -521,30 +507,14 @@ impl DesktopWindow {
                             .mt_1(),
                     ),
             );
-        let seat = match active {
-            Some(module) => {
-                let view = self.seat(module, cx);
-                let props = self.model.read(cx).state.view_props();
-                view.update(cx, |view, cx| view.set_props(props, cx));
-                view.into_any_element()
-            }
-            None => {
-                self.unseat(cx);
-                div()
-                    .size_full()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .text_color(colors.muted_foreground)
-                    .child("This network runs no program with a view.")
-                    .into_any_element()
-            }
-        };
+        let seat = self.pane_stage(window, cx);
         div()
             .id("console")
             .size_full()
             .flex()
-            .child(sidebar)
+            .when(self.kind == crate::shell::WindowKind::Console, |frame| {
+                frame.child(sidebar)
+            })
             .child(div().id("seat").flex_1().min_w_0().h_full().child(seat))
             .children(self.toast(cx))
             .into_any_element()

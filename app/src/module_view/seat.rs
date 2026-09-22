@@ -204,33 +204,38 @@ impl fmt::Display for Failure {
     }
 }
 
-pub(super) type Registry = Mutex<HashMap<&'static str, Arc<Mutex<Mounted>>>>;
+pub(super) type Registry = Mutex<HashMap<(&'static str, u64), Arc<Mutex<Mounted>>>>;
 
 pub(super) fn registry() -> &'static Registry {
     static MOUNTED: OnceLock<Registry> = OnceLock::new();
     MOUNTED.get_or_init(Mutex::default)
 }
 
-/// The seat of `module`'s view, made on its first ask. Making it asks for
-/// nothing: a load starts at the view's source event, never at a draw, so
-/// a seat a tab is first to ask for waits for the next [`connected`] or
-/// [`deployments_checked`] like every other.
-pub(super) fn mounted(module: &'static str) -> Arc<Mutex<Mounted>> {
-    registry()
-        .lock()
-        .expect("module views")
-        .entry(module)
-        .or_insert_with(Mounted::seat)
-        .clone()
+/// Claim a preloaded seat or create a distinct guest for this view instance.
+pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
+    let mut registry = registry().lock().expect("module views");
+    let seat = registry.remove(&(module, 0)).unwrap_or_else(Mounted::seat);
+    registry.insert((module, instance), seat.clone());
+    let snapshot = connection().lock().expect("views rpc").clone();
+    let mut locked = seat.lock().expect("module view lock");
+    if locked.generation == 0 && (snapshot.client.is_some() || view_override(module).is_some()) {
+        locked.rev = snapshot.rev;
+        let generation = locked.start();
+        drop(locked);
+        drop(spawn_load(module, &seat, generation, snapshot));
+    } else {
+        drop(locked);
+    }
+    seat
 }
 
 /// Retry, as a failed or stopped tab offers it: the seat's view is asked for
 /// again now, under a new generation, past any hold-off a block's retries
 /// left. A failure goes back to loading, and a stopped view gives up its
 /// seat, so what lands is a fresh instance rather than a swap against it.
-pub(crate) fn retry(module: &'static str) -> Loads {
+pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     let registry = registry().lock().expect("module views");
-    let Some(seat) = registry.get(module) else {
+    let Some(seat) = registry.get(&(module, instance)) else {
         return Loads(Vec::new());
     };
     let snapshot = connection().lock().expect("views rpc").clone();
@@ -337,7 +342,10 @@ pub(super) fn spawn_load(
                     fresh.pictures.hydrate(root);
                     old.pictures.adopt(root);
                     root.for_each_mut(&mut |node| match node {
-                        wire::Node::Svg { bytes, .. } => *bytes = None,
+                        wire::Node::Svg {
+                            source: wire::SvgSource::Data { bytes, .. },
+                            ..
+                        } => *bytes = None,
                         wire::Node::Image { data, .. } | wire::Node::ImageViewer { data, .. } => {
                             *data = None
                         }

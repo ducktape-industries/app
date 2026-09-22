@@ -94,22 +94,23 @@ pub(super) fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
     )
 }
 
-pub(crate) fn with_family<E: gpui_kit::Styled>(
-    mut element: E,
-    family: impl Into<gpui_kit::SharedString>,
-) -> E {
-    let family = family.into();
-    let is_code_face = family == design::fonts::FAMILY_MONO;
-    let style = element.text_style();
-    style.font_fallbacks = Some(if is_code_face {
+/// Pairs the family a guest asked for with the fallback chain that carries its
+/// Hangul: code faces fall back to the monospace Hangul face, everything else
+/// to the proportional one. Wire styles arrive by assignment, so this runs at
+/// the assignment sites rather than through the Styled builder.
+pub(crate) fn refine_fallbacks(style: &mut gpui_kit::StyleRefinement) {
+    let is_code_face = style
+        .text
+        .font_family
+        .as_deref()
+        .is_some_and(|family| family == design::fonts::FAMILY_MONO);
+    style.text.font_fallbacks = Some(if is_code_face {
         mono_fallback_chain()
     } else {
         fallback_chain()
     });
-    style.font_family = Some(family);
-    element
 }
 
-pub(crate) fn mono_family<E: gpui_kit::Styled>(element: E) -> E {
-    with_family(element, design::fonts::FAMILY_MONO)
-}
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/font_fallback.rs"]
+mod font_fallback;

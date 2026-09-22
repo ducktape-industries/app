@@ -7,7 +7,6 @@ use gpui_kit::{
 };
 use std::{
     cell::{Cell, RefCell},
-    ops::Range,
     rc::Rc,
 };
 
@@ -52,6 +51,17 @@ pub(super) fn mouse(guest: &mut Guest, event: wire::mouse::Event, captured: bool
     true
 }
 
+pub(super) fn needs_focus(event: &wire::Event) -> bool {
+    matches!(
+        event,
+        wire::Event::Keyboard { .. }
+            | wire::Event::Observation {
+                event: wire::events::Event::InputMethod(_),
+                ..
+            }
+    )
+}
+
 #[derive(Clone)]
 struct Route {
     seat: Arc<Mutex<Mounted>>,
@@ -62,6 +72,14 @@ struct Route {
 }
 impl Route {
     fn deliver(&self, event: wire::Event, cx: &mut App) {
+        if needs_focus(&event)
+            && self
+                .view
+                .upgrade()
+                .is_none_or(|view| !view.read(cx).focused)
+        {
+            return;
+        }
         let mut locked = self.seat.lock().expect("module view lock");
         let Slot::Ready(guest) = &mut locked.slot else {
             return;
@@ -120,7 +138,7 @@ impl Observe {
         Self {
             content,
             route: Route {
-                seat: mounted(view.module),
+                seat: view.seat.clone(),
                 generation: view.generation,
                 revision: view.revision,
                 alive: view.alive.clone().expect("mounted instance"),
@@ -381,6 +399,7 @@ fn modifiers(value: gpui::Modifiers) -> wire::keyboard::Modifiers {
         control: value.control,
         alt: value.alt,
         logo: value.platform,
+        function: value.function,
     }
 }
 fn key(value: &str) -> wire::keyboard::Key {
@@ -467,7 +486,7 @@ impl NativeModuleView {
             return;
         };
         let route = Route {
-            seat: mounted(self.module),
+            seat: self.seat.clone(),
             generation: self.generation,
             revision: self.revision,
             alive,
@@ -482,7 +501,17 @@ impl NativeModuleView {
         );
     }
     pub(super) fn bind_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current_window = window.window_handle().window_id();
+        if self.observed_window != Some(current_window) {
+            self.observers.clear();
+            self.observed_window = Some(current_window);
+        }
         if self.observers.is_empty() {
+            self.observers
+                .push(cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
+                    this.turn(cx);
+                    cx.notify();
+                }));
             let window_id = window.window_handle().window_id();
             let view = cx.entity().downgrade();
             self.observers.push(cx.on_window_closed(move |cx, closed| {
@@ -501,7 +530,7 @@ impl NativeModuleView {
             self.observers
                 .push(cx.observe_window_activation(window, |this, window, cx| {
                     this.observe_window(
-                        if window.is_window_active() {
+                        if window.is_window_active() && this.focused {
                             wire::events::Window::Focused
                         } else {
                             wire::events::Window::Unfocused
@@ -527,7 +556,7 @@ impl NativeModuleView {
                         return;
                     };
                     let route = Route {
-                        seat: mounted(this.module),
+                        seat: this.seat.clone(),
                         generation: this.generation,
                         revision: this.revision,
                         alive,
@@ -550,80 +579,6 @@ impl NativeModuleView {
     }
 }
 
-/// Native IME ranges are UTF-16. The wire only carries UTF-8 preedit offsets.
-#[derive(Clone)]
-pub(crate) struct ImeState {
-    start: usize,
-    content: String,
-    selection: (u32, u32),
-}
-pub(crate) fn ime_events(
-    previous: &mut Option<ImeState>,
-    text: &str,
-    marked: Option<Range<usize>>,
-    cursor: usize,
-    selected: Range<usize>,
-) -> Vec<wire::Event> {
-    use wire::events::InputMethod as I;
-    let byte = |wanted: usize| {
-        let mut units = 0;
-        for (offset, ch) in text.char_indices() {
-            if units >= wanted {
-                return offset;
-            }
-            units += ch.len_utf16();
-        }
-        text.len()
-    };
-    let mut events = Vec::new();
-    match marked {
-        Some(range) => {
-            let start = byte(range.start);
-            let end = byte(range.end);
-            let content = text[start..end].to_owned();
-            let selection = (
-                selected.start.saturating_sub(start).min(content.len()) as u32,
-                selected.end.saturating_sub(start).min(content.len()) as u32,
-            );
-            if content.len() > wire::MAX_STRING_BYTES {
-                return Vec::new();
-            }
-            if previous.is_none() {
-                events.push(I::Opened);
-            }
-            let changed = previous.as_ref().is_none_or(|old| {
-                old.start != start || old.content != content || old.selection != selection
-            });
-            if changed {
-                events.push(I::Preedit {
-                    selection: Some(selection),
-                    content: content.clone(),
-                });
-            }
-            *previous = Some(ImeState {
-                start,
-                content,
-                selection,
-            });
-        }
-        None => {
-            let Some(old) = previous.take() else {
-                return Vec::new();
-            };
-            if let Some(content) = text.get(old.start..cursor)
-                && !content.is_empty()
-                && content.len() <= wire::MAX_STRING_BYTES
-            {
-                events.push(I::Commit(content.to_owned()));
-            }
-            events.push(I::Closed);
-        }
-    }
-    events
-        .into_iter()
-        .map(|event| wire::Event::Observation {
-            event: wire::events::Event::InputMethod(event),
-            captured: true,
-        })
-        .collect()
-}
+#[path = "input/ime.rs"]
+mod ime;
+pub(crate) use ime::{ImeState, ime_events};

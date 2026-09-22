@@ -137,6 +137,11 @@ impl Ducktape {
                 self.push_props();
                 Task::none()
             }
+            Message::SplitView(_)
+            | Message::ClosePane(_)
+            | Message::FocusPane(_)
+            | Message::PopOut(_)
+            | Message::PopIn(_) => Task::none(),
             Message::SelectView(module) => {
                 self.active = Some(module);
                 self.badges.remove(module);
@@ -167,6 +172,12 @@ impl Ducktape {
                 // `duck://<chain>/<program>/<tail>`: the program's view is the
                 // one that reads the tail. The app opens the seat; the rest
                 // is the view's, once it asks (a link door is not built yet).
+                if let Some(module) = crate::module_view::local_link(&link) {
+                    self.active = Some(module);
+                    self.toast = format!("Opened {module}");
+                    self.toast_age = 0;
+                    return Task::none();
+                }
                 match ducklink::Link::parse(&link) {
                     Ok(parsed) => {
                         let module = crate::module_view::intern(&parsed.program);

@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 #[derive(Clone)]
 pub(super) struct Choice {
@@ -61,58 +62,55 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (key, options, selected, handler, placeholder, width, reset, input, menu_height) =
-            match node {
-                wire::Node::PickList {
-                    key,
-                    options,
-                    selected,
-                    on_select,
-                    placeholder,
-                    width,
-                    settings,
-                    ..
-                } => (
-                    key,
-                    options,
-                    *selected,
-                    *on_select,
-                    placeholder.as_deref().unwrap_or_default(),
-                    *width,
-                    None,
-                    None,
-                    settings.menu_height,
-                ),
-                wire::Node::ComboBox {
-                    key,
-                    state_key,
-                    options,
-                    selected,
-                    on_select,
-                    placeholder,
-                    width,
-                    reset,
-                    settings,
-                    ..
-                } => (
-                    key,
-                    options,
-                    *selected,
-                    *on_select,
-                    placeholder.as_str(),
-                    *width,
-                    Some((state_key.clone(), *reset)),
-                    settings.input,
-                    settings.menu_height,
-                ),
-                _ => unreachable!(),
-            };
+        let (id, options, selected, handler, placeholder, style, reset, input) = match node {
+            wire::Node::PickList {
+                id,
+                options,
+                selected,
+                on_select,
+                placeholder,
+                style,
+                ..
+            } => (
+                id,
+                options,
+                *selected,
+                *on_select,
+                placeholder.as_deref().unwrap_or_default(),
+                style,
+                None,
+                None,
+            ),
+            wire::Node::ComboBox {
+                id,
+                state_key,
+                options,
+                selected,
+                on_select,
+                placeholder,
+                style,
+                reset,
+                settings,
+                ..
+            } => (
+                id,
+                options,
+                *selected,
+                *on_select,
+                placeholder.as_str(),
+                style,
+                Some((state_key.clone(), *reset)),
+                settings.input,
+            ),
+            _ => unreachable!(),
+        };
+        let path = self.authored_path.clone();
         if self
             .pickers
-            .get(key)
+            .get(&path)
             .is_some_and(|picker| picker.reset != reset)
         {
-            self.pickers.remove(key);
+            self.pickers.remove(&path);
         }
         let weak = cx.entity().downgrade();
         let choices = || {
@@ -125,7 +123,7 @@ impl ViewTree {
                 })
                 .collect::<Vec<_>>();
             let weak = weak.clone();
-            let key = key.clone();
+            let key = path.clone();
             PickerChoices {
                 items: SearchableVec::new(items),
                 query: Box::new(move |query, cx| {
@@ -143,11 +141,11 @@ impl ViewTree {
             }
         };
         let index = selected.map(|index| IndexPath::new(index as usize));
-        if !self.pickers.contains_key(key) {
+        if !self.pickers.contains_key(&path) {
             let state = cx.new(|cx| {
                 SelectState::new(choices(), index, window, cx).searchable(reset.is_some())
             });
-            let route = key.to_owned();
+            let route = path.clone();
             let subscription = cx.subscribe_in(&state, window, move |this, _, event, _, cx| {
                 let SelectEvent::Confirm(Some(index)) = event else {
                     return;
@@ -162,7 +160,7 @@ impl ViewTree {
                 });
             });
             self.pickers.insert(
-                key.into(),
+                path.clone(),
                 Picker {
                     state,
                     options: options.to_vec(),
@@ -174,7 +172,7 @@ impl ViewTree {
                 },
             );
         }
-        let picker = self.pickers.get_mut(key).expect("picker inserted");
+        let picker = self.pickers.get_mut(&path).expect("picker inserted");
         picker.handler = handler;
         picker.input = input;
         if picker.options != *options {
@@ -186,7 +184,7 @@ impl ViewTree {
         if picker.selected != selected {
             picker.selected = selected;
             let state = picker.state.downgrade();
-            let route = key.clone();
+            let route = path.clone();
             // A wire index identifies a value in the full option set, not a
             // row in the filtered menu. Native value projection clears search
             // synchronously, so run it after releasing this render borrow.
@@ -212,20 +210,17 @@ impl ViewTree {
             });
         }
         let mut select = Select::new(&picker.state)
-            .id(key.clone())
+            .id(native_id(id))
             .placeholder(placeholder.to_owned());
         // the kit draws the picker's node itself; the wire `label` names it
         if let Some(name) = accessible(node).name {
             select = select.accessibility_label(name);
         }
-        if let Some(wire::Length::Fixed(height)) = menu_height {
-            select = select.menu_max_h(px(height));
-        }
-        dimensions(
-            div().relative().child(select).child(self.measure(key, cx)),
-            width,
-            None,
-        )
-        .into_any_element()
+        div()
+            .relative()
+            .refine_style(style)
+            .child(select)
+            .child(self.measure(&path, cx))
+            .into_any_element()
     }
 }

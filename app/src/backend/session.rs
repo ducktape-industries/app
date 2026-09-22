@@ -1,7 +1,7 @@
 //! This device: its signing key, opened from the keystore and held here
 //! while the person is signed in; the frames it signs; and the small
 //! preferences file. Every write a view submits is signed here — a view
-//! never sees the key, a password or an endpoint.
+//! never sees the private key or a password.
 
 use std::path::PathBuf;
 

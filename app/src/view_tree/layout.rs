@@ -1,167 +1,173 @@
 use super::*;
+use crate::view_tree::native_id;
 
 impl ViewTree {
-    pub(super) fn linear(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Linear {
-            axis,
-            spacing,
-            padding,
-            width,
-            height,
-            background,
-            border,
-            children,
-            align,
-            max_width,
-            clip,
-            wrap,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut element = dimensions(div().flex(), *width, *height);
-        element = match axis {
-            wire::Axis::Column => element.flex_col(),
-            wire::Axis::Row => element.flex_row(),
-        };
-        if let Some(gap) = spacing {
-            element = element.gap(px(*gap));
-        }
-        if let Some(width) = max_width {
-            element = element.max_w(px(*width));
-        }
-        if *clip {
-            element = element.overflow_hidden();
-        }
-        if wrap.is_some() {
-            element = element.flex_wrap();
-        }
-        element = cross_align(element, *align);
-        element = decoration(pad(element, *padding), *background, *border);
-        for child in children {
-            element = element.child(self.node(child, window, cx));
-        }
-        self.focusable_container(node, element, window, cx)
-    }
-
-    pub(super) fn keyed_column(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::KeyedColumn {
-            key,
-            keys,
-            spacing,
-            padding,
-            width,
-            height,
-            background,
-            border,
-            children,
-            align,
-            max_width,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut element = decoration(
-            pad(
-                dimensions(div().flex().flex_col(), *width, *height),
-                *padding,
-            ),
-            *background,
-            *border,
-        );
-        if let Some(gap) = spacing {
-            element = element.gap(px(*gap));
-        }
-        element = cross_align(element, *align);
-        if let Some(width) = max_width {
-            element = element.max_w(px(*width));
-        }
-        for (index, child) in children.iter().enumerate() {
-            let content = self.node(child, window, cx);
-            let identity = keys.as_ref().and_then(|keys| keys.get(index));
-            element = match identity {
-                Some(identity) => {
-                    let row = format!("{key}/@row:{}", identity.virtual_key());
-                    element.child(
-                        div()
-                            .relative()
-                            .child(content)
-                            .child(self.measure(&row, cx)),
-                    )
-                }
-                None => element.child(content),
-            };
-        }
-        element.into_any_element()
-    }
-
     pub(super) fn container(
         &mut self,
         node: &wire::Node,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Container {
-            key,
-            content,
-            width,
-            height,
-            padding,
-            border,
-            background,
-            max_width,
-            max_height,
-            clip,
-            align_x,
-            align_y,
-            shadow,
-            ..
-        } = node
+        let wire::Node::Container(view_wire::ContainerNode {
+            id,
+            style,
+            interactivity,
+            children,
+        }) = node
         else {
             unreachable!()
         };
-        let color = match background {
-            Some(wire::Background::Color(color)) => Some(*color),
-            _ => None,
+        let mut element = div();
+        *element.style() = style.clone();
+        crate::shell::refine_fallbacks(element.style());
+        let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
+            let index = self.render_index;
+            self.render_index += 1;
+            ElementId::NamedInteger("guest-container".into(), index)
+        });
+        let mut element = element.id(native_id);
+        if let Some(group) = &interactivity.group {
+            element = element.group(group.clone());
+        }
+        if let Some(style) = &interactivity.hover {
+            let style = style.clone();
+            element = element.hover(move |_| style);
+        }
+        if let Some(style) = &interactivity.active {
+            let style = style.clone();
+            element = element.active(move |_| style);
+        }
+        if let Some(group) = &interactivity.group_hover {
+            let style = group.style.clone();
+            element = element.group_hover(group.group.clone(), move |_| style);
+        }
+        if let Some(group) = &interactivity.group_active {
+            let style = group.style.clone();
+            element = element.group_active(group.group.clone(), move |_| style);
+        }
+        if let Some(role) = interactivity.role {
+            element = element.role(role);
+        }
+        if interactivity.focusable {
+            element = element.focusable();
+        }
+        if let Some(value) = &interactivity.aria.author_id {
+            element = element.accessibility_id(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.label {
+            element = element.aria_label(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.description {
+            element = element.aria_description(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.keyshortcuts {
+            element = element.aria_keyshortcuts(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.value {
+            element = element.aria_value(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.placeholder {
+            element = element.aria_placeholder(value.clone());
+        }
+        if let Some(value) = interactivity.aria.selected {
+            element = element.aria_selected(value);
+        }
+        if let Some(value) = interactivity.aria.expanded {
+            element = element.aria_expanded(value);
+        }
+        if let Some(value) = interactivity.aria.disabled {
+            element = element.aria_disabled(value);
+        }
+        if let Some(value) = interactivity.aria.numeric_value {
+            element = element.aria_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.numeric_value_step {
+            element = element.aria_numeric_value_step(value);
+        }
+        if let Some(value) = interactivity.aria.min_numeric_value {
+            element = element.aria_min_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.max_numeric_value {
+            element = element.aria_max_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.level {
+            element = element.aria_level(value);
+        }
+        if let Some(value) = interactivity.aria.position_in_set {
+            element = element.aria_position_in_set(value);
+        }
+        if let Some(value) = interactivity.aria.size_of_set {
+            element = element.aria_size_of_set(value);
+        }
+        if let Some(value) = interactivity.aria.row_index {
+            element = element.aria_row_index(value);
+        }
+        if let Some(value) = interactivity.aria.column_index {
+            element = element.aria_column_index(value);
+        }
+        if let Some(value) = interactivity.aria.row_count {
+            element = element.aria_row_count(value);
+        }
+        if let Some(value) = interactivity.aria.column_count {
+            element = element.aria_column_count(value);
+        }
+        if let Some(value) = interactivity.aria.toggled {
+            element = element.aria_toggled(value);
+        }
+        if let Some(value) = interactivity.aria.orientation {
+            element = element.aria_orientation(value);
+        }
+        if interactivity.aria.active_descendant {
+            element = element.aria_active_descendant();
+        }
+        let focus_handle = interactivity.focus_handle.as_ref().map(|id| {
+            self.guest_focus_targets
+                .entry(*id)
+                .or_insert_with(|| cx.focus_handle())
+                .clone()
+        });
+        element = super::interactivity::apply(element, interactivity, focus_handle, cx);
+        if let Some(handler) = interactivity.on_click {
+            element = element.on_click(cx.listener(
+                move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                    this.user_activation.set(Some(handler));
+                    cx.emit(wire::Event::Click {
+                        handler,
+                        event: event.into(),
+                    });
+                },
+            ));
+        }
+        if !self.authored_path.is_empty() {
+            let path = self.authored_path.clone();
+            let kind = std::mem::discriminant(node);
+            let restore = self
+                .presentation
+                .focused_container
+                .as_ref()
+                .is_some_and(|(saved, saved_kind)| saved == &path && *saved_kind == kind);
+            if restore {
+                self.presentation.focused_container = None;
+                let (_, handle) = self
+                    .focus_targets
+                    .entry(path.clone())
+                    .or_insert_with(|| (kind, cx.focus_handle()));
+                handle.focus(window, cx);
+            }
+            if let Some((_, handle)) = self.focus_targets.get(&path) {
+                element = element.track_focus(handle);
+            }
+            element = element.child(self.measure(&path, cx));
+        }
+        for child in children {
+            element = element.child(self.node(child, window, cx));
+        }
+        #[cfg(test)]
+        let element = {
+            use gpui_kit::test::TestSupportExt as _;
+            element.test_support()
         };
-        let mut element = shadows(
-            decoration(
-                pad(
-                    dimensions(div().relative().flex(), *width, *height),
-                    *padding,
-                ),
-                color,
-                *border,
-            ),
-            *shadow,
-        );
-        element = horizontal_align(element, *align_x);
-        element = vertical_align(element, *align_y);
-        if let Some(width) = max_width {
-            element = element.max_w(px(*width));
-        }
-        if let Some(height) = max_height {
-            element = element.max_h(px(*height));
-        }
-        if *clip {
-            element = element.overflow_hidden();
-        }
-        let element = element
-            .child(self.node(content, window, cx))
-            .child(self.measure(key, cx));
-        self.focusable_container(node, element, window, cx)
+        element.into_any_element()
     }
 
     pub(super) fn responsive(
@@ -170,17 +176,11 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Responsive {
-            key,
-            content,
-            width,
-            height,
-        } = node
-        else {
+        let wire::Node::Responsive { content, .. } = node else {
             unreachable!()
         };
         let weak = cx.entity().downgrade();
-        let key = key.clone();
+        let key = self.authored_path.clone();
         let measure = canvas(
             move |bounds, _, cx| {
                 let size = [
@@ -199,7 +199,8 @@ impl ViewTree {
         )
         .absolute()
         .inset_0();
-        dimensions(div().relative(), *width, *height)
+        div()
+            .relative()
             .child(self.node(content, window, cx))
             .child(measure)
             .into_any_element()
@@ -212,6 +213,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::When {
+            id,
             condition,
             children,
             ..
@@ -219,7 +221,7 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let mut element = div().flex().flex_col();
+        let mut element = div().id(native_id(id)).flex().flex_col();
         if condition.matches(&self.containers) {
             for child in children {
                 element = element.child(self.node(child, window, cx));
@@ -228,129 +230,72 @@ impl ViewTree {
         element.into_any_element()
     }
 
-    pub(super) fn grid(
+    pub(super) fn anchored(
         &mut self,
         node: &wire::Node,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Grid {
-            key,
+        let wire::Node::Anchored {
+            anchor,
+            fit,
+            position,
+            position_mode,
+            offset,
             children,
-            width,
-            height,
-            padding,
-            spacing,
-            columns,
-            fluid,
-            aspect,
-            background,
-            border,
-        } = node
-        else {
-            unreachable!()
-        };
-        let available = self
-            .bounds
-            .get(key)
-            .map_or(f32::from(window.viewport_size().width), |bounds| {
-                f32::from(bounds.size.width)
-            });
-        let columns = fluid
-            .filter(|value| *value > 0.0)
-            .map_or(columns.unwrap_or(1), |value| {
-                (available / value).ceil().max(1.0) as u32
-            })
-            .max(1);
-        let mut grid = decoration(
-            pad(
-                dimensions(div().flex().flex_wrap(), *width, *height),
-                *padding,
-            ),
-            *background,
-            *border,
-        );
-        let gap = spacing.unwrap_or_default();
-        grid = grid.gap(px(gap));
-        let cell_width =
-            ((available - gap * columns.saturating_sub(1) as f32) / columns as f32).max(0.0);
-        for child in children {
-            let cell = div()
-                .w(px(cell_width))
-                .h(px(cell_width / aspect.unwrap_or(1.0).max(0.001)));
-            grid = grid.child(cell.child(self.node(child, window, cx)));
-        }
-        grid.relative()
-            .child(self.measure(key, cx))
-            .into_any_element()
-    }
-
-    pub(super) fn stack(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Stack {
-            children,
-            width,
-            height,
-            padding,
-            background,
-            border,
-            clip,
-            under,
             ..
         } = node
         else {
             unreachable!()
         };
-        let mut element = decoration(
-            pad(dimensions(div().relative(), *width, *height), *padding),
-            *background,
-            *border,
-        );
-        if *clip {
-            element = element.overflow_hidden();
+        let anchor = match anchor {
+            wire::Anchor::TopLeft => gpui_kit::Anchor::TopLeft,
+            wire::Anchor::TopRight => gpui_kit::Anchor::TopRight,
+            wire::Anchor::BottomLeft => gpui_kit::Anchor::BottomLeft,
+            wire::Anchor::BottomRight => gpui_kit::Anchor::BottomRight,
+            wire::Anchor::TopCenter => gpui_kit::Anchor::TopCenter,
+            wire::Anchor::BottomCenter => gpui_kit::Anchor::BottomCenter,
+            wire::Anchor::LeftCenter => gpui_kit::Anchor::LeftCenter,
+            wire::Anchor::RightCenter => gpui_kit::Anchor::RightCenter,
+        };
+        let mut element = gpui_kit::anchored().anchor(anchor);
+        if let Some([x, y]) = position {
+            element = element.position(point(px(*x), px(*y)));
         }
-        if *under == 0 {
-            element = element.grid().grid_cols(1).grid_rows(1);
+        if let Some([x, y]) = offset {
+            element = element.offset(point(px(*x), px(*y)));
         }
-        for (index, child) in children.iter().enumerate() {
-            let content = self.node(child, window, cx);
-            element = match (*under, index) {
-                (0, _) => element.child(div().col_start(1).row_start(1).child(content)),
-                (base, index) if index == base as usize => element.child(content),
-                _ => element.child(div().absolute().inset_0().child(content)),
-            };
+        element = match position_mode {
+            wire::AnchoredPositionMode::Window => {
+                element.position_mode(gpui_kit::AnchoredPositionMode::Window)
+            }
+            wire::AnchoredPositionMode::Local => {
+                element.position_mode(gpui_kit::AnchoredPositionMode::Local)
+            }
+        };
+        element = match fit {
+            wire::AnchoredFitMode::SnapToWindow => element.snap_to_window(),
+            wire::AnchoredFitMode::SnapToWindowWithMargin(edges) => element
+                .snap_to_window_with_margin(gpui_kit::Edges {
+                    top: px(edges[0]),
+                    right: px(edges[1]),
+                    bottom: px(edges[2]),
+                    left: px(edges[3]),
+                }),
+            wire::AnchoredFitMode::SwitchAnchor => element,
+        };
+        for child in children {
+            element = element.child(self.node(child, window, cx));
         }
         element.into_any_element()
     }
 
-    pub(super) fn pin(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Pin {
-            content,
-            x,
-            y,
-            width,
-            height,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        dimensions(div().absolute().left(px(*x)).top(px(*y)), *width, *height)
-            .child(self.node(content, window, cx))
-            .into_any_element()
-    }
-
-    pub(super) fn measure(&self, key: &str, cx: &Context<Self>) -> impl IntoElement + use<> {
-        let route = key.to_owned();
+    pub(super) fn measure(
+        &self,
+        path: &[wire::ElementIdWire],
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let route = path.to_vec();
         let weak = cx.entity().downgrade();
         canvas(
             move |bounds, _, cx| {
@@ -366,121 +311,5 @@ impl ViewTree {
         )
         .absolute()
         .inset_0()
-    }
-
-    pub(super) fn flex(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Flex {
-            layout,
-            children,
-            items,
-            background,
-            border,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut element = decoration(
-            pad(
-                dimensions(div().flex(), layout.width, layout.height),
-                layout.padding,
-            ),
-            *background,
-            *border,
-        );
-        element = match layout.direction {
-            wire::FlexDirection::Row => element.flex_row(),
-            wire::FlexDirection::RowReverse => element.flex_row_reverse(),
-            wire::FlexDirection::Column => element.flex_col(),
-            wire::FlexDirection::ColumnReverse => element.flex_col_reverse(),
-        };
-        element = match layout.wrap {
-            wire::FlexWrap::NoWrap => element,
-            wire::FlexWrap::Wrap => element.flex_wrap(),
-            wire::FlexWrap::WrapReverse => element.flex_wrap_reverse(),
-        };
-        if let Some(width) = layout.max_width {
-            element = element.max_w(px(width));
-        }
-        if let Some(height) = layout.max_height {
-            element = element.max_h(px(height));
-        }
-        if let Some(gap) = layout.row_gap {
-            element = element.gap_y(px(gap));
-        }
-        if let Some(gap) = layout.column_gap {
-            element = element.gap_x(px(gap));
-        }
-        if layout.clip {
-            element = element.overflow_hidden();
-        }
-        if let Some(alignment) = layout.justify {
-            element = justify(element, alignment);
-        }
-        if let Some(alignment) = layout.items {
-            element = align_items(element, alignment);
-        }
-        if let Some(alignment) = layout.content {
-            element = match alignment {
-                wire::FlexContentAlignment::Start | wire::FlexContentAlignment::FlexStart => {
-                    element.content_start()
-                }
-                wire::FlexContentAlignment::End | wire::FlexContentAlignment::FlexEnd => {
-                    element.content_end()
-                }
-                wire::FlexContentAlignment::Center => element.content_center(),
-                wire::FlexContentAlignment::SpaceBetween => element.content_between(),
-                wire::FlexContentAlignment::SpaceAround => element.content_around(),
-                wire::FlexContentAlignment::SpaceEvenly => element.content_evenly(),
-                wire::FlexContentAlignment::Stretch => element.content_stretch(),
-            };
-        }
-        let mut order: Vec<_> = children.iter().enumerate().collect();
-        order.sort_by_key(|(index, _)| items.get(*index).map_or(0, |item| item.order));
-        for (index, child) in order {
-            let mut item = div();
-            if let Some(rules) = items.get(index) {
-                item.style().flex_grow = rules.grow;
-                item.style().flex_shrink = Some(rules.shrink);
-                item.style().flex_basis = match rules.basis {
-                    wire::FlexBasis::Auto | wire::FlexBasis::Content => Some(auto()),
-                    wire::FlexBasis::Fixed(value) => Some(px(value).into()),
-                    wire::FlexBasis::Percent(value) => Some(relative(value / 100.0).into()),
-                };
-                if let Some(alignment) = rules.align {
-                    item = match alignment {
-                        wire::FlexItemAlignment::Start => item.self_start(),
-                        wire::FlexItemAlignment::FlexStart => item.self_flex_start(),
-                        wire::FlexItemAlignment::End => item.self_end(),
-                        wire::FlexItemAlignment::FlexEnd => item.self_flex_end(),
-                        wire::FlexItemAlignment::Center => item.self_center(),
-                        wire::FlexItemAlignment::Baseline => item.self_baseline(),
-                        wire::FlexItemAlignment::Stretch => item.self_stretch(),
-                    };
-                }
-                let margin = |value| match value {
-                    wire::FlexMargin::Zero => px(0.0).into(),
-                    wire::FlexMargin::Auto => auto(),
-                    wire::FlexMargin::Fixed(value) => px(value).into(),
-                    wire::FlexMargin::Percent(value) => relative(value / 100.0).into(),
-                };
-                item = item
-                    .mt(margin(rules.margins.top))
-                    .mr(margin(rules.margins.right))
-                    .mb(margin(rules.margins.bottom))
-                    .ml(margin(rules.margins.left));
-            }
-            element = element.child(item.child(self.node(child, window, cx)));
-        }
-        let mut outer = dimensions(div(), layout.surface_width, layout.surface_height);
-        if let Some(width) = layout.surface_max_width {
-            outer = outer.max_w(px(width));
-        }
-        outer.child(element).into_any_element()
     }
 }

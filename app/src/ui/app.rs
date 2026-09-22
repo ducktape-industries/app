@@ -84,6 +84,11 @@ pub(crate) enum AppMessage {
     StatusPushed(backend::NodeStatus),
     Disconnect,
     SelectView(&'static str),
+    SplitView(&'static str),
+    ClosePane(usize),
+    FocusPane(usize),
+    PopOut(usize),
+    PopIn(WindowKey),
     ViewEvent(&'static str, ModuleViewEvent),
     OpenLink(String),
     PasswordTyped(String),
@@ -173,7 +178,13 @@ impl Ducktape {
 
     /// What every view is handed as its props.
     pub(crate) fn view_props(&self) -> Vec<u8> {
-        crate::module_view::props(self.dark(), self.connected, &self.network, &self.signer_key)
+        crate::module_view::props(
+            self.dark(),
+            self.connected,
+            &self.network,
+            &self.signer_key,
+            &self.endpoint,
+        )
     }
 }
 

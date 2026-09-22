@@ -4,13 +4,14 @@ use super::*;
 
 // ---------- the roster ----------
 
-/// The four facts every view is handed as its props.
-pub fn props(dark: bool, connected: bool, network: &str, account: &str) -> Vec<u8> {
+/// The session facts every view is handed as its props.
+pub fn props(dark: bool, connected: bool, network: &str, account: &str, endpoint: &str) -> Vec<u8> {
     serde_json::to_vec(&serde_json::json!({
         "connected": connected,
         "dark": dark,
         "chain": network,
         "account": account,
+        "endpoint": endpoint,
     }))
     .expect("props encode")
 }
@@ -77,7 +78,8 @@ pub fn rail() -> Vec<RailRow> {
         .into_iter()
         .map(|module| {
             let seat = registry
-                .get(module)
+                .iter()
+                .find_map(|((name, _), seat)| (*name == module).then_some(seat))
                 .map(|seat| seat.lock().expect("module view lock"));
             let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
                 Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
@@ -169,20 +171,31 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
             for gone in registry
                 .keys()
                 .copied()
-                .filter(|seated| !names.contains(seated))
+                .filter(|(module, _)| !names.contains(module))
                 .collect::<Vec<_>>()
             {
-                if let Some(retired) = registry.remove(gone) {
+                if let Some(retired) = registry.get(&gone) {
                     let mut retired = retired.lock().expect("module view lock");
+                    retired.generation += 1;
                     retired.slot = Slot::Empty;
                     retired.changes.send_replace(());
+                }
+                if gone.1 == 0 {
+                    registry.remove(&gone);
                 }
             }
             let previous =
                 std::mem::replace(&mut *listed().lock().expect("roster"), programs.clone());
             let mut loads = Vec::new();
-            for (program, module) in programs.iter().zip(names) {
-                let seat = registry.entry(module).or_insert_with(Mounted::seat);
+            for module in &names {
+                if !registry.keys().any(|(name, _)| name == module) {
+                    registry.insert((*module, 0), Mounted::seat());
+                }
+            }
+            for ((module, _), seat) in registry.iter() {
+                let Some(program) = programs.iter().find(|program| program.name == *module) else {
+                    continue;
+                };
                 let mut locked = seat.lock().expect("module view lock");
                 let same_code = previous
                     .iter()
@@ -205,4 +218,65 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
             let _ = load.join();
         }
     })
+}
+
+/// A short link names a program or a unique view label on this connection.
+pub fn local_link(link: &str) -> Option<&'static str> {
+    local_seat(link, &rail())
+}
+
+fn local_seat(link: &str, rows: &[RailRow]) -> Option<&'static str> {
+    let name = link.strip_prefix("duck://")?;
+    if name.is_empty()
+        || !name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+    {
+        return None;
+    }
+    if let Some(row) = rows.iter().find(|row| row.module == name && !row.empty) {
+        return Some(row.module);
+    }
+    let mut matches = rows
+        .iter()
+        .filter(|row| !row.empty && row.note.is_none() && row.label.to_lowercase() == name);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first.module)
+}
+
+#[cfg(test)]
+mod local_link_tests {
+    use super::*;
+
+    #[test]
+    fn short_links_resolve_ids_and_unique_ready_labels() {
+        let mut rows = vec![RailRow {
+            module: "catalog",
+            label: "Preferences".into(),
+            note: None,
+            empty: false,
+        }];
+        assert_eq!(local_seat("duck://catalog", &rows), Some("catalog"));
+        assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
+        for link in [
+            "duck://",
+            "duck://Preferences",
+            "duck://network-abcd1234/preferences",
+            "duck://preferences?x",
+            "https://preferences",
+        ] {
+            assert_eq!(local_seat(link, &rows), None);
+        }
+        rows.push(RailRow {
+            module: "other",
+            label: "Preferences".into(),
+            note: None,
+            empty: false,
+        });
+        assert_eq!(local_seat("duck://preferences", &rows), None);
+        rows[1].empty = true;
+        assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
+        rows[0].note = Some("Loading");
+        assert_eq!(local_seat("duck://preferences", &rows), None);
+    }
 }

@@ -7,6 +7,10 @@ use super::*;
 /// across guest instances; ordinary guest frames retain keyed control state.
 pub(crate) struct NativeModuleView {
     pub(super) module: &'static str,
+    pub(super) instance: u64,
+    pub(super) seat: Arc<Mutex<Mounted>>,
+    pub(super) focused: bool,
+    pub(super) observed_window: Option<gpui_kit::WindowId>,
     pub(super) content: Option<gpui_kit::Entity<crate::view_tree::ViewTree>>,
     pub(super) subscription: Option<gpui_kit::Subscription>,
     pub(super) generation: u64,
@@ -27,22 +31,15 @@ impl gpui_kit::EventEmitter<ModuleViewEvent> for NativeModuleView {}
 /// would otherwise take its content's, and a Fill-sized pane inside it
 /// (a room, a document) collapses to zero height.
 pub(super) fn native_root(root: wire::Node) -> wire::Node {
-    wire::Node::Container {
-        shadow: Default::default(),
-        max_width: None,
-        max_height: None,
-        clip: false,
-        key: "NativeModuleView/root".into(),
-        width: Some(wire::Length::Fill),
-        height: Some(wire::Length::Fill),
-        padding: None,
-        align_x: None,
-        align_y: None,
-        background: None,
-        border: None,
-        snap: None,
-        content: Box::new(root),
-    }
+    use gpui_kit::Styled as _;
+    let mut host_root = gpui_kit::div();
+    host_root = host_root.size_full();
+    wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("NativeModuleView/root".into())),
+        style: host_root.style().clone(),
+        interactivity: Default::default(),
+        children: vec![root],
+    })
 }
 
 /// What a tab draws where its view is not: the load's stage over a skeleton
@@ -104,8 +101,14 @@ impl NativeModuleView {
     }
 
     pub(crate) fn new(module: &'static str) -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let instance = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self {
             module,
+            instance,
+            seat: mounted(module, instance),
+            focused: true,
+            observed_window: None,
             content: None,
             subscription: None,
             generation: 0,
@@ -120,8 +123,23 @@ impl NativeModuleView {
         }
     }
 
+    pub(crate) fn set_focused(&mut self, focused: bool, cx: &mut gpui_kit::Context<Self>) {
+        if self.focused != focused {
+            self.focused = focused;
+            self.observe_window(
+                if focused {
+                    wire::events::Window::Focused
+                } else {
+                    wire::events::Window::Unfocused
+                },
+                cx,
+            );
+            cx.notify();
+        }
+    }
+
     pub(crate) fn set_props(&mut self, props: Vec<u8>, cx: &mut gpui_kit::Context<Self>) {
-        let seat = mounted(self.module);
+        let seat = self.seat.clone();
         let mut seat = seat.lock().expect("module view lock");
         let changed = seat.props.as_ref() != Some(&props);
         if changed {
@@ -146,12 +164,13 @@ impl NativeModuleView {
     /// presses it is owed go in, and the requests its tick makes are
     /// answered — a chord claim among them.
     pub(super) fn turn(&mut self, cx: &mut gpui_kit::Context<Self>) {
-        let seat = mounted(self.module);
+        let seat = self.seat.clone();
         let mut locked = seat.lock().expect("module view lock");
         let Mounted { slot, props, .. } = &mut *locked;
         let Slot::Ready(guest) = slot else {
             return;
         };
+        guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
         filesystem::mount(guest, cx);
         media::mount(guest, cx);
@@ -169,10 +188,10 @@ impl NativeModuleView {
     /// told and redrawn, and the press is spent. Says whether it landed, so
     /// the shell stops at the seat that took it.
     pub(crate) fn chord(&mut self, chord: &str, cx: &mut gpui_kit::Context<Self>) -> bool {
-        if chord_holder(chord) != Some(self.module) {
+        if !self.focused || chord_holder(chord) != Some(self.module) {
             return false;
         }
-        let seat = mounted(self.module);
+        let seat = self.seat.clone();
         let mut mounted = seat.lock().expect("module view lock");
         let Slot::Ready(guest) = &mut mounted.slot else {
             return false;
@@ -193,7 +212,7 @@ impl NativeModuleView {
         let Some(alive) = &self.alive else {
             return Vec::new();
         };
-        let seat = mounted(self.module);
+        let seat = self.seat.clone();
         let mut mounted = seat.lock().expect("module view lock");
         let Mounted { slot, props, .. } = &mut *mounted;
         let Slot::Ready(guest) = slot else {
@@ -219,7 +238,7 @@ impl NativeModuleView {
         let Some(alive) = &self.alive else {
             return Vec::new();
         };
-        let seat = mounted(self.module);
+        let seat = self.seat.clone();
         let mut mounted = seat.lock().expect("module view lock");
         let Mounted { slot, props, .. } = &mut *mounted;
         let Slot::Ready(guest) = slot else {
@@ -248,7 +267,7 @@ impl NativeModuleView {
         window: &mut gpui_kit::Window,
         cx: &mut gpui_kit::Context<Self>,
     ) -> Result<(), Standin> {
-        let mounted = mounted(self.module);
+        let mounted = self.seat.clone();
         let mut locked = mounted.lock().expect("module view lock");
         locked.shown = Some(Instant::now());
         let Mounted { slot, props, .. } = &mut *locked;
@@ -275,6 +294,7 @@ impl NativeModuleView {
         let generation = guest.seated_generation();
         let ticks = guest.ticks;
         guest.set_visible(true);
+        guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
         filesystem::mount(guest, cx);
         media::mount(guest, cx);
@@ -342,6 +362,9 @@ impl NativeModuleView {
                     let alive = guest.alive.clone();
                     self.subscription =
                         Some(cx.subscribe(&content, move |this, source, event, cx| {
+                            if !this.focused && input::needs_focus(event) {
+                                return;
+                            }
                             let activation = source.read(cx).take_user_activation(event);
                             let mut locked = seat.lock().expect("module view lock");
                             let Slot::Ready(guest) = &mut locked.slot else {
@@ -396,6 +419,10 @@ impl NativeModuleView {
                             return;
                         };
                         guest.execute_widget_commands(|command| {
+                            if !this.focused && matches!(command, wire::WidgetCommand::Focus { .. })
+                            {
+                                return Err("view is not focused".into());
+                            }
                             content.update(cx, |tree, cx| {
                                 tree.execute_widget_command(command, window, cx)
                             })
@@ -436,6 +463,7 @@ impl NativeModuleView {
             retry: offers_retry,
         } = standin;
         let module = self.module;
+        let instance = self.instance;
         // a stable id per kind, so the tree tells a load on its way from a
         // view that is not there
         let (id, words_id) = match loading {
@@ -466,7 +494,7 @@ impl NativeModuleView {
                     .outline()
                     .on_click(cx.listener(move |_, _, _, cx| {
                         cx.stop_propagation();
-                        drop(retry(module));
+                        drop(retry(module, instance));
                         cx.notify();
                     }))
             }));
@@ -551,3 +579,16 @@ impl gpui_kit::Render for NativeModuleView {
         }
     }
 }
+
+impl Drop for NativeModuleView {
+    fn drop(&mut self) {
+        registry()
+            .lock()
+            .expect("module views")
+            .remove(&(self.module, self.instance));
+    }
+}
+
+#[cfg(test)]
+#[path = "widget_tests.rs"]
+mod tests;

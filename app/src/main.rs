@@ -12,6 +12,11 @@ mod tray;
 mod view_tree;
 
 fn main() {
+    #[cfg(debug_assertions)]
+    if std::env::args().nth(1).as_deref() == Some("--render-tree") {
+        shell::render_tree_fixture();
+        return;
+    }
     match std::env::args().nth(1).as_deref() {
         Some("--version" | "-V") => {
             let build = option_env!("DUCKTAPE_APP_BUILD").unwrap_or("unknown");

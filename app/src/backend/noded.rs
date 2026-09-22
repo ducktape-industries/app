@@ -182,6 +182,10 @@ impl Client {
         }
     }
 
+    pub fn endpoint(&self) -> &str {
+        &self.base
+    }
+
     pub async fn status(&self) -> Result<Status> {
         self.fetch(route::STATUS).await
     }

@@ -23,10 +23,10 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: modules main, crates/sdk (abi, view-wire, ducklink, design) ---
-abi = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "design" }
+abi = { git = "https://github.com/ducktape-industries/modules", branch = "epic/views-2026-09-22", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", branch = "epic/views-2026-09-22", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", branch = "epic/views-2026-09-22", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", branch = "epic/views-2026-09-22", package = "design" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -52,7 +52,11 @@ wasmtime = "=46.0.3"
 libc = "0.2"
 
 [patch.crates-io]
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "021b436617db8bf377ad384b464cd1b34692f35e" }
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
+gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
 
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator

@@ -1,4 +1,5 @@
 use super::*;
+use crate::view_tree::native_id;
 
 pub(super) struct RangeControl {
     pub(super) state: Entity<SliderState>,
@@ -67,10 +68,15 @@ impl EditorView {
 
     /// The guest echoes which editor held focus when the frame was built, so
     /// the field it named takes the caret back.
-    pub(super) fn restore_focus(&self, key: &str, window: &mut Window, cx: &mut App) {
+    pub(super) fn restore_focus(
+        &self,
+        path: &[wire::ElementIdWire],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let Self::Text(view) = self;
         let focus = wire::WidgetCommand::Focus {
-            target: key.to_owned(),
+            target: path.to_vec(),
         };
         view.update(cx, |editor, cx| {
             editor.widget_command(&focus, window, cx);
@@ -111,25 +117,26 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Input {
-            key,
+            id,
             value,
             placeholder,
             secure,
             on_input,
             on_submit,
             options,
-            width,
             style,
             ..
         } = node
         else {
             unreachable!()
         };
-        if !self.fields.contains_key(key) {
+        let identity = self.authored_path.clone();
+        debug_assert_eq!(identity.last(), Some(id));
+        if !self.fields.contains_key(&identity) {
             let presentation = self
                 .presentation
                 .inputs
-                .remove(key)
+                .remove(&identity)
                 .filter(|saved| saved.value == *value && saved.secure == *secure);
             let state = cx.new(|cx| {
                 let mut state = InputState::new(window, cx)
@@ -144,10 +151,10 @@ impl ViewTree {
                 }
                 state
             });
-            let input_key = key.clone();
-            let observed_key = key.clone();
+            let input_identity = identity.clone();
+            let observed_identity = identity.clone();
             let observer = cx.observe_in(&state, window, move |this, input, window, cx| {
-                let Some(field) = this.fields.get_mut(&observed_key) else {
+                let Some(field) = this.fields.get_mut(&observed_identity) else {
                     return;
                 };
                 let (text, marked, cursor, selection) = input.update(cx, |input, cx| {
@@ -170,7 +177,7 @@ impl ViewTree {
                 }
             });
             let subscription = cx.subscribe_in(&state, window, move |this, input, event, _, cx| {
-                let Some(field) = this.fields.get_mut(&input_key) else {
+                let Some(field) = this.fields.get_mut(&input_identity) else {
                     return;
                 };
                 match event {
@@ -194,7 +201,7 @@ impl ViewTree {
                 }
             });
             self.fields.insert(
-                key.clone(),
+                identity.clone(),
                 Field {
                     state,
                     on_input: *on_input,
@@ -209,7 +216,7 @@ impl ViewTree {
                 },
             );
         }
-        let field = self.fields.get_mut(key).expect("field inserted");
+        let field = self.fields.get_mut(&identity).expect("field inserted");
         field.on_input = *on_input;
         field.on_submit = *on_submit;
         if field.guest_value != *value {
@@ -237,35 +244,17 @@ impl ViewTree {
         // empty label is no name, left unset so it reads as missing; a secure
         // field is a password, which keeps its value out of the tree.
         let accessible = accessible(node);
+        let native_id = native_id(id);
+        let field_id = ElementId::NamedChild(Arc::new(native_id.clone()), "field".into());
         let mut input = Input::new(&field.state)
-            .id(key.clone())
-            .disabled(options.disabled);
+            .id(native_id)
+            .disabled(options.disabled)
+            .refine_style(style);
         if accessible.role == Some(gpui_kit::Role::PasswordInput) {
             input = input.content_type(InputContentType::Password);
         }
-        let face = match options.disabled {
-            true => style.disabled.unwrap_or(style.active),
-            false => style.active,
-        };
-        let mut input = decoration(
-            pad(input, options.padding),
-            style.utility.background.or(face.background),
-            style.utility.border.or(face.border),
-        );
-        if let Some(color) = style.utility.value.or(face.value) {
-            input = input.text_color(rgba(color));
-        }
-        if let Some(size) = options.text_size {
-            input = input.text_size(px(size));
-        }
-        if let Some(height) = options.line_height {
-            input = input.line_height(relative(height));
-        }
-        if let Some(font) = &options.font {
-            input = input.font_weight(font_weight(font.weight));
-        }
         let field = crate::a11y::text_field(
-            SharedString::from(format!("{key}/field")),
+            field_id,
             &field.state.read(cx).focus_handle(cx),
             {
                 let state = field.state.clone();
@@ -275,7 +264,7 @@ impl ViewTree {
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
         );
-        announce(dimensions(field, *width, None), accessible).into_any_element()
+        announce(field, accessible).into_any_element()
     }
 
     pub(super) fn button(
@@ -285,31 +274,25 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Button {
-            key,
+            id,
             content,
             label,
             checked,
             on_press,
-            width,
-            height,
-            padding,
             style,
             ..
         } = node
         else {
             unreachable!()
         };
-        let mut button = button_style(Button::new(key.clone()), style.preset)
+        let mut button = Button::new(native_id(id))
+            .refine_style(style)
             .disabled(on_press.is_none())
             .selected(checked.unwrap_or(false));
         button = match content {
             wire::ButtonContent::Label(text) => button.label(text.clone()),
             wire::ButtonContent::Child(child) => {
-                let fit_content = matches!(height, None | Some(wire::Length::Shrink));
-                if fit_content {
-                    button = button.h_auto();
-                }
-                button.child(self.node(child, window, cx))
+                button.h_auto().child(self.node(child, window, cx))
             }
         };
         if let Some(label) = label {
@@ -345,24 +328,25 @@ impl ViewTree {
         } else {
             button
         };
-        let button = announce(button, accessible);
-        dimensions(pad(button, *padding), *width, *height).into_any_element()
+        announce(button, accessible).into_any_element()
     }
 
     pub(super) fn toggle(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Toggle {
-            key,
+            id,
             kind,
             label,
             checked,
             on_toggle,
+            style,
             ..
         } = node
         else {
             unreachable!()
         };
         if *kind == wire::ToggleKind::Switch {
-            let mut toggle = gpui_kit::component::switch::Switch::new(key.clone())
+            let mut toggle = gpui_kit::component::switch::Switch::new(native_id(id))
+                .refine_style(style)
                 .label(label.clone())
                 .checked(*checked)
                 .disabled(on_toggle.is_none());
@@ -374,7 +358,8 @@ impl ViewTree {
             }
             return toggle.into_any_element();
         }
-        let mut checkbox = Checkbox::new(key.clone())
+        let mut checkbox = Checkbox::new(native_id(id))
+            .refine_style(style)
             .label(label.clone())
             .checked(*checked)
             .disabled(on_toggle.is_none());
@@ -390,16 +375,12 @@ impl ViewTree {
 
     pub(super) fn progress(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Progress {
-            key,
+            id,
             value,
             min,
             max,
             axis,
-            length,
-            girth,
-            background,
-            bar,
-            border,
+            style,
             ..
         } = node
         else {
@@ -411,22 +392,22 @@ impl ViewTree {
             true => ((value - min) / span).clamp(0.0, 1.0),
             false => 0.0,
         };
-        let fill = div().bg(bar.map(rgba).unwrap_or_else(|| {
-            gpui_kit::component::Theme::global(cx)
-                .color_tokens()
-                .primary
-        }));
+        let fill = div().bg(gpui_kit::component::Theme::global(cx)
+            .color_tokens()
+            .primary);
         let track = match axis {
-            wire::Axis::Row => decoration(dimensions(div(), *length, *girth), *background, *border)
-                .child(fill.w(relative(fraction)).h_full()),
-            wire::Axis::Column => decoration(
-                dimensions(div().flex().flex_col().justify_end(), *girth, *length),
-                *background,
-                *border,
-            )
-            .child(fill.h(relative(fraction)).w_full()),
+            wire::Axis::Row => div().child(fill.w(relative(fraction)).h_full()),
+            wire::Axis::Column => div()
+                .flex()
+                .flex_col()
+                .justify_end()
+                .child(fill.h(relative(fraction)).w_full()),
         };
-        announce(track.id(key.clone()), accessible(node)).into_any_element()
+        announce(
+            track.id(native_id(id)).refine_style(style),
+            accessible(node),
+        )
+        .into_any_element()
     }
 
     pub(super) fn editor(
@@ -436,12 +417,9 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Editor {
-            key,
+            id,
+            style,
             document,
-            width,
-            height,
-            min_height,
-            max_height,
             ..
         } = node
         else {
@@ -450,45 +428,39 @@ impl ViewTree {
         let Some(store) = self.editor_store.clone() else {
             return div().child("Editor host is unavailable").into_any_element();
         };
-        if !self.editors.contains_key(key) {
+        let path = self.authored_path.clone();
+        debug_assert_eq!(path.last(), Some(id));
+        if !self.editors.contains_key(&path) {
             let events = store.clone();
             let (view, subscription) = {
-                let view = cx
-                    .new(|cx| crate::editor::wire::TextEditor::new(key.clone(), store, window, cx));
+                let view = cx.new(|cx| {
+                    crate::editor::wire::TextEditor::new(path.clone(), store, window, cx)
+                });
                 let subscription =
                     cx.subscribe(&view, move |_, _, _: &(), cx| drain_editor(&events, cx));
                 (EditorView::Text(view), subscription)
             };
             self.editors.insert(
-                key.clone(),
+                path.clone(),
                 EditorMount {
                     view,
                     _subscription: subscription,
                 },
             );
         }
-        let editor = self.editors.get(key).expect("editor inserted");
-        editor
-            .view
-            .fills(!matches!(height, Some(wire::Length::Shrink)), cx);
+        let editor = self.editors.get(&path).expect("editor inserted");
+        editor.view.fills(true, cx);
         editor.view.announce(accessible(node), cx);
         editor.view.sync(window, cx);
-        if self.presentation.editors.remove(key).as_ref() == Some(document) {
-            editor.view.restore_focus(key, window, cx);
+        if self.presentation.editors.remove(&path).as_ref() == Some(document) {
+            editor.view.restore_focus(&path, window, cx);
         }
         let view = editor.view.element();
-        let mut element = dimensions(
-            div().relative(),
-            Some(width.map_or(wire::Length::Fill, wire::Length::Fixed)),
-            Some(height.unwrap_or(wire::Length::Fill)),
-        )
-        .min_h(px(min_height.unwrap_or(0.)));
-        if let Some(maximum) = max_height {
-            element = element.max_h(px(*maximum));
-        }
+        let mut element = div().relative().id(native_id(id));
+        *element.style() = style.clone();
         element
             .child(view)
-            .child(self.measure(key, cx))
+            .child(self.measure(&path, cx))
             .into_any_element()
     }
 
@@ -499,7 +471,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Slider {
-            key,
+            id,
             value,
             min,
             max,
@@ -507,17 +479,17 @@ impl ViewTree {
             on_change,
             on_release,
             axis,
-            width,
-            height,
+            style,
             ..
         } = node
         else {
             unreachable!()
         };
+        let path = self.authored_path.clone();
         let bounds = [*min, *max, *step];
         let rebuild = self
             .ranges
-            .get(key)
+            .get(&path)
             .is_none_or(|control| control.bounds != bounds);
         if rebuild {
             let state = cx.new(|_| {
@@ -527,7 +499,7 @@ impl ViewTree {
                     .step(*step)
                     .default_value(*value)
             });
-            let route = key.clone();
+            let route = path.clone();
             let subscription = cx.subscribe_in(&state, window, move |this, _, event, _, cx| {
                 let Some(control) = this.ranges.get_mut(&route) else {
                     return;
@@ -548,7 +520,7 @@ impl ViewTree {
                 }
             });
             self.ranges.insert(
-                key.clone(),
+                path.clone(),
                 RangeControl {
                     state,
                     bounds,
@@ -559,7 +531,7 @@ impl ViewTree {
                 },
             );
         }
-        let control = self.ranges.get_mut(key).expect("range inserted");
+        let control = self.ranges.get_mut(&path).expect("range inserted");
         control.on_change = *on_change;
         control.on_release = *on_release;
         if control.value != *value {
@@ -572,7 +544,9 @@ impl ViewTree {
             wire::Axis::Row => Slider::new(&control.state).horizontal(),
             wire::Axis::Column => Slider::new(&control.state).vertical(),
         };
-        dimensions(div(), *width, *height)
+        div()
+            .id(native_id(id))
+            .refine_style(style)
             .child(slider)
             .into_any_element()
     }
