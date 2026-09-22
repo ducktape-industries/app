@@ -55,6 +55,7 @@ fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
         })
     });
     native.update(|window, cx| window.render_frame(cx));
+    native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
 
     let events = events.borrow();
@@ -183,7 +184,11 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
         })
     });
     native.update(|window, cx| window.render_frame(cx));
-    native.update(|window, cx| window.click("uniform-click", cx));
+    native.update(|window, cx| {
+        window
+            .within("uniform-click")
+            .click("uniform-click/row:0", cx)
+    });
 
     assert!(events.borrow().iter().any(|event| matches!(
         event,

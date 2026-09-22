@@ -408,8 +408,13 @@ impl ViewTree {
         let Some(scrollbar) = scrollbar else {
             return content.into_any_element();
         };
+        let mut frame_style = gpui_kit::StyleRefinement::default();
+        frame_style.size = style.size.clone();
+        frame_style.min_size = style.min_size.clone();
+        frame_style.max_size = style.max_size.clone();
         div()
             .relative()
+            .refine_style(&frame_style)
             .child(content)
             .child(
                 div().absolute().inset_0().child(

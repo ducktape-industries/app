@@ -93,26 +93,14 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         anticipate: None,
         delay: None,
         style: sized_style(Some(fill()), Some(fill())),
-        child: Box::new(wire::Node::MouseArea {
-            id: named_id("press-area"),
-            role: None,
-            label: None,
-            expanded: None,
-            selected: None,
-            checked: None,
-            on_press: Some(2),
-            on_release: None,
-            on_double_click: None,
-            on_right_press: None,
-            on_right_release: None,
-            on_middle_press: None,
-            on_middle_release: None,
-            on_enter: None,
-            on_exit: None,
-            on_move: None,
-            on_press_at: None,
-            on_scroll: None,
-            content: Box::new(room),
+        child: Box::new(wire::Node::Container {
+            id: Some(named_id("press-area")),
+            style: sized_style(Some(fill()), Some(fill())),
+            interactivity: wire::Interactivity {
+                on_click: Some(2),
+                ..Default::default()
+            },
+            children: vec![room],
         }),
     };
     // Mounted the way a module seat mounts a guest: a cached view under a

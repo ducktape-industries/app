@@ -290,7 +290,9 @@ impl ViewTree {
             .selected(checked.unwrap_or(false));
         button = match content {
             wire::ButtonContent::Label(text) => button.label(text.clone()),
-            wire::ButtonContent::Child(child) => button.child(self.node(child, window, cx)),
+            wire::ButtonContent::Child(child) => {
+                button.h_auto().child(self.node(child, window, cx))
+            }
         };
         if let Some(label) = label {
             button = button.accessibility_label(label.clone());
