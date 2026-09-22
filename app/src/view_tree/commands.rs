@@ -473,7 +473,8 @@ impl ViewTree {
             .retain(|key, _| live_keys.contains(key));
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.lists.retain(|key, _| scrolls.contains(key));
-        self.uniform_lists.retain(|id, _| uniform_lists.contains(id));
+        self.uniform_lists
+            .retain(|id, _| uniform_lists.contains(id));
         self.scroll_positions.retain(|key, _| scrolls.contains(key));
         self.pickers.retain(|key, _| pickers.contains(key));
         self.drags.retain(|key, _| drags.contains(key));

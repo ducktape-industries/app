@@ -54,7 +54,11 @@ impl ViewTree {
         }
         state.count = count;
         state.rows.retain(|index, _| *index < count && *index == 0);
-        for (&index, child) in indices.iter().zip(children).take(wire::MAX_UNIFORM_LIST_ROWS) {
+        for (&index, child) in indices
+            .iter()
+            .zip(children)
+            .take(wire::MAX_UNIFORM_LIST_ROWS)
+        {
             let index = index as usize;
             if index < count {
                 state.rows.insert(index, child.clone());
@@ -73,17 +77,21 @@ impl ViewTree {
         let weak = cx.entity().downgrade();
         let list = gpui_kit::uniform_list(native_id.clone(), count, move |range, window, app| {
             let start = range.start.min(count);
-            let end = range.end.min(count).min(start + wire::MAX_UNIFORM_LIST_ROWS);
+            let end = range
+                .end
+                .min(count)
+                .min(start + wire::MAX_UNIFORM_LIST_ROWS);
             let range = start..end;
             weak.update(app, |tree, cx| {
                 let request = !range.is_empty() && range != (0..1);
-                let should_emit = request && tree.uniform_lists.get_mut(&list_id).is_some_and(|state| {
-                    let changed = state.requested.as_ref() != Some(&range);
-                    if changed {
-                        state.requested = Some(range.clone());
-                    }
-                    changed
-                });
+                let should_emit = request
+                    && tree.uniform_lists.get_mut(&list_id).is_some_and(|state| {
+                        let changed = state.requested.as_ref() != Some(&range);
+                        if changed {
+                            state.requested = Some(range.clone());
+                        }
+                        changed
+                    });
                 if should_emit {
                     cx.emit(wire::Event::UniformListRange {
                         id: list_id.clone(),
@@ -138,6 +146,50 @@ impl ViewTree {
         let mut element = div()
             .id(ElementId::NamedChild(Arc::new(native_id), "shell".into()))
             .child(list);
+        let observe_id = id.clone();
+        let observe_route = route;
+        let observe_scroll = scroll.clone();
+        let observe_weak = cx.entity().downgrade();
+        let observe = canvas(
+            move |bounds, _, app| {
+                let state = observe_scroll.0.borrow();
+                let item_height = state
+                    .last_item_size
+                    .map(|size| f32::from(size.item.height))
+                    .filter(|height| *height > 0.)
+                    .unwrap_or(PLACEHOLDER_HEIGHT);
+                let offset = f32::from(state.base_handle.offset().y);
+                let start = ((-offset / item_height).floor() as usize).min(count);
+                let visible = (f32::from(bounds.size.height) / item_height).ceil() as usize + 1;
+                let end = start
+                    .saturating_add(visible.max(2))
+                    .min(count)
+                    .min(start.saturating_add(wire::MAX_UNIFORM_LIST_ROWS));
+                let range = start..end;
+                if range.is_empty() || range == (0..1) {
+                    return;
+                }
+                let _ = observe_weak.update(app, |tree, cx| {
+                    let Some(state) = tree.uniform_lists.get_mut(&observe_id) else {
+                        return;
+                    };
+                    if state.requested.as_ref() == Some(&range) {
+                        return;
+                    }
+                    state.requested = Some(range.clone());
+                    cx.emit(wire::Event::UniformListRange {
+                        id: observe_id.clone(),
+                        route: observe_route,
+                        start: range.start as u32,
+                        end: range.end as u32,
+                    });
+                });
+            },
+            |_, _, _, _| {},
+        )
+        .absolute()
+        .inset_0();
+        element = element.child(observe);
         if let Some(group) = &interactivity.group {
             element = element.group(group.clone());
         }
