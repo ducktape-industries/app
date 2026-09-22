@@ -2440,6 +2440,7 @@ dependencies = [
  "ducktape-rpc",
  "futures",
  "gpui-kit",
+ "gpui-pre-wgpu",
  "image",
  "keystore",
  "libc",
@@ -3939,8 +3940,6 @@ dependencies = [
 [[package]]
 name = "gpui-pre-wgpu"
 version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "640b666a16ddf9504e2eb3e7a997acb2b2adfaa7859925bdd36fc3acfd8f30a7"
 dependencies = [
  "anyhow",
  "bytemuck",

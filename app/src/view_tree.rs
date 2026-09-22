@@ -47,17 +47,18 @@ mod surfaces;
 mod text;
 
 #[cfg(test)]
-#[cfg(test)]
 mod tests;
 
 pub(crate) use accessibility::{Accessible, accessible, announce};
-use canvas::{
-    append_arc, append_arc_to, canvas_svg, native_canvas_commands, paint_canvas_commands,
-};
+#[cfg(test)]
+use canvas::{append_arc, append_arc_to};
+use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
 use inputs::{EditorMount, Field, RangeControl};
 use pickers::Picker;
-use pictures::{ViewerState, decode_image, qr};
+#[cfg(test)]
+use pictures::decode_image;
+use pictures::{ViewerState, qr};
 use scroll::{ScrollRequest, VirtualScroll};
 use sensors::SensorState;
 use style::{

@@ -22,9 +22,9 @@ use view_wire::Task;
 use crate::{AppMessage as Message, Ducktape, Screen};
 
 #[cfg(debug_assertions)]
-mod fixture;
+mod fixtures;
 #[cfg(debug_assertions)]
-pub(crate) use fixture::render_tree_fixture;
+pub(crate) use fixtures::render_tree_fixture;
 mod launch;
 mod screens;
 

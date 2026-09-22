@@ -80,3 +80,6 @@ quote = "1"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.5" }

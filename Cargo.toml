@@ -52,6 +52,7 @@ wasmtime = "=46.0.3"
 libc = "0.2"
 
 [patch.crates-io]
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "021b436617db8bf377ad384b464cd1b34692f35e" }
 
 # dev/test builds compile wasm guests through cranelift (module-owned view

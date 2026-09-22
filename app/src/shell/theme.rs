@@ -113,3 +113,7 @@ pub(crate) fn with_family<E: gpui_kit::Styled>(
 pub(crate) fn mono_family<E: gpui_kit::Styled>(element: E) -> E {
     with_family(element, design::fonts::FAMILY_MONO)
 }
+
+#[cfg(all(test, target_os = "linux"))]
+#[path = "../tests/font_fallback.rs"]
+mod font_fallback;
