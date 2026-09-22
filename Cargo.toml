@@ -52,7 +52,7 @@ wasmtime = "=46.0.3"
 libc = "0.2"
 
 [patch.crates-io]
-gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
+gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "7067cdfacd77d19fc6f78d03142987f90dfa59af" }
 rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
 gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
 gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
