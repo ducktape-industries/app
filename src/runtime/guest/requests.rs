@@ -1,5 +1,39 @@
 use super::*;
 
+/// Whether `target` names a node mounted in `root`, matched as a SUFFIX of
+/// that node's full authored path (the ancestry `crate::render::enter_scope`
+/// walks), not the whole of it. A view composes a widget command's target
+/// from context it already holds when it dispatches — an editor's own key
+/// (`"draft-general/editor"`), a list's own key — never from every named
+/// ancestor above it, which can live in other modules entirely (a pane, a
+/// room, the composer's own wrapper each carry an id of their own) and
+/// change shape without the dispatching code's knowledge. Requiring the
+/// FULL path here silently refused every such command — a `window.dispatch`
+/// is a fire-and-forget notify, so the refusal never reached the guest —
+/// which is why a composer's Send button (`WidgetCommand::EditorAction`)
+/// stayed dead while Enter, which never goes through a widget command, kept
+/// working. `ViewTree::resolve_target` (the native renderer) matches the
+/// same way, so the two walks keep agreeing.
+pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWire]) -> bool {
+    fn contains(
+        node: &wire::Node,
+        path: &mut Vec<wire::ElementIdWire>,
+        target: &[wire::ElementIdWire],
+    ) -> bool {
+        let entered = crate::render::enter_scope(node, path);
+        let found = entered && path.ends_with(target)
+            || node
+                .children()
+                .iter()
+                .any(|child| contains(child, path, target));
+        if entered {
+            path.pop();
+        }
+        found
+    }
+    contains(root, &mut Vec::new(), target)
+}
+
 impl Guest {
     pub(crate) fn sync_theme(&mut self, dark: bool) {
         if self.theme_dark != Some(dark) {
@@ -177,29 +211,13 @@ impl Guest {
     /// there, never whether the frame it was made against is still the
     /// current one.
     pub(crate) fn target_is_mounted(&self, command: &wire::WidgetCommand) -> bool {
-        fn contains(
-            node: &wire::Node,
-            path: &mut Vec<wire::ElementIdWire>,
-            target: &[wire::ElementIdWire],
-        ) -> bool {
-            let entered = crate::render::enter_scope(node, path);
-            let found = entered && path == target
-                || node
-                    .children()
-                    .iter()
-                    .any(|child| contains(child, path, target));
-            if entered {
-                path.pop();
-            }
-            found
-        }
         let Some(target) = Self::command_target(command) else {
             return true;
         };
         self.frame
             .root
             .as_ref()
-            .is_some_and(|root| contains(root, &mut Vec::new(), target))
+            .is_some_and(|root| target_names_mounted_node(root, target))
     }
 
     pub(crate) fn widget_request(&mut self, id: u64, payload: &[u8]) {
@@ -396,5 +414,98 @@ impl Guest {
                 self.frame_rev += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn container(id: &str, children: Vec<wire::Node>) -> wire::Node {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name(id.into())),
+            style: Default::default(),
+            interactivity: Default::default(),
+            children,
+        })
+    }
+
+    fn editor(id: &str) -> wire::Node {
+        wire::Node::Editor {
+            options: Box::new(wire::EditorOptions::default()),
+            id: wire::ElementIdWire::Name(id.into()),
+            style: Default::default(),
+            placeholder: String::new(),
+            label: None,
+            document: wire::editor_document::EditorDocumentRef {
+                document: "doc".into(),
+                reset: 1,
+                text_revision: 0,
+                revision: 0,
+                cursor: wire::EditorCursor::default(),
+                byte_len: 0,
+            },
+            on_document: 0,
+            editable: true,
+        }
+    }
+
+    /// The real shape a chat composer's editor mounts under — see the live
+    /// `chat-view` tree: `chat-viewport > chat-root > chat-panes >
+    /// chat-room > draft-general > draft-general/editor`. Every one of
+    /// those named ancestors is owned by a different file (`lib.rs`,
+    /// `room.rs`, the composer's own wrapper), none of which `compose.rs`
+    /// knows about or threads through — it targets the editor by its own
+    /// key alone, exactly like `actions.rs`'s `Focus` and `room.rs`'s
+    /// `ScrollToKey`.
+    fn chat_shaped_tree() -> wire::Node {
+        container(
+            "chat-viewport",
+            vec![container(
+                "chat-root",
+                vec![container(
+                    "chat-panes",
+                    vec![container(
+                        "chat-room",
+                        vec![container(
+                            "draft-general",
+                            vec![editor("draft-general/editor")],
+                        )],
+                    )],
+                )],
+            )],
+        )
+    }
+
+    /// The composer's own dispatch (`Outcome::Enqueue` in `chat-view`'s
+    /// `compose.rs`) sends `EditorAction { target: vec![Name("{key}/editor")], .. }`
+    /// — one segment. Before this fix, `target_is_mounted` required that
+    /// segment to equal the editor's FULL authored path, so it never
+    /// matched anything nested (which every real composer is), and the
+    /// guest refused its own `host.widget` request with
+    /// `widget target is outside this guest tree`. Because `window.dispatch`
+    /// is a fire-and-forget notify, nothing ever reported that refusal:
+    /// clicking Send just did nothing, forever.
+    #[test]
+    fn a_short_target_matches_its_editor_however_deep_the_named_ancestry() {
+        let tree = chat_shaped_tree();
+        let target = [wire::ElementIdWire::Name("draft-general/editor".into())];
+        assert!(
+            target_names_mounted_node(&tree, &target),
+            "a composer's own local key must resolve to its deeply-nested editor"
+        );
+    }
+
+    #[test]
+    fn an_unrelated_key_is_still_refused() {
+        let tree = chat_shaped_tree();
+        let target = [wire::ElementIdWire::Name("some-other-editor".into())];
+        assert!(!target_names_mounted_node(&tree, &target));
+    }
+
+    #[test]
+    fn an_empty_root_mounts_nothing() {
+        let target = [wire::ElementIdWire::Name("draft-general/editor".into())];
+        assert!(!target_names_mounted_node(&wire::Node::empty(), &target));
     }
 }

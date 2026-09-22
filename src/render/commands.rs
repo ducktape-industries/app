@@ -122,15 +122,40 @@ impl ViewTree {
         }
     }
 
+    /// The full authored path a widget command's target names, when one is
+    /// mounted. A guest composes a target from context it already holds —
+    /// an editor's own key (`"draft-general/editor"`), a list's own key —
+    /// never the named ancestors above it, which live in other modules and
+    /// other files entirely (the pane, the room and the composer's own
+    /// wrapper each carry an id of their own between the tree's root and
+    /// it). `self.mounted`, `self.editors` and the other target-keyed maps
+    /// are indexed by the FULL walked ancestry (`walk_authored_paths`), so
+    /// a short target is the SUFFIX of the path it names, not the whole of
+    /// it — the same idiom `scroll_command` already uses to find a list row
+    /// by its own trailing `"@row:"` key, extended to every target here.
+    pub(super) fn resolve_target(&self, target: &[wire::ElementIdWire]) -> Option<AuthoredPath> {
+        if target.is_empty() {
+            return None;
+        }
+        let mut found = None;
+        walk_authored_paths(&self.root, &mut Vec::new(), &mut |_, path| {
+            if found.is_none() && path.ends_with(target) {
+                found = Some(path.clone());
+            }
+        });
+        found
+    }
+
     pub(super) fn target_focused(
         &self,
         target: &[wire::ElementIdWire],
         window: &Window,
         cx: &App,
     ) -> bool {
-        if !self.mounted.contains(target) {
+        let Some(target) = self.resolve_target(target) else {
             return false;
-        }
+        };
+        let target = target.as_slice();
         if let Some((_, handle)) = self.focus_targets.get(target) {
             return handle.is_focused(window);
         }
@@ -196,9 +221,10 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> Result<Vec<u8>, String> {
         use wire::WidgetCommand as C;
-        if !self.mounted.contains(target) {
+        let Some(target) = self.resolve_target(target) else {
             return Ok(wire::encode(&()));
-        }
+        };
+        let target = target.as_slice();
         if matches!(command, C::Focus { .. }) {
             let mut kind = None;
             walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
@@ -260,9 +286,10 @@ impl ViewTree {
         request: ScrollRequest,
         cx: &mut Context<Self>,
     ) -> Result<Vec<u8>, String> {
-        if !self.mounted.contains(target) {
+        let Some(target) = self.resolve_target(target) else {
             return Ok(wire::encode(&()));
-        }
+        };
+        let target = target.as_slice();
         if let Some(list) = self.lists.get(target) {
             let maximum = list.state.max_offset_for_scrollbar().y;
             let offset = list.state.scroll_px_offset_for_scrollbar().y;
