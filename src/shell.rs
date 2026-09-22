@@ -454,9 +454,11 @@ impl Render for DesktopWindow {
                 match (
                     !state.phrase.is_empty(),
                     state.signer_key.is_empty() && !state.browsing,
+                    state.restoring,
                 ) {
-                    (true, _) => self.phrase(&state, cx),
-                    (_, true) => self.unlock(&state, window, cx),
+                    (true, _, _) => self.phrase(&state, cx),
+                    (_, true, true) => self.restore(&state, window, cx),
+                    (_, true, false) => self.unlock(&state, window, cx),
                     _ => self.console(window, cx),
                 }
             }

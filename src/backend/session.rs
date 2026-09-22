@@ -136,6 +136,48 @@ pub(crate) fn create_wallet(network: &str, name: &str, password: &str) -> Result
     Ok(phrase)
 }
 
+/// Whether this device already holds a signing key for `network` — the
+/// question the sign-in screen answers before offering Unlock or Create.
+pub(crate) fn key_exists(network: &str) -> bool {
+    let Ok(path) = session_key_path(network) else {
+        return false;
+    };
+    !matches!(
+        keystore::userkey::key_file_state(&path),
+        keystore::userkey::KeyFileState::Absent
+    )
+}
+
+/// Restores a wallet from its 24-word phrase for `network`, under
+/// `password`, and makes it the active key. Never overwrites a key that is
+/// already active: if this device already has one, the phrase lands under a
+/// fresh wallet name instead, and THAT becomes active.
+pub(crate) fn restore_wallet(network: &str, mnemonic: &str, password: &str) -> Result<(), String> {
+    let root = keystore_root(network)?;
+    let had_one = keystore::wallet::active_name(&root).is_some();
+    let name = match had_one {
+        false => "default".to_string(),
+        true => restore_wallet_name(&root),
+    };
+    keystore::wallet::import(&root, &name, mnemonic, password)?;
+    if had_one {
+        keystore::wallet::activate(&root, &name)?;
+    }
+    Ok(())
+}
+
+/// The first unused `restored`, `restored-2`, … name in `root` — so a
+/// restore next to an existing key never collides with it.
+fn restore_wallet_name(root: &std::path::Path) -> String {
+    (1..)
+        .map(|n| match n {
+            1 => "restored".to_string(),
+            n => format!("restored-{n}"),
+        })
+        .find(|name| !keystore::wallet::key_file(root, name).exists())
+        .expect("an unbounded search finds an unused name")
+}
+
 // ---------- preferences ----------
 
 fn prefs_path() -> Option<PathBuf> {
@@ -205,25 +247,70 @@ pub(crate) fn endpoint_origin(url: &str) -> Option<String> {
     origin.then(|| url.as_str().trim_end_matches('/').to_string())
 }
 
-/// Node URLs this device connected to, most recent first.
-pub(crate) fn recent_endpoints() -> Vec<String> {
+/// A node URL this device connected to, and the network name it reported —
+/// empty for an entry saved before the app kept names.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RecentEndpoint {
+    pub(crate) url: String,
+    pub(crate) network: String,
+}
+
+/// Node URLs this device connected to, most recent first. Reads either
+/// shape a prefs file may hold: a bare string (what this list held before
+/// it kept names) or `{"url", "network"}`.
+pub(crate) fn recent_endpoints() -> Vec<RecentEndpoint> {
     read_prefs()["endpoints"]
         .as_array()
-        .map(|list| {
-            list.iter()
-                .filter_map(|value| value.as_str().map(str::to_owned))
-                .collect()
-        })
+        .map(|list| list.iter().filter_map(endpoint_of_json).collect())
         .unwrap_or_default()
 }
 
-pub(crate) fn note_endpoint(endpoint: &str) {
+fn endpoint_of_json(value: &serde_json::Value) -> Option<RecentEndpoint> {
+    if let Some(url) = value.as_str() {
+        return Some(RecentEndpoint {
+            url: url.to_owned(),
+            network: String::new(),
+        });
+    }
+    Some(RecentEndpoint {
+        url: value.get("url")?.as_str()?.to_owned(),
+        network: value["network"].as_str().unwrap_or_default().to_owned(),
+    })
+}
+
+/// Moves `endpoint` to the front, tagged with the network it just reported.
+pub(crate) fn note_endpoint(endpoint: &str, network: &str) {
     let mut recent = recent_endpoints();
-    recent.retain(|known| known != endpoint);
-    recent.insert(0, endpoint.to_owned());
+    note(&mut recent, endpoint, network);
+    write_endpoints(&recent);
+}
+
+fn note(recent: &mut Vec<RecentEndpoint>, endpoint: &str, network: &str) {
+    recent.retain(|known| known.url != endpoint);
+    recent.insert(
+        0,
+        RecentEndpoint {
+            url: endpoint.to_owned(),
+            network: network.to_owned(),
+        },
+    );
     recent.truncate(8);
+}
+
+/// Drops `endpoint` from the recent list — the row's Forget button.
+pub(crate) fn forget_endpoint(endpoint: &str) {
+    let mut recent = recent_endpoints();
+    recent.retain(|known| known.url != endpoint);
+    write_endpoints(&recent);
+}
+
+fn write_endpoints(recent: &[RecentEndpoint]) {
     let mut prefs = read_prefs();
-    prefs["endpoints"] = serde_json::json!(recent);
+    let entries: Vec<serde_json::Value> = recent
+        .iter()
+        .map(|entry| serde_json::json!({"url": entry.url, "network": entry.network}))
+        .collect();
+    prefs["endpoints"] = serde_json::Value::Array(entries);
     write_prefs(&prefs);
 }
 
@@ -240,6 +327,46 @@ mod tests {
         assert_eq!(endpoint_origin("http://a:b@host"), None);
         assert_eq!(endpoint_origin("http://host/v1"), None);
         assert_eq!(endpoint_origin("ftp://host"), None);
+    }
+
+    #[test]
+    fn recent_endpoints_read_both_the_old_bare_list_and_the_named_shape() {
+        let old = serde_json::json!(["http://a", "http://b"]);
+        let parsed: Vec<_> = old
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(endpoint_of_json)
+            .collect();
+        assert_eq!(
+            parsed.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
+            ["http://a", "http://b"]
+        );
+        assert!(parsed.iter().all(|e| e.network.is_empty()));
+
+        let named = serde_json::json!([{"url": "http://a", "network": "testkit"}]);
+        let parsed: Vec<_> = named
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(endpoint_of_json)
+            .collect();
+        assert_eq!(parsed[0].network, "testkit");
+    }
+
+    #[test]
+    fn noting_an_endpoint_moves_it_to_the_front_and_dedupes() {
+        let mut recent = vec![RecentEndpoint {
+            url: "http://a".into(),
+            network: "x".into(),
+        }];
+        note(&mut recent, "http://b", "testkit");
+        note(&mut recent, "http://a", "renamed");
+        assert_eq!(
+            recent.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
+            ["http://a", "http://b"]
+        );
+        assert_eq!(recent[0].network, "renamed");
     }
 
     #[tokio::test]

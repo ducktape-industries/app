@@ -32,13 +32,29 @@ pub(crate) fn refused(error: noded::Error) -> view_wire::Refusal {
 pub(crate) fn user_error(message: String) -> String {
     let password_refused = message.contains("corrupt or wrong password");
     if password_refused {
-        return "That password did not open this device's key. Check it and try again.".into();
+        return "Wrong password.".into();
     }
     let node_slow = message.contains("timed out");
     if node_slow {
         return "The node did not answer in time. Retry in a moment.".into();
     }
+    // A keystore refusal that names a CLI command (`run `ducktape wallet
+    // new <name>``) is a hint for a terminal, not a sentence for a screen —
+    // catch every shape of it here, once, rather than in each caller.
+    if message.contains("`ducktape ") {
+        return "This device's key needs attention — try Restore or New key.".into();
+    }
     message
+}
+
+/// A sentence for a connection attempt that never reached `origin`: the
+/// raw transport error (a reqwest string, e.g. "error sending request for
+/// url (...)") never reaches the screen.
+pub(crate) fn connect_error(origin: &str, message: String) -> String {
+    if message.contains("error sending request") {
+        return format!("Can't reach {origin}. Check the address, or that the node is running.");
+    }
+    user_error(message)
 }
 
 /// One id, unique on this device, for a record a view mints.
@@ -98,6 +114,30 @@ pub(crate) fn command_held(modifiers: gpui_kit::Modifiers) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_transport_failure_names_the_node_not_the_raw_error() {
+        let sentence = connect_error(
+            "http://127.0.0.1:33835",
+            "error sending request for url (http://127.0.0.1:33835/v1/status)".into(),
+        );
+        assert_eq!(
+            sentence,
+            "Can't reach http://127.0.0.1:33835. Check the address, or that the node is running."
+        );
+    }
+
+    #[test]
+    fn user_error_never_lets_a_cli_command_through() {
+        assert_eq!(
+            user_error("no wallet — run `ducktape wallet new <name>` first".into()),
+            "This device's key needs attention — try Restore or New key."
+        );
+        assert_eq!(
+            user_error("corrupt or wrong password".into()),
+            "Wrong password."
+        );
+    }
 
     #[test]
     fn sequences_climb_and_hex_round_trips() {

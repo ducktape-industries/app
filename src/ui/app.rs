@@ -29,7 +29,7 @@ pub struct Ducktape {
     /// The node URL being typed.
     pub(crate) endpoint: String,
     pub(crate) endpoint_error: String,
-    pub(crate) recent_endpoints: Vec<String>,
+    pub(crate) recent_endpoints: Vec<backend::RecentEndpoint>,
     /// The node reached: its origin and the network it serves.
     pub(crate) connected_rpc: String,
     pub(crate) network: String,
@@ -41,10 +41,20 @@ pub struct Ducktape {
     /// The seated key's public half, hex; empty while locked.
     pub(crate) signer_key: String,
     pub(crate) password: String,
+    pub(crate) confirm_password: String,
     pub(crate) unlock_error: String,
     pub(crate) unlock_busy: bool,
+    /// Whether this device already holds a key for `network` — Unlock vs
+    /// Create on the sign-in screen.
+    pub(crate) key_exists: bool,
     /// Reading without a key: the console opens, writes are refused.
     pub(crate) browsing: bool,
+    /// On the sign-in screen: restoring a key from its recovery phrase
+    /// instead of unlocking or minting one.
+    pub(crate) restoring: bool,
+    pub(crate) restore_phrase: String,
+    pub(crate) restore_password: String,
+    pub(crate) restore_confirm_password: String,
     /// A freshly minted key's recovery phrase, shown once until written down.
     pub(crate) phrase: String,
     /// The program whose view is open.
@@ -92,6 +102,7 @@ pub(crate) enum AppMessage {
     ViewEvent(&'static str, ModuleViewEvent),
     OpenLink(String),
     PasswordTyped(String),
+    ConfirmPasswordTyped(String),
     UnlockSubmit,
     CreateWalletSubmit,
     Unlocked(String),
@@ -103,6 +114,14 @@ pub(crate) enum AppMessage {
     UnlockFailed(String),
     BrowseWithoutKey,
     SignIn,
+    ShowRestore,
+    RestoreCancel,
+    RestorePhraseTyped(String),
+    RestorePasswordTyped(String),
+    RestoreConfirmPasswordTyped(String),
+    RestoreSubmit,
+    Restored(String),
+    ForgetEndpoint(String),
     Lock,
     ShowToast(String),
     DismissToast,
@@ -125,7 +144,7 @@ impl Ducktape {
         let recent = backend::recent_endpoints();
         let endpoint = recent
             .first()
-            .cloned()
+            .map(|entry| entry.url.clone())
             .unwrap_or_else(|| backend::DEFAULT_ENDPOINT.to_owned());
         let state = Ducktape {
             appearance: backend::load_appearance(),
@@ -143,9 +162,15 @@ impl Ducktape {
             error: String::new(),
             signer_key: String::new(),
             password: String::new(),
+            confirm_password: String::new(),
             unlock_error: String::new(),
             unlock_busy: false,
+            key_exists: false,
             browsing: false,
+            restoring: false,
+            restore_phrase: String::new(),
+            restore_password: String::new(),
+            restore_confirm_password: String::new(),
             phrase: String::new(),
             active: None,
             badges: BTreeMap::new(),
