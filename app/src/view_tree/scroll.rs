@@ -252,7 +252,11 @@ impl ViewTree {
             background,
             border,
         )
-        .id(path.last().unwrap().to_gpui().expect("sanitized scroll identity"))
+        .id(path
+            .last()
+            .unwrap()
+            .to_gpui()
+            .expect("sanitized scroll identity"))
         .child(native)
         .child(retain_estimates)
         .child(self.measure(path, cx))
@@ -309,7 +313,11 @@ impl ViewTree {
             *background,
             *border,
         )
-        .id(path.last().unwrap().to_gpui().expect("sanitized scroll identity"))
+        .id(path
+            .last()
+            .unwrap()
+            .to_gpui()
+            .expect("sanitized scroll identity"))
         .track_scroll(&handle);
         let element = match direction {
             wire::ScrollDirection::Vertical => element.overflow_y_scroll(),

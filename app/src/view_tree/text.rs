@@ -64,7 +64,10 @@ impl Element for RichParagraph {
                 Some(state) => state.unwrap_or_else(|| {
                     let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
                     let refresh = handle.refresh_window_on_change(window, cx);
-                    RichSelection { handle, _refresh: refresh }
+                    RichSelection {
+                        handle,
+                        _refresh: refresh,
+                    }
                 }),
                 None => {
                     *active.borrow_mut() = Some(self.fallback.handle.clone());
@@ -201,12 +204,17 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let native_id = id.as_ref().map(|id| id.to_gpui().expect("sanitized portable element ID"));
+        let native_id = id
+            .as_ref()
+            .map(|id| id.to_gpui().expect("sanitized portable element ID"));
         let shared: SharedString = text.clone().into();
         let mut styled = StyledText::new(shared.clone());
         styled = match runs {
             wire::RichTextRuns::Highlights(highlights) => styled.with_highlights(
-                highlights.iter().cloned().map(|(range, style)| (range, style.into())),
+                highlights
+                    .iter()
+                    .cloned()
+                    .map(|(range, style)| (range, style.into())),
             ),
             wire::RichTextRuns::Runs(runs) => {
                 styled.with_runs(runs.iter().cloned().map(Into::into).collect())
@@ -219,14 +227,18 @@ impl ViewTree {
         if let Some(handler) = on_click {
             let handler = *handler;
             let view = cx.entity().downgrade();
-            interactive = interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
-                if !gpui_kit::base::TextSelection::has_selection(window, cx) {
-                    let _ = view.update(cx, |this, cx| {
-                        this.user_activation.set(Some(handler));
-                        cx.emit(wire::Event::Select { handler, index: index as u32 });
-                    });
-                }
-            });
+            interactive =
+                interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
+                    if !gpui_kit::base::TextSelection::has_selection(window, cx) {
+                        let _ = view.update(cx, |this, cx| {
+                            this.user_activation.set(Some(handler));
+                            cx.emit(wire::Event::Select {
+                                handler,
+                                index: index as u32,
+                            });
+                        });
+                    }
+                });
         }
         if let Some(handler) = on_hover {
             let handler = *handler;
@@ -268,7 +280,10 @@ impl ViewTree {
             content: content.into_any_element(),
             text: shared,
             layout,
-            fallback: RichSelection { handle, _refresh: refresh },
+            fallback: RichSelection {
+                handle,
+                _refresh: refresh,
+            },
             active_handle: Default::default(),
             selection: selection_range,
         }

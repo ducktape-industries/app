@@ -102,7 +102,8 @@ impl ViewTree {
                     .and_then(|list| list.rows.get(&index))
                     .cloned();
                 if let Some(row) = row {
-                    let parent = std::mem::replace(&mut this.authored_path, render_key.path.clone());
+                    let parent =
+                        std::mem::replace(&mut this.authored_path, render_key.path.clone());
                     let element = this.node(&row, window, cx);
                     this.authored_path = parent;
                     return element;

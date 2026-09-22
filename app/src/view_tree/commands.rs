@@ -208,11 +208,7 @@ impl ViewTree {
         if matches!(command, C::Focus { .. }) {
             let mut kind = None;
             walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
-                if path == target && matches!(
-                        node,
-                        wire::Node::Container { .. }
-                    )
-                {
+                if path == target && matches!(node, wire::Node::Container { .. }) {
                     kind = Some(std::mem::discriminant(node));
                 }
             });
@@ -313,9 +309,7 @@ impl ViewTree {
         let mut anchors = (wire::ScrollAnchor::Start, wire::ScrollAnchor::Start);
         walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
             let wire::Node::Scroll {
-                anchor_x,
-                anchor_y,
-                ..
+                anchor_x, anchor_y, ..
             } = node
             else {
                 return;
@@ -377,11 +371,29 @@ impl ViewTree {
                 focusable.insert(path.clone(), std::mem::discriminant(node));
             }
             match node {
-                wire::Node::Container { interactivity, .. } => {
-                    if let Some(id) = interactivity.focus_handle { guest_focus_ids.insert(id); }
+                wire::Node::Container { interactivity, .. }
+                | wire::Node::Image { interactivity, .. }
+                | wire::Node::Svg { interactivity, .. } => {
+                    if let Some(id) = interactivity.focus_handle {
+                        guest_focus_ids.insert(id);
+                    }
                 }
-                wire::Node::UniformList { path, .. } => { uniform_lists.insert(path.clone()); }
-                wire::Node::List { path, state, .. } => { variable_lists.insert(VariableListKey { path: path.clone(), state: *state }); }
+                wire::Node::UniformList {
+                    path,
+                    interactivity,
+                    ..
+                } => {
+                    if let Some(id) = interactivity.focus_handle {
+                        guest_focus_ids.insert(id);
+                    }
+                    uniform_lists.insert(path.clone());
+                }
+                wire::Node::List { path, state, .. } => {
+                    variable_lists.insert(VariableListKey {
+                        path: path.clone(),
+                        state: *state,
+                    });
+                }
                 wire::Node::Input { .. } => {
                     inputs.insert(path.clone());
                 }
@@ -391,11 +403,11 @@ impl ViewTree {
                 wire::Node::PickList { .. } | wire::Node::ComboBox { .. } => {
                     pickers.insert(path.clone());
                 }
-                wire::Node::ResizeHandle { .. } => { drags.insert(path.clone()); }
+                wire::Node::ResizeHandle { .. } => {
+                    drags.insert(path.clone());
+                }
                 wire::Node::Overlay {
-                    label,
-                    children,
-                    ..
+                    label, children, ..
                 } if named_overlay(label, children) => {
                     dialogs.insert(path.clone());
                 }
@@ -426,36 +438,36 @@ impl ViewTree {
                 wire::Node::Slider { .. }
                 | wire::Node::Surface { .. }
                 | wire::Node::Editor { .. }
-                | wire::Node::ImageViewer { .. } => { retained.insert(path.clone()); }
+                | wire::Node::ImageViewer { .. } => {
+                    retained.insert(path.clone());
+                }
                 _ => {}
             }
         });
-        root.for_each_mut(&mut |node| {
-            match node {
-                wire::Node::Image {
-                    hash,
-                    data: Some(data),
-                    ..
-                } => {
+        root.for_each_mut(&mut |node| match node {
+            wire::Node::Image {
+                hash,
+                data: Some(data),
+                ..
+            } => {
+                self.remember_image(*hash, data);
+            }
+            wire::Node::ImageViewer { hash, data, .. } => {
+                if let Some(data) = data {
                     self.remember_image(*hash, data);
                 }
-                wire::Node::ImageViewer { hash, data, .. } => {
-                    if let Some(data) = data {
-                        self.remember_image(*hash, data);
-                    }
-                }
-                wire::Node::Svg {
-                    source:
-                        wire::SvgSource::Data {
-                            hash,
-                            bytes: Some(bytes),
-                        },
-                    ..
-                } => {
-                    self.remember_vector(*hash, bytes);
-                }
-                _ => {}
             }
+            wire::Node::Svg {
+                source:
+                    wire::SvgSource::Data {
+                        hash,
+                        bytes: Some(bytes),
+                    },
+                ..
+            } => {
+                self.remember_vector(*hash, bytes);
+            }
+            _ => {}
         });
         self.bounds.retain(|key, _| mounted.contains(key));
         self.focus_targets
@@ -512,9 +524,7 @@ impl ViewTree {
             handle.focus(window, cx);
         }
         match self.focus_targets.get(&path) {
-            Some((_, handle)) => element
-                .track_focus(handle)
-                .into_any_element(),
+            Some((_, handle)) => element.track_focus(handle).into_any_element(),
             None => element.into_any_element(),
         }
     }

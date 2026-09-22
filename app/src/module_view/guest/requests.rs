@@ -136,9 +136,7 @@ impl Guest {
     /// The key a command acts on, or `None` for the two that act on focus
     /// order rather than a node. Exhaustive by design: adding a command
     /// requires reviewing its scope.
-    pub(crate) fn command_target(
-        command: &wire::WidgetCommand,
-    ) -> Option<&[wire::ElementIdWire]> {
+    pub(crate) fn command_target(command: &wire::WidgetCommand) -> Option<&[wire::ElementIdWire]> {
         use wire::WidgetCommand as C;
         match command {
             C::FocusPrevious | C::FocusNext | C::FocusHandle { .. } => None,
@@ -178,7 +176,10 @@ impl Guest {
                 _ => false,
             };
             let found = entered && path == target
-                || node.children().iter().any(|child| contains(child, path, target));
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| contains(child, path, target));
             if entered {
                 path.pop();
             }
@@ -239,7 +240,10 @@ impl Guest {
                 _ => false,
             };
             let found = matches!(node, wire::Node::Editor { options, .. } if path == target && options.rich.is_some())
-                || node.children().iter().any(|child| rich(child, path, target));
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| rich(child, path, target));
             if entered {
                 path.pop();
             }

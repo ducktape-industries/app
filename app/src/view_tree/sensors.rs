@@ -241,13 +241,15 @@ impl ViewTree {
         // must not collapse inside an auto-sized measurement wrapper.
         let (width, height) = content_dimensions(child);
         dimensions(
-            div().id(id.to_gpui().expect("sanitized sensor identity")).relative(),
+            div()
+                .id(id.to_gpui().expect("sanitized sensor identity"))
+                .relative(),
             width,
             height,
         )
-            .child(self.node(child, window, cx))
-            .child(measure)
-            .into_any_element()
+        .child(self.node(child, window, cx))
+        .child(measure)
+        .into_any_element()
     }
 
     pub(super) fn mouse_area(
@@ -282,7 +284,9 @@ impl ViewTree {
         let (width, height) = content_dimensions(content);
         let path = self.authored_path.clone();
         let mut element = dimensions(
-            div().id(id.to_gpui().expect("sanitized mouse-area identity")).relative(),
+            div()
+                .id(id.to_gpui().expect("sanitized mouse-area identity"))
+                .relative(),
             width,
             height,
         );

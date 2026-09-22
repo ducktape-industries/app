@@ -1,19 +1,18 @@
 use super::ViewTree;
 use gpui_kit::{
-    AppContext as _, Context, Div, FocusHandle, InteractiveElement as _, KeyDownEvent, KeyUpEvent,
+    AppContext as _, Context, FocusHandle, InteractiveElement as _, KeyDownEvent, KeyUpEvent,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
-    MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent, Stateful,
-    StatefulInteractiveElement as _,
+    MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent, StatefulInteractiveElement,
 };
 use std::time::Duration;
 use view_wire as wire;
 
-pub(super) fn apply(
-    mut element: Stateful<Div>,
+pub(super) fn apply<E: StatefulInteractiveElement>(
+    mut element: E,
     interactivity: &wire::Interactivity,
     focus_handle: Option<FocusHandle>,
     cx: &mut Context<ViewTree>,
-) -> Stateful<Div> {
+) -> E {
     if let Some(value) = interactivity.tab_stop {
         element = element.tab_stop(value);
     }
@@ -70,11 +69,11 @@ pub(super) fn apply(
     element
 }
 
-fn apply_mouse(
-    mut element: Stateful<Div>,
+fn apply_mouse<E: StatefulInteractiveElement>(
+    mut element: E,
     interactivity: &wire::Interactivity,
     cx: &mut Context<ViewTree>,
-) -> Stateful<Div> {
+) -> E {
     if let Some(handler) = interactivity.on_mouse_down {
         element =
             element.on_any_mouse_down(cx.listener(move |_, event: &MouseDownEvent, _, cx| {
@@ -211,11 +210,11 @@ fn apply_mouse(
     element
 }
 
-fn apply_keyboard(
-    mut element: Stateful<Div>,
+fn apply_keyboard<E: StatefulInteractiveElement>(
+    mut element: E,
     interactivity: &wire::Interactivity,
     cx: &mut Context<ViewTree>,
-) -> Stateful<Div> {
+) -> E {
     if let Some(handler) = interactivity.on_key_down {
         element = element.on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
             cx.emit(wire::Event::KeyDown {
@@ -265,11 +264,11 @@ fn apply_keyboard(
     element
 }
 
-fn apply_misc(
-    mut element: Stateful<Div>,
+fn apply_misc<E: StatefulInteractiveElement>(
+    mut element: E,
     interactivity: &wire::Interactivity,
     cx: &mut Context<ViewTree>,
-) -> Stateful<Div> {
+) -> E {
     let tooltip_request = interactivity
         .tooltip
         .as_ref()

@@ -160,7 +160,11 @@ impl ViewTree {
                 .child(self.measure(&self.authored_path, cx))
                 .into_any_element();
         }
-        let bounds = self.bounds.get(&self.authored_path).copied().unwrap_or_default();
+        let bounds = self
+            .bounds
+            .get(&self.authored_path)
+            .copied()
+            .unwrap_or_default();
         let width = f32::from(bounds.size.width).max(1.);
         let height = f32::from(bounds.size.height).max(1.);
         root.child(guarded_svg_paint(
@@ -431,10 +435,14 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_hover(group.group.clone(), move |_| style);
         }
-        let Some(id) = id else {
-            return element.into_any_element();
-        };
-        let mut element = element.id(id.to_gpui().expect("sanitized portable primitive ID"));
+        let native_id = id
+            .map(|id| id.to_gpui().expect("sanitized portable primitive ID"))
+            .unwrap_or_else(|| {
+                let index = self.render_index;
+                self.render_index += 1;
+                ElementId::NamedInteger("guest-primitive".into(), index)
+            });
+        let mut element = element.id(native_id);
         if let Some(style) = &interactivity.active {
             let style = style.clone();
             element = element.active(move |_| style);
@@ -515,6 +523,13 @@ impl ViewTree {
         if let Some(value) = interactivity.aria.orientation {
             element = element.aria_orientation(value);
         }
+        let focus_handle = interactivity.focus_handle.map(|id| {
+            self.guest_focus_targets
+                .entry(id)
+                .or_insert_with(|| cx.focus_handle())
+                .clone()
+        });
+        element = super::interactivity::apply(element, interactivity, focus_handle, cx);
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {

@@ -176,7 +176,8 @@ impl ViewTree {
                         })
                         .unwrap_or_default();
                     let parent = std::mem::replace(&mut tree.authored_path, list_path.clone());
-                    let elements = rows.into_iter()
+                    let elements = rows
+                        .into_iter()
                         .map(|row| {
                             row.map(|row| tree.node(&row, window, cx))
                                 .unwrap_or_else(|| {
@@ -238,6 +239,13 @@ impl ViewTree {
         if interactivity.focusable {
             list = list.focusable();
         }
+        let focus_handle = interactivity.focus_handle.map(|id| {
+            self.guest_focus_targets
+                .entry(id)
+                .or_insert_with(|| cx.focus_handle())
+                .clone()
+        });
+        list = super::interactivity::apply(list, interactivity, focus_handle, cx);
         if let Some(handler) = interactivity.on_click {
             list = list.on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {

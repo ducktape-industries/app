@@ -440,8 +440,9 @@ impl ViewTree {
         if !self.editors.contains_key(&path) {
             let events = store.clone();
             let (view, subscription) = {
-                let view = cx
-                    .new(|cx| crate::editor::wire::TextEditor::new(path.clone(), store, window, cx));
+                let view = cx.new(|cx| {
+                    crate::editor::wire::TextEditor::new(path.clone(), store, window, cx)
+                });
                 let subscription =
                     cx.subscribe(&view, move |_, _, _: &(), cx| drain_editor(&events, cx));
                 (EditorView::Text(view), subscription)
@@ -462,7 +463,9 @@ impl ViewTree {
             editor.view.restore_focus(&path, window, cx);
         }
         let view = editor.view.element();
-        let mut element = div().relative().id(id.to_gpui().expect("sanitized editor identity"));
+        let mut element = div()
+            .relative()
+            .id(id.to_gpui().expect("sanitized editor identity"));
         *element.style() = style.clone();
         element
             .child(view)
@@ -556,7 +559,7 @@ impl ViewTree {
             *width,
             *height,
         )
-            .child(slider)
-            .into_any_element()
+        .child(slider)
+        .into_any_element()
     }
 }

@@ -2,11 +2,11 @@
 //! decision, and an accepted edit waits for the guest's observed revision.
 //! Transfer assemblers and patch validation are the wire contract's own code.
 
+use crate::view_tree::AuthoredPath;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 use view_wire as wire;
-use crate::view_tree::AuthoredPath;
 use wire::editor_document::{
     EditorDocumentMessage as DocumentMessage, EditorDocumentRef, EditorTransferId,
     EditorTransferReceiver, EditorTransferSender, MAX_EDITOR_LIVE_BYTES,
@@ -305,32 +305,32 @@ fn collect(node: &wire::Node, fields: &mut HashMap<AuthoredPath, Field>) -> Resu
             }
             _ => false,
         };
-    if let wire::Node::Editor {
-        document,
-        on_document,
-        options,
-        placeholder,
-        editable,
-        ..
-    } = node
-    {
-        let duplicate = fields
-            .insert(
-                path.clone(),
-                Field {
-                    reference: document.clone(),
-                    handler: *on_document,
-                    options: (**options).clone(),
-                    placeholder: placeholder.clone(),
-                    editable: *editable,
-                },
-            )
-            .is_some();
-        if duplicate {
-            return Err("duplicate editor projection key".into());
+        if let wire::Node::Editor {
+            document,
+            on_document,
+            options,
+            placeholder,
+            editable,
+            ..
+        } = node
+        {
+            let duplicate = fields
+                .insert(
+                    path.clone(),
+                    Field {
+                        reference: document.clone(),
+                        handler: *on_document,
+                        options: (**options).clone(),
+                        placeholder: placeholder.clone(),
+                        editable: *editable,
+                    },
+                )
+                .is_some();
+            if duplicate {
+                return Err("duplicate editor projection key".into());
+            }
         }
-    }
-    for child in node.children() {
+        for child in node.children() {
             walk(child, path, fields)?;
         }
         if entered {

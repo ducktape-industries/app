@@ -21,14 +21,13 @@ use gpui_kit::component::{
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, BoxShadow, Context, CursorStyle, Div, Element,
     ElementId, Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable as _,
-    FollowMode, FontWeight, GlobalElementId, HitboxBehavior, Hsla, Image,
-    ImageFormat, InspectorElementId, InteractiveElement as _, IntoElement, KeyDownEvent, LayoutId,
-    ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
-    ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
-    InteractiveText, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
-    Transformation, Window, canvas, div, fill, img, point, px, radians, relative,
-    rgb, size, svg,
+    FollowMode, FontWeight, GlobalElementId, HitboxBehavior, Hsla, Image, ImageFormat,
+    InspectorElementId, InteractiveElement as _, InteractiveText, IntoElement, KeyDownEvent,
+    LayoutId, ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent,
+    MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta,
+    ScrollHandle, ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
+    Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout, Transformation, Window,
+    canvas, div, fill, img, point, px, radians, relative, rgb, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -68,7 +67,6 @@ use pickers::Picker;
 use picture_resources::decode_image;
 use pictures::{ViewerState, qr};
 use scroll::{ScrollRequest, VirtualScroll};
-use variable_list::{VariableList, VariableListKey};
 use sensors::SensorState;
 use style::{
     button_style, content_dimensions, cross_align, decoration, dimensions, has_named_overlay,
@@ -76,6 +74,7 @@ use style::{
 };
 use svg_limits::{guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
+use variable_list::{VariableList, VariableListKey};
 
 pub(crate) type AuthoredPath = Vec<wire::ElementIdWire>;
 
@@ -293,7 +292,14 @@ impl Render for ViewTree {
             .min_w_0()
             .min_h_0()
             .overflow_hidden()
-            .child(canvas(move |_, window, _| slot_mask.set(window.content_mask()), |_, _, _, _| {}).absolute().size_0())
+            .child(
+                canvas(
+                    move |_, window, _| slot_mask.set(window.content_mask()),
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .size_0(),
+            )
             .child(node)
     }
 }

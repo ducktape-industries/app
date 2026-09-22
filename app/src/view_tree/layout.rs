@@ -46,31 +46,81 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_active(group.group.clone(), move |_| style);
         }
-        if let Some(role) = interactivity.role { element = element.role(role); }
-        if interactivity.focusable { element = element.focusable(); }
-        if let Some(value) = &interactivity.aria.author_id { element = element.accessibility_id(value.clone()); }
-        if let Some(value) = &interactivity.aria.label { element = element.aria_label(value.clone()); }
-        if let Some(value) = &interactivity.aria.description { element = element.aria_description(value.clone()); }
-        if let Some(value) = &interactivity.aria.keyshortcuts { element = element.aria_keyshortcuts(value.clone()); }
-        if let Some(value) = &interactivity.aria.value { element = element.aria_value(value.clone()); }
-        if let Some(value) = &interactivity.aria.placeholder { element = element.aria_placeholder(value.clone()); }
-        if let Some(value) = interactivity.aria.selected { element = element.aria_selected(value); }
-        if let Some(value) = interactivity.aria.expanded { element = element.aria_expanded(value); }
-        if let Some(value) = interactivity.aria.disabled { element = element.aria_disabled(value); }
-        if let Some(value) = interactivity.aria.numeric_value { element = element.aria_numeric_value(value); }
-        if let Some(value) = interactivity.aria.numeric_value_step { element = element.aria_numeric_value_step(value); }
-        if let Some(value) = interactivity.aria.min_numeric_value { element = element.aria_min_numeric_value(value); }
-        if let Some(value) = interactivity.aria.max_numeric_value { element = element.aria_max_numeric_value(value); }
-        if let Some(value) = interactivity.aria.level { element = element.aria_level(value); }
-        if let Some(value) = interactivity.aria.position_in_set { element = element.aria_position_in_set(value); }
-        if let Some(value) = interactivity.aria.size_of_set { element = element.aria_size_of_set(value); }
-        if let Some(value) = interactivity.aria.row_index { element = element.aria_row_index(value); }
-        if let Some(value) = interactivity.aria.column_index { element = element.aria_column_index(value); }
-        if let Some(value) = interactivity.aria.row_count { element = element.aria_row_count(value); }
-        if let Some(value) = interactivity.aria.column_count { element = element.aria_column_count(value); }
-        if let Some(value) = interactivity.aria.toggled { element = element.aria_toggled(value); }
-        if let Some(value) = interactivity.aria.orientation { element = element.aria_orientation(value); }
-        if interactivity.aria.active_descendant { element = element.aria_active_descendant(); }
+        if let Some(role) = interactivity.role {
+            element = element.role(role);
+        }
+        if interactivity.focusable {
+            element = element.focusable();
+        }
+        if let Some(value) = &interactivity.aria.author_id {
+            element = element.accessibility_id(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.label {
+            element = element.aria_label(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.description {
+            element = element.aria_description(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.keyshortcuts {
+            element = element.aria_keyshortcuts(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.value {
+            element = element.aria_value(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.placeholder {
+            element = element.aria_placeholder(value.clone());
+        }
+        if let Some(value) = interactivity.aria.selected {
+            element = element.aria_selected(value);
+        }
+        if let Some(value) = interactivity.aria.expanded {
+            element = element.aria_expanded(value);
+        }
+        if let Some(value) = interactivity.aria.disabled {
+            element = element.aria_disabled(value);
+        }
+        if let Some(value) = interactivity.aria.numeric_value {
+            element = element.aria_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.numeric_value_step {
+            element = element.aria_numeric_value_step(value);
+        }
+        if let Some(value) = interactivity.aria.min_numeric_value {
+            element = element.aria_min_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.max_numeric_value {
+            element = element.aria_max_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.level {
+            element = element.aria_level(value);
+        }
+        if let Some(value) = interactivity.aria.position_in_set {
+            element = element.aria_position_in_set(value);
+        }
+        if let Some(value) = interactivity.aria.size_of_set {
+            element = element.aria_size_of_set(value);
+        }
+        if let Some(value) = interactivity.aria.row_index {
+            element = element.aria_row_index(value);
+        }
+        if let Some(value) = interactivity.aria.column_index {
+            element = element.aria_column_index(value);
+        }
+        if let Some(value) = interactivity.aria.row_count {
+            element = element.aria_row_count(value);
+        }
+        if let Some(value) = interactivity.aria.column_count {
+            element = element.aria_column_count(value);
+        }
+        if let Some(value) = interactivity.aria.toggled {
+            element = element.aria_toggled(value);
+        }
+        if let Some(value) = interactivity.aria.orientation {
+            element = element.aria_orientation(value);
+        }
+        if interactivity.aria.active_descendant {
+            element = element.aria_active_descendant();
+        }
         let focus_handle = interactivity.focus_handle.as_ref().map(|id| {
             self.guest_focus_targets
                 .entry(id.clone())
@@ -79,11 +129,15 @@ impl ViewTree {
         });
         element = super::interactivity::apply(element, interactivity, focus_handle, cx);
         if let Some(handler) = interactivity.on_click {
-            element = element
-                .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+            element = element.on_click(cx.listener(
+                move |this, event: &gpui_kit::ClickEvent, _, cx| {
                     this.user_activation.set(Some(handler));
-                    cx.emit(wire::Event::Click { handler, event: event.into() });
-                }));
+                    cx.emit(wire::Event::Click {
+                        handler,
+                        event: event.into(),
+                    });
+                },
+            ));
         }
         if !self.authored_path.is_empty() {
             let path = self.authored_path.clone();
@@ -123,8 +177,7 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Responsive { content, .. } = node
-        else {
+        let wire::Node::Responsive { content, .. } = node else {
             unreachable!()
         };
         let weak = cx.entity().downgrade();

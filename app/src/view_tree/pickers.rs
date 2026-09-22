@@ -223,7 +223,10 @@ impl ViewTree {
             select = select.menu_max_h(px(height));
         }
         dimensions(
-            div().relative().child(select).child(self.measure(&path, cx)),
+            div()
+                .relative()
+                .child(select)
+                .child(self.measure(&path, cx)),
             width,
             None,
         )

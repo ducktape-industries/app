@@ -403,7 +403,10 @@ impl Render for TextEditor {
             .as_ref()
             .map(|projection| projection.options.clone())
             .unwrap_or_default();
-        let padding = options.presentation.as_ref().and_then(|value| value.padding);
+        let padding = options
+            .presentation
+            .as_ref()
+            .and_then(|value| value.padding);
         let accessible = crate::view_tree::Accessible {
             value: Some(self.input.read(cx).value().to_string()),
             ..self.accessible.clone()
@@ -661,7 +664,12 @@ fn an_empty_field_wears_the_guests_placeholder_and_takes_what_is_typed(
         input.read(cx).focus_handle(cx).focus(window, cx);
         window.render_frame(cx);
     });
-    store.lock().fields.get_mut(&editor_path()).unwrap().placeholder = "새 문서".into();
+    store
+        .lock()
+        .fields
+        .get_mut(&editor_path())
+        .unwrap()
+        .placeholder = "새 문서".into();
     native.update(|window, cx| {
         editor.update(cx, |editor, cx| editor.sync(window, cx));
         window.render_frame(cx);
@@ -829,7 +837,12 @@ fn a_readonly_field_reports_no_edit(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let store = store_with("readonly", "Read only 한글", Vec::new(), "");
-    store.lock().fields.get_mut(&editor_path()).unwrap().editable = false;
+    store
+        .lock()
+        .fields
+        .get_mut(&editor_path())
+        .unwrap()
+        .editable = false;
     let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
         TextEditor::new(editor_path(), store.clone(), window, cx)
     });
