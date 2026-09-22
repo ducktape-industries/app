@@ -39,7 +39,7 @@ pub(super) fn apply(
         element = element.focus_visible(move |_| style);
     }
     if let Some(context) = &interactivity.key_context {
-        element = element.key_context(context.as_ref());
+        element = element.key_context(context.to_gpui());
     }
     if interactivity.occlude {
         element = element.occlude();
@@ -85,32 +85,33 @@ fn apply_mouse(
     cx: &mut Context<ViewTree>,
 ) -> Stateful<Div> {
     if let Some(handler) = interactivity.on_mouse_down {
-        element = element.on_any_mouse_down(cx.listener(move |_, event: &MouseDownEvent, _, cx| {
-            cx.emit(wire::Event::MouseDown {
-                handler,
-                phase: wire::DispatchPhase::Bubble,
-                event: event.into(),
-            });
-        }));
+        element =
+            element.on_any_mouse_down(cx.listener(move |_, event: &MouseDownEvent, _, cx| {
+                cx.emit(wire::Event::MouseDown {
+                    handler,
+                    phase: wire::DispatchPhase::Bubble,
+                    event: event.into(),
+                });
+            }));
     }
     if let Some(handler) = interactivity.capture_mouse_down {
-        element = element.capture_any_mouse_down(cx.listener(
-            move |_, event: &MouseDownEvent, _, cx| {
+        element =
+            element.capture_any_mouse_down(cx.listener(move |_, event: &MouseDownEvent, _, cx| {
                 cx.emit(wire::Event::MouseDown {
                     handler,
                     phase: wire::DispatchPhase::Capture,
                     event: event.into(),
                 });
-            },
-        ));
+            }));
     }
     if let Some(handler) = interactivity.on_mouse_down_out {
-        element = element.on_mouse_down_out(cx.listener(move |_, event: &MouseDownEvent, _, cx| {
-            cx.emit(wire::Event::MouseDownOut {
-                handler,
-                event: event.into(),
-            });
-        }));
+        element =
+            element.on_mouse_down_out(cx.listener(move |_, event: &MouseDownEvent, _, cx| {
+                cx.emit(wire::Event::MouseDownOut {
+                    handler,
+                    event: event.into(),
+                });
+            }));
     }
     if let Some(handler) = interactivity.on_mouse_up {
         for button in MouseButton::all() {
@@ -127,13 +128,14 @@ fn apply_mouse(
         }
     }
     if let Some(handler) = interactivity.capture_mouse_up {
-        element = element.capture_any_mouse_up(cx.listener(move |_, event: &MouseUpEvent, _, cx| {
-            cx.emit(wire::Event::MouseUp {
-                handler,
-                phase: wire::DispatchPhase::Capture,
-                event: event.into(),
-            });
-        }));
+        element =
+            element.capture_any_mouse_up(cx.listener(move |_, event: &MouseUpEvent, _, cx| {
+                cx.emit(wire::Event::MouseUp {
+                    handler,
+                    phase: wire::DispatchPhase::Capture,
+                    event: event.into(),
+                });
+            }));
     }
     if let Some(handler) = interactivity.on_mouse_up_out {
         for button in MouseButton::all() {
@@ -149,15 +151,14 @@ fn apply_mouse(
         }
     }
     if let Some(handler) = interactivity.on_mouse_pressure {
-        element = element.on_mouse_pressure(cx.listener(
-            move |_, event: &MousePressureEvent, _, cx| {
+        element =
+            element.on_mouse_pressure(cx.listener(move |_, event: &MousePressureEvent, _, cx| {
                 cx.emit(wire::Event::MousePressure {
                     handler,
                     phase: wire::DispatchPhase::Bubble,
                     event: event.into(),
                 });
-            },
-        ));
+            }));
     }
     if let Some(handler) = interactivity.capture_mouse_pressure {
         element = element.capture_mouse_pressure(cx.listener(
@@ -189,15 +190,14 @@ fn apply_mouse(
         }));
     }
     if let Some(handler) = interactivity.on_scroll_wheel {
-        element = element.on_scroll_wheel(cx.listener(
-            move |_, event: &ScrollWheelEvent, _, cx| {
+        element =
+            element.on_scroll_wheel(cx.listener(move |_, event: &ScrollWheelEvent, _, cx| {
                 cx.emit(wire::Event::ScrollWheel {
                     handler,
                     phase: wire::DispatchPhase::Bubble,
                     event: event.into(),
                 });
-            },
-        ));
+            }));
     }
     if let Some(handler) = interactivity.on_pinch {
         element = element.on_pinch(cx.listener(move |_, event: &PinchEvent, _, cx| {
@@ -279,7 +279,10 @@ fn apply_misc(
     interactivity: &wire::Interactivity,
     cx: &mut Context<ViewTree>,
 ) -> Stateful<Div> {
-    let tooltip_request = interactivity.tooltip.as_ref().map(|tooltip| tooltip.request);
+    let tooltip_request = interactivity
+        .tooltip
+        .as_ref()
+        .map(|tooltip| tooltip.request);
     if interactivity.on_hover.is_some() || tooltip_request.is_some() {
         let handler = interactivity.on_hover;
         element = element.on_hover(cx.listener(move |_, hovered, _, cx| {
