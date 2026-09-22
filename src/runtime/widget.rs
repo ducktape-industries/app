@@ -457,8 +457,8 @@ impl NativeModuleView {
     ) -> gpui_kit::AnyElement {
         use gpui_kit::component::button::Button;
         use gpui_kit::{
-            FontWeight, InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _,
-            div, px, relative,
+            FontWeight, InteractiveElement as _, IntoElement as _, ParentElement as _, Role,
+            StatefulInteractiveElement as _, Styled as _, div, px, relative,
         };
         let Standin {
             title,
@@ -474,15 +474,22 @@ impl NativeModuleView {
             true => ("view-loading", "view-loading-stage"),
             false => ("view-unavailable", "view-unavailable-reason"),
         };
+        // a failure is announced like any other alert (screens.rs's
+        // connect-error, sign_in.rs's unlock-error): a name, not just a
+        // role, or the door's compact filter drops it
+        let alert_label = match &title {
+            Some(title) => format!("{title}: {words}"),
+            None => words.clone(),
+        };
         // the whole sentence, wrapped inside the pane: one line wider than
         // the pane is centred off both edges, and a reader loses its start
         // and its end — what failed, and what to do about it
-        let reason = div()
-            .id(id)
-            .max_w_full()
-            .flex()
-            .flex_col()
-            .gap_2()
+        let reason = div().id(id).max_w_full().flex().flex_col().gap_2();
+        let reason = match loading {
+            true => reason,
+            false => reason.role(Role::Alert).aria_label(alert_label),
+        };
+        let reason = reason
             .children(title.map(|title| {
                 div()
                     .font_weight(FontWeight::MEDIUM)

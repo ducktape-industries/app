@@ -68,7 +68,11 @@ impl DesktopWindow {
     /// A native text field; Enter dispatches `on_enter`, every change
     /// dispatches `on_change` with the text. Its accessible name is
     /// `label`, or `placeholder` when a field's hint text already reads as
-    /// one (a value-shaped placeholder like an example URL does not).
+    /// one (a value-shaped placeholder like an example URL does not). Its
+    /// accessible value is the field's current text — unless `secret`,
+    /// which keeps that text out of the AX tree the way a masked field's
+    /// `PasswordInput` role already does, for a field (the recovery
+    /// phrase) that is sensitive without being visually masked.
     #[allow(clippy::too_many_arguments, reason = "one call site per field")]
     pub(super) fn input(
         &mut self,
@@ -79,6 +83,7 @@ impl DesktopWindow {
         on_change: fn(String) -> Message,
         on_enter: fn() -> Message,
         label: Option<&'static str>,
+        secret: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
@@ -133,6 +138,10 @@ impl DesktopWindow {
             input.role(gpui_kit::component::RoleOverride::Presentational),
         )
         .aria_label(label.unwrap_or(placeholder));
+        let field = match secret {
+            true => field,
+            false => field.aria_value(state.read(cx).value().to_string()),
+        };
         match masked {
             true => field.role(gpui_kit::Role::PasswordInput),
             false => field.role(gpui_kit::Role::TextInput),
@@ -218,6 +227,7 @@ impl DesktopWindow {
             Message::EndpointTyped,
             || Message::ConnectSubmit,
             Some("Node address"),
+            false,
             window,
             cx,
         );
@@ -323,6 +333,7 @@ impl DesktopWindow {
                         div()
                             .id("connect-error")
                             .role(Role::Alert)
+                            .aria_label(note.clone())
                             .text_size(px(12.5))
                             .text_color(hsla_of(design::palette(state.dark).danger))
                             .child(note)

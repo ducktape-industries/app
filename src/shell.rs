@@ -32,6 +32,9 @@ mod panes;
 #[path = "shell/panes_tests.rs"]
 mod panes_tests;
 mod screens;
+#[cfg(test)]
+#[path = "shell/screens_tests.rs"]
+mod screens_tests;
 mod windows;
 
 pub(crate) use launch::run;
