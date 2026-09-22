@@ -11,6 +11,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use super::super::wire::doors;
 use super::{
     CHUNK_MS, Guest, Indicator, Items, Listen, MICROPHONES, Media, Opened, Out, PLAYOUT_MS,
     Playout, QUEUED_CHUNKS, Speak, device_failed, spawn_device, wire,
@@ -35,12 +36,13 @@ pub(super) async fn listen(
         }
     };
     let _indicator = Indicator::held(&MICROPHONES);
-    let first = serde_json::to_vec(&opened).expect("the opened audio mode");
+    let first = doors::encode(&doors::AudioItem::Opened(opened));
     if !items.send(Ok(first)).await {
         return;
     }
     while let Some(chunk) = chunks.samples.recv().await {
-        if !items.send(Ok(chunk)).await {
+        let item = doors::encode(&doors::AudioItem::Samples(chunk));
+        if !items.send(Ok(item)).await {
             return;
         }
     }
@@ -223,7 +225,7 @@ fn readable(format: cpal::SampleFormat) -> bool {
 // ---------- audio playout ----------
 
 pub(super) fn play(guest: &mut Guest, id: u64, payload: &[u8]) {
-    let want = match serde_json::from_slice::<Speak>(payload) {
+    let want = match doors::decode::<Speak>(payload) {
         Ok(want) if (8_000..=192_000).contains(&want.rate) && (1..=8).contains(&want.channels) => {
             want
         }
@@ -236,7 +238,7 @@ pub(super) fn play(guest: &mut Guest, id: u64, payload: &[u8]) {
             return;
         }
         Err(error) => {
-            guest.refuse(id, "malformed_request", error.to_string());
+            guest.refuse(id, "malformed_request", error);
             return;
         }
     };
@@ -270,10 +272,7 @@ pub(super) fn play(guest: &mut Guest, id: u64, payload: &[u8]) {
             .await
             .map_err(|_| device_failed("the output thread ended"))?
             .map_err(device_failed)?;
-        serde_json::to_vec(&serde_json::json!({
-            "handle": "out", "rate": opened.rate, "channels": opened.channels
-        }))
-        .map_err(device_failed)
+        Ok(doors::encode(&opened))
     });
 }
 
@@ -296,6 +295,8 @@ pub(super) fn written(media: &Media, payload: &[u8]) -> Result<(), wire::Refusal
             "`audio.write` before `audio.play`",
         ));
     };
+    let payload: Vec<u8> =
+        doors::decode(payload).map_err(|error| wire::Refusal::new("malformed_request", error))?;
     if !payload.len().is_multiple_of(2) {
         return Err(wire::Refusal::new(
             "malformed_request",
@@ -455,15 +456,18 @@ mod tests {
     /// refusal nobody can act on.
     #[test]
     fn a_playout_mode_is_bounded_before_a_device_is_touched() {
-        let playable = |body: &str| {
-            serde_json::from_str::<Speak>(body).is_ok_and(|want| {
+        let playable = |body: &[u8]| {
+            doors::decode::<Speak>(body).is_ok_and(|want| {
                 (8_000..=192_000).contains(&want.rate) && (1..=8).contains(&want.channels)
             })
         };
-        assert!(playable(r#"{"rate":48000,"channels":2}"#));
-        assert!(!playable(r#"{"rate":0,"channels":1}"#));
-        assert!(!playable(r#"{"rate":48000,"channels":0}"#));
-        assert!(!playable(r#"{"rate":48000,"channels":2,"gain":3}"#));
+        let mode = |rate, channels| doors::encode(&Speak { rate, channels });
+        assert!(playable(&mode(48_000, 2)));
+        assert!(!playable(&mode(0, 1)));
+        assert!(!playable(&mode(48_000, 0)));
+        let mut loose = mode(48_000, 2);
+        loose.push(3);
+        assert!(!playable(&loose));
     }
 
     /// A write past half a second of unplayed audio is REFUSED, and says so
@@ -472,7 +476,8 @@ mod tests {
     #[test]
     fn writing_past_the_playout_ceiling_is_refused_not_queued() {
         let mut media = Media::default();
-        assert_eq!(written(&media, &[0; 4]).unwrap_err().reason, "not_open");
+        let samples = |count: usize| doors::encode(&vec![0u8; count]);
+        assert_eq!(written(&media, &samples(4)).unwrap_err().reason, "not_open");
         let (stop, _stopped) = std::sync::mpsc::channel();
         let playout = Arc::new(Mutex::new(Playout {
             samples: VecDeque::new(),
@@ -485,14 +490,17 @@ mod tests {
         });
         assert_eq!(ceiling(48_000, 1), 24_000);
         assert_eq!(
-            written(&media, &[0; 3]).unwrap_err().reason,
+            written(&media, &samples(3)).unwrap_err().reason,
             "malformed_request"
         );
-        written(&media, &vec![0; 24_000 * 2]).expect("half a second fits");
+        written(&media, &samples(24_000 * 2)).expect("half a second fits");
         assert_eq!(playout.lock().unwrap().samples.len(), 24_000);
-        assert_eq!(written(&media, &[0; 2]).unwrap_err().reason, "backpressure");
+        assert_eq!(
+            written(&media, &samples(2)).unwrap_err().reason,
+            "backpressure"
+        );
         playout.lock().unwrap().open = false;
-        assert_eq!(written(&media, &[0; 2]).unwrap_err().reason, "not_open");
+        assert_eq!(written(&media, &samples(2)).unwrap_err().reason, "not_open");
     }
 
     /// Written samples reach the device in the order and the values they
@@ -513,7 +521,7 @@ mod tests {
         });
         let samples: [i16; 3] = [-32768, 0, 32767];
         let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-        written(&media, &bytes).expect("three samples fit");
+        written(&media, &doors::encode(&bytes)).expect("three samples fit");
         let mut data = [1i16; 4];
         drain(&playout, &mut data, |sample| sample);
         assert_eq!(data, [-32768, 0, 32767, 0], "and silence past the end");

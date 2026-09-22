@@ -16,6 +16,7 @@
 //! forget.
 
 use super::kernel::spawn_device;
+use super::wire::doors::{self, Notice};
 use super::{Guest, wire};
 use crate::backend::read_prefs;
 
@@ -32,33 +33,24 @@ fn enabled() -> bool {
     read_prefs()[NOTIFY_PREF].as_bool().unwrap_or(true)
 }
 
-/// One notice, already worded. `tag` groups a notice with the ones before
-/// it: a later notice under the same tag REPLACES the standing one rather
-/// than stacking, which is the only reason the host keeps any state here.
-#[derive(Clone, Debug, Default, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
-pub(super) struct Notice {
-    title: String,
-    body: String,
-    tag: String,
-}
-
-impl Notice {
-    fn shortened(mut self) -> Result<Self, &'static str> {
-        if self.title.is_empty() && self.body.is_empty() {
-            return Err("`notify.show` carries neither a title nor a body");
-        }
-        for text in [&mut self.title, &mut self.body, &mut self.tag] {
-            if text.len() > MAX_TEXT {
-                let cut = (0..=MAX_TEXT)
-                    .rev()
-                    .find(|end| text.is_char_boundary(*end))
-                    .unwrap_or(0);
-                text.truncate(cut);
-            }
-        }
-        Ok(self)
+/// A notice, already worded (`doors::Notice`): a later notice under the
+/// same non-empty `tag` REPLACES the standing one rather than stacking,
+/// which is the only reason the host keeps any state here. Shortened to
+/// what a screen shows, on a character boundary.
+fn shortened(mut notice: Notice) -> Result<Notice, &'static str> {
+    if notice.title.is_empty() && notice.body.is_empty() {
+        return Err("`notify.show` carries neither a title nor a body");
     }
+    for text in [&mut notice.title, &mut notice.body, &mut notice.tag] {
+        if text.len() > MAX_TEXT {
+            let cut = (0..=MAX_TEXT)
+                .rev()
+                .find(|end| text.is_char_boundary(*end))
+                .unwrap_or(0);
+            text.truncate(cut);
+        }
+    }
+    Ok(notice)
 }
 
 pub(super) fn answer(
@@ -70,9 +62,8 @@ pub(super) fn answer(
 ) -> bool {
     match (capability, operation) {
         ("notify", "show") => {
-            let notice = serde_json::from_slice::<Notice>(payload)
-                .map_err(|error| error.to_string())
-                .and_then(|notice| notice.shortened().map_err(str::to_owned));
+            let notice = doors::decode::<Notice>(payload)
+                .and_then(|notice| shortened(notice).map_err(str::to_owned));
             let notice = match notice {
                 Ok(notice) => notice,
                 Err(error) => {
@@ -87,7 +78,7 @@ pub(super) fn answer(
                         .await
                         .map_err(|error| wire::Refusal::new("host_fault", error.to_string()))?,
                 };
-                Ok(format!("{{\"shown\":{shown}}}").into_bytes())
+                Ok(doors::encode(&shown))
             });
         }
         _ => return false,
@@ -277,21 +268,26 @@ mod tests {
     use super::*;
 
     /// The door takes a title, a body and an optional tag, and nothing else:
-    /// a field this door does not have is refused rather than ignored, and a
-    /// notice with no words at all is not a notice.
+    /// bytes past the notice are refused rather than ignored, and a notice
+    /// with no words at all is not a notice.
     #[test]
     fn a_notice_is_two_strings_and_an_optional_tag() {
-        let notice: Notice = serde_json::from_str(r#"{"title":"a","body":"b","tag":"t"}"#).unwrap();
-        assert_eq!((notice.title.as_str(), notice.tag.as_str()), ("a", "t"));
-        let untagged: Notice = serde_json::from_str(r#"{"title":"a","body":"b"}"#).unwrap();
-        assert!(untagged.tag.is_empty());
-        assert!(serde_json::from_str::<Notice>(r#"{"title":"a","icon":"x"}"#).is_err());
-        assert!(Notice::default().shortened().is_err());
+        let notice = Notice {
+            title: "a".into(),
+            body: "b".into(),
+            tag: "t".into(),
+        };
+        let mut bytes = doors::encode(&notice);
+        assert_eq!(doors::decode::<Notice>(&bytes).unwrap(), notice);
+        bytes.extend_from_slice(b"icon");
+        assert!(doors::decode::<Notice>(&bytes).is_err());
+        assert!(shortened(Notice::default()).is_err());
         assert!(
-            serde_json::from_str::<Notice>(r#"{"body":"b"}"#)
-                .unwrap()
-                .shortened()
-                .is_ok()
+            shortened(Notice {
+                body: "b".into(),
+                ..Notice::default()
+            })
+            .is_ok()
         );
     }
 
@@ -299,12 +295,11 @@ mod tests {
     /// lands on a character boundary rather than splitting one.
     #[test]
     fn a_notice_is_shortened_onto_a_character_boundary() {
-        let long = Notice {
+        let long = shortened(Notice {
             title: "가".repeat(MAX_TEXT),
             body: "b".repeat(MAX_TEXT * 2),
             tag: String::new(),
-        }
-        .shortened()
+        })
         .unwrap();
         assert!(long.title.len() <= MAX_TEXT);
         assert!(long.title.chars().all(|letter| letter == '가'));

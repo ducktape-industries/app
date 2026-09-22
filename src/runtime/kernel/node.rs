@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
-type Call = fn(Node, serde_json::Value) -> Answered;
+type Call = fn(Node, Vec<u8>) -> Answered;
 
 /// The node a view's request goes to, and the network its frames name.
 #[derive(Clone)]
@@ -49,17 +49,7 @@ pub(super) fn spawn_once(guest: &mut Guest, id: u64, payload: &[u8], call: Call)
 }
 
 fn spawn_call(guest: &mut Guest, id: u64, payload: &[u8], call: Call, retry: bool) {
-    let ask: serde_json::Value = match serde_json::from_slice(payload) {
-        Ok(ask) => ask,
-        Err(error) => {
-            guest.refuse(
-                id,
-                "malformed_request",
-                format!("request is not JSON: {error}"),
-            );
-            return;
-        }
-    };
+    let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
     };
@@ -185,7 +175,7 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
 
 /// `rpc.live <program>`: one item per block that wrote to the program.
 pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
-    let program = std::str::from_utf8(payload)
+    let program = doors::decode::<String>(payload)
         .unwrap_or_default()
         .trim()
         .to_owned();
@@ -221,7 +211,7 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
             };
             while let Some(change) = changes.next().await {
                 let item = match change {
-                    Ok(change) => Ok(format!("{{\"height\":{}}}", change.height).into_bytes()),
+                    Ok(change) => Ok(doors::encode(&Some(change.height))),
                     Err(_) => break,
                 };
                 if !replies.subscription_item(&mut drained, id, item).await {
@@ -230,7 +220,10 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
             }
             // the socket closed: the node restarted or the link dropped. Say
             // so once (the view re-reads) and open it again.
-            if !replies.subscription_item(&mut drained, id, Ok(b"{}".to_vec())).await {
+            if !replies
+                .subscription_item(&mut drained, id, Ok(doors::encode(&None::<u64>)))
+                .await
+            {
                 return;
             }
             tokio::time::sleep(backend::retry_delay(1)).await;
@@ -249,24 +242,29 @@ impl Drop for NodeTask {
     }
 }
 
-fn target_of(ask: &serde_json::Value) -> Result<String, wire::Refusal> {
-    let target = ask["target"].as_str().unwrap_or_default().trim();
+/// The envelope of a node door, its target checked: a program name, not a
+/// path.
+fn call_of(ask: &[u8]) -> Result<doors::Call, wire::Refusal> {
+    let call: doors::Call = doors::decode(ask).map_err(malformed)?;
+    let target = call.target.trim();
     let named = !target.is_empty()
         && target.len() <= 64
         && target
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
     match named {
-        true => Ok(target.to_owned()),
+        true => Ok(doors::Call {
+            target: target.to_owned(),
+            body: call.body,
+        }),
         false => Err(malformed("request names no target")),
     }
 }
 
-pub(super) fn query(node: Node, ask: serde_json::Value) -> Answered {
+pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let target = target_of(&ask)?;
-        let payload = serde_json::to_vec(&ask["query"]).map_err(malformed)?;
-        let frame = backend::query_frame(&node.network, &target, payload).await;
+        let call = call_of(&ask)?;
+        let frame = backend::query_frame(&node.network, &call.target, call.body).await;
         node.client
             .query(backend::Layer::Preconfirmed, frame)
             .await
@@ -274,41 +272,10 @@ pub(super) fn query(node: Node, ask: serde_json::Value) -> Answered {
     })
 }
 
-pub(super) fn query_bytes(node: Node, ask: serde_json::Value) -> Answered {
+pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let target = target_of(&ask)?;
-        let payload = binary_body(&ask)?;
-        let frame = backend::query_frame(&node.network, &target, payload).await;
-        node.client
-            .query(backend::Layer::Preconfirmed, frame)
-            .await
-            .map_err(refused)
-    })
-}
-
-fn binary_body(ask: &serde_json::Value) -> Answer {
-    let encoded = ask["body_b64"]
-        .as_str()
-        .ok_or_else(|| malformed("body_b64 must be a string"))?;
-    use base64::Engine as _;
-    base64::engine::general_purpose::STANDARD
-        .decode(encoded)
-        .map_err(|_| malformed("invalid operation base64"))
-}
-
-pub(super) fn submit(node: Node, ask: serde_json::Value) -> Answered {
-    Box::pin(async move {
-        let target = target_of(&ask)?;
-        let payload = serde_json::to_vec(&ask["payload"]).map_err(malformed)?;
-        submitted(node, target, payload).await
-    })
-}
-
-pub(super) fn submit_bytes(node: Node, ask: serde_json::Value) -> Answered {
-    Box::pin(async move {
-        let target = target_of(&ask)?;
-        let payload = binary_body(&ask)?;
-        submitted(node, target, payload).await
+        let call = call_of(&ask)?;
+        submitted(node, call.target, call.body).await
     })
 }
 
@@ -324,9 +291,9 @@ async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
     }
 }
 
-pub(super) fn blob_get(node: Node, ask: serde_json::Value) -> Answered {
+pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let id = ask["id"].as_str().unwrap_or_default();
+        let id: String = doors::decode(&ask).map_err(malformed)?;
         let (kind, hex) = id
             .split_once(':')
             .ok_or_else(|| malformed("id is `sha256:<hex>` or `sha1:<hex>`"))?;
@@ -354,34 +321,50 @@ pub(super) fn blob_get(node: Node, ask: serde_json::Value) -> Answered {
     })
 }
 
-pub(super) fn status(node: Node, ask: serde_json::Value) -> Answered {
+pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        if !ask.is_null() {
-            return Err(malformed("rpc.status takes null"));
+        if !ask.is_empty() {
+            return Err(malformed("rpc.status takes no payload"));
         }
-        node.client
-            .status()
-            .await
-            .map(|status| abi::encode(&status))
-            .map_err(refused)
+        let status = node.client.status().await.map_err(refused)?;
+        Ok(doors::encode(&doors::NodeStatus {
+            network: status.network,
+            time: status.time,
+            block_time_ms: status.block_time_ms,
+            epoch_length: status.epoch_length,
+            height: status.height,
+            tip: status.tip,
+            root: status.root.0,
+            epoch: status.epoch,
+            identity: status.identity,
+            contract: status.contract,
+        }))
     })
 }
 
-pub(super) fn invite(node: Node, ask: serde_json::Value) -> Answered {
+pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let ttl = ask["ttl_days"]
-            .as_u64()
-            .filter(|ttl| *ttl > 0)
-            .ok_or_else(|| malformed("ttl_days must be a positive integer"))?;
+        let ttl = doors::decode::<doors::Mint>(&ask)
+            .map_err(malformed)?
+            .ttl_days;
+        if ttl == 0 {
+            return Err(malformed("ttl_days must be a positive integer"));
+        }
         let refusal =
             |error: ducktape_rpc::Error| wire::Refusal::new(error.reason(), error.message());
         let client = ducktape_rpc::Client::new(node.client.endpoint()).map_err(refusal)?;
         let minted = client.mint_invite(ttl).await.map_err(refusal)?;
-        let notes: Vec<(String, String)> = minted
+        let notes = minted
             .notes
             .into_iter()
-            .map(|note| (note.reason, note.sentence))
+            .map(|note| doors::Note {
+                reason: note.reason,
+                sentence: note.sentence,
+            })
             .collect();
-        Ok(abi::encode(&(minted.invite, notes)))
+        Ok(doors::encode(&doors::Minted {
+            invite: minted.invite,
+            notes,
+        }))
     })
 }

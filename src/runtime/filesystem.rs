@@ -33,12 +33,7 @@ fn spawn(
     );
 }
 
-#[derive(serde::Serialize)]
-struct FileInfo {
-    token: String,
-    name: String,
-    bytes: u64,
-}
+use super::wire::doors::{self, SelectedFile as FileInfo};
 
 enum Content {
     Disk(Mutex<File>),
@@ -148,14 +143,6 @@ fn read_chunk(file: &Content, offset: u64, len: usize) -> Result<Vec<u8>, String
     }
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ReadRequest {
-    token: String,
-    offset: u64,
-    len: usize,
-}
-
 impl Filesystem {
     pub(super) fn cancel(&mut self, id: u64) {
         self.pending.retain(|(pending, _)| *pending != id);
@@ -181,40 +168,37 @@ pub(super) fn answer(
         ("fs", "pick") => device(guest, id, DeviceRequest::Pick),
         ("clipboard", "read") => device(guest, id, DeviceRequest::ClipboardRead),
         ("clipboard", "write") => {
-            let text = match String::from_utf8(payload.to_vec()) {
+            let text = match doors::decode::<String>(payload) {
                 Ok(text) => text,
-                Err(_) => {
-                    guest.refuse(id, "malformed_request", "clipboard text is not UTF-8");
+                Err(error) => {
+                    guest.refuse(id, "malformed_request", error);
                     return true;
                 }
             };
             device(guest, id, DeviceRequest::ClipboardWrite(text));
         }
         ("fs", "read") => {
-            let request = serde_json::from_slice::<ReadRequest>(payload)
-                .map_err(|error| error.to_string())
-                .and_then(|request| {
-                    let file = content(&guest.filesystem.state, &request.token)?;
-                    if request.len == 0 || request.len > MAX_CHUNK {
-                        return Err("file read exceeds chunk bounds".into());
-                    }
-                    Ok((file, request))
-                });
+            let request = doors::decode::<doors::ReadRequest>(payload).and_then(|request| {
+                let file = content(&guest.filesystem.state, &request.token)?;
+                let len = usize::try_from(request.len).unwrap_or(usize::MAX);
+                if len == 0 || len > MAX_CHUNK {
+                    return Err("file read exceeds chunk bounds".into());
+                }
+                Ok((file, request.offset, len))
+            });
             match request {
-                Ok((file, request)) => spawn(guest, id, async move {
-                    tokio::task::spawn_blocking(move || {
-                        read_chunk(&file, request.offset, request.len)
-                    })
-                    .await
-                    .map_err(|error| error.to_string())?
+                Ok((file, offset, len)) => spawn(guest, id, async move {
+                    tokio::task::spawn_blocking(move || read_chunk(&file, offset, len))
+                        .await
+                        .map_err(|error| error.to_string())?
                 }),
                 Err(error) => guest.refuse(id, "malformed_request", error),
             }
         }
         ("fs", "release") => {
-            let token = std::str::from_utf8(payload).unwrap_or_default();
+            let token = doors::decode::<String>(payload).unwrap_or_default();
             if let State::Active { files, .. } = &mut *guest.filesystem.state.lock().unwrap() {
-                files.remove(token);
+                files.remove(&token);
             }
             guest.reply(id, Ok(Vec::new()));
         }
@@ -237,7 +221,7 @@ pub(super) fn observe_drop(guest: &mut Guest, event: &super::wire::Event) -> boo
         return false;
     };
     let result = grant_path(&guest.filesystem.state, PathBuf::from(path))
-        .and_then(|file| serde_json::to_vec(&vec![file]).map_err(|error| error.to_string()))
+        .map(|file| doors::encode(&vec![file]))
         .map_err(device_failed);
     guest.pending.push(super::wire::Event::Response {
         id,
@@ -276,7 +260,7 @@ pub(super) fn mount(guest: &mut Guest, cx: &mut Context<NativeModuleView>) {
                         .into_iter()
                         .map(|path| grant_path(&state, path))
                         .collect::<Result<Vec<_>, _>>()?;
-                    serde_json::to_vec(&files).map_err(|error| error.to_string())
+                    Ok(doors::encode(&files))
                 });
             }
             DeviceRequest::ClipboardRead => {
@@ -318,8 +302,7 @@ pub(super) fn mount(guest: &mut Guest, cx: &mut Context<NativeModuleView>) {
                 }
                 let result = match failure {
                     Some(error) => Err(error),
-                    None => serde_json::to_vec(&serde_json::json!({"text":text,"files":files}))
-                        .map_err(|error| error.to_string()),
+                    None => Ok(doors::encode(&doors::Clipboard { text, files })),
                 };
                 guest.reply(id, result.map_err(device_failed));
             }
@@ -394,13 +377,16 @@ mod tests {
         assert_ne!(old.token, new.token);
         assert!(content(&next.state, &old.token).is_err());
     }
+    /// A read names a grant token and nothing else; extra bytes after the
+    /// request are not a path this door would open.
     #[test]
     fn read_requests_cannot_substitute_paths_for_grants() {
-        assert!(
-            serde_json::from_str::<ReadRequest>(
-                r#"{"token":"1","offset":0,"len":1,"path":"/etc/passwd"}"#
-            )
-            .is_err()
-        );
+        let mut request = doors::encode(&doors::ReadRequest {
+            token: "1".into(),
+            offset: 0,
+            len: 1,
+        });
+        request.extend_from_slice(b"/etc/passwd");
+        assert!(doors::decode::<doors::ReadRequest>(&request).is_err());
     }
 }
