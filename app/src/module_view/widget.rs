@@ -21,6 +21,9 @@ pub(crate) struct NativeModuleView {
     pub(super) observers: Vec<gpui_kit::Subscription>,
     pub(super) hovered_files: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
     pub(super) pointer_inside: std::rc::Rc<std::cell::Cell<bool>>,
+    /// The hitbox whose press took the pointer; GPUI numbers hitboxes per
+    /// frame, so the presenter re-arms the capture on each one it paints.
+    pub(super) pointer_held: std::rc::Rc<std::cell::Cell<Option<gpui_kit::HitboxId>>>,
     /// Drawn since the props were last set: a layer mounted this frame.
     pub(super) drawn: bool,
 }
@@ -119,6 +122,7 @@ impl NativeModuleView {
             observers: Vec::new(),
             hovered_files: Default::default(),
             pointer_inside: Default::default(),
+            pointer_held: Default::default(),
             drawn: false,
         }
     }
@@ -565,12 +569,10 @@ impl gpui_kit::Render for NativeModuleView {
                         .id(self.ax_mark())
                         .key_context(context)
                         .size_full()
-                        .child(guest)
-                        .child(input::Observe::new(
-                            gpui_kit::div().absolute().inset_0().into_any_element(),
-                            self,
-                            cx,
-                        ))
+                        // Observe wraps the guest: its hitbox sits under the
+                        // guest's controls, a sibling after them would block
+                        // their clicks.
+                        .child(input::Observe::new(guest, self, cx))
                         .into_any_element()
                 }
                 None => gpui_kit::div().size_full().into_any_element(),

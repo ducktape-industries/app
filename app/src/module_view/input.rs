@@ -3,7 +3,8 @@
 use super::*;
 use gpui_kit::{
     self as gpui, AnyElement, App, Bounds, Context, DispatchPhase, Element, ElementId,
-    GlobalElementId, InspectorElementId, IntoElement, LayoutId, Pixels, WeakEntity, Window,
+    GlobalElementId, Hitbox, HitboxBehavior, HitboxId, InspectorElementId, IntoElement, LayoutId,
+    Pixels, Point, Style, WeakEntity, Window,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -122,12 +123,23 @@ impl Route {
     }
 }
 
+/// The guest under the pointer, or the one whose drag holds it. The hitbox
+/// blocks the mouse, so GPUI's hit test stops at the topmost layer: a guest
+/// under another one is never hovered, as if each were its own window.
+fn owns(hitbox: &Hitbox, position: Point<Pixels>, window: &Window) -> bool {
+    match window.captured_hitbox() {
+        Some(captured) => captured == hitbox.id,
+        None => hitbox.is_hovered_at(position, window),
+    }
+}
+
 /// A transparent element puts listeners outside the child's dispatch subtree.
 pub(super) struct Observe {
     content: AnyElement,
     route: Route,
     files: Rc<RefCell<Vec<String>>>,
     pointer_inside: Rc<Cell<bool>>,
+    pointer_held: Rc<Cell<Option<HitboxId>>>,
 }
 impl Observe {
     pub(super) fn new(
@@ -146,6 +158,7 @@ impl Observe {
             },
             files: view.hovered_files.clone(),
             pointer_inside: view.pointer_inside.clone(),
+            pointer_held: view.pointer_held.clone(),
         }
     }
 }
@@ -157,7 +170,7 @@ impl IntoElement for Observe {
 }
 impl Element for Observe {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = Hitbox;
     fn id(&self) -> Option<ElementId> {
         None
     }
@@ -171,18 +184,33 @@ impl Element for Observe {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        (self.content.request_layout(window, cx), ())
+        // The layer's whole rectangle is the guest's, not just its content's box.
+        let content = self.content.request_layout(window, cx);
+        let style = Style {
+            size: gpui::Size::full(),
+            ..Style::default()
+        };
+        (window.request_layout(style, [content], cx), ())
     }
     fn prepaint(
         &mut self,
         _: Option<&GlobalElementId>,
         _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Hitbox {
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::BlockMouse);
+        if window
+            .captured_hitbox()
+            .is_some_and(|held| self.pointer_held.get() == Some(held))
+        {
+            window.capture_pointer(hitbox.id);
+            self.pointer_held.set(Some(hitbox.id));
+        }
         self.content.prepaint(window, cx);
+        hitbox
     }
     fn paint(
         &mut self,
@@ -190,51 +218,78 @@ impl Element for Observe {
         _: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        hitbox: &mut Hitbox,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let hitbox = hitbox.clone();
         let pointer_inside = self.pointer_inside.clone();
+        let inside = hitbox.clone();
         listen_mouse(
             window,
             self.route.clone(),
-            move |_: &gpui::MouseMoveEvent| {
-                (!pointer_inside.replace(true)).then_some(wire::mouse::Event::CursorEntered)
+            move |event: &gpui::MouseMoveEvent, window| {
+                let now = inside.is_hovered_at(event.position, window);
+                match (pointer_inside.replace(now), now) {
+                    (false, true) => Some(wire::mouse::Event::CursorEntered),
+                    (true, false) => Some(wire::mouse::Event::CursorLeft),
+                    _ => None,
+                }
             },
         );
+        let moved = hitbox.clone();
         listen_mouse(
             window,
             self.route.clone(),
-            move |event: &gpui::MouseMoveEvent| {
-                Some(wire::mouse::Event::CursorMoved {
+            move |event: &gpui::MouseMoveEvent, window| {
+                owns(&moved, event.position, window).then(|| wire::mouse::Event::CursorMoved {
                     x: f32::from(event.position.x - bounds.origin.x),
                     y: f32::from(event.position.y - bounds.origin.y),
                 })
             },
         );
+        // A press takes the pointer: the drag keeps delivering moves and
+        // its release to this guest wherever the pointer goes.
+        let pressed = hitbox.clone();
+        let held = self.pointer_held.clone();
         listen_mouse(
             window,
             self.route.clone(),
-            |event: &gpui::MouseDownEvent| {
-                Some(wire::mouse::Event::ButtonPressed(button(event.button)))
+            move |event: &gpui::MouseDownEvent, window| {
+                owns(&pressed, event.position, window).then(|| {
+                    window.capture_pointer(pressed.id);
+                    held.set(Some(pressed.id));
+                    wire::mouse::Event::ButtonPressed(button(event.button))
+                })
             },
         );
-        listen_mouse(window, self.route.clone(), |event: &gpui::MouseUpEvent| {
-            Some(wire::mouse::Event::ButtonReleased(button(event.button)))
-        });
+        let released = hitbox.clone();
+        listen_mouse(
+            window,
+            self.route.clone(),
+            move |event: &gpui::MouseUpEvent, window| {
+                owns(&released, event.position, window)
+                    .then(|| wire::mouse::Event::ButtonReleased(button(event.button)))
+            },
+        );
         let pointer_inside = self.pointer_inside.clone();
         listen_mouse(
             window,
             self.route.clone(),
-            move |_: &gpui::MouseExitEvent| {
-                pointer_inside.set(false);
-                Some(wire::mouse::Event::CursorLeft)
+            move |_: &gpui::MouseExitEvent, _| {
+                pointer_inside
+                    .replace(false)
+                    .then_some(wire::mouse::Event::CursorLeft)
             },
         );
+        let scrolled = hitbox.clone();
         listen_mouse(
             window,
             self.route.clone(),
-            |event: &gpui::ScrollWheelEvent| {
+            move |event: &gpui::ScrollWheelEvent, window| {
+                if !owns(&scrolled, event.position, window) {
+                    return None;
+                }
                 Some(wire::mouse::Event::WheelScrolled {
                     delta: match event.delta {
                         gpui::ScrollDelta::Pixels(point) => wire::mouse::ScrollDelta::Pixels {
@@ -343,14 +398,14 @@ fn capture_flag(
 fn listen_mouse<E: gpui::MouseEvent>(
     window: &mut Window,
     route: Route,
-    convert: impl Fn(&E) -> Option<wire::mouse::Event> + 'static,
+    convert: impl Fn(&E, &mut Window) -> Option<wire::mouse::Event> + 'static,
 ) {
     let dispatch = RefCell::new(None);
-    window.on_mouse_event(move |event: &E, phase, _, cx| {
+    window.on_mouse_event(move |event: &E, phase, window, cx| {
         let Some(captured) = capture_flag(phase, &dispatch) else {
             return;
         };
-        if let Some(event) = convert(event) {
+        if let Some(event) = convert(event, window) {
             route.deferred(
                 wire::Event::Mouse {
                     event,
