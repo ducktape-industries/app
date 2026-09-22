@@ -219,7 +219,7 @@ pub(super) fn answer(
                 && prefix.len() <= MAX_ID_PREFIX
                 && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
             match named {
-                true => guest.reply(id, Ok(backend::fresh_id(prefix).into_bytes())),
+                true => guest.reply(id, Ok(doors::encode(&backend::fresh_id(prefix)))),
                 false => guest.refuse(id, "malformed_request", "`host.id` names no prefix"),
             }
         }
