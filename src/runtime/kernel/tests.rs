@@ -325,12 +325,39 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
             br#"{"reason":"invite_denied","error":"operator only"}"#.to_vec(),
             "invite_denied",
         ),
-        ("404 Not Found", Vec::new(), "http_error"),
+        // a core built after it dropped /v1/invite answers a bare 404, not
+        // the node's own refusal envelope — that must read as "this node
+        // doesn't do invites", not the raw transport error.
+        ("404 Not Found", Vec::new(), "invite_unsupported"),
     ] {
         let (node, server) = node_server(http, body, "POST /v1/invite HTTP/1.1", Some(1));
-        assert_eq!(invite(node, mint(1)).await.unwrap_err().reason, reason);
+        let refusal = invite(node, mint(1)).await.unwrap_err();
+        assert_eq!(refusal.reason, reason);
         server.join().unwrap();
     }
+    let (node, server) = node_server(
+        "404 Not Found",
+        Vec::new(),
+        "POST /v1/invite HTTP/1.1",
+        Some(1),
+    );
+    assert_eq!(
+        invite(node, mint(1)).await.unwrap_err().sentence,
+        "This node doesn't mint invites."
+    );
+    server.join().unwrap();
+    // an unrelated non-JSON non-2xx (a proxy's 502, say) must not be folded
+    // into the same message: only http_error + 404 gets the friendlier text.
+    let (node, server) = node_server(
+        "502 Bad Gateway",
+        Vec::new(),
+        "POST /v1/invite HTTP/1.1",
+        Some(1),
+    );
+    let refusal = invite(node, mint(1)).await.unwrap_err();
+    assert_eq!(refusal.reason, "http_error");
+    assert!(refusal.sentence.starts_with("502"));
+    server.join().unwrap();
 }
 
 #[test]
