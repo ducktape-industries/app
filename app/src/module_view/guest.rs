@@ -325,35 +325,52 @@ pub(super) fn merge(
                 return Err("duplicate tooltip response request");
             }
             let mut matches = 0usize;
+            let mut index_matches = true;
             root.for_each_mut(&mut |node| {
-                let wire::Node::Container { interactivity, .. } = node else {
-                    return;
-                };
-                let Some(tooltip) = &mut interactivity.tooltip else {
-                    return;
-                };
-                if tooltip.request == response.request {
-                    matches += 1;
+                match node {
+                    wire::Node::Container { interactivity, .. } => {
+                        if interactivity.tooltip.as_ref().is_some_and(|tooltip| tooltip.request == response.request) {
+                            matches += 1;
+                            index_matches &= response.character_index.is_none();
+                        }
+                    }
+                    wire::Node::RichText { tooltip: Some(tooltip), .. }
+                        if tooltip.request == response.request => {
+                            matches += 1;
+                            index_matches &= response.character_index.is_some();
+                        }
+                    _ => {}
                 }
             });
             if matches > 1 {
                 return Err("duplicate tooltip request route");
             }
+            if matches == 1 && !index_matches {
+                return Err("tooltip response index mismatch");
+            }
         }
         for response in responses {
-            let mut content = Some(response.content);
+            let request = response.request;
+            let mut response = Some(response);
             root.for_each_mut(&mut |node| {
-                let wire::Node::Container { interactivity, .. } = node else {
+                if response.is_none() {
                     return;
-                };
-                let Some(tooltip) = &mut interactivity.tooltip else {
-                    return;
-                };
-                if tooltip.request == response.request {
-                    tooltip.content = content.take();
+                }
+                match node {
+                    wire::Node::Container { interactivity, .. }
+                        if interactivity.tooltip.as_ref().is_some_and(|tooltip| tooltip.request == request) => {
+                            interactivity.tooltip.as_mut().unwrap().content = response.take().unwrap().content;
+                        }
+                    wire::Node::RichText { tooltip: Some(tooltip), .. }
+                        if tooltip.request == request => {
+                            let value = response.take().unwrap();
+                            tooltip.character_index = value.character_index;
+                            tooltip.content = value.content;
+                        }
+                    _ => {}
                 }
             });
-            if content.is_none() {
+            if response.is_none() {
                 tooltip_changed = true;
             }
         }
@@ -449,6 +466,24 @@ mod tests {
         }
     }
 
+    fn rich_tooltip_route(request: u32) -> wire::Node {
+        wire::Node::RichText {
+            id: Some(wire::ElementIdWire::Name("rich".into())),
+            style: Default::default(),
+            text: "alpha beta".into(),
+            runs: wire::RichTextRuns::default(),
+            font_family_overrides: Vec::new(),
+            clickable_ranges: Vec::new(),
+            on_click: None,
+            on_hover: None,
+            tooltip: Some(wire::RichTextTooltip {
+                request,
+                character_index: None,
+                content: None,
+            }),
+        }
+    }
+
     fn label(guest: &Guest) -> (String, u32) {
         match guest.frame.root.as_ref().expect("a tree") {
             wire::Node::Button {
@@ -474,7 +509,8 @@ mod tests {
             unchanged: true,
             tooltip_responses: vec![wire::TooltipResponse {
                 request: 7,
-                content: Box::new(tip),
+                character_index: None,
+                content: Some(Box::new(tip)),
             }],
             ..Default::default()
         };
@@ -483,6 +519,43 @@ mod tests {
             panic!("container")
         };
         assert!(interactivity.tooltip.unwrap().content.is_some());
+    }
+
+    #[test]
+    fn rich_tooltip_cache_is_replaced_for_the_exact_character_index() {
+        let mut held = Some(rich_tooltip_route(8));
+        let mut frame = wire::Frame {
+            unchanged: true,
+            tooltip_responses: vec![wire::TooltipResponse {
+                request: 8,
+                character_index: Some(6),
+                content: Some(Box::new(wire::Node::empty())),
+            }],
+            ..Default::default()
+        };
+        assert!(merge(&mut held, &mut frame).unwrap().0);
+        let wire::Node::RichText { tooltip: Some(tooltip), .. } = frame.root.as_ref().unwrap() else {
+            panic!("rich tooltip route")
+        };
+        assert_eq!(tooltip.character_index, Some(6));
+        assert!(tooltip.content.is_some());
+
+        held = frame.root.take();
+        let mut frame = wire::Frame {
+            unchanged: true,
+            tooltip_responses: vec![wire::TooltipResponse {
+                request: 8,
+                character_index: Some(0),
+                content: None,
+            }],
+            ..Default::default()
+        };
+        assert!(merge(&mut held, &mut frame).unwrap().0);
+        let wire::Node::RichText { tooltip: Some(tooltip), .. } = frame.root.unwrap() else {
+            panic!("rich tooltip route")
+        };
+        assert_eq!(tooltip.character_index, Some(0));
+        assert!(tooltip.content.is_none());
     }
 
     #[test]
@@ -497,7 +570,8 @@ mod tests {
             unchanged: true,
             tooltip_responses: vec![wire::TooltipResponse {
                 request: 7,
-                content: Box::new(wire::Node::empty()),
+                character_index: None,
+                content: Some(Box::new(wire::Node::empty())),
             }],
             ..Default::default()
         };
@@ -524,7 +598,8 @@ mod tests {
         let mut held = Some(tooltip_route(7));
         let response = || wire::TooltipResponse {
             request: 7,
-            content: Box::new(wire::Node::empty()),
+            character_index: None,
+            content: Some(Box::new(wire::Node::empty())),
         };
         let mut frame = wire::Frame {
             unchanged: true,
@@ -561,7 +636,8 @@ mod tests {
             unchanged: true,
             tooltip_responses: vec![wire::TooltipResponse {
                 request: 7,
-                content: Box::new(response),
+                character_index: None,
+                content: Some(Box::new(response)),
             }],
             ..Default::default()
         };

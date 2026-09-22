@@ -1,5 +1,24 @@
 use super::*;
 
+fn rich_tooltip_content(
+    node: &wire::Node,
+    request: u32,
+    character_index: u32,
+) -> Option<wire::Node> {
+    if let wire::Node::RichText {
+        tooltip: Some(tooltip),
+        ..
+    } = node
+        && tooltip.request == request
+        && tooltip.character_index == Some(character_index)
+    {
+        return tooltip.content.as_deref().cloned();
+    }
+    node.children()
+        .iter()
+        .find_map(|child| rich_tooltip_content(child, request, character_index))
+}
+
 pub(super) struct RichSelection {
     pub(super) handle: gpui_kit::base::TextSelectionHandle,
     pub(super) _refresh: Subscription,
@@ -200,6 +219,7 @@ impl ViewTree {
             clickable_ranges,
             on_click,
             on_hover,
+            tooltip,
         } = node
         else {
             unreachable!()
@@ -240,22 +260,55 @@ impl ViewTree {
                     }
                 });
         }
-        if let Some(handler) = on_hover {
-            let handler = *handler;
+        let hover_handler = *on_hover;
+        let tooltip_request = tooltip.as_ref().map(|tooltip| tooltip.request);
+        if hover_handler.is_some() || tooltip_request.is_some() {
             let view = cx.entity().downgrade();
             interactive = interactive.on_hover(move |index, event, _, cx| {
-                let event = wire::Event::RichTextHover {
-                    handler,
-                    event: wire::RichTextHover {
-                        index: index.and_then(|index| u32::try_from(index).ok()),
-                        position: event.position,
-                        pressed_button: event.pressed_button.map(Into::into),
-                        modifiers: event.modifiers,
-                    },
-                };
+                let character_index = index.and_then(|index| u32::try_from(index).ok());
                 let _ = view.update(cx, |_, cx| {
-                    cx.emit(event);
+                    if let Some(handler) = hover_handler {
+                        cx.emit(wire::Event::RichTextHover {
+                            handler,
+                            event: wire::RichTextHover {
+                                index: character_index,
+                                position: event.position,
+                                pressed_button: event.pressed_button.map(Into::into),
+                                modifiers: event.modifiers,
+                            },
+                        });
+                    }
+                    if let (Some(request), Some(character_index)) =
+                        (tooltip_request, character_index)
+                    {
+                        cx.emit(wire::Event::TooltipRequest {
+                            request,
+                            character_index: Some(character_index),
+                        });
+                    }
                 });
+            });
+        }
+        if let Some(tooltip) = tooltip {
+            let request = tooltip.request;
+            let parent = cx.entity().downgrade();
+            interactive = interactive.tooltip(move |index, _, cx| {
+                let Some(character_index) = u32::try_from(index).ok() else {
+                    return None;
+                };
+                let content = parent
+                    .update(cx, |this, cx| {
+                        let content = rich_tooltip_content(&this.root, request, character_index);
+                        cx.emit(wire::Event::TooltipRequest {
+                            request,
+                            character_index: Some(character_index),
+                        });
+                        content
+                    })
+                    .ok()
+                    .flatten();
+                content
+                    .map(|content| super::tooltip_containment::build(parent.clone(), content, cx))
             });
         }
         let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));

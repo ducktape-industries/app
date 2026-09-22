@@ -283,7 +283,10 @@ fn apply_misc<E: StatefulInteractiveElement>(
                 });
             }
             if *hovered && let Some(request) = tooltip_request {
-                cx.emit(wire::Event::TooltipRequest { request });
+                cx.emit(wire::Event::TooltipRequest {
+                    request,
+                    character_index: None,
+                });
             }
         }));
     }
