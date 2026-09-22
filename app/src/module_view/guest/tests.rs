@@ -111,11 +111,17 @@ fn rich_tooltip_route(request: u32) -> wire::Node {
 
 fn label(guest: &Guest) -> (String, u32) {
     match guest.frame.root.as_ref().expect("a tree") {
-        wire::Node::Button {
-            content: wire::ButtonContent::Label(label),
-            on_press: Some(press),
+        wire::Node::Container(wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name(id)),
+            interactivity,
+            children,
             ..
-        } => (label.clone(), *press),
+        }) if id == "press" => {
+            let [wire::Node::Text(wire::TextNode { content, .. })] = children.as_slice() else {
+                panic!("the probe's click element must contain its counter text");
+            };
+            (content.clone(), interactivity.on_click.expect("click route"))
+        }
         other => panic!("not the probe's button: {other:?}"),
     }
 }
@@ -351,7 +357,13 @@ fn a_core_module_view_inits_ticks_snapshots_and_restores() {
     let (text, press) = label(&guest);
     assert_eq!(text, "0");
 
-    guest.pending.push(wire::Event::Message(press));
+    guest.pending.push(wire::Event::Click {
+        handler: press,
+        event: wire::click::Click::Keyboard {
+            button: wire::click::KeyboardButton::Enter,
+            bounds: Default::default(),
+        },
+    });
     guest.tick();
     assert_eq!(label(&guest).0, "1");
 
