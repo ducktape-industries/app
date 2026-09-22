@@ -44,6 +44,16 @@ fn a_button_is_named_by_its_label_then_its_text_and_disabled_without_a_handler()
         accessible(&button(worded, None, Some(1))).name.as_deref(),
         Some("+ New channel")
     );
+    // several text children name it together, not by the first alone
+    let hashed = Child(Box::new(axis_container(
+        "row",
+        wire::Axis::Row,
+        [text("h", "#"), text("n", "general")],
+    )));
+    assert_eq!(
+        accessible(&button(hashed, None, Some(1))).name.as_deref(),
+        Some("# general")
+    );
     assert!(accessible(&button(Label("Send".into()), None, None)).disabled);
     assert!(!plain.disabled);
 }

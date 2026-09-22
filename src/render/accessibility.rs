@@ -28,15 +28,28 @@ fn named(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// The first text a node's descendants carry, depth first: a button or a
-/// clickable drawn with a text child but no explicit label is named by it,
-/// so nothing in the tree is announced with an empty name while its label
-/// sits one level down as a twin node.
+/// Every text a node's descendants carry, depth first, joined by spaces: a
+/// button or a clickable drawn with text children but no explicit label is
+/// named by them (`#` + `general` is "# general", not "#"), so nothing in the
+/// tree is announced with an empty or truncated name.
 pub(crate) fn descendant_text(node: &wire::Node) -> Option<String> {
-    if let wire::Node::Text(view_wire::TextNode { content, .. }) = node {
-        return named(content);
+    fn gather<'a>(node: &'a wire::Node, words: &mut Vec<&'a str>) {
+        match node {
+            wire::Node::Text(view_wire::TextNode { content, .. }) => {
+                let content = content.trim();
+                if !content.is_empty() {
+                    words.push(content);
+                }
+            }
+            _ => node
+                .children()
+                .iter()
+                .for_each(|child| gather(child, words)),
+        }
     }
-    node.children().iter().find_map(descendant_text)
+    let mut words = Vec::new();
+    gather(node, &mut words);
+    named(&words.join(" "))
 }
 
 /// The ONE mapping from a wire node to what assistive technology hears. The
