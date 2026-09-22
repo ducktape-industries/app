@@ -337,7 +337,10 @@ pub(super) fn spawn_load(
                     fresh.pictures.hydrate(root);
                     old.pictures.adopt(root);
                     root.for_each_mut(&mut |node| match node {
-                        wire::Node::Svg { bytes, .. } => *bytes = None,
+                        wire::Node::Svg {
+                            source: wire::SvgSource::Data { bytes, .. },
+                            ..
+                        } => *bytes = None,
                         wire::Node::Image { data, .. } | wire::Node::ImageViewer { data, .. } => {
                             *data = None
                         }

@@ -56,7 +56,7 @@ pub(super) fn paint_canvas_commands(
                     path.move_to(position(*from));
                     path.line_to(position(*to));
                     if let Ok(path) = path.build() {
-                        window.paint_path(path, rgba(stroke.color));
+                        window.paint_path(path, stroke.color);
                     }
                     if stroke.cap == wire::CanvasLineCap::Round {
                         let r = stroke.width / 2.;
@@ -67,7 +67,7 @@ pub(super) fn paint_canvas_commands(
                                         position([p[0] - r, p[1] - r]),
                                         size(px(2. * r), px(2. * r)),
                                     ),
-                                    rgba(stroke.color),
+                                    stroke.color,
                                 )
                                 .corner_radii(px(r)),
                             );
@@ -84,8 +84,8 @@ pub(super) fn paint_canvas_commands(
             bounds.origin - point(px(border / 2.), px(border / 2.)),
             bounds.size + size(px(border), px(border)),
         );
-        let color = background.map(rgba).unwrap_or_default();
-        let border_color = stroke.as_ref().map(|s| rgba(s.color)).unwrap_or_default();
+        let color = background.unwrap_or_default();
+        let border_color = stroke.as_ref().map(|s| s.color).unwrap_or_default();
         window.paint_quad(
             fill(expanded, color)
                 .corner_radii(px(radius + border / 2.))
@@ -95,8 +95,9 @@ pub(super) fn paint_canvas_commands(
     }
 }
 
-pub(super) fn svg_color(color: wire::Rgba) -> String {
-    let [r, g, b, a] = color.0;
+pub(super) fn svg_color(color: Hsla) -> String {
+    let color = color.to_rgb();
+    let (r, g, b, a) = (color.r, color.g, color.b, color.a);
     format!(
         "rgba({},{},{},{a})",
         (r * 255.0) as u8,

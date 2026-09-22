@@ -54,12 +54,12 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
         ..Default::default()
     };
     match node {
-        Node::Text {
+        Node::Text(view_wire::TextNode {
             content,
             heading,
             live,
             ..
-        } => Accessible {
+        }) => Accessible {
             role: Some(match heading {
                 Some(_) => Role::Heading,
                 None => Role::Label,
@@ -209,16 +209,40 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             ..Default::default()
         },
         // an unlabelled picture is decoration: it stays out of the tree
-        Node::Image { label, .. } | Node::ImageViewer { label, .. } | Node::Svg { label, .. } => {
-            match label.as_deref().and_then(named) {
-                Some(name) => Accessible {
-                    role: Some(Role::Image),
-                    name: Some(name),
+        Node::Image {
+            label,
+            interactivity,
+            ..
+        }
+        | Node::Svg {
+            label,
+            interactivity,
+            ..
+        } => {
+            let name = label
+                .as_deref()
+                .and_then(named)
+                .or_else(|| interactivity.aria.label.as_deref().and_then(named));
+            if name.is_none() && interactivity.role.is_none() {
+                Accessible::default()
+            } else {
+                Accessible {
+                    role: interactivity.role.or(Some(Role::Image)),
+                    name,
+                    description: interactivity.aria.description.as_deref().and_then(named),
+                    disabled: interactivity.aria.disabled.unwrap_or(false),
                     ..Default::default()
-                },
-                None => Accessible::default(),
+                }
             }
         }
+        Node::ImageViewer { label, .. } => match label.as_deref().and_then(named) {
+            Some(name) => Accessible {
+                role: Some(Role::Image),
+                name: Some(name),
+                ..Default::default()
+            },
+            None => Accessible::default(),
+        },
         _ => Accessible::default(),
     }
 }
@@ -319,9 +343,8 @@ impl ViewTree {
             .collect();
         let mut editors = HashMap::new();
         let mut scrolls = HashMap::new();
-        self.root.clone().for_each_mut(&mut |node| {
+        super::commands::walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
             if let wire::Node::Scroll {
-                key,
                 direction,
                 anchor_x,
                 anchor_y,
@@ -330,35 +353,37 @@ impl ViewTree {
             {
                 let offset = self
                     .lists
-                    .get(key)
+                    .get(path)
                     .map(|list| list.state.scroll_px_offset_for_scrollbar())
-                    .or_else(|| self.scrolls.get(key).map(ScrollHandle::offset));
+                    .or_else(|| self.scrolls.get(path).map(ScrollHandle::offset));
                 if let Some(offset) = offset {
                     scrolls.insert(
-                        key.clone(),
+                        path.clone(),
                         ScrollPresentation {
                             direction: *direction,
                             anchors: (*anchor_x, *anchor_y),
                             offset,
                             rows: self
                                 .lists
-                                .get(key)
+                                .get(path)
                                 .map(|list| list.rows.iter().map(|row| row.key.clone()).collect()),
                         },
                     );
                 }
             }
-            if let wire::Node::Editor { key, document, .. } = node {
+            if let wire::Node::Editor { document, .. } = node {
                 let focused = self
                     .editors
-                    .get(key)
+                    .get(path)
                     .is_some_and(|editor| editor.view.is_focused(window, cx));
                 if focused {
-                    editors.insert(key.clone(), document.clone());
+                    editors.insert(path.clone(), document.clone());
                 }
             }
         });
         NativePresentation {
+            images: self.images.clone(),
+            vectors: self.vectors.clone(),
             focused_container: self.focus_targets.iter().find_map(|(key, (kind, handle))| {
                 handle.is_focused(window).then(|| (key.clone(), *kind))
             }),
@@ -368,7 +393,9 @@ impl ViewTree {
         }
     }
 
-    pub(crate) fn with_presentation(mut self, presentation: NativePresentation) -> Self {
+    pub(crate) fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
+        self.images = std::mem::take(&mut presentation.images);
+        self.vectors = std::mem::take(&mut presentation.vectors);
         self.presentation = presentation;
         self
     }

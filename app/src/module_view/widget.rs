@@ -27,22 +27,15 @@ impl gpui_kit::EventEmitter<ModuleViewEvent> for NativeModuleView {}
 /// would otherwise take its content's, and a Fill-sized pane inside it
 /// (a room, a document) collapses to zero height.
 pub(super) fn native_root(root: wire::Node) -> wire::Node {
-    wire::Node::Container {
-        shadow: Default::default(),
-        max_width: None,
-        max_height: None,
-        clip: false,
-        key: "NativeModuleView/root".into(),
-        width: Some(wire::Length::Fill),
-        height: Some(wire::Length::Fill),
-        padding: None,
-        align_x: None,
-        align_y: None,
-        background: None,
-        border: None,
-        snap: None,
-        content: Box::new(root),
-    }
+    use gpui_kit::Styled as _;
+    let mut host_root = gpui_kit::div();
+    host_root = host_root.size_full();
+    wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("NativeModuleView/root".into())),
+        style: host_root.style().clone(),
+        interactivity: Default::default(),
+        children: vec![root],
+    })
 }
 
 /// What a tab draws where its view is not: the load's stage over a skeleton
@@ -152,6 +145,7 @@ impl NativeModuleView {
         let Slot::Ready(guest) = slot else {
             return;
         };
+        guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
         filesystem::mount(guest, cx);
         media::mount(guest, cx);
@@ -275,6 +269,7 @@ impl NativeModuleView {
         let generation = guest.seated_generation();
         let ticks = guest.ticks;
         guest.set_visible(true);
+        guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
         filesystem::mount(guest, cx);
         media::mount(guest, cx);

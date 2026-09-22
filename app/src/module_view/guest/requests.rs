@@ -1,6 +1,17 @@
 use super::*;
 
 impl Guest {
+    pub(crate) fn sync_theme(&mut self, dark: bool) {
+        if self.theme_dark != Some(dark) {
+            self.theme_dark = Some(dark);
+            // Theme is driver state, shared by every view regardless of its
+            // product-specific props stream. Latest appearance wins per tick.
+            self.pending
+                .retain(|event| !matches!(event, wire::Event::Theme { .. }));
+            self.pending.push(wire::Event::Theme { dark });
+        }
+    }
+
     /// One redraw: tick if there is anything to deliver — or never was a
     /// first frame — answer the requests, and say whether the guest is due
     /// again at once. A guest with nothing to deliver is left alone: the
@@ -136,10 +147,10 @@ impl Guest {
     /// The key a command acts on, or `None` for the two that act on focus
     /// order rather than a node. Exhaustive by design: adding a command
     /// requires reviewing its scope.
-    pub(crate) fn command_target(command: &wire::WidgetCommand) -> Option<&str> {
+    pub(crate) fn command_target(command: &wire::WidgetCommand) -> Option<&[wire::ElementIdWire]> {
         use wire::WidgetCommand as C;
         match command {
-            C::FocusPrevious | C::FocusNext => None,
+            C::FocusPrevious | C::FocusNext | C::FocusHandle { .. } => None,
             C::EditorAction { target, .. }
             | C::Focus { target }
             | C::Focused { target }
@@ -156,16 +167,34 @@ impl Guest {
         }
     }
 
-    /// Whether the key this command names is in the tree the guest is
+    /// Whether the typed path this command names is in the tree the guest is
     /// showing RIGHT NOW. A press is answered a frame or more after it was
     /// made, and a live view replaces its frame between the two — so the
     /// question a queued command has to pass is whether its target is still
     /// there, never whether the frame it was made against is still the
     /// current one.
     pub(crate) fn target_is_mounted(&self, command: &wire::WidgetCommand) -> bool {
-        fn contains(node: &wire::Node, target: &str) -> bool {
-            node.key() == Some(target)
-                || node.children().iter().any(|child| contains(child, target))
+        fn contains(
+            node: &wire::Node,
+            path: &mut Vec<wire::ElementIdWire>,
+            target: &[wire::ElementIdWire],
+        ) -> bool {
+            let entered = match node.identity() {
+                Some(wire::IdentityKeyRef::Element(id)) => {
+                    path.push(id.clone());
+                    true
+                }
+                _ => false,
+            };
+            let found = entered && path == target
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| contains(child, path, target));
+            if entered {
+                path.pop();
+            }
+            found
         }
         let Some(target) = Self::command_target(command) else {
             return true;
@@ -173,7 +202,7 @@ impl Guest {
         self.frame
             .root
             .as_ref()
-            .is_some_and(|root| contains(root, target))
+            .is_some_and(|root| contains(root, &mut Vec::new(), target))
     }
 
     pub(crate) fn widget_request(&mut self, id: u64, payload: &[u8]) {
@@ -209,17 +238,33 @@ impl Guest {
         if !self.inputs.pending() {
             return self.widget_commands.len();
         }
-        fn rich(node: &wire::Node, target: &str) -> bool {
-            match node {
-                wire::Node::Editor { key, options, .. } if key == target => options.rich.is_some(),
-                node => node.children().iter().any(|child| rich(child, target)),
+        fn rich(
+            node: &wire::Node,
+            path: &mut Vec<wire::ElementIdWire>,
+            target: &[wire::ElementIdWire],
+        ) -> bool {
+            let entered = match node.identity() {
+                Some(wire::IdentityKeyRef::Element(id)) => {
+                    path.push(id.clone());
+                    true
+                }
+                _ => false,
+            };
+            let found = matches!(node, wire::Node::Editor { options, .. } if path == target && options.rich.is_some())
+                || node
+                    .children()
+                    .iter()
+                    .any(|child| rich(child, path, target));
+            if entered {
+                path.pop();
             }
+            found
         }
         self.widget_commands
             .iter()
             .take_while(|(_, command)| {
                 matches!(command, wire::WidgetCommand::Focus { target }
-                    if !self.frame.root.as_ref().is_some_and(|root| rich(root, target)))
+                    if !self.frame.root.as_ref().is_some_and(|root| rich(root, &mut Vec::new(), target)))
             })
             .count()
     }
@@ -309,7 +354,10 @@ impl Guest {
                             // picture bytes; the tree its patches build on
                             // has to be that one.
                             root.for_each_mut(&mut |node| match node {
-                                wire::Node::Svg { bytes, .. } => *bytes = None,
+                                wire::Node::Svg {
+                                    source: wire::SvgSource::Data { bytes, .. },
+                                    ..
+                                } => *bytes = None,
                                 wire::Node::Image { data, .. }
                                 | wire::Node::ImageViewer { data, .. } => *data = None,
                                 _ => {}

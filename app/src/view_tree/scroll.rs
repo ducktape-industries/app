@@ -30,156 +30,27 @@ pub(super) struct VirtualScroll {
 pub(super) fn virtual_rows(node: &wire::Node) -> Option<Vec<VirtualRow>> {
     use wire::Node;
     match node {
-        Node::KeyedColumn {
-            key,
-            keys,
-            children,
-            virtual_row: Some(estimated_height),
-            spacing,
-            ..
-        } => {
-            let rows = children
-                .iter()
-                .enumerate()
-                .map(|(index, content)| VirtualRow {
-                    key: keys
-                        .as_ref()
-                        .and_then(|keys| keys.get(index))
-                        .map(|identity| format!("{key}/@row:{}", identity.virtual_key()))
-                        .unwrap_or_else(|| format!("{key}/@index:{index}")),
-                    content: content.clone(),
-                    estimated_height: *estimated_height,
-                    gap: if index + 1 < children.len() {
-                        spacing.unwrap_or_default()
-                    } else {
-                        0.
-                    },
-                })
-                .collect();
-            Some(wrap_virtual_rows(node, rows))
-        }
-        Node::Linear {
-            axis: wire::Axis::Column,
-            children,
-            spacing,
-            ..
-        } => {
-            if !children.iter().any(has_virtual_column) {
-                return None;
-            }
-            let mut found = false;
-            let mut rows = Vec::new();
-            for (index, child) in children.iter().enumerate() {
-                let mut part = match virtual_rows(child) {
-                    Some(rows) => {
-                        found = true;
-                        rows
-                    }
-                    None => vec![VirtualRow {
-                        key: child.key().map(str::to_owned).unwrap_or_else(|| {
-                            format!("{}/@static:{index}", node.key().unwrap_or("column"))
-                        }),
-                        content: child.clone(),
-                        gap: 0.,
-                        estimated_height: 44.,
-                    }],
-                };
-                if index + 1 < children.len()
-                    && let Some(last) = part.last_mut()
-                {
-                    last.gap += spacing.unwrap_or_default();
-                }
-                rows.extend(part);
-            }
-            found.then(|| wrap_virtual_rows(node, rows))
-        }
-        Node::Container { content, .. } => {
-            virtual_rows(content).map(|rows| wrap_virtual_rows(node, rows))
+        Node::Container(view_wire::ContainerNode { children, .. }) if children.len() == 1 => {
+            virtual_rows(&children[0]).map(|rows| wrap_virtual_rows(node, rows))
         }
         _ => None,
-    }
-}
-
-pub(super) fn has_virtual_column(node: &wire::Node) -> bool {
-    match node {
-        wire::Node::KeyedColumn {
-            virtual_row: Some(_),
-            ..
-        } => true,
-        wire::Node::Linear {
-            axis: wire::Axis::Column,
-            children,
-            ..
-        } => children.iter().any(has_virtual_column),
-        wire::Node::Container { content, .. } => has_virtual_column(content),
-        _ => false,
     }
 }
 
 pub(super) fn wrap_virtual_rows(node: &wire::Node, rows: Vec<VirtualRow>) -> Vec<VirtualRow> {
     let mut shell = node.clone();
     match &mut shell {
-        wire::Node::Linear { children, .. } | wire::Node::KeyedColumn { children, .. } => {
-            children.clear()
-        }
-        wire::Node::Container { content, .. } => {
-            **content = wire::Node::Space {
-                width: None,
-                height: None,
-            }
-        }
+        wire::Node::Container(view_wire::ContainerNode { children, .. }) => children.clear(),
         _ => unreachable!("only vertical layout wrappers surround virtual rows"),
     }
-    let count = rows.len();
     rows.into_iter()
-        .enumerate()
-        .map(|(index, mut row)| {
+        .map(|mut row| {
             let mut wrapped = shell.clone();
-            let padding = match &mut wrapped {
-                wire::Node::Linear {
-                    children,
-                    padding,
-                    height,
-                    ..
-                } => {
-                    children.push(row.content);
-                    *height = None;
-                    padding
-                }
-                wire::Node::KeyedColumn {
-                    children,
-                    keys,
-                    virtual_row,
-                    padding,
-                    height,
-                    ..
-                } => {
-                    children.push(row.content);
-                    *keys = None;
-                    *virtual_row = None;
-                    *height = None;
-                    padding
-                }
-                wire::Node::Container {
-                    content,
-                    padding,
-                    height,
-                    ..
-                } => {
-                    **content = row.content;
-                    *height = None;
-                    padding
-                }
-                _ => unreachable!("vertical layout wrapper"),
+            let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut wrapped
+            else {
+                unreachable!("vertical layout wrapper")
             };
-            if let Some(padding) = padding {
-                if index > 0 {
-                    padding.top = 0.;
-                }
-                if index + 1 < count {
-                    padding.bottom = 0.;
-                }
-            }
+            children.push(row.content);
             row.content = wrapped;
             row
         })
@@ -190,15 +61,12 @@ impl ViewTree {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn virtual_scroll(
         &mut self,
-        key: &str,
+        path: &[wire::ElementIdWire],
         rows: Vec<VirtualRow>,
         anchor: wire::ScrollAnchor,
         follow: bool,
         handler: Option<u32>,
-        width: Option<wire::Length>,
-        height: Option<wire::Length>,
-        background: Option<wire::Rgba>,
-        border: Option<wire::Border>,
+        style: &gpui_kit::StyleRefinement,
         restored: Option<ScrollPresentation>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -213,7 +81,7 @@ impl ViewTree {
             .map(|saved| saved.offset);
         let list = self
             .lists
-            .entry(key.to_owned())
+            .entry(path.to_vec())
             .or_insert_with(|| VirtualScroll {
                 state: ListState::new(
                     0,
@@ -274,7 +142,7 @@ impl ViewTree {
         });
         let state = list.state.clone();
         let weak = cx.entity().downgrade();
-        let route = key.to_owned();
+        let route = path.to_vec();
         state.set_scroll_handler(move |_, _, cx| {
             let Some(handler) = handler else {
                 return;
@@ -305,7 +173,7 @@ impl ViewTree {
             });
         });
         let weak = cx.entity().downgrade();
-        let route = key.to_owned();
+        let route = path.to_vec();
         let native = gpui_kit::list(state, move |index, window, cx| {
             weak.update(cx, |this, cx| {
                 let Some(row) = this
@@ -321,19 +189,18 @@ impl ViewTree {
                     .w_full()
                     .pb(px(row.gap))
                     .child(this.node(&row.content, window, cx))
-                    .child(this.measure(&row.key, cx))
                     .into_any_element()
             })
             .unwrap_or_else(|_| div().into_any_element())
         })
-        .with_sizing_behavior(if height.is_some() {
+        .with_sizing_behavior(if style.size.height.is_some() {
             ListSizingBehavior::Auto
         } else {
             ListSizingBehavior::Infer
         })
         .w_full()
         .h_full();
-        let route = key.to_owned();
+        let route = path.to_vec();
         let weak = cx.entity().downgrade();
         let retain_estimates = canvas(
             move |bounds, _, cx| {
@@ -369,16 +236,19 @@ impl ViewTree {
         .inset_0();
         // The native list owns scrolling, including off-screen measurements;
         // the wire scroll remains the identity addressed by widget commands.
-        decoration(
-            dimensions(div().relative().min_h_0(), width, height),
-            background,
-            border,
-        )
-        .id(key.to_owned())
-        .child(native)
-        .child(retain_estimates)
-        .child(self.measure(key, cx))
-        .into_any_element()
+        div()
+            .relative()
+            .min_h_0()
+            .refine_style(style)
+            .id(path
+                .last()
+                .unwrap()
+                .to_gpui()
+                .expect("sanitized scroll identity"))
+            .child(native)
+            .child(retain_estimates)
+            .child(self.measure(path, cx))
+            .into_any_element()
     }
 
     pub(super) fn scroll(
@@ -388,57 +258,53 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Scroll {
-            key,
             content,
-            width,
-            height,
+            style,
             direction,
             anchor_x,
             anchor_y,
             auto_scroll,
             on_scroll,
-            background,
-            border,
             bar_hidden,
             ..
         } = node
         else {
             unreachable!()
         };
-        let restored = self.presentation.scrolls.remove(key).filter(|saved| {
+        let path = self.authored_path.clone();
+        let restored = self.presentation.scrolls.remove(&path).filter(|saved| {
             saved.direction == *direction && saved.anchors == (*anchor_x, *anchor_y)
         });
         if *direction == wire::ScrollDirection::Vertical
             && let Some(rows) = virtual_rows(content)
         {
             return self.virtual_scroll(
-                key,
+                &path,
                 rows,
                 *anchor_y,
                 *auto_scroll,
                 *on_scroll,
-                *width,
-                *height,
-                *background,
-                *border,
+                style,
                 restored,
                 cx,
             );
         }
-        let handle = self.scrolls.entry(key.clone()).or_default().clone();
-        let element = decoration(
-            dimensions(div().relative(), *width, *height),
-            *background,
-            *border,
-        )
-        .id(key.clone())
-        .track_scroll(&handle);
+        let handle = self.scrolls.entry(path.clone()).or_default().clone();
+        let element = div()
+            .relative()
+            .refine_style(style)
+            .id(path
+                .last()
+                .unwrap()
+                .to_gpui()
+                .expect("sanitized scroll identity"))
+            .track_scroll(&handle);
         let element = match direction {
             wire::ScrollDirection::Vertical => element.overflow_y_scroll(),
             wire::ScrollDirection::Horizontal => element.overflow_x_scroll(),
             wire::ScrollDirection::Both => element.overflow_scroll(),
         };
-        let route = key.clone();
+        let route = path.clone();
         let anchors = (*anchor_x, *anchor_y);
         let follow = *auto_scroll;
         let handler = *on_scroll;
@@ -520,8 +386,11 @@ impl ViewTree {
         )
         .absolute()
         .inset_0();
-        let content = element.child(self.node(content, window, cx)).child(observe);
-        let handle = self.scrolls[key].clone();
+        let content = element
+            .child(self.node(content, window, cx))
+            .child(observe)
+            .child(self.measure(&path, cx));
+        let handle = self.scrolls[&path].clone();
         let scrollbar = match direction {
             wire::ScrollDirection::Vertical => None,
             wire::ScrollDirection::Horizontal => Some(Scrollbar::horizontal(&handle)),
@@ -531,12 +400,20 @@ impl ViewTree {
         let Some(scrollbar) = scrollbar else {
             return content.into_any_element();
         };
-        dimensions(div().relative(), *width, *height)
+        let frame_style = gpui_kit::StyleRefinement {
+            size: style.size.clone(),
+            min_size: style.min_size.clone(),
+            max_size: style.max_size.clone(),
+            ..Default::default()
+        };
+        div()
+            .relative()
+            .refine_style(&frame_style)
             .child(content)
             .child(
                 div().absolute().inset_0().child(
                     scrollbar
-                        .id(format!("{key}/scrollbar"))
+                        .id("scrollbar")
                         .viewport_from_layout()
                         .mode(ScrollbarMode::Always),
                 ),

@@ -124,6 +124,7 @@ pub(super) struct Guest {
     pub(crate) exports: Exports,
     /// The guest's events for its next tick.
     pub(crate) pending: Vec<wire::Event>,
+    pub(crate) theme_dark: Option<bool>,
     /// Requests wait for the native layout of a frame that still mounts
     /// their target, inside this instance only.
     pub(crate) widget_commands: Vec<(u64, wire::WidgetCommand)>,
@@ -315,9 +316,88 @@ pub(super) fn merge(
     held: &mut Option<wire::Node>,
     frame: &mut wire::Frame,
 ) -> Result<(bool, wire::SanitizeReport), &'static str> {
+    let mut tooltip_changed = false;
+    if let Some(root) = held {
+        let responses = std::mem::take(&mut frame.tooltip_responses);
+        let mut response_ids = std::collections::HashSet::new();
+        for response in &responses {
+            if !response_ids.insert(response.request) {
+                return Err("duplicate tooltip response request");
+            }
+            let mut matches = 0usize;
+            let mut index_matches = true;
+            root.for_each_mut(&mut |node| match node {
+                wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
+                | wire::Node::UniformList { interactivity, .. }
+                | wire::Node::Image { interactivity, .. }
+                | wire::Node::Svg { interactivity, .. } => {
+                    if interactivity
+                        .tooltip
+                        .as_ref()
+                        .is_some_and(|tooltip| tooltip.request == response.request)
+                    {
+                        matches += 1;
+                        index_matches &= response.character_index.is_none();
+                    }
+                }
+                wire::Node::RichText {
+                    tooltip: Some(tooltip),
+                    ..
+                } if tooltip.request == response.request => {
+                    matches += 1;
+                    index_matches &= response.character_index.is_some();
+                }
+                _ => {}
+            });
+            if matches > 1 {
+                return Err("duplicate tooltip request route");
+            }
+            if matches == 1 && !index_matches {
+                return Err("tooltip response index mismatch");
+            }
+        }
+        for response in responses {
+            let request = response.request;
+            let mut response = Some(response);
+            root.for_each_mut(&mut |node| {
+                if response.is_none() {
+                    return;
+                }
+                match node {
+                    wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
+                    | wire::Node::UniformList { interactivity, .. }
+                    | wire::Node::Image { interactivity, .. }
+                    | wire::Node::Svg { interactivity, .. }
+                        if interactivity
+                            .tooltip
+                            .as_ref()
+                            .is_some_and(|tooltip| tooltip.request == request) =>
+                    {
+                        interactivity.tooltip.as_mut().unwrap().content =
+                            response.take().unwrap().content;
+                    }
+                    wire::Node::RichText {
+                        tooltip: Some(tooltip),
+                        ..
+                    } if tooltip.request == request => {
+                        let value = response.take().unwrap();
+                        tooltip.character_index = value.character_index;
+                        tooltip.content = value.content;
+                    }
+                    _ => {}
+                }
+            });
+            if response.is_none() {
+                tooltip_changed = true;
+            }
+        }
+    }
     if frame.unchanged {
         frame.root = held.take();
-        return Ok((false, Default::default()));
+        let upstream = frame.upstream_sanitization;
+        let report = wire::sanitize(frame)?;
+        frame.upstream_sanitization = upstream;
+        return Ok((tooltip_changed, report));
     }
     if frame.root.is_some() {
         return Ok((true, Default::default()));
@@ -384,54 +464,4 @@ pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn label(guest: &Guest) -> (String, u32) {
-        match guest.frame.root.as_ref().expect("a tree") {
-            wire::Node::Button {
-                content: wire::ButtonContent::Label(label),
-                on_press: Some(press),
-                ..
-            } => (label.clone(), *press),
-            other => panic!("not the probe's button: {other:?}"),
-        }
-    }
-
-    /// Every export of a real view, through guest memory. The bytes are
-    /// view-guest's `exported_view` example built for wasm32 by modules'
-    /// `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
-    #[test]
-    #[ignore = "needs DUCKTAPE_VIEW_PROBE=<exported_view.wasm>"]
-    fn a_core_module_view_inits_ticks_snapshots_and_restores() {
-        let path = std::env::var("DUCKTAPE_VIEW_PROBE").expect("DUCKTAPE_VIEW_PROBE");
-        let bytes = std::fs::read(path).expect("probe bytes");
-        let mut guest = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
-        assert_eq!(guest.name, "Exported");
-        guest.tick();
-        assert_eq!(guest.fault, None);
-        let (text, press) = label(&guest);
-        assert_eq!(text, "0");
-
-        guest.pending.push(wire::Event::Message(press));
-        guest.tick();
-        assert_eq!(label(&guest).0, "1");
-
-        let state = guest.snapshot().expect("settled");
-        let code = Guest::compile(&bytes, "probe")
-            .map_err(|f| f.to_string())
-            .expect("compiles");
-        let mut next = Guest::instantiate("probe", &code, "probe").expect("instantiates");
-        assert!(matches!(
-            next.restore(&state, "probe"),
-            Ok(Restored::Carried)
-        ));
-        assert!(matches!(
-            next.restore(b"not json", "probe"),
-            Ok(Restored::Refused(_))
-        ));
-        next.tick();
-        assert_eq!(next.fault, None);
-        assert_eq!(label(&next).0, "1");
-    }
-}
+mod tests;
