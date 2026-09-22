@@ -1,4 +1,18 @@
 use super::*;
+use image::ImageDecoder;
+
+const MAX_PICTURE_BYTES: usize = 64 << 20;
+const MAX_PICTURES: usize = 4096;
+
+fn rgba_fits(width: u32, height: u32) -> bool {
+    width <= 8192
+        && height <= 8192
+        && u64::from(width) * u64::from(height) * 4 <= MAX_PICTURE_BYTES as u64
+}
+
+fn cache_fits(count: usize, used: usize, additional: usize) -> bool {
+    count < MAX_PICTURES && additional <= MAX_PICTURE_BYTES.saturating_sub(used)
+}
 
 #[derive(Clone, Default)]
 pub(super) struct ViewerState {
@@ -14,7 +28,12 @@ pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
             width,
             height,
             pixels,
-        } => image::RgbaImage::from_raw(*width, *height, pixels.clone())?,
+        } => {
+            if !rgba_fits(*width, *height) {
+                return None;
+            }
+            image::RgbaImage::from_raw(*width, *height, pixels.clone())?
+        }
         wire::ImageData::Encoded(bytes) => {
             let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes))
                 .with_guessed_format()
@@ -22,9 +41,17 @@ pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
             let mut limits = image::Limits::default();
             limits.max_image_width = Some(8192);
             limits.max_image_height = Some(8192);
-            limits.max_alloc = Some(64 << 20);
+            limits.max_alloc = Some(MAX_PICTURE_BYTES as u64);
             reader.limits(limits);
-            reader.decode().ok()?.into_rgba8()
+            let decoder = reader.into_decoder().ok()?;
+            let (width, height) = decoder.dimensions();
+            // Decoder limits do not include expansion from grayscale to RGBA.
+            if !rgba_fits(width, height) {
+                return None;
+            }
+            image::DynamicImage::from_decoder(decoder)
+                .ok()?
+                .into_rgba8()
         }
     };
     for pixel in pixels.pixels_mut() {
@@ -212,9 +239,24 @@ impl ViewTree {
         if self.images.contains_key(&hash) {
             return;
         }
+        let used = self
+            .images
+            .values()
+            .map(|image| image.as_bytes(0).map_or(0, <[u8]>::len))
+            .sum();
+        if !cache_fits(self.images.len(), used, 1) {
+            return;
+        }
         let Some(image) = decode_image(data) else {
             return;
         };
+        if !cache_fits(
+            self.images.len(),
+            used,
+            image.as_bytes(0).map_or(0, <[u8]>::len),
+        ) {
+            return;
+        }
         self.images.insert(hash, Arc::new(image));
     }
 
@@ -231,6 +273,12 @@ impl ViewTree {
 
     pub(super) fn remember_vector(&mut self, hash: u64, bytes: &[u8]) {
         if self.vectors.contains_key(&hash) {
+            return;
+        }
+        let used = self.vectors.values().map(|bytes| bytes.len()).sum();
+        // Keep accepted hashes stable: eviction would break hash-only frames.
+        // Further resources use the existing refusal/fallback path at capacity.
+        if !cache_fits(self.vectors.len(), used, bytes.len()) {
             return;
         }
         self.vectors.insert(hash, Arc::from(bytes));
@@ -466,19 +514,45 @@ impl ViewTree {
         if let Some(value) = interactivity.aria.disabled {
             element = element.aria_disabled(value);
         }
-        if let Some(value) = interactivity.aria.numeric_value { element = element.aria_numeric_value(value); }
-        if let Some(value) = interactivity.aria.numeric_value_step { element = element.aria_numeric_value_step(value); }
-        if let Some(value) = interactivity.aria.min_numeric_value { element = element.aria_min_numeric_value(value); }
-        if let Some(value) = interactivity.aria.max_numeric_value { element = element.aria_max_numeric_value(value); }
-        if let Some(value) = interactivity.aria.level { element = element.aria_level(value); }
-        if let Some(value) = interactivity.aria.position_in_set { element = element.aria_position_in_set(value); }
-        if let Some(value) = interactivity.aria.size_of_set { element = element.aria_size_of_set(value); }
-        if let Some(value) = interactivity.aria.row_index { element = element.aria_row_index(value); }
-        if let Some(value) = interactivity.aria.column_index { element = element.aria_column_index(value); }
-        if let Some(value) = interactivity.aria.row_count { element = element.aria_row_count(value); }
-        if let Some(value) = interactivity.aria.column_count { element = element.aria_column_count(value); }
-        if let Some(value) = interactivity.aria.toggled { element = element.aria_toggled(value); }
-        if let Some(value) = interactivity.aria.orientation { element = element.aria_orientation(value); }
+        if let Some(value) = interactivity.aria.numeric_value {
+            element = element.aria_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.numeric_value_step {
+            element = element.aria_numeric_value_step(value);
+        }
+        if let Some(value) = interactivity.aria.min_numeric_value {
+            element = element.aria_min_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.max_numeric_value {
+            element = element.aria_max_numeric_value(value);
+        }
+        if let Some(value) = interactivity.aria.level {
+            element = element.aria_level(value);
+        }
+        if let Some(value) = interactivity.aria.position_in_set {
+            element = element.aria_position_in_set(value);
+        }
+        if let Some(value) = interactivity.aria.size_of_set {
+            element = element.aria_size_of_set(value);
+        }
+        if let Some(value) = interactivity.aria.row_index {
+            element = element.aria_row_index(value);
+        }
+        if let Some(value) = interactivity.aria.column_index {
+            element = element.aria_column_index(value);
+        }
+        if let Some(value) = interactivity.aria.row_count {
+            element = element.aria_row_count(value);
+        }
+        if let Some(value) = interactivity.aria.column_count {
+            element = element.aria_column_count(value);
+        }
+        if let Some(value) = interactivity.aria.toggled {
+            element = element.aria_toggled(value);
+        }
+        if let Some(value) = interactivity.aria.orientation {
+            element = element.aria_orientation(value);
+        }
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {
@@ -512,4 +586,34 @@ fn safe_asset_path(path: &str) -> bool {
         && path
             .split('/')
             .all(|part| !part.is_empty() && part != "." && part != "..")
+}
+
+#[cfg(test)]
+mod resource_limits {
+    use super::*;
+
+    #[test]
+    fn rgba_expansion_is_bounded_before_allocation() {
+        assert!(rgba_fits(4096, 4096));
+        assert!(!rgba_fits(4097, 4096));
+        assert!(!rgba_fits(8192, 8192));
+        assert!(!rgba_fits(u32::MAX, u32::MAX));
+        assert!(
+            decode_image(&wire::ImageData::Rgba {
+                width: u32::MAX,
+                height: u32::MAX,
+                pixels: Vec::new(),
+            })
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn cache_limits_bound_both_bytes_and_empty_entries() {
+        assert!(cache_fits(MAX_PICTURES - 1, MAX_PICTURE_BYTES - 4, 4));
+        assert!(!cache_fits(MAX_PICTURES, 0, 0));
+        assert!(!cache_fits(1, MAX_PICTURE_BYTES - 4, 5));
+        assert!(!cache_fits(1, MAX_PICTURE_BYTES, 1));
+        assert!(!cache_fits(1, 0, usize::MAX));
+    }
 }
