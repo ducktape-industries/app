@@ -137,6 +137,11 @@ impl Ducktape {
                 self.push_props();
                 Task::none()
             }
+            Message::SplitView(_)
+            | Message::ClosePane(_)
+            | Message::FocusPane(_)
+            | Message::PopOut(_)
+            | Message::PopIn(_) => Task::none(),
             Message::SelectView(module) => {
                 self.active = Some(module);
                 self.badges.remove(module);

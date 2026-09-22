@@ -67,3 +67,39 @@ binary directly:
 "${CARGO_TARGET_DIR:-target}/debug/ducktape-app" \
   --render-tree path/to/tree.json --size 900x300 --theme light
 ```
+
+## Pane workspace fixtures
+
+A workspace fixture wraps independently rendered trees in pane chrome:
+
+```json
+{
+  "panes": [
+    {"label": "Chat", "context": "#general", "tree": {"Text": {"key": "hello", "content": "Hello", "size": 14}}}
+  ],
+  "focused": 0,
+  "popped_out": false
+}
+```
+
+Use complete SDK-serialized trees for `tree`. One to three panes are accepted;
+`focused` must name an existing pane. A popped-out fixture contains exactly
+one pane and omits the rail. Each tree has its own editor store, so repeated
+editor identifiers in different panes remain independent. The optional editor
+sidecar supplies documents to each store. Raw tree fixtures remain a separate
+rendering mode.
+
+The committed pane fixtures embed the existing SDK conversation screenshot
+tree, without changing its content or rendering. Their contexts illustrate
+independent panes; the node-less host has no real channels or network. The
+fixture rail is static chrome, and fixture strip controls are accessibility
+nodes for screenshot inspection, not live console actions.
+
+Capture all four 1280×800 proofs using an already built debug binary:
+
+```sh
+export CARGO_TARGET_DIR=/home/eddy/dev/ducktape/target-w4 RUSTC_WRAPPER=
+app/dev/screens/chat-screens.sh app/dev/screens/panes app/dev/screens/panes/proof --capture-only
+```
+
+The manifest covers one, two and three panes plus a popped-out view.

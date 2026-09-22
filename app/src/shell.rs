@@ -26,7 +26,13 @@ mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
 mod launch;
+mod layout;
+mod panes;
+#[cfg(test)]
+#[path = "shell/panes_tests.rs"]
+mod panes_tests;
 mod screens;
+mod windows;
 
 pub(crate) use launch::run;
 mod sign_in;
@@ -50,6 +56,7 @@ impl WindowKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowKind {
     Console,
+    View { module: &'static str },
 }
 
 #[derive(Clone, Debug)]
@@ -190,9 +197,33 @@ impl Desktop {
         let runtime = crate::module_view::runtime();
         let _runtime = runtime.enter();
         let appearance = self.state.appearance;
+        let active = self.state.active;
         let task = self.state.update(message);
         if appearance != self.state.appearance {
             self.sync_appearance(cx);
+        }
+        if active != self.state.active {
+            if let Some(module) = self.state.active {
+                let views: Vec<_> = self.views.values().cloned().collect();
+                cx.defer(move |cx| {
+                    for view in views {
+                        let _ = view.update(cx, |view, cx| {
+                            if view.kind == WindowKind::Console {
+                                view.layout.select(module);
+                                view.initialized = true;
+                                cx.notify();
+                            }
+                        });
+                    }
+                });
+            } else {
+                let views: Vec<_> = self.views.values().cloned().collect();
+                cx.defer(move |cx| {
+                    for view in views {
+                        let _ = view.update(cx, |view, cx| view.unseat(cx));
+                    }
+                });
+            }
         }
         self.tray.sync(&self.state);
         self.start(task, cx).detach();
@@ -252,7 +283,7 @@ impl Desktop {
 
     fn execute(&mut self, command: Command, cx: &mut Context<Self>) {
         match command {
-            Command::Open { key, kind, reply } => self.open_window(key, kind, reply, cx),
+            Command::Open { key, kind, reply } => self.open_window(key, kind, reply, None, cx),
             Command::Close(key) => self.close_window(key, cx),
             Command::Raise(key) => self.raise_window(key, cx),
             Command::OpenLink(url) => match url.starts_with("duck://") {
@@ -261,103 +292,6 @@ impl Desktop {
             },
             Command::Quit => self.quit(cx),
         }
-    }
-
-    fn open_window(
-        &mut self,
-        key: WindowKey,
-        kind: WindowKind,
-        reply: oneshot::Sender<WindowKey>,
-        cx: &mut Context<Self>,
-    ) {
-        use gpui_kit::*;
-        let crate::shell::WindowKind::Console = kind;
-        let size = size(px(1280.0), px(800.0));
-        let model = cx.entity();
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
-            titlebar: Some(TitlebarOptions {
-                title: (!cfg!(target_os = "macos")).then(|| "Ducktape".into()),
-                appears_transparent: cfg!(target_os = "macos"),
-                traffic_light_position: Some(point(px(12.), px(12.))),
-            }),
-            window_min_size: Some(gpui_kit::size(px(720.), px(480.))),
-            is_resizable: true,
-            app_id: Some("dev.ducktape.app".into()),
-            kind: gpui_kit::WindowKind::Normal,
-            icon: image::RgbaImage::from_raw(
-                128,
-                128,
-                include_bytes!("../assets/icon.rgba").to_vec(),
-            )
-            .map(std::sync::Arc::new),
-            ..Default::default()
-        };
-        cx.defer(move |cx| {
-            let mut opened_view = None;
-            let window_model = model.clone();
-            let opened = cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| {
-                    cx.on_release(DesktopWindow::released).detach();
-                    let observer = cx.observe(&window_model, |_, _, cx| cx.notify());
-                    let activation = cx.observe_window_activation(
-                        window,
-                        move |this: &mut DesktopWindow, window, cx| {
-                            let message = match window.is_window_active() {
-                                true => Message::WindowFocused(key),
-                                false => Message::WindowUnfocused(key),
-                            };
-                            let model = this.model.clone();
-                            cx.defer(move |cx| {
-                                model.update(cx, |model, cx| model.dispatch(message, cx))
-                            });
-                        },
-                    );
-                    let focus = cx.focus_handle();
-                    focus.focus(window, cx);
-                    let keystrokes = DesktopWindow::intercept_global_keys(window, cx);
-                    DesktopWindow {
-                        model: window_model,
-                        seat: None,
-                        route: None,
-                        inputs: HashMap::new(),
-                        focus,
-                        _activation: activation,
-                        _observer: observer,
-                        _keystrokes: keystrokes,
-                        _focus_lost: cx.on_focus_lost(window, |_, window, cx| window.blur(cx)),
-                    }
-                });
-                opened_view = Some(view.downgrade());
-                let closing = view.downgrade();
-                window.on_window_should_close(cx, move |window, cx| {
-                    let _ = closing.update(cx, |this, cx| {
-                        this.observe_window(view_wire::events::Window::CloseRequested, cx)
-                    });
-                    release_window_input(window, cx);
-                    true
-                });
-                cx.new(|cx| gpui_kit::component::Root::new(view, window, cx))
-            });
-            match opened {
-                Ok(handle) => {
-                    model.update(cx, |model, _| {
-                        model.windows.insert(key, handle.into());
-                        if let Some(view) = opened_view {
-                            model.views.insert(key, view);
-                        }
-                    });
-                    let _ = reply.send(key);
-                }
-                Err(error) => {
-                    tracing::error!(target: "ducktape::app", reason = "native_window_open_failed", %error, "window could not be opened");
-                    model.update(cx, |model, cx| {
-                        model.state.error = format!("The window could not be opened: {error}");
-                        cx.notify();
-                    });
-                }
-            }
-        });
     }
 
     fn close_window(&mut self, key: WindowKey, cx: &mut Context<Self>) {
@@ -404,9 +338,13 @@ fn release_window_input(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
 
 pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
-    /// The program whose view this window draws, and its presenter.
-    seat: Option<(&'static str, Entity<crate::module_view::NativeModuleView>)>,
-    route: Option<gpui_kit::Subscription>,
+    key: WindowKey,
+    kind: WindowKind,
+    layout: layout::Layout,
+    mounted: BTreeMap<u64, panes::MountedPane>,
+    initialized: bool,
+    resize: Option<(usize, f32, f32, f32)>,
+    measured_widths: std::rc::Rc<std::cell::RefCell<Vec<f32>>>,
     inputs: HashMap<&'static str, NativeInput>,
     focus: gpui_kit::FocusHandle,
     _activation: gpui_kit::Subscription,
@@ -467,7 +405,7 @@ impl DesktopWindow {
         let Some(chord) = crate::module_view::chord_of(&key.key, key.modifiers) else {
             return false;
         };
-        let Some((_, view)) = self.seat.clone() else {
+        let Some(view) = self.focused_view() else {
             return false;
         };
         let landed = view.update(cx, |view, cx| view.chord(&chord, cx));
@@ -483,26 +421,24 @@ impl DesktopWindow {
     }
 
     fn unseat(&mut self, cx: &mut gpui_kit::App) {
-        self.route = None;
-        if let Some((module, view)) = self.seat.take() {
-            let intents = view.update(cx, |view, _| view.hide());
-            for intent in intents {
-                self.model.update(cx, |model, cx| {
-                    model.dispatch(Message::ViewEvent(module, intent), cx)
-                });
-            }
+        let mounted = std::mem::take(&mut self.mounted);
+        self.layout = layout::Layout::default();
+        self.initialized = false;
+        for (_, pane) in mounted {
+            self.hide_pane(pane, cx);
         }
     }
 
     fn observe_window(&mut self, event: view_wire::events::Window, cx: &mut gpui_kit::App) {
-        let Some((module, view)) = self.seat.clone() else {
-            return;
-        };
-        let intents = view.update(cx, |view, cx| view.observe_final_window_event(event, cx));
-        for intent in intents {
-            self.model.update(cx, |model, cx| {
-                model.dispatch(Message::ViewEvent(module, intent), cx)
+        for pane in self.mounted.values() {
+            let intents = pane.view.update(cx, |view, cx| {
+                view.observe_final_window_event(event.clone(), cx)
             });
+            for intent in intents {
+                self.model.update(cx, |model, cx| {
+                    model.dispatch(Message::ViewEvent(pane.module, intent), cx)
+                });
+            }
         }
     }
 }
