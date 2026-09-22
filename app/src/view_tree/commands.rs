@@ -26,8 +26,9 @@ pub(crate) fn dialog_entry(
 
 impl ViewTree {
     pub(crate) fn take_user_activation(&self, event: &wire::Event) -> Option<()> {
-        let wire::Event::Message(message) = event else {
-            return None;
+        let message = match event {
+            wire::Event::Message(message) | wire::Event::Click { handler: message, .. } => message,
+            _ => return None,
         };
         let actual_click = self.user_activation.get() == Some(*message);
         if !actual_click {

@@ -178,7 +178,10 @@ impl ViewTree {
         if let Some(value) = interactivity.aria.orientation { element = element.aria_orientation(value); }
         if let Some(handler) = interactivity.on_click {
             element = element
-                .on_click(cx.listener(move |_, event: &gpui_kit::ClickEvent, _, cx| cx.emit(wire::Event::Click { handler, event: event.into() })));
+                .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                    this.user_activation.set(Some(handler));
+                    cx.emit(wire::Event::Click { handler, event: event.into() });
+                }));
         }
         if let Some(key) = node.key() {
             let kind = std::mem::discriminant(node);
