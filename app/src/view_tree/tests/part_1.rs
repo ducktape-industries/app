@@ -207,7 +207,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         None,
         None,
     );
-    let row = linear(
+    let row = axis_container(
         "row",
         wire::Axis::Row,
         [
@@ -246,7 +246,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
             Some(wire::Wrapping::None),
         )];
     }
-    let mut root = linear(
+    let mut root = axis_container(
         "column",
         wire::Axis::Column,
         [paragraph, row, reference, header],
@@ -322,7 +322,7 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
     cx.update(gpui_kit::init);
     let columns = sized(
         "columns-box",
-        linear(
+        axis_container(
             "columns",
             wire::Axis::Row,
             (0..4).map(|index| {
@@ -372,7 +372,7 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         background: None,
         border: None,
     };
-    let mut main = linear(
+    let mut main = axis_container(
         "main-column",
         wire::Axis::Column,
         [
@@ -485,7 +485,7 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
         anticipate: None,
         delay: None,
         child: Box::new({
-            let mut content = linear(
+            let mut content = axis_container(
                 "content",
                 wire::Axis::Column,
                 [wire::Node::Space {

@@ -53,7 +53,7 @@ fn text(key: &str, content: impl Into<String>) -> wire::Node {
     }
 }
 
-fn linear(
+fn axis_container(
     key: &str,
     axis: wire::Axis,
     children: impl IntoIterator<Item = wire::Node>,

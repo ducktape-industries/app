@@ -24,7 +24,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         .border_color(rgb(0xf06a6a))
         .rounded(px(4.));
     let notice = container_with_style("error", notice_style.style().clone(), [error_text]);
-    let mut room_column = linear(
+    let mut room_column = axis_container(
         "room-column",
         wire::Axis::Column,
         [
@@ -73,7 +73,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         .min_h_0()
         .bg(rgb(0x252833))
         .overflow_hidden();
-    let mut workspace_row = linear(
+    let mut workspace_row = axis_container(
         "workspace-row",
         wire::Axis::Row,
         [
