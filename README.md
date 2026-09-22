@@ -23,7 +23,7 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   `ducktape.view` custom section; the app reads it out, compiles it and
   seats it. The roster's order is the rail's order; a view's manifest names
   its tab. A program without the section is left off the rail.
-- **Relay.** A view asks through the kernel contract (`app/src/module_view/kernel.rs`):
+- **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`):
   `rpc.query`/`rpc.view` `{target, query}`, `rpc.query_bytes`/`op.submit_bytes`
   (an exact borsh request), `op.submit` `{target, payload}`, `rpc.live <program>`,
   `rpc.status`, `rpc.invite`, `blob.get`, `host.widget`, and the app's own doors (`host.*`,
@@ -41,13 +41,13 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
 
 | Path | What |
 |---|---|
-| `app/src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
-| `app/src/backend/views.rs` | roster → blob → `ducktape.view` section |
-| `app/src/backend/session.rs` | the seated key, its frames, preferences |
-| `app/src/module_view.rs`, `module_view/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
-| `app/src/view_tree.rs`, `editor/` | the wire tree presenter and the one native text field (IME, caret, clipboard) |
-| `app/src/shell.rs`, `ui/` | the window, the two native screens, the state and reducer |
-| `app/src/shell/{layout,panes,windows}.rs` | one to three views side by side, pop-out into their own windows and back |
+| `src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
+| `src/backend/views.rs` | roster → blob → `ducktape.view` section |
+| `src/backend/session.rs` | the seated key, its frames, preferences |
+| `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
+| `src/render.rs`, `editor/` | the wire tree presenter and the one native text field (IME, caret, clipboard) |
+| `src/shell.rs`, `ui/` | the window, the two native screens, the state and reducer |
+| `src/shell/{layout,panes,windows}.rs` | one to three views side by side, pop-out into their own windows and back |
 
 ## Dependency line
 
