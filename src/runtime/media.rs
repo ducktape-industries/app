@@ -264,49 +264,12 @@ impl Media {
 
 // ---------- the doors ----------
 
-/// What `audio.capture` may ask for. The device's own mode is used unless
-/// it offers exactly what was asked; either way the stream's FIRST item
-/// says what opened, so a view reads it rather than assuming.
-#[derive(Default, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct Listen {
-    device: Option<String>,
-    rate: Option<u32>,
-    channels: Option<u8>,
-}
-
-#[derive(Default, serde::Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct Watch {
-    device: Option<String>,
-    width: Option<u32>,
-    height: Option<u32>,
-    fps: Option<u8>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Speak {
-    rate: u32,
-    channels: u8,
-}
-
-/// The mode a device opened in: the first item of a capture, and the
-/// `audio.play` answer.
-#[derive(Clone, Copy, serde::Serialize)]
-struct Opened {
-    rate: u32,
-    channels: u8,
-}
-
-/// The shape of a `video.capture` stream, its first item.
-#[derive(Clone, Copy, serde::Serialize)]
-struct Framing {
-    width: u32,
-    height: u32,
-    fps: u8,
-    format: &'static str,
-}
+/// The asks and the modes are the door types (`wire::doors`): `Listen` and
+/// `Watch` say what a view wants, the device's own mode is used unless it
+/// offers exactly that, and the stream's FIRST item says what opened.
+pub(super) use super::wire::doors::{AudioMode as Opened, Framing, Listen, Watch};
+/// `audio.play` asks in the mode it wants to write in.
+pub(super) type Speak = Opened;
 
 pub(super) fn answer(
     guest: &mut Guest,
@@ -361,11 +324,8 @@ fn park(guest: &mut Guest, id: u64, ask: Ask) {
     guest.media.parked.push((id, ask));
 }
 
-fn asked<T: serde::de::DeserializeOwned + Default>(payload: &[u8]) -> Result<T, String> {
-    if payload.is_empty() {
-        return Ok(T::default());
-    }
-    serde_json::from_slice(payload).map_err(|error| error.to_string())
+fn asked<T: borsh::BorshDeserialize>(payload: &[u8]) -> Result<T, String> {
+    super::wire::doors::decode(payload)
 }
 
 /// Consent is settled and the devices are opened, each on its own guest task.
@@ -382,7 +342,7 @@ pub(super) fn mount(guest: &mut Guest, cx: &mut gpui_kit::Context<NativeModuleVi
                 tokio::task::spawn_blocking(rows)
                     .await
                     .map_err(device_failed)
-                    .and_then(|rows| serde_json::to_vec(&rows).map_err(device_failed))
+                    .map(|rows| super::wire::doors::encode(&rows))
             }),
             Ask::Listen(want, guard) => {
                 spawn_subscription(guest, id, move |items| {
@@ -398,12 +358,7 @@ pub(super) fn mount(guest: &mut Guest, cx: &mut gpui_kit::Context<NativeModuleVi
 
 // ---------- the device list ----------
 
-#[derive(serde::Serialize)]
-struct Row {
-    id: String,
-    kind: &'static str,
-    name: String,
-}
+use super::wire::doors::Device as Row;
 
 fn rows() -> Vec<Row> {
     use cpal::traits::{DeviceTrait as _, HostTrait as _};
@@ -415,7 +370,7 @@ fn rows() -> Vec<Row> {
                 .filter_map(|device| device.name().ok())
                 .map(|name| Row {
                     id: name.clone(),
-                    kind: "audio_in",
+                    kind: "audio_in".into(),
                     name,
                 }),
         );
@@ -426,7 +381,7 @@ fn rows() -> Vec<Row> {
                 .filter_map(|device| device.name().ok())
                 .map(|name| Row {
                     id: name.clone(),
-                    kind: "audio_out",
+                    kind: "audio_out".into(),
                     name,
                 }),
         );
@@ -434,7 +389,7 @@ fn rows() -> Vec<Row> {
     if let Ok(cameras) = nokhwa::query(nokhwa::utils::ApiBackend::Auto) {
         rows.extend(cameras.into_iter().map(|camera| Row {
             id: camera.index().to_string(),
-            kind: "video_in",
+            kind: "video_in".into(),
             name: camera.human_name(),
         }));
     }
@@ -472,17 +427,36 @@ mod tests {
         assert!(!claimed(&media.microphone));
     }
 
-    /// The capture asks parse as documented, and an ask carrying a field
-    /// this door does not have is refused rather than silently ignored.
+    /// The capture asks are the door types, and an ask carrying bytes this
+    /// door does not have is refused rather than silently ignored.
     #[test]
     fn a_capture_ask_is_optional_but_never_loose() {
-        let listen: Listen = asked(br#"{"rate":48000,"channels":1}"#).unwrap();
+        use super::super::wire::doors::encode;
+        let want = Listen {
+            rate: Some(48_000),
+            channels: Some(1),
+            ..Listen::default()
+        };
+        let listen: Listen = asked(&encode(&want)).unwrap();
         assert_eq!((listen.rate, listen.channels), (Some(48_000), Some(1)));
-        assert!(asked::<Listen>(b"").unwrap().rate.is_none());
-        assert!(asked::<Listen>(br#"{"gain":2}"#).is_err());
-        let watch: Watch = asked(br#"{"width":640,"height":480,"fps":15}"#).unwrap();
+        assert!(
+            asked::<Listen>(&encode(&Listen::default()))
+                .unwrap()
+                .rate
+                .is_none()
+        );
+        let mut loose = encode(&want);
+        loose.push(2);
+        assert!(asked::<Listen>(&loose).is_err());
+        let watch: Watch = asked(&encode(&Watch {
+            width: Some(640),
+            height: Some(480),
+            fps: Some(15),
+            ..Watch::default()
+        }))
+        .unwrap();
         assert_eq!((watch.width, watch.fps), (Some(640), Some(15)));
-        assert!(asked::<Watch>(br#"{"bitrate":1}"#).is_err());
+        assert!(asked::<Watch>(b"").is_err());
     }
 
     /// The indicator counts LIVE captures and nothing else, and the host is

@@ -23,10 +23,11 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   `ducktape.view` custom section; the app reads it out, compiles it and
   seats it. The roster's order is the rail's order; a view's manifest names
   its tab. A program without the section is left off the rail.
-- **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`):
-  `rpc.query`/`rpc.view` `{target, query}`, `rpc.query_bytes`/`op.submit_bytes`
-  (an exact borsh request), `op.submit` `{target, payload}`, `rpc.live <program>`,
-  `rpc.status`, `rpc.invite`, `blob.get`, `host.widget`, and the app's own doors (`host.*`,
+- **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`),
+  every door a borsh type in `view_wire::doors`: `rpc.query`/`op.submit`
+  `Call{target, body}`, `rpc.live <program>`, `rpc.status`, `rpc.invite`,
+  `blob.get`, `host.widget` (the one MessagePack door: a tree command), and
+  the app's own doors (`host.*`,
   `clock.ticks`, `fs.*`, `clipboard.*`, plus the raw devices —
   `media.devices`, `audio.capture`/`play`/`write`/`stop`, `video.capture`,
   `notify.show` — behind a per-program consent prompt and an indicator the

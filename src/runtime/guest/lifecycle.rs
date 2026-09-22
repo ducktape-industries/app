@@ -514,7 +514,7 @@ impl Guest {
         for id in &self.visibility_subscriptions {
             self.pending.push(wire::Event::Response {
                 id: *id,
-                result: Ok(visible.to_string().into_bytes()),
+                result: Ok(wire::doors::encode(&visible)),
                 done: false,
             });
         }

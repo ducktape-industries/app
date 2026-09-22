@@ -100,8 +100,9 @@ impl Guest {
     /// goes to the log, and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
+        // an op rides a `doors::Call`: the target and two lengths around it
         let payload_limit = match kind.as_str() {
-            "op.submit_bytes" => MAX_OP_BYTES.div_ceil(3) * 4 + 256,
+            "op.submit" => MAX_OP_BYTES + 256,
             _ => MAX_PAYLOAD_BYTES,
         };
         if payload.len() > payload_limit {
@@ -117,23 +118,25 @@ impl Guest {
         if kernel::answer(self, capability, operation, id, &payload) {
             return;
         }
-        let own = capability == self.module;
         match (capability, operation) {
             ("host", "widget") => self.widget_request(id, &payload),
-            _ if (own || capability == "host") && operation == "props" => {
+            ("host", "props") => {
                 self.props_subscription = Some(id);
                 self.props_sent = None;
                 self.sync_props(props);
             }
-            ("host", "log") => {
-                tracing::debug!(
-                    target: "ducktape::app",
-                    module = self.module,
-                    line = %String::from_utf8_lossy(&payload),
-                    "module view log"
-                );
-                self.reply(id, Ok(Vec::new()));
-            }
+            ("host", "log") => match wire::doors::decode::<String>(&payload) {
+                Ok(line) => {
+                    tracing::debug!(
+                        target: "ducktape::app",
+                        module = self.module,
+                        line,
+                        "module view log"
+                    );
+                    self.reply(id, Ok(Vec::new()));
+                }
+                Err(error) => self.refuse(id, "malformed_request", error),
+            },
             _ => self.refuse(id, "unknown_request", format!("unknown request `{kind}`")),
         }
     }

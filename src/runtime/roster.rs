@@ -6,14 +6,13 @@ use super::*;
 
 /// The session facts every view is handed as its props.
 pub fn props(dark: bool, connected: bool, network: &str, account: &str, endpoint: &str) -> Vec<u8> {
-    serde_json::to_vec(&serde_json::json!({
-        "connected": connected,
-        "dark": dark,
-        "chain": network,
-        "account": account,
-        "endpoint": endpoint,
-    }))
-    .expect("props encode")
+    wire::doors::encode(&wire::doors::Session {
+        connected,
+        dark,
+        chain: network.into(),
+        account: account.into(),
+        endpoint: endpoint.into(),
+    })
 }
 
 /// The node the views are asked of, and the network its frames name;

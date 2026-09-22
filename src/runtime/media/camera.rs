@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use super::super::wire::doors;
 use super::{
     CAMERAS, Framing, Indicator, Items, MAX_FPS, MAX_HEIGHT, MAX_WIDTH, QUEUED_FRAMES, Watch,
     device_failed, wire,
@@ -32,12 +33,13 @@ pub(super) async fn watch(
         }
     };
     let _indicator = Indicator::held(&CAMERAS);
-    let first = serde_json::to_vec(&framing).expect("the opened camera mode");
+    let first = doors::encode(&doors::VideoItem::Opened(framing));
     if !items.send(Ok(first)).await {
         return;
     }
     while let Some(frame) = camera.frames.recv().await {
-        if !items.send(Ok(frame)).await {
+        let item = doors::encode(&doors::VideoItem::Frame(frame));
+        if !items.send(Ok(item)).await {
             return;
         }
     }
@@ -86,7 +88,7 @@ fn camera_thread(
         width: resolution.width(),
         height: resolution.height(),
         fps: device.frame_rate().min(u32::from(u8::MAX)) as u8,
-        format: "rgba",
+        format: "rgba".into(),
     };
     if ready.send(Ok(framing)).is_err() {
         return;

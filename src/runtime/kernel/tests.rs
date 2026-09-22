@@ -1,6 +1,12 @@
 use super::*;
-use base64::Engine as _;
 use std::io::{BufRead as _, Read as _, Write as _};
+
+fn call(target: &str, body: &[u8]) -> Vec<u8> {
+    doors::encode(&doors::Call {
+        target: target.into(),
+        body: body.to_vec(),
+    })
+}
 
 fn guest() -> Guest {
     let code = wasmtime::Module::new(
@@ -23,8 +29,10 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
     for (id, kind) in [
         "missing",
         "rpc.unknown",
-        "rpc.stream",
-        "rpc.admin",
+        "rpc.view",
+        "rpc.query_bytes",
+        "op.submit_bytes",
+        "chat.props",
         "picture.load",
     ]
     .into_iter()
@@ -54,13 +62,49 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
     assert!(guest.pending.is_empty());
 }
 
+/// Every kind in `doors::ALL` has a handler on this side: none of them is
+/// `unknown_request`, whatever else a bare guest with no node refuses it
+/// for. A door added to the list without a handler fails here.
 #[test]
-fn binary_queries_use_the_node_handler() {
+fn every_door_is_answered() {
+    for (id, kind) in doors::ALL.iter().enumerate() {
+        let mut guest = guest();
+        guest.answer(
+            wire::Request {
+                id: id as u64,
+                kind: (*kind).into(),
+                payload: doors::encode(&doors::Call {
+                    target: "registry".into(),
+                    body: Vec::new(),
+                }),
+            },
+            &None,
+        );
+        let refused = match guest.pending.pop() {
+            Some(wire::Event::Response {
+                result: Err(refusal),
+                ..
+            }) => Some(refusal.reason),
+            _ => None,
+        };
+        assert_ne!(
+            refused.as_deref(),
+            Some("unknown_request"),
+            "{kind} has no handler"
+        );
+    }
+}
+
+/// A node door routes to the node handler, which answers for the missing
+/// node before it reads the request; what the request says is judged by
+/// `query` itself, below.
+#[test]
+fn node_doors_answer_for_the_missing_node_first() {
     let mut guest = guest();
-    assert!(answer(&mut guest, "rpc", "query_bytes", 7, b"not JSON"));
+    assert!(answer(&mut guest, "rpc", "query", 7, b"not borsh"));
     assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
         id: 7, result: Err(refusal), done: true
-    }) if refusal.reason == "malformed_request"));
+    }) if refusal.reason == "not_connected"));
 }
 
 #[tokio::test]
@@ -121,27 +165,24 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             stream.write_all(&body).unwrap();
         }
     });
-    let ask = serde_json::json!({
-        "target": "registry",
-        "body_b64": base64::engine::general_purpose::STANDARD.encode(payload),
-    });
+    let ask = call("registry", &payload);
     assert_eq!(
-        query_bytes(node.clone(), ask.clone()).await.unwrap(),
+        query(node.clone(), ask.clone()).await.unwrap(),
         [255, 0, 129]
     );
-    let refused = query_bytes(node.clone(), ask).await.unwrap_err();
+    let refused = query(node.clone(), ask).await.unwrap_err();
     assert_eq!(refused.reason, "query_denied");
     assert_eq!(refused.sentence, "no read");
     server.join().unwrap();
 
     for ask in [
-        serde_json::json!({"target": "registry"}),
-        serde_json::json!({"target": "registry", "body_b64": 7}),
-        serde_json::json!({"target": "registry", "body_b64": "!"}),
-        serde_json::json!({"target": "../registry", "body_b64": ""}),
+        b"registry".to_vec(),
+        Vec::new(),
+        call("", b""),
+        call("../registry", b""),
     ] {
         assert_eq!(
-            query_bytes(node.clone(), ask).await.unwrap_err().reason,
+            query(node.clone(), ask).await.unwrap_err().reason,
             "malformed_request"
         );
     }
@@ -220,17 +261,20 @@ async fn system_status_preserves_borsh_and_refusals() {
         "GET /v1/status HTTP/1.1",
         None,
     );
-    let answer = status(node.clone(), serde_json::Value::Null).await.unwrap();
+    let answer = status(node.clone(), Vec::new()).await.unwrap();
+    let decoded: doors::NodeStatus = doors::decode(&answer).unwrap();
     assert_eq!(
-        abi::decode::<backend::noded::Status>(&answer).unwrap(),
-        expected
+        (
+            decoded.network.as_str(),
+            decoded.height,
+            decoded.root,
+            decoded.contract
+        ),
+        ("test-network", 201, [3; 32], 1)
     );
     server.join().unwrap();
     assert_eq!(
-        status(node, serde_json::json!({}))
-            .await
-            .unwrap_err()
-            .reason,
+        status(node, b"{}".to_vec()).await.unwrap_err().reason,
         "malformed_request"
     );
     let (node, server) = node_server(
@@ -240,10 +284,7 @@ async fn system_status_preserves_borsh_and_refusals() {
         None,
     );
     assert_eq!(
-        status(node, serde_json::Value::Null)
-            .await
-            .unwrap_err()
-            .reason,
+        status(node, Vec::new()).await.unwrap_err().reason,
         "status_denied"
     );
     server.join().unwrap();
@@ -258,24 +299,21 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
         "POST /v1/invite HTTP/1.1",
         Some(7),
     );
-    let answer = invite(node.clone(), serde_json::json!({"ttl_days": 7}))
-        .await
-        .unwrap();
-    let decoded: (String, Vec<(String, String)>) = abi::decode(&answer).unwrap();
+    let mint = |ttl_days| doors::encode(&doors::Mint { ttl_days });
+    let answer = invite(node.clone(), mint(7)).await.unwrap();
+    let decoded: doors::Minted = doors::decode(&answer).unwrap();
     assert_eq!(
         decoded,
-        (
-            "paste-me".into(),
-            vec![("local_only".into(), "Use on this box".into())]
-        )
+        doors::Minted {
+            invite: "paste-me".into(),
+            notes: vec![doors::Note {
+                reason: "local_only".into(),
+                sentence: "Use on this box".into()
+            }]
+        }
     );
     server.join().unwrap();
-    for ask in [
-        serde_json::json!({}),
-        serde_json::json!({"ttl_days": 0}),
-        serde_json::json!({"ttl_days": -1}),
-        serde_json::json!({"ttl_days": "7"}),
-    ] {
+    for ask in [Vec::new(), mint(0), b"7".to_vec()] {
         assert_eq!(
             invite(node.clone(), ask).await.unwrap_err().reason,
             "malformed_request"
@@ -290,25 +328,19 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
         ("404 Not Found", Vec::new(), "http_error"),
     ] {
         let (node, server) = node_server(http, body, "POST /v1/invite HTTP/1.1", Some(1));
-        assert_eq!(
-            invite(node, serde_json::json!({"ttl_days": 1}))
-                .await
-                .unwrap_err()
-                .reason,
-            reason
-        );
+        assert_eq!(invite(node, mint(1)).await.unwrap_err().reason, reason);
         server.join().unwrap();
     }
 }
 
 #[test]
-fn system_kinds_route_and_reject_invalid_json() {
+fn system_kinds_route_to_the_node_handler() {
     for kind in ["status", "invite"] {
         let mut guest = guest();
-        assert!(answer(&mut guest, "rpc", kind, 19, b"invalid JSON"));
+        assert!(answer(&mut guest, "rpc", kind, 19, b"invalid"));
         assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
             id: 19, result: Err(refusal), done: true
-        }) if refusal.reason == "malformed_request"));
+        }) if refusal.reason == "not_connected"));
     }
 }
 
@@ -326,7 +358,7 @@ fn host_props_is_program_independent_and_tracks_updates() {
         wire::Request {
             id: 22,
             kind: "host.props".into(),
-            payload: b"null".to_vec(),
+            payload: Vec::new(),
         },
         &props,
     );
@@ -339,10 +371,10 @@ fn host_props_is_program_independent_and_tracks_updates() {
     else {
         panic!("props must stay live")
     };
-    let decoded: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(decoded["endpoint"], "http://127.0.0.1:19001");
-    assert_eq!(decoded["account"], "abcd");
-    assert_eq!(decoded["dark"], true);
+    let decoded: doors::Session = doors::decode(&bytes).unwrap();
+    assert_eq!(decoded.endpoint, "http://127.0.0.1:19001");
+    assert_eq!(decoded.account, "abcd");
+    assert!(decoded.dark);
     let changed = Some(super::super::props(
         false,
         true,

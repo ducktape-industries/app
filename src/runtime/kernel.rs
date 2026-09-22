@@ -3,24 +3,25 @@
 //! contract is replaced by a program deployment alone — the app binary
 //! never changes for it.
 //!
-//! - `rpc.query` `{target, query}` — one query on the connected node: the
-//!   JSON `query` is the payload of a signed frame to `target`, and the
-//!   bytes the program `Respond`ed come back as they are. `rpc.view` is the
-//!   same door (a program answers its own views). `rpc.query_bytes`
-//!   `{target, body_b64}` sends exact binary query bytes and returns raw bytes.
-//! - `op.submit` `{target, payload}` — one JSON op, signed with the SEATED
-//!   key at the signer's next sequence and submitted; answered with the
-//!   receipt's output, or the program's refusal. `op.submit_bytes`
-//!   `{target, body_b64}` — the same with an exact binary payload.
-//! - `rpc.status` `null` — node status encoded as borsh.
-//! - `rpc.invite` `{ttl_days}` — mint once; borsh `(invite, notes)`, with
-//!   each note `(reason, sentence)`. Node refusals retain their tokens.
+//! Every door, its request and its reply are the types in `wire::doors`,
+//! borsh on both sides; the host decodes a request by that type and nothing
+//! else, so there is no per-door parsing here to drift from a view.
+//!
+//! - `rpc.query` `Call{target, body}` — one query on the connected node:
+//!   `body` is the payload of a signed frame to `target`, and the bytes the
+//!   program `Respond`ed come back as they are.
+//! - `op.submit` `Call{target, body}` — one op, signed with the SEATED key
+//!   at the signer's next sequence and submitted; answered with the
+//!   receipt's output, or the program's refusal.
+//! - `rpc.status` — node status as `NodeStatus`.
+//! - `rpc.invite` `Mint{ttl_days}` — mint once; `Minted{invite, notes}`.
+//!   Node refusals retain their tokens.
 //! - `rpc.live` `<program>` — a subscription that gets one item per block
 //!   that wrote to `program` (`/v1/changes/<program>`), so the view re-reads
 //!   what moved.
-//! - `blob.get` `{id}` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
-//! - `host.props` `null` — subscribes to the session props (including the
-//!   public account key, theme and read-only endpoint).
+//! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
+//! - `host.props` — subscribes to the session props (`Session`: the seated
+//!   account, theme, chain and read-only endpoint).
 //! - `host.visible`, `host.badge`, `host.open_link`, `host.chord`,
 //!   `host.id`, `clock.ticks`, `host.log`, `host.widget` — the app's own
 //!   doors: visibility, the tab badge, the one way out (a `duck://` link),
@@ -40,6 +41,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{Guest, ModuleViewEvent, wire};
 use crate::backend::{self, RpcClient, refused};
+use wire::doors;
 
 /// The longest `host.id` prefix: a word naming the kind of record, not a
 /// payload of its own.
@@ -81,9 +83,7 @@ mod node;
 mod replies;
 
 pub(super) use node::{Items, NodeTask, spawn_device, spawn_subscription};
-use node::{
-    blob_get, invite, live, query, query_bytes, spawn, spawn_once, status, submit, submit_bytes,
-};
+use node::{blob_get, invite, live, query, spawn, spawn_once, status, submit};
 pub(super) use replies::Replies;
 
 /// The kernel's own runtime, on its own thread: the window thread never
@@ -137,22 +137,19 @@ pub(super) fn answer(
             guest.visibility_subscriptions.push(id);
             guest.pending.push(wire::Event::Response {
                 id,
-                result: Ok(guest.visible.to_string().into_bytes()),
+                result: Ok(doors::encode(&guest.visible)),
                 done: false,
             });
         }
-        ("rpc", "query" | "view") => spawn(guest, id, payload, query),
+        ("rpc", "query") => spawn(guest, id, payload, query),
         ("rpc", "status") => spawn(guest, id, payload, status),
         ("rpc", "invite") => spawn_once(guest, id, payload, invite),
-        ("rpc", "query_bytes") => spawn(guest, id, payload, query_bytes),
         ("op", "submit") => spawn(guest, id, payload, submit),
-        ("op", "submit_bytes") => spawn(guest, id, payload, submit_bytes),
         ("blob", "get") => spawn(guest, id, payload, blob_get),
         ("rpc", "live") => live(guest, id, payload),
         ("host", "open_link") => {
-            let link = serde_json::from_slice::<serde_json::Value>(payload)
+            let link = doors::decode::<String>(payload)
                 .ok()
-                .and_then(|ask| ask["link"].as_str().map(str::to_owned))
                 .filter(|link| !link.is_empty());
             match link {
                 Some(link) => {
@@ -165,24 +162,20 @@ pub(super) fn answer(
                 None => guest.refuse(id, "malformed_request", "`host.open_link` names no link"),
             }
         }
-        ("host", "badge") => {
-            let count = std::str::from_utf8(payload)
-                .ok()
-                .and_then(|text| text.trim().parse::<i64>().ok());
-            match count {
-                Some(count) => {
-                    guest.intents.push(ModuleViewEvent {
-                        kind: "badge".into(),
-                        detail: format!("{{\"count\":{count}}}"),
-                    });
-                    guest.reply(id, Ok(Vec::new()));
-                }
-                None => guest.refuse(id, "malformed_request", "`host.badge` carries no count"),
+        ("host", "badge") => match doors::decode::<i64>(payload).ok() {
+            Some(count) => {
+                guest.intents.push(ModuleViewEvent {
+                    kind: "badge".into(),
+                    detail: format!("{{\"count\":{count}}}"),
+                });
+                guest.reply(id, Ok(Vec::new()));
             }
-        }
+            None => guest.refuse(id, "malformed_request", "`host.badge` carries no count"),
+        },
         // A CHORD IS CLAIMED, NOT WIRED: first claim holds it.
         ("host", "chord") => {
-            let chord = std::str::from_utf8(payload).unwrap_or_default().trim();
+            let chord = doors::decode::<String>(payload).unwrap_or_default();
+            let chord = chord.trim();
             if !is_chord(chord) {
                 guest.refuse(
                     id,
@@ -220,7 +213,8 @@ pub(super) fn answer(
             }
         }
         ("host", "id") => {
-            let prefix = std::str::from_utf8(payload).unwrap_or_default().trim();
+            let prefix = doors::decode::<String>(payload).unwrap_or_default();
+            let prefix = prefix.trim();
             let named = !prefix.is_empty()
                 && prefix.len() <= MAX_ID_PREFIX
                 && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
@@ -298,10 +292,9 @@ fn is_chord(chord: &str) -> bool {
 const MIN_TICK_MS: i64 = 16;
 const MAX_TICK_MS: i64 = 60 * 60 * 1_000;
 
-/// A `clock.ticks` payload: the period in milliseconds, little-endian, as
-/// `ui_lang_guest::every` writes it.
+/// A `clock.ticks` payload: the period in milliseconds.
 fn tick_period(payload: &[u8]) -> Option<std::time::Duration> {
-    let millis = i64::from_le_bytes(<[u8; 8]>::try_from(payload).ok()?);
+    let millis = doors::decode::<i64>(payload).ok()?;
     let named = (MIN_TICK_MS..=MAX_TICK_MS).contains(&millis);
     named.then(|| std::time::Duration::from_millis(millis as u64))
 }
