@@ -252,8 +252,8 @@ pub(super) fn current(
 }
 
 /// Performs `action` on the node `id` names in window `name`, through the
-/// path an assistive technology's request takes; `type` focuses it and sends
-/// each character as a key. False when no such node is showing.
+/// path an assistive technology's request takes; `type` and `set_value` both
+/// focus the node first, then act. False when no such node is showing.
 pub(super) fn perform_by_id(
     name: &str,
     window: &mut Window,
@@ -284,10 +284,22 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
         "scroll_into_view" => {
             window.dispatch_a11y_action(request(Action::ScrollIntoView, None), cx)
         }
-        "set_value" => window.dispatch_a11y_action(
-            request(Action::SetValue, Some(ActionData::Value(value.into()))),
-            cx,
-        ),
+        "set_value" => {
+            // Focus first, exactly as `type` does below: a multi-line guest
+            // editor (`TextEditor::observed`, editor/text.rs) only forwards
+            // an edit to the guest's own document while its native field is
+            // focused — a guard against replaying its OWN programmatic
+            // `install()` syncs back at the guest as a fresh edit. A single-
+            // line `Node::Input` field has no such guard, so `set_value`
+            // reached its guest either way; a multi-line editor's Send (or
+            // any other guest state gated on the document) silently never
+            // saw the value SetValue just set, with no fault and no refusal.
+            window.dispatch_a11y_action(request(Action::Focus, None), cx);
+            window.dispatch_a11y_action(
+                request(Action::SetValue, Some(ActionData::Value(value.into()))),
+                cx,
+            );
+        }
         "type" => {
             window.dispatch_a11y_action(request(Action::Focus, None), cx);
             type_text(window, cx, value);
@@ -312,6 +324,208 @@ fn type_text(window: &mut Window, cx: &mut App, text: &str) {
                 key_char: text,
             },
             cx,
+        );
+    }
+}
+
+#[cfg(test)]
+mod ax_editor_tests {
+    use super::*;
+    use crate::editor::wire::EditorStore;
+    use crate::render::ViewTree;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{px, size};
+    use view_wire as wire;
+
+    fn named_id(key: &str) -> wire::ElementIdWire {
+        wire::ElementIdWire::Name(key.into())
+    }
+
+    fn container(key: &str, children: Vec<wire::Node>) -> wire::Node {
+        use gpui_kit::Styled as _;
+        // Every ancestor fills its parent, same as the real chat pane's own
+        // wrappers (`native_root`, the room, the composer's own div): a
+        // percentage size against an unsized ancestor resolves to zero, and
+        // an invisible (zero-bounds) node never reaches the AX door's tree.
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(named_id(key)),
+            style: gpui_kit::div().size_full().style().clone(),
+            interactivity: Default::default(),
+            children,
+        })
+    }
+
+    /// The real shape a chat composer's editor mounts under (see PR #238's
+    /// `chat_shaped_tree` in `runtime::widget_tests`): `chat-viewport >
+    /// chat-root > chat-panes > chat-room > draft-general >
+    /// draft-general/editor`. Every one of those named ancestors is owned by
+    /// a different file, none of which the editor's own key threads through.
+    fn chat_shaped_editor(editable: bool) -> (wire::Node, crate::render::AuthoredPath) {
+        let editor = wire::Node::Editor {
+            options: Box::new(wire::EditorOptions {
+                binding: Some(Box::new(wire::EditorBinding {
+                    authored: false,
+                    claims: Vec::new(),
+                    on_request: 1,
+                    on_event: 2,
+                })),
+                ..Default::default()
+            }),
+            id: named_id("draft-general/editor"),
+            style: Default::default(),
+            placeholder: String::new(),
+            label: Some("Message #general".into()),
+            document: wire::editor_document::EditorDocumentRef {
+                document: "draft-general".into(),
+                reset: 1,
+                text_revision: 0,
+                revision: 0,
+                cursor: Default::default(),
+                byte_len: 0,
+            },
+            on_document: 0,
+            editable,
+        };
+        let root = container(
+            "chat-viewport",
+            vec![container(
+                "chat-root",
+                vec![container(
+                    "chat-panes",
+                    vec![container(
+                        "chat-room",
+                        vec![container("draft-general", vec![editor])],
+                    )],
+                )],
+            )],
+        );
+        let path = [
+            "chat-viewport",
+            "chat-root",
+            "chat-panes",
+            "chat-room",
+            "draft-general",
+            "draft-general/editor",
+        ]
+        .into_iter()
+        .map(named_id)
+        .collect();
+        (root, path)
+    }
+
+    /// Put an empty document into the store the honest way: answer the
+    /// request the store makes for the one document it has no text for.
+    fn seed_empty_document(store: &EditorStore) {
+        use wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
+        let asked = store.drain().into_iter().find_map(|event| match event {
+            wire::Event::EditorDocument {
+                message: Message::Request { id, target },
+                ..
+            } => Some((id, target)),
+            _ => None,
+        });
+        let (id, target) = asked.expect("the store asks for the document it has no text for");
+        // A zero-byte document's assembler starts with `bytes.len() ==
+        // expected` (both 0), so a Chunk message — even an empty one — is
+        // out of order; Begin then Complete is the whole transfer.
+        store
+            .frame(&wire::Frame {
+                editor_documents: vec![
+                    Message::Transfer(EditorTransfer::Begin {
+                        id: id.clone(),
+                        target,
+                    }),
+                    Message::Transfer(EditorTransfer::Complete { id }),
+                ],
+                ..Default::default()
+            })
+            .expect("the answer to the store's own request");
+    }
+
+    /// The QA runner's `type` AX action typed into the composer's
+    /// AX-visible native field (focus and value both showed it) but the
+    /// guest's own document never moved: Send stayed disabled forever.
+    /// Drives the exact AX door path a QA runner uses (`perform_by_id`,
+    /// `"type"`) against a tree shaped exactly like the real composer's
+    /// nested ancestry, and asserts the store the guest reads ends up
+    /// holding what was typed.
+    #[gpui_kit::test]
+    fn ax_type_on_a_nested_editor_reaches_the_guests_document(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let (root, path) = chat_shaped_editor(true);
+        let store = EditorStore::new(1);
+        store.replace(&root).expect("mount editor references");
+        seed_empty_document(&store);
+        let window_store = store.clone();
+        let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+            let mut tree = ViewTree::new(root);
+            tree.set_editor_store(window_store, cx);
+            tree
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+        });
+        let performed = native
+            .update(|window, cx| perform_by_id("t", window, cx, "t:editor-field", "type", "hello"));
+        assert!(performed, "the editor's AX field must be in the tree");
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+        });
+        store.ready().expect("no fault after AX `type`");
+        let text = store
+            .projection(&path)
+            .and_then(|projection| projection.text)
+            .unwrap_or_default();
+        assert_eq!(
+            &*text, "hello",
+            "AX `type` on the composer's editor must reach the guest's own document"
+        );
+    }
+
+    /// The same drive, through AX `set_value` instead of `type`: the AX
+    /// door's own `perform()` dispatches `set_value` WITHOUT an explicit
+    /// Focus first, unlike `type`.
+    #[gpui_kit::test]
+    fn ax_set_value_on_a_nested_editor_reaches_the_guests_document(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let (root, path) = chat_shaped_editor(true);
+        let store = EditorStore::new(1);
+        store.replace(&root).expect("mount editor references");
+        seed_empty_document(&store);
+        let window_store = store.clone();
+        let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+            let mut tree = ViewTree::new(root);
+            tree.set_editor_store(window_store, cx);
+            tree
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+        });
+        let performed = native.update(|window, cx| {
+            perform_by_id("t", window, cx, "t:editor-field", "set_value", "hello")
+        });
+        assert!(performed, "the editor's AX field must be in the tree");
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            window.render_frame(cx);
+        });
+        store.ready().expect("no fault after AX `set_value`");
+        let text = store
+            .projection(&path)
+            .and_then(|projection| projection.text)
+            .unwrap_or_default();
+        assert_eq!(
+            &*text, "hello",
+            "AX `set_value` on the composer's editor must reach the guest's own document"
         );
     }
 }
