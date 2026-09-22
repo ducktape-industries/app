@@ -228,11 +228,16 @@ fn apply_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
     for command in commands.iter().take(wire::MAX_LIST_COMMANDS) {
         match *command {
             wire::ListCommand::Reset { count } => {
+                let count = count.min(wire::MAX_LIST_ITEMS);
                 list.state.reset(count);
                 list.rows.clear();
                 list.item_count = count;
             }
             wire::ListCommand::Splice { start, end, count } => {
+                let current = list.state.item_count();
+                let start = start.min(current);
+                let end = end.clamp(start, current);
+                let count = count.min(wire::MAX_LIST_ITEMS.saturating_sub(current - (end - start)));
                 list.state.splice(start..end, count);
                 let delta = count as isize - (end - start) as isize;
                 list.rows = std::mem::take(&mut list.rows)
@@ -249,7 +254,11 @@ fn apply_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
                     .collect();
                 list.item_count = list.state.item_count();
             }
-            wire::ListCommand::Remeasure { start, end } => list.state.remeasure_items(start..end),
+            wire::ListCommand::Remeasure { start, end } => {
+                let count = list.state.item_count();
+                let start = start.min(count);
+                list.state.remeasure_items(start..end.clamp(start, count));
+            }
             wire::ListCommand::ScrollTo(offset) => list.state.scroll_to(gpui_kit::ListOffset {
                 item_ix: offset.item_ix,
                 offset_in_item: px(offset.offset_in_item),
