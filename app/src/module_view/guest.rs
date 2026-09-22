@@ -124,6 +124,7 @@ pub(super) struct Guest {
     pub(crate) exports: Exports,
     /// The guest's events for its next tick.
     pub(crate) pending: Vec<wire::Event>,
+    pub(crate) theme_dark: Option<bool>,
     /// Requests wait for the native layout of a frame that still mounts
     /// their target, inside this instance only.
     pub(crate) widget_commands: Vec<(u64, wire::WidgetCommand)>,

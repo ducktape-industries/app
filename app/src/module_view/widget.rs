@@ -145,6 +145,7 @@ impl NativeModuleView {
         let Slot::Ready(guest) = slot else {
             return;
         };
+        guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
         filesystem::mount(guest, cx);
         media::mount(guest, cx);
@@ -268,6 +269,7 @@ impl NativeModuleView {
         let generation = guest.seated_generation();
         let ticks = guest.ticks;
         guest.set_visible(true);
+        guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
         filesystem::mount(guest, cx);
         media::mount(guest, cx);

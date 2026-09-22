@@ -1,6 +1,16 @@
 use super::*;
 
 impl Guest {
+    pub(crate) fn sync_theme(&mut self, dark: bool) {
+        if self.theme_dark != Some(dark) {
+            self.theme_dark = Some(dark);
+            // Theme is driver state, shared by every view regardless of its
+            // product-specific props stream. Latest appearance wins per tick.
+            self.pending.retain(|event| !matches!(event, wire::Event::Theme { .. }));
+            self.pending.push(wire::Event::Theme { dark });
+        }
+    }
+
     /// One redraw: tick if there is anything to deliver — or never was a
     /// first frame — answer the requests, and say whether the guest is due
     /// again at once. A guest with nothing to deliver is left alone: the

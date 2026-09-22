@@ -428,6 +428,7 @@ impl Guest {
             store,
             exports,
             pending: Vec::new(),
+            theme_dark: None,
             widget_commands: Vec::new(),
             frame: wire::Frame::default(),
             frame_reports: Default::default(),
