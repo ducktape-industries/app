@@ -72,7 +72,7 @@ use style::{
     button_style, content_dimensions, cross_align, decoration, dimensions, has_named_overlay,
     named_overlay, native_cursor, object_fit, pad, rgba, shadows,
 };
-use svg_limits::{guarded_svg_paint, svg_data_allowed};
+use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
 use variable_list::{VariableList, VariableListKey};
 

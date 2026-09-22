@@ -77,6 +77,10 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
     native.update(|window, cx| window.render_frame(cx));
+    let admitted_before = native.update(|window, cx| {
+        svg_limits::svg_admitted_bytes(window.window_handle().window_id(), cx)
+    });
+    assert!(admitted_before > 0, "the first SVG paint was admitted");
 
     let original = host.read_with(&native, |host, _| host.tree.clone());
     native.update(|_, cx| {
@@ -102,6 +106,13 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
     native.update(|window, cx| window.render_frame(cx));
+    let admitted_after = native.update(|window, cx| {
+        svg_limits::svg_admitted_bytes(window.window_handle().window_id(), cx)
+    });
+    assert_eq!(
+        admitted_after, admitted_before,
+        "ViewTree recreation reused the native SVG admission key"
+    );
 
     let replacement = host.read_with(&native, |host, _| host.tree.clone());
     native.update(|_, cx| {

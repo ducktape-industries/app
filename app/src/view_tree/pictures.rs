@@ -117,6 +117,7 @@ impl ViewTree {
             }
             wire::SvgSource::Data { hash, .. } => match self.vectors.get(hash) {
                 Some(bytes) => element.child(guarded_svg_paint(
+                    SvgPaintSource::data(bytes),
                     svg()
                         .data(bytes)
                         .with_transformation(native_transform)
@@ -126,6 +127,7 @@ impl ViewTree {
             },
             wire::SvgSource::Asset(path) if safe_asset_path(path) => {
                 element.child(guarded_svg_paint(
+                    SvgPaintSource::asset(path.clone()),
                     svg()
                         .path(path.clone())
                         .with_transformation(native_transform)
@@ -167,13 +169,13 @@ impl ViewTree {
             .unwrap_or_default();
         let width = f32::from(bounds.size.width).max(1.);
         let height = f32::from(bounds.size.height).max(1.);
+        let svg_bytes = canvas_svg(commands, width, height);
+        let source = SvgPaintSource::data(&svg_bytes);
         root.child(guarded_svg_paint(
-            img(Arc::new(Image::from_bytes(
-                ImageFormat::Svg,
-                canvas_svg(commands, width, height),
-            )))
-            .size_full()
-            .object_fit(ObjectFit::Fill),
+            source,
+            img(Arc::new(Image::from_bytes(ImageFormat::Svg, svg_bytes)))
+                .size_full()
+                .object_fit(ObjectFit::Fill),
         ))
         .child(self.measure(&self.authored_path, cx))
         .into_any_element()
