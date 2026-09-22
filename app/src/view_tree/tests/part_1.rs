@@ -212,8 +212,8 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         "paragraph",
         "A long description with words that must wrap within the available parent width. "
             .repeat(8),
-        false,
         None,
+        false,
     );
     let row = axis_container(
         "row",
@@ -357,8 +357,7 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         id: wire::ElementIdWire::Name("folders".into()),
         content: Box::new(columns),
         direction: wire::ScrollDirection::Horizontal,
-        width: Some(fill()),
-        height: Some(fill()),
+        style: sized_style(Some(fill()), Some(fill())),
         on_scroll: None,
         virtual_rows: false,
         bar_hidden: false,
@@ -369,8 +368,6 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         anchor_x: Default::default(),
         anchor_y: Default::default(),
         auto_scroll: false,
-        background: None,
-        border: None,
     };
     let mut main = axis_container(
         "main-column",

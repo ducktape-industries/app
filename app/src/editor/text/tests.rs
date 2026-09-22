@@ -27,7 +27,7 @@ fn store_with(
     let mut locked = store.lock();
     locked.fields.insert(
         editor_path(),
-        super::Field {
+        super::super::Field {
             reference: reference.clone(),
             handler: 1,
             editable: true,
@@ -45,12 +45,12 @@ fn store_with(
     );
     locked.documents.insert(
         reference.document.clone(),
-        super::Document {
+        super::super::Document {
             reference,
             text: Some(Arc::from(text)),
             queue: Default::default(),
             queued_bytes: 0,
-            phase: super::Phase::Ready,
+            phase: super::super::Phase::Ready,
         },
     );
     drop(locked);

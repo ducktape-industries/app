@@ -92,6 +92,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         on_hide: None,
         anticipate: None,
         delay: None,
+        style: gpui_kit::StyleRefinement::default(),
         child: Box::new(wire::Node::MouseArea {
             id: named_id("press-area"),
             role: None,

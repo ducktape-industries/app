@@ -335,13 +335,13 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
 fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     for (height, minimum, maximum, expected) in [
-        (Some(fixed(60.)), None, None, 60.),
-        (Some(fixed(60.)), Some(100.), None, 100.),
-        (Some(fixed(180.)), None, Some(100.), 100.),
+        (Some(60.), None, None, 60.),
+        (Some(60.), Some(100.), None, 100.),
+        (Some(180.), None, Some(100.), 100.),
         (None, None, None, 300.),
     ] {
         let mut authored = div().w(px(240.));
-        if let Some(fixed(height)) = height {
+        if let Some(height) = height {
             authored = authored.h(px(height));
         } else {
             authored = authored.h_full();

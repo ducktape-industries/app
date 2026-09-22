@@ -403,10 +403,11 @@ impl Render for TextEditor {
             .as_ref()
             .map(|projection| projection.options.clone())
             .unwrap_or_default();
-        let padding = options
+        let presentation_style = options
             .presentation
             .as_ref()
-            .and_then(|value| value.padding);
+            .map(|value| value.style.clone())
+            .unwrap_or_default();
         let accessible = crate::view_tree::Accessible {
             value: Some(self.input.read(cx).value().to_string()),
             ..self.accessible.clone()
@@ -417,6 +418,7 @@ impl Render for TextEditor {
             .key_context(GUEST_EDITOR_CONTEXT)
             .relative()
             .w_full()
+            .refine_style(&presentation_style)
             // The box the guest gave, not the room the words take: a press in
             // the empty part of a card is a press on the card's writing. A
             // field asked to shrink has no empty part to press — its box IS
@@ -424,13 +426,6 @@ impl Render for TextEditor {
             // the height the parent is waiting on this field to report.
             .when(self.fills, |element| element.h_full())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::pressed))
-            .when_some(padding, |element, padding| {
-                element
-                    .pt(px(padding.top))
-                    .pr(px(padding.right))
-                    .pb(px(padding.bottom))
-                    .pl(px(padding.left))
-            })
             .child(crate::view_tree::announce(
                 crate::a11y::text_field(
                     "editor-field",
