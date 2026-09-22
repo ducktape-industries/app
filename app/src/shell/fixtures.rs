@@ -58,7 +58,7 @@ pub(crate) fn render_tree_fixture() {
                             vec![FixturePane {
                                 label: String::new(),
                                 context: String::new(),
-                                tree,
+                                tree: *tree,
                             }],
                             0,
                             false,
@@ -112,7 +112,7 @@ enum Fixture {
         #[serde(default)]
         popped_out: bool,
     },
-    Tree(view_wire::Node),
+    Tree(Box<view_wire::Node>),
 }
 
 #[derive(serde::Deserialize)]
@@ -265,11 +265,16 @@ impl Render for TreeFixtureFrame {
                                             .text_color(muted)
                                             .child(context.clone()),
                                     )
-                                    .child(control("split", "◫"))
-                                    .child(control(
-                                        if self.popped_out { "popin" } else { "popout" },
-                                        "↗",
-                                    ))
+                                    // Mirrors panes.rs: a console pane splits and pops
+                                    // out; a popped-out window only pops back in.
+                                    .when(!self.popped_out, |strip| {
+                                        strip
+                                            .child(control("split", "⊞"))
+                                            .child(control("popout", "↗"))
+                                    })
+                                    .when(self.popped_out, |strip| {
+                                        strip.child(control("popin", "↙"))
+                                    })
                                     .child(control("close", "×")),
                             )
                             .child(div().flex_1().min_h_0().size_full().child(tree.clone()))
