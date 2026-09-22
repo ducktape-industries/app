@@ -7,7 +7,7 @@ pub(crate) struct Facts {
     pub(crate) dark: bool,
     pub(crate) endpoint: String,
     pub(crate) endpoint_error: String,
-    pub(crate) recent_endpoints: Vec<String>,
+    pub(crate) recent_endpoints: Vec<crate::backend::RecentEndpoint>,
     pub(crate) connected: bool,
     pub(crate) connecting: bool,
     pub(crate) network: String,
@@ -16,7 +16,9 @@ pub(crate) struct Facts {
     pub(crate) signer_key: String,
     pub(crate) unlock_error: String,
     pub(crate) unlock_busy: bool,
+    pub(crate) key_exists: bool,
     pub(crate) browsing: bool,
+    pub(crate) restoring: bool,
     pub(crate) phrase: String,
     pub(crate) active: Option<&'static str>,
     pub(crate) badges: BTreeMap<&'static str, i64>,
@@ -37,7 +39,9 @@ impl Ducktape {
             signer_key: self.signer_key.clone(),
             unlock_error: self.unlock_error.clone(),
             unlock_busy: self.unlock_busy,
+            key_exists: self.key_exists,
             browsing: self.browsing,
+            restoring: self.restoring,
             phrase: self.phrase.clone(),
             active: self.active,
             badges: self.badges.clone(),
@@ -47,7 +51,9 @@ impl Ducktape {
 
 impl DesktopWindow {
     /// A native text field; Enter dispatches `on_enter`, every change
-    /// dispatches `on_change` with the text.
+    /// dispatches `on_change` with the text. Its accessible name is
+    /// `label`, or `placeholder` when a field's hint text already reads as
+    /// one (a value-shaped placeholder like an example URL does not).
     #[allow(clippy::too_many_arguments, reason = "one call site per field")]
     pub(super) fn input(
         &mut self,
@@ -57,6 +63,7 @@ impl DesktopWindow {
         initial: &str,
         on_change: fn(String) -> Message,
         on_enter: fn() -> Message,
+        label: Option<&'static str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
@@ -110,7 +117,7 @@ impl DesktopWindow {
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
         )
-        .aria_label(placeholder);
+        .aria_label(label.unwrap_or(placeholder));
         match masked {
             true => field.role(gpui_kit::Role::PasswordInput),
             false => field.role(gpui_kit::Role::TextInput),
@@ -195,29 +202,70 @@ impl DesktopWindow {
             &state.endpoint,
             Message::EndpointTyped,
             || Message::ConnectSubmit,
+            Some("Node address"),
             window,
             cx,
         );
-        let recent = state.recent_endpoints.iter().map(|endpoint| {
-            let model = self.model.clone();
-            let target = endpoint.clone();
+        let recent = state.recent_endpoints.iter().map(|entry| {
+            let label = match entry.network.is_empty() {
+                true => entry.url.clone(),
+                false => format!("{} — {}", entry.network, entry.url),
+            };
+            let row_model = self.model.clone();
+            let row_target = entry.url.clone();
+            let forget_model = self.model.clone();
+            let forget_target = entry.url.clone();
             div()
-                .id(SharedString::from(format!("recent/{endpoint}")))
-                .control(Role::Button, SharedString::from(endpoint.clone()))
-                .cursor_pointer()
-                .px_2()
-                .py_1()
-                .rounded(px(design::radius::CONTROL as f32))
-                .text_size(px(12.5))
-                .text_color(colors.muted_foreground)
-                .hover(|style| style.text_color(colors.foreground))
-                .on_click(move |_, _, cx| {
-                    let target = target.clone();
-                    model.update(cx, |model, cx| {
-                        model.dispatch(Message::ConnectTo(target), cx)
-                    })
-                })
-                .child(endpoint.clone())
+                .flex()
+                .items_center()
+                .gap_1()
+                .child(
+                    div()
+                        .id(SharedString::from(format!("recent/{}", entry.url)))
+                        .control(Role::Button, SharedString::from(label.clone()))
+                        .cursor_pointer()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .px_2()
+                        .py_1()
+                        .rounded(px(design::radius::CONTROL as f32))
+                        .text_size(px(12.5))
+                        .text_color(colors.muted_foreground)
+                        .hover(|style| style.text_color(colors.foreground))
+                        .on_click(move |_, _, cx| {
+                            let target = row_target.clone();
+                            row_model.update(cx, |model, cx| {
+                                model.dispatch(Message::ConnectTo(target), cx)
+                            })
+                        })
+                        .child(label),
+                )
+                .child(
+                    div()
+                        .id(SharedString::from(format!("forget/{}", entry.url)))
+                        .control(
+                            Role::Button,
+                            SharedString::from(format!("Forget {}", entry.url)),
+                        )
+                        .cursor_pointer()
+                        .flex_shrink_0()
+                        .px_1p5()
+                        .py_0p5()
+                        .rounded(px(design::radius::CONTROL as f32))
+                        .text_size(px(12.5))
+                        .text_color(colors.muted_foreground)
+                        .hover(|style| {
+                            style.text_color(hsla_of(design::palette(state.dark).danger))
+                        })
+                        .on_click(move |_, _, cx| {
+                            let target = forget_target.clone();
+                            forget_model.update(cx, |model, cx| {
+                                model.dispatch(Message::ForgetEndpoint(target), cx)
+                            })
+                        })
+                        .child("×"),
+                )
         });
         let note = match (!state.error.is_empty(), !state.endpoint_error.is_empty()) {
             (true, _) => Some(state.error.clone()),

@@ -82,12 +82,13 @@ impl Ducktape {
                     return Task::none();
                 }
                 let client = backend::RpcClient::new(origin.clone());
-                backend::note_endpoint(&origin);
+                backend::note_endpoint(&origin, &status.network);
                 self.recent_endpoints = backend::recent_endpoints();
                 self.connected_rpc = origin;
                 self.network = status.network.clone();
                 self.connected = true;
                 self.browsing = false;
+                self.key_exists = backend::key_exists(&self.network);
                 self.screen = Screen::Console;
                 self.apply_status(&status);
                 drop(crate::runtime::connected(&client, &self.network));
@@ -109,7 +110,7 @@ impl Ducktape {
                 self.connecting = false;
                 self.connected = false;
                 self.status = "Not connected".into();
-                self.error = backend::user_error(error);
+                self.error = backend::connect_error(&self.endpoint, error);
                 Task::none()
             }
             Message::StatusPushed(status) => {
@@ -132,8 +133,14 @@ impl Ducktape {
                 self.screen = Screen::Connect;
                 self.browsing = false;
                 self.password.clear();
+                self.confirm_password.clear();
                 self.phrase.clear();
                 self.unlock_error.clear();
+                self.key_exists = false;
+                self.restoring = false;
+                self.restore_phrase.clear();
+                self.restore_password.clear();
+                self.restore_confirm_password.clear();
                 self.push_props();
                 Task::none()
             }
@@ -200,6 +207,11 @@ impl Ducktape {
                 self.unlock_error.clear();
                 Task::none()
             }
+            Message::ConfirmPasswordTyped(text) => {
+                self.confirm_password = text;
+                self.unlock_error.clear();
+                Task::none()
+            }
             Message::UnlockSubmit => {
                 if self.unlock_busy {
                     return Task::none();
@@ -211,7 +223,7 @@ impl Ducktape {
                 Task::future(async move {
                     let path = match backend::session_key_path(&network) {
                         Ok(path) => path,
-                        Err(error) => return Message::UnlockFailed(error),
+                        Err(error) => return Message::UnlockFailed(backend::user_error(error)),
                     };
                     match backend::seat_signer(path, password).await {
                         Ok(pubkey) => Message::Unlocked(pubkey),
@@ -223,11 +235,12 @@ impl Ducktape {
                 if self.unlock_busy {
                     return Task::none();
                 }
-                if self.password.chars().count() < 8 {
-                    self.unlock_error = "The password needs at least 8 characters.".into();
+                if let Some(error) = weak_password(&self.password, &self.confirm_password) {
+                    self.unlock_error = error;
                     return Task::none();
                 }
                 let password = zeroize::Zeroizing::new(std::mem::take(&mut self.password));
+                self.confirm_password.clear();
                 let network = self.network.clone();
                 self.unlock_busy = true;
                 self.unlock_error.clear();
@@ -241,11 +254,11 @@ impl Ducktape {
                     .unwrap_or_else(|_| Err("creating the wallet did not finish".into()));
                     let phrase = match created {
                         Ok(phrase) => phrase,
-                        Err(error) => return Message::UnlockFailed(error),
+                        Err(error) => return Message::UnlockFailed(backend::user_error(error)),
                     };
                     let path = match backend::session_key_path(&network) {
                         Ok(path) => path,
-                        Err(error) => return Message::UnlockFailed(error),
+                        Err(error) => return Message::UnlockFailed(backend::user_error(error)),
                     };
                     match backend::seat_signer(path, password).await {
                         Ok(pubkey) => Message::WalletCreated { pubkey, phrase },
@@ -257,6 +270,7 @@ impl Ducktape {
                 self.unlock_busy = false;
                 self.signer_key = pubkey;
                 self.phrase = phrase;
+                self.key_exists = true;
                 self.push_props();
                 Task::none()
             }
@@ -272,6 +286,86 @@ impl Ducktape {
             }
             Message::SignIn => {
                 self.browsing = false;
+                Task::none()
+            }
+            Message::ShowRestore => {
+                self.restoring = true;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::RestoreCancel => {
+                self.restoring = false;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::RestorePhraseTyped(text) => {
+                self.restore_phrase = text;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::RestorePasswordTyped(text) => {
+                self.restore_password = text;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::RestoreConfirmPasswordTyped(text) => {
+                self.restore_confirm_password = text;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::RestoreSubmit => {
+                if self.unlock_busy {
+                    return Task::none();
+                }
+                let phrase = normalize_phrase(&self.restore_phrase);
+                if keystore::userkey::seed_of_mnemonic(&phrase).is_err() {
+                    self.unlock_error = "That phrase isn't valid — check each word.".into();
+                    return Task::none();
+                }
+                if let Some(error) =
+                    weak_password(&self.restore_password, &self.restore_confirm_password)
+                {
+                    self.unlock_error = error;
+                    return Task::none();
+                }
+                let password = zeroize::Zeroizing::new(std::mem::take(&mut self.restore_password));
+                self.restore_confirm_password.clear();
+                let network = self.network.clone();
+                self.unlock_busy = true;
+                self.unlock_error.clear();
+                Task::future(async move {
+                    let restored = tokio::task::spawn_blocking({
+                        let network = network.clone();
+                        let password = password.clone();
+                        move || backend::restore_wallet(&network, &phrase, &password)
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("restoring the key did not finish".into()));
+                    if let Err(error) = restored {
+                        return Message::UnlockFailed(backend::user_error(error));
+                    }
+                    let path = match backend::session_key_path(&network) {
+                        Ok(path) => path,
+                        Err(error) => return Message::UnlockFailed(backend::user_error(error)),
+                    };
+                    match backend::seat_signer(path, password).await {
+                        Ok(pubkey) => Message::Restored(pubkey),
+                        Err(error) => Message::UnlockFailed(backend::user_error(error)),
+                    }
+                })
+            }
+            Message::Restored(pubkey) => {
+                self.unlock_busy = false;
+                self.signer_key = pubkey;
+                self.key_exists = true;
+                self.restoring = false;
+                self.restore_phrase.clear();
+                self.push_props();
+                Task::none()
+            }
+            Message::ForgetEndpoint(url) => {
+                backend::forget_endpoint(&url);
+                self.recent_endpoints = backend::recent_endpoints();
                 Task::none()
             }
             Message::Unlocked(pubkey) => {
@@ -404,3 +498,44 @@ fn status_ticks() -> impl futures::Stream<Item = Message> {
 }
 
 use futures::StreamExt as _;
+
+/// The one password rule enforced before minting or restoring a key: long
+/// enough (the keystore's own floor), and its confirmation matches.
+fn weak_password(password: &str, confirm: &str) -> Option<String> {
+    if keystore::userkey::check_password_len(password).is_err() {
+        return Some(format!(
+            "The password needs at least {} characters.",
+            keystore::userkey::MIN_PASSWORD_LEN
+        ));
+    }
+    (password != confirm).then(|| "The passwords don't match.".to_string())
+}
+
+/// Whatever a person pastes for a recovery phrase — any run of whitespace
+/// between words, any case — folded to what BIP39 checks.
+fn normalize_phrase(raw: &str) -> String {
+    raw.split_whitespace()
+        .map(str::to_lowercase)
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_phrase_folds_whitespace_and_case() {
+        assert_eq!(
+            normalize_phrase("  Canoe\n Pond\tFOREST  "),
+            "canoe pond forest"
+        );
+    }
+
+    #[test]
+    fn weak_password_catches_short_and_mismatched() {
+        assert!(weak_password("short", "short").is_some());
+        assert!(weak_password("longenough1", "different").is_some());
+        assert!(weak_password("longenough1", "longenough1").is_none());
+    }
+}
