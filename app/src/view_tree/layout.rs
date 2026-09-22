@@ -7,12 +7,12 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Container {
+        let wire::Node::Container(view_wire::ContainerNode {
             id,
             style,
             interactivity,
             children,
-        } = node
+        }) = node
         else {
             unreachable!()
         };

@@ -19,12 +19,12 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
         *on_submit = Some(handler + 10);
         node
     };
-    let branch = |id, child| wire::Node::Container {
+    let branch = |id, child| wire::Node::Container (view_wire::ContainerNode {
         id: Some(id),
         style: gpui_kit::StyleRefinement::default(),
         interactivity: Default::default(),
         children: vec![child],
-    };
+    });
     let root = container(
         "form",
         [
@@ -208,7 +208,7 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
         let mut host = axis_container(
             "host",
             wire::Axis::Row,
-            [wire::Node::Container {
+            [wire::Node::Container (view_wire::ContainerNode {
                 id: Some(named_id("position")),
                 style: div()
                     .absolute()
@@ -231,9 +231,9 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
                     }),
                     style: sized_style(Some(fixed(20.)), Some(fixed(20.))),
                 }],
-            }],
+            })],
         );
-        if let wire::Node::Container { style, .. } = &mut host {
+        if let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut host {
             *style = div()
                 .flex()
                 .flex_row()

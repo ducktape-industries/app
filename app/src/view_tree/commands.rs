@@ -208,7 +208,9 @@ impl ViewTree {
         if matches!(command, C::Focus { .. }) {
             let mut kind = None;
             walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
-                if path == target && matches!(node, wire::Node::Container { .. }) {
+                if path == target
+                    && matches!(node, wire::Node::Container(view_wire::ContainerNode { .. }))
+                {
                     kind = Some(std::mem::discriminant(node));
                 }
             });
@@ -367,11 +369,14 @@ impl ViewTree {
         let mut mounted = std::collections::HashSet::new();
         walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
             mounted.insert(path.clone());
-            if matches!(node, wire::Node::Container { id: Some(_), .. }) {
+            if matches!(
+                node,
+                wire::Node::Container(view_wire::ContainerNode { id: Some(_), .. })
+            ) {
                 focusable.insert(path.clone(), std::mem::discriminant(node));
             }
             match node {
-                wire::Node::Container { interactivity, .. }
+                wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
                 | wire::Node::Image { interactivity, .. }
                 | wire::Node::Svg { interactivity, .. } => {
                     if let Some(id) = interactivity.focus_handle {

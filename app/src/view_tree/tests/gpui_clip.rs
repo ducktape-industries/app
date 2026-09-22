@@ -21,10 +21,10 @@ fn hostile_guest_position_size_and_overflow_remain_inside_host_slot(
         style.background = Some(rgb(0xff00ff).into());
         style.overflow.x = Some(gpui_kit::Overflow::Visible);
         style.overflow.y = Some(gpui_kit::Overflow::Visible);
-        let root = wire::Node::Container {
+        let root = wire::Node::Container (view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Integer(1)), style,
             interactivity: Default::default(), children: vec![],
-        };
+        });
         let mut frame = wire::Frame { root: Some(root), ..Default::default() };
         wire::sanitize(&mut frame).unwrap();
         let root = frame.root.unwrap();

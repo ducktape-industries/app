@@ -2,7 +2,7 @@
 fn native_gpui_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let mut root = container_with_style("action", div().size_full().style().clone(), []);
-    if let wire::Node::Container { interactivity, .. } = &mut root {
+    if let wire::Node::Container (view_wire::ContainerNode { interactivity, .. }) = &mut root {
         interactivity.on_click = Some(71);
         interactivity.on_aux_click = Some(72);
     }

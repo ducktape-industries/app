@@ -28,12 +28,12 @@ fn variable_list_node(
 fn fixed_row(id: u64, height: f32, color: u32) -> wire::Node {
     let mut style = gpui_kit::StyleRefinement::default().h(px(height)).w_full();
     style.background = Some(rgb(color).into());
-    wire::Node::Container {
+    wire::Node::Container (view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Integer(id)),
         style,
         interactivity: Default::default(),
         children: vec![],
-    }
+    })
 }
 
 #[gpui_kit::test]
@@ -124,10 +124,10 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
         assert!(list.rows.contains_key(&1_998) && list.rows.contains_key(&1_999));
         assert!(matches!(
             &list.rows[&1_998],
-            wire::Node::Container {
+            wire::Node::Container (view_wire::ContainerNode {
                 id: Some(wire::ElementIdWire::Integer(1998)),
                 ..
-            }
+            })
         ));
         assert!(list.state.logical_scroll_top().item_ix >= 1_998);
     });

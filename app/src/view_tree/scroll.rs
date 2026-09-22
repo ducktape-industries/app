@@ -30,7 +30,7 @@ pub(super) struct VirtualScroll {
 pub(super) fn virtual_rows(node: &wire::Node) -> Option<Vec<VirtualRow>> {
     use wire::Node;
     match node {
-        Node::Container { children, .. } if children.len() == 1 => {
+        Node::Container(view_wire::ContainerNode { children, .. }) if children.len() == 1 => {
             virtual_rows(&children[0]).map(|rows| wrap_virtual_rows(node, rows))
         }
         _ => None,
@@ -39,7 +39,7 @@ pub(super) fn virtual_rows(node: &wire::Node) -> Option<Vec<VirtualRow>> {
 
 pub(super) fn has_virtual_column(node: &wire::Node) -> bool {
     match node {
-        wire::Node::Container { children, .. } => {
+        wire::Node::Container(view_wire::ContainerNode { children, .. }) => {
             children.len() == 1 && has_virtual_column(&children[0])
         }
         _ => false,
@@ -49,13 +49,14 @@ pub(super) fn has_virtual_column(node: &wire::Node) -> bool {
 pub(super) fn wrap_virtual_rows(node: &wire::Node, rows: Vec<VirtualRow>) -> Vec<VirtualRow> {
     let mut shell = node.clone();
     match &mut shell {
-        wire::Node::Container { children, .. } => children.clear(),
+        wire::Node::Container(view_wire::ContainerNode { children, .. }) => children.clear(),
         _ => unreachable!("only vertical layout wrappers surround virtual rows"),
     }
     rows.into_iter()
         .map(|mut row| {
             let mut wrapped = shell.clone();
-            let wire::Node::Container { children, .. } = &mut wrapped else {
+            let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut wrapped
+            else {
                 unreachable!("vertical layout wrapper")
             };
             children.push(row.content);

@@ -172,9 +172,9 @@ pub(super) fn paint_rich_selection(
 
 impl ViewTree {
     pub(super) fn text(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
-        let wire::Node::Text {
+        let wire::Node::Text(view_wire::TextNode {
             id, style, content, ..
-        } = node
+        }) = node
         else {
             unreachable!()
         };

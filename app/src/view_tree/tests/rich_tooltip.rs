@@ -19,12 +19,12 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     }
 
     let mut tip = div().size(px(120.)).bg(rgb(TIP_COLOR));
-    let tip = wire::Node::Container {
+    let tip = wire::Node::Container (view_wire::ContainerNode {
         id: Some(named_id("rich-tip-content")),
         style: tip.style().clone(),
         interactivity: Default::default(),
         children: Vec::new(),
-    };
+    });
     fn rich(tooltip: wire::RichTextTooltip) -> wire::Node {
         let mut style = div().size(px(40.)).text_color(rgb(0xffffff));
         wire::Node::RichText {

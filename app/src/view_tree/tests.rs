@@ -47,12 +47,12 @@ fn container_with_style(
     style: gpui_kit::StyleRefinement,
     children: impl IntoIterator<Item = wire::Node>,
 ) -> wire::Node {
-    wire::Node::Container {
+    wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
         style,
         interactivity: Default::default(),
         children: children.into_iter().collect(),
-    }
+    })
 }
 
 fn sized(
@@ -61,12 +61,12 @@ fn sized(
     width: Option<gpui_kit::Length>,
     height: Option<gpui_kit::Length>,
 ) -> wire::Node {
-    wire::Node::Container {
+    wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
         style: sized_style(width, height),
         interactivity: Default::default(),
         children: vec![child],
-    }
+    })
 }
 
 fn rule(key: &str, axis: wire::Axis) -> wire::Node {
@@ -88,13 +88,13 @@ fn rule(key: &str, axis: wire::Axis) -> wire::Node {
 }
 
 fn text(key: &str, content: impl Into<String>) -> wire::Node {
-    wire::Node::Text {
+    wire::Node::Text(view_wire::TextNode {
         id: Some(named_id(key)),
         style: gpui_kit::StyleRefinement::default(),
         content: content.into(),
         heading: None,
         live: None,
-    }
+    })
 }
 
 fn axis_container(
@@ -107,12 +107,12 @@ fn axis_container(
         wire::Axis::Column => element.flex_col(),
         wire::Axis::Row => element.flex_row(),
     };
-    wire::Node::Container {
+    wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
         style: element.style().clone(),
         interactivity: Default::default(),
         children: children.into_iter().collect(),
-    }
+    })
 }
 
 include!("tests/part_1.rs");

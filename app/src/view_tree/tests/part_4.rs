@@ -10,13 +10,13 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     let refusal = "Couldn’t read this room: indexer: view: unknown field `viewer_handles`, \
          expected one of `channel_id`, `before_seq`, `limit` at line 1 column 118";
     let mut error_text_style = div().w_full().whitespace_normal();
-    let error_text = wire::Node::Text {
+    let error_text = wire::Node::Text (view_wire::TextNode {
         id: Some(named_id("error-text")),
         style: error_text_style.style().clone(),
         content: refusal.into(),
         heading: None,
         live: None,
-    };
+    });
     let mut notice_style = div()
         .p_2()
         .bg(rgb(0x5b2430))
@@ -41,7 +41,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
             ),
         ],
     );
-    if let wire::Node::Container { style, .. } = &mut room_column {
+    if let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut room_column {
         *style = div()
             .flex()
             .flex_col()
@@ -72,7 +72,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
             room,
         ],
     );
-    if let wire::Node::Container { style, .. } = &mut workspace_row {
+    if let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut workspace_row {
         *style = div()
             .flex()
             .flex_row()
@@ -93,7 +93,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         anticipate: None,
         delay: None,
         style: sized_style(Some(fill()), Some(fill())),
-        child: Box::new(wire::Node::Container {
+        child: Box::new(wire::Node::Container (view_wire::ContainerNode {
             id: Some(named_id("press-area")),
             style: sized_style(Some(fill()), Some(fill())),
             interactivity: wire::Interactivity {
@@ -101,7 +101,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
                 ..Default::default()
             },
             children: vec![room],
-        }),
+        })),
     };
     // Mounted the way a module seat mounts a guest: a cached view under a
     // full-size div, not as the window root (which gpui stretches).
@@ -256,7 +256,7 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
     let mut base = div().w(px(120.)).h(px(40.)).bg(rgb(0x20242c));
     let mut hover = div().bg(rgb(0x303846));
     let mut active = div().bg(rgb(0x405060));
-    let root = wire::Node::Container {
+    let root = wire::Node::Container (view_wire::ContainerNode {
         id: Some(named_id("interactive")),
         style: base.style().clone(),
         interactivity: wire::Interactivity {
@@ -278,7 +278,7 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
             ..Default::default()
         },
         children: vec![text("interactive-label", "Click")],
-    };
+    });
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let handle = window.into();
@@ -310,7 +310,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
-    let root = wire::Node::Container {
+    let root = wire::Node::Container (view_wire::ContainerNode {
         id: Some(named_id("events")),
         style: sized_style(Some(fixed(120.)), Some(fixed(60.))),
         interactivity: wire::Interactivity {
@@ -321,7 +321,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
             ..Default::default()
         },
         children: vec![text("event-label", "Events")],
-    };
+    });
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);

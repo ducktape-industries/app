@@ -117,21 +117,21 @@ mod tests {
         let mut element = div().size(px(size)).bg(rgb(TOOLTIP_COLOR));
         let mut interactivity = wire::Interactivity::default();
         interactivity.on_click = handler;
-        wire::Node::Container {
+        wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("tooltip-content".into())),
             style: element.style().clone(),
             interactivity,
             children: Vec::new(),
-        }
+        })
     }
 
     fn parent_node() -> wire::Node {
-        wire::Node::Container {
+        wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("source-content".into())),
             style: div().size_full().style().clone(),
             interactivity: Default::default(),
             children: Vec::new(),
-        }
+        })
     }
 
     struct TooltipFixture {

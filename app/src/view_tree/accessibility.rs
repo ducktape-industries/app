@@ -54,12 +54,12 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
         ..Default::default()
     };
     match node {
-        Node::Text {
+        Node::Text(view_wire::TextNode {
             content,
             heading,
             live,
             ..
-        } => Accessible {
+        }) => Accessible {
             role: Some(match heading {
                 Some(_) => Role::Heading,
                 None => Role::Label,

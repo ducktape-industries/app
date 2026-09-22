@@ -193,11 +193,11 @@ impl ViewTree {
         }
         use wire::Node;
         let element = match node {
-            Node::Text { .. } => self.text(node, cx),
+            Node::Text(view_wire::TextNode { .. }) => self.text(node, cx),
             Node::Space { style } => div().refine_style(style).into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, cx),
-            Node::Container { .. } => self.container(node, window, cx),
+            Node::Container(view_wire::ContainerNode { .. }) => self.container(node, window, cx),
             Node::Scroll { .. } => self.scroll(node, window, cx),
             Node::Button { .. } => self.button(node, window, cx),
             Node::Input { .. } => self.input(node, window, cx),

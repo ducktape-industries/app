@@ -347,10 +347,10 @@ impl ViewTree {
             let mut toggle = gpui_kit::component::switch::Switch::new(
                 id.to_gpui().expect("sanitized toggle identity"),
             )
-                .refine_style(style)
-                .label(label.clone())
-                .checked(*checked)
-                .disabled(on_toggle.is_none());
+            .refine_style(style)
+            .label(label.clone())
+            .checked(*checked)
+            .disabled(on_toggle.is_none());
             if let Some(handler) = on_toggle {
                 let handler = *handler;
                 toggle = toggle.on_click(cx.listener(move |_, on, _, cx| {

@@ -30,12 +30,12 @@ pub(super) fn native_root(root: wire::Node) -> wire::Node {
     use gpui_kit::Styled as _;
     let mut host_root = gpui_kit::div();
     host_root = host_root.size_full();
-    wire::Node::Container {
+    wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Name("NativeModuleView/root".into())),
         style: host_root.style().clone(),
         interactivity: Default::default(),
         children: vec![root],
-    }
+    })
 }
 
 /// What a tab draws where its view is not: the load's stage over a skeleton

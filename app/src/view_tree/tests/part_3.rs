@@ -334,13 +334,13 @@ fn a_slider_is_named_by_its_label() {
 
 #[test]
 fn a_text_heading_has_its_level_and_a_live_text_its_politeness() {
-    let text = |heading, live| wire::Node::Text {
+    let text = |heading, live| wire::Node::Text (view_wire::TextNode {
         id: Some(named_id("t")),
         style: gpui_kit::StyleRefinement::default(),
         content: "Members".into(),
         heading,
         live,
-    };
+    });
     for level in 1..=6u8 {
         assert_eq!(
             accessible(&text(Some(level), None)),

@@ -200,13 +200,13 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         } else {
             element.whitespace_normal()
         };
-        wire::Node::Text {
+        wire::Node::Text (view_wire::TextNode {
             id: Some(named_id(key)),
             style: element.style().clone(),
             content,
             heading: None,
             live: None,
-        }
+        })
     };
     let paragraph = text(
         "paragraph",
@@ -225,7 +225,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         ],
     );
     let mut header = row.clone();
-    if let wire::Node::Container { children, .. } = &mut header {
+    if let wire::Node::Container (view_wire::ContainerNode { children, .. }) = &mut header {
         *children = vec![
             text("label", "Header".into(), None, true),
             wire::Node::Space {
@@ -235,7 +235,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         ];
     }
     let mut reference = row.clone();
-    if let wire::Node::Container { children, .. } = &mut reference {
+    if let wire::Node::Container (view_wire::ContainerNode { children, .. }) = &mut reference {
         *children = vec![text("reference", "Header".into(), None, true)];
     }
     let mut root = axis_container(
@@ -243,7 +243,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         wire::Axis::Column,
         [paragraph, row, reference, header],
     );
-    if let wire::Node::Container { style, .. } = &mut root {
+    if let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut root {
         let mut root_style = div()
             .flex()
             .flex_col()
@@ -354,8 +354,8 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         Some(fill()),
     );
     let mut columns = columns;
-    if let wire::Node::Container { children, .. } = &mut columns
-        && let wire::Node::Container { style, .. } = &mut children[0]
+    if let wire::Node::Container (view_wire::ContainerNode { children, .. }) = &mut columns
+        && let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut children[0]
     {
         *style = div()
             .flex()
@@ -401,7 +401,7 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
             ),
         ],
     );
-    if let wire::Node::Container { style, .. } = &mut main {
+    if let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut main {
         *style = div()
             .flex()
             .flex_col()
@@ -415,8 +415,8 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
     }
     let root = sized("main", main, Some(fill()), Some(fill()));
     let mut root = root;
-    if let wire::Node::Container { children, .. } = &mut root
-        && let wire::Node::Container { style, .. } = &mut children[0]
+    if let wire::Node::Container (view_wire::ContainerNode { children, .. }) = &mut root
+        && let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut children[0]
     {
         *style = div()
             .flex()
@@ -517,7 +517,7 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
                     style: sized_style(Some(fixed(20.)), Some(fixed(5.))),
                 }],
             );
-            if let wire::Node::Container { style, .. } = &mut content {
+            if let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut content {
                 *style = div().flex().flex_col().w_full().h_full().style().clone();
             }
             content

@@ -19,7 +19,7 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
     fn pictures(with_bytes: bool) -> wire::Node {
         let mut image_style = div().size(px(30.));
         let mut svg_style = div().size(px(30.)).text_color(rgb(0x00ff00));
-        wire::Node::Container {
+        wire::Node::Container (view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("pictures".into())),
             style: div()
                 .flex()
@@ -65,7 +65,7 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
                     interactivity: Default::default(),
                 },
             ],
-        }
+        })
     }
 
     cx.update(gpui_kit::init);
