@@ -65,10 +65,16 @@ impl UniformListDecoration for RangeObserver {
                     end: range.end as u32,
                 });
             }
-            let top_index = self
-                .scroll
-                .logical_scroll_top_index()
+            // GPUI's convenience query is test-support-only. Its public native
+            // state exposes the same pending target and settled logical offset.
+            let native = self.scroll.0.borrow();
+            let top_index = native
+                .deferred_scroll_to_item
+                .as_ref()
+                .map(|request| request.item_index)
+                .unwrap_or_else(|| native.base_handle.logical_scroll_top().0)
                 .min(item_count.saturating_sub(1));
+            drop(native);
             let observed = (top_index, scrollable, scrolled_to_end);
             if state.observed != Some(observed) {
                 state.observed = Some(observed);
