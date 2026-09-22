@@ -23,7 +23,7 @@ mod widget;
 
 pub(crate) use kernel::chord_of;
 pub(crate) use media::capturing;
-pub use roster::{connected, deployments_checked, local_link, props, rail};
+pub use roster::{RailRow, connected, deployments_checked, local_link, props, rail};
 pub(crate) use seat::{Failure, NODE_UNREACHABLE, retry};
 pub use seat::{Loads, override_views_from};
 pub(crate) use widget::NativeModuleView;
