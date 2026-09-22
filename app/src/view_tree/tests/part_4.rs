@@ -6,40 +6,89 @@
 fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    use view_wire::kit;
     cx.update(gpui_kit::init);
     let refusal = "Couldn’t read this room: indexer: view: unknown field `viewer_handles`, \
          expected one of `channel_id`, `before_seq`, `limit` at line 1 column 118";
-    let room = kit::sized(
-        kit::column(
-            "room",
-            [
-                kit::divider("header-rule"),
-                kit::notice(
-                    "error",
-                    kit::wrapping(kit::text("error-text", refusal)),
-                    kit::Tone::Danger,
-                ),
-                kit::space(None, Some(wire::Length::Fill)),
-                kit::sized(
-                    kit::container("composer", wire::Node::empty()),
-                    Some(wire::Length::Fill),
-                    Some(wire::Length::Fixed(60.)),
-                ),
-            ],
-        ),
+    let mut error_text_style = div().w_full().whitespace_normal();
+    let error_text = wire::Node::Text {
+        id: Some(named_id("error-text")),
+        style: error_text_style.style().clone(),
+        content: refusal.into(),
+        heading: None,
+        live: None,
+    };
+    let mut notice_style = div()
+        .p_2()
+        .bg(rgb(0x5b2430))
+        .border(px(1.))
+        .border_color(rgb(0xf06a6a))
+        .rounded(px(4.));
+    let notice = container_with_style("error", notice_style.style().clone(), [error_text]);
+    let mut room_column = linear(
+        "room-column",
+        wire::Axis::Column,
+        [
+            wire::Node::Rule {
+                key: "header-rule".into(),
+                axis: wire::Axis::Row,
+                thickness: 1.,
+                color: Some(wire::Rgba([0.4, 0.4, 0.4, 1.])),
+                weak: true,
+                radius: None,
+                snap: None,
+            },
+            notice,
+            wire::Node::Space {
+                width: None,
+                height: Some(wire::Length::Fill),
+            },
+            sized(
+                "composer",
+                container("composer-content", [wire::Node::empty()]),
+                Some(wire::Length::Fill),
+                Some(wire::Length::Fixed(60.)),
+            ),
+        ],
+    );
+    if let wire::Node::Linear { height, .. } = &mut room_column {
+        *height = Some(wire::Length::Fill);
+    }
+    let room = sized(
+        "room",
+        room_column,
         Some(wire::Length::Fill),
         Some(wire::Length::Fill),
     );
-    let room = kit::sized(
-        kit::row(
-            "workspace",
-            [
-                kit::pane("sidebar", wire::Node::empty(), wire::Length::Fixed(236.)),
-                kit::vertical_divider("sidebar-resize"),
-                room,
-            ],
-        ),
+    let mut sidebar_style = div()
+        .w(px(236.))
+        .min_w(px(236.))
+        .h_full()
+        .min_h_0()
+        .bg(rgb(0x252833))
+        .overflow_hidden();
+    let mut workspace_row = linear(
+        "workspace-row",
+        wire::Axis::Row,
+        [
+            container_with_style("sidebar", sidebar_style.style().clone(), [wire::Node::empty()]),
+            wire::Node::Rule {
+                key: "sidebar-resize".into(),
+                axis: wire::Axis::Column,
+                thickness: 1.,
+                color: Some(wire::Rgba([0.4, 0.4, 0.4, 1.])),
+                weak: true,
+                radius: None,
+                snap: None,
+            },
+            room,
+        ],
+    );
+    if let wire::Node::Linear { height, .. } = &mut workspace_row {
+        *height = Some(wire::Length::Fill);
+    }
+    let room = sized(
+        "workspace",
+        workspace_row,
         Some(wire::Length::Fill),
         Some(wire::Length::Fill),
     );
@@ -139,8 +188,9 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
 #[gpui_kit::test]
 fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    let card = wire::kit::sized(
-        wire::kit::container("float-card", wire::Node::empty()),
+    let card = sized(
+        "float-card-box",
+        container("float-card", [wire::Node::empty()]),
         Some(wire::Length::Fixed(40.)),
         Some(wire::Length::Fixed(20.)),
     );
@@ -153,7 +203,10 @@ fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::Te
         align_y: wire::AlignY::Bottom,
         on_dismiss: None,
         children: vec![
-            wire::kit::spacer(),
+            wire::Node::Space {
+                width: Some(wire::Length::Fill),
+                height: Some(wire::Length::Fill),
+            },
             wire::Node::Float {
                 key: "float".into(),
                 x: 37.,
@@ -189,4 +242,53 @@ fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::Te
             "the Float owns the card surface: {quads:?}"
         );
     });
+}
+
+#[gpui_kit::test]
+fn styled_container_uses_native_interactivity_and_typed_identity(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let mut base = div().w(px(120.)).h(px(40.)).bg(rgb(0x20242c));
+    let mut hover = div().bg(rgb(0x303846));
+    let mut active = div().bg(rgb(0x405060));
+    let root = wire::Node::Container {
+        id: Some(named_id("interactive")),
+        style: base.style().clone(),
+        interactivity: wire::Interactivity {
+            id: None,
+            group: Some("card".into()),
+            hover: Some(hover.style().clone()),
+            active: Some(active.style().clone()),
+            group_hover: Some(wire::GroupRefinement {
+                group: "card".into(),
+                style: hover.style().clone(),
+            }),
+            group_active: Some(wire::GroupRefinement {
+                group: "card".into(),
+                style: active.style().clone(),
+            }),
+            on_click: Some(42),
+        },
+        children: vec![text("interactive-label", "Click")],
+    };
+    let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let handle = window.into();
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let mut native = gpui_kit::VisualTestContext::from_window(handle, cx);
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone());
+        })
+    });
+    native.update(|window, cx| window.render_frame(cx));
+    native.update(|window, cx| window.render_frame(cx));
+    native.update(|window, cx| window.click("interactive", cx));
+    assert!(events
+        .borrow()
+        .iter()
+        .any(|event| matches!(event, wire::Event::Message(42))));
+    assert!(tree.read_with(&native, |tree, _| tree.mounted.contains("interactive")));
 }

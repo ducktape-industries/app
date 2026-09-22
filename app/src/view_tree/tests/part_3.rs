@@ -354,14 +354,9 @@ fn a_slider_is_named_by_its_label() {
 #[test]
 fn a_text_heading_has_its_level_and_a_live_text_its_politeness() {
     let text = |heading, live| wire::Node::Text {
-        key: "t".into(),
+        id: Some(named_id("t")),
+        style: gpui_kit::StyleRefinement::default(),
         content: "Members".into(),
-        width: None,
-        size: None,
-        color: None,
-        font: Default::default(),
-        align_x: None,
-        options: Default::default(),
         heading,
         live,
     };

@@ -26,7 +26,7 @@ use gpui_kit::{
     ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
     StrikethroughStyle, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
-    UnderlineStyle, Window, auto, canvas, div, fill, img, point, px, relative, rgb, size, svg,
+    UnderlineStyle, Window, canvas, div, fill, img, point, px, relative, rgb, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -51,19 +51,21 @@ mod text;
 mod tests;
 
 pub(crate) use accessibility::{Accessible, accessible, announce};
-use canvas::{
-    append_arc, append_arc_to, canvas_svg, native_canvas_commands, paint_canvas_commands,
-};
+#[cfg(test)]
+use canvas::{append_arc, append_arc_to};
+use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
 use inputs::{EditorMount, Field, RangeControl};
 use pickers::Picker;
-use pictures::{ViewerState, decode_image, qr};
+#[cfg(test)]
+use pictures::decode_image;
+use pictures::{ViewerState, qr};
 use scroll::{ScrollRequest, VirtualScroll};
 use sensors::SensorState;
 use style::{
-    align_items, button_style, content_dimensions, cross_align, decoration, dimensions,
-    font_weight, has_named_overlay, horizontal_align, justify, named_overlay, native_cursor,
-    object_fit, pad, rgba, shadows, text_options, vertical_align,
+    button_style, content_dimensions, cross_align, decoration, dimensions, font_weight,
+    has_named_overlay, horizontal_align, named_overlay, native_cursor, object_fit, pad, rgba,
+    shadows, text_options,
 };
 use text::RichSelection;
 
@@ -115,6 +117,7 @@ pub struct ViewTree {
     editors: HashMap<String, EditorMount>,
     mounted: std::collections::HashSet<String>,
     presentation: NativePresentation,
+    render_index: u64,
     #[cfg(test)]
     renders: u64,
 }
@@ -147,6 +150,7 @@ impl ViewTree {
             editors: HashMap::new(),
             mounted: Default::default(),
             presentation: NativePresentation::default(),
+            render_index: 0,
             #[cfg(test)]
             renders: 0,
         }
@@ -216,7 +220,6 @@ impl ViewTree {
             Node::MouseArea { .. } => self.mouse_area(node, window, cx),
             Node::Slider { .. } => self.slider(node, window, cx),
             Node::RichText { .. } => self.rich_text(node, window, cx),
-            Node::Flex { .. } => self.flex(node, window, cx),
             Node::Grid { .. } => self.grid(node, window, cx),
             Node::Hover { .. } => self.hover(node, window, cx),
             Node::Tooltip { .. } => self.tooltip(node, window, cx),
@@ -248,6 +251,7 @@ impl Render for ViewTree {
             self.renders += 1;
         }
         self.mounted.clear();
+        self.render_index = 0;
         let node = self.node(&self.root.clone(), window, cx);
         // Only controls mounted by this replacement frame may recover focus.
         self.presentation = NativePresentation::default();

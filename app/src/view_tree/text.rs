@@ -129,55 +129,35 @@ pub(super) fn paint_rich_selection(
 impl ViewTree {
     pub(super) fn text(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Text {
-            key,
-            content,
-            size,
-            color,
-            width,
-            font,
-            align_x,
-            options,
-            heading,
-            ..
+            id, style, content, ..
         } = node
         else {
             unreachable!()
         };
-        let mut element = text_options(
-            dimensions(div().min_w_0().max_w_full(), *width, options.height),
-            *font,
-            *align_x,
-            options,
-        )
-        // a Label: assistive technology reads its content as its name
-        .child(gpui_kit::Text::new(
-            key.clone().into(),
-            content.clone().into(),
-        ));
-        let intrinsic_label = options.wrapping == Some(wire::Wrapping::None)
-            && matches!(width, None | Some(wire::Length::Shrink));
-        if intrinsic_label {
-            // Shrink-sized labels keep their natural width; a Fill
-            // sibling takes the remaining space, not their letters.
-            element = element.flex_shrink_0();
-        }
-        if let Some(size) = size {
-            element = element.text_size(px(*size));
-        }
-        if let Some(color) = color {
-            element = element.text_color(rgba(*color));
-        }
+        let native_id = id
+            .as_ref()
+            .and_then(|id| id.to_gpui().ok())
+            .unwrap_or_else(|| {
+                let index = self.render_index;
+                self.render_index += 1;
+                ElementId::NamedInteger("guest-text".into(), index)
+            });
+        let mut element = div();
+        *element.style() = style.clone();
+        let text_id = native_id.clone();
+        let element = element
+            .id(native_id)
+            // A Label: assistive technology reads its content as its name.
+            .child(gpui_kit::Text::new(text_id, content.clone().into()));
         #[cfg(test)]
-        {
-            element = element.relative().child(self.measure(key, cx));
-        }
+        let element = if let Some(key) = node.key() {
+            element.child(self.measure(key, cx))
+        } else {
+            element
+        };
         #[cfg(not(test))]
-        let _ = (key, cx);
-        if heading.is_some() {
-            return announce(element.id(format!("{key}/heading")), accessible(node))
-                .into_any_element();
-        }
-        element.into_any_element()
+        let _ = cx;
+        announce(element, accessible(node)).into_any_element()
     }
 
     pub(super) fn rich_text(

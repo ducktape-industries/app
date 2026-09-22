@@ -58,7 +58,6 @@ pub(super) fn content_dimensions(
         | wire::Node::Linear { width, height, .. }
         | wire::Node::KeyedColumn { width, height, .. }
         | wire::Node::Grid { width, height, .. }
-        | wire::Node::Container { width, height, .. }
         | wire::Node::Hover { width, height, .. }
         | wire::Node::Scroll { width, height, .. }
         | wire::Node::Stack { width, height, .. }
@@ -74,6 +73,9 @@ pub(super) fn content_dimensions(
             content_dimensions(content)
         }
         wire::Node::Sensor { child, .. } => content_dimensions(child),
+        wire::Node::Container { children, .. } => {
+            children.first().map_or((None, None), content_dimensions)
+        }
         _ => (None, None),
     }
 }
@@ -231,49 +233,12 @@ pub(super) fn horizontal_align(element: Div, alignment: Option<wire::AlignX>) ->
     }
 }
 
-pub(super) fn vertical_align(element: Div, alignment: Option<wire::AlignY>) -> Div {
-    match alignment {
-        Some(wire::AlignY::Top) => element.items_start(),
-        Some(wire::AlignY::Center) => element.items_center(),
-        Some(wire::AlignY::Bottom) => element.items_end(),
-        None => element,
-    }
-}
-
 pub(super) fn cross_align(element: Div, alignment: Option<wire::AlignX>) -> Div {
     match alignment {
         Some(wire::AlignX::Left) => element.items_start(),
         Some(wire::AlignX::Center) => element.items_center(),
         Some(wire::AlignX::Right) => element.items_end(),
         None => element,
-    }
-}
-
-pub(super) fn justify(element: Div, alignment: wire::FlexContentAlignment) -> Div {
-    match alignment {
-        wire::FlexContentAlignment::Start | wire::FlexContentAlignment::FlexStart => {
-            element.justify_start()
-        }
-        wire::FlexContentAlignment::End | wire::FlexContentAlignment::FlexEnd => {
-            element.justify_end()
-        }
-        wire::FlexContentAlignment::Center => element.justify_center(),
-        wire::FlexContentAlignment::SpaceBetween => element.justify_between(),
-        wire::FlexContentAlignment::SpaceAround => element.justify_around(),
-        wire::FlexContentAlignment::SpaceEvenly => element.justify_evenly(),
-        wire::FlexContentAlignment::Stretch => element,
-    }
-}
-
-pub(super) fn align_items(element: Div, alignment: wire::FlexItemAlignment) -> Div {
-    match alignment {
-        wire::FlexItemAlignment::Start | wire::FlexItemAlignment::FlexStart => {
-            element.items_start()
-        }
-        wire::FlexItemAlignment::End | wire::FlexItemAlignment::FlexEnd => element.items_end(),
-        wire::FlexItemAlignment::Center => element.items_center(),
-        wire::FlexItemAlignment::Baseline => element.items_baseline(),
-        wire::FlexItemAlignment::Stretch => element.items_stretch(),
     }
 }
 

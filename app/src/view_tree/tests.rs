@@ -1,6 +1,80 @@
 use super::*;
 use gpui_kit::test::TestWindowExt as _;
 
+fn named_id(key: &str) -> wire::ElementIdWire {
+    wire::ElementIdWire::Name(key.into())
+}
+
+fn sized_style(
+    width: Option<wire::Length>,
+    height: Option<wire::Length>,
+) -> gpui_kit::StyleRefinement {
+    dimensions(div(), width, height).style().clone()
+}
+
+fn container(key: &str, children: impl IntoIterator<Item = wire::Node>) -> wire::Node {
+    container_with_style(key, gpui_kit::StyleRefinement::default(), children)
+}
+
+fn container_with_style(
+    key: &str,
+    style: gpui_kit::StyleRefinement,
+    children: impl IntoIterator<Item = wire::Node>,
+) -> wire::Node {
+    wire::Node::Container {
+        id: Some(named_id(key)),
+        style,
+        interactivity: Default::default(),
+        children: children.into_iter().collect(),
+    }
+}
+
+fn sized(
+    key: &str,
+    child: wire::Node,
+    width: Option<wire::Length>,
+    height: Option<wire::Length>,
+) -> wire::Node {
+    wire::Node::Container {
+        id: Some(named_id(key)),
+        style: sized_style(width, height),
+        interactivity: Default::default(),
+        children: vec![child],
+    }
+}
+
+fn text(key: &str, content: impl Into<String>) -> wire::Node {
+    wire::Node::Text {
+        id: Some(named_id(key)),
+        style: gpui_kit::StyleRefinement::default(),
+        content: content.into(),
+        heading: None,
+        live: None,
+    }
+}
+
+fn linear(
+    key: &str,
+    axis: wire::Axis,
+    children: impl IntoIterator<Item = wire::Node>,
+) -> wire::Node {
+    wire::Node::Linear {
+        key: key.into(),
+        axis,
+        spacing: Some(8.),
+        padding: None,
+        width: Some(wire::Length::Fill),
+        height: None,
+        background: None,
+        border: None,
+        align: None,
+        max_width: None,
+        clip: false,
+        wrap: None,
+        children: children.into_iter().collect(),
+    }
+}
+
 include!("tests/part_1.rs");
 include!("tests/part_2.rs");
 include!("tests/part_3.rs");

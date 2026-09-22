@@ -93,8 +93,8 @@ pub(super) fn virtual_rows(node: &wire::Node) -> Option<Vec<VirtualRow>> {
             }
             found.then(|| wrap_virtual_rows(node, rows))
         }
-        Node::Container { content, .. } => {
-            virtual_rows(content).map(|rows| wrap_virtual_rows(node, rows))
+        Node::Container { children, .. } if children.len() == 1 => {
+            virtual_rows(&children[0]).map(|rows| wrap_virtual_rows(node, rows))
         }
         _ => None,
     }
@@ -111,7 +111,9 @@ pub(super) fn has_virtual_column(node: &wire::Node) -> bool {
             children,
             ..
         } => children.iter().any(has_virtual_column),
-        wire::Node::Container { content, .. } => has_virtual_column(content),
+        wire::Node::Container { children, .. } => {
+            children.len() == 1 && has_virtual_column(&children[0])
+        }
         _ => false,
     }
 }
@@ -122,12 +124,7 @@ pub(super) fn wrap_virtual_rows(node: &wire::Node, rows: Vec<VirtualRow>) -> Vec
         wire::Node::Linear { children, .. } | wire::Node::KeyedColumn { children, .. } => {
             children.clear()
         }
-        wire::Node::Container { content, .. } => {
-            **content = wire::Node::Space {
-                width: None,
-                height: None,
-            }
-        }
+        wire::Node::Container { children, .. } => children.clear(),
         _ => unreachable!("only vertical layout wrappers surround virtual rows"),
     }
     let count = rows.len();
@@ -144,7 +141,7 @@ pub(super) fn wrap_virtual_rows(node: &wire::Node, rows: Vec<VirtualRow>) -> Vec
                 } => {
                     children.push(row.content);
                     *height = None;
-                    padding
+                    padding.as_mut()
                 }
                 wire::Node::KeyedColumn {
                     children,
@@ -158,17 +155,11 @@ pub(super) fn wrap_virtual_rows(node: &wire::Node, rows: Vec<VirtualRow>) -> Vec
                     *keys = None;
                     *virtual_row = None;
                     *height = None;
-                    padding
+                    padding.as_mut()
                 }
-                wire::Node::Container {
-                    content,
-                    padding,
-                    height,
-                    ..
-                } => {
-                    **content = row.content;
-                    *height = None;
-                    padding
+                wire::Node::Container { children, .. } => {
+                    children.push(row.content);
+                    None
                 }
                 _ => unreachable!("vertical layout wrapper"),
             };

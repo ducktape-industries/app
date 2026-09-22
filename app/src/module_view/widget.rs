@@ -27,21 +27,14 @@ impl gpui_kit::EventEmitter<ModuleViewEvent> for NativeModuleView {}
 /// would otherwise take its content's, and a Fill-sized pane inside it
 /// (a room, a document) collapses to zero height.
 pub(super) fn native_root(root: wire::Node) -> wire::Node {
+    use gpui_kit::Styled as _;
+    let mut host_root = gpui_kit::div();
+    host_root = host_root.size_full();
     wire::Node::Container {
-        shadow: Default::default(),
-        max_width: None,
-        max_height: None,
-        clip: false,
-        key: "NativeModuleView/root".into(),
-        width: Some(wire::Length::Fill),
-        height: Some(wire::Length::Fill),
-        padding: None,
-        align_x: None,
-        align_y: None,
-        background: None,
-        border: None,
-        snap: None,
-        content: Box::new(root),
+        id: Some(wire::ElementIdWire::Name("NativeModuleView/root".into())),
+        style: host_root.style().clone(),
+        interactivity: Default::default(),
+        children: vec![root],
     }
 }
 

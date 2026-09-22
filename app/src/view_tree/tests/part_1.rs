@@ -130,13 +130,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
     }
     cx.update(gpui_kit::init);
     let menu = || {
-        view_wire::kit::column(
-            "menu",
-            [view_wire::kit::text(
-                "label",
-                "A real menu, without an input",
-            )],
-        )
+        container("menu", [text("label", "A real menu, without an input")])
     };
     let keys = std::rc::Rc::new(std::cell::Cell::new(0));
     let window = cx.open_window(size(px(500.), px(300.)), |_, cx| Host {
@@ -199,7 +193,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
     assert_eq!(keys.get(), 2);
     native.update(|window, cx| {
         replacement.update(cx, |tree, cx| {
-            tree.replace(view_wire::kit::text("closed", "menu closed"), cx);
+            tree.replace(text("closed", "menu closed"), cx);
             assert!(tree.focus_targets.is_empty());
             assert!(!tree.target_focused("menu", window, cx));
         })
@@ -219,20 +213,20 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
 #[gpui_kit::test]
 fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    let text = |key: &str, content: String, width, wrapping| wire::Node::Text {
-        key: key.into(),
-        heading: None,
-        live: None,
-        content,
-        width,
-        size: Some(14.),
-        color: None,
-        font: Default::default(),
-        align_x: None,
-        options: wire::TextOptions {
-            wrapping,
-            ..Default::default()
-        },
+    let text = |key: &str, content: String, width, wrapping| {
+        let mut element = dimensions(div().min_w_0().max_w_full(), width, None).text_size(px(14.));
+        element = if wrapping == Some(wire::Wrapping::None) {
+            element.truncate().flex_shrink_0()
+        } else {
+            element.whitespace_normal()
+        };
+        wire::Node::Text {
+            id: Some(named_id(key)),
+            style: element.style().clone(),
+            content,
+            heading: None,
+            live: None,
+        }
     };
     let paragraph = text(
         "paragraph",
@@ -355,15 +349,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         );
         assert!(count.right() <= paragraph.left() + px(620.));
     });
-    let mut nowrap = text_options(
-        div(),
-        Default::default(),
-        None,
-        &wire::TextOptions {
-            wrapping: Some(wire::Wrapping::None),
-            ..Default::default()
-        },
-    );
+    let mut nowrap = div().truncate();
     assert_eq!(nowrap.style().overflow.x, Some(gpui_kit::Overflow::Hidden));
     assert!(
         nowrap.text_style().text_overflow.is_some(),
@@ -374,16 +360,18 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
 #[gpui_kit::test]
 fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::InputEvent as _;
-    use view_wire::kit;
     cx.update(gpui_kit::init);
-    let columns = kit::sized(
-        kit::row(
+    let columns = sized(
+        "columns-box",
+        linear(
             "columns",
+            wire::Axis::Row,
             (0..4).map(|index| {
-                kit::sized(
-                    kit::container(
-                        format!("column-{index}"),
-                        kit::text(format!("name-{index}"), "Folder"),
+                sized(
+                    &format!("column-{index}"),
+                    container(
+                        &format!("column-content-{index}"),
+                        [text(&format!("name-{index}"), "Folder")],
                     ),
                     Some(wire::Length::Fixed(230.)),
                     Some(wire::Length::Fill),
@@ -393,31 +381,65 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         Some(wire::Length::Fixed(920.)),
         Some(wire::Length::Fill),
     );
-    let mut root = kit::scroll("folders", kit::spaced(columns, 0.));
-    if let wire::Node::Scroll { direction, .. } = &mut root {
-        *direction = wire::ScrollDirection::Horizontal;
+    let mut columns = columns;
+    if let wire::Node::Container { children, .. } = &mut columns
+        && let wire::Node::Linear { spacing, .. } = &mut children[0]
+    {
+        *spacing = Some(0.);
     }
-    let root = kit::sized(
-        kit::column(
-            "main",
-            [
-                kit::sized(
-                    kit::container("header", kit::text("header-text", "Header")),
-                    None,
-                    Some(wire::Length::Fixed(24.)),
-                ),
-                root,
-                kit::sized(
-                    kit::container("footer", kit::text("footer-text", "Footer")),
-                    None,
-                    Some(wire::Length::Fixed(24.)),
-                ),
-            ],
-        ),
+    let root = wire::Node::Scroll {
+        key: "folders".into(),
+        content: Box::new(columns),
+        direction: wire::ScrollDirection::Horizontal,
+        width: Some(wire::Length::Fill),
+        height: Some(wire::Length::Fill),
+        on_scroll: None,
+        virtual_rows: false,
+        bar_hidden: false,
+        bar_width: None,
+        bar_margin: None,
+        scroller_width: None,
+        bar_spacing: None,
+        anchor_x: Default::default(),
+        anchor_y: Default::default(),
+        auto_scroll: false,
+        background: None,
+        border: None,
+    };
+    let mut main = linear(
+        "main-column",
+        wire::Axis::Column,
+        [
+            sized(
+                "header",
+                container("header-content", [text("header-text", "Header")]),
+                None,
+                Some(wire::Length::Fixed(24.)),
+            ),
+            root,
+            sized(
+                "footer",
+                container("footer-content", [text("footer-text", "Footer")]),
+                None,
+                Some(wire::Length::Fixed(24.)),
+            ),
+        ],
+    );
+    if let wire::Node::Linear { height, .. } = &mut main {
+        *height = Some(wire::Length::Fill);
+    }
+    let root = sized(
+        "main",
+        main,
         Some(wire::Length::Fill),
         Some(wire::Length::Fill),
     );
-    let root = kit::spaced(root, 0.);
+    let mut root = root;
+    if let wire::Node::Container { children, .. } = &mut root
+        && let wire::Node::Linear { spacing, .. } = &mut children[0]
+    {
+        *spacing = Some(0.);
+    }
     let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);

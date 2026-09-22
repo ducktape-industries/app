@@ -97,13 +97,8 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     use gpui_kit::test::TestWindowExt as _;
-    let sensor = |y, hide| wire::Node::Flex {
-        key: "host".into(),
-        layout: Default::default(),
-        background: None,
-        border: None,
-        items: Vec::new(),
-        children: vec![wire::Node::Pin {
+    let sensor = |y, hide| {
+        let mut host = linear("host", wire::Axis::Row, [wire::Node::Pin {
             key: "position".into(),
             x: 0.,
             y,
@@ -122,7 +117,11 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
                     height: Some(wire::Length::Fixed(20.)),
                 }),
             }),
-        }],
+        }]);
+        if let wire::Node::Linear { height, .. } = &mut host {
+            *height = Some(wire::Length::Fill);
+        }
+        host
     };
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(100.), px(100.)), |_, _| {
@@ -329,22 +328,7 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     // In a box with room to spare, which is the only place shrinking means
     // anything: the editor is the root of nothing in a real view, it sits
     // inside the card's own layout.
-    let root = wire::Node::Container {
-        key: "card".into(),
-        shadow: Default::default(),
-        max_width: None,
-        max_height: None,
-        clip: false,
-        width: Some(wire::Length::Fill),
-        height: Some(wire::Length::Fill),
-        padding: None,
-        align_x: None,
-        align_y: None,
-        background: None,
-        border: None,
-        snap: None,
-        content: Box::new(root),
-    };
+    let root = sized("card", root, Some(wire::Length::Fill), Some(wire::Length::Fill));
     let store = crate::editor::wire::EditorStore::new(91);
     store.replace(&root).unwrap();
     seed_editor_text(&store, words);
@@ -472,18 +456,7 @@ fn picture(label: Option<&str>) -> [wire::Node; 3] {
 
 #[test]
 fn text_is_a_label_its_content_names() {
-    let text = |content: &str| wire::Node::Text {
-        options: Default::default(),
-        key: "t".into(),
-        heading: None,
-        live: None,
-        content: content.into(),
-        size: None,
-        color: None,
-        font: Default::default(),
-        width: None,
-        align_x: None,
-    };
+    let text = |content: &str| text("t", content);
     assert_eq!(
         accessible(&text("Members")),
         Accessible {
