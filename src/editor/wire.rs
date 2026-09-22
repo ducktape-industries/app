@@ -118,7 +118,9 @@ struct Outgoing {
 #[derive(Clone, PartialEq)]
 pub(crate) struct Projection {
     reference: EditorDocumentRef,
-    text: Option<Arc<str>>,
+    // `pub(crate)`: a regression test outside this module reads the text an
+    // AX-driven edit committed, to check that it reached the guest's store.
+    pub(crate) text: Option<Arc<str>>,
     options: wire::EditorOptions,
     placeholder: String,
     editable: bool,
