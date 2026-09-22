@@ -61,6 +61,20 @@ struct Route {
 }
 impl Route {
     fn deliver(&self, event: wire::Event, cx: &mut App) {
+        if matches!(
+            &event,
+            wire::Event::Keyboard { .. }
+                | wire::Event::Observation {
+                    event: wire::events::Event::InputMethod(_),
+                    ..
+                }
+        ) && self
+            .view
+            .upgrade()
+            .is_none_or(|view| !view.read(cx).focused)
+        {
+            return;
+        }
         let mut locked = self.seat.lock().expect("module view lock");
         let Slot::Ready(guest) = &mut locked.slot else {
             return;
@@ -119,7 +133,7 @@ impl Observe {
         Self {
             content,
             route: Route {
-                seat: mounted(view.module),
+                seat: view.seat.clone(),
                 generation: view.generation,
                 revision: view.revision,
                 alive: view.alive.clone().expect("mounted instance"),
@@ -467,7 +481,7 @@ impl NativeModuleView {
             return;
         };
         let route = Route {
-            seat: mounted(self.module),
+            seat: self.seat.clone(),
             generation: self.generation,
             revision: self.revision,
             alive,
@@ -482,6 +496,11 @@ impl NativeModuleView {
         );
     }
     pub(super) fn bind_observers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let current_window = window.window_handle().window_id();
+        if self.observed_window != Some(current_window) {
+            self.observers.clear();
+            self.observed_window = Some(current_window);
+        }
         if self.observers.is_empty() {
             self.observers
                 .push(cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
@@ -506,7 +525,7 @@ impl NativeModuleView {
             self.observers
                 .push(cx.observe_window_activation(window, |this, window, cx| {
                     this.observe_window(
-                        if window.is_window_active() {
+                        if window.is_window_active() && this.focused {
                             wire::events::Window::Focused
                         } else {
                             wire::events::Window::Unfocused
@@ -532,7 +551,7 @@ impl NativeModuleView {
                         return;
                     };
                     let route = Route {
-                        seat: mounted(this.module),
+                        seat: this.seat.clone(),
                         generation: this.generation,
                         revision: this.revision,
                         alive,

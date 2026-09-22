@@ -78,7 +78,8 @@ pub fn rail() -> Vec<RailRow> {
         .into_iter()
         .map(|module| {
             let seat = registry
-                .get(module)
+                .iter()
+                .find_map(|((name, _), seat)| (*name == module).then_some(seat))
                 .map(|seat| seat.lock().expect("module view lock"));
             let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
                 Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
@@ -170,20 +171,31 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
             for gone in registry
                 .keys()
                 .copied()
-                .filter(|seated| !names.contains(seated))
+                .filter(|(module, _)| !names.contains(module))
                 .collect::<Vec<_>>()
             {
-                if let Some(retired) = registry.remove(gone) {
+                if let Some(retired) = registry.get(&gone) {
                     let mut retired = retired.lock().expect("module view lock");
+                    retired.generation += 1;
                     retired.slot = Slot::Empty;
                     retired.changes.send_replace(());
+                }
+                if gone.1 == 0 {
+                    registry.remove(&gone);
                 }
             }
             let previous =
                 std::mem::replace(&mut *listed().lock().expect("roster"), programs.clone());
             let mut loads = Vec::new();
-            for (program, module) in programs.iter().zip(names) {
-                let seat = registry.entry(module).or_insert_with(Mounted::seat);
+            for module in &names {
+                if !registry.keys().any(|(name, _)| name == module) {
+                    registry.insert((*module, 0), Mounted::seat());
+                }
+            }
+            for ((module, _), seat) in registry.iter() {
+                let Some(program) = programs.iter().find(|program| program.name == *module) else {
+                    continue;
+                };
                 let mut locked = seat.lock().expect("module view lock");
                 let same_code = previous
                     .iter()
