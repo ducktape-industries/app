@@ -350,8 +350,18 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
         if ttl == 0 {
             return Err(malformed("ttl_days must be a positive integer"));
         }
-        let refusal =
-            |error: ducktape_rpc::Error| wire::Refusal::new(error.reason(), error.message());
+        // ducktape_rpc::Error carries no status code, only the reason/message
+        // its `refusal()` classified a non-2xx into — a route the node does
+        // not recognize (no /v1/invite on core's current routes: status,
+        // submit, query, get, scan, blob, programs, changes, logs, admin,
+        // sync) falls to its generic "http_error: 404 Not Found: no detail.",
+        // which is not something to show a person as-is.
+        let refusal = |error: ducktape_rpc::Error| {
+            if error.reason() == "http_error" && error.message().starts_with("404") {
+                return wire::Refusal::new("invite_unsupported", "This node doesn't mint invites.");
+            }
+            wire::Refusal::new(error.reason(), error.message())
+        };
         let client = ducktape_rpc::Client::new(node.client.endpoint()).map_err(refusal)?;
         let minted = client.mint_invite(ttl).await.map_err(refusal)?;
         let notes = minted
