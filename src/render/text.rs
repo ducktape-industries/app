@@ -187,11 +187,12 @@ impl ViewTree {
         let mut element = div();
         *element.style() = style.clone();
         crate::shell::refine_fallbacks(element.style());
-        let text_id = native_id.clone();
         let element = element
             .id(native_id)
-            // A Label: assistive technology reads its content as its name.
-            .child(gpui_kit::Text::new(text_id, content.clone().into()));
+            // The div above is the Label `announce` names below; the text
+            // itself stays out of the AX tree so it is not a second,
+            // empty-named node carrying the same content as its value.
+            .child(gpui_kit::Text::new_inaccessible(content.clone().into()));
         #[cfg(test)]
         let element = if id.is_some() {
             element.child(self.measure(&self.authored_path, cx))
