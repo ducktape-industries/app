@@ -317,7 +317,17 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
                 "blob exceeds the view's read limit",
             ));
         }
-        Ok(body.to_vec())
+        // `BlobGet`'s door promises `Vec<u8>` through the standard `door!`
+        // macro, which borsh-wraps (length-prefixes) it on both ends — the
+        // guest's generic `Door::decode_reply` expects that prefix on every
+        // reply, this door included. Raw bytes here would desync it from
+        // the very first blob any view fetched.
+        // `BlobGet`'s door promises `Vec<u8>` through the standard `door!`
+        // macro, which borsh-wraps (length-prefixes) it on both ends — the
+        // guest's generic `Door::decode_reply` expects that prefix on every
+        // reply, this door included. Raw bytes here would desync it from
+        // the very first blob any view fetched.
+        Ok(doors::encode(&body.to_vec()))
     })
 }
 

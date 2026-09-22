@@ -290,6 +290,28 @@ async fn system_status_preserves_borsh_and_refusals() {
     server.join().unwrap();
 }
 
+/// `BlobGet`'s door is declared `door!(BlobGet, "blob.get", String, Vec<u8>)`
+/// — the standard macro, which borsh-wraps the reply on both ends, same as
+/// every other door here. A view's generic `Door::decode_reply` expects that
+/// wrapping on every blob it fetches, not just the ones this test happens to
+/// exercise.
+#[tokio::test]
+async fn blob_get_answers_borsh_wrapped_bytes_a_view_can_decode() {
+    let mut framed = b"sha256\0".to_vec();
+    framed.extend_from_slice(b"blob body bytes");
+    let (node, server) = node_server(
+        "200 OK",
+        abi::encode(&Some(framed)),
+        "POST /v1/blob/get HTTP/1.1",
+        None,
+    );
+    let ask = doors::encode(&format!("sha256:{}", "00".repeat(32)));
+    let answer = blob_get(node, ask).await.unwrap();
+    let decoded: Vec<u8> = doors::decode(&answer).unwrap();
+    assert_eq!(decoded, b"blob body bytes");
+    server.join().unwrap();
+}
+
 #[tokio::test]
 async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
     let (node, server) = node_server(

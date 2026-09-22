@@ -143,6 +143,15 @@ fn read_chunk(file: &Content, offset: u64, len: usize) -> Result<Vec<u8>, String
     }
 }
 
+/// `FsRead`'s door promises `Vec<u8>` through the standard `door!` macro,
+/// which borsh-wraps (length-prefixes) it on both ends — the guest's generic
+/// `Door::decode_reply` expects that prefix on every reply, this one
+/// included. `read_chunk` stays a plain byte read so its own direct test
+/// keeps checking raw bytes; this is the one call site that answers a view.
+fn read_reply(file: &Content, offset: u64, len: usize) -> Result<Vec<u8>, String> {
+    read_chunk(file, offset, len).map(|bytes| doors::encode(&bytes))
+}
+
 impl Filesystem {
     pub(super) fn cancel(&mut self, id: u64) {
         self.pending.retain(|(pending, _)| *pending != id);
@@ -188,7 +197,7 @@ pub(super) fn answer(
             });
             match request {
                 Ok((file, offset, len)) => spawn(guest, id, async move {
-                    tokio::task::spawn_blocking(move || read_chunk(&file, offset, len))
+                    tokio::task::spawn_blocking(move || read_reply(&file, offset, len))
                         .await
                         .map_err(|error| error.to_string())?
                 }),
@@ -376,6 +385,18 @@ mod tests {
         .unwrap();
         assert_ne!(old.token, new.token);
         assert!(content(&next.state, &old.token).is_err());
+    }
+    /// `FsRead`'s door is declared `door!(FsRead, "fs.read", ReadRequest,
+    /// Vec<u8>)` — the standard macro, which borsh-wraps the reply, same as
+    /// every other door. `read_chunk` alone (checked above) is deliberately
+    /// raw; `read_reply` is the one call site `answer`'s `("fs", "read")`
+    /// arm actually uses to build a view's answer, and it must wrap.
+    #[test]
+    fn fs_read_answers_borsh_wrapped_bytes_a_view_can_decode() {
+        let file = Content::Bytes(Arc::from(&b"abcdef"[..]));
+        let answer = read_reply(&file, 2, 3).unwrap();
+        let decoded: Vec<u8> = doors::decode(&answer).unwrap();
+        assert_eq!(decoded, b"cde");
     }
     /// A read names a grant token and nothing else; extra bytes after the
     /// request are not a path this door would open.
