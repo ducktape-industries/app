@@ -273,7 +273,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Button {
-            key,
+            id,
             content,
             label,
             checked,
@@ -284,7 +284,7 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let mut button = Button::new(key.clone())
+        let mut button = Button::new(id.to_gpui().expect("sanitized button identity"))
             .refine_style(style)
             .disabled(on_press.is_none())
             .selected(checked.unwrap_or(false));
@@ -332,7 +332,7 @@ impl ViewTree {
 
     pub(super) fn toggle(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Toggle {
-            key,
+            id,
             kind,
             label,
             checked,
@@ -344,7 +344,9 @@ impl ViewTree {
             unreachable!()
         };
         if *kind == wire::ToggleKind::Switch {
-            let mut toggle = gpui_kit::component::switch::Switch::new(key.clone())
+            let mut toggle = gpui_kit::component::switch::Switch::new(
+                id.to_gpui().expect("sanitized toggle identity"),
+            )
                 .refine_style(style)
                 .label(label.clone())
                 .checked(*checked)
@@ -357,7 +359,7 @@ impl ViewTree {
             }
             return toggle.into_any_element();
         }
-        let mut checkbox = Checkbox::new(key.clone())
+        let mut checkbox = Checkbox::new(id.to_gpui().expect("sanitized toggle identity"))
             .refine_style(style)
             .label(label.clone())
             .checked(*checked)
@@ -374,7 +376,7 @@ impl ViewTree {
 
     pub(super) fn progress(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Progress {
-            key,
+            id,
             value,
             min,
             max,
@@ -402,7 +404,13 @@ impl ViewTree {
                 .justify_end()
                 .child(fill.h(relative(fraction)).w_full()),
         };
-        announce(track.id(key.clone()).refine_style(style), accessible(node)).into_any_element()
+        announce(
+            track
+                .id(id.to_gpui().expect("sanitized progress identity"))
+                .refine_style(style),
+            accessible(node),
+        )
+        .into_any_element()
     }
 
     pub(super) fn editor(

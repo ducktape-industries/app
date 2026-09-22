@@ -214,6 +214,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::When {
+            id,
             condition,
             children,
             ..
@@ -221,7 +222,10 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let mut element = div().flex().flex_col();
+        let mut element = div()
+            .id(id.to_gpui().expect("sanitized condition identity"))
+            .flex()
+            .flex_col();
         if condition.matches(&self.containers) {
             for child in children {
                 element = element.child(self.node(child, window, cx));

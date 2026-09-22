@@ -204,7 +204,7 @@ impl ViewTree {
             Node::PickList { .. } | Node::ComboBox { .. } => self.picker(node, window, cx),
             Node::Toggle { .. } => self.toggle(node, cx),
             Node::Radio {
-                key,
+                id,
                 label,
                 selected,
                 on_select,
@@ -212,7 +212,7 @@ impl ViewTree {
                 ..
             } => {
                 let message = *on_select;
-                let radio = Radio::new(key.clone())
+                let radio = Radio::new(id.to_gpui().expect("sanitized radio identity"))
                     .label(label.clone())
                     .checked(*selected)
                     .on_click(
@@ -221,14 +221,21 @@ impl ViewTree {
                 announce(div().refine_style(style).child(radio), accessible(node))
                     .into_any_element()
             }
-            Node::Rule { axis, style, .. } => {
-                let element = div().refine_style(style);
+            Node::Rule {
+                id, axis, style, ..
+            } => {
+                let element = div()
+                    .id(id.to_gpui().expect("sanitized rule identity"))
+                    .refine_style(style);
                 match axis {
                     wire::Axis::Column => element.h_full().into_any_element(),
                     wire::Axis::Row => element.w_full().into_any_element(),
                 }
             }
-            Node::Lazy { content, .. } => self.node(content, window, cx),
+            Node::Lazy { id, content, .. } => div()
+                .id(id.to_gpui().expect("sanitized lazy identity"))
+                .child(self.node(content, window, cx))
+                .into_any_element(),
             Node::Deferred { .. } => self.deferred(node, window, cx),
             Node::ResizeHandle { .. } => self.resize_handle(node, window, cx),
             Node::Responsive { .. } => self.responsive(node, window, cx),
@@ -243,8 +250,11 @@ impl ViewTree {
             Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
             Node::Svg { .. } => self.vector(node, window, cx),
             Node::Canvas { .. } => self.drawing(node, cx),
-            Node::Qr { key, code, style } => announce(
-                div().id(key.clone()).refine_style(style).child(qr(code)),
+            Node::Qr { id, code, style } => announce(
+                div()
+                    .id(id.to_gpui().expect("sanitized QR identity"))
+                    .refine_style(style)
+                    .child(qr(code)),
                 accessible(node),
             )
             .into_any_element(),

@@ -8,7 +8,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Tooltip {
-            key,
+            id,
             children,
             delay_ms,
             style,
@@ -21,7 +21,7 @@ impl ViewTree {
             return div().into_any_element();
         };
         let mut element = div()
-            .id(key.clone())
+            .id(id.to_gpui().expect("sanitized tooltip identity"))
             .refine_style(style)
             .tooltip_show_delay(std::time::Duration::from_millis(*delay_ms))
             .child(self.node(content, window, cx));
@@ -39,7 +39,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Float {
-            key: _,
+            id,
             content,
             x,
             y,
@@ -71,6 +71,7 @@ impl ViewTree {
         // Authored floating rails use unit scale; their measurement is
         // outside the translated child to avoid positional feedback.
         div()
+            .id(id.to_gpui().expect("sanitized float identity"))
             .relative()
             .child(element.child(self.node(content, window, cx)))
             .child(self.measure(&self.authored_path, cx))
