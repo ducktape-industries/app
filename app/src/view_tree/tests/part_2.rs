@@ -158,26 +158,30 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
 ) {
     use gpui_kit::test::TestWindowExt as _;
     let sensor = |y, hide| {
-        let mut host = linear("host", wire::Axis::Row, [wire::Node::Pin {
-            key: "position".into(),
-            x: 0.,
-            y,
-            width: Some(wire::Length::Fill),
-            height: Some(wire::Length::Fill),
-            content: Box::new(wire::Node::Sensor {
-                key: "watched".into(),
-                reset: None,
-                on_show: None,
-                on_resize: None,
-                on_hide: Some(hide),
-                anticipate: None,
-                delay: None,
-                child: Box::new(wire::Node::Space {
-                    width: Some(wire::Length::Fixed(20.)),
-                    height: Some(wire::Length::Fixed(20.)),
+        let mut host = linear(
+            "host",
+            wire::Axis::Row,
+            [wire::Node::Pin {
+                key: "position".into(),
+                x: 0.,
+                y,
+                width: Some(wire::Length::Fill),
+                height: Some(wire::Length::Fill),
+                content: Box::new(wire::Node::Sensor {
+                    key: "watched".into(),
+                    reset: None,
+                    on_show: None,
+                    on_resize: None,
+                    on_hide: Some(hide),
+                    anticipate: None,
+                    delay: None,
+                    child: Box::new(wire::Node::Space {
+                        width: Some(wire::Length::Fixed(20.)),
+                        height: Some(wire::Length::Fixed(20.)),
+                    }),
                 }),
-            }),
-        }]);
+            }],
+        );
         if let wire::Node::Linear { height, .. } = &mut host {
             *height = Some(wire::Length::Fill);
         }
@@ -388,7 +392,12 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     // In a box with room to spare, which is the only place shrinking means
     // anything: the editor is the root of nothing in a real view, it sits
     // inside the card's own layout.
-    let root = sized("card", root, Some(wire::Length::Fill), Some(wire::Length::Fill));
+    let root = sized(
+        "card",
+        root,
+        Some(wire::Length::Fill),
+        Some(wire::Length::Fill),
+    );
     let store = crate::editor::wire::EditorStore::new(91);
     store.replace(&root).unwrap();
     seed_editor_text(&store, words);
@@ -486,6 +495,9 @@ fn picture(label: Option<&str>) -> [wire::Node; 3] {
             opacity: None,
             width: None,
             height: None,
+            grayscale: false,
+            style: Default::default(),
+            interactivity: Default::default(),
         },
         wire::Node::ImageViewer {
             key: "viewer".into(),
@@ -502,6 +514,7 @@ fn picture(label: Option<&str>) -> [wire::Node; 3] {
             inherit_button_ink: false,
             hash: 1,
             bytes: None,
+            path: None,
             label,
             color: None,
             hover: None,
@@ -509,6 +522,8 @@ fn picture(label: Option<&str>) -> [wire::Node; 3] {
             opacity: None,
             width: None,
             height: None,
+            style: Default::default(),
+            interactivity: Default::default(),
         },
     ]
 }

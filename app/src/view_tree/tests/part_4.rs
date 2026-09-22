@@ -70,7 +70,11 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         "workspace-row",
         wire::Axis::Row,
         [
-            container_with_style("sidebar", sidebar_style.style().clone(), [wire::Node::empty()]),
+            container_with_style(
+                "sidebar",
+                sidebar_style.style().clone(),
+                [wire::Node::empty()],
+            ),
             wire::Node::Rule {
                 key: "sidebar-resize".into(),
                 axis: wire::Axis::Column,

@@ -3,6 +3,23 @@
 //! let guest overlays draw above host chrome after the slot has been painted.
 use super::*;
 
+impl ViewTree {
+    pub(super) fn deferred(
+        &mut self,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let wire::Node::Deferred {
+            content, priority, ..
+        } = node
+        else {
+            unreachable!()
+        };
+        deferred(self.node(content, window, cx), *priority).into_any_element()
+    }
+}
+
 pub(super) fn deferred(child: AnyElement, priority: usize) -> SlotDeferred {
     SlotDeferred {
         child: Some(child),

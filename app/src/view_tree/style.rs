@@ -69,9 +69,9 @@ pub(super) fn content_dimensions(
         // around a press area around a Fill row is still a Fill row. Under a
         // cached guest mount nothing stretches an auto-sized wrapper, so a
         // wrapper that stops here leaves every Fill below it content-tall.
-        wire::Node::ResizeHandle { content, .. } | wire::Node::Lazy { content, .. } => {
-            content_dimensions(content)
-        }
+        wire::Node::ResizeHandle { content, .. }
+        | wire::Node::Lazy { content, .. }
+        | wire::Node::Deferred { content, .. } => content_dimensions(content),
         wire::Node::Sensor { child, .. } => content_dimensions(child),
         wire::Node::Container { children, .. } => {
             children.first().map_or((None, None), content_dimensions)

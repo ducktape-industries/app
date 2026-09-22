@@ -60,6 +60,7 @@ mod tests {
             key: format!("picture-{hash}"),
             hash,
             bytes,
+            path: None,
             inherit_button_ink: false,
             label: None,
             color: None,
@@ -68,6 +69,8 @@ mod tests {
             opacity: None,
             width: None,
             height: None,
+            style: Default::default(),
+            interactivity: Default::default(),
         }
     }
 
@@ -96,6 +99,9 @@ mod tests {
             opacity: None,
             width: None,
             height: None,
+            grayscale: false,
+            style: Default::default(),
+            interactivity: Default::default(),
         };
         pictures.adopt(&mut image);
         if let wire::Node::Image { data, .. } = &mut image {

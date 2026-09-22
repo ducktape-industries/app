@@ -399,6 +399,66 @@ impl ViewTree {
             .into_any_element()
     }
 
+    pub(super) fn anchored(
+        &mut self,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let wire::Node::Anchored {
+            anchor,
+            fit,
+            position,
+            position_mode,
+            offset,
+            children,
+            ..
+        } = node
+        else {
+            unreachable!()
+        };
+        let anchor = match anchor {
+            wire::Anchor::TopLeft => gpui_kit::Anchor::TopLeft,
+            wire::Anchor::TopRight => gpui_kit::Anchor::TopRight,
+            wire::Anchor::BottomLeft => gpui_kit::Anchor::BottomLeft,
+            wire::Anchor::BottomRight => gpui_kit::Anchor::BottomRight,
+            wire::Anchor::TopCenter => gpui_kit::Anchor::TopCenter,
+            wire::Anchor::BottomCenter => gpui_kit::Anchor::BottomCenter,
+            wire::Anchor::LeftCenter => gpui_kit::Anchor::LeftCenter,
+            wire::Anchor::RightCenter => gpui_kit::Anchor::RightCenter,
+        };
+        let mut element = gpui_kit::anchored().anchor(anchor);
+        if let Some([x, y]) = position {
+            element = element.position(point(px(*x), px(*y)));
+        }
+        if let Some([x, y]) = offset {
+            element = element.offset(point(px(*x), px(*y)));
+        }
+        element = match position_mode {
+            wire::AnchoredPositionMode::Window => {
+                element.position_mode(gpui_kit::AnchoredPositionMode::Window)
+            }
+            wire::AnchoredPositionMode::Local => {
+                element.position_mode(gpui_kit::AnchoredPositionMode::Local)
+            }
+        };
+        element = match fit {
+            wire::AnchoredFitMode::SnapToWindow => element.snap_to_window(),
+            wire::AnchoredFitMode::SnapToWindowWithMargin(edges) => element
+                .snap_to_window_with_margin(gpui_kit::Edges {
+                    top: px(edges.top),
+                    right: px(edges.right),
+                    bottom: px(edges.bottom),
+                    left: px(edges.left),
+                }),
+            wire::AnchoredFitMode::SwitchAnchor => element,
+        };
+        for child in children {
+            element = element.child(self.node(child, window, cx));
+        }
+        element.into_any_element()
+    }
+
     pub(super) fn measure(&self, key: &str, cx: &Context<Self>) -> impl IntoElement + use<> {
         let route = key.to_owned();
         let weak = cx.entity().downgrade();

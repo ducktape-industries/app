@@ -95,17 +95,25 @@ pub(super) fn qr(code: &wire::Qr) -> AnyElement {
 }
 
 impl ViewTree {
-    pub(super) fn vector(&mut self, node: &wire::Node, window: &mut Window) -> AnyElement {
+    pub(super) fn vector(
+        &mut self,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let wire::Node::Svg {
             key,
             hash,
             bytes,
+            path,
             color,
             inherit_button_ink,
             fit,
             width,
             height,
             opacity,
+            style,
+            interactivity,
             ..
         } = node
         else {
@@ -114,7 +122,9 @@ impl ViewTree {
         if let Some(bytes) = bytes {
             self.remember_vector(*hash, bytes);
         }
-        let mut element = dimensions(div(), *width, *height).opacity(opacity.unwrap_or(1.0));
+        let mut element = dimensions(div(), *width, *height);
+        *element.style() = style.clone();
+        element = element.opacity(opacity.unwrap_or(1.0));
         if let Some(bytes) = self.vectors.get(hash) {
             let monochrome = color.is_some() || *inherit_button_ink;
             if monochrome {
@@ -132,8 +142,18 @@ impl ViewTree {
                     .object_fit(object_fit(*fit)),
                 );
             }
+        } else if path.is_some() {
+            // A guest path is not a host filesystem capability. The host has
+            // no asset resolver in this bounded primitive, so refuse it
+            // rather than letting GPUI read an arbitrary machine path.
+            element =
+                element.child(div().child("SVG path unavailable: host asset capability required"));
         }
-        announce(element.id(key.clone()), accessible(node)).into_any_element()
+        announce(
+            self.primitive_interactivity(element, key, interactivity, cx),
+            accessible(node),
+        )
+        .into_any_element()
     }
 
     pub(super) fn drawing(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
@@ -142,6 +162,7 @@ impl ViewTree {
             width,
             height,
             commands,
+            style,
             ..
         } = node
         else {
@@ -151,7 +172,9 @@ impl ViewTree {
         // asynchronous SVG image on every pointer move leaves blank drag frames.
         if native_canvas_commands(commands) {
             let commands = commands.clone();
-            return dimensions(div().relative().overflow_hidden(), *width, *height)
+            let mut root = dimensions(div().relative().overflow_hidden(), *width, *height);
+            *root.style() = style.clone();
+            return root
                 .child(
                     canvas(
                         |_, _, _| (),
@@ -169,21 +192,22 @@ impl ViewTree {
             Some(wire::Length::Fixed(value)) => value,
             _ => f32::from(measured).max(1.0),
         };
-        dimensions(div().relative(), *width, *height)
-            .child(
-                img(Arc::new(Image::from_bytes(
-                    ImageFormat::Svg,
-                    canvas_svg(
-                        commands,
-                        known(*width, bounds.size.width),
-                        known(*height, bounds.size.height),
-                    ),
-                )))
-                .size_full()
-                .object_fit(ObjectFit::Fill),
-            )
-            .child(self.measure(key, cx))
-            .into_any_element()
+        let mut root = dimensions(div().relative(), *width, *height);
+        *root.style() = style.clone();
+        root.child(
+            img(Arc::new(Image::from_bytes(
+                ImageFormat::Svg,
+                canvas_svg(
+                    commands,
+                    known(*width, bounds.size.width),
+                    known(*height, bounds.size.height),
+                ),
+            )))
+            .size_full()
+            .object_fit(ObjectFit::Fill),
+        )
+        .child(self.measure(key, cx))
+        .into_any_element()
     }
 
     pub(super) fn remember_image(&mut self, hash: u64, data: &wire::ImageData) {
@@ -337,6 +361,9 @@ impl ViewTree {
             height,
             fit,
             opacity,
+            grayscale,
+            style,
+            interactivity,
             ..
         } = node
         else {
@@ -345,18 +372,67 @@ impl ViewTree {
         if let Some(data) = data {
             self.remember_image(*hash, data);
         }
-        let mut element = dimensions(div(), *width, *height).opacity(opacity.unwrap_or(1.0));
+        let mut element = dimensions(div(), *width, *height);
+        *element.style() = style.clone();
+        element = element.opacity(opacity.unwrap_or(1.0));
         match data {
             Some(wire::ImageData::Resource(_)) => {
                 element = element.child(self.measure(key, cx));
             }
             _ => {
                 if let Some(image) = self.image_frame(*hash, data.as_ref()) {
-                    element =
-                        element.child(img(image.clone()).size_full().object_fit(object_fit(*fit)));
+                    element = element.child(
+                        img(image.clone())
+                            .size_full()
+                            .grayscale(*grayscale)
+                            .object_fit(object_fit(*fit)),
+                    );
                 }
             }
         }
-        announce(element.id(key.clone()), accessible(node)).into_any_element()
+        announce(
+            self.primitive_interactivity(element, key, interactivity, cx),
+            accessible(node),
+        )
+        .into_any_element()
+    }
+
+    fn primitive_interactivity(
+        &mut self,
+        element: Div,
+        key: &str,
+        interactivity: &wire::Interactivity,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let native_id = interactivity
+            .id
+            .as_ref()
+            .and_then(|id| id.to_gpui().ok())
+            .unwrap_or_else(|| ElementId::Name(key.to_owned().into()));
+        let mut element = element.id(native_id);
+        if let Some(group) = &interactivity.group {
+            element = element.group(group.clone());
+        }
+        if let Some(style) = &interactivity.hover {
+            let style = style.clone();
+            element = element.hover(move |_| style);
+        }
+        if let Some(style) = &interactivity.active {
+            let style = style.clone();
+            element = element.active(move |_| style);
+        }
+        if let Some(group) = &interactivity.group_hover {
+            let style = group.style.clone();
+            element = element.group_hover(group.group.clone(), move |_| style);
+        }
+        if let Some(group) = &interactivity.group_active {
+            let style = group.style.clone();
+            element = element.group_active(group.group.clone(), move |_| style);
+        }
+        if let Some(handler) = interactivity.on_click {
+            element = element
+                .on_click(cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(handler))));
+        }
+        element
     }
 }

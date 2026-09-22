@@ -209,16 +209,40 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             ..Default::default()
         },
         // an unlabelled picture is decoration: it stays out of the tree
-        Node::Image { label, .. } | Node::ImageViewer { label, .. } | Node::Svg { label, .. } => {
-            match label.as_deref().and_then(named) {
-                Some(name) => Accessible {
-                    role: Some(Role::Image),
-                    name: Some(name),
+        Node::Image {
+            label,
+            interactivity,
+            ..
+        }
+        | Node::Svg {
+            label,
+            interactivity,
+            ..
+        } => {
+            let name = label
+                .as_deref()
+                .and_then(named)
+                .or_else(|| interactivity.aria.label.as_deref().and_then(named));
+            if name.is_none() && interactivity.role.is_none() {
+                Accessible::default()
+            } else {
+                Accessible {
+                    role: interactivity.role.or(Some(Role::Image)),
+                    name,
+                    description: interactivity.aria.description.as_deref().and_then(named),
+                    disabled: interactivity.aria.disabled.unwrap_or(false),
                     ..Default::default()
-                },
-                None => Accessible::default(),
+                }
             }
         }
+        Node::ImageViewer { label, .. } => match label.as_deref().and_then(named) {
+            Some(name) => Accessible {
+                role: Some(Role::Image),
+                name: Some(name),
+                ..Default::default()
+            },
+            None => Accessible::default(),
+        },
         _ => Accessible::default(),
     }
 }

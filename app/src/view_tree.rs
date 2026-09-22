@@ -229,6 +229,8 @@ impl ViewTree {
                 }
             }
             Node::Lazy { content, .. } => self.node(content, window, cx),
+            Node::Deferred { .. } => self.deferred(node, window, cx),
+            Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::ResizeHandle { .. } => self.resize_handle(node, window, cx),
             Node::Responsive { .. } => self.responsive(node, window, cx),
             Node::When { .. } => self.when(node, window, cx),
@@ -242,7 +244,7 @@ impl ViewTree {
             Node::Float { .. } => self.float(node, window, cx),
             Node::Image { .. } => self.picture(node, cx),
             Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
-            Node::Svg { .. } => self.vector(node, window),
+            Node::Svg { .. } => self.vector(node, window, cx),
             Node::Canvas { .. } => self.drawing(node, cx),
             Node::Qr { key, code } => {
                 announce(div().id(key.clone()).child(qr(code)), accessible(node)).into_any_element()

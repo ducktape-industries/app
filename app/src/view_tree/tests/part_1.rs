@@ -16,6 +16,7 @@ fn primitive_canvas_paints_in_the_first_frame_and_after_a_move(cx: &mut gpui_kit
         width: Some(wire::Length::Fixed(100.)),
         height: Some(wire::Length::Fixed(80.)),
         commands: vec![command.clone()],
+        style: Default::default(),
     };
     let window = cx.open_window(size(px(100.), px(80.)), |_, _| ViewTree::new(node));
     let tree = window.root(cx).unwrap();
@@ -62,6 +63,7 @@ fn untinted_svg_uses_native_color_decoder_and_retains_pixels_without_resent_byte
         key: "artwork".into(),
         hash: 42,
         bytes: Some(bytes),
+        path: None,
         inherit_button_ink: false,
         label: None,
         color: None,
@@ -70,6 +72,8 @@ fn untinted_svg_uses_native_color_decoder_and_retains_pixels_without_resent_byte
         opacity: None,
         width: Some(wire::Length::Fixed(24.)),
         height: Some(wire::Length::Fixed(24.)),
+        style: Default::default(),
+        interactivity: Default::default(),
     };
     let window = cx.open_window(size(px(80.), px(80.)), |_, _| ViewTree::new(node));
     let tree = window.root(cx).unwrap();
@@ -129,9 +133,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
         }
     }
     cx.update(gpui_kit::init);
-    let menu = || {
-        container("menu", [text("label", "A real menu, without an input")])
-    };
+    let menu = || container("menu", [text("label", "A real menu, without an input")]);
     let keys = std::rc::Rc::new(std::cell::Cell::new(0));
     let window = cx.open_window(size(px(500.), px(300.)), |_, cx| Host {
         tree: cx.new(|_| ViewTree::new(menu())),
