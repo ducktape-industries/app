@@ -152,7 +152,8 @@ fn accepted_frames_retain_anonymous_list_scroll_and_clear_old_listener_rows(
         let before = state.logical_scroll_top();
         tree.replace(root.clone(), cx);
         let retained = tree.variable_lists.values().next().expect("anonymous List remains mounted");
-        assert_eq!(retained.state.logical_scroll_top(), before);
+        assert_eq!(retained.state.logical_scroll_top().item_ix, before.item_ix);
+        assert_eq!(retained.state.logical_scroll_top().offset_in_item, before.offset_in_item);
         assert!(retained.rows.is_empty(), "old-frame listeners are discarded before native rerender");
         tree.replace(wire::Node::empty(), cx);
         assert!(tree.variable_lists.is_empty(), "unmounted List state is retired");

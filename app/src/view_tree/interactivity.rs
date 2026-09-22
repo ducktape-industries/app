@@ -1,6 +1,6 @@
 use super::ViewTree;
 use gpui_kit::{
-    AppContext as _, Context, FocusHandle, InteractiveElement as _, KeyDownEvent, KeyUpEvent,
+    AppContext as _, Context, FocusHandle, KeyDownEvent, KeyUpEvent,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
     MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent, StatefulInteractiveElement,
 };
