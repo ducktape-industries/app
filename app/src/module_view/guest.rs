@@ -315,9 +315,26 @@ pub(super) fn merge(
     held: &mut Option<wire::Node>,
     frame: &mut wire::Frame,
 ) -> Result<(bool, wire::SanitizeReport), &'static str> {
+    let mut tooltip_changed = false;
+    if let Some(root) = held {
+        for response in std::mem::take(&mut frame.tooltip_responses) {
+            root.for_each_mut(&mut |node| {
+                let wire::Node::Container { interactivity, .. } = node else {
+                    return;
+                };
+                let Some(tooltip) = &mut interactivity.tooltip else {
+                    return;
+                };
+                if tooltip.request == response.request {
+                    tooltip.content = Some(response.content.clone());
+                    tooltip_changed = true;
+                }
+            });
+        }
+    }
     if frame.unchanged {
         frame.root = held.take();
-        return Ok((false, Default::default()));
+        return Ok((tooltip_changed, Default::default()));
     }
     if frame.root.is_some() {
         return Ok((true, Default::default()));
@@ -396,6 +413,43 @@ mod tests {
             } => (label.clone(), *press),
             other => panic!("not the probe's button: {other:?}"),
         }
+    }
+
+    #[test]
+    fn tooltip_response_only_attaches_to_its_current_frame_route() {
+        let mut interactivity = wire::Interactivity::default();
+        interactivity.tooltip = Some(wire::Tooltip {
+            request: 7,
+            content: None,
+            hoverable: false,
+            delay_ms: 250,
+        });
+        let mut held = Some(wire::Node::Container {
+            id: None,
+            style: Default::default(),
+            interactivity,
+            children: Vec::new(),
+        });
+        let tip = wire::Node::Text {
+            id: None,
+            style: Default::default(),
+            content: "Help".into(),
+            heading: None,
+            live: None,
+        };
+        let mut frame = wire::Frame {
+            unchanged: true,
+            tooltip_responses: vec![wire::TooltipResponse {
+                request: 7,
+                content: Box::new(tip),
+            }],
+            ..Default::default()
+        };
+        assert!(merge(&mut held, &mut frame).unwrap().0);
+        let wire::Node::Container { interactivity, .. } = frame.root.unwrap() else {
+            panic!("container")
+        };
+        assert!(interactivity.tooltip.unwrap().content.is_some());
     }
 
     /// Every export of a real view, through guest memory. The bytes are

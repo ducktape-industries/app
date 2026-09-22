@@ -4,6 +4,7 @@ fn native_gpui_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppContex
     let mut root = container_with_style("action", div().size_full().style().clone(), []);
     if let wire::Node::Container { interactivity, .. } = &mut root {
         interactivity.on_click = Some(71);
+        interactivity.on_aux_click = Some(72);
     }
     let window = cx.open_window(size(px(120.), px(80.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
@@ -23,11 +24,31 @@ fn native_gpui_click_grants_one_user_activation(cx: &mut gpui_kit::TestAppContex
         );
     });
     native.update(|window, cx| window.click("action", cx));
-    let events = events.borrow();
-    let event = events
+    let observed_events = events.borrow();
+    let event = observed_events
         .iter()
         .find(|event| matches!(event, wire::Event::Click { handler: 71, .. }))
         .expect("native click delivers the actual click payload");
+    tree.read_with(&native, |tree, _| {
+        assert!(tree.take_user_activation(event).is_some());
+        assert!(tree.take_user_activation(event).is_none());
+    });
+    drop(observed_events);
+    native.simulate_mouse_down(
+        point(px(60.), px(40.)),
+        gpui_kit::MouseButton::Right,
+        Default::default(),
+    );
+    native.simulate_mouse_up(
+        point(px(60.), px(40.)),
+        gpui_kit::MouseButton::Right,
+        Default::default(),
+    );
+    let events = events.borrow();
+    let event = events
+        .iter()
+        .find(|event| matches!(event, wire::Event::AuxClick { handler: 72, .. }))
+        .expect("native auxiliary click delivers its click payload");
     tree.read_with(&native, |tree, _| {
         assert!(tree.take_user_activation(event).is_some());
         assert!(tree.take_user_activation(event).is_none());

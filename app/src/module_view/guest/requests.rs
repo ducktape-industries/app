@@ -139,7 +139,7 @@ impl Guest {
     pub(crate) fn command_target(command: &wire::WidgetCommand) -> Option<&str> {
         use wire::WidgetCommand as C;
         match command {
-            C::FocusPrevious | C::FocusNext => None,
+            C::FocusPrevious | C::FocusNext | C::FocusHandle { .. } => None,
             C::EditorAction { target, .. }
             | C::Focus { target }
             | C::Focused { target }

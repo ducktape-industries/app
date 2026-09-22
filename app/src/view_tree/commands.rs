@@ -51,8 +51,15 @@ impl ViewTree {
     pub(crate) fn take_user_activation(&self, event: &wire::Event) -> Option<()> {
         let message = match event {
             wire::Event::Message(message)
-            | wire::Event::Click { handler: message, .. }
-            | wire::Event::Select { handler: message, .. } => message,
+            | wire::Event::Click {
+                handler: message, ..
+            }
+            | wire::Event::AuxClick {
+                handler: message, ..
+            }
+            | wire::Event::Select {
+                handler: message, ..
+            } => message,
             _ => return None,
         };
         let actual_click = self.user_activation.get() == Some(*message);
@@ -87,6 +94,15 @@ impl ViewTree {
         command.validate()?;
         match command {
             C::Focused { target } => Ok(wire::encode(&self.target_focused(&target, window, cx))),
+            C::FocusHandle { handle } => {
+                let focus = self
+                    .guest_focus_targets
+                    .get(&handle)
+                    .ok_or_else(|| "focus handle is not mounted".to_string())?
+                    .clone();
+                focus.focus(window, cx);
+                Ok(wire::encode(&()))
+            }
             C::FocusPrevious => self.focus_relative(false, window, cx),
             C::FocusNext => self.focus_relative(true, window, cx),
             C::EditorAction { ref target, .. }

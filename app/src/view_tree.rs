@@ -109,7 +109,7 @@ pub struct ViewTree {
     root: wire::Node,
     // Structural nodes enter the native focus path only on an explicit Focus request.
     focus_targets: HashMap<String, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
-    guest_focus_targets: HashMap<wire::ElementIdWire, FocusHandle>,
+    guest_focus_targets: HashMap<u64, FocusHandle>,
     fields: HashMap<AuthoredPath, Field>,
     authored_path: AuthoredPath,
     scrolls: HashMap<String, ScrollHandle>,

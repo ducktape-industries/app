@@ -58,8 +58,10 @@ pub(super) fn apply(
     element = apply_mouse(element, interactivity, cx);
     element = apply_keyboard(element, interactivity, cx);
     element = apply_misc(element, interactivity, cx);
-    if let Some(tooltip) = &interactivity.tooltip {
-        let content = tooltip.content.clone();
+    if let Some(tooltip) = &interactivity.tooltip
+        && let Some(content) = &tooltip.content
+    {
+        let content = content.clone();
         let delay = Duration::from_millis(tooltip.delay_ms);
         element = element.tooltip_show_delay(delay);
         if tooltip.hoverable {
@@ -277,12 +279,19 @@ fn apply_misc(
     interactivity: &wire::Interactivity,
     cx: &mut Context<ViewTree>,
 ) -> Stateful<Div> {
-    if let Some(handler) = interactivity.on_hover {
+    let tooltip_request = interactivity.tooltip.as_ref().map(|tooltip| tooltip.request);
+    if interactivity.on_hover.is_some() || tooltip_request.is_some() {
+        let handler = interactivity.on_hover;
         element = element.on_hover(cx.listener(move |_, hovered, _, cx| {
-            cx.emit(wire::Event::Hover {
-                handler,
-                hovered: *hovered,
-            });
+            if let Some(handler) = handler {
+                cx.emit(wire::Event::Hover {
+                    handler,
+                    hovered: *hovered,
+                });
+            }
+            if *hovered && let Some(request) = tooltip_request {
+                cx.emit(wire::Event::TooltipRequest { request });
+            }
         }));
     }
     element = element.hover_listener_mode(match interactivity.hover_listener_mode {
@@ -300,7 +309,8 @@ fn apply_misc(
     }
     if let Some(handler) = interactivity.on_aux_click {
         element = element.on_aux_click(cx.listener(
-            move |_, event: &gpui_kit::ClickEvent, _, cx| {
+            move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                this.user_activation.set(Some(handler));
                 cx.emit(wire::Event::AuxClick {
                     handler,
                     event: event.into(),
