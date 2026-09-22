@@ -137,13 +137,15 @@ mod tests {
     }
 
     fn ordinary_source(request: u32, content: Option<wire::Node>) -> wire::Node {
-        let mut interactivity = wire::Interactivity::default();
-        interactivity.tooltip = Some(wire::Tooltip {
-            request,
-            content: content.map(Box::new),
-            hoverable: false,
-            delay_ms: 10,
-        });
+        let interactivity = wire::Interactivity {
+            tooltip: Some(wire::Tooltip {
+                request,
+                content: content.map(Box::new),
+                hoverable: false,
+                delay_ms: 10,
+            }),
+            ..Default::default()
+        };
         wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("ordinary-source".into())),
             style: div().size(px(40.)).style().clone(),

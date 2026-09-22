@@ -224,6 +224,7 @@ fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::Te
         .read_with(&native, |tree, _| {
             tree.measured_bounds(&[
                 named_id("float-overlay"),
+                named_id("float"),
                 named_id("float-card-box"),
                 named_id("float-card"),
             ])

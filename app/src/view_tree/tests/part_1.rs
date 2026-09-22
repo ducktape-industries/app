@@ -272,33 +272,59 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
     native.update(|window, cx| window.render_frame(cx));
     let button_bounds = native.update(|window, _| window.find("wrapping-parent").bounds());
     tree.read_with(&native, |tree, _| {
+        let parent = named_id("wrapping-parent");
         let column = named_id("column");
         let row = named_id("row");
         let paragraph = tree
-            .measured_bounds(&[column.clone(), named_id("paragraph")])
+            .measured_bounds(&[parent.clone(), column.clone(), named_id("paragraph")])
             .unwrap();
         let hash = tree
-            .measured_bounds(&[column.clone(), row.clone(), named_id("hash")])
+            .measured_bounds(&[
+                parent.clone(),
+                column.clone(),
+                row.clone(),
+                named_id("hash"),
+            ])
             .unwrap();
         assert!(
             button_bounds.bottom() >= hash.bottom(),
             "auto-height button must show every wrapped line"
         );
         let count = tree
-            .measured_bounds(&[column.clone(), row.clone(), named_id("count")])
+            .measured_bounds(&[
+                parent.clone(),
+                column.clone(),
+                row.clone(),
+                named_id("count"),
+            ])
             .unwrap();
         assert!(
-            tree.measured_bounds(&[column.clone(), row.clone(), named_id("height")])
+            tree.measured_bounds(&[
+                parent.clone(),
+                column.clone(),
+                row.clone(),
+                named_id("height"),
+            ])
                 .unwrap()
                 .right()
                 <= hash.left()
         );
         assert_eq!(
-            tree.measured_bounds(&[column.clone(), row.clone(), named_id("label")])
+            tree.measured_bounds(&[
+                parent.clone(),
+                column.clone(),
+                row.clone(),
+                named_id("label"),
+            ])
                 .unwrap()
                 .size
                 .width,
-            tree.measured_bounds(&[column.clone(), row.clone(), named_id("reference")])
+            tree.measured_bounds(&[
+                parent.clone(),
+                column.clone(),
+                row.clone(),
+                named_id("reference"),
+            ])
                 .unwrap()
                 .size
                 .width,
@@ -313,7 +339,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         assert!(
             hash.size.height
                 > tree
-                    .measured_bounds(&[column, row, named_id("reference")])
+                    .measured_bounds(&[parent, column, row, named_id("reference")])
                     .unwrap()
                     .size
                     .height,
