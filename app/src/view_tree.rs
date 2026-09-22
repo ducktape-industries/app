@@ -50,6 +50,7 @@ mod style;
 mod surfaces;
 mod text;
 mod uniform;
+mod variable_list;
 
 #[cfg(test)]
 mod tests;
@@ -62,10 +63,10 @@ pub(crate) use commands::dialog_entry;
 use inputs::{EditorMount, Field, RangeControl};
 use pickers::Picker;
 #[cfg(test)]
-#[cfg(test)]
 use picture_resources::decode_image;
 use pictures::{ViewerState, qr};
 use scroll::{ScrollRequest, VirtualScroll};
+use variable_list::{VariableList, VariableListKey};
 use sensors::SensorState;
 use style::{
     button_style, content_dimensions, cross_align, decoration, dimensions, has_named_overlay,
@@ -109,6 +110,7 @@ pub struct ViewTree {
     scrolls: HashMap<String, ScrollHandle>,
     lists: HashMap<String, VirtualScroll>,
     uniform_lists: HashMap<Vec<wire::ElementIdWire>, UniformListHostState>,
+    variable_lists: HashMap<VariableListKey, VariableList>,
     scroll_positions: HashMap<String, (Point<Pixels>, Point<Pixels>)>,
     pickers: HashMap<String, Picker>,
     drags: HashMap<String, Point<Pixels>>,
@@ -144,6 +146,7 @@ impl ViewTree {
             scrolls: HashMap::new(),
             lists: HashMap::new(),
             uniform_lists: HashMap::new(),
+            variable_lists: HashMap::new(),
             scroll_positions: HashMap::new(),
             pickers: HashMap::new(),
             drags: HashMap::new(),
@@ -191,6 +194,7 @@ impl ViewTree {
             Node::Text { .. } => self.text(node, cx),
             Node::Space { width, height } => dimensions(div(), *width, *height).into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
+            Node::List { .. } => self.variable_list(node, cx),
             Node::Container { .. } => self.container(node, window, cx),
             Node::Scroll { .. } => self.scroll(node, window, cx),
             Node::Button { .. } => self.button(node, window, cx),
