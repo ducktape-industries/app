@@ -283,7 +283,7 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
     tree.update(&mut native, |tree, cx| {
         tree.replace(
             wire::Node::Button {
-                key: "watched".into(),
+                id: named_id("watched"),
                 role: None,
                 selected: None,
                 content: wire::ButtonContent::Label("New action".into()),
@@ -515,7 +515,7 @@ fn geometry_and_pixels_keep_the_wire_meaning() {
 
 fn button(content: wire::ButtonContent, label: Option<&str>, on_press: Option<u32>) -> wire::Node {
     wire::Node::Button {
-        key: "b".into(),
+        id: named_id("b"),
         role: None,
         selected: None,
         content,

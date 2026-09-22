@@ -255,7 +255,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         *style = root_style.style().clone();
     }
     let root = wire::Node::Button {
-        key: "wrapping-parent".into(),
+        id: named_id("wrapping-parent"),
         role: None,
         selected: None,
         content: wire::ButtonContent::Child(Box::new(root)),

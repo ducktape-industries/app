@@ -27,7 +27,7 @@ fn a_button_reports_checked_expanded_and_its_description() {
 #[test]
 fn a_toggle_is_a_checkbox_or_a_switch_reporting_checked() {
     let toggle = |kind, label: &str, checked, on_toggle| wire::Node::Toggle {
-        key: "t".into(),
+        id: named_id("t"),
         kind,
         label: label.into(),
         checked,
@@ -57,7 +57,7 @@ fn a_toggle_is_a_checkbox_or_a_switch_reporting_checked() {
 #[test]
 fn a_radio_reports_whether_it_is_the_selected_one() {
     let radio = |selected| wire::Node::Radio {
-        key: "r".into(),
+        id: named_id("r"),
         label: "Weekly".into(),
         selected,
         on_select: 1,
@@ -101,7 +101,7 @@ fn a_slider_and_a_progress_report_their_value_in_range() {
         }
     );
     let progress = wire::Node::Progress {
-        key: "p".into(),
+        id: named_id("p"),
         value: 0.25,
         min: 0.,
         max: 1.,

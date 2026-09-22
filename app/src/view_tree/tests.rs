@@ -81,7 +81,7 @@ fn rule(key: &str, axis: wire::Axis) -> wire::Node {
         wire::Axis::Column => element.w(px(1.)),
     };
     wire::Node::Rule {
-        key: key.into(),
+        id: named_id(key),
         axis,
         style: element.style().clone(),
     }

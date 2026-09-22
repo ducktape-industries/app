@@ -207,7 +207,7 @@ fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::Te
                 style: sized_style(Some(fill()), Some(fill())),
             },
             wire::Node::Float {
-                key: "float".into(),
+                id: named_id("float"),
                 x: 37.,
                 y: 29.,
                 scale: 1.,
