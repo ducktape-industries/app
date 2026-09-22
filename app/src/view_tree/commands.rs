@@ -1,5 +1,9 @@
 use super::*;
 
+fn legacy_input_identity(target: &str) -> wire::IdentityKey {
+    wire::IdentityKey::Element(wire::ElementIdWire::Name(target.into()))
+}
+
 /// Where focus enters a dialog: a node-less element drawn first in it,
 /// tracking `entry`. The frame the dialog opens, focus that is still where
 /// it was at the end of that frame moves to the first Tab stop after this
@@ -91,7 +95,7 @@ impl ViewTree {
         if !self.mounted.contains(target) {
             return false;
         }
-        if let Some(field) = self.fields.get(target) {
+        if let Some(field) = self.fields.get(&legacy_input_identity(target)) {
             return field.state.read(cx).focus_handle(cx).is_focused(window);
         }
         if let Some((_, handle)) = self.focus_targets.get(target) {
@@ -121,7 +125,7 @@ impl ViewTree {
                 return;
             };
             let available = self.mounted.contains(key)
-                && (self.fields.contains_key(key)
+                && (self.fields.contains_key(&legacy_input_identity(key))
                     || self.pickers.contains_key(key)
                     || self.focus_targets.contains_key(key)
                     || self.editors.contains_key(key));
@@ -212,7 +216,7 @@ impl ViewTree {
             }
             return Ok(wire::encode(&()));
         }
-        let Some(field) = self.fields.get(target) else {
+        let Some(field) = self.fields.get(&legacy_input_identity(target)) else {
             return Ok(wire::encode(&()));
         };
         field.state.update(cx, |input, cx| {
@@ -383,8 +387,8 @@ impl ViewTree {
                 }
             }
             match node {
-                wire::Node::Input { key, .. } => {
-                    inputs.insert(key.clone());
+                wire::Node::Input { id, .. } => {
+                    inputs.insert(wire::IdentityKey::Element(id.clone()));
                 }
                 wire::Node::Scroll { key, .. } => {
                     scrolls.insert(key.clone());

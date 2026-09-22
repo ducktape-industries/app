@@ -404,12 +404,11 @@ fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
             disabled,
             ..Default::default()
         },
-        key: "i".into(),
+        id: wire::ElementIdWire::Name("i".into()),
         placeholder: "Type here".into(),
         value: "hunter2".into(),
         on_input: 1,
         on_submit: None,
-        width: None,
         secure,
         style: Default::default(),
     }

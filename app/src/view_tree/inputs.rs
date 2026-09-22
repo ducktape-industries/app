@@ -111,25 +111,25 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Input {
-            key,
+            id,
             value,
             placeholder,
             secure,
             on_input,
             on_submit,
             options,
-            width,
             style,
             ..
         } = node
         else {
             unreachable!()
         };
-        if !self.fields.contains_key(key) {
+        let identity = wire::IdentityKey::Element(id.clone());
+        if !self.fields.contains_key(&identity) {
             let presentation = self
                 .presentation
                 .inputs
-                .remove(key)
+                .remove(&identity)
                 .filter(|saved| saved.value == *value && saved.secure == *secure);
             let state = cx.new(|cx| {
                 let mut state = InputState::new(window, cx)
@@ -144,10 +144,10 @@ impl ViewTree {
                 }
                 state
             });
-            let input_key = key.clone();
-            let observed_key = key.clone();
+            let input_identity = identity.clone();
+            let observed_identity = identity.clone();
             let observer = cx.observe_in(&state, window, move |this, input, window, cx| {
-                let Some(field) = this.fields.get_mut(&observed_key) else {
+                let Some(field) = this.fields.get_mut(&observed_identity) else {
                     return;
                 };
                 let (text, marked, cursor, selection) = input.update(cx, |input, cx| {
@@ -170,7 +170,7 @@ impl ViewTree {
                 }
             });
             let subscription = cx.subscribe_in(&state, window, move |this, input, event, _, cx| {
-                let Some(field) = this.fields.get_mut(&input_key) else {
+                let Some(field) = this.fields.get_mut(&input_identity) else {
                     return;
                 };
                 match event {
@@ -194,7 +194,7 @@ impl ViewTree {
                 }
             });
             self.fields.insert(
-                key.clone(),
+                identity.clone(),
                 Field {
                     state,
                     on_input: *on_input,
@@ -209,7 +209,7 @@ impl ViewTree {
                 },
             );
         }
-        let field = self.fields.get_mut(key).expect("field inserted");
+        let field = self.fields.get_mut(&identity).expect("field inserted");
         field.on_input = *on_input;
         field.on_submit = *on_submit;
         if field.guest_value != *value {
@@ -237,35 +237,17 @@ impl ViewTree {
         // empty label is no name, left unset so it reads as missing; a secure
         // field is a password, which keeps its value out of the tree.
         let accessible = accessible(node);
+        let native_id = id.to_gpui().expect("validated input ID must lower to GPUI");
+        let field_id = ElementId::NamedChild(Arc::new(native_id.clone()), "field".into());
         let mut input = Input::new(&field.state)
-            .id(key.clone())
-            .disabled(options.disabled);
+            .id(native_id)
+            .disabled(options.disabled)
+            .refine_style(style);
         if accessible.role == Some(gpui_kit::Role::PasswordInput) {
             input = input.content_type(InputContentType::Password);
         }
-        let face = match options.disabled {
-            true => style.disabled.unwrap_or(style.active),
-            false => style.active,
-        };
-        let mut input = decoration(
-            pad(input, options.padding),
-            style.utility.background.or(face.background),
-            style.utility.border.or(face.border),
-        );
-        if let Some(color) = style.utility.value.or(face.value) {
-            input = input.text_color(rgba(color));
-        }
-        if let Some(size) = options.text_size {
-            input = input.text_size(px(size));
-        }
-        if let Some(height) = options.line_height {
-            input = input.line_height(relative(height));
-        }
-        if let Some(font) = &options.font {
-            input = input.font_weight(font_weight(font.weight));
-        }
         let field = crate::a11y::text_field(
-            SharedString::from(format!("{key}/field")),
+            field_id,
             &field.state.read(cx).focus_handle(cx),
             {
                 let state = field.state.clone();
@@ -275,7 +257,7 @@ impl ViewTree {
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
         );
-        announce(dimensions(field, *width, None), accessible).into_any_element()
+        announce(field, accessible).into_any_element()
     }
 
     pub(super) fn button(

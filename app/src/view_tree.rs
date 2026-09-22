@@ -12,6 +12,7 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     input::{Input, InputContentType, InputEvent, InputState},
 };
+use gpui_kit::gpui_base::StyledExt as _;
 use gpui_kit::component::{
     IndexPath,
     searchable_list::{SearchableListDelegate, SearchableListItem},
@@ -25,7 +26,7 @@ use gpui_kit::{
     ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
     ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
-    StrikethroughStyle, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
+    StrikethroughStyle, Styled, StyledExt as _, StyledImage as _, StyledText, Subscription, Task, TextLayout,
     UnderlineStyle, Window, canvas, div, fill, img, point, px, relative, rgb, size, svg,
 };
 use std::collections::HashMap;
@@ -63,7 +64,7 @@ use pictures::{ViewerState, qr};
 use scroll::{ScrollRequest, VirtualScroll};
 use sensors::SensorState;
 use style::{
-    button_style, content_dimensions, cross_align, decoration, dimensions, font_weight,
+    button_style, content_dimensions, cross_align, decoration, dimensions,
     has_named_overlay, horizontal_align, named_overlay, native_cursor, object_fit, pad, rgba,
     shadows, text_options,
 };
@@ -72,7 +73,7 @@ use text::RichSelection;
 #[derive(Default)]
 pub(crate) struct NativePresentation {
     focused_container: Option<(String, std::mem::Discriminant<wire::Node>)>,
-    inputs: HashMap<String, InputPresentation>,
+    inputs: HashMap<wire::IdentityKey, InputPresentation>,
     editors: HashMap<String, wire::editor_document::EditorDocumentRef>,
     scrolls: HashMap<String, ScrollPresentation>,
 }
@@ -96,7 +97,7 @@ pub struct ViewTree {
     root: wire::Node,
     // Structural nodes enter the native focus path only on an explicit Focus request.
     focus_targets: HashMap<String, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
-    fields: HashMap<String, Field>,
+    fields: HashMap<wire::IdentityKey, Field>,
     rich_selections: HashMap<String, RichSelection>,
     scrolls: HashMap<String, ScrollHandle>,
     lists: HashMap<String, VirtualScroll>,
