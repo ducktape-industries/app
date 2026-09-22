@@ -12,10 +12,15 @@
 //!   key at the signer's next sequence and submitted; answered with the
 //!   receipt's output, or the program's refusal. `op.submit_bytes`
 //!   `{target, body_b64}` — the same with an exact binary payload.
+//! - `rpc.status` `null` — node status encoded as borsh.
+//! - `rpc.invite` `{ttl_days}` — mint once; borsh `(invite, notes)`, with
+//!   each note `(reason, sentence)`. Node refusals retain their tokens.
 //! - `rpc.live` `<program>` — a subscription that gets one item per block
 //!   that wrote to `program` (`/v1/changes/<program>`), so the view re-reads
 //!   what moved.
 //! - `blob.get` `{id}` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
+//! - `host.props` `null` — subscribes to the session props (including the
+//!   public account key, theme and read-only endpoint).
 //! - `host.visible`, `host.badge`, `host.open_link`, `host.chord`,
 //!   `host.id`, `clock.ticks`, `host.log`, `host.widget` — the app's own
 //!   doors: visibility, the tab badge, the one way out (a `duck://` link),
@@ -76,7 +81,9 @@ mod node;
 mod replies;
 
 pub(super) use node::{Items, NodeTask, spawn_device, spawn_subscription};
-use node::{blob_get, live, query, query_bytes, spawn, submit, submit_bytes};
+use node::{
+    blob_get, invite, live, query, query_bytes, spawn, spawn_once, status, submit, submit_bytes,
+};
 pub(super) use replies::Replies;
 
 /// The kernel's own runtime, on its own thread: the window thread never
@@ -135,6 +142,8 @@ pub(super) fn answer(
             });
         }
         ("rpc", "query" | "view") => spawn(guest, id, payload, query),
+        ("rpc", "status") => spawn(guest, id, payload, status),
+        ("rpc", "invite") => spawn_once(guest, id, payload, invite),
         ("rpc", "query_bytes") => spawn(guest, id, payload, query_bytes),
         ("op", "submit") => spawn(guest, id, payload, submit),
         ("op", "submit_bytes") => spawn(guest, id, payload, submit_bytes),

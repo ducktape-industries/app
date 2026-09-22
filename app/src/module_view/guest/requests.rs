@@ -109,7 +109,7 @@ impl Guest {
         let own = capability == self.module;
         match (capability, operation) {
             ("host", "widget") => self.widget_request(id, &payload),
-            _ if own && operation == "props" => {
+            _ if (own || capability == "host") && operation == "props" => {
                 self.props_subscription = Some(id);
                 self.props_sent = None;
                 self.sync_props(props);

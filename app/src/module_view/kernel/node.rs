@@ -41,6 +41,14 @@ async fn until_answered(budget: std::time::Duration, mut call: impl FnMut() -> A
 }
 
 pub(super) fn spawn(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
+    spawn_call(guest, id, payload, call, true);
+}
+
+pub(super) fn spawn_once(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
+    spawn_call(guest, id, payload, call, false);
+}
+
+fn spawn_call(guest: &mut Guest, id: u64, payload: &[u8], call: Call, retry: bool) {
     let ask: serde_json::Value = match serde_json::from_slice(payload) {
         Ok(ask) => ask,
         Err(error) => {
@@ -62,7 +70,11 @@ pub(super) fn spawn(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
     };
     let task = runtime().spawn(async move {
         let _counted = counted;
-        let result = until_answered(NODE_RETRY_BUDGET, || call(node.clone(), ask.clone())).await;
+        let result = if retry {
+            until_answered(NODE_RETRY_BUDGET, || call(node.clone(), ask.clone())).await
+        } else {
+            call(node, ask).await
+        };
         replies.item(id, result, true);
     });
     guest
@@ -339,5 +351,37 @@ pub(super) fn blob_get(node: Node, ask: serde_json::Value) -> Answered {
             ));
         }
         Ok(body.to_vec())
+    })
+}
+
+pub(super) fn status(node: Node, ask: serde_json::Value) -> Answered {
+    Box::pin(async move {
+        if !ask.is_null() {
+            return Err(malformed("rpc.status takes null"));
+        }
+        node.client
+            .status()
+            .await
+            .map(|status| abi::encode(&status))
+            .map_err(refused)
+    })
+}
+
+pub(super) fn invite(node: Node, ask: serde_json::Value) -> Answered {
+    Box::pin(async move {
+        let ttl = ask["ttl_days"]
+            .as_u64()
+            .filter(|ttl| *ttl > 0)
+            .ok_or_else(|| malformed("ttl_days must be a positive integer"))?;
+        let refusal =
+            |error: ducktape_rpc::Error| wire::Refusal::new(error.reason(), error.message());
+        let client = ducktape_rpc::Client::new(node.client.endpoint()).map_err(refusal)?;
+        let minted = client.mint_invite(ttl).await.map_err(refusal)?;
+        let notes: Vec<(String, String)> = minted
+            .notes
+            .into_iter()
+            .map(|note| (note.reason, note.sentence))
+            .collect();
+        Ok(abi::encode(&(minted.invite, notes)))
     })
 }

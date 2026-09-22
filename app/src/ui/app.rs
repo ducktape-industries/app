@@ -173,7 +173,13 @@ impl Ducktape {
 
     /// What every view is handed as its props.
     pub(crate) fn view_props(&self) -> Vec<u8> {
-        crate::module_view::props(self.dark(), self.connected, &self.network, &self.signer_key)
+        crate::module_view::props(
+            self.dark(),
+            self.connected,
+            &self.network,
+            &self.signer_key,
+            &self.endpoint,
+        )
     }
 }
 

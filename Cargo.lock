@@ -2437,6 +2437,7 @@ dependencies = [
  "design",
  "ducklink",
  "ducktape-home",
+ "ducktape-rpc",
  "futures",
  "gpui-kit",
  "image",
@@ -2473,6 +2474,20 @@ dependencies = [
 name = "ducktape-home"
 version = "0.1.0"
 source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapable-sandbox#665907ddc65ccada5f3e3ba0a95ae955414bfb3c"
+
+[[package]]
+name = "ducktape-rpc"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=75fce331d60b942ab2f20b7d7bce9f53b3f9de8b#75fce331d60b942ab2f20b7d7bce9f53b3f9de8b"
+dependencies = [
+ "futures",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-tungstenite",
+]
 
 [[package]]
 name = "dunce"

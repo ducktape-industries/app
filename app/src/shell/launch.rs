@@ -10,22 +10,7 @@ pub(crate) fn run() {
     });
     application.run(move |cx| {
         gpui_kit::init(cx);
-        let fonts: Vec<std::borrow::Cow<'static, [u8]>> = BUNDLED_FACES
-            .iter()
-            .copied()
-            .map(std::borrow::Cow::Borrowed)
-            .collect();
-        // CoreGraphics cannot load Noto's CBDT color font; macOS supplies emoji.
-        #[cfg(not(target_os = "macos"))]
-        let fonts = {
-            let mut fonts = fonts;
-            fonts.push(std::borrow::Cow::Borrowed(EMOJI_FACE));
-            fonts
-        };
-        if let Err(error) = cx.text_system().add_fonts(fonts) {
-            tracing::error!(target: "ducktape::app", reason = "font_registration_failed", %error, "bundled desktop fonts could not be registered");
-        }
-        configure_native_theme(cx);
+        initialize_rendering(cx);
         let mut commands = commands();
         let (state, initial) = Ducktape::boot();
         let (mut tray, mut tray_events) = crate::tray::init(cx);
@@ -91,7 +76,9 @@ pub(crate) fn run() {
             // until a node answers
             let (key, opened) = open(WindowKind::Console);
             desktop.state.console_win = Some(key);
-            desktop.start(opened.map(Message::ConsoleOpened), cx).detach();
+            desktop
+                .start(opened.map(Message::ConsoleOpened), cx)
+                .detach();
             desktop.start(initial, cx).detach();
             desktop.subscriptions(cx);
         });
@@ -111,7 +98,8 @@ pub(crate) fn run() {
         let command_desktop = desktop.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(pending) = commands.next().await {
-                let _ = command_desktop.update(cx, |desktop, cx| desktop.execute(pending.command, cx));
+                let _ =
+                    command_desktop.update(cx, |desktop, cx| desktop.execute(pending.command, cx));
                 let _ = pending.completed.send(());
             }
         })
@@ -123,4 +111,23 @@ pub(crate) fn run() {
         })
         .detach();
     });
+}
+
+pub(super) fn initialize_rendering(cx: &mut gpui_kit::App) {
+    let fonts: Vec<std::borrow::Cow<'static, [u8]>> = BUNDLED_FACES
+        .iter()
+        .copied()
+        .map(std::borrow::Cow::Borrowed)
+        .collect();
+    // CoreGraphics cannot load Noto's CBDT color font; macOS supplies emoji.
+    #[cfg(not(target_os = "macos"))]
+    let fonts = {
+        let mut fonts = fonts;
+        fonts.push(std::borrow::Cow::Borrowed(EMOJI_FACE));
+        fonts
+    };
+    if let Err(error) = cx.text_system().add_fonts(fonts) {
+        tracing::error!(target: "ducktape::app", reason = "font_registration_failed", %error, "bundled desktop fonts could not be registered");
+    }
+    configure_native_theme(cx);
 }
