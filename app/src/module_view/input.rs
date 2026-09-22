@@ -51,6 +51,17 @@ pub(super) fn mouse(guest: &mut Guest, event: wire::mouse::Event, captured: bool
     true
 }
 
+pub(super) fn needs_focus(event: &wire::Event) -> bool {
+    matches!(
+        event,
+        wire::Event::Keyboard { .. }
+            | wire::Event::Observation {
+                event: wire::events::Event::InputMethod(_),
+                ..
+            }
+    )
+}
+
 #[derive(Clone)]
 struct Route {
     seat: Arc<Mutex<Mounted>>,
@@ -61,17 +72,11 @@ struct Route {
 }
 impl Route {
     fn deliver(&self, event: wire::Event, cx: &mut App) {
-        if matches!(
-            &event,
-            wire::Event::Keyboard { .. }
-                | wire::Event::Observation {
-                    event: wire::events::Event::InputMethod(_),
-                    ..
-                }
-        ) && self
-            .view
-            .upgrade()
-            .is_none_or(|view| !view.read(cx).focused)
+        if needs_focus(&event)
+            && self
+                .view
+                .upgrade()
+                .is_none_or(|view| !view.read(cx).focused)
         {
             return;
         }
