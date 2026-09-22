@@ -1,7 +1,26 @@
 use super::*;
 
-fn legacy_input_identity(target: &str) -> wire::IdentityKey {
-    wire::IdentityKey::Element(wire::ElementIdWire::Name(target.into()))
+fn collect_input_paths(
+    node: &wire::Node,
+    path: &mut AuthoredPath,
+    inputs: &mut std::collections::HashSet<AuthoredPath>,
+) {
+    let entered_scope = match node.identity() {
+        Some(wire::IdentityKeyRef::Element(id)) => {
+            path.push(id.clone());
+            true
+        }
+        _ => false,
+    };
+    if matches!(node, wire::Node::Input { .. }) {
+        inputs.insert(path.clone());
+    }
+    for child in node.children() {
+        collect_input_paths(child, path, inputs);
+    }
+    if entered_scope {
+        path.pop();
+    }
 }
 
 /// Where focus enters a dialog: a node-less element drawn first in it,
@@ -95,9 +114,6 @@ impl ViewTree {
         if !self.mounted.contains(target) {
             return false;
         }
-        if let Some(field) = self.fields.get(&legacy_input_identity(target)) {
-            return field.state.read(cx).focus_handle(cx).is_focused(window);
-        }
         if let Some((_, handle)) = self.focus_targets.get(target) {
             return handle.is_focused(window);
         }
@@ -125,8 +141,7 @@ impl ViewTree {
                 return;
             };
             let available = self.mounted.contains(key)
-                && (self.fields.contains_key(&legacy_input_identity(key))
-                    || self.pickers.contains_key(key)
+                && (self.pickers.contains_key(key)
                     || self.focus_targets.contains_key(key)
                     || self.editors.contains_key(key));
             if available {
@@ -216,31 +231,6 @@ impl ViewTree {
             }
             return Ok(wire::encode(&()));
         }
-        let Some(field) = self.fields.get(&legacy_input_identity(target)) else {
-            return Ok(wire::encode(&()));
-        };
-        field.state.update(cx, |input, cx| {
-            let text = input.value();
-            let byte = |index: u32| {
-                unicode_segmentation::UnicodeSegmentation::grapheme_indices(text.as_ref(), true)
-                    .nth(index as usize)
-                    .map_or(text.len(), |(offset, _)| offset)
-            };
-            match command {
-                C::Focus { .. } => input.focus(window, cx),
-                C::CursorFront { .. } => input.set_selected_range(0..0, cx),
-                C::CursorEnd { .. } => input.set_selected_range(text.len()..text.len(), cx),
-                C::Cursor { position, .. } => {
-                    let offset = byte(*position);
-                    input.set_selected_range(offset..offset, cx);
-                }
-                C::SelectAll { .. } => input.select_all(window, cx),
-                C::Select { start, end, .. } => {
-                    input.set_selected_range(byte(*start)..byte(*end), cx)
-                }
-                _ => {}
-            }
-        });
         Ok(wire::encode(&()))
     }
 
@@ -368,6 +358,7 @@ impl ViewTree {
     pub fn replace(&mut self, mut root: wire::Node, cx: &mut Context<Self>) {
         let mut focusable = HashMap::new();
         let mut inputs = std::collections::HashSet::new();
+        collect_input_paths(&root, &mut Vec::new(), &mut inputs);
         let mut scrolls = std::collections::HashSet::new();
         let mut pickers = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
@@ -387,9 +378,7 @@ impl ViewTree {
                 }
             }
             match node {
-                wire::Node::Input { id, .. } => {
-                    inputs.insert(wire::IdentityKey::Element(id.clone()));
-                }
+                wire::Node::Input { .. } => {}
                 wire::Node::Scroll { key, .. } => {
                     scrolls.insert(key.clone());
                 }

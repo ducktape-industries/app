@@ -124,7 +124,8 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let identity = wire::IdentityKey::Element(id.clone());
+        let identity = self.authored_path.clone();
+        debug_assert_eq!(identity.last(), Some(id));
         if !self.fields.contains_key(&identity) {
             let presentation = self
                 .presentation

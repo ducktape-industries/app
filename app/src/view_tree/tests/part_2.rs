@@ -1,4 +1,64 @@
 #[gpui_kit::test]
+fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let field = |handler| {
+        let mut node = input("Message", false, false);
+        let wire::Node::Input {
+            id,
+            value,
+            on_input,
+            on_submit,
+            ..
+        } = &mut node
+        else {
+            unreachable!()
+        };
+        *id = wire::ElementIdWire::Name("field".into());
+        value.clear();
+        *on_input = handler;
+        *on_submit = Some(handler + 10);
+        node
+    };
+    let root = container(
+        "form",
+        [
+            container("left", [field(1)]),
+            container("right", [field(2)]),
+        ],
+    );
+    let window = cx.open_window(size(px(500.), px(200.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+
+    let (left, right) = tree.read_with(&native, |tree, _| {
+        assert_eq!(tree.fields.len(), 2);
+        let left = vec![named_id("form"), named_id("left"), named_id("field")];
+        let right = vec![named_id("form"), named_id("right"), named_id("field")];
+        (
+            tree.fields[&left].state.clone(),
+            tree.fields[&right].state.clone(),
+        )
+    });
+    assert_ne!(left.entity_id(), right.entity_id());
+
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone())
+        })
+    });
+    native.update(|window, cx| left.update(cx, |state, cx| state.focus(window, cx)));
+    native.simulate_input("hello");
+    native.run_until_parked();
+    assert!(events.borrow().iter().any(
+        |event| matches!(event, wire::Event::Input { handler: 1, text } if text == "hello")
+    ));
+    assert_eq!(right.read_with(&native, |state, _| state.value().to_string()), "");
+}
+
+#[gpui_kit::test]
 fn combo_search_reset_and_routes_use_fresh_native_state(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let combo = |reset, handler| wire::Node::ComboBox {

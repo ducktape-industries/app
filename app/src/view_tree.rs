@@ -1,6 +1,7 @@
 //! GPUI rendering of the existing WASM tree. Widget identities retain native
 //! input state; interaction uses the same semantic events the guests consume.
 
+use gpui_base::StyledExt as _;
 use gpui_kit::MouseUpEvent;
 use gpui_kit::base::FocusTrapElement as _;
 use gpui_kit::component::radio::Radio;
@@ -12,7 +13,6 @@ use gpui_kit::component::{
     checkbox::Checkbox,
     input::{Input, InputContentType, InputEvent, InputState},
 };
-use gpui_kit::gpui_base::StyledExt as _;
 use gpui_kit::component::{
     IndexPath,
     searchable_list::{SearchableListDelegate, SearchableListItem},
@@ -26,7 +26,7 @@ use gpui_kit::{
     ListAlignment, ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent,
     ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
-    StrikethroughStyle, Styled, StyledExt as _, StyledImage as _, StyledText, Subscription, Task, TextLayout,
+    StrikethroughStyle, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
     UnderlineStyle, Window, canvas, div, fill, img, point, px, relative, rgb, size, svg,
 };
 use std::collections::HashMap;
@@ -64,16 +64,17 @@ use pictures::{ViewerState, qr};
 use scroll::{ScrollRequest, VirtualScroll};
 use sensors::SensorState;
 use style::{
-    button_style, content_dimensions, cross_align, decoration, dimensions,
-    has_named_overlay, horizontal_align, named_overlay, native_cursor, object_fit, pad, rgba,
-    shadows, text_options,
+    button_style, content_dimensions, cross_align, decoration, dimensions, has_named_overlay,
+    horizontal_align, named_overlay, native_cursor, object_fit, pad, rgba, shadows, text_options,
 };
 use text::RichSelection;
+
+type AuthoredPath = Vec<wire::ElementIdWire>;
 
 #[derive(Default)]
 pub(crate) struct NativePresentation {
     focused_container: Option<(String, std::mem::Discriminant<wire::Node>)>,
-    inputs: HashMap<wire::IdentityKey, InputPresentation>,
+    inputs: HashMap<AuthoredPath, InputPresentation>,
     editors: HashMap<String, wire::editor_document::EditorDocumentRef>,
     scrolls: HashMap<String, ScrollPresentation>,
 }
@@ -97,7 +98,8 @@ pub struct ViewTree {
     root: wire::Node,
     // Structural nodes enter the native focus path only on an explicit Focus request.
     focus_targets: HashMap<String, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
-    fields: HashMap<wire::IdentityKey, Field>,
+    fields: HashMap<AuthoredPath, Field>,
+    authored_path: AuthoredPath,
     rich_selections: HashMap<String, RichSelection>,
     scrolls: HashMap<String, ScrollHandle>,
     lists: HashMap<String, VirtualScroll>,
@@ -132,6 +134,7 @@ impl ViewTree {
             root,
             focus_targets: HashMap::new(),
             fields: HashMap::new(),
+            authored_path: Vec::new(),
             rich_selections: HashMap::new(),
             scrolls: HashMap::new(),
             lists: HashMap::new(),
@@ -171,8 +174,15 @@ impl ViewTree {
         // unoptimised build gives a function the stack of ALL its arms at
         // once — inlined bodies here once cost 570 KiB a level and overflowed
         // the main thread at a depth of fourteen.
+        let entered_scope = match node.identity() {
+            Some(wire::IdentityKeyRef::Element(id)) => {
+                self.authored_path.push(id.clone());
+                true
+            }
+            _ => false,
+        };
         use wire::Node;
-        match node {
+        let element = match node {
             Node::Text { .. } => self.text(node, cx),
             Node::Space { width, height } => dimensions(div(), *width, *height).into_any_element(),
             Node::Linear { .. } => self.linear(node, window, cx),
@@ -241,7 +251,11 @@ impl ViewTree {
             Node::Progress { .. } => self.progress(node, cx),
             Node::Pin { .. } => self.pin(node, window, cx),
             Node::Editor { .. } => self.editor(node, window, cx),
+        };
+        if entered_scope {
+            self.authored_path.pop();
         }
+        element
     }
 }
 
@@ -252,6 +266,7 @@ impl Render for ViewTree {
             self.renders += 1;
         }
         self.mounted.clear();
+        self.authored_path.clear();
         self.render_index = 0;
         let node = self.node(&self.root.clone(), window, cx);
         // Only controls mounted by this replacement frame may recover focus.

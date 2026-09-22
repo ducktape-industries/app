@@ -271,6 +271,7 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
                 style: active.style().clone(),
             }),
             on_click: Some(42),
+            ..Default::default()
         },
         children: vec![text("interactive-label", "Click")],
     };
