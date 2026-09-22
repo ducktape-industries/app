@@ -188,7 +188,7 @@ impl ViewTree {
                 if node.key() == Some(target)
                     && matches!(
                         node,
-                        wire::Node::Container { .. } | wire::Node::Linear { .. }
+                        wire::Node::Container { .. }
                     )
                 {
                     kind = Some(std::mem::discriminant(node));
@@ -283,7 +283,7 @@ impl ViewTree {
         };
         let maximum = handle.max_offset();
         let mut anchors = (wire::ScrollAnchor::Start, wire::ScrollAnchor::Start);
-        let mut row = None;
+        let mut row: Option<String> = None;
         self.root.clone().for_each_mut(&mut |node| {
             let wire::Node::Scroll {
                 key,
@@ -300,19 +300,7 @@ impl ViewTree {
             }
             anchors = (*anchor_x, *anchor_y);
             if let ScrollRequest::Key(requested) = request {
-                content.for_each_mut(&mut |node| {
-                    let wire::Node::KeyedColumn {
-                        key,
-                        keys: Some(keys),
-                        ..
-                    } = node
-                    else {
-                        return;
-                    };
-                    if keys.iter().any(|key| key.virtual_key() == requested) {
-                        row = Some(format!("{key}/@row:{requested}"));
-                    }
-                });
+                let _ = requested;
             }
         });
         let from_anchor = |distance: f32, maximum: Pixels, anchor: wire::ScrollAnchor| match anchor
@@ -373,7 +361,7 @@ impl ViewTree {
                 live_keys.insert(key.to_owned());
                 if matches!(
                     node,
-                    wire::Node::Container { .. } | wire::Node::Linear { .. }
+                    wire::Node::Container { .. }
                 ) {
                     focusable.insert(key.to_owned(), std::mem::discriminant(node));
                 }
@@ -403,15 +391,6 @@ impl ViewTree {
                 wire::Node::Responsive { key, .. } => {
                     containers.insert(key.clone());
                 }
-                wire::Node::KeyedColumn {
-                    key,
-                    keys: Some(keys),
-                    ..
-                } => {
-                    for identity in keys {
-                        live_keys.insert(format!("{key}/@row:{}", identity.virtual_key()));
-                    }
-                }
                 wire::Node::Sensor {
                     key,
                     reset,
@@ -435,7 +414,6 @@ impl ViewTree {
                     }
                 }
                 wire::Node::Slider { key, .. }
-                | wire::Node::Hover { key, .. }
                 | wire::Node::Surface { key, .. }
                 | wire::Node::Editor { key, .. } => {
                     retained.insert(key.clone());
@@ -486,7 +464,6 @@ impl ViewTree {
         self.ranges.retain(|key, _| retained.contains(key));
         self.editors.retain(|key, _| retained.contains(key));
         self.viewers.retain(|key, _| retained.contains(key));
-        self.hovered.retain(|key| retained.contains(key));
         // on_hide observes viewport exit while mounted, not destruction.
         // Removed nodes own old-frame IDs; emitting one now could activate
         // an unrelated route in the replacement frame's handler table.

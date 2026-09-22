@@ -158,32 +158,28 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
 ) {
     use gpui_kit::test::TestWindowExt as _;
     let sensor = |y, hide| {
-        let mut host = linear(
-            "host",
-            wire::Axis::Row,
-            [wire::Node::Pin {
-                key: "position".into(),
-                x: 0.,
-                y,
-                width: Some(wire::Length::Fill),
-                height: Some(wire::Length::Fill),
-                content: Box::new(wire::Node::Sensor {
-                    key: "watched".into(),
-                    reset: None,
-                    on_show: None,
-                    on_resize: None,
-                    on_hide: Some(hide),
-                    anticipate: None,
-                    delay: None,
-                    child: Box::new(wire::Node::Space {
-                        width: Some(wire::Length::Fixed(20.)),
-                        height: Some(wire::Length::Fixed(20.)),
-                    }),
+        let mut host = linear("host", wire::Axis::Row, [wire::Node::Anchored {
+            key: "position".into(),
+            x: 0.,
+            y,
+            width: Some(wire::Length::Fill),
+            height: Some(wire::Length::Fill),
+            content: Box::new(wire::Node::Sensor {
+                key: "watched".into(),
+                reset: None,
+                on_show: None,
+                on_resize: None,
+                on_hide: Some(hide),
+                anticipate: None,
+                delay: None,
+                child: Box::new(wire::Node::Space {
+                    width: Some(wire::Length::Fixed(20.)),
+                    height: Some(wire::Length::Fixed(20.)),
                 }),
-            }],
-        );
-        if let wire::Node::Linear { height, .. } = &mut host {
-            *height = Some(wire::Length::Fill);
+            }),
+        }]);
+        if let wire::Node::Container { style, .. } = &mut host {
+            *style = div().flex().flex_row().w_full().h_full().gap(px(8.)).style().clone();
         }
         host
     };

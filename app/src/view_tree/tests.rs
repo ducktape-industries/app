@@ -58,19 +58,15 @@ fn linear(
     axis: wire::Axis,
     children: impl IntoIterator<Item = wire::Node>,
 ) -> wire::Node {
-    wire::Node::Linear {
-        key: key.into(),
-        axis,
-        spacing: Some(8.),
-        padding: None,
-        width: Some(wire::Length::Fill),
-        height: None,
-        background: None,
-        border: None,
-        align: None,
-        max_width: None,
-        clip: false,
-        wrap: None,
+    let mut element = div().flex().w_full().gap(px(8.));
+    element = match axis {
+        wire::Axis::Column => element.flex_col(),
+        wire::Axis::Row => element.flex_row(),
+    };
+    wire::Node::Container {
+        id: Some(named_id(key)),
+        style: element.style().clone(),
+        interactivity: Default::default(),
         children: children.into_iter().collect(),
     }
 }

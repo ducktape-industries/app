@@ -53,15 +53,19 @@ pub(super) fn has_named_overlay(node: &wire::Node) -> bool {
 pub(super) fn content_dimensions(
     node: &wire::Node,
 ) -> (Option<wire::Length>, Option<wire::Length>) {
+    let from_native = |length: gpui_kit::Length| match length {
+        gpui_kit::Length::Auto => None,
+        gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Absolute(
+            gpui_kit::AbsoluteLength::Pixels(value),
+        )) => Some(wire::Length::Fixed(f32::from(value))),
+        gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Fraction(value))
+            if (value - 1.0).abs() < f32::EPSILON => Some(wire::Length::Fill),
+        gpui_kit::Length::Definite(_) => None,
+    };
     match node {
         wire::Node::Space { width, height }
-        | wire::Node::Linear { width, height, .. }
-        | wire::Node::KeyedColumn { width, height, .. }
-        | wire::Node::Grid { width, height, .. }
-        | wire::Node::Hover { width, height, .. }
         | wire::Node::Scroll { width, height, .. }
-        | wire::Node::Stack { width, height, .. }
-        | wire::Node::Responsive { width, height, .. } => (*width, *height),
+        => (*width, *height),
         wire::Node::MouseArea { content, .. } => content_dimensions(content),
         // an overlay always renders full-size (see its arm)
         wire::Node::Overlay { .. } => (Some(wire::Length::Fill), Some(wire::Length::Fill)),
@@ -73,8 +77,13 @@ pub(super) fn content_dimensions(
         | wire::Node::Lazy { content, .. }
         | wire::Node::Deferred { content, .. } => content_dimensions(content),
         wire::Node::Sensor { child, .. } => content_dimensions(child),
-        wire::Node::Container { children, .. } => {
-            children.first().map_or((None, None), content_dimensions)
+        wire::Node::Container { style, children, .. } => {
+            let native = (from_native(style.size.width), from_native(style.size.height));
+            if native.0.is_some() || native.1.is_some() {
+                native
+            } else {
+                children.first().map_or((None, None), content_dimensions)
+            }
         }
         _ => (None, None),
     }

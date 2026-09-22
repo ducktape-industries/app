@@ -115,7 +115,6 @@ pub struct ViewTree {
     containers: HashMap<String, [f64; 2]>,
     bounds: HashMap<String, Bounds<Pixels>>,
     sensors: HashMap<String, SensorState>,
-    hovered: std::collections::HashSet<String>,
     ranges: HashMap<String, RangeControl>,
     images: HashMap<u64, Arc<RenderImage>>,
     viewers: HashMap<String, ViewerState>,
@@ -150,7 +149,6 @@ impl ViewTree {
             containers: HashMap::new(),
             bounds: HashMap::new(),
             sensors: HashMap::new(),
-            hovered: Default::default(),
             ranges: HashMap::new(),
             images: HashMap::new(),
             viewers: HashMap::new(),
@@ -190,8 +188,6 @@ impl ViewTree {
         let element = match node {
             Node::Text { .. } => self.text(node, cx),
             Node::Space { width, height } => dimensions(div(), *width, *height).into_any_element(),
-            Node::Linear { .. } => self.linear(node, window, cx),
-            Node::KeyedColumn { .. } => self.keyed_column(node, window, cx),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::Container { .. } => self.container(node, window, cx),
             Node::Scroll { .. } => self.scroll(node, window, cx),
@@ -239,8 +235,6 @@ impl ViewTree {
             Node::MouseArea { .. } => self.mouse_area(node, window, cx),
             Node::Slider { .. } => self.slider(node, window, cx),
             Node::RichText { .. } => self.rich_text(node, window, cx),
-            Node::Grid { .. } => self.grid(node, window, cx),
-            Node::Hover { .. } => self.hover(node, window, cx),
             Node::Tooltip { .. } => self.tooltip(node, window, cx),
             Node::Float { .. } => self.float(node, window, cx),
             Node::Image { .. } => self.picture(node, window, cx),
@@ -254,10 +248,9 @@ impl ViewTree {
             Node::Surface { name, .. } => div()
                 .child(format!("Unavailable host surface: {name}"))
                 .into_any_element(),
-            Node::Stack { .. } => self.stack(node, window, cx),
             Node::Overlay { .. } => self.overlay(node, window, cx),
             Node::Progress { .. } => self.progress(node, cx),
-            Node::Pin { .. } => self.pin(node, window, cx),
+            Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::Editor { .. } => self.editor(node, window, cx),
         };
         if entered_scope {

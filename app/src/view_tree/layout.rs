@@ -1,112 +1,6 @@
 use super::*;
 
 impl ViewTree {
-    pub(super) fn linear(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Linear {
-            axis,
-            spacing,
-            padding,
-            width,
-            height,
-            background,
-            border,
-            children,
-            align,
-            max_width,
-            clip,
-            wrap,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut element = dimensions(div().flex(), *width, *height);
-        element = match axis {
-            wire::Axis::Column => element.flex_col(),
-            wire::Axis::Row => element.flex_row(),
-        };
-        if let Some(gap) = spacing {
-            element = element.gap(px(*gap));
-        }
-        if let Some(width) = max_width {
-            element = element.max_w(px(*width));
-        }
-        if *clip {
-            element = element.overflow_hidden();
-        }
-        if wrap.is_some() {
-            element = element.flex_wrap();
-        }
-        element = cross_align(element, *align);
-        element = decoration(pad(element, *padding), *background, *border);
-        for child in children {
-            element = element.child(self.node(child, window, cx));
-        }
-        self.focusable_container(node, element, window, cx)
-    }
-
-    pub(super) fn keyed_column(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::KeyedColumn {
-            key,
-            keys,
-            spacing,
-            padding,
-            width,
-            height,
-            background,
-            border,
-            children,
-            align,
-            max_width,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut element = decoration(
-            pad(
-                dimensions(div().flex().flex_col(), *width, *height),
-                *padding,
-            ),
-            *background,
-            *border,
-        );
-        if let Some(gap) = spacing {
-            element = element.gap(px(*gap));
-        }
-        element = cross_align(element, *align);
-        if let Some(width) = max_width {
-            element = element.max_w(px(*width));
-        }
-        for (index, child) in children.iter().enumerate() {
-            let content = self.node(child, window, cx);
-            let identity = keys.as_ref().and_then(|keys| keys.get(index));
-            element = match identity {
-                Some(identity) => {
-                    let row = format!("{key}/@row:{}", identity.virtual_key());
-                    element.child(
-                        div()
-                            .relative()
-                            .child(content)
-                            .child(self.measure(&row, cx)),
-                    )
-                }
-                None => element.child(content),
-            };
-        }
-        element.into_any_element()
-    }
-
     pub(super) fn container(
         &mut self,
         node: &wire::Node,
@@ -220,12 +114,7 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Responsive {
-            key,
-            content,
-            width,
-            height,
-        } = node
+        let wire::Node::Responsive { key, content } = node
         else {
             unreachable!()
         };
@@ -249,7 +138,8 @@ impl ViewTree {
         )
         .absolute()
         .inset_0();
-        dimensions(div().relative(), *width, *height)
+        div()
+            .relative()
             .child(self.node(content, window, cx))
             .child(measure)
             .into_any_element()
@@ -278,112 +168,13 @@ impl ViewTree {
         element.into_any_element()
     }
 
-    pub(super) fn grid(
+    pub(super) fn anchored(
         &mut self,
         node: &wire::Node,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Grid {
-            key,
-            children,
-            width,
-            height,
-            padding,
-            spacing,
-            columns,
-            fluid,
-            aspect,
-            background,
-            border,
-        } = node
-        else {
-            unreachable!()
-        };
-        let available = self
-            .bounds
-            .get(key)
-            .map_or(f32::from(window.viewport_size().width), |bounds| {
-                f32::from(bounds.size.width)
-            });
-        let columns = fluid
-            .filter(|value| *value > 0.0)
-            .map_or(columns.unwrap_or(1), |value| {
-                (available / value).ceil().max(1.0) as u32
-            })
-            .max(1);
-        let mut grid = decoration(
-            pad(
-                dimensions(div().flex().flex_wrap(), *width, *height),
-                *padding,
-            ),
-            *background,
-            *border,
-        );
-        let gap = spacing.unwrap_or_default();
-        grid = grid.gap(px(gap));
-        let cell_width =
-            ((available - gap * columns.saturating_sub(1) as f32) / columns as f32).max(0.0);
-        for child in children {
-            let cell = div()
-                .w(px(cell_width))
-                .h(px(cell_width / aspect.unwrap_or(1.0).max(0.001)));
-            grid = grid.child(cell.child(self.node(child, window, cx)));
-        }
-        grid.relative()
-            .child(self.measure(key, cx))
-            .into_any_element()
-    }
-
-    pub(super) fn stack(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Stack {
-            children,
-            width,
-            height,
-            padding,
-            background,
-            border,
-            clip,
-            under,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut element = decoration(
-            pad(dimensions(div().relative(), *width, *height), *padding),
-            *background,
-            *border,
-        );
-        if *clip {
-            element = element.overflow_hidden();
-        }
-        if *under == 0 {
-            element = element.grid().grid_cols(1).grid_rows(1);
-        }
-        for (index, child) in children.iter().enumerate() {
-            let content = self.node(child, window, cx);
-            element = match (*under, index) {
-                (0, _) => element.child(div().col_start(1).row_start(1).child(content)),
-                (base, index) if index == base as usize => element.child(content),
-                _ => element.child(div().absolute().inset_0().child(content)),
-            };
-        }
-        element.into_any_element()
-    }
-
-    pub(super) fn pin(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Pin {
+        let wire::Node::Anchored {
             content,
             x,
             y,

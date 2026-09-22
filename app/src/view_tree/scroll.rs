@@ -30,69 +30,6 @@ pub(super) struct VirtualScroll {
 pub(super) fn virtual_rows(node: &wire::Node) -> Option<Vec<VirtualRow>> {
     use wire::Node;
     match node {
-        Node::KeyedColumn {
-            key,
-            keys,
-            children,
-            virtual_row: Some(estimated_height),
-            spacing,
-            ..
-        } => {
-            let rows = children
-                .iter()
-                .enumerate()
-                .map(|(index, content)| VirtualRow {
-                    key: keys
-                        .as_ref()
-                        .and_then(|keys| keys.get(index))
-                        .map(|identity| format!("{key}/@row:{}", identity.virtual_key()))
-                        .unwrap_or_else(|| format!("{key}/@index:{index}")),
-                    content: content.clone(),
-                    estimated_height: *estimated_height,
-                    gap: if index + 1 < children.len() {
-                        spacing.unwrap_or_default()
-                    } else {
-                        0.
-                    },
-                })
-                .collect();
-            Some(wrap_virtual_rows(node, rows))
-        }
-        Node::Linear {
-            axis: wire::Axis::Column,
-            children,
-            spacing,
-            ..
-        } => {
-            if !children.iter().any(has_virtual_column) {
-                return None;
-            }
-            let mut found = false;
-            let mut rows = Vec::new();
-            for (index, child) in children.iter().enumerate() {
-                let mut part = match virtual_rows(child) {
-                    Some(rows) => {
-                        found = true;
-                        rows
-                    }
-                    None => vec![VirtualRow {
-                        key: child.key().map(str::to_owned).unwrap_or_else(|| {
-                            format!("{}/@static:{index}", node.key().unwrap_or("column"))
-                        }),
-                        content: child.clone(),
-                        gap: 0.,
-                        estimated_height: 44.,
-                    }],
-                };
-                if index + 1 < children.len()
-                    && let Some(last) = part.last_mut()
-                {
-                    last.gap += spacing.unwrap_or_default();
-                }
-                rows.extend(part);
-            }
-            found.then(|| wrap_virtual_rows(node, rows))
-        }
         Node::Container { children, .. } if children.len() == 1 => {
             virtual_rows(&children[0]).map(|rows| wrap_virtual_rows(node, rows))
         }
@@ -102,15 +39,6 @@ pub(super) fn virtual_rows(node: &wire::Node) -> Option<Vec<VirtualRow>> {
 
 pub(super) fn has_virtual_column(node: &wire::Node) -> bool {
     match node {
-        wire::Node::KeyedColumn {
-            virtual_row: Some(_),
-            ..
-        } => true,
-        wire::Node::Linear {
-            axis: wire::Axis::Column,
-            children,
-            ..
-        } => children.iter().any(has_virtual_column),
         wire::Node::Container { children, .. } => {
             children.len() == 1 && has_virtual_column(&children[0])
         }
@@ -121,56 +49,16 @@ pub(super) fn has_virtual_column(node: &wire::Node) -> bool {
 pub(super) fn wrap_virtual_rows(node: &wire::Node, rows: Vec<VirtualRow>) -> Vec<VirtualRow> {
     let mut shell = node.clone();
     match &mut shell {
-        wire::Node::Linear { children, .. } | wire::Node::KeyedColumn { children, .. } => {
-            children.clear()
-        }
         wire::Node::Container { children, .. } => children.clear(),
         _ => unreachable!("only vertical layout wrappers surround virtual rows"),
     }
-    let count = rows.len();
     rows.into_iter()
-        .enumerate()
-        .map(|(index, mut row)| {
+        .map(|mut row| {
             let mut wrapped = shell.clone();
-            let padding = match &mut wrapped {
-                wire::Node::Linear {
-                    children,
-                    padding,
-                    height,
-                    ..
-                } => {
-                    children.push(row.content);
-                    *height = None;
-                    padding.as_mut()
-                }
-                wire::Node::KeyedColumn {
-                    children,
-                    keys,
-                    virtual_row,
-                    padding,
-                    height,
-                    ..
-                } => {
-                    children.push(row.content);
-                    *keys = None;
-                    *virtual_row = None;
-                    *height = None;
-                    padding.as_mut()
-                }
-                wire::Node::Container { children, .. } => {
-                    children.push(row.content);
-                    None
-                }
-                _ => unreachable!("vertical layout wrapper"),
+            let wire::Node::Container { children, .. } = &mut wrapped else {
+                unreachable!("vertical layout wrapper")
             };
-            if let Some(padding) = padding {
-                if index > 0 {
-                    padding.top = 0.;
-                }
-                if index + 1 < count {
-                    padding.bottom = 0.;
-                }
-            }
+            children.push(row.content);
             row.content = wrapped;
             row
         })
