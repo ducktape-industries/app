@@ -68,10 +68,7 @@ use picture_resources::decode_image;
 use pictures::{ViewerState, qr};
 use scroll::{ScrollRequest, VirtualScroll};
 use sensors::SensorState;
-use style::{
-    button_style, content_dimensions, cross_align, decoration, dimensions, has_named_overlay,
-    named_overlay, native_cursor, object_fit, pad, rgba, shadows,
-};
+use style::{has_named_overlay, named_overlay, native_cursor};
 use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
 use variable_list::{VariableList, VariableListKey};
@@ -197,7 +194,7 @@ impl ViewTree {
         use wire::Node;
         let element = match node {
             Node::Text { .. } => self.text(node, cx),
-            Node::Space { width, height } => dimensions(div(), *width, *height).into_any_element(),
+            Node::Space { style } => div().refine_style(style).into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, cx),
             Node::Container { .. } => self.container(node, window, cx),
@@ -211,6 +208,7 @@ impl ViewTree {
                 label,
                 selected,
                 on_select,
+                style,
                 ..
             } => {
                 let message = *on_select;
@@ -220,20 +218,14 @@ impl ViewTree {
                     .on_click(
                         cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(message))),
                     );
-                announce(radio, accessible(node)).into_any_element()
+                announce(div().refine_style(style).child(radio), accessible(node))
+                    .into_any_element()
             }
-            Node::Rule {
-                axis,
-                thickness,
-                color,
-                ..
-            } => {
-                let element = div().bg(color.map(rgba).unwrap_or_else(|| {
-                    gpui_kit::component::Theme::global(cx).color_tokens().border
-                }));
+            Node::Rule { axis, style, .. } => {
+                let element = div().refine_style(style);
                 match axis {
-                    wire::Axis::Column => element.w(px(*thickness)).h_full().into_any_element(),
-                    wire::Axis::Row => element.h(px(*thickness)).w_full().into_any_element(),
+                    wire::Axis::Column => element.h_full().into_any_element(),
+                    wire::Axis::Row => element.w_full().into_any_element(),
                 }
             }
             Node::Lazy { content, .. } => self.node(content, window, cx),
@@ -251,12 +243,17 @@ impl ViewTree {
             Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
             Node::Svg { .. } => self.vector(node, window, cx),
             Node::Canvas { .. } => self.drawing(node, cx),
-            Node::Qr { key, code } => {
-                announce(div().id(key.clone()).child(qr(code)), accessible(node)).into_any_element()
-            }
+            Node::Qr { key, code, style } => announce(
+                div().id(key.clone()).refine_style(style).child(qr(code)),
+                accessible(node),
+            )
+            .into_any_element(),
             // the host registers no surface: the slot says so where it would be
-            Node::Surface { id, name, .. } => div()
+            Node::Surface {
+                id, name, style, ..
+            } => div()
                 .id(id.to_gpui().expect("sanitized surface identity"))
+                .refine_style(style)
                 .child(format!("Unavailable host surface: {name}"))
                 .into_any_element(),
             Node::Overlay { .. } => self.overlay(node, window, cx),

@@ -278,27 +278,19 @@ impl ViewTree {
             label,
             checked,
             on_press,
-            width,
-            height,
-            padding,
             style,
             ..
         } = node
         else {
             unreachable!()
         };
-        let mut button = button_style(Button::new(key.clone()), style.preset)
+        let mut button = Button::new(key.clone())
+            .refine_style(style)
             .disabled(on_press.is_none())
             .selected(checked.unwrap_or(false));
         button = match content {
             wire::ButtonContent::Label(text) => button.label(text.clone()),
-            wire::ButtonContent::Child(child) => {
-                let fit_content = matches!(height, None | Some(wire::Length::Shrink));
-                if fit_content {
-                    button = button.h_auto();
-                }
-                button.child(self.node(child, window, cx))
-            }
+            wire::ButtonContent::Child(child) => button.child(self.node(child, window, cx)),
         };
         if let Some(label) = label {
             button = button.accessibility_label(label.clone());
@@ -333,8 +325,7 @@ impl ViewTree {
         } else {
             button
         };
-        let button = announce(button, accessible);
-        dimensions(pad(button, *padding), *width, *height).into_any_element()
+        announce(button, accessible).into_any_element()
     }
 
     pub(super) fn toggle(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
@@ -344,6 +335,7 @@ impl ViewTree {
             label,
             checked,
             on_toggle,
+            style,
             ..
         } = node
         else {
@@ -351,6 +343,7 @@ impl ViewTree {
         };
         if *kind == wire::ToggleKind::Switch {
             let mut toggle = gpui_kit::component::switch::Switch::new(key.clone())
+                .refine_style(style)
                 .label(label.clone())
                 .checked(*checked)
                 .disabled(on_toggle.is_none());
@@ -363,6 +356,7 @@ impl ViewTree {
             return toggle.into_any_element();
         }
         let mut checkbox = Checkbox::new(key.clone())
+            .refine_style(style)
             .label(label.clone())
             .checked(*checked)
             .disabled(on_toggle.is_none());
@@ -383,11 +377,7 @@ impl ViewTree {
             min,
             max,
             axis,
-            length,
-            girth,
-            background,
-            bar,
-            border,
+            style,
             ..
         } = node
         else {
@@ -399,22 +389,18 @@ impl ViewTree {
             true => ((value - min) / span).clamp(0.0, 1.0),
             false => 0.0,
         };
-        let fill = div().bg(bar.map(rgba).unwrap_or_else(|| {
-            gpui_kit::component::Theme::global(cx)
-                .color_tokens()
-                .primary
-        }));
+        let fill = div().bg(gpui_kit::component::Theme::global(cx)
+            .color_tokens()
+            .primary);
         let track = match axis {
-            wire::Axis::Row => decoration(dimensions(div(), *length, *girth), *background, *border)
-                .child(fill.w(relative(fraction)).h_full()),
-            wire::Axis::Column => decoration(
-                dimensions(div().flex().flex_col().justify_end(), *girth, *length),
-                *background,
-                *border,
-            )
-            .child(fill.h(relative(fraction)).w_full()),
+            wire::Axis::Row => div().child(fill.w(relative(fraction)).h_full()),
+            wire::Axis::Column => div()
+                .flex()
+                .flex_col()
+                .justify_end()
+                .child(fill.h(relative(fraction)).w_full()),
         };
-        announce(track.id(key.clone()), accessible(node)).into_any_element()
+        announce(track.id(key.clone()).refine_style(style), accessible(node)).into_any_element()
     }
 
     pub(super) fn editor(
@@ -488,8 +474,7 @@ impl ViewTree {
             on_change,
             on_release,
             axis,
-            width,
-            height,
+            style,
             ..
         } = node
         else {
@@ -554,12 +539,10 @@ impl ViewTree {
             wire::Axis::Row => Slider::new(&control.state).horizontal(),
             wire::Axis::Column => Slider::new(&control.state).vertical(),
         };
-        dimensions(
-            div().id(id.to_gpui().expect("sanitized slider identity")),
-            *width,
-            *height,
-        )
-        .child(slider)
-        .into_any_element()
+        div()
+            .id(id.to_gpui().expect("sanitized slider identity"))
+            .refine_style(style)
+            .child(slider)
+            .into_any_element()
     }
 }

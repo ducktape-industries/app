@@ -95,11 +95,11 @@ fn combo_search_reset_and_routes_use_fresh_native_state(cx: &mut gpui_kit::TestA
         selected: None,
         placeholder: "Choose".into(),
         on_select: handler,
-        width: Some(wire::Length::Fixed(200.)),
         settings: Box::new(wire::ComboOptions {
             input: Some(44),
             ..Default::default()
         }),
+        style: gpui_kit::StyleRefinement::default(),
     };
     let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(combo(0, 7)));
     let tree = window.root(cx).unwrap();
@@ -202,6 +202,7 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
                         width: Some(wire::Length::Fixed(20.)),
                         height: Some(wire::Length::Fixed(20.)),
                     }),
+                    style: gpui_kit::StyleRefinement::default(),
                 }],
             }],
         );
@@ -263,9 +264,6 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
                 expanded: None,
                 description: None,
                 on_press: Some(11),
-                width: None,
-                height: None,
-                padding: None,
                 style: Default::default(),
             },
             cx,
@@ -498,9 +496,6 @@ fn button(content: wire::ButtonContent, label: Option<&str>, on_press: Option<u3
         expanded: None,
         description: None,
         on_press,
-        width: None,
-        height: None,
-        padding: None,
         style: Default::default(),
     }
 }
@@ -544,9 +539,8 @@ fn picture(label: Option<&str>) -> [wire::Node; 3] {
             data: None,
             label: label.clone(),
             fit: None,
-            width: None,
-            height: None,
             options: Default::default(),
+            style: gpui_kit::StyleRefinement::default(),
         },
         wire::Node::Svg {
             id: Some(wire::ElementIdWire::Name("svg".into())),

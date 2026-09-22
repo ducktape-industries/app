@@ -32,7 +32,6 @@ fn a_toggle_is_a_checkbox_or_a_switch_reporting_checked() {
         label: label.into(),
         checked,
         on_toggle,
-        width: None,
         style: Default::default(),
     };
     let checkbox = accessible(&toggle(wire::ToggleKind::Checkbox, "Notify", true, Some(1)));
@@ -62,7 +61,6 @@ fn a_radio_reports_whether_it_is_the_selected_one() {
         label: "Weekly".into(),
         selected,
         on_select: 1,
-        width: None,
         style: Default::default(),
     };
     assert_eq!(
@@ -89,8 +87,6 @@ fn a_slider_and_a_progress_report_their_value_in_range() {
         on_change: 1,
         on_release: None,
         axis: wire::Axis::Row,
-        width: None,
-        height: None,
         style: Default::default(),
     };
     assert_eq!(
@@ -110,12 +106,7 @@ fn a_slider_and_a_progress_report_their_value_in_range() {
         min: 0.,
         max: 1.,
         axis: wire::Axis::Row,
-        length: None,
-        girth: None,
-        tone: None,
-        background: None,
-        bar: None,
-        border: None,
+        style: gpui_kit::StyleRefinement::default(),
     };
     assert_eq!(
         accessible(&progress),
@@ -257,8 +248,8 @@ fn a_picker_reports_the_chosen_option_as_its_value() {
         reset: 0,
         placeholder: "Priority".into(),
         on_select: 1,
-        width: None,
         settings: Box::default(),
+        style: gpui_kit::StyleRefinement::default(),
     };
     let pick = |selected| wire::Node::PickList {
         settings: Box::default(),
@@ -268,7 +259,6 @@ fn a_picker_reports_the_chosen_option_as_its_value() {
         selected,
         placeholder: Some("Priority".into()),
         on_select: 1,
-        width: None,
         style: Default::default(),
     };
     for node in [combo(Some(1)), pick(Some(1))] {
@@ -333,8 +323,6 @@ fn a_slider_is_named_by_its_label() {
         on_change: 1,
         on_release: None,
         axis: wire::Axis::Row,
-        width: None,
-        height: None,
         style: Default::default(),
     };
     assert_eq!(
@@ -458,16 +446,13 @@ fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
     let overlay = |label: Option<&str>, open| wire::Node::Overlay {
         id: named_id("o"),
         label: label.map(str::to_owned),
-        padding: 0.,
-        backdrop: wire::Rgba([0.; 4]),
-        align_x: wire::AlignX::Center,
-        align_y: wire::AlignY::Center,
         on_dismiss: None,
         children: if open {
             vec![wire::Node::empty(), wire::Node::empty()]
         } else {
             Vec::new()
         },
+        style: gpui_kit::StyleRefinement::default(),
     };
     assert_eq!(
         accessible(&overlay(Some("Rename channel"), true)),

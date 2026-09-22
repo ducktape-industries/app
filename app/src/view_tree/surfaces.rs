@@ -11,6 +11,7 @@ impl ViewTree {
             key,
             children,
             delay_ms,
+            style,
             ..
         } = node
         else {
@@ -21,6 +22,7 @@ impl ViewTree {
         };
         let mut element = div()
             .id(key.clone())
+            .refine_style(style)
             .tooltip_show_delay(std::time::Duration::from_millis(*delay_ms))
             .child(self.node(content, window, cx));
         if let Some(tip) = children.get(1) {
@@ -42,38 +44,16 @@ impl ViewTree {
             x,
             y,
             scale: _,
-            shadow,
-            radius,
+            style,
         } = node
         else {
             unreachable!()
         };
-        let mut element = shadows(
-            div()
-                .absolute()
-                .bg(gpui_kit::component::Theme::global(cx)
-                    .color_tokens()
-                    .surface)
-                .text_color(
-                    gpui_kit::component::Theme::global(cx)
-                        .color_tokens()
-                        .surface_foreground,
-                )
-                .left(px(*x))
-                .top(px(*y)),
-            *shadow,
-        );
-        if let Some(radius) = radius {
-            element = decoration(
-                element,
-                None,
-                Some(wire::Border {
-                    color: None,
-                    width: None,
-                    radius: Some(*radius),
-                }),
-            );
-        }
+        let mut element = div()
+            .absolute()
+            .refine_style(style)
+            .left(px(*x))
+            .top(px(*y));
         // A press inside a floated card is the card's: it never
         // reaches what the card floats over (a dismissing backdrop,
         // the document under a comment card).
@@ -99,10 +79,7 @@ impl ViewTree {
             id,
             label,
             children,
-            backdrop,
-            padding,
-            align_x,
-            align_y,
+            style,
             on_dismiss,
         } = node
         else {
@@ -128,7 +105,8 @@ impl ViewTree {
                 .id("backdrop")
                 .absolute()
                 .inset_0()
-                .bg(rgba(*backdrop));
+                .bg(rgb(0x000000))
+                .opacity(0.5);
             let opened = named && !self.dialogs.contains_key(&path);
             let entry = (named && !nested).then(|| {
                 self.dialogs
@@ -137,9 +115,9 @@ impl ViewTree {
                     .clone()
             });
             let is_float = matches!(modal, wire::Node::Float { .. });
-            let mut layer = div().id("layer").absolute().inset_0();
+            let mut layer = div().id("layer").absolute().inset_0().refine_style(style);
             if !is_float {
-                layer = layer.flex().p(px(*padding));
+                layer = layer.flex();
             }
             if let Some(message) = on_dismiss {
                 let message = *message;
@@ -154,18 +132,6 @@ impl ViewTree {
                             cx.emit(wire::Event::Message(message));
                         }
                     }));
-            }
-            if !is_float {
-                layer = match align_x {
-                    wire::AlignX::Left => layer.justify_start(),
-                    wire::AlignX::Center => layer.justify_center(),
-                    wire::AlignX::Right => layer.justify_end(),
-                };
-                layer = match align_y {
-                    wire::AlignY::Top => layer.items_start(),
-                    wire::AlignY::Center => layer.items_center(),
-                    wire::AlignY::Bottom => layer.items_end(),
-                };
             }
             let content = if is_float {
                 self.node(modal, window, cx)

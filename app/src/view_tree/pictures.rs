@@ -42,11 +42,8 @@ pub(super) fn qr(code: &wire::Qr) -> AnyElement {
         Some(wire::QrSize::Cell(size)) => size * modules as f32,
         None => 4.0 * modules as f32,
     };
-    let cell = code.cell.map(rgba).unwrap_or_else(|| rgb(0).into());
-    let background = code
-        .background
-        .map(rgba)
-        .unwrap_or_else(|| rgb(0xffffff).into());
+    let cell = code.cell.unwrap_or_else(|| rgb(0).into());
+    let background = code.background.unwrap_or_else(|| rgb(0xffffff).into());
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -260,8 +257,7 @@ impl ViewTree {
             id,
             hash,
             data,
-            width,
-            height,
+            style,
             options,
             ..
         } = node
@@ -278,7 +274,10 @@ impl ViewTree {
             viewer.scale = 1.0;
         }
         let mut element = announce(
-            dimensions(div().relative().overflow_hidden(), *width, *height)
+            div()
+                .relative()
+                .overflow_hidden()
+                .refine_style(style)
                 .id(id.to_gpui().expect("sanitized image viewer identity")),
             accessible(node),
         );

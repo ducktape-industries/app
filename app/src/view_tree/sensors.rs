@@ -23,6 +23,7 @@ impl ViewTree {
             on_drag,
             content,
             cursor,
+            style,
         } = node
         else {
             unreachable!()
@@ -82,8 +83,8 @@ impl ViewTree {
         )
         .absolute()
         .inset_0();
-        let (width, height) = content_dimensions(content);
-        let element = dimensions(div(), width, height)
+        let element = div()
+            .refine_style(style)
             .id(id.to_gpui().expect("sanitized resize identity"))
             .relative()
             .cursor(native_cursor(*cursor))
@@ -121,6 +122,7 @@ impl ViewTree {
             anticipate,
             delay,
             child,
+            style,
             ..
         } = node
         else {
@@ -239,17 +241,13 @@ impl ViewTree {
         .inset_0();
         // A sensor is layout-transparent. In particular, a fill spacer
         // must not collapse inside an auto-sized measurement wrapper.
-        let (width, height) = content_dimensions(child);
-        dimensions(
-            div()
-                .id(id.to_gpui().expect("sanitized sensor identity"))
-                .relative(),
-            width,
-            height,
-        )
-        .child(self.node(child, window, cx))
-        .child(measure)
-        .into_any_element()
+        div()
+            .id(id.to_gpui().expect("sanitized sensor identity"))
+            .relative()
+            .refine_style(style)
+            .child(self.node(child, window, cx))
+            .child(measure)
+            .into_any_element()
     }
 
     pub(super) fn mouse_area(
@@ -281,15 +279,10 @@ impl ViewTree {
         };
         // A mouse area is layout-transparent, like a sensor: a fill-sized
         // child must not collapse inside an auto-sized wrapper.
-        let (width, height) = content_dimensions(content);
         let path = self.authored_path.clone();
-        let mut element = dimensions(
-            div()
-                .id(id.to_gpui().expect("sanitized mouse-area identity"))
-                .relative(),
-            width,
-            height,
-        );
+        let mut element = div()
+            .id(id.to_gpui().expect("sanitized mouse-area identity"))
+            .relative();
         for (button, down, up) in [
             (MouseButton::Left, *on_press, *on_release),
             (MouseButton::Right, *on_right_press, *on_right_release),

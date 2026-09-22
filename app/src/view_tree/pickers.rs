@@ -61,52 +61,48 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (id, options, selected, handler, placeholder, width, reset, input, menu_height) =
-            match node {
-                wire::Node::PickList {
-                    id,
-                    options,
-                    selected,
-                    on_select,
-                    placeholder,
-                    width,
-                    settings,
-                    ..
-                } => (
-                    id,
-                    options,
-                    *selected,
-                    *on_select,
-                    placeholder.as_deref().unwrap_or_default(),
-                    *width,
-                    None,
-                    None,
-                    settings.menu_height,
-                ),
-                wire::Node::ComboBox {
-                    id,
-                    state_key,
-                    options,
-                    selected,
-                    on_select,
-                    placeholder,
-                    width,
-                    reset,
-                    settings,
-                    ..
-                } => (
-                    id,
-                    options,
-                    *selected,
-                    *on_select,
-                    placeholder.as_str(),
-                    *width,
-                    Some((state_key.clone(), *reset)),
-                    settings.input,
-                    settings.menu_height,
-                ),
-                _ => unreachable!(),
-            };
+        let (id, options, selected, handler, placeholder, style, reset, input) = match node {
+            wire::Node::PickList {
+                id,
+                options,
+                selected,
+                on_select,
+                placeholder,
+                style,
+                ..
+            } => (
+                id,
+                options,
+                *selected,
+                *on_select,
+                placeholder.as_deref().unwrap_or_default(),
+                style,
+                None,
+                None,
+            ),
+            wire::Node::ComboBox {
+                id,
+                state_key,
+                options,
+                selected,
+                on_select,
+                placeholder,
+                style,
+                reset,
+                settings,
+                ..
+            } => (
+                id,
+                options,
+                *selected,
+                *on_select,
+                placeholder.as_str(),
+                style,
+                Some((state_key.clone(), *reset)),
+                settings.input,
+            ),
+            _ => unreachable!(),
+        };
         let path = self.authored_path.clone();
         if self
             .pickers
@@ -219,17 +215,11 @@ impl ViewTree {
         if let Some(name) = accessible(node).name {
             select = select.accessibility_label(name);
         }
-        if let Some(wire::Length::Fixed(height)) = menu_height {
-            select = select.menu_max_h(px(height));
-        }
-        dimensions(
-            div()
-                .relative()
-                .child(select)
-                .child(self.measure(&path, cx)),
-            width,
-            None,
-        )
-        .into_any_element()
+        div()
+            .relative()
+            .refine_style(style)
+            .child(select)
+            .child(self.measure(&path, cx))
+            .into_any_element()
     }
 }

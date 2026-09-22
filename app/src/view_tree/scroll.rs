@@ -74,10 +74,7 @@ impl ViewTree {
         anchor: wire::ScrollAnchor,
         follow: bool,
         handler: Option<u32>,
-        width: Option<wire::Length>,
-        height: Option<wire::Length>,
-        background: Option<wire::Rgba>,
-        border: Option<wire::Border>,
+        style: &gpui_kit::StyleRefinement,
         restored: Option<ScrollPresentation>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -204,7 +201,7 @@ impl ViewTree {
             })
             .unwrap_or_else(|_| div().into_any_element())
         })
-        .with_sizing_behavior(if height.is_some() {
+        .with_sizing_behavior(if style.size.height.is_some() {
             ListSizingBehavior::Auto
         } else {
             ListSizingBehavior::Infer
@@ -247,20 +244,19 @@ impl ViewTree {
         .inset_0();
         // The native list owns scrolling, including off-screen measurements;
         // the wire scroll remains the identity addressed by widget commands.
-        decoration(
-            dimensions(div().relative().min_h_0(), width, height),
-            background,
-            border,
-        )
-        .id(path
-            .last()
-            .unwrap()
-            .to_gpui()
-            .expect("sanitized scroll identity"))
-        .child(native)
-        .child(retain_estimates)
-        .child(self.measure(path, cx))
-        .into_any_element()
+        div()
+            .relative()
+            .min_h_0()
+            .refine_style(style)
+            .id(path
+                .last()
+                .unwrap()
+                .to_gpui()
+                .expect("sanitized scroll identity"))
+            .child(native)
+            .child(retain_estimates)
+            .child(self.measure(path, cx))
+            .into_any_element()
     }
 
     pub(super) fn scroll(
@@ -271,15 +267,12 @@ impl ViewTree {
     ) -> AnyElement {
         let wire::Node::Scroll {
             content,
-            width,
-            height,
+            style,
             direction,
             anchor_x,
             anchor_y,
             auto_scroll,
             on_scroll,
-            background,
-            border,
             bar_hidden,
             ..
         } = node
@@ -299,26 +292,21 @@ impl ViewTree {
                 *anchor_y,
                 *auto_scroll,
                 *on_scroll,
-                *width,
-                *height,
-                *background,
-                *border,
+                style,
                 restored,
                 cx,
             );
         }
         let handle = self.scrolls.entry(path.clone()).or_default().clone();
-        let element = decoration(
-            dimensions(div().relative(), *width, *height),
-            *background,
-            *border,
-        )
-        .id(path
-            .last()
-            .unwrap()
-            .to_gpui()
-            .expect("sanitized scroll identity"))
-        .track_scroll(&handle);
+        let element = div()
+            .relative()
+            .refine_style(style)
+            .id(path
+                .last()
+                .unwrap()
+                .to_gpui()
+                .expect("sanitized scroll identity"))
+            .track_scroll(&handle);
         let element = match direction {
             wire::ScrollDirection::Vertical => element.overflow_y_scroll(),
             wire::ScrollDirection::Horizontal => element.overflow_x_scroll(),
@@ -420,7 +408,8 @@ impl ViewTree {
         let Some(scrollbar) = scrollbar else {
             return content.into_any_element();
         };
-        dimensions(div().relative(), *width, *height)
+        div()
+            .relative()
             .child(content)
             .child(
                 div().absolute().inset_0().child(

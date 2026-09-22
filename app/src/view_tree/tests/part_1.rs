@@ -274,10 +274,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         expanded: None,
         description: None,
         on_press: Some(1),
-        width: Some(wire::Length::Fill),
-        height: None,
-        padding: None,
-        style: Default::default(),
+        style: div().w_full().style().clone(),
     };
     let window = cx.open_window(size(px(800.), px(500.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
@@ -510,6 +507,7 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
             }
             content
         }),
+        style: gpui_kit::StyleRefinement::default(),
     };
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
