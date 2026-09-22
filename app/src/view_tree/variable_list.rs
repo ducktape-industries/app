@@ -90,7 +90,11 @@ impl ViewTree {
             list.state.remeasure_items(index..index + 1);
         }
 
+        let request_leading = native_alignment == ListAlignment::Bottom && incoming.start > 0;
         let state = list.state.clone();
+        if request_leading {
+            request_row(self, &key, incoming.start - 1, *request_handler, cx);
+        }
         let weak = cx.entity().downgrade();
         let render_key = key.clone();
         let request_route = *request_handler;

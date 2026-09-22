@@ -40,20 +40,37 @@ fn uniform_node(id: &str, count: usize, rows: Range<usize>) -> wire::Node {
 fn uniform_list_measures_row_zero_and_emits_bounded_viewport_ranges(
     cx: &mut gpui_kit::TestAppContext,
 ) {
+    struct Host {
+        tree: Entity<ViewTree>,
+        _subscription: Subscription,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(self.tree.clone())
+        }
+    }
+
     cx.update(gpui_kit::init);
     let node = uniform_node("uniform", 2_000, 0..1);
-    let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(node));
-    let tree = window.root(cx).unwrap();
     let events = Rc::new(RefCell::new(Vec::new()));
     let received = events.clone();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+    let window = cx.open_window(size(px(240.), px(96.)), |_, cx| {
+        let tree = cx.new(|_| ViewTree::new(node));
+        let subscription = cx.subscribe(&tree, move |_, _, event: &wire::Event, _| {
             if let wire::Event::UniformListRange { .. } = event {
                 received.borrow_mut().push(event.clone());
             }
-        })
+        });
+        Host {
+            tree,
+            _subscription: subscription,
+        }
     });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |host, _| host.tree.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();

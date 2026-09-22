@@ -483,7 +483,11 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         window.render_frame(cx);
     });
     tree.read_with(&native, |tree, _| {
-        let folders = vec![named_id("main"), named_id("folders")];
+        let folders = vec![
+            named_id("main"),
+            named_id("main-column"),
+            named_id("folders"),
+        ];
         assert!(
             tree.scrolls[&folders].offset().x < px(-200.),
             "scrollbar track click reveals offscreen columns: bounds={:?}, offset={:?}",

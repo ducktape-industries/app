@@ -332,6 +332,11 @@ mod tests {
         });
         let window_id = window.window_id();
         cx.update(|cx| {
+            if cx.has_global::<SvgAdmissionLedgers>() {
+                cx.global_mut::<SvgAdmissionLedgers>()
+                    .windows
+                    .remove(&window_id);
+            }
             for source in 0..MAX_WINDOW_SVG_RASTERS as u64 {
                 assert!(admit_svg_raster(
                     window_id,
@@ -385,6 +390,7 @@ mod tests {
             width: 100.0,
             paints: small,
         });
+        small_paints.set(0);
         cx.update_window(window.into(), |_, window, cx| window.draw(cx).clear(cx))
             .unwrap();
         assert_eq!(small_paints.get(), 1);
