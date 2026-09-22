@@ -32,6 +32,7 @@ impl DesktopWindow {
             Message::AccountNameTyped,
             || Message::PasskeyCreateSubmit,
             Some("Account name"),
+            false,
             window,
             cx,
         );
@@ -47,6 +48,7 @@ impl DesktopWindow {
             Message::PasswordTyped,
             submit,
             None,
+            true,
             window,
             cx,
         );
@@ -59,6 +61,7 @@ impl DesktopWindow {
                 Message::ConfirmPasswordTyped,
                 submit,
                 None,
+                true,
                 window,
                 cx,
             )
@@ -265,6 +268,7 @@ impl DesktopWindow {
             Message::RestorePhraseTyped,
             || Message::RestoreSubmit,
             Some("Recovery phrase"),
+            true,
             window,
             cx,
         );
@@ -276,6 +280,7 @@ impl DesktopWindow {
             Message::RestorePasswordTyped,
             || Message::RestoreSubmit,
             None,
+            true,
             window,
             cx,
         );
@@ -287,6 +292,7 @@ impl DesktopWindow {
             Message::RestoreConfirmPasswordTyped,
             || Message::RestoreSubmit,
             None,
+            true,
             window,
             cx,
         );
