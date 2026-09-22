@@ -12,9 +12,9 @@ pub(super) fn walk_authored_paths(
         }
         _ => false,
     };
-    if entered_scope {
-        visit(node, path);
-    }
+    // Anonymous primitives (notably List) still own retained host state at
+    // their current authored ancestry; they do not add a fabricated segment.
+    visit(node, path);
     for child in node.children() {
         walk_authored_paths(child, path, visit);
     }
@@ -367,7 +367,7 @@ impl ViewTree {
         let mut mounted = std::collections::HashSet::new();
         walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
             mounted.insert(path.clone());
-            if matches!(node, wire::Node::Container { .. }) {
+            if matches!(node, wire::Node::Container { id: Some(_), .. }) {
                 focusable.insert(path.clone(), std::mem::discriminant(node));
             }
             match node {
