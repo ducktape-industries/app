@@ -53,6 +53,7 @@ pub(super) fn svg_data_allowed(bytes: &[u8]) -> bool {
     !bytes.starts_with(&[0x1f, 0x8b])
 }
 
+#[cfg(test)]
 pub(super) fn svg_raster_fits(width: f32, height: f32, device_scale: f32) -> bool {
     svg_raster_size_and_charge(width, height, device_scale).is_some()
 }

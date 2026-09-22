@@ -2,7 +2,7 @@
 use super::*;
 use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{AppContext as _, ElementId, TestAppContext, VisualTestContext, px, size};
+use gpui_kit::{ElementId, TestAppContext, VisualTestContext, px, size};
 
 fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     window.activate_a11y();

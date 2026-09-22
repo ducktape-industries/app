@@ -1,6 +1,6 @@
 use super::launch::initialize_rendering;
 use super::theme::fallback_chain;
-use gpui_kit::{Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Window};
+use gpui_kit::{Context, Entity, IntoElement, Render, Window};
 
 /// Development-only host renderer: never creates a node, shell model, or network runtime.
 pub(crate) fn render_tree_fixture() {
