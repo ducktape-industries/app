@@ -1,3 +1,5 @@
+use super::*;
+
 #[gpui_kit::test]
 fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -19,12 +21,14 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
         *on_submit = Some(handler + 10);
         node
     };
-    let branch = |id, child| wire::Node::Container (view_wire::ContainerNode {
-        id: Some(id),
-        style: gpui_kit::StyleRefinement::default(),
-        interactivity: Default::default(),
-        children: vec![child],
-    });
+    let branch = |id, child| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(id),
+            style: gpui_kit::StyleRefinement::default(),
+            interactivity: Default::default(),
+            children: vec![child],
+        })
+    };
     let root = container(
         "form",
         [
@@ -208,7 +212,7 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
         let mut host = axis_container(
             "host",
             wire::Axis::Row,
-            [wire::Node::Container (view_wire::ContainerNode {
+            [wire::Node::Container(view_wire::ContainerNode {
                 id: Some(named_id("position")),
                 style: div()
                     .absolute()
@@ -233,7 +237,7 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
                 }],
             })],
         );
-        if let wire::Node::Container (view_wire::ContainerNode { style, .. }) = &mut host {
+        if let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut host {
             *style = div()
                 .flex()
                 .flex_row()
@@ -389,37 +393,6 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
     }
 }
 
-/// Put a document's text into a store the honest way: the store asks for
-/// every document it has no text for, so answer the request it just made.
-fn seed_editor_text(store: &crate::editor::wire::EditorStore, text: &str) {
-    use wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
-    let asked = store.drain().into_iter().find_map(|event| match event {
-        wire::Event::EditorDocument {
-            message: Message::Request { id, target },
-            ..
-        } => Some((id, target)),
-        _ => None,
-    });
-    let (id, target) = asked.expect("the store asks for a document it has no text for");
-    store
-        .frame(&wire::Frame {
-            editor_documents: vec![
-                Message::Transfer(EditorTransfer::Begin {
-                    id: id.clone(),
-                    target,
-                }),
-                Message::Transfer(EditorTransfer::Chunk {
-                    id: id.clone(),
-                    index: 0,
-                    bytes: text.as_bytes().to_vec(),
-                }),
-                Message::Transfer(EditorTransfer::Complete { id }),
-            ],
-            ..Default::default()
-        })
-        .expect("the answer to the store's own request");
-}
-
 /// An editor asked to lay out to its own content is as tall as the words in
 /// it — every line of them.
 ///
@@ -511,123 +484,4 @@ fn geometry_and_pixels_keep_the_wire_meaning() {
     let image = decode_image(&pixels).expect("one valid pixel");
     assert_eq!(image.as_bytes(0), Some([20, 10, 255, 255].as_slice()));
     assert!(decode_image(&wire::ImageData::Encoded(vec![1, 2, 3])).is_none());
-}
-
-fn button(content: wire::ButtonContent, label: Option<&str>, on_press: Option<u32>) -> wire::Node {
-    wire::Node::Button {
-        id: named_id("b"),
-        role: None,
-        selected: None,
-        content,
-        label: label.map(str::to_owned),
-        checked: None,
-        expanded: None,
-        description: None,
-        on_press,
-        style: Default::default(),
-    }
-}
-
-fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
-    wire::Node::Input {
-        options: wire::InputOptions {
-            label: label.into(),
-            description: Some("Shown to members".into()),
-            disabled,
-        },
-        id: wire::ElementIdWire::Name("i".into()),
-        placeholder: "Type here".into(),
-        value: "hunter2".into(),
-        on_input: 1,
-        on_submit: None,
-        secure,
-        style: Default::default(),
-    }
-}
-
-fn picture(label: Option<&str>) -> [wire::Node; 3] {
-    let label = label.map(str::to_owned);
-    [
-        wire::Node::Image {
-            id: Some(wire::ElementIdWire::Name("img".into())),
-            hash: 1,
-            data: None,
-            label: label.clone(),
-            image_style: wire::ImageStyle {
-                grayscale: false,
-                object_fit: wire::ImageObjectFit::Contain,
-            },
-            loading: false,
-            fallback: false,
-            state_children: vec![],
-            style: Default::default(),
-            interactivity: Default::default(),
-        },
-        wire::Node::ImageViewer {
-            id: named_id("viewer"),
-            hash: 1,
-            data: None,
-            label: label.clone(),
-            fit: None,
-            options: Default::default(),
-            style: gpui_kit::StyleRefinement::default(),
-        },
-        wire::Node::Svg {
-            id: Some(wire::ElementIdWire::Name("svg".into())),
-            source: wire::SvgSource::Data {
-                hash: 1,
-                bytes: None,
-            },
-            transformation: wire::SvgTransformation {
-                scale: [1., 1.],
-                translate: [0., 0.],
-                rotate: 0.,
-            },
-            label,
-            style: Default::default(),
-            interactivity: Default::default(),
-        },
-    ]
-}
-
-#[test]
-fn text_is_a_label_its_content_names() {
-    let text = |content: &str| text("t", content);
-    assert_eq!(
-        accessible(&text("Members")),
-        Accessible {
-            role: Some(gpui_kit::Role::Label),
-            name: Some("Members".into()),
-            ..Default::default()
-        }
-    );
-    assert_eq!(accessible(&text("")).name, None);
-}
-
-#[test]
-fn a_button_is_named_by_its_label_then_its_text_and_disabled_without_a_handler() {
-    use wire::ButtonContent::{Child, Label};
-    let glyph = || {
-        Child(Box::new(wire::Node::Space {
-            style: gpui_kit::StyleRefinement::default(),
-        }))
-    };
-    let plain = accessible(&button(Label("Send".into()), None, Some(1)));
-    assert_eq!(
-        plain,
-        Accessible {
-            role: Some(gpui_kit::Role::Button),
-            name: Some("Send".into()),
-            ..Default::default()
-        }
-    );
-    let labelled = accessible(&button(Label("×".into()), Some("Close"), Some(1)));
-    assert_eq!(labelled.name.as_deref(), Some("Close"));
-    let named_icon = accessible(&button(glyph(), Some("Close"), Some(1)));
-    assert_eq!(named_icon.name.as_deref(), Some("Close"));
-    // an icon the view did not name has no name: the gap stays visible
-    assert_eq!(accessible(&button(glyph(), None, Some(1))).name, None);
-    assert_eq!(accessible(&button(glyph(), Some(""), Some(1))).name, None);
-    assert!(accessible(&button(Label("Send".into()), None, None)).disabled);
-    assert!(!plain.disabled);
 }

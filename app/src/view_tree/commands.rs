@@ -5,13 +5,7 @@ pub(super) fn walk_authored_paths(
     path: &mut AuthoredPath,
     visit: &mut impl FnMut(&wire::Node, &AuthoredPath),
 ) {
-    let entered_scope = match node.identity() {
-        Some(wire::IdentityKeyRef::Element(id)) => {
-            path.push(id.clone());
-            true
-        }
-        _ => false,
-    };
+    let entered_scope = crate::view_tree::enter_scope(node, path);
     // Anonymous primitives (notably List) still own retained host state at
     // their current authored ancestry; they do not add a fabricated segment.
     visit(node, path);

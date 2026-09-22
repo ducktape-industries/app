@@ -1,3 +1,5 @@
+use super::*;
+
 // Native picture caches belong to presentation state, not one ViewTree entity.
 const PRESENTATION_SVG: &[u8] =
     br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><path d="M0 0h1v1H0z"/></svg>"#;
@@ -19,7 +21,7 @@ fn picture_caches_survive_view_tree_recreation_without_resetting_limits(
     fn pictures(with_bytes: bool) -> wire::Node {
         let mut image_style = div().size(px(30.));
         let mut svg_style = div().size(px(30.)).text_color(rgb(0x00ff00));
-        wire::Node::Container (view_wire::ContainerNode {
+        wire::Node::Container(view_wire::ContainerNode {
             id: Some(wire::ElementIdWire::Name("pictures".into())),
             style: div()
                 .flex()

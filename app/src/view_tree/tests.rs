@@ -115,15 +115,121 @@ fn axis_container(
     })
 }
 
-include!("tests/part_1.rs");
-include!("tests/part_2.rs");
-include!("tests/part_3.rs");
-include!("tests/part_4.rs");
-include!("tests/gpui_clip.rs");
+fn button(content: wire::ButtonContent, label: Option<&str>, on_press: Option<u32>) -> wire::Node {
+    wire::Node::Button {
+        id: named_id("b"),
+        role: None,
+        selected: None,
+        content,
+        label: label.map(str::to_owned),
+        checked: None,
+        expanded: None,
+        description: None,
+        on_press,
+        style: Default::default(),
+    }
+}
 
-include!("tests/gpui_activation.rs");
-include!("tests/rich_tooltip.rs");
-include!("tests/part_5.rs");
-include!("tests/variable_list.rs");
+fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
+    wire::Node::Input {
+        options: wire::InputOptions {
+            label: label.into(),
+            description: Some("Shown to members".into()),
+            disabled,
+        },
+        id: wire::ElementIdWire::Name("i".into()),
+        placeholder: "Type here".into(),
+        value: "hunter2".into(),
+        on_input: 1,
+        on_submit: None,
+        secure,
+        style: Default::default(),
+    }
+}
 
-include!("tests/picture_presentation.rs");
+fn picture(label: Option<&str>) -> [wire::Node; 3] {
+    let label = label.map(str::to_owned);
+    [
+        wire::Node::Image {
+            id: Some(wire::ElementIdWire::Name("img".into())),
+            hash: 1,
+            data: None,
+            label: label.clone(),
+            image_style: wire::ImageStyle {
+                grayscale: false,
+                object_fit: wire::ImageObjectFit::Contain,
+            },
+            loading: false,
+            fallback: false,
+            state_children: vec![],
+            style: Default::default(),
+            interactivity: Default::default(),
+        },
+        wire::Node::ImageViewer {
+            id: named_id("viewer"),
+            hash: 1,
+            data: None,
+            label: label.clone(),
+            fit: None,
+            options: Default::default(),
+            style: gpui_kit::StyleRefinement::default(),
+        },
+        wire::Node::Svg {
+            id: Some(wire::ElementIdWire::Name("svg".into())),
+            source: wire::SvgSource::Data {
+                hash: 1,
+                bytes: None,
+            },
+            transformation: wire::SvgTransformation {
+                scale: [1., 1.],
+                translate: [0., 0.],
+                rotate: 0.,
+            },
+            label,
+            style: Default::default(),
+            interactivity: Default::default(),
+        },
+    ]
+}
+
+/// Put a document's text into a store the honest way: the store asks for
+/// every document it has no text for, so answer the request it just made.
+fn seed_editor_text(store: &crate::editor::wire::EditorStore, text: &str) {
+    use wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
+    let asked = store.drain().into_iter().find_map(|event| match event {
+        wire::Event::EditorDocument {
+            message: Message::Request { id, target },
+            ..
+        } => Some((id, target)),
+        _ => None,
+    });
+    let (id, target) = asked.expect("the store asks for a document it has no text for");
+    store
+        .frame(&wire::Frame {
+            editor_documents: vec![
+                Message::Transfer(EditorTransfer::Begin {
+                    id: id.clone(),
+                    target,
+                }),
+                Message::Transfer(EditorTransfer::Chunk {
+                    id: id.clone(),
+                    index: 0,
+                    bytes: text.as_bytes().to_vec(),
+                }),
+                Message::Transfer(EditorTransfer::Complete { id }),
+            ],
+            ..Default::default()
+        })
+        .expect("the answer to the store's own request");
+}
+
+mod accessibility;
+mod gpui_activation;
+mod gpui_clip;
+mod inputs;
+mod layout;
+mod picture_presentation;
+mod primitives;
+mod rich_tooltip;
+mod uniform_list;
+mod variable_list;

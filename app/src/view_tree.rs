@@ -75,6 +75,18 @@ use variable_list::{VariableList, VariableListKey};
 
 pub(crate) type AuthoredPath = Vec<wire::ElementIdWire>;
 
+/// Pushes the node's identity onto `path` when it has one; the caller pops
+/// on the way out when this answers `true`.
+pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {
+    match node.identity() {
+        Some(id) => {
+            path.push(id.clone());
+            true
+        }
+        None => false,
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct NativePresentation {
     images: HashMap<u64, Arc<RenderImage>>,
@@ -181,13 +193,7 @@ impl ViewTree {
         // unoptimised build gives a function the stack of ALL its arms at
         // once — inlined bodies here once cost 570 KiB a level and overflowed
         // the main thread at a depth of fourteen.
-        let entered_scope = match node.identity() {
-            Some(wire::IdentityKeyRef::Element(id)) => {
-                self.authored_path.push(id.clone());
-                true
-            }
-            _ => false,
-        };
+        let entered_scope = enter_scope(node, &mut self.authored_path);
         if entered_scope {
             self.mounted.insert(self.authored_path.clone());
         }

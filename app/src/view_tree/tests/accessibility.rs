@@ -1,3 +1,47 @@
+use super::*;
+
+#[test]
+fn text_is_a_label_its_content_names() {
+    let text = |content: &str| text("t", content);
+    assert_eq!(
+        accessible(&text("Members")),
+        Accessible {
+            role: Some(gpui_kit::Role::Label),
+            name: Some("Members".into()),
+            ..Default::default()
+        }
+    );
+    assert_eq!(accessible(&text("")).name, None);
+}
+
+#[test]
+fn a_button_is_named_by_its_label_then_its_text_and_disabled_without_a_handler() {
+    use wire::ButtonContent::{Child, Label};
+    let glyph = || {
+        Child(Box::new(wire::Node::Space {
+            style: gpui_kit::StyleRefinement::default(),
+        }))
+    };
+    let plain = accessible(&button(Label("Send".into()), None, Some(1)));
+    assert_eq!(
+        plain,
+        Accessible {
+            role: Some(gpui_kit::Role::Button),
+            name: Some("Send".into()),
+            ..Default::default()
+        }
+    );
+    let labelled = accessible(&button(Label("×".into()), Some("Close"), Some(1)));
+    assert_eq!(labelled.name.as_deref(), Some("Close"));
+    let named_icon = accessible(&button(glyph(), Some("Close"), Some(1)));
+    assert_eq!(named_icon.name.as_deref(), Some("Close"));
+    // an icon the view did not name has no name: the gap stays visible
+    assert_eq!(accessible(&button(glyph(), None, Some(1))).name, None);
+    assert_eq!(accessible(&button(glyph(), Some(""), Some(1))).name, None);
+    assert!(accessible(&button(Label("Send".into()), None, None)).disabled);
+    assert!(!plain.disabled);
+}
+
 #[test]
 fn a_button_reports_checked_expanded_and_its_description() {
     let mut node = button(wire::ButtonContent::Label("Bold".into()), None, Some(1));
@@ -334,13 +378,15 @@ fn a_slider_is_named_by_its_label() {
 
 #[test]
 fn a_text_heading_has_its_level_and_a_live_text_its_politeness() {
-    let text = |heading, live| wire::Node::Text (view_wire::TextNode {
-        id: Some(named_id("t")),
-        style: gpui_kit::StyleRefinement::default(),
-        content: "Members".into(),
-        heading,
-        live,
-    });
+    let text = |heading, live| {
+        wire::Node::Text(view_wire::TextNode {
+            id: Some(named_id("t")),
+            style: gpui_kit::StyleRefinement::default(),
+            content: "Members".into(),
+            heading,
+            live,
+        })
+    };
     for level in 1..=6u8 {
         assert_eq!(
             accessible(&text(Some(level), None)),

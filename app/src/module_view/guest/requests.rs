@@ -179,13 +179,7 @@ impl Guest {
             path: &mut Vec<wire::ElementIdWire>,
             target: &[wire::ElementIdWire],
         ) -> bool {
-            let entered = match node.identity() {
-                Some(wire::IdentityKeyRef::Element(id)) => {
-                    path.push(id.clone());
-                    true
-                }
-                _ => false,
-            };
+            let entered = crate::view_tree::enter_scope(node, path);
             let found = entered && path == target
                 || node
                     .children()
@@ -243,13 +237,7 @@ impl Guest {
             path: &mut Vec<wire::ElementIdWire>,
             target: &[wire::ElementIdWire],
         ) -> bool {
-            let entered = match node.identity() {
-                Some(wire::IdentityKeyRef::Element(id)) => {
-                    path.push(id.clone());
-                    true
-                }
-                _ => false,
-            };
+            let entered = crate::view_tree::enter_scope(node, path);
             let found = matches!(node, wire::Node::Editor { options, .. } if path == target && options.rich.is_some())
                 || node
                     .children()

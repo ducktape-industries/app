@@ -1,3 +1,5 @@
+use super::*;
+
 #[gpui_kit::test]
 fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     cx: &mut gpui_kit::TestAppContext,
@@ -19,7 +21,7 @@ fn rich_text_tooltip_dispatches_character_index_and_stays_in_slot(
     }
 
     let mut tip = div().size(px(120.)).bg(rgb(TIP_COLOR));
-    let tip = wire::Node::Container (view_wire::ContainerNode {
+    let tip = wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id("rich-tip-content")),
         style: tip.style().clone(),
         interactivity: Default::default(),

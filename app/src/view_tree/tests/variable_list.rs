@@ -1,3 +1,5 @@
+use super::*;
+
 fn variable_list_node(
     count: usize,
     alignment: wire::ListAlignment,
@@ -28,7 +30,7 @@ fn variable_list_node(
 fn fixed_row(id: u64, height: f32, color: u32) -> wire::Node {
     let mut style = gpui_kit::StyleRefinement::default().h(px(height)).w_full();
     style.background = Some(rgb(color).into());
-    wire::Node::Container (view_wire::ContainerNode {
+    wire::Node::Container(view_wire::ContainerNode {
         id: Some(wire::ElementIdWire::Integer(id)),
         style,
         interactivity: Default::default(),
@@ -124,7 +126,7 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
         assert!(list.rows.contains_key(&1_998) && list.rows.contains_key(&1_999));
         assert!(matches!(
             &list.rows[&1_998],
-            wire::Node::Container (view_wire::ContainerNode {
+            wire::Node::Container(view_wire::ContainerNode {
                 id: Some(wire::ElementIdWire::Integer(1998)),
                 ..
             })
@@ -138,24 +140,52 @@ fn accepted_frames_retain_anonymous_list_scroll_and_clear_old_listener_rows(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
-    let root = axis_container("room", wire::Axis::Column, [variable_list_node(
-        3, wire::ListAlignment::Top, 0,
-        vec![fixed_row(10, 20., 0xff0000), fixed_row(11, 60., 0x00ff00), fixed_row(12, 100., 0x0000ff)],
-    )]);
+    let root = axis_container(
+        "room",
+        wire::Axis::Column,
+        [variable_list_node(
+            3,
+            wire::ListAlignment::Top,
+            0,
+            vec![
+                fixed_row(10, 20., 0xff0000),
+                fixed_row(11, 60., 0x00ff00),
+                fixed_row(12, 100., 0x0000ff),
+            ],
+        )],
+    );
     let window = cx.open_window(size(px(200.), px(120.)), |_, _| ViewTree::new(root.clone()));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
-    native.update(|_, cx| tree.update(cx, |tree, cx| {
-        let state = tree.variable_lists.values().next().unwrap().state.clone();
-        state.scroll_to(gpui_kit::ListOffset { item_ix: 1, offset_in_item: px(3.) });
-        let before = state.logical_scroll_top();
-        tree.replace(root.clone(), cx);
-        let retained = tree.variable_lists.values().next().expect("anonymous List remains mounted");
-        assert_eq!(retained.state.logical_scroll_top().item_ix, before.item_ix);
-        assert_eq!(retained.state.logical_scroll_top().offset_in_item, before.offset_in_item);
-        assert!(retained.rows.is_empty(), "old-frame listeners are discarded before native rerender");
-        tree.replace(wire::Node::empty(), cx);
-        assert!(tree.variable_lists.is_empty(), "unmounted List state is retired");
-    }));
+    native.update(|_, cx| {
+        tree.update(cx, |tree, cx| {
+            let state = tree.variable_lists.values().next().unwrap().state.clone();
+            state.scroll_to(gpui_kit::ListOffset {
+                item_ix: 1,
+                offset_in_item: px(3.),
+            });
+            let before = state.logical_scroll_top();
+            tree.replace(root.clone(), cx);
+            let retained = tree
+                .variable_lists
+                .values()
+                .next()
+                .expect("anonymous List remains mounted");
+            assert_eq!(retained.state.logical_scroll_top().item_ix, before.item_ix);
+            assert_eq!(
+                retained.state.logical_scroll_top().offset_in_item,
+                before.offset_in_item
+            );
+            assert!(
+                retained.rows.is_empty(),
+                "old-frame listeners are discarded before native rerender"
+            );
+            tree.replace(wire::Node::empty(), cx);
+            assert!(
+                tree.variable_lists.is_empty(),
+                "unmounted List state is retired"
+            );
+        })
+    });
 }

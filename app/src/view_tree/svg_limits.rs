@@ -53,10 +53,6 @@ pub(super) fn svg_data_allowed(bytes: &[u8]) -> bool {
     !bytes.starts_with(&[0x1f, 0x8b])
 }
 
-pub(super) fn svg_raster_fits(width: f32, height: f32, device_scale: f32) -> bool {
-    svg_raster_size_and_charge(width, height, device_scale).is_some()
-}
-
 fn svg_raster_size_and_charge(
     width: f32,
     height: f32,
@@ -232,6 +228,10 @@ impl Element for SvgPaintGuard {
 mod tests {
     use super::*;
     use std::{cell::Cell, rc::Rc};
+
+    fn svg_raster_fits(width: f32, height: f32, device_scale: f32) -> bool {
+        svg_raster_size_and_charge(width, height, device_scale).is_some()
+    }
 
     #[test]
     fn compressed_svg_data_is_refused_before_native_parsing() {

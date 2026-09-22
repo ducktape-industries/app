@@ -298,13 +298,7 @@ fn collect(node: &wire::Node, fields: &mut HashMap<AuthoredPath, Field>) -> Resu
         path: &mut AuthoredPath,
         fields: &mut HashMap<AuthoredPath, Field>,
     ) -> Result<(), String> {
-        let entered = match node.identity() {
-            Some(wire::IdentityKeyRef::Element(id)) => {
-                path.push(id.clone());
-                true
-            }
-            _ => false,
-        };
+        let entered = crate::view_tree::enter_scope(node, path);
         if let wire::Node::Editor {
             document,
             on_document,
