@@ -3,7 +3,7 @@ use gpui_kit::{
     AppContext as _, Context, Div, FocusHandle, InteractiveElement as _, KeyDownEvent, KeyUpEvent,
     ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, MouseMoveEvent,
     MousePressureEvent, MouseUpEvent, PinchEvent, ScrollWheelEvent, Stateful,
-    StatefulInteractiveElement as _, WindowControlArea,
+    StatefulInteractiveElement as _,
 };
 use std::time::Duration;
 use view_wire as wire;
@@ -47,32 +47,23 @@ pub(super) fn apply(
     if interactivity.block_mouse_except_scroll {
         element = element.block_mouse_except_scroll();
     }
-    if let Some(area) = interactivity.window_control_area {
-        element = element.window_control_area(match area {
-            wire::WindowControlArea::Drag => WindowControlArea::Drag,
-            wire::WindowControlArea::Close => WindowControlArea::Close,
-            wire::WindowControlArea::Max => WindowControlArea::Max,
-            wire::WindowControlArea::Min => WindowControlArea::Min,
-        });
-    }
     element = apply_mouse(element, interactivity, cx);
     element = apply_keyboard(element, interactivity, cx);
     element = apply_misc(element, interactivity, cx);
     if let Some(tooltip) = &interactivity.tooltip
         && let Some(content) = &tooltip.content
     {
+        let parent = cx.entity().downgrade();
         let content = content.clone();
         let delay = Duration::from_millis(tooltip.delay_ms);
         element = element.tooltip_show_delay(delay);
         if tooltip.hoverable {
             element = element.hoverable_tooltip(move |_, cx| {
-                let content = content.clone();
-                cx.new(|_| ViewTree::new(*content)).into()
+                super::tooltip_containment::build(parent.clone(), *content.clone(), cx)
             });
         } else {
             element = element.tooltip(move |_, cx| {
-                let content = content.clone();
-                cx.new(|_| ViewTree::new(*content)).into()
+                super::tooltip_containment::build(parent.clone(), *content.clone(), cx)
             });
         }
     }

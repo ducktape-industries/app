@@ -317,7 +317,13 @@ pub(super) fn merge(
 ) -> Result<(bool, wire::SanitizeReport), &'static str> {
     let mut tooltip_changed = false;
     if let Some(root) = held {
-        for response in std::mem::take(&mut frame.tooltip_responses) {
+        let responses = std::mem::take(&mut frame.tooltip_responses);
+        let mut response_ids = std::collections::HashSet::new();
+        for response in &responses {
+            if !response_ids.insert(response.request) {
+                return Err("duplicate tooltip response request");
+            }
+            let mut matches = 0usize;
             root.for_each_mut(&mut |node| {
                 let wire::Node::Container { interactivity, .. } = node else {
                     return;
@@ -326,15 +332,37 @@ pub(super) fn merge(
                     return;
                 };
                 if tooltip.request == response.request {
-                    tooltip.content = Some(response.content.clone());
-                    tooltip_changed = true;
+                    matches += 1;
                 }
             });
+            if matches > 1 {
+                return Err("duplicate tooltip request route");
+            }
+        }
+        for response in responses {
+            let mut content = Some(response.content);
+            root.for_each_mut(&mut |node| {
+                let wire::Node::Container { interactivity, .. } = node else {
+                    return;
+                };
+                let Some(tooltip) = &mut interactivity.tooltip else {
+                    return;
+                };
+                if tooltip.request == response.request {
+                    tooltip.content = content.take();
+                }
+            });
+            if content.is_none() {
+                tooltip_changed = true;
+            }
         }
     }
     if frame.unchanged {
         frame.root = held.take();
-        return Ok((tooltip_changed, Default::default()));
+        let upstream = frame.upstream_sanitization;
+        let report = wire::sanitize(frame)?;
+        frame.upstream_sanitization = upstream;
+        return Ok((tooltip_changed, report));
     }
     if frame.root.is_some() {
         return Ok((true, Default::default()));
@@ -404,6 +432,22 @@ pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    fn tooltip_route(request: u32) -> wire::Node {
+        let mut interactivity = wire::Interactivity::default();
+        interactivity.tooltip = Some(wire::Tooltip {
+            request,
+            content: None,
+            hoverable: false,
+            delay_ms: 250,
+        });
+        wire::Node::Container {
+            id: None,
+            style: Default::default(),
+            interactivity,
+            children: Vec::new(),
+        }
+    }
+
     fn label(guest: &Guest) -> (String, u32) {
         match guest.frame.root.as_ref().expect("a tree") {
             wire::Node::Button {
@@ -417,19 +461,7 @@ mod tests {
 
     #[test]
     fn tooltip_response_only_attaches_to_its_current_frame_route() {
-        let mut interactivity = wire::Interactivity::default();
-        interactivity.tooltip = Some(wire::Tooltip {
-            request: 7,
-            content: None,
-            hoverable: false,
-            delay_ms: 250,
-        });
-        let mut held = Some(wire::Node::Container {
-            id: None,
-            style: Default::default(),
-            interactivity,
-            children: Vec::new(),
-        });
+        let mut held = Some(tooltip_route(7));
         let tip = wire::Node::Text {
             id: None,
             style: Default::default(),
@@ -450,6 +482,90 @@ mod tests {
             panic!("container")
         };
         assert!(interactivity.tooltip.unwrap().content.is_some());
+    }
+
+    #[test]
+    fn tooltip_response_rejects_duplicate_authored_routes_before_mutating() {
+        let mut held = Some(wire::Node::Container {
+            id: None,
+            style: Default::default(),
+            interactivity: Default::default(),
+            children: vec![tooltip_route(7), tooltip_route(7)],
+        });
+        let mut frame = wire::Frame {
+            unchanged: true,
+            tooltip_responses: vec![wire::TooltipResponse {
+                request: 7,
+                content: Box::new(wire::Node::empty()),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            merge(&mut held, &mut frame),
+            Err("duplicate tooltip request route")
+        );
+        let mut populated = 0;
+        held.unwrap().for_each_mut(&mut |node| {
+            if let wire::Node::Container { interactivity, .. } = node
+                && interactivity
+                    .tooltip
+                    .as_ref()
+                    .is_some_and(|tooltip| tooltip.content.is_some())
+            {
+                populated += 1;
+            }
+        });
+        assert_eq!(populated, 0);
+    }
+
+    #[test]
+    fn duplicate_tooltip_responses_are_rejected_before_mutating() {
+        let mut held = Some(tooltip_route(7));
+        let response = || wire::TooltipResponse {
+            request: 7,
+            content: Box::new(wire::Node::empty()),
+        };
+        let mut frame = wire::Frame {
+            unchanged: true,
+            tooltip_responses: vec![response(), response()],
+            ..Default::default()
+        };
+        assert_eq!(
+            merge(&mut held, &mut frame),
+            Err("duplicate tooltip response request")
+        );
+        let wire::Node::Container { interactivity, .. } = held.unwrap() else {
+            panic!("tooltip route")
+        };
+        assert!(interactivity.tooltip.unwrap().content.is_none());
+    }
+
+    #[test]
+    fn tooltip_response_is_sanitized_against_the_combined_held_tree_budget() {
+        let mut children = vec![tooltip_route(7)];
+        children.extend((0..wire::MAX_NODES - 2).map(|_| wire::Node::empty()));
+        let mut held = Some(wire::Node::Container {
+            id: None,
+            style: Default::default(),
+            interactivity: Default::default(),
+            children,
+        });
+        let response = wire::Node::Container {
+            id: None,
+            style: Default::default(),
+            interactivity: Default::default(),
+            children: (0..wire::MAX_NODES).map(|_| wire::Node::empty()).collect(),
+        };
+        let mut frame = wire::Frame {
+            unchanged: true,
+            tooltip_responses: vec![wire::TooltipResponse {
+                request: 7,
+                content: Box::new(response),
+            }],
+            ..Default::default()
+        };
+        assert!(merge(&mut held, &mut frame).unwrap().0);
+        assert!(frame.root.unwrap().count() <= wire::MAX_NODES);
     }
 
     /// Every export of a real view, through guest memory. The bytes are
