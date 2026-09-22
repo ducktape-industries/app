@@ -51,7 +51,7 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
 
 ## Dependency line
 
-`ducktape-industries/modules` (`crates/sdk`; pinned to `epic/views-2026-09-22` until modules #72 lands on `main`): `abi`, `view-wire`, `ducklink`, `design`.
+`ducktape-industries/modules` (`crates/sdk`; pinned by rev to modules `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
 `ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
 
 Out until their upstreams settle: the self-update lane (`app-update`,
