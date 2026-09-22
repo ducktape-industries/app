@@ -1,9 +1,9 @@
 use super::*;
 
-fn collect_input_paths(
+pub(super) fn walk_authored_paths(
     node: &wire::Node,
     path: &mut AuthoredPath,
-    inputs: &mut std::collections::HashSet<AuthoredPath>,
+    visit: &mut impl FnMut(&wire::Node, &AuthoredPath),
 ) {
     let entered_scope = match node.identity() {
         Some(wire::IdentityKeyRef::Element(id)) => {
@@ -12,11 +12,11 @@ fn collect_input_paths(
         }
         _ => false,
     };
-    if matches!(node, wire::Node::Input { .. }) {
-        inputs.insert(path.clone());
+    if entered_scope {
+        visit(node, path);
     }
     for child in node.children() {
-        collect_input_paths(child, path, inputs);
+        walk_authored_paths(child, path, visit);
     }
     if entered_scope {
         path.pop();
@@ -70,8 +70,8 @@ impl ViewTree {
     }
 
     #[cfg(test)]
-    pub(crate) fn measured_bounds(&self, key: &str) -> Option<Bounds<Pixels>> {
-        self.bounds.get(key).copied()
+    pub(crate) fn measured_bounds(&self, path: &[wire::ElementIdWire]) -> Option<Bounds<Pixels>> {
+        self.bounds.get(path).copied()
     }
 
     pub fn set_editor_store(
@@ -128,7 +128,12 @@ impl ViewTree {
         }
     }
 
-    pub(super) fn target_focused(&self, target: &str, window: &Window, cx: &App) -> bool {
+    pub(super) fn target_focused(
+        &self,
+        target: &[wire::ElementIdWire],
+        window: &Window,
+        cx: &App,
+    ) -> bool {
         if !self.mounted.contains(target) {
             return false;
         }
@@ -154,16 +159,13 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> Result<Vec<u8>, String> {
         let mut targets = Vec::new();
-        self.root.clone().for_each_mut(&mut |node| {
-            let Some(key) = node.key() else {
-                return;
-            };
-            let available = self.mounted.contains(key)
-                && (self.pickers.contains_key(key)
-                    || self.focus_targets.contains_key(key)
-                    || self.editors.contains_key(key));
+        walk_authored_paths(&self.root, &mut Vec::new(), &mut |_, path| {
+            let available = self.mounted.contains(path)
+                && (self.pickers.contains_key(path)
+                    || self.focus_targets.contains_key(path)
+                    || self.editors.contains_key(path));
             if available {
-                targets.push(key.to_owned());
+                targets.push(path.clone());
             }
         });
         if targets.is_empty() {
@@ -191,7 +193,7 @@ impl ViewTree {
 
     pub(super) fn input_command(
         &mut self,
-        target: &str,
+        target: &[wire::ElementIdWire],
         command: &wire::WidgetCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -202,9 +204,8 @@ impl ViewTree {
         }
         if matches!(command, C::Focus { .. }) {
             let mut kind = None;
-            self.root.clone().for_each_mut(&mut |node| {
-                if node.key() == Some(target)
-                    && matches!(
+            walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
+                if path == target && matches!(
                         node,
                         wire::Node::Container { .. }
                     )
@@ -215,7 +216,7 @@ impl ViewTree {
             if let Some(kind) = kind {
                 let (_, handle) = self
                     .focus_targets
-                    .entry(target.into())
+                    .entry(target.to_vec())
                     .or_insert_with(|| (kind, cx.focus_handle()));
                 handle.focus(window, cx);
                 cx.notify();
@@ -254,7 +255,7 @@ impl ViewTree {
 
     pub(super) fn scroll_command(
         &mut self,
-        target: &str,
+        target: &[wire::ElementIdWire],
         request: ScrollRequest,
         cx: &mut Context<Self>,
     ) -> Result<Vec<u8>, String> {
@@ -301,11 +302,8 @@ impl ViewTree {
         };
         let maximum = handle.max_offset();
         let mut anchors = (wire::ScrollAnchor::Start, wire::ScrollAnchor::Start);
-        let mut row: Option<String> = None;
-        self.root.clone().for_each_mut(&mut |node| {
+        walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
             let wire::Node::Scroll {
-                key,
-                content,
                 anchor_x,
                 anchor_y,
                 ..
@@ -313,13 +311,10 @@ impl ViewTree {
             else {
                 return;
             };
-            if key != target {
+            if path != target {
                 return;
             }
             anchors = (*anchor_x, *anchor_y);
-            if let ScrollRequest::Key(requested) = request {
-                let _ = requested;
-            }
         });
         let from_anchor = |distance: f32, maximum: Pixels, anchor: wire::ScrollAnchor| match anchor
         {
@@ -343,15 +338,7 @@ impl ViewTree {
                 handle.offset() + point(direction(x, anchors.0), direction(y, anchors.1))
             }
             ScrollRequest::End => -maximum,
-            ScrollRequest::Key(_) => {
-                let Some(bounds) = row.and_then(|row| self.bounds.get(&row)) else {
-                    return Ok(wire::encode(&()));
-                };
-                point(
-                    handle.offset().x,
-                    handle.offset().y - (bounds.origin.y - handle.bounds().origin.y),
-                )
-            }
+            ScrollRequest::Key(_) => return Ok(wire::encode(&())),
         };
         handle.set_offset(point(
             next.x.clamp(-maximum.x, px(0.0)),
@@ -365,66 +352,56 @@ impl ViewTree {
         let mut focusable = HashMap::new();
         let mut guest_focus_ids = std::collections::HashSet::new();
         let mut inputs = std::collections::HashSet::new();
-        collect_input_paths(&root, &mut Vec::new(), &mut inputs);
         let mut scrolls = std::collections::HashSet::new();
         let mut uniform_lists = std::collections::HashSet::new();
+        let mut variable_lists = std::collections::HashSet::new();
         let mut pickers = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
         let mut dialogs = std::collections::HashSet::new();
         let mut containers = std::collections::HashSet::new();
         let mut retained = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
-        let mut live_keys = std::collections::HashSet::new();
-        root.for_each_mut(&mut |node| {
-            if let Some(key) = node.key() {
-                live_keys.insert(key.to_owned());
-                if matches!(
-                    node,
-                    wire::Node::Container { .. }
-                ) {
-                    focusable.insert(key.to_owned(), std::mem::discriminant(node));
-                }
+        let mut mounted = std::collections::HashSet::new();
+        walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
+            mounted.insert(path.clone());
+            if matches!(node, wire::Node::Container { .. }) {
+                focusable.insert(path.clone(), std::mem::discriminant(node));
             }
             match node {
                 wire::Node::Container { interactivity, .. } => {
-                    if let Some(id) = &interactivity.focus_handle {
-                        guest_focus_ids.insert(id.clone());
-                    }
+                    if let Some(id) = interactivity.focus_handle { guest_focus_ids.insert(id); }
                 }
-                wire::Node::Input { .. } => {}
-                wire::Node::Scroll { key, .. } => {
-                    scrolls.insert(key.clone());
+                wire::Node::UniformList { path, .. } => { uniform_lists.insert(path.clone()); }
+                wire::Node::List { path, state, .. } => { variable_lists.insert((path.clone(), *state)); }
+                wire::Node::Input { .. } => {
+                    inputs.insert(path.clone());
                 }
-                wire::Node::UniformList { path, .. } => {
-                    uniform_lists.insert(path.clone());
+                wire::Node::Scroll { .. } => {
+                    scrolls.insert(path.clone());
                 }
-                wire::Node::PickList { key, .. } | wire::Node::ComboBox { key, .. } => {
-                    pickers.insert(key.clone());
+                wire::Node::PickList { .. } | wire::Node::ComboBox { .. } => {
+                    pickers.insert(path.clone());
                 }
-                wire::Node::ResizeHandle { key, .. } => {
-                    drags.insert(key.clone());
-                }
+                wire::Node::ResizeHandle { .. } => { drags.insert(path.clone()); }
                 wire::Node::Overlay {
-                    key,
                     label,
                     children,
                     ..
                 } if named_overlay(label, children) => {
-                    dialogs.insert(key.clone());
+                    dialogs.insert(path.clone());
                 }
-                wire::Node::Responsive { key, .. } => {
-                    containers.insert(key.clone());
+                wire::Node::Responsive { .. } => {
+                    containers.insert(path.clone());
                 }
                 wire::Node::Sensor {
-                    key,
                     reset,
                     on_show,
                     on_resize,
                     on_hide,
                     ..
                 } => {
-                    sensors.insert(key.clone());
-                    if let Some(sensor) = self.sensors.get_mut(key) {
+                    sensors.insert(path.clone());
+                    if let Some(sensor) = self.sensors.get_mut(path) {
                         if sensor.reset != *reset {
                             sensor.reset = reset.clone();
                             sensor.size = None;
@@ -437,11 +414,15 @@ impl ViewTree {
                         sensor.on_hide = *on_hide;
                     }
                 }
-                wire::Node::Slider { key, .. }
-                | wire::Node::Surface { key, .. }
-                | wire::Node::Editor { key, .. } => {
-                    retained.insert(key.clone());
-                }
+                wire::Node::Slider { .. }
+                | wire::Node::Surface { .. }
+                | wire::Node::Editor { .. }
+                | wire::Node::ImageViewer { .. } => { retained.insert(path.clone()); }
+                _ => {}
+            }
+        });
+        root.for_each_mut(&mut |node| {
+            match node {
                 wire::Node::Image {
                     hash,
                     data: Some(data),
@@ -449,10 +430,7 @@ impl ViewTree {
                 } => {
                     self.remember_image(*hash, data);
                 }
-                wire::Node::ImageViewer {
-                    key, hash, data, ..
-                } => {
-                    retained.insert(key.clone());
+                wire::Node::ImageViewer { hash, data, .. } => {
                     if let Some(data) = data {
                         self.remember_image(*hash, data);
                     }
@@ -470,7 +448,7 @@ impl ViewTree {
                 _ => {}
             }
         });
-        self.bounds.retain(|key, _| live_keys.contains(key));
+        self.bounds.retain(|key, _| mounted.contains(key));
         self.focus_targets
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
         self.guest_focus_targets
@@ -478,8 +456,14 @@ impl ViewTree {
         self.fields.retain(|key, _| inputs.contains(key));
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.lists.retain(|key, _| scrolls.contains(key));
-        self.uniform_lists
-            .retain(|id, _| uniform_lists.contains(id));
+        self.uniform_lists.retain(|id, list| {
+            list.rows.borrow_mut().clear();
+            uniform_lists.contains(id)
+        });
+        self.variable_lists.retain(|id, list| {
+            list.rows.borrow_mut().clear();
+            variable_lists.contains(id)
+        });
         self.scroll_positions.retain(|key, _| scrolls.contains(key));
         self.pickers.retain(|key, _| pickers.contains(key));
         self.drags.retain(|key, _| drags.contains(key));
@@ -503,24 +487,23 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let key = node.key().expect("keyed container");
+        let path = self.authored_path.clone();
         let kind = std::mem::discriminant(node);
         let restore = self
             .presentation
             .focused_container
             .as_ref()
-            .is_some_and(|(saved, saved_kind)| saved == key && *saved_kind == kind);
+            .is_some_and(|(saved, saved_kind)| saved == &path && *saved_kind == kind);
         if restore {
             self.presentation.focused_container = None;
             let (_, handle) = self
                 .focus_targets
-                .entry(key.into())
+                .entry(path.clone())
                 .or_insert_with(|| (kind, cx.focus_handle()));
             handle.focus(window, cx);
         }
-        match self.focus_targets.get(key) {
+        match self.focus_targets.get(&path) {
             Some((_, handle)) => element
-                .id(SharedString::from(key.to_owned()))
                 .track_focus(handle)
                 .into_any_element(),
             None => element.into_any_element(),

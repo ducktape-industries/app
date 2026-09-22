@@ -145,7 +145,6 @@ impl ViewTree {
         };
         let mut root = div().relative().overflow_hidden();
         *root.style() = style.clone();
-        let host_key = format!("guest-command-canvas:{:016x}", node.fingerprint());
         if native_canvas_commands(commands) {
             let commands = commands.clone();
             return root
@@ -158,10 +157,10 @@ impl ViewTree {
                     )
                     .size_full(),
                 )
-                .child(self.measure(&host_key, cx))
+                .child(self.measure(&self.authored_path, cx))
                 .into_any_element();
         }
-        let bounds = self.bounds.get(&host_key).copied().unwrap_or_default();
+        let bounds = self.bounds.get(&self.authored_path).copied().unwrap_or_default();
         let width = f32::from(bounds.size.width).max(1.);
         let height = f32::from(bounds.size.height).max(1.);
         root.child(guarded_svg_paint(
@@ -172,7 +171,7 @@ impl ViewTree {
             .size_full()
             .object_fit(ObjectFit::Fill),
         ))
-        .child(self.measure(&host_key, cx))
+        .child(self.measure(&self.authored_path, cx))
         .into_any_element()
     }
 
@@ -267,7 +266,8 @@ impl ViewTree {
             self.remember_image(*hash, data);
         }
         let frame = self.image_frame(*hash, data.as_ref());
-        let viewer = self.viewers.entry(key.clone()).or_default();
+        let path = self.authored_path.clone();
+        let viewer = self.viewers.entry(path.clone()).or_default();
         if viewer.scale == 0.0 {
             viewer.scale = 1.0;
         }
@@ -279,7 +279,7 @@ impl ViewTree {
             let original = image.size(0);
             let viewport = self
                 .bounds
-                .get(key)
+                .get(&path)
                 .map_or(window.viewport_size(), |bounds| bounds.size);
             let inset = options.padding.unwrap_or_default() * 2.0;
             let ratio = ((f32::from(viewport.width) - inset) / u32::from(original.width) as f32)
@@ -303,7 +303,7 @@ impl ViewTree {
         }
         let (minimum, maximum) = options.scale_bounds.unwrap_or((0.25, 10.0));
         let step = options.scale_step.unwrap_or(0.1);
-        let wheel_key = key.clone();
+        let wheel_key = path.clone();
         element =
             element.on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
                 let delta = match event.delta {
@@ -318,7 +318,7 @@ impl ViewTree {
                 cx.stop_propagation();
                 cx.notify();
             }));
-        let down_key = key.clone();
+        let down_key = path.clone();
         element = element.on_mouse_down(
             MouseButton::Left,
             cx.listener(move |this, event: &MouseDownEvent, _, cx| {
@@ -328,7 +328,7 @@ impl ViewTree {
                 cx.stop_propagation();
             }),
         );
-        let move_key = key.clone();
+        let move_key = path.clone();
         element = element.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
             let Some(viewer) = this.viewers.get_mut(&move_key) else {
                 return;
@@ -344,7 +344,7 @@ impl ViewTree {
             viewer.drag = Some(event.position);
             cx.notify();
         }));
-        let up_key = key.clone();
+        let up_key = path.clone();
         element = element.on_mouse_up(
             MouseButton::Left,
             cx.listener(move |this, _, _, _| {
@@ -353,7 +353,7 @@ impl ViewTree {
                 }
             }),
         );
-        element.child(self.measure(key, cx)).into_any_element()
+        element.child(self.measure(&path, cx)).into_any_element()
     }
 
     pub(super) fn picture(

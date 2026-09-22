@@ -69,7 +69,7 @@ impl ViewTree {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn virtual_scroll(
         &mut self,
-        key: &str,
+        path: &[wire::ElementIdWire],
         rows: Vec<VirtualRow>,
         anchor: wire::ScrollAnchor,
         follow: bool,
@@ -92,7 +92,7 @@ impl ViewTree {
             .map(|saved| saved.offset);
         let list = self
             .lists
-            .entry(key.to_owned())
+            .entry(path.to_vec())
             .or_insert_with(|| VirtualScroll {
                 state: ListState::new(
                     0,
@@ -153,7 +153,7 @@ impl ViewTree {
         });
         let state = list.state.clone();
         let weak = cx.entity().downgrade();
-        let route = key.to_owned();
+        let route = path.to_vec();
         state.set_scroll_handler(move |_, _, cx| {
             let Some(handler) = handler else {
                 return;
@@ -184,7 +184,7 @@ impl ViewTree {
             });
         });
         let weak = cx.entity().downgrade();
-        let route = key.to_owned();
+        let route = path.to_vec();
         let native = gpui_kit::list(state, move |index, window, cx| {
             weak.update(cx, |this, cx| {
                 let Some(row) = this
@@ -200,7 +200,6 @@ impl ViewTree {
                     .w_full()
                     .pb(px(row.gap))
                     .child(this.node(&row.content, window, cx))
-                    .child(this.measure(&row.key, cx))
                     .into_any_element()
             })
             .unwrap_or_else(|_| div().into_any_element())
@@ -212,7 +211,7 @@ impl ViewTree {
         })
         .w_full()
         .h_full();
-        let route = key.to_owned();
+        let route = path.to_vec();
         let weak = cx.entity().downgrade();
         let retain_estimates = canvas(
             move |bounds, _, cx| {
@@ -253,10 +252,10 @@ impl ViewTree {
             background,
             border,
         )
-        .id(key.to_owned())
+        .id(path.last().unwrap().to_gpui().expect("sanitized scroll identity"))
         .child(native)
         .child(retain_estimates)
-        .child(self.measure(key, cx))
+        .child(self.measure(path, cx))
         .into_any_element()
     }
 
@@ -284,14 +283,15 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let restored = self.presentation.scrolls.remove(key).filter(|saved| {
+        let path = self.authored_path.clone();
+        let restored = self.presentation.scrolls.remove(&path).filter(|saved| {
             saved.direction == *direction && saved.anchors == (*anchor_x, *anchor_y)
         });
         if *direction == wire::ScrollDirection::Vertical
             && let Some(rows) = virtual_rows(content)
         {
             return self.virtual_scroll(
-                key,
+                &path,
                 rows,
                 *anchor_y,
                 *auto_scroll,
@@ -304,7 +304,7 @@ impl ViewTree {
                 cx,
             );
         }
-        let handle = self.scrolls.entry(key.clone()).or_default().clone();
+        let handle = self.scrolls.entry(path.clone()).or_default().clone();
         let element = decoration(
             dimensions(div().relative(), *width, *height),
             *background,
@@ -317,7 +317,7 @@ impl ViewTree {
             wire::ScrollDirection::Horizontal => element.overflow_x_scroll(),
             wire::ScrollDirection::Both => element.overflow_scroll(),
         };
-        let route = key.clone();
+        let route = path.clone();
         let anchors = (*anchor_x, *anchor_y);
         let follow = *auto_scroll;
         let handler = *on_scroll;
@@ -402,8 +402,8 @@ impl ViewTree {
         let content = element
             .child(self.node(content, window, cx))
             .child(observe)
-            .child(self.measure(key, cx));
-        let handle = self.scrolls[key].clone();
+            .child(self.measure(&path, cx));
+        let handle = self.scrolls[&path].clone();
         let scrollbar = match direction {
             wire::ScrollDirection::Vertical => None,
             wire::ScrollDirection::Horizontal => Some(Scrollbar::horizontal(&handle)),
@@ -418,7 +418,7 @@ impl ViewTree {
             .child(
                 div().absolute().inset_0().child(
                     scrollbar
-                        .id(format!("{key}/scrollbar"))
+                        .id("scrollbar")
                         .viewport_from_layout()
                         .mode(ScrollbarMode::Always),
                 ),

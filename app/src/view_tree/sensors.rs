@@ -17,7 +17,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::ResizeHandle {
-            key,
+            id,
             on_press,
             on_release,
             on_drag,
@@ -27,9 +27,10 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let press_key = key.clone();
-        let move_key = key.clone();
-        let release_key = key.clone();
+        let path = self.authored_path.clone();
+        let press_key = path.clone();
+        let move_key = path.clone();
+        let release_key = path;
         let press = *on_press;
         let release = *on_release;
         let drag = *on_drag;
@@ -83,7 +84,7 @@ impl ViewTree {
         .inset_0();
         let (width, height) = content_dimensions(content);
         let element = dimensions(div(), width, height)
-            .id(key.clone())
+            .id(id.to_gpui().expect("sanitized resize identity"))
             .relative()
             .cursor(native_cursor(*cursor))
             .on_mouse_down(
@@ -112,7 +113,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Sensor {
-            key,
+            id,
             reset,
             on_show,
             on_resize,
@@ -125,7 +126,8 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let sensor = self.sensors.entry(key.clone()).or_insert(SensorState {
+        let path = self.authored_path.clone();
+        let sensor = self.sensors.entry(path.clone()).or_insert(SensorState {
             reset: reset.clone(),
             size: None,
             on_hide: *on_hide,
@@ -141,7 +143,7 @@ impl ViewTree {
         sensor.on_hide = *on_hide;
         sensor.on_show = *on_show;
         sensor.on_resize = *on_resize;
-        let route = key.clone();
+        let route = path;
         let show = *on_show;
         let resize = *on_resize;
         let anticipate = px(anticipate.unwrap_or_default());
@@ -238,7 +240,11 @@ impl ViewTree {
         // A sensor is layout-transparent. In particular, a fill spacer
         // must not collapse inside an auto-sized measurement wrapper.
         let (width, height) = content_dimensions(child);
-        dimensions(div().relative(), width, height)
+        dimensions(
+            div().id(id.to_gpui().expect("sanitized sensor identity")).relative(),
+            width,
+            height,
+        )
             .child(self.node(child, window, cx))
             .child(measure)
             .into_any_element()
@@ -251,7 +257,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::MouseArea {
-            key,
+            id,
             content,
             on_press,
             on_release,
@@ -274,7 +280,12 @@ impl ViewTree {
         // A mouse area is layout-transparent, like a sensor: a fill-sized
         // child must not collapse inside an auto-sized wrapper.
         let (width, height) = content_dimensions(content);
-        let mut element = dimensions(div().id(key.clone()).relative(), width, height);
+        let path = self.authored_path.clone();
+        let mut element = dimensions(
+            div().id(id.to_gpui().expect("sanitized mouse-area identity")).relative(),
+            width,
+            height,
+        );
         for (button, down, up) in [
             (MouseButton::Left, *on_press, *on_release),
             (MouseButton::Right, *on_right_press, *on_right_release),
@@ -317,7 +328,7 @@ impl ViewTree {
         }));
         if let Some(handler) = on_move {
             let handler = *handler;
-            let route = key.clone();
+            let route = path.clone();
             element =
                 element.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
                     let origin = this
@@ -334,7 +345,7 @@ impl ViewTree {
         }
         if let Some(handler) = on_press_at {
             let handler = *handler;
-            let route = key.clone();
+            let route = path.clone();
             element = element.capture_any_mouse_down(cx.listener(
                 move |this, event: &MouseDownEvent, _, cx| {
                     // A right press reports its position too: a context menu
@@ -398,7 +409,7 @@ impl ViewTree {
         }
         element
             .child(self.node(content, window, cx))
-            .child(self.measure(key, cx))
+            .child(self.measure(&path, cx))
             .into_any_element()
     }
 }

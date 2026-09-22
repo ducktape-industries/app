@@ -67,10 +67,15 @@ impl EditorView {
 
     /// The guest echoes which editor held focus when the frame was built, so
     /// the field it named takes the caret back.
-    pub(super) fn restore_focus(&self, key: &str, window: &mut Window, cx: &mut App) {
+    pub(super) fn restore_focus(
+        &self,
+        path: &[wire::ElementIdWire],
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let Self::Text(view) = self;
         let focus = wire::WidgetCommand::Focus {
-            target: key.to_owned(),
+            target: path.to_vec(),
         };
         view.update(cx, |editor, cx| {
             editor.widget_command(&focus, window, cx);
@@ -419,12 +424,9 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Editor {
-            key,
+            id,
+            style,
             document,
-            width,
-            height,
-            min_height,
-            max_height,
             ..
         } = node
         else {
@@ -433,45 +435,38 @@ impl ViewTree {
         let Some(store) = self.editor_store.clone() else {
             return div().child("Editor host is unavailable").into_any_element();
         };
-        if !self.editors.contains_key(key) {
+        let path = self.authored_path.clone();
+        debug_assert_eq!(path.last(), Some(id));
+        if !self.editors.contains_key(&path) {
             let events = store.clone();
             let (view, subscription) = {
                 let view = cx
-                    .new(|cx| crate::editor::wire::TextEditor::new(key.clone(), store, window, cx));
+                    .new(|cx| crate::editor::wire::TextEditor::new(path.clone(), store, window, cx));
                 let subscription =
                     cx.subscribe(&view, move |_, _, _: &(), cx| drain_editor(&events, cx));
                 (EditorView::Text(view), subscription)
             };
             self.editors.insert(
-                key.clone(),
+                path.clone(),
                 EditorMount {
                     view,
                     _subscription: subscription,
                 },
             );
         }
-        let editor = self.editors.get(key).expect("editor inserted");
-        editor
-            .view
-            .fills(!matches!(height, Some(wire::Length::Shrink)), cx);
+        let editor = self.editors.get(&path).expect("editor inserted");
+        editor.view.fills(true, cx);
         editor.view.announce(accessible(node), cx);
         editor.view.sync(window, cx);
-        if self.presentation.editors.remove(key).as_ref() == Some(document) {
-            editor.view.restore_focus(key, window, cx);
+        if self.presentation.editors.remove(&path).as_ref() == Some(document) {
+            editor.view.restore_focus(&path, window, cx);
         }
         let view = editor.view.element();
-        let mut element = dimensions(
-            div().relative(),
-            Some(width.map_or(wire::Length::Fill, wire::Length::Fixed)),
-            Some(height.unwrap_or(wire::Length::Fill)),
-        )
-        .min_h(px(min_height.unwrap_or(0.)));
-        if let Some(maximum) = max_height {
-            element = element.max_h(px(*maximum));
-        }
+        let mut element = div().relative().id(id.to_gpui().expect("sanitized editor identity"));
+        *element.style() = style.clone();
         element
             .child(view)
-            .child(self.measure(key, cx))
+            .child(self.measure(&path, cx))
             .into_any_element()
     }
 
@@ -497,10 +492,11 @@ impl ViewTree {
         else {
             unreachable!()
         };
+        let path = self.authored_path.clone();
         let bounds = [*min, *max, *step];
         let rebuild = self
             .ranges
-            .get(key)
+            .get(&path)
             .is_none_or(|control| control.bounds != bounds);
         if rebuild {
             let state = cx.new(|_| {
@@ -510,7 +506,7 @@ impl ViewTree {
                     .step(*step)
                     .default_value(*value)
             });
-            let route = key.clone();
+            let route = path.clone();
             let subscription = cx.subscribe_in(&state, window, move |this, _, event, _, cx| {
                 let Some(control) = this.ranges.get_mut(&route) else {
                     return;
@@ -531,7 +527,7 @@ impl ViewTree {
                 }
             });
             self.ranges.insert(
-                key.clone(),
+                path.clone(),
                 RangeControl {
                     state,
                     bounds,
@@ -542,7 +538,7 @@ impl ViewTree {
                 },
             );
         }
-        let control = self.ranges.get_mut(key).expect("range inserted");
+        let control = self.ranges.get_mut(&path).expect("range inserted");
         control.on_change = *on_change;
         control.on_release = *on_release;
         if control.value != *value {

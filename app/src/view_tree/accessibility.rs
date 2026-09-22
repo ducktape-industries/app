@@ -343,7 +343,7 @@ impl ViewTree {
             .collect();
         let mut editors = HashMap::new();
         let mut scrolls = HashMap::new();
-        self.root.clone().for_each_mut(&mut |node| {
+        super::commands::walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
             if let wire::Node::Scroll {
                 key,
                 direction,
@@ -354,31 +354,31 @@ impl ViewTree {
             {
                 let offset = self
                     .lists
-                    .get(key)
+                    .get(path)
                     .map(|list| list.state.scroll_px_offset_for_scrollbar())
-                    .or_else(|| self.scrolls.get(key).map(ScrollHandle::offset));
+                    .or_else(|| self.scrolls.get(path).map(ScrollHandle::offset));
                 if let Some(offset) = offset {
                     scrolls.insert(
-                        key.clone(),
+                        path.clone(),
                         ScrollPresentation {
                             direction: *direction,
                             anchors: (*anchor_x, *anchor_y),
                             offset,
                             rows: self
                                 .lists
-                                .get(key)
+                                .get(path)
                                 .map(|list| list.rows.iter().map(|row| row.key.clone()).collect()),
                         },
                     );
                 }
             }
-            if let wire::Node::Editor { key, document, .. } = node {
+            if let wire::Node::Editor { document, .. } = node {
                 let focused = self
                     .editors
-                    .get(key)
+                    .get(path)
                     .is_some_and(|editor| editor.view.is_focused(window, cx));
                 if focused {
-                    editors.insert(key.clone(), document.clone());
+                    editors.insert(path.clone(), document.clone());
                 }
             }
         });

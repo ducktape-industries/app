@@ -85,25 +85,26 @@ impl ViewTree {
                     cx.emit(wire::Event::Click { handler, event: event.into() });
                 }));
         }
-        if let Some(key) = node.key() {
+        if !self.authored_path.is_empty() {
+            let path = self.authored_path.clone();
             let kind = std::mem::discriminant(node);
             let restore = self
                 .presentation
                 .focused_container
                 .as_ref()
-                .is_some_and(|(saved, saved_kind)| saved == key && *saved_kind == kind);
+                .is_some_and(|(saved, saved_kind)| saved == &path && *saved_kind == kind);
             if restore {
                 self.presentation.focused_container = None;
                 let (_, handle) = self
                     .focus_targets
-                    .entry(key.to_owned())
+                    .entry(path.clone())
                     .or_insert_with(|| (kind, cx.focus_handle()));
                 handle.focus(window, cx);
             }
-            if let Some((_, handle)) = self.focus_targets.get(key) {
+            if let Some((_, handle)) = self.focus_targets.get(&path) {
                 element = element.track_focus(handle);
             }
-            element = element.child(self.measure(key, cx));
+            element = element.child(self.measure(&path, cx));
         }
         for child in children {
             element = element.child(self.node(child, window, cx));
@@ -127,7 +128,7 @@ impl ViewTree {
             unreachable!()
         };
         let weak = cx.entity().downgrade();
-        let key = key.clone();
+        let key = self.authored_path.clone();
         let measure = canvas(
             move |bounds, _, cx| {
                 let size = [
@@ -236,8 +237,12 @@ impl ViewTree {
         element.into_any_element()
     }
 
-    pub(super) fn measure(&self, key: &str, cx: &Context<Self>) -> impl IntoElement + use<> {
-        let route = key.to_owned();
+    pub(super) fn measure(
+        &self,
+        path: &[wire::ElementIdWire],
+        cx: &Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let route = path.to_vec();
         let weak = cx.entity().downgrade();
         canvas(
             move |bounds, _, cx| {

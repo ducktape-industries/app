@@ -85,7 +85,7 @@ impl ViewTree {
         div()
             .relative()
             .child(element.child(self.node(content, window, cx)))
-            .child(self.measure(key, cx))
+            .child(self.measure(&self.authored_path, cx))
             .into_any_element()
     }
 
@@ -96,7 +96,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Overlay {
-            key,
+            id,
             label,
             children,
             backdrop,
@@ -108,7 +108,11 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let mut element = div().relative().size_full();
+        let path = self.authored_path.clone();
+        let mut element = div()
+            .id(id.to_gpui().expect("sanitized overlay identity"))
+            .relative()
+            .size_full();
         if let Some(base) = children.first() {
             element = element.child(self.node(base, window, cx));
         }
@@ -118,22 +122,22 @@ impl ViewTree {
             if named && nested {
                 // The focus-trap registry keeps weak handles until another
                 // trap registers; drop an obscured ancestor before that pass.
-                self.dialogs.remove(key);
+                self.dialogs.remove(&path);
             }
             let shade = div()
-                .id(format!("{key}/backdrop"))
+                .id("backdrop")
                 .absolute()
                 .inset_0()
                 .bg(rgba(*backdrop));
-            let opened = named && !self.dialogs.contains_key(key);
+            let opened = named && !self.dialogs.contains_key(&path);
             let entry = (named && !nested).then(|| {
                 self.dialogs
-                    .entry(key.clone())
+                    .entry(path.clone())
                     .or_insert_with(|| cx.focus_handle())
                     .clone()
             });
             let is_float = matches!(modal, wire::Node::Float { .. });
-            let mut layer = div().id(format!("{key}/layer")).absolute().inset_0();
+            let mut layer = div().id("layer").absolute().inset_0();
             if !is_float {
                 layer = layer.flex().p(px(*padding));
             }
@@ -200,7 +204,7 @@ impl ViewTree {
                     (false, Some(entry)) => div()
                         .absolute()
                         .inset_0()
-                        .focus_trap(format!("{key}/focus-trap-container"), entry)
+                        .focus_trap("focus-trap-container", entry)
                         .child(layer)
                         .into_any_element(),
                     _ => layer.into_any_element(),

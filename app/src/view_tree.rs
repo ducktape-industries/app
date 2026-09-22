@@ -77,16 +77,16 @@ use style::{
 use svg_limits::{guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
 
-type AuthoredPath = Vec<wire::ElementIdWire>;
+pub(crate) type AuthoredPath = Vec<wire::ElementIdWire>;
 
 #[derive(Default)]
 pub(crate) struct NativePresentation {
     images: HashMap<u64, Arc<RenderImage>>,
     vectors: HashMap<u64, Arc<[u8]>>,
-    focused_container: Option<(String, std::mem::Discriminant<wire::Node>)>,
+    focused_container: Option<(AuthoredPath, std::mem::Discriminant<wire::Node>)>,
     inputs: HashMap<AuthoredPath, InputPresentation>,
-    editors: HashMap<String, wire::editor_document::EditorDocumentRef>,
-    scrolls: HashMap<String, ScrollPresentation>,
+    editors: HashMap<AuthoredPath, wire::editor_document::EditorDocumentRef>,
+    scrolls: HashMap<AuthoredPath, ScrollPresentation>,
 }
 
 struct ScrollPresentation {
@@ -108,29 +108,29 @@ pub struct ViewTree {
     slot_mask: tooltip_containment::SlotMask,
     root: wire::Node,
     // Structural nodes enter the native focus path only on an explicit Focus request.
-    focus_targets: HashMap<String, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
-    guest_focus_targets: HashMap<u64, FocusHandle>,
+    focus_targets: HashMap<AuthoredPath, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
     fields: HashMap<AuthoredPath, Field>,
     authored_path: AuthoredPath,
-    scrolls: HashMap<String, ScrollHandle>,
-    lists: HashMap<String, VirtualScroll>,
-    uniform_lists: HashMap<Vec<wire::ElementIdWire>, UniformListHostState>,
-    variable_lists: HashMap<VariableListKey, VariableList>,
-    scroll_positions: HashMap<String, (Point<Pixels>, Point<Pixels>)>,
-    pickers: HashMap<String, Picker>,
-    drags: HashMap<String, Point<Pixels>>,
+    scrolls: HashMap<AuthoredPath, ScrollHandle>,
+    lists: HashMap<AuthoredPath, VirtualScroll>,
+    scroll_positions: HashMap<AuthoredPath, (Point<Pixels>, Point<Pixels>)>,
+    pickers: HashMap<AuthoredPath, Picker>,
+    drags: HashMap<AuthoredPath, Point<Pixels>>,
     /// The overlays showing a dialog, and where focus enters each.
-    dialogs: HashMap<String, FocusHandle>,
-    containers: HashMap<String, [f64; 2]>,
-    bounds: HashMap<String, Bounds<Pixels>>,
-    sensors: HashMap<String, SensorState>,
-    ranges: HashMap<String, RangeControl>,
+    dialogs: HashMap<AuthoredPath, FocusHandle>,
+    containers: HashMap<AuthoredPath, [f64; 2]>,
+    bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
+    sensors: HashMap<AuthoredPath, SensorState>,
+    ranges: HashMap<AuthoredPath, RangeControl>,
+    guest_focus_targets: HashMap<u64, FocusHandle>,
+    uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
+    variable_lists: HashMap<VariableListKey, VariableList>,
     images: HashMap<u64, Arc<RenderImage>>,
-    viewers: HashMap<String, ViewerState>,
+    viewers: HashMap<AuthoredPath, ViewerState>,
     vectors: HashMap<u64, Arc<[u8]>>,
     editor_store: Option<crate::editor::wire::EditorStore>,
-    editors: HashMap<String, EditorMount>,
-    mounted: std::collections::HashSet<String>,
+    editors: HashMap<AuthoredPath, EditorMount>,
+    mounted: std::collections::HashSet<AuthoredPath>,
     presentation: NativePresentation,
     render_index: u64,
     #[cfg(test)]
@@ -180,9 +180,6 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        if let Some(key) = node.key() {
-            self.mounted.insert(key.to_owned());
-        }
         // One arm, one method: this dispatcher is on the recursion chain for
         // every nesting level the wire allows (`wire::MAX_DEPTH`), and an
         // unoptimised build gives a function the stack of ALL its arms at
@@ -195,6 +192,9 @@ impl ViewTree {
             }
             _ => false,
         };
+        if entered_scope {
+            self.mounted.insert(self.authored_path.clone());
+        }
         use wire::Node;
         let element = match node {
             Node::Text { .. } => self.text(node, cx),

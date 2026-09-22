@@ -9,12 +9,12 @@
 //! learned is an edit the writer cannot make.
 
 use super::{EditorStore, Projection, key_state, offset, position};
-use gpui_kit::base::input::{InputEditorStyle, Textarea, TextareaState};
+use gpui_kit::base::input::{Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     App, AppContext as _, Context, Edges, Entity, EntityInputHandler as _, EventEmitter,
-    Focusable as _, Hsla, InteractiveElement as _, IntoElement, Keystroke, MouseButton,
-    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div, px,
+    Focusable as _, InteractiveElement as _, IntoElement, Keystroke, MouseButton,
+    ParentElement as _, Render, Styled as _, Subscription, Window, div, px,
 };
 use std::ops::Range;
 use std::sync::Arc;
@@ -32,7 +32,7 @@ pub const GUEST_EDITOR_CONTEXT: &str = "GuestEditor";
 const MAX_ROWS: usize = 4096;
 
 pub struct TextEditor {
-    key: String,
+    key: crate::view_tree::AuthoredPath,
     store: EditorStore,
     input: Entity<TextareaState>,
     preview: Arc<str>,
@@ -52,7 +52,7 @@ impl EventEmitter<()> for TextEditor {}
 
 impl TextEditor {
     pub fn new(
-        key: String,
+        key: crate::view_tree::AuthoredPath,
         store: EditorStore,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -201,28 +201,8 @@ impl TextEditor {
                 input.set_readonly(!editable, cx);
             }
             input.set_placeholder(projection.placeholder.clone(), window, cx);
-            input.set_soft_wrap(
-                !matches!(projection.options.wrapping, Some(wire::Wrapping::None)),
-                window,
-                cx,
-            );
+            input.set_soft_wrap(true, window, cx);
             input.set_editor_paddings(Edges::all(px(0.)));
-            let face = &projection.options.style.active;
-            // A face that names no selection ink gets the theme's: the default
-            // is transparent, and a selection nobody can see is a selection
-            // nobody trusts.
-            let selection = face
-                .selection
-                .map(color)
-                .unwrap_or(gpui_kit::component::Theme::global(cx).selection);
-            input.set_editor_style(InputEditorStyle {
-                foreground: face.value.map(color).unwrap_or_default(),
-                muted_foreground: face.placeholder.map(color).unwrap_or_default(),
-                background: face.background.map(color).unwrap_or_default(),
-                caret: face.value.map(color).unwrap_or_default(),
-                selection,
-                ..Default::default()
-            });
         });
         self.painted = Some(projection.options.clone());
         self.projection = Some(projection);
@@ -423,20 +403,7 @@ impl Render for TextEditor {
             .as_ref()
             .map(|projection| projection.options.clone())
             .unwrap_or_default();
-        let size = options.size.unwrap_or(14.);
-        let line_height = match options.line_height {
-            Some(wire::LineHeight::Absolute(height)) => height,
-            Some(wire::LineHeight::Relative(ratio)) => ratio * size,
-            None => size * 1.4,
-        };
-        // The generic families name no face this app registered; every one but
-        // the monospace is the app's own text face, which is the one with the
-        // weights on it.
-        let family = options.font.as_ref().map(|font| match &font.family {
-            wire::FontFamily::Named(name) => name.clone(),
-            wire::FontFamily::Monospace => design::fonts::FAMILY_MONO.to_owned(),
-            _ => design::fonts::FAMILY_UI.to_owned(),
-        });
+        let padding = options.presentation.as_ref().and_then(|value| value.padding);
         let accessible = crate::view_tree::Accessible {
             value: Some(self.input.read(cx).value().to_string()),
             ..self.accessible.clone()
@@ -454,15 +421,16 @@ impl Render for TextEditor {
             // the height the parent is waiting on this field to report.
             .when(self.fills, |element| element.h_full())
             .on_mouse_down(MouseButton::Left, cx.listener(Self::pressed))
-            .p(px(options.padding.unwrap_or(8.)))
-            .text_size(px(size))
-            .line_height(px(line_height))
-            .when_some(family, |element, family| {
-                crate::shell::with_family(element, family)
+            .when_some(padding, |element, padding| {
+                element
+                    .pt(px(padding.top))
+                    .pr(px(padding.right))
+                    .pb(px(padding.bottom))
+                    .pl(px(padding.left))
             })
             .child(crate::view_tree::announce(
                 crate::a11y::text_field(
-                    SharedString::from(format!("{}/field", self.key)),
+                    "editor-field",
                     &self.input.read(cx).focus_handle(cx),
                     {
                         let state = self.input.clone();
@@ -592,16 +560,6 @@ fn edit_kind(before: &str, after: &str) -> wire::EditorEditKind {
         true => wire::EditorEditKind::Backspace,
         false => wire::EditorEditKind::Insert,
     }
-}
-
-fn color(ink: wire::Rgba) -> Hsla {
-    gpui_kit::Rgba {
-        r: ink.0[0],
-        g: ink.0[1],
-        b: ink.0[2],
-        a: ink.0[3],
-    }
-    .into()
 }
 
 /// A store holding one ready document with the given claims. The mount reads

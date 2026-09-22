@@ -6,6 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 use view_wire as wire;
+use crate::view_tree::AuthoredPath;
 use wire::editor_document::{
     EditorDocumentMessage as DocumentMessage, EditorDocumentRef, EditorTransferId,
     EditorTransferReceiver, EditorTransferSender, MAX_EDITOR_LIVE_BYTES,
@@ -19,7 +20,7 @@ struct Store {
     instance: u64,
     serial: u64,
     epoch: Instant,
-    fields: HashMap<String, Field>,
+    fields: HashMap<AuthoredPath, Field>,
     documents: HashMap<String, Document>,
     incoming: Option<Incoming>,
     outgoing: Option<Outgoing>,
@@ -60,7 +61,7 @@ enum Phase {
 }
 
 struct Work {
-    key: String,
+    key: AuthoredPath,
     sequence: u64,
     at: u64,
     input: Input,
@@ -233,7 +234,7 @@ impl EditorStore {
                 .any(|d| !d.queue.is_empty() || !matches!(d.phase, Phase::Ready))
     }
 
-    fn projection(&self, key: &str) -> Option<Projection> {
+    fn projection(&self, key: &[wire::ElementIdWire]) -> Option<Projection> {
         let store = self.lock();
         let field = store.fields.get(key)?;
         let document = store.documents.get(&field.reference.document)?;
@@ -251,7 +252,7 @@ impl EditorStore {
     /// A toolbar press on an editor. It is not an edit: only the guest knows
     /// what its tag means, so it reaches the field's binding as an
     /// interaction and the decision comes back the way a key's does.
-    pub(crate) fn act(&self, key: &str, tag: String) {
+    pub(crate) fn act(&self, key: &[wire::ElementIdWire], tag: String) {
         self.request(
             key,
             wire::EditorRequestInput::Interaction {
@@ -260,7 +261,7 @@ impl EditorStore {
         );
     }
 
-    fn request(&self, key: &str, input: wire::EditorRequestInput) {
+    fn request(&self, key: &[wire::ElementIdWire], input: wire::EditorRequestInput) {
         let mut store = self.lock();
         store.enqueue(key, Input::Request(input));
         store.pump();
@@ -274,7 +275,7 @@ impl EditorStore {
 
     fn native(
         &self,
-        key: &str,
+        key: &[wire::ElementIdWire],
         before: &str,
         previous: wire::EditorCursor,
         after: &str,
@@ -291,9 +292,20 @@ impl EditorStore {
     }
 }
 
-fn collect(node: &wire::Node, fields: &mut HashMap<String, Field>) -> Result<(), String> {
+fn collect(node: &wire::Node, fields: &mut HashMap<AuthoredPath, Field>) -> Result<(), String> {
+    fn walk(
+        node: &wire::Node,
+        path: &mut AuthoredPath,
+        fields: &mut HashMap<AuthoredPath, Field>,
+    ) -> Result<(), String> {
+        let entered = match node.identity() {
+            Some(wire::IdentityKeyRef::Element(id)) => {
+                path.push(id.clone());
+                true
+            }
+            _ => false,
+        };
     if let wire::Node::Editor {
-        key,
         document,
         on_document,
         options,
@@ -304,7 +316,7 @@ fn collect(node: &wire::Node, fields: &mut HashMap<String, Field>) -> Result<(),
     {
         let duplicate = fields
             .insert(
-                key.clone(),
+                path.clone(),
                 Field {
                     reference: document.clone(),
                     handler: *on_document,
@@ -319,9 +331,14 @@ fn collect(node: &wire::Node, fields: &mut HashMap<String, Field>) -> Result<(),
         }
     }
     for child in node.children() {
-        collect(child, fields)?;
+            walk(child, path, fields)?;
+        }
+        if entered {
+            path.pop();
+        }
+        Ok(())
     }
-    Ok(())
+    walk(node, &mut Vec::new(), fields)
 }
 
 impl Store {
@@ -337,7 +354,7 @@ impl Store {
         self.serial
     }
 
-    fn validate_budget(&self, fields: &HashMap<String, Field>) -> Result<(), String> {
+    fn validate_budget(&self, fields: &HashMap<AuthoredPath, Field>) -> Result<(), String> {
         let mut logical = HashMap::new();
         let mut projections = 0usize;
         for field in fields.values() {
@@ -365,7 +382,7 @@ impl Store {
         Ok(())
     }
 
-    fn replace(&mut self, fields: HashMap<String, Field>) {
+    fn replace(&mut self, fields: HashMap<AuthoredPath, Field>) {
         let removed: Vec<_> = self
             .documents
             .keys()
@@ -438,7 +455,7 @@ impl Store {
         document.queued_bytes = 0;
     }
 
-    fn enqueue(&mut self, key: &str, input: Input) {
+    fn enqueue(&mut self, key: &[wire::ElementIdWire], input: Input) {
         if self.fault.is_some() {
             return;
         }
@@ -515,7 +532,7 @@ impl Store {
         }
         document.queued_bytes += bytes;
         document.queue.push_back(Work {
-            key: key.into(),
+            key: key.to_vec(),
             sequence,
             at,
             input,
