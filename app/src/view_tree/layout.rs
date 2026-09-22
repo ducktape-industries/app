@@ -446,10 +446,10 @@ impl ViewTree {
             wire::AnchoredFitMode::SnapToWindow => element.snap_to_window(),
             wire::AnchoredFitMode::SnapToWindowWithMargin(edges) => element
                 .snap_to_window_with_margin(gpui_kit::Edges {
-                    top: px(edges.top),
-                    right: px(edges.right),
-                    bottom: px(edges.bottom),
-                    left: px(edges.left),
+                    top: px(edges[0]),
+                    right: px(edges[1]),
+                    bottom: px(edges[2]),
+                    left: px(edges[3]),
                 }),
             wire::AnchoredFitMode::SwitchAnchor => element,
         };

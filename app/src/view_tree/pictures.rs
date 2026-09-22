@@ -9,7 +9,7 @@ pub(super) struct ViewerState {
 
 pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
     let mut pixels = match data {
-        wire::ImageData::Resource(_) => return None,
+        wire::ImageData::Resource(_) | wire::ImageData::Refusal(_) => return None,
         wire::ImageData::Rgba {
             width,
             height,
@@ -98,20 +98,13 @@ impl ViewTree {
     pub(super) fn vector(
         &mut self,
         node: &wire::Node,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Svg {
-            key,
-            hash,
-            bytes,
-            path,
-            color,
-            inherit_button_ink,
-            fit,
-            width,
-            height,
-            opacity,
+            id,
+            source,
+            transformation,
             style,
             interactivity,
             ..
@@ -119,61 +112,54 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        if let Some(bytes) = bytes {
+        if let wire::SvgSource::Data {
+            hash,
+            bytes: Some(bytes),
+        } = source
+        {
             self.remember_vector(*hash, bytes);
         }
-        let mut element = dimensions(div(), *width, *height);
+        let mut element = div();
         *element.style() = style.clone();
-        element = element.opacity(opacity.unwrap_or(1.0));
-        if let Some(bytes) = self.vectors.get(hash) {
-            let monochrome = color.is_some() || *inherit_button_ink;
-            if monochrome {
-                let ink = color.map(rgba).unwrap_or_else(|| window.text_style().color);
-                element = element.child(svg().data(bytes).size_full().text_color(ink));
-            } else {
-                // GPUI's SVG icon renderer is an alpha mask. Untinted
-                // artwork instead uses its native full-color image decoder.
-                element = element.child(
-                    img(Arc::new(Image::from_bytes(
-                        ImageFormat::Svg,
-                        bytes.to_vec(),
-                    )))
-                    .size_full()
-                    .object_fit(object_fit(*fit)),
-                );
-            }
-        } else if path.is_some() {
-            // A guest path is not a host filesystem capability. The host has
-            // no asset resolver in this bounded primitive, so refuse it
-            // rather than letting GPUI read an arbitrary machine path.
-            element =
-                element.child(div().child("SVG path unavailable: host asset capability required"));
-        }
-        announce(
-            self.primitive_interactivity(element, key, interactivity, cx),
-            accessible(node),
-        )
-        .into_any_element()
+        let native_transform =
+            Transformation::scale(size(transformation.scale[0], transformation.scale[1]))
+                .with_translation(point(
+                    px(transformation.translate[0]),
+                    px(transformation.translate[1]),
+                ))
+                .with_rotation(radians(transformation.rotate));
+        element = match source {
+            wire::SvgSource::Data { hash, .. } => match self.vectors.get(hash) {
+                Some(bytes) => element.child(
+                    svg()
+                        .data(bytes)
+                        .with_transformation(native_transform)
+                        .size_full(),
+                ),
+                None => element.child("SVG data unavailable"),
+            },
+            wire::SvgSource::Asset(path) if safe_asset_path(path) => element.child(
+                svg()
+                    .path(path.clone())
+                    .with_transformation(native_transform)
+                    .size_full(),
+            ),
+            wire::SvgSource::Asset(_) => element.child("SVG asset identifier refused"),
+            wire::SvgSource::External(_) => element.child("External SVG path refused"),
+            wire::SvgSource::None => element.child("SVG source unavailable"),
+        };
+        self.primitive_interactivity(element, id.as_ref(), interactivity, cx)
     }
 
     pub(super) fn drawing(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
-        let wire::Node::Canvas {
-            key,
-            width,
-            height,
-            commands,
-            style,
-            ..
-        } = node
-        else {
+        let wire::Node::Canvas { commands, style } = node else {
             unreachable!()
         };
-        // Primitive canvases paint in the current native frame. Recreating an
-        // asynchronous SVG image on every pointer move leaves blank drag frames.
+        let mut root = div().relative().overflow_hidden();
+        *root.style() = style.clone();
+        let host_key = format!("guest-command-canvas:{:016x}", node.fingerprint());
         if native_canvas_commands(commands) {
             let commands = commands.clone();
-            let mut root = dimensions(div().relative().overflow_hidden(), *width, *height);
-            *root.style() = style.clone();
             return root
                 .child(
                     canvas(
@@ -184,34 +170,43 @@ impl ViewTree {
                     )
                     .size_full(),
                 )
-                .child(self.measure(key, cx))
+                .child(self.measure(&host_key, cx))
                 .into_any_element();
         }
-        let bounds = self.bounds.get(key).copied().unwrap_or_default();
-        let known = |length: Option<wire::Length>, measured: Pixels| match length {
-            Some(wire::Length::Fixed(value)) => value,
-            _ => f32::from(measured).max(1.0),
-        };
-        let mut root = dimensions(div().relative(), *width, *height);
-        *root.style() = style.clone();
+        let bounds = self.bounds.get(&host_key).copied().unwrap_or_default();
+        let width = f32::from(bounds.size.width).max(1.);
+        let height = f32::from(bounds.size.height).max(1.);
         root.child(
             img(Arc::new(Image::from_bytes(
                 ImageFormat::Svg,
-                canvas_svg(
-                    commands,
-                    known(*width, bounds.size.width),
-                    known(*height, bounds.size.height),
-                ),
+                canvas_svg(commands, width, height),
             )))
             .size_full()
             .object_fit(ObjectFit::Fill),
         )
-        .child(self.measure(key, cx))
+        .child(self.measure(&host_key, cx))
         .into_any_element()
     }
 
+    fn image_state<'a>(
+        loading: bool,
+        fallback: bool,
+        children: &'a [wire::Node],
+        want_fallback: bool,
+    ) -> Option<&'a wire::Node> {
+        match (want_fallback, loading, fallback) {
+            (false, true, _) => children.first(),
+            (true, true, true) => children.get(1),
+            (true, false, true) => children.first(),
+            _ => None,
+        }
+    }
+
     pub(super) fn remember_image(&mut self, hash: u64, data: &wire::ImageData) {
-        if matches!(data, wire::ImageData::Resource(_)) {
+        if matches!(
+            data,
+            wire::ImageData::Resource(_) | wire::ImageData::Refusal(_)
+        ) {
             return;
         }
         if self.images.contains_key(&hash) {
@@ -229,7 +224,7 @@ impl ViewTree {
         data: Option<&wire::ImageData>,
     ) -> Option<Arc<RenderImage>> {
         match data {
-            Some(wire::ImageData::Resource(_)) => None,
+            Some(wire::ImageData::Resource(_) | wire::ImageData::Refusal(_)) => None,
             _ => self.images.get(&hash).cloned(),
         }
     }
@@ -352,16 +347,20 @@ impl ViewTree {
         element.child(self.measure(key, cx)).into_any_element()
     }
 
-    pub(super) fn picture(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn picture(
+        &mut self,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let wire::Node::Image {
-            key,
+            id,
             hash,
             data,
-            width,
-            height,
-            fit,
-            opacity,
-            grayscale,
+            image_style,
+            loading,
+            fallback,
+            state_children,
             style,
             interactivity,
             ..
@@ -372,44 +371,45 @@ impl ViewTree {
         if let Some(data) = data {
             self.remember_image(*hash, data);
         }
-        let mut element = dimensions(div(), *width, *height);
+        let mut element = div();
         *element.style() = style.clone();
-        element = element.opacity(opacity.unwrap_or(1.0));
         match data {
+            Some(wire::ImageData::Refusal(reason)) => {
+                element = match Self::image_state(*loading, *fallback, state_children, true) {
+                    Some(child) => element.child(self.node(child, window, cx)),
+                    None => element.child(reason.clone()),
+                };
+            }
             Some(wire::ImageData::Resource(_)) => {
-                element = element.child(self.measure(key, cx));
+                element = element.child("Host image resource unavailable")
             }
             _ => {
                 if let Some(image) = self.image_frame(*hash, data.as_ref()) {
                     element = element.child(
                         img(image.clone())
                             .size_full()
-                            .grayscale(*grayscale)
-                            .object_fit(object_fit(*fit)),
+                            .grayscale(image_style.grayscale)
+                            .object_fit(primitive_object_fit(image_style.object_fit)),
                     );
+                } else if let Some(child) =
+                    Self::image_state(*loading, *fallback, state_children, false)
+                {
+                    // State recipes remain ordinary guest nodes and therefore stay inside the slot clip.
+                    element = element.child(self.node(child, window, cx));
                 }
             }
         }
-        announce(
-            self.primitive_interactivity(element, key, interactivity, cx),
-            accessible(node),
-        )
-        .into_any_element()
+        self.primitive_interactivity(element, id.as_ref(), interactivity, cx)
     }
 
     fn primitive_interactivity(
         &mut self,
         element: Div,
-        key: &str,
+        id: Option<&wire::ElementIdWire>,
         interactivity: &wire::Interactivity,
         cx: &mut Context<Self>,
-    ) -> Stateful<Div> {
-        let native_id = interactivity
-            .id
-            .as_ref()
-            .and_then(|id| id.to_gpui().ok())
-            .unwrap_or_else(|| ElementId::Name(key.to_owned().into()));
-        let mut element = element.id(native_id);
+    ) -> AnyElement {
+        let mut element = element;
         if let Some(group) = &interactivity.group {
             element = element.group(group.clone());
         }
@@ -417,22 +417,99 @@ impl ViewTree {
             let style = style.clone();
             element = element.hover(move |_| style);
         }
-        if let Some(style) = &interactivity.active {
-            let style = style.clone();
-            element = element.active(move |_| style);
-        }
         if let Some(group) = &interactivity.group_hover {
             let style = group.style.clone();
             element = element.group_hover(group.group.clone(), move |_| style);
+        }
+        let Some(id) = id else {
+            return element.into_any_element();
+        };
+        let mut element = element.id(id.to_gpui().expect("sanitized portable primitive ID"));
+        if let Some(style) = &interactivity.active {
+            let style = style.clone();
+            element = element.active(move |_| style);
         }
         if let Some(group) = &interactivity.group_active {
             let style = group.style.clone();
             element = element.group_active(group.group.clone(), move |_| style);
         }
-        if let Some(handler) = interactivity.on_click {
-            element = element
-                .on_click(cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(handler))));
+        if let Some(role) = interactivity.role {
+            element = element.role(role);
         }
-        element
+        if interactivity.focusable {
+            element = element.focusable();
+        }
+        if let Some(value) = &interactivity.aria.author_id {
+            element = element.accessibility_id(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.label {
+            element = element.aria_label(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.description {
+            element = element.aria_description(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.keyshortcuts {
+            element = element.aria_keyshortcuts(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.value {
+            element = element.aria_value(value.clone());
+        }
+        if let Some(value) = &interactivity.aria.placeholder {
+            element = element.aria_placeholder(value.clone());
+        }
+        if let Some(value) = interactivity.aria.selected {
+            element = element.aria_selected(value);
+        }
+        if let Some(value) = interactivity.aria.expanded {
+            element = element.aria_expanded(value);
+        }
+        if let Some(value) = interactivity.aria.disabled {
+            element = element.aria_disabled(value);
+        }
+        if let Some(value) = interactivity.aria.numeric_value { element = element.aria_numeric_value(value); }
+        if let Some(value) = interactivity.aria.numeric_value_step { element = element.aria_numeric_value_step(value); }
+        if let Some(value) = interactivity.aria.min_numeric_value { element = element.aria_min_numeric_value(value); }
+        if let Some(value) = interactivity.aria.max_numeric_value { element = element.aria_max_numeric_value(value); }
+        if let Some(value) = interactivity.aria.level { element = element.aria_level(value); }
+        if let Some(value) = interactivity.aria.position_in_set { element = element.aria_position_in_set(value); }
+        if let Some(value) = interactivity.aria.size_of_set { element = element.aria_size_of_set(value); }
+        if let Some(value) = interactivity.aria.row_index { element = element.aria_row_index(value); }
+        if let Some(value) = interactivity.aria.column_index { element = element.aria_column_index(value); }
+        if let Some(value) = interactivity.aria.row_count { element = element.aria_row_count(value); }
+        if let Some(value) = interactivity.aria.column_count { element = element.aria_column_count(value); }
+        if let Some(value) = interactivity.aria.toggled { element = element.aria_toggled(value); }
+        if let Some(value) = interactivity.aria.orientation { element = element.aria_orientation(value); }
+        if let Some(handler) = interactivity.on_click {
+            element = element.on_click(cx.listener(
+                move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                    this.user_activation.set(Some(handler));
+                    cx.emit(wire::Event::Click {
+                        handler,
+                        event: event.into(),
+                    });
+                },
+            ));
+        }
+        element.into_any_element()
     }
+}
+
+fn primitive_object_fit(fit: wire::ImageObjectFit) -> ObjectFit {
+    match fit {
+        wire::ImageObjectFit::Fill => ObjectFit::Fill,
+        wire::ImageObjectFit::Contain => ObjectFit::Contain,
+        wire::ImageObjectFit::Cover => ObjectFit::Cover,
+        wire::ImageObjectFit::ScaleDown => ObjectFit::ScaleDown,
+        wire::ImageObjectFit::None => ObjectFit::None,
+    }
+}
+
+fn safe_asset_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.contains('\\')
+        && !path.contains(':')
+        && path
+            .split('/')
+            .all(|part| !part.is_empty() && part != "." && part != "..")
 }

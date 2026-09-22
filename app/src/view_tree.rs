@@ -27,7 +27,8 @@ use gpui_kit::{
     ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
     ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _,
     StrikethroughStyle, Styled, StyledImage as _, StyledText, Subscription, Task, TextLayout,
-    UnderlineStyle, Window, canvas, div, fill, img, point, px, relative, rgb, size, svg,
+    Transformation, UnderlineStyle, Window, canvas, div, fill, img, point, px, radians, relative,
+    rgb, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -242,7 +243,7 @@ impl ViewTree {
             Node::Hover { .. } => self.hover(node, window, cx),
             Node::Tooltip { .. } => self.tooltip(node, window, cx),
             Node::Float { .. } => self.float(node, window, cx),
-            Node::Image { .. } => self.picture(node, cx),
+            Node::Image { .. } => self.picture(node, window, cx),
             Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
             Node::Svg { .. } => self.vector(node, window, cx),
             Node::Canvas { .. } => self.drawing(node, cx),

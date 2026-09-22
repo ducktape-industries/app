@@ -456,8 +456,11 @@ impl ViewTree {
                     }
                 }
                 wire::Node::Svg {
-                    hash,
-                    bytes: Some(bytes),
+                    source:
+                        wire::SvgSource::Data {
+                            hash,
+                            bytes: Some(bytes),
+                        },
                     ..
                 } => {
                     self.remember_vector(*hash, bytes);

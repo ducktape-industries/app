@@ -26,8 +26,11 @@ impl Pictures {
                 self.raster.entry(*hash).or_insert_with(|| data.clone());
             }
             wire::Node::Svg {
-                hash,
-                bytes: Some(bytes),
+                source:
+                    wire::SvgSource::Data {
+                        hash,
+                        bytes: Some(bytes),
+                    },
                 ..
             } => {
                 self.vector.entry(*hash).or_insert_with(|| bytes.clone());
@@ -43,7 +46,10 @@ impl Pictures {
                     *data = self.raster.get(hash).cloned();
                 }
             }
-            wire::Node::Svg { hash, bytes, .. } if bytes.is_none() => {
+            wire::Node::Svg {
+                source: wire::SvgSource::Data { hash, bytes },
+                ..
+            } if bytes.is_none() => {
                 *bytes = self.vector.get(hash).cloned();
             }
             _ => {}
@@ -57,18 +63,14 @@ mod tests {
 
     fn vector(hash: u64, bytes: Option<Vec<u8>>) -> wire::Node {
         wire::Node::Svg {
-            key: format!("picture-{hash}"),
-            hash,
-            bytes,
-            path: None,
-            inherit_button_ink: false,
+            id: None,
+            source: wire::SvgSource::Data { hash, bytes },
+            transformation: wire::SvgTransformation {
+                scale: [1., 1.],
+                translate: [0., 0.],
+                rotate: 0.,
+            },
             label: None,
-            color: None,
-            hover: None,
-            fit: None,
-            opacity: None,
-            width: None,
-            height: None,
             style: Default::default(),
             interactivity: Default::default(),
         }
@@ -83,7 +85,7 @@ mod tests {
         let mut remounted = vector(7, None);
         pictures.hydrate(&mut remounted);
         assert!(
-            matches!(remounted, wire::Node::Svg { bytes: Some(bytes), .. } if bytes == b"first")
+            matches!(remounted, wire::Node::Svg { source: wire::SvgSource::Data { bytes: Some(bytes), .. }, .. } if bytes == b"first")
         );
     }
 
@@ -91,15 +93,17 @@ mod tests {
     fn host_image_resource_survives_a_patch_and_remount() {
         let mut pictures = Pictures::default();
         let mut image = wire::Node::Image {
-            key: "live-image".into(),
+            id: None,
             hash: 11,
             data: Some(wire::ImageData::Resource("image:7".into())),
             label: None,
-            fit: None,
-            opacity: None,
-            width: None,
-            height: None,
-            grayscale: false,
+            image_style: wire::ImageStyle {
+                grayscale: false,
+                object_fit: wire::ImageObjectFit::Contain,
+            },
+            loading: false,
+            fallback: false,
+            state_children: vec![],
             style: Default::default(),
             interactivity: Default::default(),
         };

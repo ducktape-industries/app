@@ -309,7 +309,10 @@ impl Guest {
                             // picture bytes; the tree its patches build on
                             // has to be that one.
                             root.for_each_mut(&mut |node| match node {
-                                wire::Node::Svg { bytes, .. } => *bytes = None,
+                                wire::Node::Svg {
+                                    source: wire::SvgSource::Data { bytes, .. },
+                                    ..
+                                } => *bytes = None,
                                 wire::Node::Image { data, .. }
                                 | wire::Node::ImageViewer { data, .. } => *data = None,
                                 _ => {}

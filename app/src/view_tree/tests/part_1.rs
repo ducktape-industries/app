@@ -7,16 +7,14 @@ fn primitive_canvas_paints_in_the_first_frame_and_after_a_move(cx: &mut gpui_kit
             size: [40., 30.],
             radius: [4.; 4],
         },
-        fill: Some(wire::Rgba([1., 0., 0., 1.])),
+        fill: Some(gpui_kit::rgb(0xff0000).into()),
         stroke: None,
         even_odd: false,
     };
+    let mut canvas_style = div().w(px(100.)).h(px(80.));
     let node = wire::Node::Canvas {
-        key: "canvas".into(),
-        width: Some(wire::Length::Fixed(100.)),
-        height: Some(wire::Length::Fixed(80.)),
         commands: vec![command.clone()],
-        style: Default::default(),
+        style: canvas_style.style().clone(),
     };
     let window = cx.open_window(size(px(100.), px(80.)), |_, _| ViewTree::new(node));
     let tree = window.root(cx).unwrap();
@@ -53,25 +51,16 @@ fn primitive_canvas_paints_in_the_first_frame_and_after_a_move(cx: &mut gpui_kit
 }
 
 #[gpui_kit::test]
-fn untinted_svg_uses_native_color_decoder_and_retains_pixels_without_resent_bytes(
+fn svg_uses_native_element_and_retains_data_without_resent_bytes(
     cx: &mut gpui_kit::TestAppContext,
 ) {
     cx.update(gpui_kit::init);
     let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path fill="#ff0000" d="M0 0h12v24H0z"/><path fill="#0000ff" d="M12 0h12v24H12z"/></svg>"##.to_vec();
-    let image = Arc::new(Image::from_bytes(ImageFormat::Svg, bytes.clone()));
     let node = wire::Node::Svg {
-        key: "artwork".into(),
-        hash: 42,
-        bytes: Some(bytes),
-        path: None,
-        inherit_button_ink: false,
+        id: Some(wire::ElementIdWire::Name("artwork".into())),
+        source: wire::SvgSource::Data { hash: 42, bytes: Some(bytes) },
+        transformation: wire::SvgTransformation { scale: [1., 1.], translate: [0., 0.], rotate: 0. },
         label: None,
-        color: None,
-        hover: None,
-        fit: Some(wire::ContentFit::Contain),
-        opacity: None,
-        width: Some(wire::Length::Fixed(24.)),
-        height: Some(wire::Length::Fixed(24.)),
         style: Default::default(),
         interactivity: Default::default(),
     };
@@ -81,35 +70,16 @@ fn untinted_svg_uses_native_color_decoder_and_retains_pixels_without_resent_byte
     native.update(|window, cx| window.render_frame(cx));
     native.run_until_parked();
     native.update(|window, cx| {
-        assert!(
-            gpui_kit::ImageSource::Image(image.clone()).is_asset_cached(cx),
-            "the rendered SVG must request the native full-color image path"
-        );
-        let rendered = image
-            .clone()
-            .get_render_image(window, cx)
-            .expect("native SVG decoded");
-        let pixels = rendered.as_bytes(0).expect("decoded native pixels");
-        assert!(
-            pixels.chunks_exact(4).any(|p| p == [0, 0, 255, 255]),
-            "red survives"
-        );
-        assert!(
-            pixels.chunks_exact(4).any(|p| p == [255, 0, 0, 255]),
-            "blue survives"
-        );
+        assert!(tree.read(cx).vectors.contains_key(&42));
         tree.update(cx, |tree, cx| {
             let mut next = tree.root.clone();
-            if let wire::Node::Svg { bytes, .. } = &mut next {
+            if let wire::Node::Svg { source: wire::SvgSource::Data { bytes, .. }, .. } = &mut next {
                 *bytes = None;
             }
             tree.replace(next, cx);
         });
         window.render_frame(cx);
-        assert!(
-            image.clone().get_render_image(window, cx).is_some(),
-            "unchanged artwork remains available when a wire patch omits bytes"
-        );
+        assert!(tree.read(cx).vectors.contains_key(&42));
     });
 }
 
