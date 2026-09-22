@@ -136,7 +136,7 @@ impl ViewTree {
         };
         let native_id = id
             .as_ref()
-            .and_then(|id| id.to_gpui().ok())
+            .map(|id| id.to_gpui().expect("sanitized portable element ID"))
             .unwrap_or_else(|| {
                 let index = self.render_index;
                 self.render_index += 1;

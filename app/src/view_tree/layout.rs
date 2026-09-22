@@ -126,8 +126,7 @@ impl ViewTree {
         *element.style() = style.clone();
         let native_id = id
             .as_ref()
-            .or(interactivity.id.as_ref())
-            .and_then(|id| id.to_gpui().ok())
+            .map(|id| id.to_gpui().expect("sanitized portable element ID"))
             .unwrap_or_else(|| {
                 let index = self.render_index;
                 self.render_index += 1;
@@ -153,9 +152,33 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_active(group.group.clone(), move |_| style);
         }
+        if let Some(role) = interactivity.role { element = element.role(role); }
+        if interactivity.focusable { element = element.focusable(); }
+        if let Some(value) = &interactivity.aria.author_id { element = element.accessibility_id(value.clone()); }
+        if let Some(value) = &interactivity.aria.label { element = element.aria_label(value.clone()); }
+        if let Some(value) = &interactivity.aria.description { element = element.aria_description(value.clone()); }
+        if let Some(value) = &interactivity.aria.keyshortcuts { element = element.aria_keyshortcuts(value.clone()); }
+        if let Some(value) = &interactivity.aria.value { element = element.aria_value(value.clone()); }
+        if let Some(value) = &interactivity.aria.placeholder { element = element.aria_placeholder(value.clone()); }
+        if let Some(value) = interactivity.aria.selected { element = element.aria_selected(value); }
+        if let Some(value) = interactivity.aria.expanded { element = element.aria_expanded(value); }
+        if let Some(value) = interactivity.aria.disabled { element = element.aria_disabled(value); }
+        if let Some(value) = interactivity.aria.numeric_value { element = element.aria_numeric_value(value); }
+        if let Some(value) = interactivity.aria.numeric_value_step { element = element.aria_numeric_value_step(value); }
+        if let Some(value) = interactivity.aria.min_numeric_value { element = element.aria_min_numeric_value(value); }
+        if let Some(value) = interactivity.aria.max_numeric_value { element = element.aria_max_numeric_value(value); }
+        if let Some(value) = interactivity.aria.level { element = element.aria_level(value); }
+        if let Some(value) = interactivity.aria.position_in_set { element = element.aria_position_in_set(value); }
+        if let Some(value) = interactivity.aria.size_of_set { element = element.aria_size_of_set(value); }
+        if let Some(value) = interactivity.aria.row_index { element = element.aria_row_index(value); }
+        if let Some(value) = interactivity.aria.column_index { element = element.aria_column_index(value); }
+        if let Some(value) = interactivity.aria.row_count { element = element.aria_row_count(value); }
+        if let Some(value) = interactivity.aria.column_count { element = element.aria_column_count(value); }
+        if let Some(value) = interactivity.aria.toggled { element = element.aria_toggled(value); }
+        if let Some(value) = interactivity.aria.orientation { element = element.aria_orientation(value); }
         if let Some(handler) = interactivity.on_click {
             element = element
-                .on_click(cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(handler))));
+                .on_click(cx.listener(move |_, event: &gpui_kit::ClickEvent, _, cx| cx.emit(wire::Event::Click { handler, event: event.into() })));
         }
         if let Some(key) = node.key() {
             let kind = std::mem::discriminant(node);
