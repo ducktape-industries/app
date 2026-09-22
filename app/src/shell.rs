@@ -546,22 +546,7 @@ pub(crate) fn run() {
     });
     application.run(move |cx| {
         gpui_kit::init(cx);
-        let fonts: Vec<std::borrow::Cow<'static, [u8]>> = BUNDLED_FACES
-            .iter()
-            .copied()
-            .map(std::borrow::Cow::Borrowed)
-            .collect();
-        // CoreGraphics cannot load Noto's CBDT color font; macOS supplies emoji.
-        #[cfg(not(target_os = "macos"))]
-        let fonts = {
-            let mut fonts = fonts;
-            fonts.push(std::borrow::Cow::Borrowed(EMOJI_FACE));
-            fonts
-        };
-        if let Err(error) = cx.text_system().add_fonts(fonts) {
-            tracing::error!(target: "ducktape::app", reason = "font_registration_failed", %error, "bundled desktop fonts could not be registered");
-        }
-        configure_native_theme(cx);
+        initialize_rendering(cx);
         let mut commands = commands();
         let (state, initial) = Ducktape::boot();
         let (mut tray, mut tray_events) = crate::tray::init(cx);
@@ -627,7 +612,9 @@ pub(crate) fn run() {
             // until a node answers
             let (key, opened) = open(WindowKind::Console);
             desktop.state.console_win = Some(key);
-            desktop.start(opened.map(Message::ConsoleOpened), cx).detach();
+            desktop
+                .start(opened.map(Message::ConsoleOpened), cx)
+                .detach();
             desktop.start(initial, cx).detach();
             desktop.subscriptions(cx);
         });
@@ -647,7 +634,8 @@ pub(crate) fn run() {
         let command_desktop = desktop.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(pending) = commands.next().await {
-                let _ = command_desktop.update(cx, |desktop, cx| desktop.execute(pending.command, cx));
+                let _ =
+                    command_desktop.update(cx, |desktop, cx| desktop.execute(pending.command, cx));
                 let _ = pending.completed.send(());
             }
         })
@@ -659,4 +647,172 @@ pub(crate) fn run() {
         })
         .detach();
     });
+}
+
+fn initialize_rendering(cx: &mut gpui_kit::App) {
+    let fonts: Vec<std::borrow::Cow<'static, [u8]>> = BUNDLED_FACES
+        .iter()
+        .copied()
+        .map(std::borrow::Cow::Borrowed)
+        .collect();
+    // CoreGraphics cannot load Noto's CBDT color font; macOS supplies emoji.
+    #[cfg(not(target_os = "macos"))]
+    let fonts = {
+        let mut fonts = fonts;
+        fonts.push(std::borrow::Cow::Borrowed(EMOJI_FACE));
+        fonts
+    };
+    if let Err(error) = cx.text_system().add_fonts(fonts) {
+        tracing::error!(target: "ducktape::app", reason = "font_registration_failed", %error, "bundled desktop fonts could not be registered");
+    }
+    configure_native_theme(cx);
+}
+
+/// Development-only host renderer: never creates a node, shell model, or network runtime.
+#[cfg(debug_assertions)]
+pub(crate) fn render_tree_fixture() {
+    use gpui_kit::component::{Root, Theme, ThemeMode};
+    use gpui_kit::*;
+    let args: Vec<_> = std::env::args().collect();
+    let root: view_wire::Node = serde_json::from_slice(
+        &std::fs::read(
+            args.get(2)
+                .expect("--render-tree <json> --size WxH --theme light|dark"),
+        )
+        .expect("read fixture"),
+    )
+    .expect("decode wire tree");
+    let store = fixture_editor_store(&root, std::path::Path::new(&args[2]));
+    let option = |name: &str| {
+        args.windows(2)
+            .find(|pair| pair[0] == name)
+            .map(|pair| pair[1].clone())
+    };
+    let dimensions = option("--size").unwrap_or_else(|| "1100x760".into());
+    let (width, height) = dimensions.split_once('x').expect("size WxH");
+    let dimensions = size(
+        px(width.parse().expect("width")),
+        px(height.parse().expect("height")),
+    );
+    let dark = option("--theme").as_deref() == Some("dark");
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::AllAssets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            Theme::change(
+                if dark {
+                    ThemeMode::Dark
+                } else {
+                    ThemeMode::Light
+                },
+                None,
+                cx,
+            );
+            initialize_rendering(cx);
+            cx.open_window(
+                WindowOptions {
+                    window_bounds: Some(WindowBounds::Windowed(Bounds::new(
+                        point(px(0.), px(0.)),
+                        dimensions,
+                    ))),
+                    titlebar: None,
+                    app_id: Some("dev.ducktape.tree-fixture".into()),
+                    ..Default::default()
+                },
+                |window, cx| {
+                    let tree = cx.new(|cx| {
+                        let mut tree = crate::view_tree::ViewTree::new(root);
+                        tree.set_editor_store(store, cx);
+                        tree
+                    });
+                    let frame = cx.new(|_| TreeFixtureFrame(tree));
+                    cx.new(|cx| Root::new(frame, window, cx))
+                },
+            )
+            .expect("open fixture window");
+            cx.activate(true);
+        });
+}
+
+#[cfg(debug_assertions)]
+struct TreeFixtureFrame(Entity<crate::view_tree::ViewTree>);
+
+#[cfg(debug_assertions)]
+impl Render for TreeFixtureFrame {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::ActiveTheme as _;
+        let mut frame = gpui_kit::div();
+        frame.text_style().font_fallbacks = Some(fallback_chain());
+        frame
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(self.0.clone())
+    }
+}
+
+#[cfg(debug_assertions)]
+fn fixture_editor_store(
+    root: &view_wire::Node,
+    fixture: &std::path::Path,
+) -> crate::editor::wire::EditorStore {
+    use view_wire::editor_document::{
+        EditorDocumentMessage as Message, EditorTransfer, MAX_EDITOR_CHUNK_BYTES,
+    };
+    #[derive(serde::Deserialize)]
+    struct Document {
+        document: String,
+        text: String,
+    }
+    let path = fixture.with_extension("editors.json");
+    let documents: Vec<Document> = if path.exists() {
+        serde_json::from_slice(&std::fs::read(path).expect("read editor fixture"))
+            .expect("decode editor fixture")
+    } else {
+        Vec::new()
+    };
+    let store = crate::editor::wire::EditorStore::new(1);
+    store.replace(root).expect("mount editor references");
+    while !store.ready().expect("editor store valid") {
+        let requests = store.drain();
+        assert!(!requests.is_empty(), "editor projection stalled");
+        for event in requests {
+            if let view_wire::Event::EditorDocument {
+                message: Message::Request { id, target },
+                ..
+            } = event
+            {
+                let text = documents
+                    .iter()
+                    .find(|d| d.document == target.document)
+                    .map(|d| d.text.as_str())
+                    .unwrap_or("");
+                assert_eq!(
+                    text.len(),
+                    target.byte_len as usize,
+                    "missing or stale text for {}",
+                    target.document
+                );
+                let mut messages = vec![Message::Transfer(EditorTransfer::Begin {
+                    id: id.clone(),
+                    target,
+                })];
+                for (index, bytes) in text.as_bytes().chunks(MAX_EDITOR_CHUNK_BYTES).enumerate() {
+                    messages.push(Message::Transfer(EditorTransfer::Chunk {
+                        id: id.clone(),
+                        index: index.try_into().expect("chunk index"),
+                        bytes: bytes.to_vec(),
+                    }));
+                }
+                messages.push(Message::Transfer(EditorTransfer::Complete { id }));
+                store
+                    .frame(&view_wire::Frame {
+                        editor_documents: messages,
+                        ..Default::default()
+                    })
+                    .expect("seed real editor projection");
+            }
+        }
+    }
+    store
 }
