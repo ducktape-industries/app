@@ -2,8 +2,8 @@ use super::*;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct VariableListKey {
-    path: Vec<wire::ElementIdWire>,
-    state: u64,
+    pub(super) path: Vec<wire::ElementIdWire>,
+    pub(super) state: u64,
 }
 
 pub(super) struct VariableList {
@@ -102,7 +102,10 @@ impl ViewTree {
                     .and_then(|list| list.rows.get(&index))
                     .cloned();
                 if let Some(row) = row {
-                    return this.node(&row, window, cx);
+                    let parent = std::mem::replace(&mut this.authored_path, render_key.path.clone());
+                    let element = this.node(&row, window, cx);
+                    this.authored_path = parent;
+                    return element;
                 }
                 request_row(this, &render_key, index, request_route, cx);
                 div().w_full().h(px(44.)).into_any_element()

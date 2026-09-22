@@ -175,14 +175,17 @@ impl ViewTree {
                                 .collect::<Vec<_>>()
                         })
                         .unwrap_or_default();
-                    rows.into_iter()
+                    let parent = std::mem::replace(&mut tree.authored_path, list_path.clone());
+                    let elements = rows.into_iter()
                         .map(|row| {
                             row.map(|row| tree.node(&row, window, cx))
                                 .unwrap_or_else(|| {
                                     div().h(px(PLACEHOLDER_HEIGHT)).into_any_element()
                                 })
                         })
-                        .collect()
+                        .collect();
+                    tree.authored_path = parent;
+                    elements
                 })
                 .unwrap_or_else(|_| {
                     range
