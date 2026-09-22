@@ -105,7 +105,7 @@ pub struct ViewTree {
     rich_selections: HashMap<String, RichSelection>,
     scrolls: HashMap<String, ScrollHandle>,
     lists: HashMap<String, VirtualScroll>,
-    uniform_lists: HashMap<wire::ElementIdWire, UniformListHostState>,
+    uniform_lists: HashMap<Vec<wire::ElementIdWire>, UniformListHostState>,
     scroll_positions: HashMap<String, (Point<Pixels>, Point<Pixels>)>,
     pickers: HashMap<String, Picker>,
     drags: HashMap<String, Point<Pixels>>,

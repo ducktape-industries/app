@@ -383,8 +383,8 @@ impl ViewTree {
                 wire::Node::Scroll { key, .. } => {
                     scrolls.insert(key.clone());
                 }
-                wire::Node::UniformList { id, .. } => {
-                    uniform_lists.insert(id.clone());
+                wire::Node::UniformList { path, .. } => {
+                    uniform_lists.insert(path.clone());
                 }
                 wire::Node::PickList { key, .. } | wire::Node::ComboBox { key, .. } => {
                     pickers.insert(key.clone());
