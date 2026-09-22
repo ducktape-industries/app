@@ -252,7 +252,14 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         [paragraph, row, reference, header],
     );
     if let wire::Node::Container { style, .. } = &mut root {
-        let mut root_style = div().flex().flex_col().w_full().gap(px(8.)).max_w(px(620.));
+        let mut root_style = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .min_h_0()
+            .gap(px(8.))
+            .max_w(px(620.));
         *style = root_style.style().clone();
     }
     let root = wire::Node::Button {
@@ -337,7 +344,14 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
     if let wire::Node::Container { children, .. } = &mut columns
         && let wire::Node::Container { style, .. } = &mut children[0]
     {
-        *style = div().flex().flex_row().w_full().gap(px(0.)).style().clone();
+        *style = div()
+            .flex()
+            .flex_row()
+            .w_full()
+            .min_w_0()
+            .gap(px(0.))
+            .style()
+            .clone();
     }
     let root = wire::Node::Scroll {
         key: "folders".into(),
@@ -378,7 +392,16 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         ],
     );
     if let wire::Node::Container { style, .. } = &mut main {
-        *style = div().flex().flex_col().w_full().h_full().gap(px(8.)).style().clone();
+        *style = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .gap(px(8.))
+            .style()
+            .clone();
     }
     let root = sized(
         "main",
@@ -390,7 +413,16 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
     if let wire::Node::Container { children, .. } = &mut root
         && let wire::Node::Container { style, .. } = &mut children[0]
     {
-        *style = div().flex().flex_row().w_full().gap(px(0.)).style().clone();
+        *style = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .min_w_0()
+            .min_h_0()
+            .h_full()
+            .gap(px(0.))
+            .style()
+            .clone();
     }
     let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
@@ -457,8 +489,8 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
                 "content",
                 wire::Axis::Column,
                 [wire::Node::Space {
-                width: Some(wire::Length::Fixed(20.)),
-                height: Some(wire::Length::Fixed(5.)),
+                    width: Some(wire::Length::Fixed(20.)),
+                    height: Some(wire::Length::Fixed(5.)),
                 }],
             );
             if let wire::Node::Container { style, .. } = &mut content {

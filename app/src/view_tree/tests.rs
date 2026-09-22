@@ -58,7 +58,7 @@ fn linear(
     axis: wire::Axis,
     children: impl IntoIterator<Item = wire::Node>,
 ) -> wire::Node {
-    let mut element = div().flex().w_full().gap(px(8.));
+    let mut element = div().flex().w_full().min_w_0().gap(px(8.));
     element = match axis {
         wire::Axis::Column => element.flex_col(),
         wire::Axis::Row => element.flex_row(),

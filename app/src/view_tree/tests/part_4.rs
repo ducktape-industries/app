@@ -51,7 +51,14 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         ],
     );
     if let wire::Node::Container { style, .. } = &mut room_column {
-        *style = div().flex().flex_col().w_full().h_full().gap(px(8.)).style().clone();
+        *style = div()
+            .flex()
+            .flex_col()
+            .w_full()
+            .h_full()
+            .gap(px(8.))
+            .style()
+            .clone();
     }
     let room = sized(
         "room",
@@ -88,7 +95,14 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         ],
     );
     if let wire::Node::Container { style, .. } = &mut workspace_row {
-        *style = div().flex().flex_row().w_full().h_full().gap(px(8.)).style().clone();
+        *style = div()
+            .flex()
+            .flex_row()
+            .w_full()
+            .h_full()
+            .gap(px(8.))
+            .style()
+            .clone();
     }
     let room = sized(
         "workspace",

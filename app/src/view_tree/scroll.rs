@@ -399,7 +399,10 @@ impl ViewTree {
         )
         .absolute()
         .inset_0();
-        let content = element.child(self.node(content, window, cx)).child(observe);
+        let content = element
+            .child(self.node(content, window, cx))
+            .child(observe)
+            .child(self.measure(key, cx));
         let handle = self.scrolls[key].clone();
         let scrollbar = match direction {
             wire::ScrollDirection::Vertical => None,
