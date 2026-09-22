@@ -175,28 +175,6 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Anchored {
-            content,
-            x,
-            y,
-            width,
-            height,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        dimensions(div().absolute().left(px(*x)).top(px(*y)), *width, *height)
-            .child(self.node(content, window, cx))
-            .into_any_element()
-    }
-
-    pub(super) fn anchored(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Anchored {
             anchor,
             fit,
             position,

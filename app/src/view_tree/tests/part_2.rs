@@ -161,13 +161,11 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
         let mut host = axis_container(
             "host",
             wire::Axis::Row,
-            [wire::Node::Anchored {
-                key: "position".into(),
-                x: 0.,
-                y,
-                width: Some(wire::Length::Fill),
-                height: Some(wire::Length::Fill),
-                content: Box::new(wire::Node::Sensor {
+            [wire::Node::Container {
+                id: Some(named_id("position")),
+                style: div().absolute().left(px(0.)).top(px(y)).size_full().style().clone(),
+                interactivity: Default::default(),
+                children: vec![wire::Node::Sensor {
                     key: "watched".into(),
                     reset: None,
                     on_show: None,
@@ -179,7 +177,7 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
                         width: Some(wire::Length::Fixed(20.)),
                         height: Some(wire::Length::Fixed(20.)),
                     }),
-                }),
+                }],
             }],
         );
         if let wire::Node::Container { style, .. } = &mut host {

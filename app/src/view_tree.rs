@@ -227,7 +227,6 @@ impl ViewTree {
             }
             Node::Lazy { content, .. } => self.node(content, window, cx),
             Node::Deferred { .. } => self.deferred(node, window, cx),
-            Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::ResizeHandle { .. } => self.resize_handle(node, window, cx),
             Node::Responsive { .. } => self.responsive(node, window, cx),
             Node::When { .. } => self.when(node, window, cx),
