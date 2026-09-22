@@ -25,7 +25,7 @@ fn variable_list_node(
     }
 }
 
-fn fixed_row(id: i64, height: f32, color: u32) -> wire::Node {
+fn fixed_row(id: u64, height: f32, color: u32) -> wire::Node {
     let mut style = gpui_kit::StyleRefinement::default().h(px(height)).w_full();
     style.background = Some(rgb(color).into());
     wire::Node::Container {
@@ -56,7 +56,11 @@ fn native_variable_list_measures_different_heights_and_keeps_slot_clip(
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
-        let list = tree.variable_lists.values().next().expect("native list state");
+        let list = tree
+            .variable_lists
+            .values()
+            .next()
+            .expect("native list state");
         assert_eq!(list.state.bounds_for_item(0).unwrap().size.height, px(20.));
         assert_eq!(list.state.bounds_for_item(1).unwrap().size.height, px(60.));
         assert_eq!(list.state.bounds_for_item(2).unwrap().size.height, px(100.));
@@ -78,7 +82,10 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
         2_000,
         wire::ListAlignment::Bottom,
         1_998,
-        vec![fixed_row(1998, 48., 0x111111), fixed_row(1999, 96., 0x222222)],
+        vec![
+            fixed_row(1998, 48., 0x111111),
+            fixed_row(1999, 96., 0x222222),
+        ],
     );
     let window = cx.open_window(size(px(240.), px(120.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
@@ -86,20 +93,42 @@ fn missing_far_rows_emit_one_bounded_request_and_bottom_anchor_uses_tail_rows(
     let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let observed = events.clone();
     let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| observed.borrow_mut().push(event.clone()))
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone())
+        })
     });
     native.update(|window, cx| {
         window.render_frame(cx);
         window.render_frame(cx);
     });
     native.run_until_parked();
-    assert!(events.borrow().iter().all(|event| match event {
-        wire::Event::ListRequest { request, .. } => request.end - request.start <= wire::MAX_LIST_ROWS,
-        _ => true,
-    }));
+    let requests = events
+        .borrow()
+        .iter()
+        .filter_map(|event| match event {
+            wire::Event::ListRequest { request, .. } => Some(*request),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !requests.is_empty(),
+        "leading overdraw requests its missing row"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.end - request.start <= wire::MAX_LIST_ROWS)
+    );
     tree.read_with(&native, |tree, _| {
         let list = tree.variable_lists.values().next().unwrap();
         assert!(list.rows.contains_key(&1_998) && list.rows.contains_key(&1_999));
+        assert!(matches!(
+            &list.rows[&1_998],
+            wire::Node::Container {
+                id: Some(wire::ElementIdWire::Integer(1998)),
+                ..
+            }
+        ));
         assert!(list.state.logical_scroll_top().item_ix >= 1_998);
     });
 }

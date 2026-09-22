@@ -8,7 +8,7 @@ pub(super) struct VariableListKey {
 
 pub(super) struct VariableList {
     pub(super) state: ListState,
-    rows: HashMap<usize, wire::Node>,
+    pub(super) rows: HashMap<usize, wire::Node>,
     item_count: usize,
     revision: u64,
     requested: Option<std::ops::Range<usize>>,
@@ -48,7 +48,9 @@ impl ViewTree {
             wire::ListAlignment::Top => ListAlignment::Top,
             wire::ListAlignment::Bottom => ListAlignment::Bottom,
         };
+        let mut created = false;
         let list = self.variable_lists.entry(key.clone()).or_insert_with(|| {
+            created = true;
             let state = ListState::new(*item_count, native_alignment, px(*overdraw));
             state.set_follow_mode(if *following_tail {
                 FollowMode::Tail
@@ -59,12 +61,14 @@ impl ViewTree {
                 state,
                 rows: HashMap::new(),
                 item_count: *item_count,
-                revision: 0,
+                revision: *revision,
                 requested: None,
                 request_scheduled: false,
             }
         });
-        if list.revision != *revision {
+        if created {
+            apply_initial_commands(list, commands);
+        } else if list.revision != *revision {
             apply_commands(list, commands);
             list.revision = *revision;
         }
@@ -128,7 +132,9 @@ impl ViewTree {
                 };
                 cx.defer(move |cx| {
                     let _ = weak.update(cx, |this, cx| {
-                        let Some(list) = this.variable_lists.get(&scroll_key) else { return };
+                        let Some(list) = this.variable_lists.get(&scroll_key) else {
+                            return;
+                        };
                         let mut event = event;
                         let offset = list.state.logical_scroll_top();
                         event.offset = wire::ListOffset {
@@ -144,6 +150,28 @@ impl ViewTree {
     }
 }
 
+fn apply_initial_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
+    for command in commands {
+        match *command {
+            wire::ListCommand::ScrollTo(offset) => list.state.scroll_to(gpui_kit::ListOffset {
+                item_ix: offset.item_ix,
+                offset_in_item: px(offset.offset_in_item),
+            }),
+            wire::ListCommand::ScrollToEnd => list.state.scroll_to_end(),
+            wire::ListCommand::ScrollToRevealItem(index) => list.state.scroll_to_reveal_item(index),
+            wire::ListCommand::SetFollowMode { tail } => list.state.set_follow_mode(if tail {
+                FollowMode::Tail
+            } else {
+                FollowMode::Normal
+            }),
+            wire::ListCommand::PauseFollowingTail => list.state.pause_following_tail(),
+            wire::ListCommand::Reset { .. }
+            | wire::ListCommand::Splice { .. }
+            | wire::ListCommand::Remeasure { .. } => {}
+        }
+    }
+}
+
 fn request_row(
     tree: &mut ViewTree,
     key: &VariableListKey,
@@ -151,13 +179,19 @@ fn request_row(
     handler: u32,
     cx: &mut Context<ViewTree>,
 ) {
-    let Some(list) = tree.variable_lists.get_mut(key) else { return };
+    let Some(list) = tree.variable_lists.get_mut(key) else {
+        return;
+    };
     let start = index.min(list.item_count);
     let end = start.saturating_add(1).min(list.item_count);
     list.requested = Some(match list.requested.take() {
         Some(range) => {
             let start = range.start.min(start);
-            start..range.end.max(end).min(start.saturating_add(wire::MAX_LIST_ROWS))
+            start
+                ..range
+                    .end
+                    .max(end)
+                    .min(start.saturating_add(wire::MAX_LIST_ROWS))
         }
         None => start..end,
     });
@@ -169,12 +203,19 @@ fn request_row(
     let key = key.clone();
     cx.defer(move |cx| {
         let _ = weak.update(cx, |this, cx| {
-            let Some(list) = this.variable_lists.get_mut(&key) else { return };
+            let Some(list) = this.variable_lists.get_mut(&key) else {
+                return;
+            };
             list.request_scheduled = false;
-            let Some(range) = list.requested.take() else { return };
+            let Some(range) = list.requested.take() else {
+                return;
+            };
             cx.emit(wire::Event::ListRequest {
                 handler,
-                request: wire::ListRequest { start: range.start, end: range.end },
+                request: wire::ListRequest {
+                    start: range.start,
+                    end: range.end,
+                },
             });
         });
     });
@@ -194,9 +235,13 @@ fn apply_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
                 list.rows = std::mem::take(&mut list.rows)
                     .into_iter()
                     .filter_map(|(index, row)| {
-                        if (start..end).contains(&index) { None }
-                        else if index >= end { Some(((index as isize + delta) as usize, row)) }
-                        else { Some((index, row)) }
+                        if (start..end).contains(&index) {
+                            None
+                        } else if index >= end {
+                            Some(((index as isize + delta) as usize, row))
+                        } else {
+                            Some((index, row))
+                        }
                     })
                     .collect();
                 list.item_count = list.state.item_count();
@@ -208,7 +253,11 @@ fn apply_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
             }),
             wire::ListCommand::ScrollToEnd => list.state.scroll_to_end(),
             wire::ListCommand::ScrollToRevealItem(index) => list.state.scroll_to_reveal_item(index),
-            wire::ListCommand::SetFollowMode { tail } => list.state.set_follow_mode(if tail { FollowMode::Tail } else { FollowMode::Normal }),
+            wire::ListCommand::SetFollowMode { tail } => list.state.set_follow_mode(if tail {
+                FollowMode::Tail
+            } else {
+                FollowMode::Normal
+            }),
             wire::ListCommand::PauseFollowingTail => list.state.pause_following_tail(),
         }
     }
