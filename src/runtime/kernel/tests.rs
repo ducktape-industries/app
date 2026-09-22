@@ -419,3 +419,34 @@ fn host_props_is_program_independent_and_tracks_updates() {
         })
     ));
 }
+
+/// Reproduces "Couldn't create this channel: Unexpected length of input":
+/// `create_channel` mints its id with `host.ask::<Id>("channel".into())`
+/// before it ever submits an op, and `Id` (`door!(Id, "host.id", String,
+/// String)`) answers borsh like every other door — so the reply the view
+/// decodes with `Id::decode_reply` (`doors::decode::<String>`) must be one
+/// it, not raw UTF-8 with no length prefix, which the guest happily builds
+/// and only the view's decode fails on later.
+#[test]
+fn host_id_answers_a_borsh_string_a_view_can_decode() {
+    let mut guest = guest();
+    guest.answer(
+        wire::Request {
+            id: 9,
+            kind: "host.id".into(),
+            payload: doors::encode(&"channel".to_string()),
+        },
+        &None,
+    );
+    let Some(wire::Event::Response {
+        id: 9,
+        result: Ok(bytes),
+        done: true,
+    }) = guest.pending.pop()
+    else {
+        panic!("host.id must answer once");
+    };
+    let minted: String =
+        doors::decode(&bytes).expect("a view decodes `host.id`'s reply as one borsh String");
+    assert!(minted.starts_with("channel-"), "{minted}");
+}
