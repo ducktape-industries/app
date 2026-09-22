@@ -98,7 +98,7 @@ nodes for screenshot inspection, not live console actions.
 Capture all four 1280×800 proofs using an already built debug binary:
 
 ```sh
-export CARGO_TARGET_DIR=/home/eddy/dev/ducktape/target-w4 RUSTC_WRAPPER=
+export RUSTC_WRAPPER=
 app/dev/screens/chat-screens.sh app/dev/screens/panes app/dev/screens/panes/proof --capture-only
 ```
 

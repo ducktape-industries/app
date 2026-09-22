@@ -69,7 +69,10 @@ pub(crate) fn render_tree_fixture() {
                             focused,
                             popped_out,
                         } => {
-                            assert!((1..=3).contains(&panes.len()), "one to three panes");
+                            assert!(
+                                (1..=super::layout::MAX_PANES).contains(&panes.len()),
+                                "one to three panes"
+                            );
                             assert!(focused < panes.len(), "focused pane exists");
                             assert!(!popped_out || panes.len() == 1, "one popped view");
                             (panes, focused, popped_out, false)
@@ -221,7 +224,10 @@ impl Render for TreeFixtureFrame {
                             div()
                                 .id(SharedString::from(format!("pane/{n}/{action}")))
                                 .control(Role::Button, SharedString::from(action.to_owned()))
-                                .aria_disabled(action == "split" && self.panes.len() == 3)
+                                .aria_disabled(
+                                    action == "split"
+                                        && self.panes.len() == super::layout::MAX_PANES,
+                                )
                                 .flex()
                                 .items_center()
                                 .justify_center()

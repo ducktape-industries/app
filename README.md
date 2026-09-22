@@ -24,8 +24,9 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   seats it. The roster's order is the rail's order; a view's manifest names
   its tab. A program without the section is left off the rail.
 - **Relay.** A view asks through the kernel contract (`app/src/module_view/kernel.rs`):
-  `rpc.query`/`rpc.view` `{target, query}`, `op.submit` `{target, payload}`,
-  `rpc.live <program>`, `blob.get`, and the app's own doors (`host.*`,
+  `rpc.query`/`rpc.view` `{target, query}`, `rpc.query_bytes`/`op.submit_bytes`
+  (an exact borsh request), `op.submit` `{target, payload}`, `rpc.live <program>`,
+  `rpc.status`, `rpc.invite`, `blob.get`, `host.widget`, and the app's own doors (`host.*`,
   `clock.ticks`, `fs.*`, `clipboard.*`, plus the raw devices —
   `media.devices`, `audio.capture`/`play`/`write`/`stop`, `video.capture`,
   `notify.show` — behind a per-program consent prompt and an indicator the
@@ -46,10 +47,11 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
 | `app/src/module_view.rs`, `module_view/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
 | `app/src/view_tree.rs`, `editor/` | the wire tree presenter and the one native text field (IME, caret, clipboard) |
 | `app/src/shell.rs`, `ui/` | the window, the two native screens, the state and reducer |
+| `app/src/shell/{layout,panes,windows}.rs` | one to three views side by side, pop-out into their own windows and back |
 
 ## Dependency line
 
-`ducktape-industries/modules` (`main`, `crates/sdk`): `abi`, `view-wire`, `ducklink`, `design`.
+`ducktape-industries/modules` (`crates/sdk`; pinned to `epic/views-2026-09-22` until modules #72 lands on `main`): `abi`, `view-wire`, `ducklink`, `design`.
 `ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
 
 Out until their upstreams settle: the self-update lane (`app-update`,
