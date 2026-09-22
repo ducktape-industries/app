@@ -9,6 +9,7 @@
 //! learned is an edit the writer cannot make.
 
 use super::{EditorStore, Projection, key_state, offset, position};
+use gpui_base::StyledExt as _;
 use gpui_kit::base::input::{Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{

@@ -8,7 +8,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Tooltip {
-            key,
+            key: _,
             children,
             delay_ms,
             style,

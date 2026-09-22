@@ -27,8 +27,8 @@ mod theme;
 
 #[cfg(not(target_os = "macos"))]
 use theme::EMOJI_FACE;
+pub(crate) use theme::fallback_chain;
 use theme::{BUNDLED_FACES, RAIL_WIDTH, configure_native_theme, hsla_of};
-pub(crate) use theme::{fallback_chain, mono_family, with_family};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WindowKey(u64);
