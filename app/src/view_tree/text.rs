@@ -221,7 +221,8 @@ impl ViewTree {
             let view = cx.entity().downgrade();
             interactive = interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
                 if !gpui_kit::base::TextSelection::has_selection(window, cx) {
-                    let _ = view.update(cx, |_, cx| {
+                    let _ = view.update(cx, |this, cx| {
+                        this.user_activation.set(Some(handler));
                         cx.emit(wire::Event::Select { handler, index: index as u32 });
                     });
                 }
