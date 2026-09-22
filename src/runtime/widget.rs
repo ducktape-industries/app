@@ -33,12 +33,22 @@ impl gpui_kit::EventEmitter<ModuleViewEvent> for NativeModuleView {}
 /// The guest's root, sized to the seat: a wire root that names no size
 /// would otherwise take its content's, and a Fill-sized pane inside it
 /// (a room, a document) collapses to zero height.
+///
+/// UNNAMED ON PURPOSE: `EditorStore` keys every editor by the `AuthoredPath`
+/// it walks from the guest's OWN root (`guest.frame.root`, never wrapped —
+/// see `guest/requests.rs`'s `tick`). Giving this wrapper an id would push
+/// it onto every descendant's path here and nowhere else, so no editor's
+/// native field could ever find its `EditorStore` entry: it would type
+/// locally (GPUI's own default text handling) while the guest never saw an
+/// edit and every gate on the guest's document (Send, key claims like
+/// Enter) stayed stuck. An id-less `Container` gets GPUI's own synthetic
+/// element id (`ViewTree::container`) instead, so identity is unaffected.
 pub(super) fn native_root(root: wire::Node) -> wire::Node {
     use gpui_kit::Styled as _;
     let mut host_root = gpui_kit::div();
     host_root = host_root.size_full();
     wire::Node::Container(view_wire::ContainerNode {
-        id: Some(wire::ElementIdWire::Name("NativeModuleView/root".into())),
+        id: None,
         style: host_root.style().clone(),
         interactivity: Default::default(),
         children: vec![root],
