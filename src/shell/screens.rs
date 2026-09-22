@@ -384,6 +384,12 @@ impl DesktopWindow {
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
         }
+        // Below the threshold, a fixed `RAIL_WIDTH` left the open program's
+        // own pane narrower than `layout::MIN_PANE_WIDTH` — the rail was
+        // fine, the pane behind it was not. Collapse the rail to its rows'
+        // own initials instead: same ids, same AX names and roles, fewer
+        // pixels.
+        let narrow = window.viewport_size().width < px(NARROW_WINDOW_WIDTH);
         self.initialize_panes(
             state
                 .active
@@ -411,6 +417,7 @@ impl DesktopWindow {
                 Some(note) => format!("{shown} · {note}"),
                 None => shown.clone(),
             };
+            let initial = shown.chars().next().map(String::from).unwrap_or_default();
             div()
                 .id(SharedString::from(format!("rail/{module}")))
                 .control(Role::Tab, SharedString::from(name))
@@ -419,9 +426,11 @@ impl DesktopWindow {
                 .tab_stop(true)
                 .flex()
                 .items_center()
+                .when(narrow, |row| row.justify_center())
                 .gap_2()
                 .h(px(28.))
                 .px_2()
+                .when(narrow, |row| row.px_0())
                 .mb_0p5()
                 .rounded(px(design::radius::CONTROL as f32))
                 .cursor_pointer()
@@ -444,35 +453,42 @@ impl DesktopWindow {
                     };
                     this.pane_message(message, window, cx);
                 }))
-                .child(div().flex_1().min_w_0().truncate().child(shown))
-                .when(row.note == Some("Loading"), |row| {
-                    row.child(
-                        div()
-                            .size(px(6.))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(ink_muted),
-                    )
-                })
-                .when(row.note == Some("Failed"), |row| {
-                    row.child(
-                        div()
-                            .size(px(6.))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(hsla_of(palette.danger)),
-                    )
-                })
-                .when(badge > 0, |row| {
-                    row.child(
-                        div()
-                            .px_1p5()
-                            .rounded_full()
-                            .bg(accent)
-                            .text_size(px(10.))
-                            .text_color(hsla_of(palette.background))
-                            .child(badge.to_string()),
-                    )
+                .map(|built| match narrow {
+                    // The rail's id and AX name (`.control` above) still
+                    // name the whole program; only the sighted label
+                    // shrinks to its initial.
+                    true => built.child(div().child(initial)),
+                    false => built
+                        .child(div().flex_1().min_w_0().truncate().child(shown))
+                        .when(row.note == Some("Loading"), |row| {
+                            row.child(
+                                div()
+                                    .size(px(6.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(ink_muted),
+                            )
+                        })
+                        .when(row.note == Some("Failed"), |row| {
+                            row.child(
+                                div()
+                                    .size(px(6.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(hsla_of(palette.danger)),
+                            )
+                        })
+                        .when(badge > 0, |row| {
+                            row.child(
+                                div()
+                                    .px_1p5()
+                                    .rounded_full()
+                                    .bg(accent)
+                                    .text_size(px(10.))
+                                    .text_color(hsla_of(palette.background))
+                                    .child(badge.to_string()),
+                            )
+                        }),
                 })
         });
         let rows: Vec<_> = rows.collect();
@@ -516,7 +532,11 @@ impl DesktopWindow {
         };
         let sidebar = div()
             .id("rail")
-            .w(px(RAIL_WIDTH))
+            .w(px(if narrow {
+                RAIL_COMPACT_WIDTH
+            } else {
+                RAIL_WIDTH
+            }))
             .h_full()
             .flex_shrink_0()
             .flex()
@@ -528,39 +548,51 @@ impl DesktopWindow {
                 div()
                     .flex()
                     .items_center()
+                    .when(narrow, |row| row.justify_center())
                     .gap_2()
-                    .px_3()
+                    .px(px(if narrow { 0. } else { 12. }))
                     .pt(px(if cfg!(target_os = "macos") { 44. } else { 12. }))
                     .pb_2()
                     .child(
                         div()
+                            .id("rail-connection")
+                            .control(
+                                Role::Status,
+                                SharedString::from(if state.connected {
+                                    "Connected"
+                                } else {
+                                    "Not connected"
+                                }),
+                            )
                             .size(px(6.))
                             .flex_shrink_0()
                             .rounded_full()
                             .bg(if state.connected { accent } else { faint }),
                     )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_size(px(13.))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .text_color(ink_fg)
-                                    .truncate()
-                                    .child(state.network.clone()),
-                            )
-                            .child(
-                                div()
-                                    .text_size(px(11.))
-                                    .text_color(ink_muted)
-                                    .truncate()
-                                    .child(state.status.clone()),
-                            ),
-                    ),
+                    .when(!narrow, |row| {
+                        row.child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_size(px(13.))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(ink_fg)
+                                        .truncate()
+                                        .child(state.network.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(11.))
+                                        .text_color(ink_muted)
+                                        .truncate()
+                                        .child(state.status.clone()),
+                                ),
+                        )
+                    }),
             )
             .child(
                 div()
