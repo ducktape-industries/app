@@ -14,8 +14,8 @@ fn uniform_node(id: &str, count: usize, rows: Range<usize>) -> wire::Node {
             sized(
                 &format!("{id}/row:{index}"),
                 text(&format!("{id}/label:{index}"), format!("Row {index}")),
-                Some(wire::Length::Fill),
-                Some(wire::Length::Fixed(24.)),
+                Some(fill()),
+                Some(fixed(24.)),
             )
         })
         .collect();
@@ -23,7 +23,7 @@ fn uniform_node(id: &str, count: usize, rows: Range<usize>) -> wire::Node {
         id: wire_id.clone(),
         path: vec![wire_id],
         route: 1,
-        style: sized_style(Some(wire::Length::Fill), Some(wire::Length::Fixed(96.))),
+        style: sized_style(Some(fill()), Some(fixed(96.))),
         interactivity: Default::default(),
         count,
         measure_index: 0,
@@ -125,9 +125,7 @@ fn uniform_list_scroll_requests_far_rows_without_guest_layout_or_unbounded_state
 }
 
 #[gpui_kit::test]
-fn uniform_list_row_cache_contains_only_the_current_frame(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+fn uniform_list_row_cache_contains_only_the_current_frame(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let first = uniform_node("uniform", 2_000, 0..4);
     let window = cx.open_window(size(px(240.), px(96.)), |_, _| ViewTree::new(first));
@@ -155,7 +153,10 @@ fn uniform_list_row_cache_contains_only_the_current_frame(
                 .keys()
                 .all(|index| *index == 0 || *index >= 1_000)
         );
-        assert!(!state.rows.contains_key(&1), "an old row callback cannot survive into the new frame");
+        assert!(
+            !state.rows.contains_key(&1),
+            "an old row callback cannot survive into the new frame"
+        );
     });
 }
 
@@ -191,5 +192,8 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
             event: wire::click::Click::Mouse { .. }
         }
     )));
-    assert_eq!(tree.read_with(&native, |tree, _| tree.user_activation.get()), Some(42));
+    assert_eq!(
+        tree.read_with(&native, |tree, _| tree.user_activation.get()),
+        Some(42)
+    );
 }

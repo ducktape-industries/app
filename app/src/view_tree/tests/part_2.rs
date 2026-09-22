@@ -25,10 +25,13 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
         interactivity: Default::default(),
         children: vec![child],
     };
-    let root = container("form", [
-        branch(wire::ElementIdWire::Integer(1), field(1)),
-        branch(named_id("1"), field(2)),
-    ]);
+    let root = container(
+        "form",
+        [
+            branch(wire::ElementIdWire::Integer(1), field(1)),
+            branch(named_id("1"), field(2)),
+        ],
+    );
     let window = cx.open_window(size(px(500.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -36,7 +39,11 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
 
     let (left, right) = tree.read_with(&native, |tree, _| {
         assert_eq!(tree.fields.len(), 2);
-        let left = vec![named_id("form"), wire::ElementIdWire::Integer(1), named_id("field")];
+        let left = vec![
+            named_id("form"),
+            wire::ElementIdWire::Integer(1),
+            named_id("field"),
+        ];
         let right = vec![named_id("form"), named_id("1"), named_id("field")];
         (
             tree.fields[&left].state.clone(),
@@ -53,7 +60,9 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
                 named_id("field"),
             ];
             tree.execute_widget_command(
-                wire::WidgetCommand::Focus { target: left_path.clone() },
+                wire::WidgetCommand::Focus {
+                    target: left_path.clone(),
+                },
                 window,
                 cx,
             )
@@ -77,10 +86,15 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     native.update(|window, cx| left.update(cx, |state, cx| state.focus(window, cx)));
     native.simulate_input("hello");
     native.run_until_parked();
-    assert!(events.borrow().iter().any(
-        |event| matches!(event, wire::Event::Input { handler: 1, text } if text == "hello")
-    ));
-    assert_eq!(right.read_with(&native, |state, _| state.value().to_string()), "");
+    assert!(
+        events.borrow().iter().any(
+            |event| matches!(event, wire::Event::Input { handler: 1, text } if text == "hello")
+        )
+    );
+    assert_eq!(
+        right.read_with(&native, |state, _| state.value().to_string()),
+        ""
+    );
 }
 
 #[gpui_kit::test]
@@ -112,7 +126,9 @@ fn combo_search_reset_and_routes_use_fresh_native_state(cx: &mut gpui_kit::TestA
         })
     });
     native.update(|window, cx| window.render_frame(cx));
-    let old = tree.read_with(&native, |tree, _| tree.pickers[&vec![named_id("combo")]].state.clone());
+    let old = tree.read_with(&native, |tree, _| {
+        tree.pickers[&vec![named_id("combo")]].state.clone()
+    });
     native.update(|window, cx| window.within("combo").click("input", cx));
     native.update(|window, cx| window.render_frame(cx));
     native.simulate_input("Be");
@@ -157,7 +173,13 @@ fn combo_search_reset_and_routes_use_fresh_native_state(cx: &mut gpui_kit::TestA
         "a deferred projection cannot mutate a retired native picker"
     );
     let fresh = tree.read_with(&native, |tree, _| {
-        assert_eq!(tree.measured_bounds(&[named_id("combo")]).unwrap().size.width, px(200.));
+        assert_eq!(
+            tree.measured_bounds(&[named_id("combo")])
+                .unwrap()
+                .size
+                .width,
+            px(200.)
+        );
         tree.pickers[&vec![named_id("combo")]].state.clone()
     });
     assert_ne!(old.entity_id(), fresh.entity_id());
@@ -188,7 +210,13 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
             wire::Axis::Row,
             [wire::Node::Container {
                 id: Some(named_id("position")),
-                style: div().absolute().left(px(0.)).top(px(y)).size_full().style().clone(),
+                style: div()
+                    .absolute()
+                    .left(px(0.))
+                    .top(px(y))
+                    .size_full()
+                    .style()
+                    .clone(),
                 interactivity: Default::default(),
                 children: vec![wire::Node::Sensor {
                     id: named_id("watched"),
@@ -199,8 +227,7 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
                     anticipate: None,
                     delay: None,
                     child: Box::new(wire::Node::Space {
-                        width: Some(wire::Length::Fixed(20.)),
-                        height: Some(wire::Length::Fixed(20.)),
+                        style: sized_style(Some(fixed(20.)), Some(fixed(20.))),
                     }),
                     style: gpui_kit::StyleRefinement::default(),
                 }],
@@ -308,13 +335,13 @@ fn sensor_visibility_uses_current_routes_and_removal_does_not_replay_old_ids(
 fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     for (height, minimum, maximum, expected) in [
-        (Some(wire::Length::Fixed(60.)), None, None, 60.),
-        (Some(wire::Length::Fixed(60.)), Some(100.), None, 100.),
-        (Some(wire::Length::Fixed(180.)), None, Some(100.), 100.),
+        (Some(fixed(60.)), None, None, 60.),
+        (Some(fixed(60.)), Some(100.), None, 100.),
+        (Some(fixed(180.)), None, Some(100.), 100.),
         (None, None, None, 300.),
     ] {
         let mut authored = div().w(px(240.));
-        if let Some(wire::Length::Fixed(height)) = height {
+        if let Some(fixed(height)) = height {
             authored = authored.h(px(height));
         } else {
             authored = authored.h_full();
@@ -353,7 +380,9 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| window.render_frame(cx));
         let bounds = tree
-            .read_with(&native, |tree, _| tree.measured_bounds(&[named_id("document")]))
+            .read_with(&native, |tree, _| {
+                tree.measured_bounds(&[named_id("document")])
+            })
             .unwrap();
         assert_eq!(bounds.size, size(px(240.), px(expected)));
     }
@@ -401,14 +430,17 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     cx.update(gpui_kit::init);
     let words = "one\ntwo\nthree\nfour\nfive\nsix";
     let leading = 20.;
-    let mut authored = div().w(px(240.)).text_size(px(14.)).line_height(px(leading));
+    let mut authored = div()
+        .w(px(240.))
+        .text_size(px(14.))
+        .line_height(px(leading));
     let root = wire::Node::Editor {
         id: named_id("document"),
         style: authored.style().clone(),
         label: None,
         options: Box::new(wire::EditorOptions {
             presentation: Some(Box::new(wire::editor_presentation::EditorPresentation {
-                padding: Some(wire::Edges::all(0.)),
+                style: div().p_0().style().clone(),
                 ..Default::default()
             })),
             ..Default::default()
@@ -428,12 +460,7 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     // In a box with room to spare, which is the only place shrinking means
     // anything: the editor is the root of nothing in a real view, it sits
     // inside the card's own layout.
-    let root = sized(
-        "card",
-        root,
-        Some(wire::Length::Fill),
-        Some(wire::Length::Fill),
-    );
+    let root = sized("card", root, Some(fill()), Some(fill()));
     let store = crate::editor::wire::EditorStore::new(91);
     store.replace(&root).unwrap();
     seed_editor_text(&store, words);
@@ -526,7 +553,10 @@ fn picture(label: Option<&str>) -> [wire::Node; 3] {
             hash: 1,
             data: None,
             label: label.clone(),
-            image_style: wire::ImageStyle { grayscale: false, object_fit: wire::ImageObjectFit::Contain },
+            image_style: wire::ImageStyle {
+                grayscale: false,
+                object_fit: wire::ImageObjectFit::Contain,
+            },
             loading: false,
             fallback: false,
             state_children: vec![],
@@ -544,8 +574,15 @@ fn picture(label: Option<&str>) -> [wire::Node; 3] {
         },
         wire::Node::Svg {
             id: Some(wire::ElementIdWire::Name("svg".into())),
-            source: wire::SvgSource::Data { hash: 1, bytes: None },
-            transformation: wire::SvgTransformation { scale: [1., 1.], translate: [0., 0.], rotate: 0. },
+            source: wire::SvgSource::Data {
+                hash: 1,
+                bytes: None,
+            },
+            transformation: wire::SvgTransformation {
+                scale: [1., 1.],
+                translate: [0., 0.],
+                rotate: 0.,
+            },
             label,
             style: Default::default(),
             interactivity: Default::default(),
@@ -572,8 +609,7 @@ fn a_button_is_named_by_its_label_then_its_text_and_disabled_without_a_handler()
     use wire::ButtonContent::{Child, Label};
     let glyph = || {
         Child(Box::new(wire::Node::Space {
-            width: None,
-            height: None,
+            style: gpui_kit::StyleRefinement::default(),
         }))
     };
     let plain = accessible(&button(Label("Send".into()), None, Some(1)));

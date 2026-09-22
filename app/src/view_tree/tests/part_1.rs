@@ -58,8 +58,15 @@ fn svg_uses_native_element_and_retains_data_without_resent_bytes(
     let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path fill="#ff0000" d="M0 0h12v24H0z"/><path fill="#0000ff" d="M12 0h12v24H12z"/></svg>"##.to_vec();
     let node = wire::Node::Svg {
         id: Some(wire::ElementIdWire::Name("artwork".into())),
-        source: wire::SvgSource::Data { hash: 42, bytes: Some(bytes) },
-        transformation: wire::SvgTransformation { scale: [1., 1.], translate: [0., 0.], rotate: 0. },
+        source: wire::SvgSource::Data {
+            hash: 42,
+            bytes: Some(bytes),
+        },
+        transformation: wire::SvgTransformation {
+            scale: [1., 1.],
+            translate: [0., 0.],
+            rotate: 0.,
+        },
         label: None,
         style: Default::default(),
         interactivity: Default::default(),
@@ -73,7 +80,11 @@ fn svg_uses_native_element_and_retains_data_without_resent_bytes(
         assert!(tree.read(cx).vectors.contains_key(&42));
         tree.update(cx, |tree, cx| {
             let mut next = tree.root.clone();
-            if let wire::Node::Svg { source: wire::SvgSource::Data { bytes, .. }, .. } = &mut next {
+            if let wire::Node::Svg {
+                source: wire::SvgSource::Data { bytes, .. },
+                ..
+            } = &mut next
+            {
                 *bytes = None;
             }
             tree.replace(next, cx);
@@ -117,14 +128,8 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
         tree.update(cx, |tree, cx| {
             assert!(tree.fields.is_empty());
             let target = vec![named_id("menu")];
-            tree.execute_widget_command(
-                wire::WidgetCommand::Focus {
-                    target,
-                },
-                window,
-                cx,
-            )
-            .unwrap();
+            tree.execute_widget_command(wire::WidgetCommand::Focus { target }, window, cx)
+                .unwrap();
         })
     });
     native.update(|window, cx| window.render_frame(cx));
@@ -187,9 +192,10 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
 #[gpui_kit::test]
 fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    let text = |key: &str, content: String, width, wrapping| {
-        let mut element = dimensions(div().min_w_0().max_w_full(), width, None).text_size(px(14.));
-        element = if wrapping == Some(wire::Wrapping::None) {
+    let text = |key: &str, content: String, width, nowrap| {
+        let mut element = div().min_w_0().max_w_full().text_size(px(14.));
+        element.style().size.width = width;
+        element = if nowrap {
             element.truncate().flex_shrink_0()
         } else {
             element.whitespace_normal()
@@ -206,47 +212,31 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         "paragraph",
         "A long description with words that must wrap within the available parent width. "
             .repeat(8),
-        None,
+        false,
         None,
     );
     let row = axis_container(
         "row",
         wire::Axis::Row,
         [
-            text("height", "17968".into(), None, Some(wire::Wrapping::None)),
-            text(
-                "hash",
-                "0123456789abcdef".repeat(16),
-                Some(wire::Length::Fill),
-                Some(wire::Wrapping::WordOrGlyph),
-            ),
-            text("count", "12 ops".into(), None, Some(wire::Wrapping::None)),
+            text("height", "17968".into(), None, true),
+            text("hash", "0123456789abcdef".repeat(16), Some(fill()), false),
+            text("count", "12 ops".into(), None, true),
         ],
     );
     let mut header = row.clone();
     if let wire::Node::Container { children, .. } = &mut header {
         *children = vec![
-            text("label", "Header".into(), None, Some(wire::Wrapping::None)),
+            text("label", "Header".into(), None, true),
             wire::Node::Space {
-                width: Some(wire::Length::Fill),
-                height: None,
+                style: sized_style(Some(fill()), None),
             },
-            text(
-                "actions",
-                "New page".into(),
-                Some(wire::Length::Fixed(100.)),
-                Some(wire::Wrapping::None),
-            ),
+            text("actions", "New page".into(), Some(fixed(100.)), true),
         ];
     }
     let mut reference = row.clone();
     if let wire::Node::Container { children, .. } = &mut reference {
-        *children = vec![text(
-            "reference",
-            "Header".into(),
-            None,
-            Some(wire::Wrapping::None),
-        )];
+        *children = vec![text("reference", "Header".into(), None, true)];
     }
     let mut root = axis_container(
         "column",
@@ -291,8 +281,14 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         let count = tree.measured_bounds(&[named_id("count")]).unwrap();
         assert!(tree.measured_bounds(&[named_id("height")]).unwrap().right() <= hash.left());
         assert_eq!(
-            tree.measured_bounds(&[named_id("label")]).unwrap().size.width,
-            tree.measured_bounds(&[named_id("reference")]).unwrap().size.width,
+            tree.measured_bounds(&[named_id("label")])
+                .unwrap()
+                .size
+                .width,
+            tree.measured_bounds(&[named_id("reference")])
+                .unwrap()
+                .size
+                .width,
             "intrinsic labels cannot lose letters to a Fill spacer"
         );
         assert!(paragraph.size.width <= px(620.));
@@ -302,7 +298,12 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         );
         assert!(hash.right() <= count.left());
         assert!(
-            hash.size.height > tree.measured_bounds(&[named_id("reference")]).unwrap().size.height,
+            hash.size.height
+                > tree
+                    .measured_bounds(&[named_id("reference")])
+                    .unwrap()
+                    .size
+                    .height,
             "WordOrGlyph must override a native Button's inherited nowrap"
         );
         assert!(count.right() <= paragraph.left() + px(620.));
@@ -331,13 +332,13 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
                         &format!("column-content-{index}"),
                         [text(&format!("name-{index}"), "Folder")],
                     ),
-                    Some(wire::Length::Fixed(230.)),
-                    Some(wire::Length::Fill),
+                    Some(fixed(230.)),
+                    Some(fill()),
                 )
             }),
         ),
-        Some(wire::Length::Fixed(920.)),
-        Some(wire::Length::Fill),
+        Some(fixed(920.)),
+        Some(fill()),
     );
     let mut columns = columns;
     if let wire::Node::Container { children, .. } = &mut columns
@@ -356,8 +357,8 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         id: wire::ElementIdWire::Name("folders".into()),
         content: Box::new(columns),
         direction: wire::ScrollDirection::Horizontal,
-        width: Some(wire::Length::Fill),
-        height: Some(wire::Length::Fill),
+        width: Some(fill()),
+        height: Some(fill()),
         on_scroll: None,
         virtual_rows: false,
         bar_hidden: false,
@@ -379,14 +380,14 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
                 "header",
                 container("header-content", [text("header-text", "Header")]),
                 None,
-                Some(wire::Length::Fixed(24.)),
+                Some(fixed(24.)),
             ),
             root,
             sized(
                 "footer",
                 container("footer-content", [text("footer-text", "Footer")]),
                 None,
-                Some(wire::Length::Fixed(24.)),
+                Some(fixed(24.)),
             ),
         ],
     );
@@ -402,12 +403,7 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
             .style()
             .clone();
     }
-    let root = sized(
-        "main",
-        main,
-        Some(wire::Length::Fill),
-        Some(wire::Length::Fill),
-    );
+    let root = sized("main", main, Some(fill()), Some(fill()));
     let mut root = root;
     if let wire::Node::Container { children, .. } = &mut root
         && let wire::Node::Container { style, .. } = &mut children[0]
@@ -438,9 +434,9 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
                 named_id("columns-box"),
                 named_id("column-0"),
             ])
-                .unwrap()
-                .size
-                .width,
+            .unwrap()
+            .size
+            .width,
             px(230.)
         );
     });
@@ -498,8 +494,7 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
                 "content",
                 wire::Axis::Column,
                 [wire::Node::Space {
-                    width: Some(wire::Length::Fixed(20.)),
-                    height: Some(wire::Length::Fixed(5.)),
+                    style: sized_style(Some(fixed(20.)), Some(fixed(5.))),
                 }],
             );
             if let wire::Node::Container { style, .. } = &mut content {

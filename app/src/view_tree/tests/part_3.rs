@@ -305,8 +305,7 @@ fn a_labelled_picture_is_an_image_and_an_unlabelled_one_is_decoration() {
 #[test]
 fn layout_is_not_in_the_accessibility_tree() {
     let space = wire::Node::Space {
-        width: None,
-        height: None,
+        style: gpui_kit::StyleRefinement::default(),
     };
     assert_eq!(accessible(&space), Accessible::default());
 }

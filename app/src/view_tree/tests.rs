@@ -6,11 +6,24 @@ fn named_id(key: &str) -> wire::ElementIdWire {
     wire::ElementIdWire::Name(key.into())
 }
 
+fn fill() -> gpui_kit::Length {
+    gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Fraction(1.0))
+}
+
+fn fixed(value: f32) -> gpui_kit::Length {
+    gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Absolute(
+        gpui_kit::AbsoluteLength::Pixels(px(value)),
+    ))
+}
+
 fn sized_style(
-    width: Option<wire::Length>,
-    height: Option<wire::Length>,
+    width: Option<gpui_kit::Length>,
+    height: Option<gpui_kit::Length>,
 ) -> gpui_kit::StyleRefinement {
-    dimensions(div(), width, height).style().clone()
+    let mut style = gpui_kit::StyleRefinement::default();
+    style.size.width = width;
+    style.size.height = height;
+    style
 }
 
 fn container(key: &str, children: impl IntoIterator<Item = wire::Node>) -> wire::Node {
@@ -33,14 +46,32 @@ fn container_with_style(
 fn sized(
     key: &str,
     child: wire::Node,
-    width: Option<wire::Length>,
-    height: Option<wire::Length>,
+    width: Option<gpui_kit::Length>,
+    height: Option<gpui_kit::Length>,
 ) -> wire::Node {
     wire::Node::Container {
         id: Some(named_id(key)),
         style: sized_style(width, height),
         interactivity: Default::default(),
         children: vec![child],
+    }
+}
+
+fn rule(key: &str, axis: wire::Axis) -> wire::Node {
+    let mut element = div().bg(gpui_kit::Rgba {
+        r: 0.4,
+        g: 0.4,
+        b: 0.4,
+        a: 1.0,
+    });
+    element = match axis {
+        wire::Axis::Row => element.h(px(1.)),
+        wire::Axis::Column => element.w(px(1.)),
+    };
+    wire::Node::Rule {
+        key: key.into(),
+        axis,
+        style: element.style().clone(),
     }
 }
 

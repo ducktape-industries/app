@@ -28,25 +28,16 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         "room-column",
         wire::Axis::Column,
         [
-            wire::Node::Rule {
-                key: "header-rule".into(),
-                axis: wire::Axis::Row,
-                thickness: 1.,
-                color: Some(wire::Rgba([0.4, 0.4, 0.4, 1.])),
-                weak: true,
-                radius: None,
-                snap: None,
-            },
+            rule("header-rule", wire::Axis::Row),
             notice,
             wire::Node::Space {
-                width: None,
-                height: Some(wire::Length::Fill),
+                style: sized_style(None, Some(fill())),
             },
             sized(
                 "composer",
                 container("composer-content", [wire::Node::empty()]),
-                Some(wire::Length::Fill),
-                Some(wire::Length::Fixed(60.)),
+                Some(fill()),
+                Some(fixed(60.)),
             ),
         ],
     );
@@ -60,12 +51,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
             .style()
             .clone();
     }
-    let room = sized(
-        "room",
-        room_column,
-        Some(wire::Length::Fill),
-        Some(wire::Length::Fill),
-    );
+    let room = sized("room", room_column, Some(fill()), Some(fill()));
     let mut sidebar_style = div()
         .w(px(236.))
         .min_w(px(236.))
@@ -82,15 +68,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
                 sidebar_style.style().clone(),
                 [wire::Node::empty()],
             ),
-            wire::Node::Rule {
-                key: "sidebar-resize".into(),
-                axis: wire::Axis::Column,
-                thickness: 1.,
-                color: Some(wire::Rgba([0.4, 0.4, 0.4, 1.])),
-                weak: true,
-                radius: None,
-                snap: None,
-            },
+            rule("sidebar-resize", wire::Axis::Column),
             room,
         ],
     );
@@ -104,12 +82,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
             .style()
             .clone();
     }
-    let room = sized(
-        "workspace",
-        workspace_row,
-        Some(wire::Length::Fill),
-        Some(wire::Length::Fill),
-    );
+    let room = sized("workspace", workspace_row, Some(fill()), Some(fill()));
     // A room's real root: a viewport sensor around the press area.
     let root = wire::Node::Sensor {
         id: named_id("viewport"),
@@ -166,7 +139,11 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         window.render_frame(cx);
     });
     let bounds = |key: &str| {
-        let mut path = vec![named_id("viewport"), named_id("press-area"), named_id("workspace")];
+        let mut path = vec![
+            named_id("viewport"),
+            named_id("press-area"),
+            named_id("workspace"),
+        ];
         if key != "sidebar" {
             path.push(named_id("room"));
         }
@@ -214,29 +191,36 @@ fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::Te
     let card = sized(
         "float-card-box",
         container("float-card", [wire::Node::empty()]),
-        Some(wire::Length::Fixed(40.)),
-        Some(wire::Length::Fixed(20.)),
+        Some(fixed(40.)),
+        Some(fixed(20.)),
     );
     let root = wire::Node::Overlay {
         id: named_id("float-overlay"),
         label: Some("Context menu".into()),
-        padding: 30.,
-        backdrop: wire::Rgba([0.; 4]),
-        align_x: wire::AlignX::Right,
-        align_y: wire::AlignY::Bottom,
+        style: {
+            let mut layer = div()
+                .p(px(30.))
+                .justify_end()
+                .items_end()
+                .bg(gpui_kit::Rgba {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                });
+            layer.style().clone()
+        },
         on_dismiss: None,
         children: vec![
             wire::Node::Space {
-                width: Some(wire::Length::Fill),
-                height: Some(wire::Length::Fill),
+                style: sized_style(Some(fill()), Some(fill())),
             },
             wire::Node::Float {
                 key: "float".into(),
                 x: 37.,
                 y: 29.,
                 scale: 1.,
-                shadow: Default::default(),
-                radius: None,
+                style: gpui_kit::StyleRefinement::default(),
                 content: Box::new(card),
             },
         ],
@@ -318,11 +302,16 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| window.click("interactive", cx));
-    assert!(events
-        .borrow()
-        .iter()
-        .any(|event| matches!(event, wire::Event::Click { handler: 42, event: wire::click::Click::Mouse { .. } })));
-    assert!(tree.read_with(&native, |tree, _| tree.mounted.contains(&vec![named_id("interactive")])));
+    assert!(events.borrow().iter().any(|event| matches!(
+        event,
+        wire::Event::Click {
+            handler: 42,
+            event: wire::click::Click::Mouse { .. }
+        }
+    )));
+    assert!(tree.read_with(&native, |tree, _| {
+        tree.mounted.contains(&vec![named_id("interactive")])
+    }));
 }
 
 #[gpui_kit::test]
@@ -332,7 +321,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     cx.update(gpui_kit::init);
     let root = wire::Node::Container {
         id: Some(named_id("events")),
-        style: sized_style(Some(wire::Length::Fixed(120.)), Some(wire::Length::Fixed(60.))),
+        style: sized_style(Some(fixed(120.)), Some(fixed(60.))),
         interactivity: wire::Interactivity {
             focusable: true,
             on_mouse_down: Some(10),
