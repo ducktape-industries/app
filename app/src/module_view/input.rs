@@ -381,6 +381,7 @@ fn modifiers(value: gpui::Modifiers) -> wire::keyboard::Modifiers {
         control: value.control,
         alt: value.alt,
         logo: value.platform,
+        function: value.function,
     }
 }
 fn key(value: &str) -> wire::keyboard::Key {

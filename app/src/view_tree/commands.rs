@@ -347,6 +347,7 @@ impl ViewTree {
 
     pub fn replace(&mut self, mut root: wire::Node, cx: &mut Context<Self>) {
         let mut focusable = HashMap::new();
+        let mut guest_focus_ids = std::collections::HashSet::new();
         let mut inputs = std::collections::HashSet::new();
         collect_input_paths(&root, &mut Vec::new(), &mut inputs);
         let mut scrolls = std::collections::HashSet::new();
@@ -369,6 +370,11 @@ impl ViewTree {
                 }
             }
             match node {
+                wire::Node::Container { interactivity, .. } => {
+                    if let Some(id) = &interactivity.focus_handle {
+                        guest_focus_ids.insert(id.clone());
+                    }
+                }
                 wire::Node::Input { .. } => {}
                 wire::Node::Scroll { key, .. } => {
                     scrolls.insert(key.clone());
@@ -451,6 +457,8 @@ impl ViewTree {
         self.bounds.retain(|key, _| live_keys.contains(key));
         self.focus_targets
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
+        self.guest_focus_targets
+            .retain(|id, _| guest_focus_ids.contains(id));
         self.fields.retain(|key, _| inputs.contains(key));
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.lists.retain(|key, _| scrolls.contains(key));

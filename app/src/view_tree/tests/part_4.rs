@@ -313,3 +313,96 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
         .any(|event| matches!(event, wire::Event::Click { handler: 42, event: wire::click::Click::Mouse { .. } })));
     assert!(tree.read_with(&native, |tree, _| tree.mounted.contains("interactive")));
 }
+
+#[gpui_kit::test]
+fn container_interactivity_emits_native_pointer_and_key_payloads(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let root = wire::Node::Container {
+        id: Some(named_id("events")),
+        style: sized_style(Some(wire::Length::Fixed(120.)), Some(wire::Length::Fixed(60.))),
+        interactivity: wire::Interactivity {
+            focusable: true,
+            on_mouse_down: Some(10),
+            capture_mouse_down: Some(11),
+            on_key_down: Some(12),
+            ..Default::default()
+        },
+        children: vec![text("event-label", "Events")],
+    };
+    let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone());
+        })
+    });
+    native.update(|window, cx| window.render_frame(cx));
+    native.update(|window, cx| window.click("events", cx));
+    native.update(|window, cx| {
+        let modifiers = gpui_kit::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        window.dispatch_event(
+            MouseDownEvent {
+                position: point(px(20.), px(20.)),
+                button: MouseButton::Left,
+                modifiers,
+                click_count: 3,
+                first_mouse: true,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.dispatch_event(
+            KeyDownEvent {
+                keystroke: Keystroke::parse("shift-a").unwrap(),
+                is_held: true,
+                prefer_character_input: true,
+            }
+            .to_platform_input(),
+            cx,
+        );
+        window.render_frame(cx);
+    });
+    let events = events.borrow();
+    assert!(events.iter().any(|event| matches!(
+        event,
+        wire::Event::MouseDown {
+            handler: 10,
+            phase: wire::DispatchPhase::Bubble,
+            event: wire::interactivity::MouseDown {
+                button: wire::click::MouseButton::Left,
+                click_count: 3,
+                first_mouse: true,
+                modifiers: wire::keyboard::Modifiers { shift: true, .. },
+                ..
+            }
+        }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        wire::Event::MouseDown {
+            handler: 11,
+            phase: wire::DispatchPhase::Capture,
+            ..
+        }
+    )));
+    assert!(events.iter().any(|event| matches!(
+        event,
+        wire::Event::KeyDown {
+            handler: 12,
+            event: wire::interactivity::KeyDown {
+                repeat: true,
+                prefer_character_input: true,
+                ..
+            },
+            ..
+        }
+    )));
+}

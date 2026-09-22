@@ -1,5 +1,6 @@
 use super::*;
 use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{InputEvent as _, Keystroke};
 
 fn named_id(key: &str) -> wire::ElementIdWire {
     wire::ElementIdWire::Name(key.into())

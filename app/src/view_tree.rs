@@ -39,6 +39,7 @@ mod canvas;
 mod commands;
 mod deferred;
 mod inputs;
+mod interactivity;
 mod layout;
 mod pickers;
 mod picture_resources;
@@ -108,6 +109,7 @@ pub struct ViewTree {
     root: wire::Node,
     // Structural nodes enter the native focus path only on an explicit Focus request.
     focus_targets: HashMap<String, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
+    guest_focus_targets: HashMap<wire::ElementIdWire, FocusHandle>,
     fields: HashMap<AuthoredPath, Field>,
     authored_path: AuthoredPath,
     scrolls: HashMap<String, ScrollHandle>,
@@ -144,6 +146,7 @@ impl ViewTree {
             slot_mask: Default::default(),
             root,
             focus_targets: HashMap::new(),
+            guest_focus_targets: HashMap::new(),
             fields: HashMap::new(),
             authored_path: Vec::new(),
             scrolls: HashMap::new(),

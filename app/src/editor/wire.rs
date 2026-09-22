@@ -1223,6 +1223,7 @@ pub(super) fn key_state(key: &gpui_kit::Keystroke) -> wire::keyboard::KeyState {
             control: key.modifiers.control,
             alt: key.modifiers.alt,
             logo: key.modifiers.platform,
+            function: key.modifiers.function,
         },
     }
 }

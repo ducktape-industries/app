@@ -70,6 +70,14 @@ impl ViewTree {
         if let Some(value) = interactivity.aria.column_count { element = element.aria_column_count(value); }
         if let Some(value) = interactivity.aria.toggled { element = element.aria_toggled(value); }
         if let Some(value) = interactivity.aria.orientation { element = element.aria_orientation(value); }
+        if interactivity.aria.active_descendant { element = element.aria_active_descendant(); }
+        let focus_handle = interactivity.focus_handle.as_ref().map(|id| {
+            self.guest_focus_targets
+                .entry(id.clone())
+                .or_insert_with(|| cx.focus_handle())
+                .clone()
+        });
+        element = super::interactivity::apply(element, interactivity, focus_handle, cx);
         if let Some(handler) = interactivity.on_click {
             element = element
                 .on_click(cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
