@@ -116,9 +116,10 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
     native.update(|window, cx| {
         tree.update(cx, |tree, cx| {
             assert!(tree.fields.is_empty());
+            let target = vec![named_id("menu")];
             tree.execute_widget_command(
                 wire::WidgetCommand::Focus {
-                    target: "menu".into(),
+                    target,
                 },
                 window,
                 cx,
@@ -129,8 +130,9 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
     native.update(|window, cx| window.render_frame(cx));
     let retired = native.update(|window, cx| {
         tree.read_with(cx, |tree, cx| {
-            assert!(tree.target_focused("menu", window, cx));
-            tree.focus_targets["menu"].1.clone()
+            let target = vec![named_id("menu")];
+            assert!(tree.target_focused(&target, window, cx));
+            tree.focus_targets[&target].1.clone()
         })
     });
     native.update(|window, cx| {
@@ -152,7 +154,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
     let replacement = host.read_with(&native, |host, _| host.tree.clone());
     native.update(|window, cx| {
         replacement.read_with(cx, |tree, cx| {
-            assert!(tree.target_focused("menu", window, cx));
+            assert!(tree.target_focused(&[named_id("menu")], window, cx));
             assert!(
                 !retired.is_focused(window),
                 "handoff uses a fresh native handle"
@@ -167,7 +169,7 @@ fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
         replacement.update(cx, |tree, cx| {
             tree.replace(text("closed", "menu closed"), cx);
             assert!(tree.focus_targets.is_empty());
-            assert!(!tree.target_focused("menu", window, cx));
+            assert!(!tree.target_focused(&[named_id("menu")], window, cx));
         })
     });
     native.update(|window, cx| window.render_frame(cx));
@@ -283,17 +285,17 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
     native.update(|window, cx| window.render_frame(cx));
     let button_bounds = native.update(|window, _| window.find("wrapping-parent").bounds());
     tree.read_with(&native, |tree, _| {
-        let paragraph = tree.measured_bounds("paragraph").unwrap();
-        let hash = tree.measured_bounds("hash").unwrap();
+        let paragraph = tree.measured_bounds(&[named_id("paragraph")]).unwrap();
+        let hash = tree.measured_bounds(&[named_id("hash")]).unwrap();
         assert!(
             button_bounds.bottom() >= hash.bottom(),
             "auto-height button must show every wrapped line"
         );
-        let count = tree.measured_bounds("count").unwrap();
-        assert!(tree.measured_bounds("height").unwrap().right() <= hash.left());
+        let count = tree.measured_bounds(&[named_id("count")]).unwrap();
+        assert!(tree.measured_bounds(&[named_id("height")]).unwrap().right() <= hash.left());
         assert_eq!(
-            tree.measured_bounds("label").unwrap().size.width,
-            tree.measured_bounds("reference").unwrap().size.width,
+            tree.measured_bounds(&[named_id("label")]).unwrap().size.width,
+            tree.measured_bounds(&[named_id("reference")]).unwrap().size.width,
             "intrinsic labels cannot lose letters to a Fill spacer"
         );
         assert!(paragraph.size.width <= px(620.));
@@ -303,7 +305,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         );
         assert!(hash.right() <= count.left());
         assert!(
-            hash.size.height > tree.measured_bounds("reference").unwrap().size.height,
+            hash.size.height > tree.measured_bounds(&[named_id("reference")]).unwrap().size.height,
             "WordOrGlyph must override a native Button's inherited nowrap"
         );
         assert!(count.right() <= paragraph.left() + px(620.));
@@ -354,7 +356,7 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
             .clone();
     }
     let root = wire::Node::Scroll {
-        key: "folders".into(),
+        id: wire::ElementIdWire::Name("folders".into()),
         content: Box::new(columns),
         direction: wire::ScrollDirection::Horizontal,
         width: Some(wire::Length::Fill),
@@ -429,10 +431,19 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
-        assert_eq!(tree.scrolls["folders"].max_offset().x, px(520.));
-        assert_eq!(tree.scrolls["folders"].bounds().size.height, px(152.));
+        let folders = vec![named_id("main"), named_id("folders")];
+        assert_eq!(tree.scrolls[&folders].max_offset().x, px(520.));
+        assert_eq!(tree.scrolls[&folders].bounds().size.height, px(152.));
         assert_eq!(
-            tree.measured_bounds("column-0").unwrap().size.width,
+            tree.measured_bounds(&[
+                named_id("main"),
+                named_id("folders"),
+                named_id("columns-box"),
+                named_id("column-0"),
+            ])
+                .unwrap()
+                .size
+                .width,
             px(230.)
         );
     });
@@ -463,13 +474,14 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
         window.render_frame(cx);
     });
     tree.read_with(&native, |tree, _| {
+        let folders = vec![named_id("main"), named_id("folders")];
         assert!(
-            tree.scrolls["folders"].offset().x < px(-200.),
+            tree.scrolls[&folders].offset().x < px(-200.),
             "scrollbar track click reveals offscreen columns: bounds={:?}, offset={:?}",
-            tree.scrolls["folders"].bounds(),
-            tree.scrolls["folders"].offset()
+            tree.scrolls[&folders].bounds(),
+            tree.scrolls[&folders].offset()
         );
-        assert_eq!(tree.scrolls["folders"].offset().y, px(0.));
+        assert_eq!(tree.scrolls[&folders].offset().y, px(0.));
     });
 }
 
@@ -477,7 +489,7 @@ fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::Te
 fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let root = wire::Node::Sensor {
-        key: "viewport".into(),
+        id: named_id("viewport"),
         reset: None,
         on_show: Some(1),
         on_resize: None,
@@ -505,7 +517,7 @@ fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
     native.update(|window, cx| window.render_frame(cx));
     tree.read_with(&native, |tree, _| {
         assert_eq!(
-            tree.sensors["viewport"].size,
+            tree.sensors[&vec![named_id("viewport")]].size,
             Some(size(px(400.), px(300.)))
         );
     });

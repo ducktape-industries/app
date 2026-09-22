@@ -251,7 +251,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::ImageViewer {
-            key,
+            id,
             hash,
             data,
             width,
@@ -272,7 +272,8 @@ impl ViewTree {
             viewer.scale = 1.0;
         }
         let mut element = announce(
-            dimensions(div().relative().overflow_hidden(), *width, *height).id(key.clone()),
+            dimensions(div().relative().overflow_hidden(), *width, *height)
+                .id(id.to_gpui().expect("sanitized image viewer identity")),
             accessible(node),
         );
         if let Some(image) = frame {

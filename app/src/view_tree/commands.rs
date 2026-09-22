@@ -140,6 +140,9 @@ impl ViewTree {
         if let Some((_, handle)) = self.focus_targets.get(target) {
             return handle.is_focused(window);
         }
+        if let Some(field) = self.fields.get(target) {
+            return field.state.read(cx).focus_handle(cx).is_focused(window);
+        }
         if let Some(picker) = self.pickers.get(target) {
             return picker
                 .state
@@ -240,6 +243,12 @@ impl ViewTree {
         }
         if let Some(editor) = self.editors.get(target) {
             editor.view.widget_command(command, window, cx);
+            return Ok(wire::encode(&()));
+        }
+        if let Some(field) = self.fields.get(target) {
+            if matches!(command, C::Focus { .. }) {
+                field.state.update(cx, |field, cx| field.focus(window, cx));
+            }
             return Ok(wire::encode(&()));
         }
         if let Some(picker) = self.pickers.get(target) {
@@ -372,7 +381,7 @@ impl ViewTree {
                     if let Some(id) = interactivity.focus_handle { guest_focus_ids.insert(id); }
                 }
                 wire::Node::UniformList { path, .. } => { uniform_lists.insert(path.clone()); }
-                wire::Node::List { path, state, .. } => { variable_lists.insert((path.clone(), *state)); }
+                wire::Node::List { path, state, .. } => { variable_lists.insert(VariableListKey { path: path.clone(), state: *state }); }
                 wire::Node::Input { .. } => {
                     inputs.insert(path.clone());
                 }
@@ -457,11 +466,11 @@ impl ViewTree {
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.lists.retain(|key, _| scrolls.contains(key));
         self.uniform_lists.retain(|id, list| {
-            list.rows.borrow_mut().clear();
+            list.rows.clear();
             uniform_lists.contains(id)
         });
         self.variable_lists.retain(|id, list| {
-            list.rows.borrow_mut().clear();
+            list.rows.clear();
             variable_lists.contains(id)
         });
         self.scroll_positions.retain(|key, _| scrolls.contains(key));

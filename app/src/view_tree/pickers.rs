@@ -61,10 +61,10 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let (key, options, selected, handler, placeholder, width, reset, input, menu_height) =
+        let (id, options, selected, handler, placeholder, width, reset, input, menu_height) =
             match node {
                 wire::Node::PickList {
-                    key,
+                    id,
                     options,
                     selected,
                     on_select,
@@ -73,7 +73,7 @@ impl ViewTree {
                     settings,
                     ..
                 } => (
-                    key,
+                    id,
                     options,
                     *selected,
                     *on_select,
@@ -84,7 +84,7 @@ impl ViewTree {
                     settings.menu_height,
                 ),
                 wire::Node::ComboBox {
-                    key,
+                    id,
                     state_key,
                     options,
                     selected,
@@ -95,7 +95,7 @@ impl ViewTree {
                     settings,
                     ..
                 } => (
-                    key,
+                    id,
                     options,
                     *selected,
                     *on_select,
@@ -213,7 +213,7 @@ impl ViewTree {
             });
         }
         let mut select = Select::new(&picker.state)
-            .id(key.clone())
+            .id(id.to_gpui().expect("sanitized picker identity"))
             .placeholder(placeholder.to_owned());
         // the kit draws the picker's node itself; the wire `label` names it
         if let Some(name) = accessible(node).name {

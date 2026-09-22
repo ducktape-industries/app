@@ -266,7 +266,6 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Scroll {
-            key,
             content,
             width,
             height,
@@ -310,7 +309,7 @@ impl ViewTree {
             *background,
             *border,
         )
-        .id(key.clone())
+        .id(path.last().unwrap().to_gpui().expect("sanitized scroll identity"))
         .track_scroll(&handle);
         let element = match direction {
             wire::ScrollDirection::Vertical => element.overflow_y_scroll(),

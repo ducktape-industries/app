@@ -112,7 +112,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     );
     // A room's real root: a viewport sensor around the press area.
     let root = wire::Node::Sensor {
-        key: "viewport".into(),
+        id: named_id("viewport"),
         reset: None,
         on_show: None,
         on_resize: Some(1),
@@ -120,7 +120,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         anticipate: None,
         delay: None,
         child: Box::new(wire::Node::MouseArea {
-            key: "press-area".into(),
+            id: named_id("press-area"),
             role: None,
             label: None,
             expanded: None,
@@ -166,7 +166,12 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         window.render_frame(cx);
     });
     let bounds = |key: &str| {
-        tree.read_with(&native, |tree, _| tree.measured_bounds(key))
+        let mut path = vec![named_id("viewport"), named_id("press-area"), named_id("workspace")];
+        if key != "sidebar" {
+            path.push(named_id("room"));
+        }
+        path.push(named_id(key));
+        tree.read_with(&native, |tree, _| tree.measured_bounds(&path))
             .unwrap_or_else(|| panic!("{key} was measured"))
     };
     let (sidebar, error, composer) = (bounds("sidebar"), bounds("error"), bounds("composer"));
@@ -213,7 +218,7 @@ fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::Te
         Some(wire::Length::Fixed(20.)),
     );
     let root = wire::Node::Overlay {
-        key: "float-overlay".into(),
+        id: named_id("float-overlay"),
         label: Some("Context menu".into()),
         padding: 30.,
         backdrop: wire::Rgba([0.; 4]),
@@ -241,7 +246,13 @@ fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::Te
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     let card = tree
-        .read_with(&native, |tree, _| tree.measured_bounds("float-card"))
+        .read_with(&native, |tree, _| {
+            tree.measured_bounds(&[
+                named_id("float-overlay"),
+                named_id("float-card-box"),
+                named_id("float-card"),
+            ])
+        })
         .expect("the floated card was measured");
     assert_eq!(card.origin, point(px(37.), px(29.)));
     native.update(|window, cx| {
@@ -311,7 +322,7 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
         .borrow()
         .iter()
         .any(|event| matches!(event, wire::Event::Click { handler: 42, event: wire::click::Click::Mouse { .. } })));
-    assert!(tree.read_with(&native, |tree, _| tree.mounted.contains("interactive")));
+    assert!(tree.read_with(&native, |tree, _| tree.mounted.contains(&vec![named_id("interactive")])));
 }
 
 #[gpui_kit::test]

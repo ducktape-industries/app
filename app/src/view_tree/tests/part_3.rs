@@ -80,7 +80,7 @@ fn a_radio_reports_whether_it_is_the_selected_one() {
 #[test]
 fn a_slider_and_a_progress_report_their_value_in_range() {
     let slider = wire::Node::Slider {
-        key: "s".into(),
+        id: named_id("s"),
         label: None,
         value: 30.,
         min: 0.,
@@ -153,7 +153,8 @@ fn an_input_is_named_by_its_label_and_a_secure_one_never_reports_its_value() {
 fn an_editor_is_named_by_its_label_and_described_by_its_placeholder_without_one() {
     let mut editor = wire::Node::Editor {
         options: Box::default(),
-        key: "e".into(),
+        id: named_id("e"),
+        style: gpui_kit::StyleRefinement::default(),
         label: None,
         placeholder: "Write something".into(),
         document: wire::editor_document::EditorDocumentRef {
@@ -166,10 +167,6 @@ fn an_editor_is_named_by_its_label_and_described_by_its_placeholder_without_one(
         },
         on_document: 0,
         editable: true,
-        width: None,
-        height: None,
-        min_height: None,
-        max_height: None,
     };
     assert_eq!(
         accessible(&editor),
@@ -198,7 +195,8 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
     let words = "no channel is open";
     for editable in [true, false] {
         let root = wire::Node::Editor {
-            key: "composer".into(),
+            id: named_id("composer"),
+            style: gpui_kit::StyleRefinement::default(),
             label: Some("Message".into()),
             options: Box::default(),
             placeholder: String::new(),
@@ -212,10 +210,6 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
             },
             on_document: 0,
             editable,
-            width: None,
-            height: None,
-            min_height: None,
-            max_height: None,
         };
         let store = crate::editor::wire::EditorStore::new(91);
         store.replace(&root).unwrap();
@@ -255,7 +249,7 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
 fn a_picker_reports_the_chosen_option_as_its_value() {
     let options = vec!["Low".to_owned(), "High".to_owned()];
     let combo = |selected| wire::Node::ComboBox {
-        key: "c".into(),
+        id: named_id("c"),
         label: None,
         state_key: "c".into(),
         options: options.clone(),
@@ -268,7 +262,7 @@ fn a_picker_reports_the_chosen_option_as_its_value() {
     };
     let pick = |selected| wire::Node::PickList {
         settings: Box::default(),
-        key: "p".into(),
+        id: named_id("p"),
         label: None,
         options: options.clone(),
         selected,
@@ -330,7 +324,7 @@ fn layout_is_not_in_the_accessibility_tree() {
 #[test]
 fn a_slider_is_named_by_its_label() {
     let slider = |label: Option<&str>| wire::Node::Slider {
-        key: "s".into(),
+        id: named_id("s"),
         label: label.map(str::to_owned),
         value: 1.,
         min: 0.,
@@ -419,7 +413,7 @@ fn a_button_with_a_role_is_that_role_and_reports_selected() {
 #[test]
 fn a_mouse_area_is_announced_only_as_the_role_its_view_gives_it() {
     let area = |role, label: Option<&str>| wire::Node::MouseArea {
-        key: "m".into(),
+        id: named_id("m"),
         role,
         label: label.map(str::to_owned),
         expanded: Some(true),
@@ -462,7 +456,7 @@ fn a_mouse_area_is_announced_only_as_the_role_its_view_gives_it() {
 #[test]
 fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
     let overlay = |label: Option<&str>, open| wire::Node::Overlay {
-        key: "o".into(),
+        id: named_id("o"),
         label: label.map(str::to_owned),
         padding: 0.,
         backdrop: wire::Rgba([0.; 4]),

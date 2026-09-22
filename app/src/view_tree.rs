@@ -256,7 +256,8 @@ impl ViewTree {
                 announce(div().id(key.clone()).child(qr(code)), accessible(node)).into_any_element()
             }
             // the host registers no surface: the slot says so where it would be
-            Node::Surface { name, .. } => div()
+            Node::Surface { id, name, .. } => div()
+                .id(id.to_gpui().expect("sanitized surface identity"))
                 .child(format!("Unavailable host surface: {name}"))
                 .into_any_element(),
             Node::Overlay { .. } => self.overlay(node, window, cx),

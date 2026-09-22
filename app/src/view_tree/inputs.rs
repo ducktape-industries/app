@@ -477,7 +477,7 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Slider {
-            key,
+            id,
             value,
             min,
             max,
@@ -551,7 +551,11 @@ impl ViewTree {
             wire::Axis::Row => Slider::new(&control.state).horizontal(),
             wire::Axis::Column => Slider::new(&control.state).vertical(),
         };
-        dimensions(div(), *width, *height)
+        dimensions(
+            div().id(id.to_gpui().expect("sanitized slider identity")),
+            *width,
+            *height,
+        )
             .child(slider)
             .into_any_element()
     }

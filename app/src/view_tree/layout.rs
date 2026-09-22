@@ -123,7 +123,7 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let wire::Node::Responsive { key, content } = node
+        let wire::Node::Responsive { content, .. } = node
         else {
             unreachable!()
         };

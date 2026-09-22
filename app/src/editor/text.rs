@@ -565,6 +565,11 @@ fn edit_kind(before: &str, after: &str) -> wire::EditorEditKind {
 /// A store holding one ready document with the given claims. The mount reads
 /// its projection exactly the way it reads a live guest's.
 #[cfg(test)]
+fn editor_path() -> crate::view_tree::AuthoredPath {
+    vec![wire::ElementIdWire::Name("document".into())]
+}
+
+#[cfg(test)]
 fn store_with(
     name: &str,
     text: &str,
@@ -585,7 +590,7 @@ fn store_with(
     };
     let mut locked = store.lock();
     locked.fields.insert(
-        "document".into(),
+        editor_path(),
         super::Field {
             reference: reference.clone(),
             handler: 1,
@@ -623,7 +628,7 @@ fn settle(store: &EditorStore, name: &str) {
     let mut locked = store.lock();
     while !locked.documents[name].queue.is_empty() {
         let accepted = locked.documents[name].reference.clone();
-        locked.fields.get_mut("document").unwrap().reference = accepted;
+        locked.fields.get_mut(&editor_path()).unwrap().reference = accepted;
         locked.acknowledge();
         locked.pump();
         assert!(locked.fault.is_none(), "{:?}", locked.fault);
@@ -641,7 +646,7 @@ fn an_empty_field_wears_the_guests_placeholder_and_takes_what_is_typed(
     cx.update(gpui_kit::init);
     let store = store_with("empty", "", Vec::new(), "Start writing");
     let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new("document".into(), store.clone(), window, cx)
+        TextEditor::new(editor_path(), store.clone(), window, cx)
     });
     let editor = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -656,7 +661,7 @@ fn an_empty_field_wears_the_guests_placeholder_and_takes_what_is_typed(
         input.read(cx).focus_handle(cx).focus(window, cx);
         window.render_frame(cx);
     });
-    store.lock().fields.get_mut("document").unwrap().placeholder = "새 문서".into();
+    store.lock().fields.get_mut(&editor_path()).unwrap().placeholder = "새 문서".into();
     native.update(|window, cx| {
         editor.update(cx, |editor, cx| editor.sync(window, cx));
         window.render_frame(cx);
@@ -693,7 +698,7 @@ fn shift_and_an_arrow_select_across_the_lines_of_one_document(cx: &mut gpui_kit:
     cx.update(gpui_kit::init);
     let store = store_with("lines", "one\ntwo\nthree", Vec::new(), "");
     let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new("document".into(), store.clone(), window, cx)
+        TextEditor::new(editor_path(), store.clone(), window, cx)
     });
     let editor = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -734,7 +739,7 @@ fn backspace_at_the_head_of_a_line_joins_it_to_the_one_above(cx: &mut gpui_kit::
     cx.update(gpui_kit::init);
     let store = store_with("join", "one\ntwo", Vec::new(), "");
     let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new("document".into(), store.clone(), window, cx)
+        TextEditor::new(editor_path(), store.clone(), window, cx)
     });
     let editor = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -779,7 +784,7 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
         "",
     );
     let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new("document".into(), store.clone(), window, cx)
+        TextEditor::new(editor_path(), store.clone(), window, cx)
     });
     let editor = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -824,9 +829,9 @@ fn a_readonly_field_reports_no_edit(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let store = store_with("readonly", "Read only 한글", Vec::new(), "");
-    store.lock().fields.get_mut("document").unwrap().editable = false;
+    store.lock().fields.get_mut(&editor_path()).unwrap().editable = false;
     let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-        TextEditor::new("document".into(), store.clone(), window, cx)
+        TextEditor::new(editor_path(), store.clone(), window, cx)
     });
     let editor = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -873,7 +878,7 @@ fn a_drag_through_a_paragraph_does_not_fill_the_queue() {
     for byte in 1..text.len() {
         let next = reaching(byte);
         store.native(
-            "document",
+            &editor_path(),
             text,
             held,
             text,

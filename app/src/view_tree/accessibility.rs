@@ -345,7 +345,6 @@ impl ViewTree {
         let mut scrolls = HashMap::new();
         super::commands::walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
             if let wire::Node::Scroll {
-                key,
                 direction,
                 anchor_x,
                 anchor_y,

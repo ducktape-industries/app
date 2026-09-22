@@ -172,8 +172,8 @@ impl ViewTree {
             // A Label: assistive technology reads its content as its name.
             .child(gpui_kit::Text::new(text_id, content.clone().into()));
         #[cfg(test)]
-        let element = if let Some(key) = node.key() {
-            element.child(self.measure(key, cx))
+        let element = if id.is_some() {
+            element.child(self.measure(&self.authored_path, cx))
         } else {
             element
         };
