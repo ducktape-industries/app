@@ -47,6 +47,7 @@ mod scroll;
 mod sensors;
 mod style;
 mod surfaces;
+mod svg_limits;
 mod text;
 mod tooltip_containment;
 mod uniform;
@@ -72,6 +73,7 @@ use style::{
     button_style, content_dimensions, cross_align, decoration, dimensions, has_named_overlay,
     named_overlay, native_cursor, object_fit, pad, rgba, shadows,
 };
+use svg_limits::{guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
 
 type AuthoredPath = Vec<wire::ElementIdWire>;

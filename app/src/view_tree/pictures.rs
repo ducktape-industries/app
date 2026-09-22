@@ -87,10 +87,18 @@ impl ViewTree {
         else {
             unreachable!()
         };
+        let refused_data = matches!(
+            source,
+            wire::SvgSource::Data {
+                bytes: Some(bytes),
+                ..
+            } if !svg_data_allowed(bytes)
+        );
         if let wire::SvgSource::Data {
             hash,
             bytes: Some(bytes),
         } = source
+            && !refused_data
         {
             self.remember_vector(*hash, bytes);
         }
@@ -104,21 +112,26 @@ impl ViewTree {
                 ))
                 .with_rotation(radians(transformation.rotate));
         element = match source {
+            wire::SvgSource::Data { .. } if refused_data => {
+                element.child("Compressed SVG data refused")
+            }
             wire::SvgSource::Data { hash, .. } => match self.vectors.get(hash) {
-                Some(bytes) => element.child(
+                Some(bytes) => element.child(guarded_svg_paint(
                     svg()
                         .data(bytes)
                         .with_transformation(native_transform)
                         .size_full(),
-                ),
+                )),
                 None => element.child("SVG data unavailable"),
             },
-            wire::SvgSource::Asset(path) if safe_asset_path(path) => element.child(
-                svg()
-                    .path(path.clone())
-                    .with_transformation(native_transform)
-                    .size_full(),
-            ),
+            wire::SvgSource::Asset(path) if safe_asset_path(path) => {
+                element.child(guarded_svg_paint(
+                    svg()
+                        .path(path.clone())
+                        .with_transformation(native_transform)
+                        .size_full(),
+                ))
+            }
             wire::SvgSource::Asset(_) => element.child("SVG asset identifier refused"),
             wire::SvgSource::External(_) => element.child("External SVG path refused"),
             wire::SvgSource::None => element.child("SVG source unavailable"),
@@ -151,14 +164,14 @@ impl ViewTree {
         let bounds = self.bounds.get(&host_key).copied().unwrap_or_default();
         let width = f32::from(bounds.size.width).max(1.);
         let height = f32::from(bounds.size.height).max(1.);
-        root.child(
+        root.child(guarded_svg_paint(
             img(Arc::new(Image::from_bytes(
                 ImageFormat::Svg,
                 canvas_svg(commands, width, height),
             )))
             .size_full()
             .object_fit(ObjectFit::Fill),
-        )
+        ))
         .child(self.measure(&host_key, cx))
         .into_any_element()
     }
@@ -220,7 +233,7 @@ impl ViewTree {
     }
 
     pub(super) fn remember_vector(&mut self, hash: u64, bytes: &[u8]) {
-        if self.vectors.contains_key(&hash) {
+        if !svg_data_allowed(bytes) || self.vectors.contains_key(&hash) {
             return;
         }
         let used = self.vectors.values().map(|bytes| bytes.len()).sum();
