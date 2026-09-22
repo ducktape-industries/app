@@ -80,6 +80,8 @@ type AuthoredPath = Vec<wire::ElementIdWire>;
 
 #[derive(Default)]
 pub(crate) struct NativePresentation {
+    images: HashMap<u64, Arc<RenderImage>>,
+    vectors: HashMap<u64, Arc<[u8]>>,
     focused_container: Option<(String, std::mem::Discriminant<wire::Node>)>,
     inputs: HashMap<AuthoredPath, InputPresentation>,
     editors: HashMap<String, wire::editor_document::EditorDocumentRef>,
