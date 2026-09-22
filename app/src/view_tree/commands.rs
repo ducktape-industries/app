@@ -360,6 +360,7 @@ impl ViewTree {
         let mut inputs = std::collections::HashSet::new();
         collect_input_paths(&root, &mut Vec::new(), &mut inputs);
         let mut scrolls = std::collections::HashSet::new();
+        let mut uniform_lists = std::collections::HashSet::new();
         let mut pickers = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
         let mut dialogs = std::collections::HashSet::new();
@@ -381,6 +382,9 @@ impl ViewTree {
                 wire::Node::Input { .. } => {}
                 wire::Node::Scroll { key, .. } => {
                     scrolls.insert(key.clone());
+                }
+                wire::Node::UniformList { id, .. } => {
+                    uniform_lists.insert(id.clone());
                 }
                 wire::Node::PickList { key, .. } | wire::Node::ComboBox { key, .. } => {
                     pickers.insert(key.clone());
@@ -469,6 +473,7 @@ impl ViewTree {
             .retain(|key, _| live_keys.contains(key));
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.lists.retain(|key, _| scrolls.contains(key));
+        self.uniform_lists.retain(|id, _| uniform_lists.contains(id));
         self.scroll_positions.retain(|key, _| scrolls.contains(key));
         self.pickers.retain(|key, _| pickers.contains(key));
         self.drags.retain(|key, _| drags.contains(key));

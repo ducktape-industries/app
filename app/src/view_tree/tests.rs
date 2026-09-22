@@ -79,7 +79,7 @@ include!("tests/part_1.rs");
 include!("tests/part_2.rs");
 include!("tests/part_3.rs");
 include!("tests/part_4.rs");
-
 include!("tests/gpui_clip.rs");
 
 include!("tests/gpui_activation.rs");
+include!("tests/part_5.rs");

@@ -47,6 +47,7 @@ mod sensors;
 mod style;
 mod surfaces;
 mod text;
+mod uniform;
 
 #[cfg(test)]
 mod tests;
@@ -68,6 +69,7 @@ use style::{
     horizontal_align, named_overlay, native_cursor, object_fit, pad, rgba, shadows, text_options,
 };
 use text::RichSelection;
+use uniform::UniformListHostState;
 
 type AuthoredPath = Vec<wire::ElementIdWire>;
 
@@ -103,6 +105,7 @@ pub struct ViewTree {
     rich_selections: HashMap<String, RichSelection>,
     scrolls: HashMap<String, ScrollHandle>,
     lists: HashMap<String, VirtualScroll>,
+    uniform_lists: HashMap<wire::ElementIdWire, UniformListHostState>,
     scroll_positions: HashMap<String, (Point<Pixels>, Point<Pixels>)>,
     pickers: HashMap<String, Picker>,
     drags: HashMap<String, Point<Pixels>>,
@@ -138,6 +141,7 @@ impl ViewTree {
             rich_selections: HashMap::new(),
             scrolls: HashMap::new(),
             lists: HashMap::new(),
+            uniform_lists: HashMap::new(),
             scroll_positions: HashMap::new(),
             pickers: HashMap::new(),
             drags: HashMap::new(),
@@ -187,6 +191,7 @@ impl ViewTree {
             Node::Space { width, height } => dimensions(div(), *width, *height).into_any_element(),
             Node::Linear { .. } => self.linear(node, window, cx),
             Node::KeyedColumn { .. } => self.keyed_column(node, window, cx),
+            Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::Container { .. } => self.container(node, window, cx),
             Node::Scroll { .. } => self.scroll(node, window, cx),
             Node::Button { .. } => self.button(node, window, cx),
