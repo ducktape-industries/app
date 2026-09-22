@@ -7,14 +7,14 @@ pub(crate) fn render_tree_fixture() {
     use gpui_kit::component::{Root, Theme, ThemeMode};
     use gpui_kit::*;
     let args: Vec<_> = std::env::args().collect();
-    let fixture: Fixture = serde_json::from_slice(
+    let tree: view_wire::Node = serde_json::from_slice(
         &std::fs::read(
             args.get(2)
                 .expect("--render-tree <json> --size WxH --theme light|dark"),
         )
         .expect("read fixture"),
     )
-    .expect("decode wire tree or pane fixture");
+    .expect("decode wire tree");
     let path = std::path::PathBuf::from(&args[2]);
     let option = |name: &str| {
         args.windows(2)
@@ -53,50 +53,13 @@ pub(crate) fn render_tree_fixture() {
                     ..Default::default()
                 },
                 |window, cx| {
-                    let (panes, focused, popped_out, bare) = match fixture {
-                        Fixture::Tree(tree) => (
-                            vec![FixturePane {
-                                label: String::new(),
-                                context: String::new(),
-                                tree: *tree,
-                            }],
-                            0,
-                            false,
-                            true,
-                        ),
-                        Fixture::Workspace {
-                            panes,
-                            focused,
-                            popped_out,
-                        } => {
-                            assert!(
-                                (1..=super::layout::MAX_PANES).contains(&panes.len()),
-                                "one to three panes"
-                            );
-                            assert!(focused < panes.len(), "focused pane exists");
-                            assert!(!popped_out || panes.len() == 1, "one popped view");
-                            (panes, focused, popped_out, false)
-                        }
-                    };
-                    let panes = panes
-                        .into_iter()
-                        .map(|pane| {
-                            let store = fixture_editor_store(&pane.tree, &path);
-                            let tree = cx.new(|cx| {
-                                let mut tree = crate::view_tree::ViewTree::new(pane.tree);
-                                tree.set_editor_store(store, cx);
-                                tree
-                            });
-                            (pane.label, pane.context, tree)
-                        })
-                        .collect();
-                    let frame = cx.new(|_| TreeFixtureFrame {
-                        panes,
-                        focused,
-                        popped_out,
-                        bare,
-                        dark,
+                    let store = fixture_editor_store(&tree, &path);
+                    let tree = cx.new(|cx| {
+                        let mut view = crate::view_tree::ViewTree::new(tree);
+                        view.set_editor_store(store, cx);
+                        view
                     });
+                    let frame = cx.new(|_| TreeFixtureFrame { tree });
                     cx.new(|cx| Root::new(frame, window, cx))
                 },
             )
@@ -105,191 +68,21 @@ pub(crate) fn render_tree_fixture() {
         });
 }
 
-#[derive(serde::Deserialize)]
-#[serde(untagged)]
-enum Fixture {
-    Workspace {
-        panes: Vec<FixturePane>,
-        #[serde(default)]
-        focused: usize,
-        #[serde(default)]
-        popped_out: bool,
-    },
-    Tree(Box<view_wire::Node>),
-}
-
-#[derive(serde::Deserialize)]
-struct FixturePane {
-    label: String,
-    #[serde(default)]
-    context: String,
-    tree: view_wire::Node,
-}
-
 struct TreeFixtureFrame {
-    panes: Vec<(String, String, Entity<crate::view_tree::ViewTree>)>,
-    focused: usize,
-    popped_out: bool,
-    bare: bool,
-    dark: bool,
+    tree: Entity<crate::view_tree::ViewTree>,
 }
 
 impl Render for TreeFixtureFrame {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use crate::a11y::Control as _;
         use gpui_kit::component::ActiveTheme as _;
-        use gpui_kit::prelude::FluentBuilder as _;
         use gpui_kit::*;
-        let palette = design::palette(self.dark);
-        let ink = super::hsla_of(palette.sidebar_foreground);
-        let muted = super::hsla_of(palette.sidebar_muted);
-        let border = super::hsla_of(palette.sidebar_border);
-        let accent = super::hsla_of(palette.accent);
         let mut frame = div();
         frame.text_style().font_fallbacks = Some(fallback_chain());
-        let frame = frame
+        frame
             .size_full()
             .bg(cx.theme().background)
-            .text_color(cx.theme().foreground);
-        if self.bare {
-            return frame.child(self.panes[0].2.clone());
-        }
-        let rail = div()
-            .id("rail")
-            .w(px(super::RAIL_WIDTH))
-            .h_full()
-            .flex_shrink_0()
-            .flex()
-            .flex_col()
-            .bg(cx.theme().sidebar)
-            .border_r_1()
-            .border_color(border)
-            .child(
-                div()
-                    .px_3()
-                    .pt_3()
-                    .pb_2()
-                    .text_size(px(13.))
-                    .text_color(ink)
-                    .child("Workspace")
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(muted)
-                            .child("Fixture network"),
-                    ),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .px_2()
-                    .children(self.panes.iter().enumerate().map(|(n, (label, _, _))| {
-                        div()
-                            .h(px(28.))
-                            .px_2()
-                            .rounded(px(design::radius::CONTROL as f32))
-                            .text_size(px(13.))
-                            .text_color(ink)
-                            .when(n == self.focused, |row| {
-                                row.bg(super::hsla_of(palette.sidebar_raised))
-                            })
-                            .child(label.clone())
-                    })),
-            )
-            .child(
-                div()
-                    .px_2()
-                    .py_2()
-                    .border_t_1()
-                    .border_color(border)
-                    .text_size(px(11.))
-                    .text_color(muted)
-                    .child("Reading without a key"),
-            );
-        let stage = div()
-            .flex()
-            .flex_1()
-            .min_w_0()
-            .h_full()
-            .gap(px(6.))
-            .py(px(8.))
-            .pr(px(8.))
-            .when(self.popped_out, |stage| stage.pl(px(8.)))
-            .children(
-                self.panes
-                    .iter()
-                    .enumerate()
-                    .map(|(n, (label, context, tree))| {
-                        let control = |action: &str, glyph: &str| {
-                            div()
-                                .id(SharedString::from(format!("pane/{n}/{action}")))
-                                .control(Role::Button, SharedString::from(action.to_owned()))
-                                .aria_disabled(
-                                    action == "split"
-                                        && self.panes.len() == super::layout::MAX_PANES,
-                                )
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .size(px(22.))
-                                .text_color(muted)
-                                .child(glyph.to_owned())
-                        };
-                        div()
-                            .id(SharedString::from(format!("pane/{n}")))
-                            .flex()
-                            .flex_col()
-                            .flex_1()
-                            .min_w_0()
-                            .h_full()
-                            .overflow_hidden()
-                            .rounded(px(8.))
-                            .bg(cx.theme().background)
-                            .border(px(if n == self.focused { 1.5 } else { 1. }))
-                            .border_color(if n == self.focused { accent } else { border })
-                            .child(
-                                div()
-                                    .id(SharedString::from(format!("pane/{n}/strip")))
-                                    .flex()
-                                    .items_center()
-                                    .h(px(30.))
-                                    .flex_shrink_0()
-                                    .px(px(10.))
-                                    .gap(px(6.))
-                                    .text_size(px(12.))
-                                    .child(
-                                        div()
-                                            .font_weight(FontWeight::BOLD)
-                                            .text_color(ink)
-                                            .child(label.clone()),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .truncate()
-                                            .text_color(muted)
-                                            .child(context.clone()),
-                                    )
-                                    // Mirrors panes.rs: a console pane splits and pops
-                                    // out; a popped-out window only pops back in.
-                                    .when(!self.popped_out, |strip| {
-                                        strip
-                                            .child(control("split", "⊞"))
-                                            .child(control("popout", "↗"))
-                                    })
-                                    .when(self.popped_out, |strip| {
-                                        strip.child(control("popin", "↙"))
-                                    })
-                                    .child(control("close", "×")),
-                            )
-                            .child(div().flex_1().min_h_0().size_full().child(tree.clone()))
-                    }),
-            );
-        frame
-            .flex()
-            .when(!self.popped_out, |frame| frame.child(rail))
-            .child(stage)
+            .text_color(cx.theme().foreground)
+            .child(self.tree.clone())
     }
 }
 
