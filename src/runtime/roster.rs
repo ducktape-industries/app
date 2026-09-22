@@ -84,10 +84,13 @@ pub fn rail() -> Vec<RailRow> {
                 Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
                     (guest.name.clone(), None, false)
                 }
-                Some(Slot::Ready(_)) | None => (module.to_owned(), None, false),
+                Some(Slot::Ready(_)) => (module.to_owned(), None, false),
                 Some(Slot::Empty) => (module.to_owned(), None, true),
                 Some(Slot::Failed(_)) => (module.to_owned(), Some("Failed"), false),
-                Some(_) => (module.to_owned(), Some("Loading"), false),
+                // No seat yet (a pane just let go of it, the roster hasn't
+                // remounted it) is loading too, not a final unnamed view —
+                // else the raw module id flashes in the rail/pane title.
+                Some(_) | None => (module.to_owned(), Some("Loading"), false),
             };
             RailRow {
                 module,
@@ -277,5 +280,36 @@ mod local_link_tests {
         assert_eq!(local_seat("duck://preferences", &rows), Some("catalog"));
         rows[0].note = Some("Loading");
         assert_eq!(local_seat("duck://preferences", &rows), None);
+    }
+}
+
+#[cfg(test)]
+mod rail_tests {
+    use super::*;
+
+    /// A module the roster lists but whose seat hasn't been (re)mounted yet
+    /// — the gap right after a pane lets go of it and before the next
+    /// preload — must not draw as a final, unnamed view: that flashed the
+    /// raw module id ("rail-tests-unmounted") in the rail and any popped-out
+    /// pane's window title instead of a "Loading" row.
+    #[test]
+    fn unmounted_module_is_loading_not_a_bare_id() {
+        let module = "rail-tests-unmounted";
+        listed()
+            .lock()
+            .unwrap()
+            .push(crate::backend::views::Program {
+                name: module.into(),
+                code: abi::BlobId::Sha256([0; 32]),
+            });
+        // No entry for `module` is inserted into registry(): this is the
+        // `None` seat case rail() must treat as loading.
+        let row = rail()
+            .into_iter()
+            .find(|row| row.module == module)
+            .expect("listed module appears in the rail");
+        assert_eq!(row.label, module);
+        assert_eq!(row.note, Some("Loading"));
+        assert!(!row.empty);
     }
 }
