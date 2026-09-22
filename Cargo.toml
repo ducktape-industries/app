@@ -23,10 +23,10 @@ version = "0.1.0"
 [workspace.dependencies]
 
 # --- sdk-line: modules main, crates/sdk (abi, view-wire, ducklink, design) ---
-abi = { path = "/home/eddy/dev/ducktape/wt/modules-shots/crates/sdk/abi" }
-view-wire = { path = "/home/eddy/dev/ducktape/wt/modules-shots/crates/sdk/view-wire" }
-ducklink = { path = "/home/eddy/dev/ducktape/wt/modules-shots/crates/sdk/ducklink" }
-design = { path = "/home/eddy/dev/ducktape/wt/modules-shots/crates/sdk/design" }
+abi = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", branch = "main", package = "design" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -52,6 +52,7 @@ wasmtime = "=46.0.3"
 libc = "0.2"
 
 [patch.crates-io]
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }
 gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "021b436617db8bf377ad384b464cd1b34692f35e" }
 
 # dev/test builds compile wasm guests through cranelift (module-owned view

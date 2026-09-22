@@ -1,15 +1,23 @@
 """Capture real host-rendered fixture windows. No node or normal app startup."""
+import argparse
 import json
 import os
 from pathlib import Path
 import subprocess
 import time
 
-fixtures = Path('/home/eddy/dev/ducktape/wt/modules-shots/target/chat-screens')
-out = Path('/home/eddy/dev/ducktape/wt/chat-screens')
-binary = Path(os.environ['CARGO_TARGET_DIR']) / 'debug/ducktape-app'
-env = dict(os.environ, VK_ICD_FILENAMES='/usr/share/vulkan/icd.d/lvp_icd.json',
-           LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='llvmpipe')
+parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument('fixtures', type=Path, help='directory containing manifest.json and wire trees')
+parser.add_argument('output', type=Path, help='destination for PNGs and logs')
+parser.add_argument('--binary', type=Path, required=True, help='debug ducktape-app executable')
+args = parser.parse_args()
+fixtures, out, binary = args.fixtures.resolve(), args.output.resolve(), args.binary.resolve()
+(out / 'logs').mkdir(parents=True, exist_ok=True)
+env = dict(os.environ, LIBGL_ALWAYS_SOFTWARE='1', GALLIUM_DRIVER='llvmpipe')
+# Mesa packages use either lvp_icd.json or lvp_icd.<architecture>.json.
+icds = sorted(Path('/usr/share/vulkan/icd.d').glob('lvp_icd*.json'))
+if icds:
+    env.setdefault('VK_ICD_FILENAMES', str(icds[0]))
 env.pop('WAYLAND_DISPLAY', None)
 base_env = env
 rows = json.loads((fixtures / 'manifest.json').read_text())
@@ -85,10 +93,16 @@ def capture(row):
             subprocess.run(['xdotool', 'mousemove', str(int(width * .6)), str(height - 165)], env=env, check=True)
             time.sleep(1)
             subprocess.run(['import', '-window', 'root', str(png)], env=env, check=True)
+        colors = int(subprocess.check_output(['identify', '-format', '%k', str(png)]))
+        if colors <= 32:
+            png.unlink(missing_ok=True)
+            raise RuntimeError(f'{name}: final PNG is blank')
         print(f'{name}.png: {width}x{height}, {colors} colors', flush=True)
     finally:
-        stop(app, str(binary))
-        stop(xvfb, 'Xvfb')
+        try:
+            stop(app, str(binary))
+        finally:
+            stop(xvfb, 'Xvfb')
 
 # Independent displays and owned processes; no shared renderer state.
 from concurrent.futures import ThreadPoolExecutor
