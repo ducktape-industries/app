@@ -4,6 +4,7 @@
 
 mod app_dirs;
 pub(crate) mod noded;
+pub(crate) mod passkey;
 mod session;
 pub(crate) mod views;
 

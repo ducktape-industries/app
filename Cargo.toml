@@ -67,6 +67,12 @@ sha2.workspace = true
 ducktape-home.workspace = true
 ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", rev = "75fce331d60b942ab2f20b7d7bce9f53b3f9de8b" }
 keystore.workspace = true
+# The passkey lane (`backend/passkey.rs`): the verifier the node runs (to
+# pick which passkey signed and to frame its assertion), and the identity
+# program's own types, so a Create/AddKey/Consent is the program's bytes.
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "167128fd", package = "identity" }
+base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
 rand.workspace = true
@@ -130,6 +136,8 @@ quote = "1"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
 tempfile.workspace = true
+keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme", features = ["testkit"] }
+p256 = "0.13"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.5" }

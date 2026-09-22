@@ -20,7 +20,21 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
+        if state.passkey_waiting {
+            return self.passkey_waiting(cx);
+        }
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let account_name = self.input(
+            "account-name",
+            "Account name",
+            false,
+            "",
+            Message::AccountNameTyped,
+            || Message::PasskeyCreateSubmit,
+            Some("Account name"),
+            window,
+            cx,
+        );
         let submit: fn() -> Message = match state.key_exists {
             true => || Message::UnlockSubmit,
             false => || Message::CreateWalletSubmit,
@@ -145,11 +159,90 @@ impl DesktopWindow {
                         )
                     })
                     .child(
+                        div()
+                            .id("passkey")
+                            .role(Role::Group)
+                            .aria_label("Passkey")
+                            .mt_3()
+                            .pt_3()
+                            .border_t_1()
+                            .border_color(colors.border)
+                            .flex()
+                            .flex_col()
+                            .gap_2()
+                            .child(
+                                div()
+                                    .text_size(px(12.5))
+                                    .text_color(colors.muted_foreground)
+                                    .child("Or keep your account on a passkey. Your browser asks for it; the password above still locks this device's key."),
+                            )
+                            .child(account_name)
+                            .child(
+                                div()
+                                    .flex()
+                                    .gap_2()
+                                    .child(
+                                        self.action(
+                                            "passkey-create",
+                                            "Create account with a passkey",
+                                            || Message::PasskeyCreateSubmit,
+                                            state.unlock_busy,
+                                        )
+                                        .outline(),
+                                    )
+                                    .child(
+                                        self.action(
+                                            "passkey-sign-in",
+                                            "Sign in with a passkey",
+                                            || Message::PasskeySignInSubmit,
+                                            state.unlock_busy,
+                                        )
+                                        .outline(),
+                                    ),
+                            ),
+                    )
+                    .child(
                         self.action("disconnect", "Switch node", || Message::Disconnect, false)
                             .ghost(),
                     ),
             )
             .children(self.toast(cx))
+            .into_any_element()
+    }
+
+    /// A passkey ceremony is in the browser: say so, and offer to stop.
+    fn passkey_waiting(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        use gpui_kit::*;
+        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        div()
+            .id("passkey-waiting")
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(460.))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .id("passkey-waiting-status")
+                            .role(Role::Status)
+                            .aria_label("Continue in your browser")
+                            .text_size(px(20.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("Continue in your browser…"),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .text_color(colors.muted_foreground)
+                            .child("Your browser asks for your passkey twice. Come back here once it says you're done."),
+                    )
+                    .child(self.action("passkey-cancel", "Cancel", || Message::PasskeyCancel, false)),
+            )
             .into_any_element()
     }
 

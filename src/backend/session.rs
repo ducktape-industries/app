@@ -58,16 +58,41 @@ pub(crate) async fn seated_frame(
 ) -> Result<Vec<u8>, Refusal> {
     let session = SIGNER.lock().await;
     let signer = session.as_ref().ok_or_else(locked_seat)?;
-    let pubkey = signer.key.public_key().as_ref().to_vec();
-    let seq = client
-        .get(Layer::Preconfirmed, SIGNERS, &pubkey)
+    let seq = next_seq(client, signer.key.public_key().as_ref()).await?;
+    Ok(Frame::sign(&signer.key, network.as_bytes(), seq, target, payload).encode())
+}
+
+/// The sequence the node expects next from `signer`.
+pub(crate) async fn next_seq(client: &RpcClient, signer: &[u8]) -> Result<u64, Refusal> {
+    Ok(client
+        .get(Layer::Preconfirmed, SIGNERS, signer)
         .await
         .map_err(refused)?
         .map(|bytes| abi::decode::<u64>(&bytes))
         .transpose()
         .map_err(|refusal| Refusal::new("malformed_reply", refusal.sentence))?
-        .unwrap_or(0);
-    Ok(Frame::sign(&signer.key, network.as_bytes(), seq, target, payload).encode())
+        .unwrap_or(0))
+}
+
+/// The seated key's public half.
+pub(crate) async fn seated_key() -> Result<Vec<u8>, Refusal> {
+    let session = SIGNER.lock().await;
+    let signer = session.as_ref().ok_or_else(locked_seat)?;
+    Ok(signer.key.public_key().as_ref().to_vec())
+}
+
+/// The seated key's public half and its signature over `message` under
+/// `namespace` — a consent the device key gives (`backend::passkey`).
+pub(crate) async fn seated_sign(
+    namespace: &[u8],
+    message: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), Refusal> {
+    let session = SIGNER.lock().await;
+    let signer = session.as_ref().ok_or_else(locked_seat)?;
+    Ok((
+        signer.key.public_key().as_ref().to_vec(),
+        signer.key.sign(namespace, message).as_ref().to_vec(),
+    ))
 }
 
 /// A read: a query still travels as a signed frame (the program hears who
