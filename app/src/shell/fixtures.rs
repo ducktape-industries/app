@@ -221,6 +221,7 @@ impl Render for TreeFixtureFrame {
                             div()
                                 .id(SharedString::from(format!("pane/{n}/{action}")))
                                 .control(Role::Button, SharedString::from(action.to_owned()))
+                                .aria_disabled(action == "split" && self.panes.len() == 3)
                                 .flex()
                                 .items_center()
                                 .justify_center()
@@ -238,7 +239,7 @@ impl Render for TreeFixtureFrame {
                             .overflow_hidden()
                             .rounded(px(8.))
                             .bg(cx.theme().background)
-                            .border_1()
+                            .border(px(if n == self.focused { 1.5 } else { 1. }))
                             .border_color(if n == self.focused { accent } else { border })
                             .child(
                                 div()
