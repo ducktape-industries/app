@@ -73,7 +73,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             _activation: cx.observe_window_activation(window, |_, _, _| {}),
             _observer: cx.observe(&model, |_, _, cx| cx.notify()),
             _keystrokes: DesktopWindow::intercept_global_keys(window, cx),
-            _focus_lost: cx.on_focus_lost(window, |_, _, _| {}),
+            _focus_lost: cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
         });
         view = Some(desktop.clone());
         gpui_kit::component::Root::new(desktop, window, cx)
