@@ -90,21 +90,26 @@ impl ViewTree {
             list.state.remeasure_items(index..index + 1);
         }
 
-        let request_leading = native_alignment == ListAlignment::Bottom && incoming.start > 0;
         let state = list.state.clone();
-        if request_leading {
-            request_row(self, &key, incoming.start - 1, *request_handler, cx);
-        }
+        let bottom = native_alignment == ListAlignment::Bottom;
         let weak = cx.entity().downgrade();
         let render_key = key.clone();
         let request_route = *request_handler;
         let native = gpui_kit::list(state.clone(), move |index, window, cx| {
             weak.update(cx, |this, cx| {
-                let row = this
-                    .variable_lists
-                    .get(&render_key)
-                    .and_then(|list| list.rows.get(&index))
-                    .cloned();
+                let list = this.variable_lists.get(&render_key);
+                let row = list.and_then(|list| list.rows.get(&index)).cloned();
+                // The first row the guest sent is on screen: ask for the one
+                // above it. Asking whenever rows were missing above walked a
+                // bottom-anchored list back one row a frame, off screen too,
+                // re-rendering the guest's whole window every step.
+                let leading = bottom
+                    && index > 0
+                    && row.is_some()
+                    && list.is_some_and(|list| !list.rows.contains_key(&(index - 1)));
+                if leading {
+                    request_row(this, &render_key, index - 1, request_route, cx);
+                }
                 if let Some(row) = row {
                     let parent =
                         std::mem::replace(&mut this.authored_path, render_key.path.clone());
