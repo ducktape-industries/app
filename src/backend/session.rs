@@ -7,7 +7,6 @@ use std::path::PathBuf;
 
 use commonware_cryptography::{Signer as _, ed25519};
 use view_wire::Refusal;
-use zeroize::Zeroizing;
 
 use super::noded::{Frame, Layer};
 use super::{RpcClient, hex_encode, refused};
@@ -21,27 +20,17 @@ struct Signer {
 
 static SIGNER: tokio::sync::Mutex<Option<Signer>> = tokio::sync::Mutex::const_new(None);
 
-pub(crate) const LOCKED: &str = "the local user key is locked; enter its password";
+pub(crate) const LOCKED: &str = "this device's key is locked; unlock it first";
 
 pub(crate) fn locked_seat() -> Refusal {
     Refusal::new("session_locked", LOCKED)
 }
 
-/// Opens the key file with `password` and seats it; answers the public key.
-pub(crate) async fn seat_signer(
-    path: PathBuf,
-    password: Zeroizing<String>,
-) -> Result<String, String> {
-    if password.is_empty() {
-        return Err(LOCKED.into());
-    }
-    let key =
-        tokio::task::spawn_blocking(move || keystore::userkey::open_user_key_at(&path, &password))
-            .await
-            .map_err(|_| "opening this device's key did not finish".to_string())??;
+/// Seats `key` as the one that signs; answers its public key.
+pub(crate) async fn seat_key(key: ed25519::PrivateKey) -> String {
     let pubkey = hex_encode(key.public_key().as_ref());
     *SIGNER.lock().await = Some(Signer { key });
-    Ok(pubkey)
+    pubkey
 }
 
 pub(crate) async fn lock_signer() -> bool {
@@ -211,24 +200,6 @@ pub(crate) fn session_key_path(keyring: &str) -> Result<PathBuf, String> {
     keystore::wallet::active_user_key(&keystore_root(keyring)?)
 }
 
-/// Mints a fresh key into `keyring` under `password`, makes it the active
-/// one, and answers its recovery phrase. Never overwrites a key already on
-/// this device: the first key is `default`, a later one ("New key") lands in
-/// the first unused `default-2`, `default-3`, … slot. The keystore's own
-/// write refuses an occupied file too; picking a free slot here turns that
-/// refusal into a working "New key" instead of an error.
-pub(crate) fn create_wallet(keyring: &str, password: &str) -> Result<String, String> {
-    let root = keystore_root(keyring)?;
-    let name = unused_wallet_name(&root, "default");
-    let path = keystore::wallet::key_file(&root, &name);
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let (phrase, _) = keystore::userkey::mint_user_key(&path, password)?;
-    keystore::wallet::set_active(&root, &name)?;
-    Ok(phrase)
-}
-
 /// Whether this device already holds a signing key in `keyring` — the
 /// question the sign-in screen answers before offering Unlock or Create.
 pub(crate) fn key_exists(keyring: &str) -> bool {
@@ -239,36 +210,6 @@ pub(crate) fn key_exists(keyring: &str) -> bool {
         keystore::userkey::key_file_state(&path),
         keystore::userkey::KeyFileState::Absent
     )
-}
-
-/// Restores a wallet from its 24-word phrase into `keyring`, under
-/// `password`, and makes it the active key. Never overwrites a key that is
-/// already active: if this device already has one, the phrase lands under a
-/// fresh wallet name instead, and THAT becomes active.
-pub(crate) fn restore_wallet(keyring: &str, mnemonic: &str, password: &str) -> Result<(), String> {
-    let root = keystore_root(keyring)?;
-    let had_one = keystore::wallet::active_name(&root).is_some();
-    let name = match had_one {
-        false => "default".to_string(),
-        true => unused_wallet_name(&root, "restored"),
-    };
-    keystore::wallet::import(&root, &name, mnemonic, password)?;
-    if had_one {
-        keystore::wallet::activate(&root, &name)?;
-    }
-    Ok(())
-}
-
-/// The first unused `stem`, `stem-2`, … wallet name in `root` — so a new
-/// or restored key next to an existing one never collides with it.
-fn unused_wallet_name(root: &std::path::Path, stem: &str) -> String {
-    (1..)
-        .map(|n| match n {
-            1 => stem.to_string(),
-            n => format!("{stem}-{n}"),
-        })
-        .find(|name| !keystore::wallet::key_file(root, name).exists())
-        .expect("an unbounded search finds an unused name")
 }
 
 // ---------- preferences ----------
@@ -484,16 +425,6 @@ mod tests {
         ] {
             assert_eq!(endpoint_origin(junk), None, "{junk:?}");
         }
-    }
-
-    #[test]
-    fn a_new_key_never_takes_an_occupied_slot() {
-        let root = tempfile::tempdir().unwrap();
-        assert_eq!(unused_wallet_name(root.path(), "default"), "default");
-        let first = keystore::wallet::key_file(root.path(), "default");
-        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
-        std::fs::write(&first, "sealed").unwrap();
-        assert_eq!(unused_wallet_name(root.path(), "default"), "default-2");
     }
 
     #[test]

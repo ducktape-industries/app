@@ -67,6 +67,9 @@ sha2.workspace = true
 ducktape-home.workspace = true
 ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", rev = "75fce331d60b942ab2f20b7d7bce9f53b3f9de8b" }
 keystore.workspace = true
+# This device's key, kept by the OS (`backend/device_key.rs`): Keychain,
+# Credential Manager, Secret Service (over zbus, no libdbus to link).
+keyring = { version = "3", features = ["apple-native", "windows-native", "async-secret-service", "async-io", "crypto-rust"] }
 # The passkey lane (`backend/passkey.rs`): the verifier the node runs (to
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.

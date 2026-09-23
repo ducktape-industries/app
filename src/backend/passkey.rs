@@ -51,7 +51,7 @@ const RELAY_POLL: Duration = Duration::from_millis(1500);
 /// How long a consent stays good, in the node's milliseconds.
 const CONSENT_TTL_MS: u64 = 15 * 60 * 1000;
 
-fn auth_page() -> String {
+pub(super) fn auth_page() -> String {
     std::env::var("DUCKTAPE_AUTH_PAGE").unwrap_or_else(|_| AUTH_PAGE.to_owned())
 }
 
@@ -229,7 +229,7 @@ fn passkey_frame(body: Body, assertion: &Assertion) -> Option<Frame> {
 
 // ---------- the node ----------
 
-async fn ask(client: &RpcClient, network: &str, query: Query) -> Result<Reply, String> {
+pub(super) async fn ask(client: &RpcClient, network: &str, query: Query) -> Result<Reply, String> {
     let frame = query_frame(network, identity::PROGRAM, abi::encode(&query)).await;
     let reply = client
         .query(Layer::Preconfirmed, frame)
@@ -255,7 +255,11 @@ pub(crate) async fn account_of_key(
     }
 }
 
-async fn generation(client: &RpcClient, network: &str, key: &[u8]) -> Result<u64, String> {
+pub(super) async fn generation(
+    client: &RpcClient,
+    network: &str,
+    key: &[u8],
+) -> Result<u64, String> {
     match ask(client, network, Query::Generation { key: key.to_vec() }).await? {
         Reply::Generation(generation) => Ok(generation),
         _ => Err("identity answered something other than a generation".into()),
@@ -265,7 +269,7 @@ async fn generation(client: &RpcClient, network: &str, key: &[u8]) -> Result<u64
 /// A consent's deadline, against block time (unix ms). The node's status
 /// names only its genesis time, so this reads this device's clock; the TTL
 /// absorbs ordinary skew.
-fn expires_at() -> u64 {
+pub(super) fn expires_at() -> u64 {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|since| since.as_millis() as u64)
@@ -273,14 +277,18 @@ fn expires_at() -> u64 {
     now + CONSENT_TTL_MS
 }
 
-async fn submit_seated(client: &RpcClient, network: &str, op: &Op) -> Result<Vec<u8>, String> {
+pub(super) async fn submit_seated(
+    client: &RpcClient,
+    network: &str,
+    op: &Op,
+) -> Result<Vec<u8>, String> {
     let frame = seated_frame(client, network, identity::PROGRAM, abi::encode(op))
         .await
         .map_err(|refusal| refusal.sentence)?;
     submit(client, frame).await
 }
 
-async fn submit(client: &RpcClient, frame: Vec<u8>) -> Result<Vec<u8>, String> {
+pub(super) async fn submit(client: &RpcClient, frame: Vec<u8>) -> Result<Vec<u8>, String> {
     let receipt = client
         .submit(frame)
         .await
@@ -358,7 +366,7 @@ fn request_url(page: &str, request: &Request, callback: &str) -> String {
     format!("{page}#{fields}&cb={}", url_encode(callback))
 }
 
-fn url_encode(value: &str) -> String {
+pub(super) fn url_encode(value: &str) -> String {
     value
         .bytes()
         .map(
@@ -643,7 +651,9 @@ impl Listener {
     }
 }
 
-async fn read_request(stream: &mut TcpStream) -> std::io::Result<(String, String, Vec<u8>)> {
+pub(super) async fn read_request(
+    stream: &mut TcpStream,
+) -> std::io::Result<(String, String, Vec<u8>)> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line).await?;
@@ -684,7 +694,7 @@ async fn respond(stream: &mut TcpStream, status: &str, said: &str) {
 }
 
 /// One `application/x-www-form-urlencoded` field, decoded.
-fn form_field(body: &[u8], name: &str) -> Option<String> {
+pub(super) fn form_field(body: &[u8], name: &str) -> Option<String> {
     body.split(|byte| *byte == b'&').find_map(|pair| {
         let at = pair.iter().position(|byte| *byte == b'=')?;
         (form_decode(&pair[..at]) == name.as_bytes())

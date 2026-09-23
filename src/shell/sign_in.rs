@@ -1,7 +1,8 @@
 //! The launcher's key and account screens, in that order: this device's
-//! key (unlock it, make one and write its 24 words down, restore one from
-//! them, or read without one), then the network's account for that key
-//! (create one, or add this device to one a passkey holds). Reads are open
+//! key (kept by the system and opened on its own; the screen shows only
+//! while it opens or when it is locked), then the network's account for
+//! that key (create one, or add this device to one: another device of it,
+//! its passkey or its recovery key says yes). Reads are open
 //! on every network; only a write needs a seated key. No program is named
 //! here: the key is the app's, the network's name comes from the node.
 
@@ -18,11 +19,11 @@ impl DesktopWindow {
         format!("{} · {host}", state.network)
     }
 
-    /// This device's key for `state.network`. None here yet → make one
-    /// (or restore it, or read without one). One here → unlock it (or
-    /// restore a different one, or replace it with a new one, which first
-    /// says what that costs). Nothing about accounts: that is the next
-    /// step, once a key is unlocked.
+    /// This device's key for `state.network`, kept by the system and opened
+    /// on its own: this screen shows only while it opens, after a Lock, when
+    /// the system would not hand it over, or for a password-locked key from
+    /// before (asked once, then kept by the system). Nothing about accounts:
+    /// that is the next step.
     pub(super) fn unlock(
         &mut self,
         state: &Facts,
@@ -32,78 +33,28 @@ impl DesktopWindow {
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
-        // Minting a key: the first one, or a new one in place of this one.
-        let minting = !state.key_exists || state.replacing;
-        let submit: fn() -> Message = match minting {
-            false => || Message::UnlockSubmit,
-            true => || Message::CreateWalletSubmit,
-        };
-        let password = self.input(
-            "password",
-            // One hint per field key: the field outlives the screen that
-            // made it, and a placeholder is set only once.
-            "Password",
-            true,
-            |state| &state.password,
-            Message::PasswordTyped,
-            submit,
-            Some("Password".into()),
-            true,
-            window,
-            cx,
-        );
-        let confirm = minting.then(|| {
-            self.input(
-                "confirm-password",
-                "Confirm password",
-                true,
-                |state| &state.confirm_password,
-                Message::ConfirmPasswordTyped,
-                submit,
-                None,
-                true,
-                window,
-                cx,
-            )
-        });
-        let (label, headline, lead) = match (state.key_exists, state.replacing) {
-            (true, true) => (
-                "[02 / 04] Key · replace".to_string(),
-                "Replace this device's key".to_string(),
-                format!(
-                    "A new key signs what you write on {}. It stays on this device, locked with a password.",
-                    state.network
-                ),
-            ),
-            (true, false) => (
+        let failed = !state.unlock_error.is_empty();
+        let (label, headline, lead) = match (state.key_exists, state.locked, failed) {
+            (true, _, _) => (
                 format!("{} · locked", state.network),
                 format!("Sign in to {}", state.network),
-                "Unlock this device's key with its password. The key signs what you write here."
-                    .to_string(),
+                "This device's key still has a password from before. Type it once; the system keeps the key after that.",
             ),
-            (false, _) => (
+            (false, true, _) => (
+                format!("{} · locked", state.network),
+                format!("Sign in to {}", state.network),
+                "You locked this device's key. It stays with the system; unlock to write again.",
+            ),
+            (false, false, true) => (
                 "[02 / 04] Key".to_string(),
-                format!("Set up a key for {}", state.network),
-                format!(
-                    "It signs what you write on {} and never leaves this device. A password you choose now keeps it locked.",
-                    state.network
-                ),
+                "The key didn't open".to_string(),
+                "The system holds this device's key and didn't hand it over.",
             ),
-        };
-        // The error replaces the standing hint rather than repeating it.
-        let below = match (state.unlock_error.is_empty(), minting) {
-            (false, _) => Some(self.alert("unlock-error", state.unlock_error.clone(), cx)),
-            (true, true) => Some(
-                div()
-                    .id("password-hint")
-                    .text_size(px(12.5))
-                    .text_color(colors.muted_foreground)
-                    .child(format!(
-                        "At least {} characters, typed twice. The recovery phrase shows next.",
-                        keystore::userkey::MIN_PASSWORD_LEN
-                    )),
+            (false, false, false) => (
+                "[02 / 04] Key".to_string(),
+                "Opening this device's key…".to_string(),
+                "It signs what you write, and the system keeps it: no password, nothing to write down.",
             ),
-            (true, false) => None,
         };
         // Two chains can share a name; this one's keys are its own
         // (`backend::bind_keyring`), and the person hears why it asks anew.
@@ -120,81 +71,60 @@ impl DesktopWindow {
                     state.network, state.network
                 ))
         });
-        let warning = state.replacing.then(|| {
-            div()
-                .id("new-key-warning")
-                .role(Role::Note)
-                .aria_label("The current key is replaced")
-                .p_3()
-                .border_1()
-                .border_color(hsla_of(design::palette(state.dark).danger))
-                .text_size(px(13.))
-                .child(format!(
-                    "A new key takes the current one's place on {}. The current key is gone from this app unless its recovery phrase is written down: only those 24 words bring it back.",
-                    state.network
-                ))
-        });
-        let primary = match (state.key_exists, state.replacing) {
-            (true, false) => self.action("unlock", "Unlock", submit, state.unlock_busy),
-            (true, true) => self.action(
-                "create-wallet",
-                "Replace with a new key",
-                submit,
-                state.unlock_busy,
-            ),
-            (false, _) => self.action("create-wallet", "Create key", submit, state.unlock_busy),
-        }
-        .primary();
-        let links = match state.replacing {
-            true => vec![self.quiet_link(
-                "new-key-cancel",
-                "Cancel, keep the current key",
-                || Message::NewKeyCancel,
+        let password = state.key_exists.then(|| {
+            let field = self.input(
+                "password",
+                "Password",
+                true,
+                |state| &state.password,
+                Message::PasswordTyped,
+                || Message::UnlockSubmit,
+                Some("Password".into()),
+                true,
+                window,
                 cx,
-            )],
-            false => {
-                let mut links = vec![self.quiet_link(
-                    "restore",
-                    "Restore from recovery phrase",
-                    || Message::ShowRestore,
-                    cx,
-                )];
-                if state.key_exists {
-                    links.push(self.quiet_link(
-                        "new-key",
-                        "Replace this key",
-                        || Message::ShowNewKey,
-                        cx,
-                    ));
-                }
-                links.push(self.quiet_link(
-                    "browse",
-                    "Read without a key",
-                    || Message::BrowseWithoutKey,
-                    cx,
-                ));
-                links
-            }
-        };
+            );
+            self.field("Password", field)
+        });
+        let primary = match (state.key_exists || state.locked, failed) {
+            (true, _) => Some(("unlock", "Unlock")),
+            (false, true) => Some(("unlock", "Try again")),
+            // opening on its own: nothing to press
+            (false, false) => None,
+        }
+        .map(|(id, label)| {
+            div().flex().child(square(
+                self.action(
+                    id,
+                    label,
+                    || Message::UnlockSubmit,
+                    state.unlock_busy || state.seating,
+                )
+                .primary(),
+            ))
+        });
         let form = div()
             .flex()
             .flex_col()
             .gap_3()
             .children(other_chain)
-            .children(warning)
-            .child(self.field("Password", password))
-            .children(confirm.map(|confirm| self.field("Confirm password", confirm)))
-            .children(below)
-            .child(div().flex().child(square(primary)));
-        let body = vec![
-            form.into_any_element(),
-            div()
-                .flex()
-                .flex_col()
-                .gap_2()
-                .children(links)
-                .into_any_element(),
-        ];
+            .children(password)
+            .children(failed.then(|| self.alert("unlock-error", state.unlock_error.clone(), cx)))
+            .children(primary)
+            .children((!failed && state.seating).then(|| {
+                div()
+                    .id("seating")
+                    .role(Role::Status)
+                    .text_size(px(13.))
+                    .text_color(colors.muted_foreground)
+                    .child("Asking the system for it…")
+            }));
+        let links = div().flex().flex_col().gap_2().child(self.quiet_link(
+            "browse",
+            "Read without a key",
+            || Message::BrowseWithoutKey,
+            cx,
+        ));
         self.launcher(
             "sign-in",
             Figure::Ring,
@@ -202,8 +132,8 @@ impl DesktopWindow {
             Some(("disconnect", "← Other networks", || Message::Disconnect)),
             label,
             headline,
-            Some(lead),
-            body,
+            Some(lead.into()),
+            vec![form.into_any_element(), links.into_any_element()],
             window,
             cx,
         )
@@ -327,6 +257,9 @@ impl DesktopWindow {
         if state.passkey_waiting {
             return self.passkey_waiting(state, window, cx);
         }
+        if !state.link_code.is_empty() {
+            return self.link_waiting(state, window, cx);
+        }
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
         let name = self.input(
             "create-account-name",
@@ -377,8 +310,9 @@ impl DesktopWindow {
                         .outline(),
                     )),
             );
-        // An account made elsewhere: this device's key joins it. The
-        // account's passkey is what says yes.
+        // An account made elsewhere: this device's key joins it, and
+        // something the account already trusts says yes — another device
+        // of it, its passkey, or its recovery key.
         let join = div()
             .id("join-account")
             .role(Role::Group)
@@ -395,17 +329,41 @@ impl DesktopWindow {
                     .text_size(px(13.))
                     .line_height(px(20.))
                     .text_color(colors.muted_foreground)
-                    .child("Add this device to it. The account's passkey says yes, in your browser or on your phone; this device's key then signs for the account too."),
+                    .child("Add this device to it. Something the account already trusts says yes; this device's key then signs for the account too."),
             )
-            .child(div().flex().child(square(
-                self.action(
-                    "passkey-sign-in",
-                    "Add this device with a passkey",
-                    || Message::PasskeySignInSubmit,
-                    state.unlock_busy,
-                )
-                .outline(),
-            )));
+            .child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_2()
+                    .child(square(
+                        self.action(
+                            "link-device",
+                            "From another device",
+                            || Message::LinkStart,
+                            state.unlock_busy,
+                        )
+                        .outline(),
+                    ))
+                    .child(square(
+                        self.action(
+                            "passkey-sign-in",
+                            "With a passkey",
+                            || Message::PasskeySignInSubmit,
+                            state.unlock_busy,
+                        )
+                        .outline(),
+                    ))
+                    .child(square(
+                        self.action(
+                            "recover",
+                            "With a recovery key",
+                            || Message::RecoverShow,
+                            state.unlock_busy,
+                        )
+                        .outline(),
+                    )),
+            );
         let body = vec![
             create.into_any_element(),
             join.into_any_element(),
@@ -432,9 +390,83 @@ impl DesktopWindow {
         )
     }
 
-    /// Rebuilding this device's key from its 24 words, under a fresh
-    /// password for this copy.
-    pub(super) fn restore(
+    /// This device waits under a short code for one already on the account
+    /// to approve it (the account menu's "Add a device…"). The fingerprint
+    /// is what the person compares on both screens before saying yes.
+    fn link_waiting(
+        &mut self,
+        state: &Facts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::*;
+        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let fingerprint = crate::backend::hex_decode(&state.signer_key)
+            .map(|key| crate::backend::join::fingerprint(&key))
+            .unwrap_or_default();
+        let big = |id: &'static str, label: &'static str, text: String| {
+            div()
+                .flex()
+                .flex_col()
+                .gap_1()
+                .child(mono(label, colors.muted_foreground))
+                .child(crate::a11y::whole(
+                    div()
+                        .id(id)
+                        .role(Role::Label)
+                        .aria_label(text.clone())
+                        .text_size(px(28.))
+                        .font_family(super::theme::FAMILY_MONO)
+                        .child(text),
+                ))
+        };
+        let body = vec![
+            div()
+                .flex()
+                .gap_8()
+                .child(big("link-code", "Code", state.link_code.clone()))
+                .child(big("link-fingerprint", "This device", fingerprint))
+                .into_any_element(),
+            div()
+                .id("link-waiting-status")
+                .role(Role::Status)
+                .text_size(px(13.))
+                .line_height(px(20.))
+                .text_color(colors.muted_foreground)
+                .child("On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Check that it shows the same four-and-four before approving. The code lasts five minutes.")
+                .into_any_element(),
+            div()
+                .flex()
+                .flex_col()
+                .gap_3()
+                .children(
+                    (!state.unlock_error.is_empty())
+                        .then(|| self.alert("link-error", state.unlock_error.clone(), cx)),
+                )
+                .child(div().flex().child(square(
+                    self.action("link-cancel", "Cancel", || Message::LinkCancel, false)
+                        .outline(),
+                )))
+                .into_any_element(),
+        ];
+        self.launcher(
+            "link-waiting",
+            Figure::Pair,
+            Self::where_(state),
+            None,
+            "[04 / 04] Account · another device".into(),
+            "Approve this device".into(),
+            None,
+            body,
+            window,
+            cx,
+        )
+    }
+
+    /// The account's recovery key, typed: its 24 words say yes to this
+    /// device's key joining. A phrase from a key made before keys moved into
+    /// the system works too — that key is on the account already.
+    pub(super) fn recover(
         &mut self,
         state: &Facts,
         window: &mut Window,
@@ -448,43 +480,21 @@ impl DesktopWindow {
             false,
             |state| &state.restore_phrase,
             Message::RestorePhraseTyped,
-            || Message::RestoreSubmit,
-            Some("Recovery phrase".into()),
+            || Message::RecoverSubmit,
+            Some("Recovery key".into()),
             true,
             window,
             cx,
         );
-        let password = self.input(
-            "restore-password",
-            "New password",
-            true,
-            |state| &state.restore_password,
-            Message::RestorePasswordTyped,
-            || Message::RestoreSubmit,
-            None,
-            true,
-            window,
-            cx,
-        );
-        let confirm = self.input(
-            "restore-confirm-password",
-            "Confirm password",
-            true,
-            |state| &state.restore_confirm_password,
-            Message::RestoreConfirmPasswordTyped,
-            || Message::RestoreSubmit,
-            None,
-            true,
-            window,
-            cx,
-        );
+        let label = match state.unlock_busy {
+            true => "Adding…",
+            false => "Add this device",
+        };
         let form = div()
             .flex()
             .flex_col()
             .gap_3()
-            .child(self.field("Recovery phrase", phrase))
-            .child(self.field("New password", password))
-            .child(self.field("Confirm password", confirm))
+            .child(self.field("Recovery key", phrase))
             .children(
                 (!state.unlock_error.is_empty())
                     .then(|| self.alert("unlock-error", state.unlock_error.clone(), cx)),
@@ -492,29 +502,29 @@ impl DesktopWindow {
             .child(
                 div().flex().child(square(
                     self.action(
-                        "restore-submit",
-                        "Restore",
-                        || Message::RestoreSubmit,
+                        "recover-submit",
+                        label,
+                        || Message::RecoverSubmit,
                         state.unlock_busy,
                     )
                     .primary(),
                 )),
             );
         self.launcher(
-            "restore",
+            "recover",
             Figure::Sheets,
             Self::where_(state),
-            Some(("restore-back", "← Back", || Message::RestoreCancel)),
-            "[02 / 04] Key · restore".into(),
-            format!("Restore {}'s key", state.network),
-            Some("The 24 words from when this key was made. They rebuild it; the password only locks this copy.".into()),
+            Some(("recover-back", "← Back", || Message::RecoverCancel)),
+            "[04 / 04] Account · recovery key".into(),
+            format!("Your {} recovery key", state.network),
+            Some("The 24 words you wrote down for this account. They add this device; nothing else changes.".into()),
             vec![form.into_any_element()],
             window,
             cx,
         )
     }
 
-    /// The freshly minted key's recovery phrase, then a check that it was
+    /// A new recovery key for the account, then a check that it was
     /// written down: three of its words typed back. Private to the test
     /// door; assistive technology reads it as anyone at the screen would.
     pub(super) fn phrase(
@@ -583,15 +593,16 @@ impl DesktopWindow {
                     .text_size(px(13.))
                     .text_color(colors.muted_foreground)
                     .child("Nobody can recover them for you."),
-            );
+            )
+            .child(self.quiet_link("phrase-cancel", "Not now", || Message::PhraseCancel, cx));
         self.launcher(
             "recovery",
             Figure::Sheets,
             "Twenty-four words, on paper.".into(),
             None,
-            "[03 / 04] Phrase".into(),
+            "Recovery key".into(),
             "Write these down".into(),
-            Some("In order, on paper. They are the only way back to this key on another device, and anyone holding them can write as you. They show only now.".into()),
+            Some(format!("In order, on paper. With them, a new device joins your {} account when no other device is at hand — and so can anyone holding them. They show only now.", state.network)),
             vec![sheet.into_any_element(), done.into_any_element()],
             window,
             cx,
@@ -692,10 +703,10 @@ impl DesktopWindow {
             "recovery-check",
             Figure::Sheets,
             "Twenty-four words, on paper.".into(),
-            Some(("phrase-show", "← Show the phrase again", || {
+            Some(("phrase-show", "← Show the words again", || {
                 Message::PhraseShowAgain
             })),
-            "[03 / 04] Phrase · check".into(),
+            "Recovery key · check".into(),
             "Now, three of them".into(),
             None,
             vec![form.into_any_element()],

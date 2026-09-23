@@ -584,11 +584,12 @@ impl Render for DesktopWindow {
                     Screen::Console => match (
                         !state.phrase.is_empty(),
                         state.signer_key.is_empty() && !state.browsing,
-                        state.restoring,
                     ) {
-                        (true, _, _) => self.phrase(&state, window, cx),
-                        (_, true, true) => self.restore(&state, window, cx),
-                        (_, true, false) => self.unlock(&state, window, cx),
+                        (true, _) => self.phrase(&state, window, cx),
+                        (_, true) => self.unlock(&state, window, cx),
+                        _ if state.account_step && state.recovering => {
+                            self.recover(&state, window, cx)
+                        }
                         _ if state.account_step && !state.signer_key.is_empty() => {
                             self.account_step(&state, window, cx)
                         }

@@ -134,6 +134,8 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
     state.screen = Screen::Console;
+    // a password-locked key from before: its password is asked once
+    state.key_exists = true;
     state.unlock_error = "wrong password".to_string();
     let (view, mut native) = open(state, cx);
 
@@ -156,7 +158,11 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     // The recovery-phrase input is not visually masked (it is not a
     // PasswordInput), but its typed text must stay out of the tree too.
     let model = native.update(|_, cx| view.read(cx).model.clone());
-    model.update(cx, |model, _| model.state.restoring = true);
+    model.update(cx, |model, _| {
+        model.state.signer_key = "ab".into();
+        model.state.account_step = true;
+        model.state.recovering = true;
+    });
     native.update(|window, cx| {
         type_into(
             "restore-phrase/field",
@@ -166,7 +172,7 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
         )
     });
     let nodes = native.update(draw);
-    let phrase = find(&nodes, "TextInput", "Recovery phrase");
+    let phrase = find(&nodes, "TextInput", "Recovery key");
     assert!(
         phrase.get("value").is_none(),
         "recovery phrase leaked into the AX tree: {phrase}"
@@ -183,7 +189,7 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     state.screen = Screen::Console;
     let (view, mut native) = open(state, cx);
     let nodes = native.update(draw);
-    find(&nodes, "Button", "Create key");
+    find(&nodes, "Button", "Read without a key");
     let passkeys = nodes
         .as_array()
         .unwrap()
@@ -205,7 +211,9 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     let nodes = native.update(draw);
     assert_eq!(find(&nodes, "TextInput", "Account name")["value"], "duck");
     find(&nodes, "Button", "Create account");
-    find(&nodes, "Button", "Add this device with a passkey");
+    find(&nodes, "Button", "From another device");
+    find(&nodes, "Button", "With a passkey");
+    find(&nodes, "Button", "With a recovery key");
 }
 
 /// The Connect screen's "Recent" list had no tab stop at all: a
@@ -297,8 +305,8 @@ fn initials_take_the_first_letter_of_two_words() {
     assert_eq!(initials("émile zola"), "ÉZ");
 }
 
-/// The field state outlives the model's copy of a secret: after Lock (or a
-/// new key's form reset) the model's password is empty, and the password
+/// The field state outlives the model's copy of a secret: after "Read
+/// without a key" the model's password is empty, and the password
 /// field used to go on showing the old dots — while a retry sent nothing.
 /// The field mirrors the model on every draw.
 #[gpui_kit::test]
@@ -327,8 +335,9 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
     );
 
     model.update(cx, |model, _| {
-        model.state.update(Message::Unlocked("ab".into()));
-        model.state.update(Message::Lock);
+        // reading without a key wipes it; the key screen comes back
+        model.state.update(Message::BrowseWithoutKey);
+        model.state.update(Message::SignIn);
     });
     native.update(draw);
     assert_eq!(

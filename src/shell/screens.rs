@@ -23,12 +23,18 @@ pub(crate) struct Facts {
     pub(crate) unlock_busy: bool,
     pub(crate) key_exists: bool,
     pub(crate) browsing: bool,
-    pub(crate) restoring: bool,
+    pub(crate) recovering: bool,
+    pub(crate) seating: bool,
+    pub(crate) locked: bool,
+    /// The code this device waits under for another to approve it.
+    pub(crate) link_code: String,
+    pub(crate) approving: bool,
+    /// The joining key's fingerprint, once its code was found.
+    pub(crate) approve_fingerprint: Option<String>,
     pub(crate) passkey_waiting: bool,
     pub(crate) account_step: bool,
     /// The QR URL, once the person picked the phone.
     pub(crate) passkey_qr: Option<String>,
-    pub(crate) replacing: bool,
     pub(crate) phrase: String,
     pub(crate) phrase_quiz: Option<[usize; 3]>,
     pub(crate) active: Option<&'static str>,
@@ -65,7 +71,15 @@ impl Ducktape {
             unlock_busy: self.unlock_busy,
             key_exists: self.key_exists,
             browsing: self.browsing,
-            restoring: self.restoring,
+            recovering: self.recovering,
+            seating: self.seating,
+            locked: self.locked,
+            link_code: self.link_code.clone(),
+            approving: self.approving,
+            approve_fingerprint: self
+                .approve_found
+                .as_ref()
+                .map(|request| crate::backend::join::fingerprint(&request.key)),
             passkey_waiting: self.passkey_task.is_some(),
             account_step: self.account_step,
             passkey_qr: (self.passkey_task.is_some()
@@ -74,7 +88,6 @@ impl Ducktape {
                     .load(std::sync::atomic::Ordering::Relaxed)
                 && !self.passkey_qr.is_empty())
             .then(|| self.passkey_qr.clone()),
-            replacing: self.replacing,
             phrase: self.phrase.clone(),
             phrase_quiz: self.phrase_quiz,
             active: self.active,
