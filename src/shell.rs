@@ -407,6 +407,18 @@ impl DesktopWindow {
         }
     }
 
+    /// The window's focused element vanished — most often because the
+    /// screen it was on gave way to another (Connect → sign-in, sign-in →
+    /// recovery phrase, phrase → console, a dialog opening or closing
+    /// mid-form). Refocus the window's own root (the same handle a fresh
+    /// window starts on) so a keyboard-only reader's next Tab still lands
+    /// on the new screen's first control, instead of the window going
+    /// silently blurred with no dispatch path for Tab, Enter or Escape to
+    /// reach at all.
+    fn focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus.focus(window, cx);
+    }
+
     fn deliver_chord(&mut self, key: &KeyPress, cx: &mut Context<Self>) -> bool {
         let Some(chord) = crate::runtime::chord_of(&key.key, key.modifiers) else {
             return false;

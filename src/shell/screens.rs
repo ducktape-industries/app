@@ -240,57 +240,55 @@ impl DesktopWindow {
             let row_target = entry.url.clone();
             let forget_model = self.model.clone();
             let forget_target = entry.url.clone();
+            let pick = div()
+                .id(SharedString::from(format!("recent/{}", entry.url)))
+                .control(Role::Button, SharedString::from(label.clone()))
+                .cursor_pointer()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .px_2()
+                .py_1()
+                .rounded(px(design::radius::CONTROL as f32))
+                .text_size(px(12.5))
+                .text_color(colors.muted_foreground)
+                .hover(|style| style.text_color(colors.foreground))
+                .on_click(move |_, _, cx| {
+                    let target = row_target.clone();
+                    row_model.update(cx, |model, cx| {
+                        model.dispatch(Message::ConnectTo(target), cx)
+                    })
+                })
+                .child(label);
+            let forget = div()
+                .id(SharedString::from(format!("forget/{}", entry.url)))
+                .control(
+                    Role::Button,
+                    SharedString::from(format!("Forget {}", entry.url)),
+                )
+                .cursor_pointer()
+                .flex_shrink_0()
+                .px_1p5()
+                .py_0p5()
+                .rounded(px(design::radius::CONTROL as f32))
+                .text_size(px(12.5))
+                .text_color(colors.muted_foreground)
+                .hover(|style| style.text_color(hsla_of(design::palette(state.dark).danger)))
+                .on_click(move |_, _, cx| {
+                    let target = forget_target.clone();
+                    forget_model.update(cx, |model, cx| {
+                        model.dispatch(Message::ForgetEndpoint(target), cx)
+                    })
+                })
+                .child("×");
+            // Neither row had a tab stop: a keyboard-only reader could never
+            // reach a previously-used node, or forget one, from this list.
             div()
                 .flex()
                 .items_center()
                 .gap_1()
-                .child(
-                    div()
-                        .id(SharedString::from(format!("recent/{}", entry.url)))
-                        .control(Role::Button, SharedString::from(label.clone()))
-                        .cursor_pointer()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .px_2()
-                        .py_1()
-                        .rounded(px(design::radius::CONTROL as f32))
-                        .text_size(px(12.5))
-                        .text_color(colors.muted_foreground)
-                        .hover(|style| style.text_color(colors.foreground))
-                        .on_click(move |_, _, cx| {
-                            let target = row_target.clone();
-                            row_model.update(cx, |model, cx| {
-                                model.dispatch(Message::ConnectTo(target), cx)
-                            })
-                        })
-                        .child(label),
-                )
-                .child(
-                    div()
-                        .id(SharedString::from(format!("forget/{}", entry.url)))
-                        .control(
-                            Role::Button,
-                            SharedString::from(format!("Forget {}", entry.url)),
-                        )
-                        .cursor_pointer()
-                        .flex_shrink_0()
-                        .px_1p5()
-                        .py_0p5()
-                        .rounded(px(design::radius::CONTROL as f32))
-                        .text_size(px(12.5))
-                        .text_color(colors.muted_foreground)
-                        .hover(|style| {
-                            style.text_color(hsla_of(design::palette(state.dark).danger))
-                        })
-                        .on_click(move |_, _, cx| {
-                            let target = forget_target.clone();
-                            forget_model.update(cx, |model, cx| {
-                                model.dispatch(Message::ForgetEndpoint(target), cx)
-                            })
-                        })
-                        .child("×"),
-                )
+                .child(crate::a11y::keyboard(pick))
+                .child(crate::a11y::keyboard(forget))
         });
         let note = match (!state.error.is_empty(), !state.endpoint_error.is_empty()) {
             (true, _) => Some(state.error.clone()),

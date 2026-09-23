@@ -65,21 +65,28 @@ fn open(state: Ducktape, cx: &mut TestAppContext) -> (Entity<DesktopWindow>, Vis
     let key = WindowKey::unique();
     let mut view = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let desktop = cx.new(|cx| DesktopWindow {
-            model: model.clone(),
-            key,
-            kind: WindowKind::Console,
-            layout: layout::Layout::default(),
-            mounted: BTreeMap::new(),
-            initialized: false,
-            resize: None,
-            measured_widths: Default::default(),
-            inputs: HashMap::new(),
-            focus: cx.focus_handle(),
-            _activation: cx.observe_window_activation(window, |_, _, _| {}),
-            _observer: cx.observe(&model, |_, _, cx| cx.notify()),
-            _keystrokes: DesktopWindow::intercept_global_keys(window, cx),
-            _focus_lost: cx.on_focus_lost(window, |_, _, _| {}),
+        let desktop = cx.new(|cx| {
+            // Same as the real window (windows.rs): start focused on the
+            // window's own root, so the first Tab reaches the first control.
+            let focus = cx.focus_handle();
+            focus.focus(window, cx);
+            DesktopWindow {
+                model: model.clone(),
+                key,
+                kind: WindowKind::Console,
+                layout: layout::Layout::default(),
+                mounted: BTreeMap::new(),
+                initialized: false,
+                resize: None,
+                measured_widths: Default::default(),
+                inputs: HashMap::new(),
+                focus,
+                _activation: cx.observe_window_activation(window, |_, _, _| {}),
+                _observer: cx.observe(&model, |_, _, cx| cx.notify()),
+                _keystrokes: DesktopWindow::intercept_global_keys(window, cx),
+                _focus_lost: cx
+                    .on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
+            }
         });
         view = Some(desktop.clone());
         gpui_kit::component::Root::new(desktop, window, cx)
@@ -163,5 +170,84 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     assert!(
         phrase.get("value").is_none(),
         "recovery phrase leaked into the AX tree: {phrase}"
+    );
+}
+
+/// The Connect screen's "Recent" list had no tab stop at all: a
+/// keyboard-only reader could see a previously used node but never reach it
+/// (or its "Forget" button) with Tab, only a mouse.
+#[gpui_kit::test]
+fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (mut state, _) = Ducktape::boot();
+    state.screen = Screen::Connect;
+    state.recent_endpoints = vec![crate::backend::RecentEndpoint {
+        url: "http://127.0.0.1:9000".to_string(),
+        network: "testkit".to_string(),
+    }];
+    let (_view, mut native) = open(state, cx);
+    let nodes = native.update(draw);
+    for id in [
+        "shell:recent/http://127.0.0.1:9000",
+        "shell:forget/http://127.0.0.1:9000",
+    ] {
+        let node = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == id)
+            .unwrap_or_else(|| panic!("missing {id}: {nodes}"));
+        assert!(
+            node["actions"]
+                .as_array()
+                .is_some_and(|actions| actions.iter().any(|a| a == "focus")),
+            "{id} has no tab stop, so a keyboard-only reader can never reach it: {node}"
+        );
+    }
+}
+
+/// A screen change (Connect → sign-in, the way `ConnectSubmit` does once the
+/// node answers) unmounts whatever the reader had focused. Before the fix,
+/// the window's `on_focus_lost` handler called `window.blur`, dropping
+/// focus for good: every later Tab was silently swallowed (there is no
+/// dispatch path with nothing focused), a full keyboard trap. It must
+/// instead fall back to the window's own root, the same handle a fresh
+/// window starts focused on, so Tab still reaches the new screen.
+#[gpui_kit::test]
+fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (mut state, _) = Ducktape::boot();
+    state.screen = Screen::Connect;
+    let (view, mut native) = open(state, cx);
+    native.update(draw);
+    native.update(|window, cx| {
+        window.dispatch_keystroke(gpui_kit::Keystroke::parse("tab").unwrap(), cx)
+    });
+    let nodes = native.update(draw);
+    assert_eq!(
+        find(&nodes, "TextInput", "Node address")["state"],
+        serde_json::json!(["focused"]),
+        "sanity: tab reaches the endpoint field"
+    );
+
+    // ConnectSubmit swaps Connect for sign-in once the node answers: the
+    // endpoint field the reader was on is gone.
+    let model = native.update(|_, cx| view.read(cx).model.clone());
+    model.update(cx, |model, _| model.state.screen = Screen::Console);
+    native.update(draw);
+
+    // A keyboard-only reader's next Tab must still land somewhere on the
+    // new screen, not be swallowed because the window itself went blurred.
+    native.update(|window, cx| {
+        window.dispatch_keystroke(gpui_kit::Keystroke::parse("tab").unwrap(), cx)
+    });
+    let nodes = native.update(draw);
+    assert!(
+        nodes.as_array().unwrap().iter().any(|node| {
+            node["state"]
+                .as_array()
+                .is_some_and(|states| states.iter().any(|s| s == "focused"))
+        }),
+        "Tab after a screen change should reach a control, not be swallowed: {nodes}"
     );
 }

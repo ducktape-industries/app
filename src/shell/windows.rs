@@ -76,7 +76,8 @@ impl Desktop {
                         _activation: activation,
                         _observer: observer,
                         _keystrokes: keystrokes,
-                        _focus_lost: cx.on_focus_lost(window, |_, window, cx| window.blur(cx)),
+                        _focus_lost: cx
+                            .on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
                     }
                 });
                 if let Some((pane, mounted, _)) = transferred.take() {
