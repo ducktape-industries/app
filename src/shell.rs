@@ -44,6 +44,7 @@ mod windows;
 pub(crate) use launch::run;
 mod settings;
 mod sign_in;
+mod spin;
 mod switcher;
 mod theme;
 

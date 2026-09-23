@@ -254,7 +254,7 @@ impl DesktopWindow {
 
     pub(super) fn pane_stage(
         &mut self,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
@@ -268,10 +268,13 @@ impl DesktopWindow {
                 .items_center()
                 .justify_center()
                 .gap(px(20.))
-                .child(super::launcher::drawing(
+                .child(super::spin::drawing(
+                    "empty-desk-figure",
                     super::figure::Figure::Node,
                     moving,
                     ink.figure,
+                    window,
+                    cx,
                 ))
                 .child(
                     super::ink::mono(400, 12.)
