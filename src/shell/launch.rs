@@ -89,7 +89,7 @@ pub(crate) fn run() {
                 let windows = move |cx: &gpui_kit::App| {
                     door_desktop
                         .upgrade()
-                        .map(|desktop| desktop.read(cx).ax_windows(cx))
+                        .map(|desktop| desktop.read(cx).ax_windows())
                         .unwrap_or_default()
                 };
                 crate::ax::serve(calls, windows, cx).await;

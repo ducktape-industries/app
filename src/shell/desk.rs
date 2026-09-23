@@ -8,7 +8,7 @@ use crate::{Popover, Spot};
 use screens::{Facts, pulse};
 
 /// The menu bar's height.
-const BAR: f32 = 36.;
+pub(super) const BAR: f32 = 36.;
 
 /// The program whose view holds the account's settings, which the account
 /// menu opens.
@@ -42,6 +42,7 @@ impl DesktopWindow {
             false => None,
             true if state.spotlight => Some(self.spotlight(&state, window, cx)),
             true if state.approving => Some(self.approve(&state, window, cx)),
+            true if state.settings => Some(self.settings(&state)),
             true if state.network_menu => Some(self.network_menu(&state, narrow)),
             true => state.popover.map(|popover| match popover {
                 Popover::Node => self.node_menu(&state, cx),

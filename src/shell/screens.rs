@@ -29,6 +29,7 @@ pub(crate) struct Facts {
     /// The code this device waits under for another to approve it.
     pub(crate) link_code: String,
     pub(crate) approving: bool,
+    pub(crate) settings: bool,
     /// The joining key's fingerprint, once its code was found.
     pub(crate) approve_fingerprint: Option<String>,
     pub(crate) passkey_waiting: bool,
@@ -76,6 +77,7 @@ impl Ducktape {
             locked: self.locked,
             link_code: self.link_code.clone(),
             approving: self.approving,
+            settings: self.settings,
             approve_fingerprint: self
                 .approve_found
                 .as_ref()

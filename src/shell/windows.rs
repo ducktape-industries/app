@@ -40,9 +40,7 @@ impl Desktop {
         let title = match kind {
             crate::shell::WindowKind::Console => "Ducktape".to_owned(),
             crate::shell::WindowKind::View { module } => panes::label(module),
-            crate::shell::WindowKind::Settings => "Settings".to_owned(),
         };
-        let settings = kind == crate::shell::WindowKind::Settings;
         // the launcher is a small window of a fixed size; the desk grows
         let launcher = kind == crate::shell::WindowKind::Console && self.state.in_launcher();
         let extent = match kind {
@@ -50,9 +48,6 @@ impl Desktop {
                 size(px(launcher::LAUNCHER_SIZE.0), px(launcher::LAUNCHER_SIZE.1))
             }
             crate::shell::WindowKind::Console => size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1)),
-            crate::shell::WindowKind::Settings => {
-                size(px(settings::SETTINGS_SIZE.0), px(settings::SETTINGS_SIZE.1))
-            }
             crate::shell::WindowKind::View { .. } => size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1)),
         };
         let model = cx.entity();
@@ -62,16 +57,11 @@ impl Desktop {
             )),
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
-                // a floating window keeps its title bar: it names the window
-                appears_transparent: cfg!(target_os = "macos") && !settings,
+                appears_transparent: cfg!(target_os = "macos"),
                 traffic_light_position: Some(point(px(12.), px(12.))),
             }),
-            window_min_size: Some(match (settings, launcher) {
-                (true, _) => gpui_kit::size(px(560.), px(400.)),
-                (_, true) => extent,
-                _ => gpui_kit::size(px(720.), px(480.)),
-            }),
-            is_resizable: !launcher,
+            // one window serves the launcher and the desk, so it resizes
+            window_min_size: Some(gpui_kit::size(px(720.), px(480.))),
             app_id: Some("dev.ducktape.app".into()),
             kind: gpui_kit::WindowKind::Normal,
             icon: image::RgbaImage::from_raw(
