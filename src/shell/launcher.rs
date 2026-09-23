@@ -4,15 +4,16 @@
 //! on the right, the way a game client signs in before its main window.
 //!
 //! Two different things happen here, one after the other. The KEY is this
-//! device's: made (and its 24 words written down), restored, or unlocked
-//! with its password; it never leaves the device. The ACCOUNT is the
-//! network's: created for that key, or an existing one this key joins
-//! (a passkey consents). The key comes first; the account step only ever
-//! asks about a key already unlocked.
+//! device's: kept by the system and opened on its own; it never leaves the
+//! device. The ACCOUNT is the network's: created for that key, or one this
+//! key joins (another device, a passkey or a recovery key consents).
+//!
+//! Every screen is ported from its board on the design canvas, element by
+//! element, out of `ink`'s pieces.
 
+use super::ink::{self, *};
 use super::*;
 use figure::Figure;
-use gpui_kit::component::button::{Button, ButtonRounded};
 
 /// The launcher window's size; it does not change.
 pub(super) const LAUNCHER_SIZE: (f32, f32) = (960., 640.);
@@ -21,9 +22,11 @@ pub(super) const LAUNCHER_SIZE: (f32, f32) = (960., 640.);
 pub(super) type Back = (&'static str, &'static str, fn() -> Message);
 
 impl DesktopWindow {
-    /// One launcher screen: `figure` and its `caption` on the left, then a
-    /// small step `label`, a `headline`, a `lead`, and the screen's own
-    /// `body`. `back` is a quiet link above the label.
+    /// One launcher screen, the canvas's frame: on the left a 380px panel,
+    /// `padding: 20px; gap: 12px`, the drawing on `surface` and its mono
+    /// `caption`; on the right the reading column, `padding: 32px 40px 0;
+    /// gap: 22px` — a small back link, then `[step]`, the `<h1>` and the
+    /// lead (`gap: 18px`), then the screen's own `body`.
     #[allow(
         clippy::too_many_arguments,
         reason = "one frame, every screen fills it"
@@ -43,23 +46,38 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         let state = self.model.read(cx).state.clone_facts();
-        let palette = design::palette(state.dark);
-        let muted = hsla_of(palette.muted);
-        // macOS draws the traffic lights over the window's top; that strip
-        // is the only handle, so it moves the window.
-        let titlebar = cfg!(target_os = "macos") && !window.is_fullscreen();
+        let ink = Ink::of(state.dark);
+        // The canvas draws a 34px title bar. macOS lends the window's own
+        // (transparent, the traffic lights in it); elsewhere the system's
+        // title bar is that bar.
+        let titlebar = (cfg!(target_os = "macos") && !window.is_fullscreen()).then(|| {
+            div()
+                .id("launcher-titlebar")
+                .h(px(34.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .pl(px(78.))
+                .border_b_1()
+                .border_color(ink.line)
+                .on_mouse_down(MouseButton::Left, |event, window, _| {
+                    match event.click_count {
+                        2 => window.titlebar_double_click(),
+                        _ => window.start_window_move(),
+                    }
+                })
+                .child(sans(500, 13.).text_color(ink.ink).child("Ducktape"))
+        });
         let picture = div()
             .id("launcher-figure")
             .w(px(380.))
-            .h_full()
             .flex_shrink_0()
+            .p(px(20.))
             .flex()
             .flex_col()
-            .gap_3()
-            .p_5()
-            .when(titlebar, |panel| panel.pt(px(40.)))
+            .gap(px(12.))
             .border_r_1()
-            .border_color(hsla_of(palette.border))
+            .border_color(ink.line)
             .child(
                 div()
                     .flex_1()
@@ -67,168 +85,80 @@ impl DesktopWindow {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .bg(hsla_of(palette.surface))
-                    .child(drawing(figure, state.motion, palette)),
+                    .bg(ink.surface)
+                    .child(drawing(figure, state.motion, ink.figure)),
             )
-            .child(mono(caption, muted));
+            .child(tag(caption, &ink));
+        // the phrase's 24 words need the room: its column sits tighter
+        let tight = id == "recovery";
         let reading =
             div()
                 .id(id)
                 .flex_1()
                 .min_w_0()
-                .h_full()
                 .overflow_y_scroll()
+                .pt(px(if tight { 24. } else { 32. }))
                 .px(px(40.))
-                .pt(px(if titlebar { 44. } else { 32. }))
                 .pb(px(32.))
                 .flex()
                 .flex_col()
-                .gap(px(20.))
+                .gap(px(if tight { 16. } else { 22. }))
                 .children(back.map(|(key, text, message)| {
-                    div().child(self.quiet_link(key, text, message, cx))
+                    div().child(self.link(key, text, message, true, &ink))
                 }))
                 .child(
                     div()
                         .flex()
                         .flex_col()
-                        .gap(px(14.))
-                        .child(mono(label, muted))
-                        .child(
-                            div()
-                                .text_size(px(28.))
-                                .line_height(px(34.))
-                                .child(headline),
-                        )
-                        .children(lead.map(|lead| {
-                            div()
-                                .text_size(px(14.))
-                                .line_height(px(22.))
-                                .text_color(muted)
-                                .child(lead)
-                        })),
+                        .gap(px(18.))
+                        .child(tag(label, &ink))
+                        .child(h1(headline, &ink))
+                        .children(lead.map(|text| ink::lead(text, &ink))),
                 )
                 .children(body);
         div()
             .id("launcher")
             .size_full()
             .flex()
-            .when(titlebar, |frame| {
-                frame.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        .h(px(28.))
-                        .on_mouse_down(MouseButton::Left, |event, window, _| {
-                            match event.click_count {
-                                2 => window.titlebar_double_click(),
-                                _ => window.start_window_move(),
-                            }
-                        }),
-                )
-            })
-            .child(picture)
-            .child(reading)
+            .flex_col()
+            .bg(ink.bg)
+            .text_color(ink.ink)
+            .children(titlebar)
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .child(picture)
+                    .child(reading),
+            )
             .children(self.footer(cx))
             .into_any_element()
     }
 
-    /// Underlined words that do one thing: "Restore from recovery phrase".
-    pub(super) fn quiet_link(
-        &self,
-        key: &'static str,
-        text: &'static str,
-        message: fn() -> Message,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        use gpui_kit::*;
-        let model = self.model.clone();
-        let muted = hsla_of(design::palette(self.model.read(cx).state.dark()).muted);
-        crate::a11y::keyboard(
-            div()
-                .id(key)
-                .control(Role::Button, text)
-                .cursor_pointer()
-                .text_size(px(13.5))
-                .underline()
-                .hover(move |style| style.text_color(muted))
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    model.update(cx, |model, cx| model.dispatch(message(), cx))
-                })
-                .child(text),
-        )
-    }
-
-    /// A labelled field: the words above it, the field, a hint below.
+    /// `<label>` over its control, `gap: 8px`, and a line under it.
     pub(super) fn field(
         &self,
-        label: impl Into<gpui_kit::SharedString>,
-        field: gpui_kit::AnyElement,
+        text: impl Into<gpui_kit::SharedString>,
+        control: gpui_kit::AnyElement,
+        below: Option<gpui_kit::AnyElement>,
+        ink: &Ink,
     ) -> gpui_kit::Div {
         use gpui_kit::*;
         div()
             .flex()
             .flex_col()
-            .gap(px(6.))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .font_weight(FontWeight::MEDIUM)
-                    .child(label.into()),
-            )
-            .child(field)
+            .gap(px(8.))
+            .child(label(text, ink))
+            .child(control)
+            .children(below)
     }
-
-    /// A sentence in the danger tone, read out as it appears.
-    pub(super) fn alert(
-        &self,
-        id: &'static str,
-        said: String,
-        cx: &gpui_kit::App,
-    ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        use gpui_kit::*;
-        let danger = hsla_of(design::palette(self.model.read(cx).state.dark()).danger);
-        div()
-            .id(id)
-            .role(Role::Alert)
-            .aria_label(said.clone())
-            .text_size(px(13.))
-            .text_color(danger)
-            .child(said)
-    }
-}
-
-/// The launcher's and the desk's buttons: square, a little taller than the
-/// kit's.
-pub(super) fn square(button: Button) -> Button {
-    use gpui_kit::Styled as _;
-    button.rounded(ButtonRounded::None).h(gpui_kit::px(40.))
-}
-
-/// Small mono text: step labels, captions, counts.
-pub(super) fn mono(
-    text: impl Into<gpui_kit::SharedString>,
-    color: gpui_kit::Hsla,
-) -> gpui_kit::Div {
-    use gpui_kit::*;
-    div()
-        .font_family(super::theme::FAMILY_MONO)
-        .text_size(px(12.))
-        .text_color(color)
-        .child(text.into())
 }
 
 /// The drawing, one line per row, turning while `moving`. Hidden from a
 /// reader: it is the screen's mood, not its content.
-pub(super) fn drawing(
-    figure: Figure,
-    moving: bool,
-    palette: &design::Palette,
-) -> gpui_kit::AnyElement {
+pub(super) fn drawing(figure: Figure, moving: bool, ink: gpui_kit::Hsla) -> gpui_kit::AnyElement {
     use gpui_kit::*;
-    let ink = hsla_of(palette.muted);
     let lines = move |elapsed: u64| {
         div()
             .flex()
@@ -237,7 +167,7 @@ pub(super) fn drawing(
             .font_family(super::theme::FAMILY_MONO)
             // "===" is one glyph in the mono face; a drawing wants three
             .font_features(FontFeatures::disable_ligatures())
-            .text_size(px(figure::SIZE))
+            .text_size(px(figure::GLYPH))
             .line_height(px(figure::SIZE))
             .text_color(ink)
             .children(figure.frame(elapsed).iter().map(|line| {

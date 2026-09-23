@@ -225,9 +225,23 @@ impl DesktopWindow {
             let text = value(&self.model.read(cx).state).to_owned();
             state.update(cx, |state, cx| state.set_value(text, window, cx));
         }
-        use gpui_kit::component::Sizable as _;
-        // as tall as the square buttons beside it
-        let input = Input::new(state).id(key).large();
+        // bare: the canvas's box around it is `ink::field_box`; its text
+        // is the canvas's `15px` (the account name's `22px`)
+        let size = match key {
+            "create-account-name" => 22.,
+            "spotlight" => 20.,
+            _ => 15.,
+        };
+        // the kit fixes an input's line at `1.25rem` (20px) inside `8px`
+        // padding: a larger face is clipped top and bottom. The line follows
+        // the face; the canvas's box around it sets height and inset.
+        let input = Input::new(state)
+            .id(key)
+            .appearance(false)
+            .text_size(gpui_kit::px(size))
+            .line_height(gpui_kit::relative(1.4))
+            .py_0()
+            .px_0();
         let input = match masked {
             true => input.content_type(InputContentType::Password),
             false => input,
@@ -255,32 +269,12 @@ impl DesktopWindow {
         .into_any_element()
     }
 
-    pub(super) fn action(
-        &self,
-        key: impl Into<gpui_kit::ElementId>,
-        label: impl Into<gpui_kit::SharedString>,
-        message: fn() -> Message,
-        disabled: bool,
-    ) -> gpui_kit::component::button::Button {
-        use gpui_kit::component::Disableable as _;
-        let model = self.model.clone();
-        let button = gpui_kit::component::button::Button::new(key)
-            .label(label)
-            .disabled(disabled)
-            .on_click(move |_, _, cx| {
-                cx.stop_propagation();
-                model.update(cx, |model, cx| model.dispatch(message(), cx))
-            });
-        crate::a11y::disabled(button, disabled)
-    }
-
-    /// The bar at the window's foot, for what the app has to say: the
-    /// node not answering (it stays until the node does), and a passing
-    /// note (a toast: it fades, or is dismissed). Centered, and as wide as
-    /// its words need up to a limit: a long note wraps instead of running
-    /// off the window's edge.
+    /// The bar at the window's foot (the Reconnecting board): the node not
+    /// answering, which stays until it does, and a passing note (a toast:
+    /// it fades, or is dismissed). `width: 560px; height: 56px; gap: 14px;
+    /// border: 1.5px solid ink`, a soft shadow; a long note wraps.
     pub(super) fn footer(&self, cx: &gpui_kit::App) -> Option<gpui_kit::Div> {
-        use gpui_kit::component::button::ButtonVariants as _;
+        use super::ink::*;
         use gpui_kit::*;
         let state = &self.model.read(cx).state;
         let lost = state.reconnecting() && state.screen == Screen::Console;
@@ -288,24 +282,25 @@ impl DesktopWindow {
         if !lost && toast.is_empty() {
             return None;
         }
-        let palette = design::palette(state.dark());
+        let ink = Ink::of(state.dark());
         let bar = |id: &'static str| {
             div()
                 .id(id)
                 .w(px(560.))
                 .max_w_full()
+                .min_h(px(56.))
                 .flex()
                 .items_center()
-                .gap_3()
-                .pl_4()
-                .pr_2()
-                .py_2()
-                .bg(hsla_of(palette.background))
+                .gap(px(14.))
+                .pl(px(18.))
+                .pr(px(10.))
+                .py(px(10.))
+                .bg(ink.bg)
                 .border(px(1.5))
-                .border_color(hsla_of(palette.foreground))
-                .shadow_md()
-                .text_size(px(13.))
+                .border_color(ink.ink)
+                .shadow_lg()
         };
+        let text = |said: String| sans(400, 14.).flex_1().min_w_0().child(said);
         let lost = lost.then(|| {
             let said = format!(
                 "{} isn't answering. What you write stays here.",
@@ -313,41 +308,42 @@ impl DesktopWindow {
             );
             bar("reconnecting")
                 .control(Role::Status, SharedString::from(said.clone()))
-                .child(pulse(false, state.motion, palette))
-                .child(div().flex_1().min_w_0().child(said))
-                .child(
-                    launcher::square(
-                        self.action("reconnect", "Retry now", || Message::Tick, false)
-                            .outline(),
-                    )
-                    .h(px(32.)),
-                )
+                .child(pulse(false, state.motion, &ink))
+                .child(text(said))
+                .child(self.button(
+                    "reconnect",
+                    "Retry now",
+                    Kind::Small,
+                    || Message::Tick,
+                    false,
+                    &ink,
+                ))
         });
         let toast = (!toast.is_empty()).then(|| {
             bar("toast")
                 .control(Role::Status, SharedString::from(toast.clone()))
+                // `Text` hands its words to the AX value, leaving the
+                // node's name empty; a reader announces the name.
                 .child(
-                    // `Text` hands its words to the AX value, leaving the
-                    // node's name empty; a reader announces the name.
-                    div()
+                    text(toast.clone())
                         .id("toast-message")
-                        .control(Role::Label, SharedString::from(toast.clone()))
-                        .flex_1()
-                        .min_w_0()
-                        .child(toast),
+                        .control(Role::Label, SharedString::from(toast)),
                 )
-                .child(
-                    self.action("toast-dismiss", "Dismiss", || Message::DismissToast, false)
-                        .ghost()
-                        .h_7(),
-                )
+                .child(self.button(
+                    "toast-dismiss",
+                    "Dismiss",
+                    Kind::Small,
+                    || Message::DismissToast,
+                    false,
+                    &ink,
+                ))
         });
         Some(
             div()
                 .absolute()
                 .left_0()
                 .right_0()
-                .bottom(px(24.))
+                .bottom(px(32.))
                 .px_4()
                 .flex()
                 .flex_col()
@@ -358,17 +354,17 @@ impl DesktopWindow {
         )
     }
 
-    /// Reaching a node: an address, the ones used before, and why the
+    /// Main (Connect): an address, the nodes reached before, and why the
     /// last try did not land.
     pub(super) fn connect(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::button::ButtonVariants as _;
+        use super::ink::{self, *};
         use gpui_kit::*;
         let state = self.model.read(cx).state.clone_facts();
-        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let ink = Ink::of(state.dark);
         let field = self.input(
             "endpoint",
             "127.0.0.1:8844",
@@ -381,31 +377,73 @@ impl DesktopWindow {
             window,
             cx,
         );
-        let danger = hsla_of(design::palette(state.dark).danger);
-        let recent = state.recent_endpoints.iter().map(|entry| {
-            let label = entry.label();
-            let row_model = self.model.clone();
-            let row_target = entry.url.clone();
+        // The address refusal is about what is typed now; a failed try is
+        // about the last address. Both clear on the next keystroke or try.
+        let note = [&state.endpoint_error, &state.error]
+            .into_iter()
+            .find(|note| !note.is_empty())
+            .cloned();
+        let border = match note {
+            Some(_) => ink.danger,
+            None => ink.strong,
+        };
+        // Only a try in flight has a status worth reading.
+        let below = match (&note, state.connecting) {
+            (Some(note), _) => Some(self.alert("connect-error", note.clone(), &ink)),
+            (None, true) => Some(
+                ink::note(state.status.clone(), ink.muted)
+                    .id("connect-status")
+                    .role(Role::Status)
+                    .aria_label(state.status.clone())
+                    .into_any_element(),
+            ),
+            (None, false) => None,
+        };
+        let form = self.field(
+            "Node address",
+            div()
+                .flex()
+                .gap(px(8.))
+                .child(div().flex_1().child(
+                    field_box(field, border, 44., &ink).font_family(super::theme::FAMILY_MONO),
+                ))
+                .child(self.button(
+                    "connect",
+                    "Connect",
+                    Kind::Primary,
+                    || Message::ConnectSubmit,
+                    state.connecting,
+                    &ink,
+                ))
+                .into_any_element(),
+            below,
+            &ink,
+        );
+        let rows = state.recent_endpoints.iter().map(|entry| {
+            let pick_model = self.model.clone();
+            let pick_target = entry.url.clone();
             let forget_model = self.model.clone();
             let forget_target = entry.url.clone();
             let name = match entry.network.is_empty() {
                 true => entry.host().to_owned(),
                 false => entry.network.clone(),
             };
+            let danger = ink.danger;
+            // `display: flex; align-items: baseline; gap: 16px;
+            // padding: 12px 0; border-bottom: 1px solid line`
             let pick = div()
                 .id(SharedString::from(format!("recent/{}", entry.url)))
-                .control(Role::Button, SharedString::from(label.clone()))
+                .control(Role::Button, SharedString::from(entry.label()))
                 .cursor_pointer()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .items_baseline()
-                .gap_4()
-                .py(px(10.))
+                .gap(px(16.))
                 .hover(|style| style.opacity(0.7))
                 .on_click(move |_, _, cx| {
-                    let target = row_target.clone();
-                    row_model.update(cx, |model, cx| {
+                    let target = pick_target.clone();
+                    pick_model.update(cx, |model, cx| {
                         model.dispatch(Message::ConnectTo(target), cx)
                     })
                 })
@@ -415,27 +453,19 @@ impl DesktopWindow {
                         .flex_shrink_0()
                         .flex()
                         .flex_col()
-                        .child(
-                            div()
-                                .text_size(px(14.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .truncate()
-                                .child(name),
-                        )
+                        .gap(px(2.))
+                        .child(sans(500, 15.).truncate().child(name))
                         .when(entry.other_chain, |cell| {
-                            cell.child(
-                                div()
-                                    .text_size(px(12.))
-                                    .text_color(colors.muted_foreground)
-                                    .child("Other chain"),
-                            )
+                            cell.child(sans(400, 12.).text_color(ink.muted).child("Other chain"))
                         }),
                 )
                 .child(
-                    launcher::mono(entry.host().to_owned(), colors.muted_foreground)
+                    mono(400, 13.)
                         .flex_1()
                         .min_w_0()
-                        .truncate(),
+                        .truncate()
+                        .text_color(ink.muted)
+                        .child(entry.host().to_owned()),
                 );
             let forget = div()
                 .id(SharedString::from(format!("forget/{}", entry.url)))
@@ -445,83 +475,42 @@ impl DesktopWindow {
                 )
                 .cursor_pointer()
                 .flex_shrink_0()
-                .px_2()
-                .text_size(px(15.))
-                .text_color(colors.muted_foreground)
-                .hover(move |style| style.text_color(danger))
+                .child(
+                    sans(400, 16.)
+                        .text_color(ink.muted)
+                        .hover(move |style| style.text_color(danger))
+                        .child("×"),
+                )
                 .on_click(move |_, _, cx| {
                     let target = forget_target.clone();
                     forget_model.update(cx, |model, cx| {
                         model.dispatch(Message::ForgetEndpoint(target), cx)
                     })
-                })
-                .child("×");
-            // Neither row had a tab stop: a keyboard-only reader could never
-            // reach a previously-used node, or forget one, from this list.
+                });
+            // Both have a tab stop: a keyboard-only reader reaches a node
+            // used before, and can forget it.
             div()
                 .flex()
-                .items_center()
-                .gap_1()
+                .items_baseline()
+                .gap(px(16.))
+                .py(px(12.))
                 .border_b_1()
-                .border_color(colors.border)
+                .border_color(ink.line)
                 .child(crate::a11y::keyboard(pick))
                 .child(crate::a11y::keyboard(forget))
         });
-        // The address refusal is about what is typed now; a failed try is
-        // about the last address. Both clear on the next keystroke or try.
-        let note = [&state.endpoint_error, &state.error]
-            .into_iter()
-            .find(|note| !note.is_empty())
-            .cloned();
-        let form = div()
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(
-                self.field(
-                    "Node address",
-                    div()
-                        .flex()
-                        .gap_2()
-                        .child(div().flex_1().child(field))
-                        .child(launcher::square(
-                            self.action(
-                                "connect",
-                                "Connect",
-                                || Message::ConnectSubmit,
-                                state.connecting,
-                            )
-                            .primary(),
-                        ))
-                        .into_any_element(),
-                ),
-            )
-            // Only a try in flight has a status worth reading; before one,
-            // "Not connected" beside Connect is noise.
-            .when(state.connecting, |form| {
-                form.child(
-                    div()
-                        .id("connect-status")
-                        .role(Role::Status)
-                        .aria_label(state.status.clone())
-                        .text_size(px(13.))
-                        .text_color(colors.muted_foreground)
-                        .child(state.status.clone()),
-                )
-            })
-            .children(note.map(|note| self.alert("connect-error", note, cx)));
         let recent = (!state.recent_endpoints.is_empty()).then(|| {
             div()
                 .id("recent")
                 .flex()
                 .flex_col()
                 .child(
-                    launcher::mono("Recent", colors.muted_foreground)
-                        .pb_2()
+                    tag("Recent", &ink)
+                        .pb(px(8.))
                         .border_b_1()
-                        .border_color(colors.border),
+                        .border_color(ink.line),
                 )
-                .children(recent)
+                .children(rows)
                 .into_any_element()
         });
         let caption = match state.recent_endpoints.is_empty() {
@@ -543,15 +532,15 @@ impl DesktopWindow {
     }
 }
 
-/// The node, as a breath: slow and green while it answers, quick and red
-/// while it does not. Still when motion is off.
-pub(super) fn pulse(ok: bool, moving: bool, palette: &design::Palette) -> gpui_kit::AnyElement {
+/// The node, as a breath (the canvas's `.pulse`): 5px to 11px and back
+/// over 2s, green to its soft tone, while it answers; red, 5px to 9px over
+/// 0.8s while it does not. An 8px dot when motion is off.
+pub(super) fn pulse(ok: bool, moving: bool, ink: &super::ink::Ink) -> gpui_kit::AnyElement {
     use gpui_kit::*;
     let (color, soft, period, big) = match ok {
-        true => (palette.success, palette.success_soft, 2000, 11.),
-        false => (palette.danger, palette.danger_soft, 800, 9.),
+        true => (ink.ok, ink.ok_soft, 2000, 11.),
+        false => (ink.danger, ink.danger, 800, 9.),
     };
-    let (color, soft) = (hsla_of(color), hsla_of(soft));
     let dot = div().rounded_full().flex_shrink_0();
     let well = div()
         .size(px(12.))
@@ -570,12 +559,8 @@ pub(super) fn pulse(ok: bool, moving: bool, palette: &design::Palette) -> gpui_k
                         .with_easing(bounce(ease_in_out))
                         .with_max_fps(30.),
                     move |dot, delta| {
-                        let size = 5. + (big - 5.) * delta;
-                        let ink = match ok {
-                            true => color.blend(soft.opacity(delta)),
-                            false => color,
-                        };
-                        dot.size(px(size)).bg(ink)
+                        dot.size(px(5. + (big - 5.) * delta))
+                            .bg(color.blend(soft.opacity(delta)))
                     },
                 ),
             )

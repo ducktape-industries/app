@@ -246,9 +246,14 @@ impl ViewTree {
         let accessible = accessible(node);
         let native_id = native_id(id);
         let field_id = ElementId::NamedChild(Arc::new(native_id.clone()), "field".into());
+        // the kit fixes the line at 20px inside `8px` padding: a face over
+        // ~16px is clipped top and bottom. The line follows the face and the
+        // kit's height centres it; a view's own style still wins.
         let mut input = Input::new(&field.state)
             .id(native_id)
             .disabled(options.disabled)
+            .line_height(gpui_kit::relative(1.4))
+            .py_0()
             .refine_style(style);
         if accessible.role == Some(gpui_kit::Role::PasswordInput) {
             input = input.content_type(InputContentType::Password);

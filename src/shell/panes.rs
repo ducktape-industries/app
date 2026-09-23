@@ -24,8 +24,8 @@ pub(super) fn label(module: &str) -> String {
 fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> &'static str {
     if rail.iter().any(|row| !row.empty) {
         match cfg!(target_os = "macos") {
-            true => "Nothing open here. Pick a program above, or search with ⌘K.",
-            false => "Nothing open here. Pick a program above, or search with Ctrl K.",
+            true => "Press ⌘K to open something.",
+            false => "Press Ctrl K to open something.",
         }
     } else {
         "This network runs no program with a view."
@@ -207,9 +207,9 @@ impl DesktopWindow {
         enabled: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        use gpui_kit::component::ActiveTheme as _;
         use gpui_kit::*;
-        let hover = cx.theme().secondary;
+        let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
+        let hover = ink.surface;
         // The action drives the element id and the dispatch below (stable
         // for the AX door and tests); the AX name is a phrase a screen
         // reader can announce on its own, not the bare verb.
@@ -224,7 +224,8 @@ impl DesktopWindow {
                 div()
                     .id(SharedString::from(format!("pane/{index}/{action}")))
                     .control(Role::Button, name)
-                    .size(px(24.))
+                    .size(px(28.))
+                    .text_color(ink.muted)
                     .flex()
                     .items_center()
                     .justify_center()
@@ -245,7 +246,7 @@ impl DesktopWindow {
                         };
                         this.pane_message(message, window, cx);
                     }))
-                    .child(gpui_kit::component::Icon::new(glyph).size(px(14.))),
+                    .child(gpui_kit::component::Icon::new(glyph).size(px(18.))),
             ),
             !enabled,
         )
@@ -257,13 +258,7 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let palette = design::palette(self.model.read(cx).state.dark());
-        // Content-area tokens: a pane sits beside the rail, not on it, and
-        // the sidebar_* colors (built for the always-dark rail) read as
-        // near-invisible text on the pane's own background.
-        let border = hsla_of(palette.border);
-        let fg = hsla_of(palette.foreground);
-        let muted = hsla_of(palette.muted);
+        let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
         if self.layout.panes.is_empty() {
             let moving = self.model.read(cx).state.motion;
             return div()
@@ -272,14 +267,17 @@ impl DesktopWindow {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap_5()
-                .text_color(muted)
+                .gap(px(20.))
                 .child(super::launcher::drawing(
                     super::figure::Figure::Node,
                     moving,
-                    palette,
+                    ink.figure,
                 ))
-                .child(empty_panes_message(&crate::runtime::rail()))
+                .child(
+                    super::ink::mono(400, 12.)
+                        .text_color(ink.muted)
+                        .child(empty_panes_message(&crate::runtime::rail())),
+                )
                 .into_any_element();
         }
         let props = self.model.read(cx).state.view_props();
@@ -295,7 +293,7 @@ impl DesktopWindow {
             .id("panes")
             .size_full()
             .flex()
-            .p(px(10.))
+            .p(px(12.))
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
                 if event.pressed_button != Some(MouseButton::Left) {
                     this.resize = None;
@@ -315,7 +313,8 @@ impl DesktopWindow {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.resize = None),
             );
-        // No title: the program's view is the window. With two or more,
+        // No title: the program's view is the window (the Pane board: its
+        // controls `28px` at `top: 8px; right: 8px`). With two or more,
         // the focused one is drawn in ink and shows its controls; the others
         // show theirs only under the pointer.
         let multi = self.layout.panes.len() > 1;
@@ -331,6 +330,7 @@ impl DesktopWindow {
             let controls = div()
                 .flex()
                 .items_center()
+                .gap(px(2.))
                 .when(multi && !focused, |controls| {
                     controls
                         .opacity(0.)
@@ -359,17 +359,16 @@ impl DesktopWindow {
                 .child(self.pane_button(index, "close", IconName::X, true, cx));
             let strip = div()
                 .id(SharedString::from(format!("pane/{index}/strip")))
-                .h(px(30.))
+                .h(px(44.))
                 .flex_shrink_0()
-                .pl(px(12.))
-                .pr(px(4.))
+                .pl(px(16.))
+                .pr(px(8.))
                 .flex()
                 .items_center()
                 .gap(px(4.))
-                .text_size(px(12.))
-                .text_color(muted)
                 .child(
-                    div()
+                    super::ink::mono(400, 12.)
+                        .text_color(ink.muted)
                         .flex_1()
                         .min_w_0()
                         .truncate()
@@ -380,7 +379,7 @@ impl DesktopWindow {
                 stage = stage.child(
                     div()
                         .id(SharedString::from(format!("pane/{index}/divider")))
-                        .w(px(10.))
+                        .w(px(12.))
                         .h_full()
                         .flex_shrink_0()
                         .cursor(CursorStyle::ResizeLeftRight)
@@ -413,10 +412,10 @@ impl DesktopWindow {
                     .group(group)
                     .border(px(1.))
                     .border_color(match focused && multi {
-                        true => fg,
-                        false => border,
+                        true => ink.ink,
+                        false => ink.line,
                     })
-                    .bg(hsla_of(palette.background))
+                    .bg(ink.bg)
                     .overflow_hidden()
                     .capture_any_mouse_down(cx.listener(move |this, _, window, cx| {
                         if this.layout.focused != index {
@@ -456,6 +455,6 @@ mod empty_panes_message_tests {
             "This network runs no program with a view.",
             "a rail of empty-slot rows still has nothing to open"
         );
-        assert!(empty_panes_message(&[row(true), row(false)]).starts_with("Nothing open here."),);
+        assert!(empty_panes_message(&[row(true), row(false)]).starts_with("Press "));
     }
 }

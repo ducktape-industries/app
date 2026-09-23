@@ -211,9 +211,9 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     let nodes = native.update(draw);
     assert_eq!(find(&nodes, "TextInput", "Account name")["value"], "duck");
     find(&nodes, "Button", "Create account");
-    find(&nodes, "Button", "From another device");
-    find(&nodes, "Button", "With a passkey");
-    find(&nodes, "Button", "With a recovery key");
+    find(&nodes, "Button", "Add this device from another device");
+    find(&nodes, "Button", "Add this device with a passkey");
+    find(&nodes, "Button", "Add this device with a recovery key");
 }
 
 /// The Connect screen's "Recent" list had no tab stop at all: a
@@ -416,5 +416,5 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
         "MenuItemRadio",
         "testkit · 127.0.0.1:2 · different network",
     );
-    find(&nodes, "MenuItem", "Add a network…");
+    find(&nodes, "MenuItem", "Add a network");
 }

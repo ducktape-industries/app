@@ -1,15 +1,41 @@
-//! The launcher's key and account screens, in that order: this device's
-//! key (kept by the system and opened on its own; the screen shows only
-//! while it opens or when it is locked), then the network's account for
-//! that key (create one, or add this device to one: another device of it,
-//! its passkey or its recovery key says yes). Reads are open
-//! on every network; only a write needs a seated key. No program is named
-//! here: the key is the app's, the network's name comes from the node.
+//! The launcher's key and account screens, each ported from its board on
+//! the design canvas (SignIn, Passkey, CreateAccount, Phrase, PhraseCheck).
+//! The KEY is this device's, kept by the system and opened on its own: its
+//! screen shows only while it opens, after a Lock, or for a password-locked
+//! key from before. The ACCOUNT is the network's: create one, or add this
+//! device to one — another device of it, its passkey or its recovery key
+//! says yes. No program is named here.
 
+use super::ink::{self, *};
 use super::*;
 use figure::Figure;
-use launcher::{mono, square};
 use screens::Facts;
+
+/// The canvas's button row: `display: flex; gap: 12px; margin-top: 4px`.
+fn buttons(children: impl IntoIterator<Item = gpui_kit::AnyElement>) -> gpui_kit::Div {
+    use gpui_kit::*;
+    div()
+        .flex()
+        .flex_wrap()
+        .gap(px(12.))
+        .mt(px(4.))
+        .children(children)
+}
+
+/// The canvas's closing links: `gap: 10px; padding-top: 20px;
+/// border-top: 1px solid line`.
+fn closing(children: impl IntoIterator<Item = gpui_kit::AnyElement>, ink: &Ink) -> gpui_kit::Div {
+    use gpui_kit::*;
+    div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(10.))
+        .pt(px(20.))
+        .border_t_1()
+        .border_color(ink.line)
+        .children(children)
+}
 
 impl DesktopWindow {
     /// The node reached, as the drawing's caption: "testkit · 127.0.0.1:8844".
@@ -19,62 +45,59 @@ impl DesktopWindow {
         format!("{} · {host}", state.network)
     }
 
-    /// This device's key for `state.network`, kept by the system and opened
-    /// on its own: this screen shows only while it opens, after a Lock, when
-    /// the system would not hand it over, or for a password-locked key from
-    /// before (asked once, then kept by the system). Nothing about accounts:
-    /// that is the next step.
+    /// SignIn: this device's key, opening, locked, failed, or (from before
+    /// keys moved into the system) behind a password asked once.
     pub(super) fn unlock(
         &mut self,
         state: &Facts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
-        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let ink = Ink::of(state.dark);
         let failed = !state.unlock_error.is_empty();
         let (label, headline, lead) = match (state.key_exists, state.locked, failed) {
             (true, _, _) => (
                 format!("{} · locked", state.network),
                 format!("Sign in to {}", state.network),
-                "This device's key still has a password from before. Type it once; the system keeps the key after that.",
+                Some(
+                    "This device's key still has a password from before. Type it once; the system keeps the key after that.",
+                ),
             ),
             (false, true, _) => (
                 format!("{} · locked", state.network),
                 format!("Sign in to {}", state.network),
-                "You locked this device's key. It stays with the system; unlock to write again.",
+                None,
             ),
             (false, false, true) => (
                 "[02 / 04] Key".to_string(),
                 "The key didn't open".to_string(),
-                "The system holds this device's key and didn't hand it over.",
+                Some("The system holds this device's key and didn't hand it over."),
             ),
             (false, false, false) => (
                 "[02 / 04] Key".to_string(),
                 "Opening this device's key…".to_string(),
-                "It signs what you write, and the system keeps it: no password, nothing to write down.",
+                Some(
+                    "It signs what you write, and the system keeps it: no password, nothing to write down.",
+                ),
             ),
         };
-        // Two chains can share a name; this one's keys are its own
-        // (`backend::bind_keyring`), and the person hears why it asks anew.
         let other_chain = state.other_chain.then(|| {
-            div()
-                .id("other-chain")
-                .control(
-                    Role::Note,
-                    format!("This is a different network also called {}", state.network),
-                )
-                .text_size(px(13.))
-                .child(format!(
-                    "This is a different network also called {}. It gets its own key on this device; the other {}'s key stays with that one.",
-                    state.network, state.network
-                ))
+            ink::note(
+                format!(
+                    "This is a different network also called {}. It gets its own key on this device.",
+                    state.network
+                ),
+                ink.muted,
+            )
+            .id("other-chain")
+            .role(Role::Note)
+            .into_any_element()
         });
         let password = state.key_exists.then(|| {
             let field = self.input(
                 "password",
-                "Password",
+                "",
                 true,
                 |state| &state.password,
                 Message::PasswordTyped,
@@ -84,63 +107,70 @@ impl DesktopWindow {
                 window,
                 cx,
             );
-            self.field("Password", field)
+            let border = match failed {
+                true => ink.danger,
+                false => ink.strong,
+            };
+            self.field(
+                "Password for this device's key",
+                field_box(field, border, 44., &ink).into_any_element(),
+                failed.then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink)),
+                &ink,
+            )
+            .into_any_element()
         });
+        let busy = state.unlock_busy || state.seating;
         let primary = match (state.key_exists || state.locked, failed) {
-            (true, _) => Some(("unlock", "Unlock")),
-            (false, true) => Some(("unlock", "Try again")),
-            // opening on its own: nothing to press
+            (true, _) => Some("Unlock"),
+            (false, true) => Some("Try again"),
             (false, false) => None,
         }
-        .map(|(id, label)| {
-            div().flex().child(square(
-                self.action(
-                    id,
-                    label,
-                    || Message::UnlockSubmit,
-                    state.unlock_busy || state.seating,
-                )
-                .primary(),
-            ))
+        .map(|text| {
+            buttons([self.button(
+                "unlock",
+                text,
+                Kind::Primary,
+                || Message::UnlockSubmit,
+                busy,
+                &ink,
+            )])
+            .into_any_element()
         });
+        let loose_error = (failed && !state.key_exists)
+            .then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink));
         let form = div()
             .flex()
             .flex_col()
-            .gap_3()
+            .gap(px(16.))
             .children(other_chain)
             .children(password)
-            .children(failed.then(|| self.alert("unlock-error", state.unlock_error.clone(), cx)))
-            .children(primary)
-            .children((!failed && state.seating).then(|| {
-                div()
-                    .id("seating")
-                    .role(Role::Status)
-                    .text_size(px(13.))
-                    .text_color(colors.muted_foreground)
-                    .child("Asking the system for it…")
-            }));
-        let links = div().flex().flex_col().gap_2().child(self.quiet_link(
-            "browse",
-            "Read without a key",
-            || Message::BrowseWithoutKey,
-            cx,
-        ));
+            .children(loose_error)
+            .children(primary);
+        let links = closing(
+            [self.link(
+                "browse",
+                "Read without a key",
+                || Message::BrowseWithoutKey,
+                false,
+                &ink,
+            )],
+            &ink,
+        );
         self.launcher(
             "sign-in",
             Figure::Ring,
             Self::where_(state),
-            Some(("disconnect", "← Other networks", || Message::Disconnect)),
+            Some(("disconnect", "Other networks", || Message::Disconnect)),
             label,
             headline,
-            Some(lead.into()),
+            lead.map(str::to_owned),
             vec![form.into_any_element(), links.into_any_element()],
             window,
             cx,
         )
     }
 
-    /// A passkey ceremony is in the browser, or on a phone through the QR:
-    /// say so, and offer to stop.
+    /// Passkey: the ceremony is in the browser, or on a phone through the QR.
     fn passkey_waiting(
         &mut self,
         state: &Facts,
@@ -148,83 +178,99 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let ink = Ink::of(state.dark);
         let (title, hint) = match state.passkey_qr {
             Some(_) => (
                 "Scan with your phone",
-                "Point its camera at the code and follow it. It asks for your passkey twice; a new code shows here for the second time.",
+                "Point its camera at the code. It asks for your passkey twice; this screen moves on by itself.",
             ),
             None => (
-                "Continue in your browser…",
-                "Your browser asks for your passkey twice. Come back here once it says you're done.",
+                "Continue in your browser",
+                "Your browser asks for your passkey twice. This screen moves on by itself.",
             ),
         };
-        let phone = match &state.passkey_qr {
-            Some(url) => div()
+        let row = state.passkey_qr.as_ref().map(|url| {
+            let copy = {
+                let url = url.clone();
+                crate::a11y::keyboard(
+                    sans(400, 14.)
+                        .id("passkey-qr-copy")
+                        .control(Role::Button, "Copy the link instead")
+                        .underline()
+                        .cursor_pointer()
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                        })
+                        .child("Copy the link instead"),
+                )
+            };
+            div()
                 .flex()
-                .flex_col()
                 .items_start()
-                .gap_2()
+                .gap(px(20.))
                 .child(
                     div()
                         .id("passkey-qr")
                         .role(Role::Image)
                         .aria_label("Passkey QR code")
+                        .size(px(168.))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .border(px(1.5))
+                        .border_color(ink.ink)
+                        .bg(gpui_kit::white())
                         .child(crate::render::qr(&view_wire::Qr {
                             payload: Some(url.clone().into_bytes()),
-                            size: Some(view_wire::QrSize::Total(200.)),
+                            size: Some(view_wire::QrSize::Total(150.)),
                             ..Default::default()
                         })),
                 )
-                .child(crate::a11y::whole(
+                .child(
                     div()
-                        .id("passkey-qr-url")
-                        .role(Role::Label)
-                        .aria_label(url.clone())
-                        .w_full()
-                        .text_size(px(11.))
-                        .text_color(colors.muted_foreground)
-                        .child(url.clone()),
-                ))
-                .child({
-                    let url = url.clone();
-                    square(
-                        gpui_kit::component::button::Button::new("passkey-qr-copy")
-                            .label("Copy link")
-                            .outline()
-                            .on_click(move |_, _, cx| {
-                                cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
-                            }),
-                    )
-                })
-                .into_any_element(),
-            None => self
-                .quiet_link(
-                    "passkey-use-phone",
-                    "Use a phone instead",
-                    || Message::PasskeyUsePhone,
-                    cx,
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(px(10.))
+                        .child(
+                            tag("Waiting", &ink)
+                                .id("passkey-waiting-status")
+                                .role(Role::Status),
+                        )
+                        .child(sans(500, 16.).child("Your passkey, twice"))
+                        .child(ink::note(
+                            "A new code appears here for the second time.",
+                            ink.muted,
+                        ))
+                        .child(copy),
                 )
-                .into_any_element(),
-        };
-        let status = div()
-            .id("passkey-waiting-status")
-            .role(Role::Status)
-            .aria_label(title)
-            .text_size(px(13.))
-            .text_color(colors.muted_foreground)
-            .child(hint);
-        let body = vec![
-            status.into_any_element(),
-            phone,
-            div()
-                .flex()
-                .child(square(
-                    self.action("passkey-cancel", "Cancel", || Message::PasskeyCancel, false)
-                        .outline(),
-                ))
-                .into_any_element(),
-        ];
+                .into_any_element()
+        });
+        let links = closing(
+            [
+                match state.passkey_qr {
+                    Some(_) => None,
+                    None => Some(self.link(
+                        "passkey-use-phone",
+                        "Use a phone instead",
+                        || Message::PasskeyUsePhone,
+                        false,
+                        &ink,
+                    )),
+                },
+                Some(self.link(
+                    "passkey-cancel",
+                    "Cancel",
+                    || Message::PasskeyCancel,
+                    false,
+                    &ink,
+                )),
+            ]
+            .into_iter()
+            .flatten(),
+            &ink,
+        );
         self.launcher(
             "passkey-waiting",
             Figure::Pair,
@@ -232,27 +278,21 @@ impl DesktopWindow {
             None,
             "[04 / 04] Account · passkey".into(),
             title.into(),
-            None,
-            body,
+            Some(hint.into()),
+            row.into_iter().chain([links.into_any_element()]).collect(),
             window,
             cx,
         )
     }
 
-    /// The account step: the unlocked key holds no account on this
-    /// network. Create one (identity's self-serve `Create`, signed by the
-    /// key — optionally with a passkey joining it), or add this device's
-    /// key to an account that already exists, a passkey on it consenting
-    /// (`AddKey`). "Not now" goes to the desk; reading and signing work
-    /// there without an account, and the menu bar's "Create account" comes
-    /// back here.
+    /// CreateAccount: name the account this key signs for, or add this
+    /// device to one that exists.
     pub(super) fn account_step(
         &mut self,
         state: &Facts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         if state.passkey_waiting {
             return self.passkey_waiting(state, window, cx);
@@ -260,10 +300,10 @@ impl DesktopWindow {
         if !state.link_code.is_empty() {
             return self.link_waiting(state, window, cx);
         }
-        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let ink = Ink::of(state.dark);
         let name = self.input(
             "create-account-name",
-            "Your name",
+            "",
             false,
             |state| &state.account_name,
             Message::AccountNameTyped,
@@ -273,109 +313,89 @@ impl DesktopWindow {
             window,
             cx,
         );
-        let label = match state.unlock_busy {
-            true => "Creating…",
-            false => "Create account",
+        let below = match state.unlock_error.is_empty() {
+            true => ink::note(
+                "The account number is given when it's created. Change the name later in Settings.",
+                ink.muted,
+            )
+            .into_any_element(),
+            false => self.alert("create-account-error", state.unlock_error.clone(), &ink),
         };
-        let create = div()
+        let busy = state.unlock_busy;
+        let form = div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(self.field("Name", name))
-            .children(
-                (!state.unlock_error.is_empty())
-                    .then(|| self.alert("create-account-error", state.unlock_error.clone(), cx)),
+            .gap(px(16.))
+            .child(
+                self.field(
+                    "Name",
+                    sans(400, 22.)
+                        .child(field_box(name, ink.strong, 56., &ink).text_size(px(22.)))
+                        .into_any_element(),
+                    Some(below),
+                    &ink,
+                ),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(square(
-                        self.action(
-                            "create-account",
-                            label,
-                            || Message::CreateAccountSubmit,
-                            state.unlock_busy,
-                        )
-                        .primary(),
-                    ))
-                    .child(square(
-                        self.action(
-                            "passkey-create",
-                            "Create with a passkey",
-                            || Message::PasskeyCreateSubmit,
-                            state.unlock_busy,
-                        )
-                        .outline(),
-                    )),
-            );
-        // An account made elsewhere: this device's key joins it, and
-        // something the account already trusts says yes — another device
-        // of it, its passkey, or its recovery key.
-        let join = div()
-            .id("join-account")
-            .role(Role::Group)
-            .aria_label("Already have an account")
-            .pt_4()
-            .border_t_1()
-            .border_color(colors.border)
-            .flex()
-            .flex_col()
-            .gap_3()
-            .child(div().text_size(px(14.)).font_weight(FontWeight::MEDIUM).child(format!("Already have an account on {}?", state.network)))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .line_height(px(20.))
-                    .text_color(colors.muted_foreground)
-                    .child("Add this device to it. Something the account already trusts says yes; this device's key then signs for the account too."),
-            )
-            .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .gap_2()
-                    .child(square(
-                        self.action(
-                            "link-device",
-                            "From another device",
-                            || Message::LinkStart,
-                            state.unlock_busy,
-                        )
-                        .outline(),
-                    ))
-                    .child(square(
-                        self.action(
-                            "passkey-sign-in",
-                            "With a passkey",
-                            || Message::PasskeySignInSubmit,
-                            state.unlock_busy,
-                        )
-                        .outline(),
-                    ))
-                    .child(square(
-                        self.action(
-                            "recover",
-                            "With a recovery key",
-                            || Message::RecoverShow,
-                            state.unlock_busy,
-                        )
-                        .outline(),
-                    )),
-            );
-        let body = vec![
-            create.into_any_element(),
-            join.into_any_element(),
-            div()
-                .child(self.quiet_link(
+            .child(buttons([
+                self.button(
+                    "create-account",
+                    match busy {
+                        true => "Creating…",
+                        false => "Create account",
+                    },
+                    Kind::Primary,
+                    || Message::CreateAccountSubmit,
+                    busy,
+                    &ink,
+                ),
+                self.button(
                     "create-account-later",
                     "Not now",
+                    Kind::Secondary,
                     || Message::CreateAccountLater,
-                    cx,
-                ))
-                .into_any_element(),
-        ];
+                    false,
+                    &ink,
+                ),
+            ]));
+        let join = closing(
+            [
+                sans(500, 14.)
+                    .child(format!("Already have an account on {}?", state.network))
+                    .into_any_element(),
+                self.link(
+                    "link-device",
+                    "Add this device from another device",
+                    || Message::LinkStart,
+                    false,
+                    &ink,
+                ),
+                self.link(
+                    "passkey-sign-in",
+                    "Add this device with a passkey",
+                    || Message::PasskeySignInSubmit,
+                    false,
+                    &ink,
+                ),
+                self.link(
+                    "recover",
+                    "Add this device with a recovery key",
+                    || Message::RecoverShow,
+                    false,
+                    &ink,
+                ),
+                self.link(
+                    "passkey-create",
+                    "Or create the account with a passkey",
+                    || Message::PasskeyCreateSubmit,
+                    false,
+                    &ink,
+                ),
+            ],
+            &ink,
+        )
+        .id("join-account")
+        .role(Role::Group)
+        .aria_label("Already have an account");
         self.launcher(
             "account-step",
             Figure::Pair,
@@ -383,16 +403,18 @@ impl DesktopWindow {
             None,
             "[04 / 04] Account".into(),
             "What should people call you?".into(),
-            Some(format!("An account is the name beside everything you write on {}. This device's key signs for it.", state.network)),
-            body,
+            Some(format!(
+                "Your account is the name beside everything you write on {}. This device's key signs for it.",
+                state.network
+            )),
+            vec![form.into_any_element(), join.into_any_element()],
             window,
             cx,
         )
     }
 
     /// This device waits under a short code for one already on the account
-    /// to approve it (the account menu's "Add a device…"). The fingerprint
-    /// is what the person compares on both screens before saying yes.
+    /// to approve it; the fingerprint is compared on both screens.
     fn link_waiting(
         &mut self,
         state: &Facts,
@@ -400,53 +422,52 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let ink = Ink::of(state.dark);
         let fingerprint = crate::backend::hex_decode(&state.signer_key)
             .map(|key| crate::backend::join::fingerprint(&key))
             .unwrap_or_default();
-        let big = |id: &'static str, label: &'static str, text: String| {
+        let big = |id: &'static str, name: &'static str, text: String| {
             div()
                 .flex()
                 .flex_col()
-                .gap_1()
-                .child(mono(label, colors.muted_foreground))
+                .gap(px(8.))
+                .child(tag(name, &ink))
                 .child(crate::a11y::whole(
-                    div()
+                    mono(400, 28.)
                         .id(id)
                         .role(Role::Label)
                         .aria_label(text.clone())
-                        .text_size(px(28.))
-                        .font_family(super::theme::FAMILY_MONO)
                         .child(text),
                 ))
         };
         let body = vec![
             div()
                 .flex()
-                .gap_8()
+                .gap(px(40.))
                 .child(big("link-code", "Code", state.link_code.clone()))
                 .child(big("link-fingerprint", "This device", fingerprint))
                 .into_any_element(),
-            div()
-                .id("link-waiting-status")
-                .role(Role::Status)
-                .text_size(px(13.))
-                .line_height(px(20.))
-                .text_color(colors.muted_foreground)
-                .child("On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Check that it shows the same four-and-four before approving. The code lasts five minutes.")
-                .into_any_element(),
+            ink::note(
+                "On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Approve there only if it shows the same four-and-four. The code lasts five minutes.",
+                ink.muted,
+            )
+            .id("link-waiting-status")
+            .role(Role::Status)
+            .into_any_element(),
             div()
                 .flex()
                 .flex_col()
-                .gap_3()
-                .children(
-                    (!state.unlock_error.is_empty())
-                        .then(|| self.alert("link-error", state.unlock_error.clone(), cx)),
-                )
-                .child(div().flex().child(square(
-                    self.action("link-cancel", "Cancel", || Message::LinkCancel, false)
-                        .outline(),
-                )))
+                .gap(px(16.))
+                .children((!state.unlock_error.is_empty())
+                    .then(|| self.alert("link-error", state.unlock_error.clone(), &ink)))
+                .child(buttons([self.button(
+                    "link-cancel",
+                    "Cancel",
+                    Kind::Secondary,
+                    || Message::LinkCancel,
+                    false,
+                    &ink,
+                )]))
                 .into_any_element(),
         ];
         self.launcher(
@@ -464,16 +485,15 @@ impl DesktopWindow {
     }
 
     /// The account's recovery key, typed: its 24 words say yes to this
-    /// device's key joining. A phrase from a key made before keys moved into
-    /// the system works too — that key is on the account already.
+    /// device's key joining. An old device phrase works as one.
     pub(super) fn recover(
         &mut self,
         state: &Facts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
+        let ink = Ink::of(state.dark);
         let phrase = self.input(
             "restore-phrase",
             "24 words, separated by spaces",
@@ -486,30 +506,39 @@ impl DesktopWindow {
             window,
             cx,
         );
-        let label = match state.unlock_busy {
-            true => "Adding…",
-            false => "Add this device",
-        };
+        let failed = !state.unlock_error.is_empty();
         let form = div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(self.field("Recovery key", phrase))
-            .children(
-                (!state.unlock_error.is_empty())
-                    .then(|| self.alert("unlock-error", state.unlock_error.clone(), cx)),
-            )
+            .gap(px(16.))
             .child(
-                div().flex().child(square(
-                    self.action(
-                        "recover-submit",
-                        label,
-                        || Message::RecoverSubmit,
-                        state.unlock_busy,
+                self.field(
+                    "Recovery key",
+                    field_box(
+                        phrase,
+                        match failed {
+                            true => ink.danger,
+                            false => ink.strong,
+                        },
+                        44.,
+                        &ink,
                     )
-                    .primary(),
-                )),
-            );
+                    .into_any_element(),
+                    failed.then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink)),
+                    &ink,
+                ),
+            )
+            .child(buttons([self.button(
+                "recover-submit",
+                match state.unlock_busy {
+                    true => "Adding…",
+                    false => "Add this device",
+                },
+                Kind::Primary,
+                || Message::RecoverSubmit,
+                state.unlock_busy,
+                &ink,
+            )]));
         self.launcher(
             "recover",
             Figure::Sheets,
@@ -524,24 +553,23 @@ impl DesktopWindow {
         )
     }
 
-    /// A new recovery key for the account, then a check that it was
-    /// written down: three of its words typed back. Private to the test
-    /// door; assistive technology reads it as anyone at the screen would.
+    /// Phrase: a new recovery key's 24 words, then a check of three.
     pub(super) fn phrase(
         &mut self,
         state: &Facts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         if let Some(asked) = state.phrase_quiz {
             return self.phrase_check(state, asked, window, cx);
         }
-        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let ink = Ink::of(state.dark);
         let words: Vec<&str> = state.phrase.split_whitespace().collect();
         let per_column = words.len().div_ceil(3).max(1);
-        // Three columns read top to bottom, 1–8, 9–16, 17–24.
+        // `grid-template-columns: repeat(3, 1fr); grid-auto-flow: column;
+        // column-gap: 24px`, each `<li>` `gap 10px; padding 6px 0;
+        // border-bottom 1px`
         let columns = words.chunks(per_column).enumerate().map(|(column, chunk)| {
             div()
                 .flex_1()
@@ -551,19 +579,12 @@ impl DesktopWindow {
                     div()
                         .flex()
                         .items_baseline()
-                        .gap_2()
-                        .py(px(5.))
+                        .gap(px(10.))
+                        .py(px(6.))
                         .border_b_1()
-                        .border_color(colors.border)
-                        .text_size(px(14.))
-                        .child(
-                            mono(
-                                format!("{}", column * per_column + row + 1),
-                                colors.muted_foreground,
-                            )
-                            .w(px(20.)),
-                        )
-                        .child(div().child(word.to_string()))
+                        .border_color(ink.line)
+                        .child(tag(format!("{}", column * per_column + row + 1), &ink).w(px(18.)))
+                        .child(sans(400, 15.).child(word.to_string()))
                 }))
         });
         let sheet = crate::a11y::private(
@@ -572,29 +593,29 @@ impl DesktopWindow {
                 .role(Role::Group)
                 .aria_label(state.phrase.clone())
                 .flex()
-                .gap_5()
+                .gap(px(24.))
                 .children(columns),
         );
         let done = div()
             .flex()
             .items_center()
-            .gap_4()
-            .child(square(
-                self.action(
-                    "phrase-done",
-                    "I wrote them down",
-                    || Message::PhraseWrittenDown,
-                    false,
-                )
-                .primary(),
+            .gap(px(16.))
+            .child(self.button(
+                "phrase-done",
+                "I wrote them down",
+                Kind::Primary,
+                || Message::PhraseWrittenDown,
+                false,
+                &ink,
             ))
-            .child(
-                div()
-                    .text_size(px(13.))
-                    .text_color(colors.muted_foreground)
-                    .child("Nobody can recover them for you."),
-            )
-            .child(self.quiet_link("phrase-cancel", "Not now", || Message::PhraseCancel, cx));
+            .child(ink::note("Nobody can recover them for you.", ink.muted))
+            .child(self.link(
+                "phrase-cancel",
+                "Not now",
+                || Message::PhraseCancel,
+                false,
+                &ink,
+            ));
         self.launcher(
             "recovery",
             Figure::Sheets,
@@ -602,16 +623,17 @@ impl DesktopWindow {
             None,
             "Recovery key".into(),
             "Write these down".into(),
-            Some(format!("In order, on paper. With them, a new device joins your {} account when no other device is at hand — and so can anyone holding them. They show only now.", state.network)),
+            Some(format!(
+                "In order, on paper. With them a new device joins your {} account when no other is at hand — and so can anyone holding them.",
+                state.network
+            )),
             vec![sheet.into_any_element(), done.into_any_element()],
             window,
             cx,
         )
     }
 
-    /// "Words 5, 12 and 20": proof the phrase left the screen before the
-    /// screen lets it go. The typed words stay out of the AX value like
-    /// the phrase itself.
+    /// PhraseCheck: three words typed back from the paper.
     fn phrase_check(
         &mut self,
         state: &Facts,
@@ -619,11 +641,8 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
-        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
-        let [a, b, c] = asked.map(|nth| nth + 1);
-        let prompt = format!("Type words {a}, {b} and {c} from your phrase.");
+        let ink = Ink::of(state.dark);
         type Field = (&'static str, fn(&Ducktape) -> &str, fn(String) -> Message);
         let fields: [Field; 3] = [
             (
@@ -642,13 +661,14 @@ impl DesktopWindow {
                 |text| Message::PhraseWordTyped(2, text),
             ),
         ];
+        let [a, b, c] = asked.map(|nth| nth + 1);
         let rows: Vec<_> = fields
             .into_iter()
             .zip(asked)
             .map(|((key, value, typed), nth)| {
                 let field = self.input(
                     key,
-                    "Word",
+                    "",
                     false,
                     value,
                     typed,
@@ -658,57 +678,55 @@ impl DesktopWindow {
                     window,
                     cx,
                 );
-                div()
-                    .flex()
-                    .items_center()
-                    .gap_3()
-                    .child(
-                        mono(format!("Word {}", nth + 1), colors.muted_foreground)
-                            .w(px(64.))
-                            .flex_shrink_0(),
-                    )
-                    .child(div().flex_1().child(field))
-                    .into_any_element()
+                self.field(
+                    format!("Word {}", nth + 1),
+                    field_box(field, ink.strong, 44., &ink).into_any_element(),
+                    None,
+                    &ink,
+                )
+                .into_any_element()
             })
             .collect();
-        let prompt = div()
-            .id("phrase-check-prompt")
-            .role(Role::Label)
-            .aria_label(prompt.clone())
-            .text_size(px(13.))
-            .text_color(colors.muted_foreground)
-            .child(prompt);
         let form = div()
             .flex()
             .flex_col()
-            .gap_3()
-            .child(prompt)
+            .gap(px(14.))
             .children(rows)
             .children(
                 (!state.unlock_error.is_empty())
-                    .then(|| self.alert("unlock-error", state.unlock_error.clone(), cx)),
+                    .then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink)),
             )
             .child(
-                div().flex().child(square(
-                    self.action(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(16.))
+                    .mt(px(4.))
+                    .child(self.button(
                         "phrase-check",
                         "Confirm",
+                        Kind::Primary,
                         || Message::PhraseCheckSubmit,
+                        state.unlock_busy,
+                        &ink,
+                    ))
+                    .child(self.link(
+                        "phrase-show",
+                        "See the words again",
+                        || Message::PhraseShowAgain,
                         false,
-                    )
-                    .primary(),
-                )),
+                        &ink,
+                    )),
             );
+        let prompt = format!("Type words {a}, {b} and {c} from your paper.");
         self.launcher(
             "recovery-check",
             Figure::Sheets,
             "Twenty-four words, on paper.".into(),
-            Some(("phrase-show", "← Show the words again", || {
-                Message::PhraseShowAgain
-            })),
+            None,
             "Recovery key · check".into(),
             "Now, three of them".into(),
-            None,
+            Some(prompt),
             vec![form.into_any_element()],
             window,
             cx,

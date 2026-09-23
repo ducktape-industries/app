@@ -15,7 +15,11 @@ pub(super) const ROWS: usize = 30;
 /// `SIZE`, and a line exactly `SIZE` tall. Rays step y by the same physical
 /// distance as x, so a sphere stays round.
 pub(super) const SIZE: f32 = 11.;
-pub(super) const ADVANCE: f32 = 6.6;
+/// The canvas sets 11px with `letter-spacing: 0.5px`: a 7.1px cell. gpui
+/// has no letter spacing, so the glyphs are drawn a touch larger instead
+/// (`GLYPH`, whose advance is the cell).
+pub(super) const ADVANCE: f32 = 7.1;
+pub(super) const GLYPH: f32 = ADVANCE / 0.6;
 /// Enough frames that a step is under a character's width of movement.
 const FRAMES: usize = 96;
 /// One loop, start to start.
