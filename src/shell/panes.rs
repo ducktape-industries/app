@@ -360,24 +360,17 @@ impl DesktopWindow {
                     strip.child(self.pane_button(index, "popin", IconName::ArrowDownLeft, true, cx))
                 })
                 .child(self.pane_button(index, "close", IconName::X, true, cx));
+            // the Pane board: no title strip; the view runs to the frame and
+            // the controls float over its top-right corner, which a view
+            // leaves free (`design::pane`)
             let strip = div()
                 .id(SharedString::from(format!("pane/{index}/strip")))
-                .h(px(44.))
-                .flex_shrink_0()
-                .pl(px(16.))
-                .pr(px(8.))
-                .flex()
-                .items_center()
-                .gap(px(4.))
-                .child(
-                    super::ink::mono(400, 12.)
-                        .text_color(ink.muted)
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .child(self.mounted[&pane.instance].context.borrow().clone()),
-                )
+                .absolute()
+                .top(px(8.))
+                .right(px(8.))
+                .bg(ink.bg)
                 .child(controls);
+            let context = self.mounted[&pane.instance].context.borrow().clone();
             if index > 0 {
                 stage = stage.child(
                     div()
@@ -425,8 +418,11 @@ impl DesktopWindow {
                             this.pane_message(Message::FocusPane(index), window, cx);
                         }
                     }))
-                    .child(strip)
-                    .child(div().flex_1().min_h_0().w_full().child(view)),
+                    .relative()
+                    .role(gpui_kit::Role::Group)
+                    .when(!context.is_empty(), |pane| pane.aria_label(context))
+                    .child(div().flex_1().min_h_0().w_full().child(view))
+                    .child(strip),
             );
         }
         stage.into_any_element()
