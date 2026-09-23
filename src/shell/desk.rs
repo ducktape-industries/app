@@ -5,7 +5,7 @@
 
 use super::*;
 use crate::{Popover, Spot};
-use launcher::mono;
+use launcher::{mono, square};
 use screens::{Facts, pulse};
 
 /// The menu bar's height.
@@ -42,6 +42,7 @@ impl DesktopWindow {
         let overlay = match console {
             false => None,
             true if state.spotlight => Some(self.spotlight(&state, window, cx)),
+            true if state.approving => Some(self.approve(&state, window, cx)),
             true if state.network_menu => Some(self.network_menu(&state, narrow, cx)),
             true => state.popover.map(|popover| match popover {
                 Popover::Node => self.node_menu(&state, cx),
@@ -565,6 +566,19 @@ impl DesktopWindow {
                 },
                 cx,
             ));
+            rows = rows
+                .child(self.menu_row(
+                    "add-device",
+                    "Add a device…",
+                    self.dispatching(|| Message::ApproveOpen),
+                    cx,
+                ))
+                .child(self.menu_row(
+                    "recovery-key",
+                    "Make a recovery key…",
+                    self.dispatching(|| Message::RecoveryKeyStart),
+                    cx,
+                ));
         }
         let body = div()
             .flex()
@@ -590,7 +604,7 @@ impl DesktopWindow {
                             .pt_1()
                             .text_size(px(12.5))
                             .text_color(muted)
-                            .child("Key on this device, locked with a password"),
+                            .child("This device's key, kept by the system"),
                     ),
             )
             .child(rows)
@@ -608,6 +622,144 @@ impl DesktopWindow {
                     )),
             );
         self.hanging("account-menu", "Account", 44., 300., body, cx)
+    }
+
+    /// "Add a device…": the code a new device shows, then its fingerprint
+    /// to compare, then this device's yes — consent it signs for the
+    /// account and hands over the relay.
+    fn approve(
+        &mut self,
+        state: &Facts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::component::button::ButtonVariants as _;
+        use gpui_kit::*;
+        let palette = design::palette(state.dark);
+        let muted = hsla_of(palette.muted);
+        let (said, fields) = match &state.approve_fingerprint {
+            None => {
+                let code = self.input(
+                    "approve-code",
+                    "XXXX-XXXX",
+                    false,
+                    |state| &state.approve_code,
+                    Message::ApproveCodeTyped,
+                    || Message::ApproveFind,
+                    Some("Code".into()),
+                    false,
+                    window,
+                    cx,
+                );
+                (
+                    "On the new device, choose \"From another device\". Type the code it shows.",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child(self.field("Code", code))
+                        .children(
+                            (!state.unlock_error.is_empty()).then(|| {
+                                self.alert("approve-error", state.unlock_error.clone(), cx)
+                            }),
+                        )
+                        .child(
+                            div().flex().gap_2().child(square(
+                                self.action(
+                                    "approve-find",
+                                    "Next",
+                                    || Message::ApproveFind,
+                                    state.unlock_busy,
+                                )
+                                .primary(),
+                            )),
+                        ),
+                )
+            }
+            Some(fingerprint) => (
+                "Approve only if the new device shows these same characters. It can then write as your account.",
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(crate::a11y::whole(
+                        div()
+                            .id("approve-fingerprint")
+                            .role(Role::Label)
+                            .aria_label(fingerprint.clone())
+                            .text_size(px(28.))
+                            .font_family(super::theme::FAMILY_MONO)
+                            .child(fingerprint.clone()),
+                    ))
+                    .children(
+                        (!state.unlock_error.is_empty())
+                            .then(|| self.alert("approve-error", state.unlock_error.clone(), cx)),
+                    )
+                    .child(
+                        div().flex().gap_2().child(square(
+                            self.action(
+                                "approve-confirm",
+                                "Approve",
+                                || Message::ApproveConfirm,
+                                state.unlock_busy,
+                            )
+                            .primary(),
+                        )),
+                    ),
+            ),
+        };
+        let close = self.model.clone();
+        let scrim = hsla_of(palette.background).opacity(0.6);
+        div()
+            .id("approve-backdrop")
+            .absolute()
+            .top(px(BAR))
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .occlude()
+            .bg(scrim)
+            .flex()
+            .justify_center()
+            .on_click(move |_, _, cx| {
+                close.update(cx, |model, cx| model.dispatch(Message::ApproveClose, cx));
+            })
+            .child(
+                div()
+                    .id("approve")
+                    .control(Role::Dialog, "Add a device")
+                    .occlude()
+                    .mt(px(60.))
+                    .w(px(440.))
+                    .max_w_full()
+                    .self_start()
+                    .flex()
+                    .flex_col()
+                    .gap_4()
+                    .p_6()
+                    .bg(hsla_of(palette.background))
+                    .border(px(1.5))
+                    .border_color(hsla_of(palette.foreground))
+                    .shadow_lg()
+                    .text_size(px(14.))
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(mono("Add a device", muted))
+                    .child(
+                        div()
+                            .text_size(px(13.))
+                            .line_height(px(20.))
+                            .text_color(muted)
+                            .child(said),
+                    )
+                    .child(fields)
+                    .child(self.quiet_link(
+                        "approve-cancel",
+                        "Cancel",
+                        || Message::ApproveClose,
+                        cx,
+                    )),
+            )
+            .into_any_element()
     }
 
     /// ⌘K: one field, and what it finds among the programs, the networks

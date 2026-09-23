@@ -111,21 +111,33 @@ pub struct Ducktape {
     /// The account the seated key belongs to, as `(number, name)`: `None`
     /// until the node was asked, `Some(None)` while the key holds none.
     pub(crate) account: Option<Option<(u64, String)>>,
+    /// A password-locked key's password (keys from before they moved into
+    /// the OS; see [`backend::device_key`]).
     pub(crate) password: String,
-    pub(crate) confirm_password: String,
     pub(crate) unlock_error: String,
     pub(crate) unlock_busy: bool,
-    /// Whether this device already holds a key for `network` — Unlock vs
-    /// Create on the sign-in screen.
+    /// A password-locked key file is here for `network` and this device's
+    /// OS-kept key is not: the key screen asks for its password, once, and
+    /// moves it into the OS.
     pub(crate) key_exists: bool,
+    /// This device's key is being opened (or made) for the network reached.
+    pub(crate) seating: bool,
+    /// Locked on purpose: the key is not reopened until Unlock.
+    pub(crate) locked: bool,
     /// Reading without a key: the console opens, writes are refused.
     pub(crate) browsing: bool,
-    /// On the sign-in screen: restoring a key from its recovery phrase
-    /// instead of unlocking or minting one.
-    pub(crate) restoring: bool,
+    /// The account step's "Use a recovery key": its 24 words being typed.
+    pub(crate) recovering: bool,
     pub(crate) restore_phrase: String,
-    pub(crate) restore_password: String,
-    pub(crate) restore_confirm_password: String,
+    /// The account step's "From another device": the code this device shows
+    /// while it waits for one on the account to approve.
+    pub(crate) link_code: String,
+    pub(crate) link_task: Option<view_wire::task::Handle>,
+    /// A device on the account approving a new one: the dialog is open, the
+    /// code typed, and the request it found.
+    pub(crate) approving: bool,
+    pub(crate) approve_code: String,
+    pub(crate) approve_found: Option<backend::join::Request>,
     /// The name a new passkey account takes.
     pub(crate) account_name: String,
     /// A passkey ceremony in flight (the browser has it); dropping the
@@ -143,11 +155,8 @@ pub struct Ducktape {
     pub(crate) passkey_phone: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The QR URL of the touch in flight (its callback is the relay slot).
     pub(crate) passkey_qr: String,
-    /// On the sign-in screen with a key already here: minting a new one in
-    /// its place, after saying what that costs ("New key").
-    pub(crate) replacing: bool,
-    /// A freshly minted key's recovery phrase, held until the person has
-    /// typed back the words `phrase_quiz` asks for.
+    /// A new recovery key's 24 words, held until the person has typed back
+    /// the words `phrase_quiz` asks for and the key is on the account.
     pub(crate) phrase: String,
     /// Once "I wrote it down" is pressed: the three word positions
     /// (0-based, ascending) the person types back before the console opens.
@@ -227,30 +236,42 @@ pub(crate) enum AppMessage {
     ViewEvent(&'static str, ModuleViewEvent),
     OpenLink(String),
     PasswordTyped(String),
-    ConfirmPasswordTyped(String),
+    /// Unlock: the OS-kept key again after a Lock, or a password-locked
+    /// key with its password.
     UnlockSubmit,
-    CreateWalletSubmit,
     Unlocked(String),
-    WalletCreated {
-        pubkey: String,
-        phrase: String,
-    },
+    /// This device's key, opened or made on reaching a network: its public
+    /// half; `None` when only a password-locked key is here.
+    DeviceKey(Result<Option<String>, String>),
+    /// "From another device": show a code and wait for an approval.
+    LinkStart,
+    LinkCancel,
+    /// "Use a recovery key".
+    RecoverShow,
+    RecoverCancel,
+    RecoverSubmit,
+    /// A join (another device, a recovery key) landed or failed.
+    Joined(Result<(), String>),
+    /// The approving side, on a device already on the account.
+    ApproveOpen,
+    ApproveClose,
+    ApproveCodeTyped(String),
+    ApproveFind,
+    ApproveFound(Result<backend::join::Request, String>),
+    ApproveConfirm,
+    ApproveDone(Result<(), String>),
+    /// A new recovery key: its words, their check, then onto the account.
+    RecoveryKeyStart,
+    RecoveryKeyAdded(Result<(), String>),
+    PhraseCancel,
     PhraseWrittenDown,
     PhraseWordTyped(usize, String),
     PhraseCheckSubmit,
     PhraseShowAgain,
-    ShowNewKey,
-    NewKeyCancel,
     UnlockFailed(String),
     BrowseWithoutKey,
     SignIn,
-    ShowRestore,
-    RestoreCancel,
     RestorePhraseTyped(String),
-    RestorePasswordTyped(String),
-    RestoreConfirmPasswordTyped(String),
-    RestoreSubmit,
-    Restored(String),
     AccountNameTyped(String),
     PasskeyCreateSubmit,
     PasskeySignInSubmit,
@@ -318,22 +339,25 @@ impl Ducktape {
             signer_key: String::new(),
             account: None,
             password: String::new(),
-            confirm_password: String::new(),
             unlock_error: String::new(),
             unlock_busy: false,
             key_exists: false,
+            seating: false,
+            locked: false,
             browsing: false,
-            restoring: false,
+            recovering: false,
             restore_phrase: String::new(),
-            restore_password: String::new(),
-            restore_confirm_password: String::new(),
+            link_code: String::new(),
+            link_task: None,
+            approving: false,
+            approve_code: String::new(),
+            approve_found: None,
             account_name: String::new(),
             passkey_task: None,
             account_offer: false,
             account_step: false,
             passkey_phone: Default::default(),
             passkey_qr: String::new(),
-            replacing: false,
             phrase: String::new(),
             phrase_quiz: None,
             quiz_answers: Default::default(),

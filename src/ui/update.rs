@@ -115,7 +115,7 @@ impl Ducktape {
                         opened.map(Message::ConsoleOpened)
                     }
                 };
-                Task::batch([left, window, self.resolve_account()])
+                Task::batch([left, window, self.open_device_key(), self.resolve_account()])
             }
             Message::ConnectFailed { generation, error } => {
                 if generation != self.connect_generation {
@@ -354,19 +354,19 @@ impl Ducktape {
                 self.unlock_error.clear();
                 Task::none()
             }
-            Message::ConfirmPasswordTyped(text) => {
-                self.confirm_password = text;
-                self.unlock_error.clear();
-                Task::none()
-            }
-            // Every submit below copies the typed secret instead of taking
-            // it: the field on screen still shows what was typed, so a
-            // failed try leaves model and field in agreement and a retry
-            // sends what the person sees. Success, or leaving the screen,
-            // wipes both (`forget_secrets`).
+            // With no password typed, Unlock reopens this device's OS-kept
+            // key (after a Lock). With one, it opens a password-locked key
+            // from before keys moved into the OS, and moves it there: the
+            // password is asked this once. The typed password is copied, not
+            // taken: a failed try leaves model and field in agreement.
             Message::UnlockSubmit => {
                 if self.unlock_busy {
                     return Task::none();
+                }
+                self.locked = false;
+                self.unlock_error.clear();
+                if !self.key_exists {
+                    return self.open_device_key();
                 }
                 if self.password.is_empty() {
                     self.unlock_error = "Type this key's password first.".into();
@@ -375,65 +375,49 @@ impl Ducktape {
                 let password = zeroize::Zeroizing::new(self.password.clone());
                 let keyring = self.keyring.clone();
                 self.unlock_busy = true;
-                self.unlock_error.clear();
                 Task::future(async move {
-                    let path = match backend::session_key_path(&keyring) {
-                        Ok(path) => path,
-                        Err(error) => return Message::UnlockFailed(backend::user_error(error)),
-                    };
-                    match backend::seat_signer(path, password).await {
-                        Ok(pubkey) => Message::Unlocked(pubkey),
-                        Err(error) => Message::UnlockFailed(backend::user_error(error)),
-                    }
-                })
-            }
-            // Minting only when there is no key yet, or the person has seen
-            // what replacing it costs (`ShowNewKey`): this message never
-            // doubles as "New key" on the Unlock screen.
-            Message::CreateWalletSubmit => {
-                if self.unlock_busy || (self.key_exists && !self.replacing) {
-                    return Task::none();
-                }
-                if let Some(error) = weak_password(&self.password, &self.confirm_password) {
-                    self.unlock_error = error;
-                    return Task::none();
-                }
-                let password = zeroize::Zeroizing::new(self.password.clone());
-                let keyring = self.keyring.clone();
-                self.unlock_busy = true;
-                self.unlock_error.clear();
-                Task::future(async move {
-                    let created = tokio::task::spawn_blocking({
-                        let keyring = keyring.clone();
-                        let password = password.clone();
-                        move || backend::create_wallet(&keyring, &password)
+                    let opened = tokio::task::spawn_blocking(move || {
+                        let path = backend::session_key_path(&keyring)?;
+                        let key = keystore::userkey::open_user_key_at(&path, &password)?;
+                        // kept by the OS from now on; a refusal only means
+                        // the password is asked again next time
+                        if let Err(error) = backend::device_key::save(&keyring, &key) {
+                            tracing::info!(target: "ducktape::keys", %error, "password-locked key not moved into the OS");
+                        }
+                        Ok::<_, String>(key)
                     })
                     .await
-                    .unwrap_or_else(|_| Err("creating the wallet did not finish".into()));
-                    let phrase = match created {
-                        Ok(phrase) => phrase,
-                        Err(error) => return Message::UnlockFailed(backend::user_error(error)),
-                    };
-                    let path = match backend::session_key_path(&keyring) {
-                        Ok(path) => path,
-                        Err(error) => return Message::UnlockFailed(backend::user_error(error)),
-                    };
-                    match backend::seat_signer(path, password).await {
-                        Ok(pubkey) => Message::WalletCreated { pubkey, phrase },
+                    .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
+                    match opened {
+                        Ok(key) => Message::Unlocked(backend::seat_key(key).await),
                         Err(error) => Message::UnlockFailed(backend::user_error(error)),
                     }
                 })
             }
-            Message::WalletCreated { pubkey, phrase } => {
-                self.unlock_busy = false;
-                self.signer_key = pubkey;
-                self.phrase = phrase;
-                self.key_exists = true;
-                self.replacing = false;
-                self.account_offer = true;
-                self.forget_secrets();
-                self.push_props();
-                self.resolve_account()
+            Message::DeviceKey(found) => {
+                self.seating = false;
+                match found {
+                    Ok(Some(pubkey)) => {
+                        self.key_exists = false;
+                        self.update(Message::Unlocked(pubkey))
+                    }
+                    // only a password-locked key here: the key screen asks
+                    Ok(None) => Task::none(),
+                    Err(error) => {
+                        self.unlock_error = error;
+                        Task::none()
+                    }
+                }
+            }
+            Message::RecoveryKeyStart => {
+                self.popover = None;
+                self.forget_phrase();
+                self.phrase = backend::join::new_recovery_phrase();
+                Task::none()
+            }
+            Message::PhraseCancel => {
+                self.forget_phrase();
+                Task::none()
             }
             Message::PhraseWrittenDown => {
                 self.phrase_quiz = Some(quiz_positions(self.phrase.split_whitespace().count()));
@@ -448,35 +432,48 @@ impl Ducktape {
                 self.unlock_error.clear();
                 Task::none()
             }
+            // The words checked: the key they make goes onto the account.
             Message::PhraseCheckSubmit => {
                 let Some(asked) = self.phrase_quiz else {
                     return Task::none();
                 };
-                match quiz_matches(&self.phrase, asked, &self.quiz_answers) {
-                    true => self.forget_phrase(),
-                    false => {
-                        self.unlock_error =
-                            "Those words don't match your phrase. Check them, or show the phrase again."
-                                .into();
+                if self.unlock_busy {
+                    return Task::none();
+                }
+                if !quiz_matches(&self.phrase, asked, &self.quiz_answers) {
+                    self.unlock_error =
+                        "Those words don't match your phrase. Check them, or show the phrase again."
+                            .into();
+                    return Task::none();
+                }
+                let phrase = zeroize::Zeroizing::new(self.phrase.clone());
+                let client = backend::RpcClient::new(self.connected_rpc.clone());
+                let network = self.network.clone();
+                self.unlock_busy = true;
+                Task::future(async move {
+                    Message::RecoveryKeyAdded(
+                        backend::join::add_recovery_key(&client, &network, &phrase).await,
+                    )
+                })
+            }
+            Message::RecoveryKeyAdded(added) => {
+                self.unlock_busy = false;
+                match added {
+                    Ok(()) => {
+                        self.forget_phrase();
+                        self.update(Message::ShowToast(
+                            "Recovery key added. Keep the paper somewhere safe.".into(),
+                        ))
+                    }
+                    Err(error) => {
+                        self.unlock_error = error;
+                        Task::none()
                     }
                 }
-                Task::none()
             }
             Message::PhraseShowAgain => {
                 self.phrase_quiz = None;
                 self.quiz_answers.iter_mut().for_each(Zeroize::zeroize);
-                self.unlock_error.clear();
-                Task::none()
-            }
-            Message::ShowNewKey => {
-                self.replacing = true;
-                self.forget_secrets();
-                self.unlock_error.clear();
-                Task::none()
-            }
-            Message::NewKeyCancel => {
-                self.replacing = false;
-                self.forget_secrets();
                 self.unlock_error.clear();
                 Task::none()
             }
@@ -488,84 +485,156 @@ impl Ducktape {
             }
             Message::SignIn => {
                 self.browsing = false;
-                Task::none()
-            }
-            Message::ShowRestore => {
-                self.restoring = true;
-                self.forget_secrets();
-                self.unlock_error.clear();
-                Task::none()
-            }
-            Message::RestoreCancel => {
-                self.restoring = false;
-                self.forget_secrets();
-                self.unlock_error.clear();
-                Task::none()
+                self.locked = false;
+                self.open_device_key()
             }
             Message::RestorePhraseTyped(text) => {
                 self.restore_phrase = text;
                 self.unlock_error.clear();
                 Task::none()
             }
-            Message::RestorePasswordTyped(text) => {
-                self.restore_password = text;
+            Message::RecoverShow => {
+                self.recovering = true;
                 self.unlock_error.clear();
                 Task::none()
             }
-            Message::RestoreConfirmPasswordTyped(text) => {
-                self.restore_confirm_password = text;
+            Message::RecoverCancel => {
+                self.recovering = false;
+                self.forget_secrets();
                 self.unlock_error.clear();
                 Task::none()
             }
-            Message::RestoreSubmit => {
+            Message::RecoverSubmit => {
                 if self.unlock_busy {
                     return Task::none();
                 }
-                let phrase = normalize_phrase(&self.restore_phrase);
+                let phrase = zeroize::Zeroizing::new(normalize_phrase(&self.restore_phrase));
                 if keystore::userkey::seed_of_mnemonic(&phrase).is_err() {
-                    self.unlock_error = "That phrase isn't valid — check each word.".into();
+                    self.unlock_error =
+                        "Those words aren't a recovery key — check each one.".into();
                     return Task::none();
                 }
-                if let Some(error) =
-                    weak_password(&self.restore_password, &self.restore_confirm_password)
-                {
-                    self.unlock_error = error;
-                    return Task::none();
-                }
-                let password = zeroize::Zeroizing::new(self.restore_password.clone());
-                let keyring = self.keyring.clone();
+                let client = backend::RpcClient::new(self.connected_rpc.clone());
+                let network = self.network.clone();
                 self.unlock_busy = true;
                 self.unlock_error.clear();
                 Task::future(async move {
-                    let restored = tokio::task::spawn_blocking({
-                        let keyring = keyring.clone();
-                        let password = password.clone();
-                        move || backend::restore_wallet(&keyring, &phrase, &password)
-                    })
-                    .await
-                    .unwrap_or_else(|_| Err("restoring the key did not finish".into()));
-                    if let Err(error) = restored {
-                        return Message::UnlockFailed(backend::user_error(error));
-                    }
-                    let path = match backend::session_key_path(&keyring) {
-                        Ok(path) => path,
-                        Err(error) => return Message::UnlockFailed(backend::user_error(error)),
-                    };
-                    match backend::seat_signer(path, password).await {
-                        Ok(pubkey) => Message::Restored(pubkey),
-                        Err(error) => Message::UnlockFailed(backend::user_error(error)),
-                    }
+                    Message::Joined(
+                        backend::join::join_with_recovery_key(&client, &network, &phrase).await,
+                    )
                 })
             }
-            Message::Restored(pubkey) => {
+            Message::LinkStart => {
+                if self.link_task.is_some() {
+                    return Task::none();
+                }
+                let code = backend::join::new_code();
+                self.link_code = code.clone();
+                self.unlock_error.clear();
+                let client = backend::RpcClient::new(self.connected_rpc.clone());
+                let network = self.network.clone();
+                let (task, handle) = Task::future(async move {
+                    Message::Joined(backend::join::join_from_device(&client, &network, &code).await)
+                })
+                .abortable();
+                self.link_task = Some(handle.abort_on_drop());
+                task
+            }
+            Message::LinkCancel => {
+                self.link_task = None;
+                self.link_code.clear();
+                Task::none()
+            }
+            Message::Joined(joined) => {
                 self.unlock_busy = false;
-                self.signer_key = pubkey;
-                self.key_exists = true;
-                self.restoring = false;
-                self.account_offer = true;
-                self.forget_secrets();
-                self.push_props();
-                self.resolve_account()
+                self.link_task = None;
+                self.link_code.clear();
+                match joined {
+                    Ok(()) => {
+                        self.recovering = false;
+                        self.forget_secrets();
+                        self.account_offer = false;
+                        self.account_step = false;
+                        self.resolve_account()
+                    }
+                    Err(error) => {
+                        self.unlock_error = error;
+                        Task::none()
+                    }
+                }
+            }
+            Message::ApproveOpen => {
+                self.popover = None;
+                self.approving = true;
+                self.approve_code.clear();
+                self.approve_found = None;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::ApproveClose => {
+                self.approving = false;
+                self.approve_found = None;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::ApproveCodeTyped(text) => {
+                self.approve_code = text;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::ApproveFind => {
+                if self.unlock_busy {
+                    return Task::none();
+                }
+                let code = self.approve_code.clone();
+                self.unlock_busy = true;
+                self.unlock_error.clear();
+                Task::future(async move {
+                    Message::ApproveFound(backend::join::find_request(&code).await)
+                })
+            }
+            Message::ApproveFound(found) => {
+                self.unlock_busy = false;
+                match found {
+                    Ok(request) => self.approve_found = Some(request),
+                    Err(error) => self.unlock_error = error,
+                }
+                Task::none()
+            }
+            Message::ApproveConfirm => {
+                let (Some(request), Some(Some((account, _)))) =
+                    (self.approve_found.clone(), self.account.clone())
+                else {
+                    return Task::none();
+                };
+                if self.unlock_busy {
+                    return Task::none();
+                }
+                let code = self.approve_code.clone();
+                let client = backend::RpcClient::new(self.connected_rpc.clone());
+                let network = self.network.clone();
+                self.unlock_busy = true;
+                Task::future(async move {
+                    Message::ApproveDone(
+                        backend::join::approve(&client, &network, account, &code, &request).await,
+                    )
+                })
+            }
+            Message::ApproveDone(done) => {
+                self.unlock_busy = false;
+                match done {
+                    Ok(()) => {
+                        self.approving = false;
+                        self.approve_found = None;
+                        self.update(Message::ShowToast(
+                            "Approved. The new device finishes on its own.".into(),
+                        ))
+                    }
+                    Err(error) => {
+                        self.unlock_error = error;
+                        Task::none()
+                    }
+                }
             }
             Message::ForgetEndpoint(url) => {
                 backend::forget_endpoint(&url);
@@ -574,6 +643,9 @@ impl Ducktape {
             }
             Message::Unlocked(pubkey) => {
                 self.unlock_busy = false;
+                self.key_exists = false;
+                self.seating = false;
+                self.locked = false;
                 self.signer_key = pubkey;
                 self.account_offer = true;
                 self.forget_secrets();
@@ -669,6 +741,7 @@ impl Ducktape {
             }
             Message::Lock => {
                 self.popover = None;
+                self.locked = true;
                 self.signer_key.clear();
                 self.account = None;
                 self.account_offer = false;
@@ -807,8 +880,14 @@ impl Ducktape {
         self.keyring.clear();
         self.other_chain = false;
         self.key_exists = false;
-        self.restoring = false;
-        self.replacing = false;
+        self.seating = false;
+        self.locked = false;
+        self.recovering = false;
+        self.link_task = None;
+        self.link_code.clear();
+        self.approving = false;
+        self.approve_code.clear();
+        self.approve_found = None;
         self.account_name.clear();
         self.passkey_task = None;
         self.unlock_busy = false;
@@ -943,15 +1022,37 @@ impl Ducktape {
     /// fields on screen mirror these (`DesktopWindow::input`), so they empty
     /// on the next draw too.
     fn forget_secrets(&mut self) {
-        for secret in [
-            &mut self.password,
-            &mut self.confirm_password,
-            &mut self.restore_phrase,
-            &mut self.restore_password,
-            &mut self.restore_confirm_password,
-        ] {
+        for secret in [&mut self.password, &mut self.restore_phrase] {
             secret.zeroize();
         }
+    }
+
+    /// Opens this device's key for the network in hand and seats it — made
+    /// here the first time this device meets the network. Nothing to do when
+    /// one is seated, or the person locked it; a password-locked key from
+    /// before answers `Ok(None)` and waits for its password once.
+    fn open_device_key(&mut self) -> Task<Message> {
+        if self.seating || self.locked || !self.signer_key.is_empty() || self.keyring.is_empty() {
+            return Task::none();
+        }
+        self.seating = true;
+        let keyring = self.keyring.clone();
+        let legacy = self.key_exists;
+        Task::future(async move {
+            let opened =
+                tokio::task::spawn_blocking(move || match backend::device_key::load(&keyring)? {
+                    Some(key) => Ok(Some(key)),
+                    None if legacy => Ok(None),
+                    None => backend::device_key::mint(&keyring).map(Some),
+                })
+                .await
+                .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
+            Message::DeviceKey(match opened {
+                Ok(Some(key)) => Ok(Some(backend::seat_key(key).await)),
+                Ok(None) => Ok(None),
+                Err(error) => Err(error),
+            })
+        })
     }
 
     /// The recovery phrase and its check, gone once passed (or abandoned).
@@ -1058,16 +1159,6 @@ fn account_error(network: &str, error: String) -> String {
         return format!("Can't reach {network}'s node right now. Try again in a moment.");
     }
     format!("{network} didn't create the account: {error}")
-}
-
-fn weak_password(password: &str, confirm: &str) -> Option<String> {
-    if keystore::userkey::check_password_len(password).is_err() {
-        return Some(format!(
-            "The password needs at least {} characters.",
-            keystore::userkey::MIN_PASSWORD_LEN
-        ));
-    }
-    (password != confirm).then(|| "The passwords don't match.".to_string())
 }
 
 /// Three distinct word positions (0-based, ascending) out of `words` to ask
@@ -1199,20 +1290,15 @@ mod tests {
     }
 
     #[test]
-    fn create_never_stands_in_for_new_key_without_its_confirm_step() {
+    fn a_lock_stays_locked_until_unlock_and_approving_needs_a_found_request() {
         let mut state = signing_in();
-        state.key_exists = true;
-        state.password = "longenough1".into();
-        state.confirm_password = "longenough1".into();
-        let _ = state.update(Message::CreateWalletSubmit);
-        assert!(
-            !state.unlock_busy,
-            "minted over an existing key without asking"
-        );
-        let _ = state.update(Message::ShowNewKey);
-        assert!(state.replacing && state.password.is_empty());
-        let _ = state.update(Message::NewKeyCancel);
-        assert!(!state.replacing);
+        let _ = state.update(Message::Unlocked("ab".into()));
+        let _ = state.update(Message::Lock);
+        assert!(state.locked && state.signer_key.is_empty());
+        assert!(!state.seating, "a lock reopened the key on its own");
+        let _ = state.update(Message::ApproveOpen);
+        let _ = state.update(Message::ApproveConfirm);
+        assert!(!state.unlock_busy, "approved with nothing found");
     }
 
     #[test]
@@ -1234,11 +1320,7 @@ mod tests {
     fn a_sign_in_without_an_account_opens_the_account_step_once() {
         for signed_in in [
             Message::Unlocked("ab".into()),
-            Message::Restored("ab".into()),
-            Message::WalletCreated {
-                pubkey: "ab".into(),
-                phrase: "w1 w2 w3".into(),
-            },
+            Message::DeviceKey(Ok(Some("ab".into()))),
         ] {
             let mut state = signing_in();
             let _ = state.update(signed_in);
@@ -1389,12 +1471,5 @@ mod tests {
             identity: Vec::new(),
             contract: backend::noded::NODE_CONTRACT,
         }
-    }
-
-    #[test]
-    fn weak_password_catches_short_and_mismatched() {
-        assert!(weak_password("short", "short").is_some());
-        assert!(weak_password("longenough1", "different").is_some());
-        assert!(weak_password("longenough1", "longenough1").is_none());
     }
 }

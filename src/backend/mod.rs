@@ -3,6 +3,8 @@
 //! Nothing here names a program.
 
 mod app_dirs;
+pub(crate) mod device_key;
+pub(crate) mod join;
 pub(crate) mod noded;
 pub(crate) mod passkey;
 mod session;
