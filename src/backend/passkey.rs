@@ -219,6 +219,23 @@ async fn ask(client: &RpcClient, network: &str, query: Query) -> Result<Reply, S
     abi::decode(&reply).map_err(|refusal| refusal.sentence)
 }
 
+/// The account `key` belongs to on `network` — its number and name — or
+/// `None` while the key holds no account there. The rail's foot reads it.
+pub(crate) async fn account_of_key(
+    client: &RpcClient,
+    network: &str,
+    key: Vec<u8>,
+) -> Result<Option<(u64, String)>, String> {
+    let number = match ask(client, network, Query::OfKey { key }).await? {
+        Reply::Number(Some(number)) => number,
+        _ => return Ok(None),
+    };
+    match ask(client, network, Query::Get { number }).await? {
+        Reply::Account(Some(account)) => Ok(Some((number, account.name))),
+        _ => Ok(None),
+    }
+}
+
 async fn generation(client: &RpcClient, network: &str, key: &[u8]) -> Result<u64, String> {
     match ask(client, network, Query::Generation { key: key.to_vec() }).await? {
         Reply::Generation(generation) => Ok(generation),

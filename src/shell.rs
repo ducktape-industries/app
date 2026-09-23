@@ -289,7 +289,9 @@ impl Desktop {
 
     fn execute(&mut self, command: Command, cx: &mut Context<Self>) {
         match command {
-            Command::Open { key, kind, reply } => self.open_window(key, kind, reply, None, cx),
+            Command::Open { key, kind, reply } => {
+                self.open_window(key, kind, reply, None, None, cx)
+            }
             Command::Close(key) => self.close_window(key, cx),
             Command::Raise(key) => self.raise_window(key, cx),
             Command::OpenLink(url) => match url.starts_with("duck://") {
@@ -386,6 +388,7 @@ impl DesktopWindow {
                         modifiers: event.keystroke.modifiers,
                     },
                     in_guest_editor,
+                    window,
                     cx,
                 );
             });
@@ -394,7 +397,13 @@ impl DesktopWindow {
 
     /// ⌘Q quits and ⌘W closes; any other command chord goes to the seated
     /// view if it claimed it.
-    fn global_key(&mut self, key: KeyPress, in_guest_editor: bool, cx: &mut Context<Self>) {
+    fn global_key(
+        &mut self,
+        key: KeyPress,
+        in_guest_editor: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let command = crate::backend::command_held(key.modifiers);
         if command && key.key == "q" {
             self.model
@@ -402,8 +411,34 @@ impl DesktopWindow {
             cx.stop_propagation();
             return;
         }
+        if command && key.key == "w" {
+            self.close_by_key(window, cx);
+            cx.stop_propagation();
+            return;
+        }
         if !in_guest_editor && self.deliver_chord(&key, cx) {
             cx.stop_propagation();
+        }
+    }
+
+    /// ⌘W closes a window, never the app. A pop-out closes as its pane's ×
+    /// does. The console closes too where the status item reopens it
+    /// (macOS); elsewhere there is no tray to bring it back from, and the
+    /// last window closing would quit — so it minimizes instead.
+    fn close_by_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match (self.kind, cfg!(target_os = "macos")) {
+            (WindowKind::Console, false) => window.minimize_window(),
+            // deferred: releasing input draws the window, and this view is
+            // mid-update
+            _ => {
+                let handle = window.window_handle();
+                cx.defer(move |cx| {
+                    let _ = handle.update(cx, |_, window, cx| {
+                        release_window_input(window, cx);
+                        window.remove_window();
+                    });
+                });
+            }
         }
     }
 

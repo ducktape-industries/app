@@ -8,6 +8,10 @@ use crate::backend;
 use crate::runtime::ModuleViewEvent;
 use crate::shell::WindowKey;
 
+/// Unanswered status polls in a row before the node counts as lost: one
+/// miss is a hiccup, two (four seconds) is a node that went away.
+pub(crate) const LOST_AFTER: u32 = 2;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Appearance {
     System,
@@ -37,9 +41,15 @@ pub struct Ducktape {
     pub(crate) connecting: bool,
     pub(crate) status: String,
     pub(crate) height: i64,
+    /// Status polls gone unanswered in a row; from [`LOST_AFTER`] on the
+    /// rail reads "Reconnecting…" (the poll keeps running) until one lands.
+    pub(crate) status_misses: u32,
     pub(crate) error: String,
     /// The seated key's public half, hex; empty while locked.
     pub(crate) signer_key: String,
+    /// The account the seated key belongs to, as `(number, name)`: `None`
+    /// until the node was asked, `Some(None)` while the key holds none.
+    pub(crate) account: Option<Option<(u64, String)>>,
     pub(crate) password: String,
     pub(crate) confirm_password: String,
     pub(crate) unlock_error: String,
@@ -101,6 +111,11 @@ pub(crate) enum AppMessage {
         error: String,
     },
     StatusPushed(backend::NodeStatus),
+    StatusMissed,
+    AccountResolved {
+        key: String,
+        account: Option<(u64, String)>,
+    },
     Disconnect,
     SelectView(&'static str),
     SplitView(&'static str),
@@ -175,8 +190,10 @@ impl Ducktape {
             connecting: false,
             status: "Not connected".into(),
             height: -1,
+            status_misses: 0,
             error: String::new(),
             signer_key: String::new(),
+            account: None,
             password: String::new(),
             confirm_password: String::new(),
             unlock_error: String::new(),
@@ -211,6 +228,11 @@ impl Ducktape {
             None => view_wire::Task::none(),
         };
         (state, first)
+    }
+
+    /// Connected, but the last [`LOST_AFTER`] status polls went unanswered.
+    pub(crate) fn reconnecting(&self) -> bool {
+        self.connected && self.status_misses >= LOST_AFTER
     }
 
     pub(crate) fn dark(&self) -> bool {
