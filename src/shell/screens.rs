@@ -232,10 +232,18 @@ impl DesktopWindow {
             "spotlight" => 20.,
             _ => 15.,
         };
+        // the kit fixes an input's line at `1.25rem` (20px) and its height
+        // by `Size`: a larger face is clipped top and bottom. The line
+        // follows the face instead; the box around it sets the height.
+        let line = gpui_kit::px((size * 1.4f32).round());
         let input = Input::new(state)
             .id(key)
             .appearance(false)
-            .text_size(gpui_kit::px(size));
+            .text_size(gpui_kit::px(size))
+            .line_height(line)
+            .h(line)
+            .py_0()
+            .px_0();
         let input = match masked {
             true => input.content_type(InputContentType::Password),
             false => input,
