@@ -39,6 +39,7 @@ mod windows;
 
 pub(crate) use launch::run;
 mod sign_in;
+mod switcher;
 mod theme;
 
 #[cfg(not(target_os = "macos"))]

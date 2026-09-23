@@ -37,6 +37,15 @@ pub struct Ducktape {
     /// The node reached: its origin and the network it serves.
     pub(crate) connected_rpc: String,
     pub(crate) network: String,
+    /// Where this network's keys live on this device
+    /// ([`backend::bind_keyring`]): the name alone is not enough, two
+    /// chains can share one.
+    pub(crate) keyring: String,
+    /// The network shares its name with another chain this device met
+    /// first: its keys are its own, and the sign-in screen says so.
+    pub(crate) other_chain: bool,
+    /// The rail's network switcher is open.
+    pub(crate) network_menu: bool,
     pub(crate) connected: bool,
     pub(crate) connecting: bool,
     pub(crate) status: String,
@@ -129,10 +138,17 @@ pub(crate) enum AppMessage {
     StatusPushed(backend::NodeStatus),
     StatusMissed,
     AccountResolved {
+        /// The node asked: an answer from before a switch is not this one's.
+        node: String,
         key: String,
         account: Option<(u64, String)>,
     },
     Disconnect,
+    ToggleNetworkMenu,
+    CloseNetworkMenu,
+    /// Another node from the switcher: reached first, and only once it
+    /// answers does the console leave the network in hand.
+    SwitchNetwork(String),
     SelectView(&'static str),
     SplitView(&'static str),
     ClosePane(usize),
@@ -211,6 +227,9 @@ impl Ducktape {
             recent_endpoints: recent,
             connected_rpc: String::new(),
             network: String::new(),
+            keyring: String::new(),
+            other_chain: false,
+            network_menu: false,
             connected: false,
             connecting: false,
             status: "Not connected".into(),
@@ -280,7 +299,9 @@ impl Ducktape {
             self.connected,
             &self.network,
             &self.signer_key,
-            &self.endpoint,
+            // the node the views are on — not the address being typed or
+            // tried (a switch in flight)
+            &self.connected_rpc,
         )
     }
 }

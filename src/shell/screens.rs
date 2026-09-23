@@ -12,6 +12,10 @@ pub(crate) struct Facts {
     /// Connected, but the node stopped answering its status polls.
     pub(crate) reconnecting: bool,
     pub(crate) network: String,
+    /// The node the console is on.
+    pub(crate) connected_rpc: String,
+    pub(crate) other_chain: bool,
+    pub(crate) network_menu: bool,
     pub(crate) status: String,
     pub(crate) error: String,
     pub(crate) signer_key: String,
@@ -42,6 +46,9 @@ impl Ducktape {
             connecting: self.connecting,
             reconnecting: self.reconnecting(),
             network: self.network.clone(),
+            connected_rpc: self.connected_rpc.clone(),
+            other_chain: self.other_chain,
+            network_menu: self.network_menu,
             status: self.status.clone(),
             error: self.error.clone(),
             signer_key: self.signer_key.clone(),
@@ -342,10 +349,7 @@ impl DesktopWindow {
             cx,
         );
         let recent = state.recent_endpoints.iter().map(|entry| {
-            let label = match entry.network.is_empty() {
-                true => entry.url.clone(),
-                false => format!("{} — {}", entry.network, entry.url),
-            };
+            let label = entry.label();
             let row_model = self.model.clone();
             let row_target = entry.url.clone();
             let forget_model = self.model.clone();
@@ -616,7 +620,7 @@ impl DesktopWindow {
         });
         let rows: Vec<_> = rows.collect();
         let unlocked = !state.signer_key.is_empty();
-        let dot = if state.connected && !state.reconnecting {
+        let dot = if state.connected && !state.reconnecting && !state.connecting {
             accent
         } else {
             faint
@@ -822,8 +826,10 @@ impl DesktopWindow {
                     .flex()
                     .flex_col()
                     .when(narrow, |column| column.items_center())
-                    .px(px(if narrow { 0. } else { 12. }))
-                    .pt(px(if titlebar { 44. } else { 12. }))
+                    // the switcher's own padding makes up the rest: its text
+                    // sits where the plain name used to
+                    .px(px(if narrow { 0. } else { 4. }))
+                    .pt(px(if titlebar { 38. } else { 6. }))
                     .pb_2()
                     .when(titlebar, |strip| {
                         strip.on_mouse_down(MouseButton::Left, |event, window, _| {
@@ -833,51 +839,7 @@ impl DesktopWindow {
                             }
                         })
                     })
-                    .when(!narrow, |column| {
-                        column.child(
-                            div()
-                                .text_size(px(13.))
-                                .font_weight(FontWeight::MEDIUM)
-                                .text_color(ink_fg)
-                                .truncate()
-                                .child(state.network.clone()),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_1p5()
-                            .child(
-                                div()
-                                    .id("rail-connection")
-                                    .control(
-                                        Role::Status,
-                                        SharedString::from(
-                                            match (state.connected, state.reconnecting) {
-                                                (true, false) => "Connected",
-                                                (true, true) => "Reconnecting",
-                                                (false, _) => "Not connected",
-                                            },
-                                        ),
-                                    )
-                                    .size(px(6.))
-                                    .flex_shrink_0()
-                                    .rounded_full()
-                                    .bg(dot),
-                            )
-                            .when(!narrow, |row| {
-                                row.child(
-                                    div()
-                                        .id("rail-status")
-                                        .min_w_0()
-                                        .text_size(px(11.))
-                                        .text_color(ink_muted)
-                                        .truncate()
-                                        .child(state.status.clone()),
-                                )
-                            }),
-                    ),
+                    .child(self.network_switcher(&state, narrow, dot)),
             )
             .child(
                 div()
@@ -933,6 +895,10 @@ impl DesktopWindow {
                 frame.child(sidebar)
             })
             .child(div().id("seat").flex_1().min_w_0().h_full().child(seat))
+            .when(
+                state.network_menu && self.kind == crate::shell::WindowKind::Console,
+                |frame| frame.child(self.network_menu(&state, narrow, cx)),
+            )
             .children(self.toast(cx))
             .into_any_element()
     }
