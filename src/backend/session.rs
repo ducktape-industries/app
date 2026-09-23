@@ -147,17 +147,21 @@ pub(crate) fn session_key_path(network: &str) -> Result<PathBuf, String> {
     keystore::wallet::active_user_key(&keystore_root(network)?)
 }
 
-/// Mints a wallet named `name` for `network` under `password`, makes it the
-/// active one, and answers its recovery phrase.
-pub(crate) fn create_wallet(network: &str, name: &str, password: &str) -> Result<String, String> {
+/// Mints a fresh key for `network` under `password`, makes it the active
+/// one, and answers its recovery phrase. Never overwrites a key already on
+/// this device: the first key is `default`, a later one ("New key") lands in
+/// the first unused `default-2`, `default-3`, … slot. The keystore's own
+/// write refuses an occupied file too; picking a free slot here turns that
+/// refusal into a working "New key" instead of an error.
+pub(crate) fn create_wallet(network: &str, password: &str) -> Result<String, String> {
     let root = keystore_root(network)?;
-    keystore::wallet::valid_name(name)?;
-    let path = keystore::wallet::key_file(&root, name);
+    let name = unused_wallet_name(&root, "default");
+    let path = keystore::wallet::key_file(&root, &name);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
     let (phrase, _) = keystore::userkey::mint_user_key(&path, password)?;
-    keystore::wallet::set_active(&root, name)?;
+    keystore::wallet::set_active(&root, &name)?;
     Ok(phrase)
 }
 
@@ -182,7 +186,7 @@ pub(crate) fn restore_wallet(network: &str, mnemonic: &str, password: &str) -> R
     let had_one = keystore::wallet::active_name(&root).is_some();
     let name = match had_one {
         false => "default".to_string(),
-        true => restore_wallet_name(&root),
+        true => unused_wallet_name(&root, "restored"),
     };
     keystore::wallet::import(&root, &name, mnemonic, password)?;
     if had_one {
@@ -191,13 +195,13 @@ pub(crate) fn restore_wallet(network: &str, mnemonic: &str, password: &str) -> R
     Ok(())
 }
 
-/// The first unused `restored`, `restored-2`, … name in `root` — so a
-/// restore next to an existing key never collides with it.
-fn restore_wallet_name(root: &std::path::Path) -> String {
+/// The first unused `stem`, `stem-2`, … wallet name in `root` — so a new
+/// or restored key next to an existing one never collides with it.
+fn unused_wallet_name(root: &std::path::Path, stem: &str) -> String {
     (1..)
         .map(|n| match n {
-            1 => "restored".to_string(),
-            n => format!("restored-{n}"),
+            1 => stem.to_string(),
+            n => format!("{stem}-{n}"),
         })
         .find(|name| !keystore::wallet::key_file(root, name).exists())
         .expect("an unbounded search finds an unused name")
@@ -256,12 +260,18 @@ pub(crate) fn save_appearance(mode: crate::Appearance) -> bool {
 
 pub(crate) const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8844";
 
-pub(crate) const ENDPOINT_REFUSAL: &str =
-    "A node URL is http:// or https:// followed by a host and an optional port, and nothing else.";
+pub(crate) const ENDPOINT_REFUSAL: &str = "A node address is a host and an optional port (127.0.0.1:8844), with http:// or https:// in front if you like, and nothing else.";
 
-/// The origin of a node URL, or `None` for anything that is not one.
+/// The origin of a node URL, or `None` for anything that is not one. A bare
+/// `host:port` is what a node prints and what people paste, so no scheme
+/// means `http://` — checked by `://`, since `localhost:8844` would
+/// otherwise parse as a URL whose scheme is `localhost`.
 pub(crate) fn endpoint_origin(url: &str) -> Option<String> {
-    let url = reqwest::Url::parse(url.trim()).ok()?;
+    let url = url.trim();
+    let url = match url.contains("://") {
+        true => reqwest::Url::parse(url).ok()?,
+        false => reqwest::Url::parse(&format!("http://{url}")).ok()?,
+    };
     let origin = matches!(url.scheme(), "http" | "https")
         && url.host_str().is_some()
         && url.username().is_empty()
@@ -352,6 +362,34 @@ mod tests {
         assert_eq!(endpoint_origin("http://a:b@host"), None);
         assert_eq!(endpoint_origin("http://host/v1"), None);
         assert_eq!(endpoint_origin("ftp://host"), None);
+        assert_eq!(
+            endpoint_origin("127.0.0.1:34329").as_deref(),
+            Some("http://127.0.0.1:34329")
+        );
+        assert_eq!(
+            endpoint_origin(" localhost:8844 ").as_deref(),
+            Some("http://localhost:8844")
+        );
+        for junk in [
+            "",
+            "hello world",
+            "host:port",
+            "host/v1",
+            "a:b@host",
+            "host?x=1",
+        ] {
+            assert_eq!(endpoint_origin(junk), None, "{junk:?}");
+        }
+    }
+
+    #[test]
+    fn a_new_key_never_takes_an_occupied_slot() {
+        let root = tempfile::tempdir().unwrap();
+        assert_eq!(unused_wallet_name(root.path(), "default"), "default");
+        let first = keystore::wallet::key_file(root.path(), "default");
+        std::fs::create_dir_all(first.parent().unwrap()).unwrap();
+        std::fs::write(&first, "sealed").unwrap();
+        assert_eq!(unused_wallet_name(root.path(), "default"), "default-2");
     }
 
     #[test]

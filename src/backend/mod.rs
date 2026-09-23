@@ -55,6 +55,11 @@ pub(crate) fn connect_error(origin: &str, message: String) -> String {
     if message.contains("error sending request") {
         return format!("Can't reach {origin}. Check the address, or that the node is running.");
     }
+    if message.contains("did not answer in time") {
+        return format!(
+            "{origin} has not answered. Check that the node is running, then Connect again."
+        );
+    }
     user_error(message)
 }
 
