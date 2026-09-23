@@ -74,8 +74,16 @@ pub struct Ducktape {
     pub(crate) passkey_phone: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The QR URL of the touch in flight (its callback is the relay slot).
     pub(crate) passkey_qr: String,
-    /// A freshly minted key's recovery phrase, shown once until written down.
+    /// On the sign-in screen with a key already here: minting a new one in
+    /// its place, after saying what that costs ("New key").
+    pub(crate) replacing: bool,
+    /// A freshly minted key's recovery phrase, held until the person has
+    /// typed back the words `phrase_quiz` asks for.
     pub(crate) phrase: String,
+    /// Once "I wrote it down" is pressed: the three word positions
+    /// (0-based, ascending) the person types back before the console opens.
+    pub(crate) phrase_quiz: Option<[usize; 3]>,
+    pub(crate) quiz_answers: [String; 3],
     /// The program whose view is open.
     pub(crate) active: Option<&'static str>,
     pub(crate) badges: BTreeMap<&'static str, i64>,
@@ -135,6 +143,11 @@ pub(crate) enum AppMessage {
         phrase: String,
     },
     PhraseWrittenDown,
+    PhraseWordTyped(usize, String),
+    PhraseCheckSubmit,
+    PhraseShowAgain,
+    ShowNewKey,
+    NewKeyCancel,
     UnlockFailed(String),
     BrowseWithoutKey,
     SignIn,
@@ -208,7 +221,10 @@ impl Ducktape {
             passkey_task: None,
             passkey_phone: Default::default(),
             passkey_qr: String::new(),
+            replacing: false,
             phrase: String::new(),
+            phrase_quiz: None,
+            quiz_answers: Default::default(),
             active: None,
             badges: BTreeMap::new(),
             toast: String::new(),

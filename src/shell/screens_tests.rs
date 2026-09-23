@@ -260,3 +260,44 @@ fn initials_take_the_first_letter_of_two_words() {
     assert_eq!(initials("  "), "?");
     assert_eq!(initials("émile zola"), "ÉZ");
 }
+
+/// The field state outlives the model's copy of a secret: after Lock (or a
+/// new key's form reset) the model's password is empty, and the password
+/// field used to go on showing the old dots — while a retry sent nothing.
+/// The field mirrors the model on every draw.
+#[gpui_kit::test]
+fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (mut state, _) = Ducktape::boot();
+    state.screen = Screen::Console;
+    state.key_exists = true;
+    let (view, mut native) = open(state, cx);
+    native.update(|window, cx| type_into("password/field", "hunter22", window, cx));
+    native.update(draw);
+    let field = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            view.read(cx).inputs["password"]
+                .state
+                .read(cx)
+                .value()
+                .to_string()
+        })
+    };
+    assert_eq!(field(&mut native), "hunter22");
+    let model = native.update(|_, cx| view.read(cx).model.clone());
+    assert_eq!(
+        model.read_with(cx, |model, _| model.state.password.clone()),
+        "hunter22"
+    );
+
+    model.update(cx, |model, _| {
+        model.state.update(Message::Unlocked("ab".into()));
+        model.state.update(Message::Lock);
+    });
+    native.update(draw);
+    assert_eq!(
+        field(&mut native),
+        "",
+        "the field kept a password the model wiped"
+    );
+}

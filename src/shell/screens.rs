@@ -5,7 +5,6 @@ use super::*;
 #[derive(Clone)]
 pub(crate) struct Facts {
     pub(crate) dark: bool,
-    pub(crate) endpoint: String,
     pub(crate) endpoint_error: String,
     pub(crate) recent_endpoints: Vec<crate::backend::RecentEndpoint>,
     pub(crate) connected: bool,
@@ -25,7 +24,9 @@ pub(crate) struct Facts {
     pub(crate) passkey_waiting: bool,
     /// The QR URL, once the person picked the phone.
     pub(crate) passkey_qr: Option<String>,
+    pub(crate) replacing: bool,
     pub(crate) phrase: String,
+    pub(crate) phrase_quiz: Option<[usize; 3]>,
     pub(crate) active: Option<&'static str>,
     pub(crate) badges: BTreeMap<&'static str, i64>,
 }
@@ -34,7 +35,6 @@ impl Ducktape {
     pub(crate) fn clone_facts(&self) -> Facts {
         Facts {
             dark: self.dark(),
-            endpoint: self.endpoint.clone(),
             endpoint_error: self.endpoint_error.clone(),
             recent_endpoints: self.recent_endpoints.clone(),
             connected: self.connected,
@@ -57,7 +57,9 @@ impl Ducktape {
                     .load(std::sync::atomic::Ordering::Relaxed)
                 && !self.passkey_qr.is_empty())
             .then(|| self.passkey_qr.clone()),
+            replacing: self.replacing,
             phrase: self.phrase.clone(),
+            phrase_quiz: self.phrase_quiz,
             active: self.active,
             badges: self.badges.clone(),
         }
@@ -98,7 +100,19 @@ const SETTINGS: &str = "module-registry";
 
 impl DesktopWindow {
     /// A native text field; Enter dispatches `on_enter`, every change
-    /// dispatches `on_change` with the text. Its accessible name is
+    /// dispatches `on_change` with the text.
+    ///
+    /// The model owns the text; the field mirrors it. `value` reads the
+    /// model's copy, and every draw writes it back into the field when the
+    /// two differ. Typing moves the model first (`on_change` runs before
+    /// the next draw), so this only fires when the model changed on its
+    /// own: a password wiped after Unlock or Lock, a new key's form reset,
+    /// the endpoint rewritten to the origin actually reached. The field
+    /// state is kept per window for as long as the window lives, so without
+    /// this a field would keep showing text the model no longer holds, and
+    /// a retry would send something other than what is on screen.
+    ///
+    /// Its accessible name is
     /// `label`, or `placeholder` when a field's hint text already reads as
     /// one (a value-shaped placeholder like an example URL does not). Its
     /// accessible value is the field's current text — unless `secret`,
@@ -111,10 +125,10 @@ impl DesktopWindow {
         key: &'static str,
         placeholder: &'static str,
         masked: bool,
-        initial: &str,
+        value: fn(&Ducktape) -> &str,
         on_change: fn(String) -> Message,
         on_enter: fn() -> Message,
-        label: Option<&'static str>,
+        label: Option<gpui_kit::SharedString>,
         secret: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -125,9 +139,6 @@ impl DesktopWindow {
                 InputState::new(window, cx)
                     .placeholder(placeholder)
                     .masked(masked)
-            });
-            state.update(cx, |state, cx| {
-                state.set_value(initial.to_owned(), window, cx)
             });
             let model = self.model.clone();
             let subscription = cx.subscribe_in(&state, window, move |_, input, event, _, cx| {
@@ -153,6 +164,11 @@ impl DesktopWindow {
         }
         use gpui_kit::{Focusable as _, StatefulInteractiveElement as _};
         let state = &self.inputs[key].state;
+        // set_value emits no Change, so mirroring never echoes back.
+        if state.read(cx).value().as_ref() != value(&self.model.read(cx).state) {
+            let text = value(&self.model.read(cx).state).to_owned();
+            state.update(cx, |state, cx| state.set_value(text, window, cx));
+        }
         let input = Input::new(state).id(key);
         let input = match masked {
             true => input.content_type(InputContentType::Password),
@@ -169,7 +185,7 @@ impl DesktopWindow {
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
         )
-        .aria_label(label.unwrap_or(placeholder));
+        .aria_label(label.unwrap_or_else(|| placeholder.into()));
         let field = match secret {
             true => field,
             false => field.aria_value(state.read(cx).value().to_string()),
@@ -291,12 +307,12 @@ impl DesktopWindow {
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
         let field = self.input(
             "endpoint",
-            "http://127.0.0.1:8844",
+            "127.0.0.1:8844",
             false,
-            &state.endpoint,
+            |state| &state.endpoint,
             Message::EndpointTyped,
             || Message::ConnectSubmit,
-            Some("Node address"),
+            Some("Node address".into()),
             false,
             window,
             cx,
@@ -360,11 +376,12 @@ impl DesktopWindow {
                 .child(crate::a11y::keyboard(pick))
                 .child(crate::a11y::keyboard(forget))
         });
-        let note = match (!state.error.is_empty(), !state.endpoint_error.is_empty()) {
-            (true, _) => Some(state.error.clone()),
-            (_, true) => Some(state.endpoint_error.clone()),
-            _ => None,
-        };
+        // The address refusal is about what is typed now; a failed try is
+        // about the last address. Both clear on the next keystroke or try.
+        let note = [&state.endpoint_error, &state.error]
+            .into_iter()
+            .find(|note| !note.is_empty())
+            .cloned();
         div()
             .id("connect")
             .size_full()
@@ -391,11 +408,24 @@ impl DesktopWindow {
                     )
                     .child(field)
                     .child(
-                        div().flex().gap_2().child(
+                        div().flex().items_center().gap_2().child(
                             self.action("connect", "Connect", || Message::ConnectSubmit, state.connecting)
                                 .primary(),
                         )
-                        .child(div().flex_1().text_size(px(12.5)).text_color(colors.muted_foreground).child(state.status.clone())),
+                        // Only a try in flight has a status worth reading;
+                        // before one, "Not connected" beside Connect is noise.
+                        .when(state.connecting, |row| {
+                            row.child(
+                                div()
+                                    .id("connect-status")
+                                    .role(Role::Status)
+                                    .aria_label(state.status.clone())
+                                    .flex_1()
+                                    .text_size(px(12.5))
+                                    .text_color(colors.muted_foreground)
+                                    .child(state.status.clone()),
+                            )
+                        }),
                     )
                     .children(note.map(|note| {
                         div()

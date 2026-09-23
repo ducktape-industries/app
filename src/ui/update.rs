@@ -17,14 +17,18 @@ impl Ducktape {
                 self.push_props();
                 Task::none()
             }
+            // A new address or a new try makes the last failure's sentence
+            // stale: it named a node this attempt is not about.
             Message::EndpointTyped(text) => {
                 self.endpoint = text;
                 self.endpoint_error.clear();
+                self.error.clear();
                 Task::none()
             }
             Message::ConnectSubmit => match backend::endpoint_origin(&self.endpoint) {
                 Some(origin) => self.update(Message::ConnectTo(origin)),
                 None => {
+                    self.error.clear();
                     self.endpoint_error = backend::ENDPOINT_REFUSAL.into();
                     Task::none()
                 }
@@ -111,7 +115,15 @@ impl Ducktape {
                 self.connecting = false;
                 self.connected = false;
                 self.status = "Not connected".into();
-                self.error = backend::connect_error(&self.endpoint, error);
+                // A node this device reached before is named by its network,
+                // the way the Recent list names it.
+                let who = self
+                    .recent_endpoints
+                    .iter()
+                    .find(|entry| entry.url == self.endpoint && !entry.network.is_empty())
+                    .map(|entry| format!("{} ({})", entry.network, entry.url))
+                    .unwrap_or_else(|| self.endpoint.clone());
+                self.error = backend::connect_error(&who, error);
                 Task::none()
             }
             Message::StatusPushed(status) => {
@@ -151,20 +163,23 @@ impl Ducktape {
                 self.status = "Not connected".into();
                 self.screen = Screen::Connect;
                 self.browsing = false;
-                self.password.clear();
-                self.confirm_password.clear();
-                self.phrase.clear();
+                self.forget_secrets();
+                self.forget_phrase();
                 self.unlock_error.clear();
                 self.key_exists = false;
                 self.restoring = false;
-                self.restore_phrase.clear();
-                self.restore_password.clear();
-                self.restore_confirm_password.clear();
+                self.replacing = false;
                 self.account_name.clear();
                 self.passkey_task = None;
                 self.unlock_busy = false;
+                // The seated key belongs to the network being left; the
+                // next node may be another one.
+                self.signer_key.clear();
                 self.push_props();
-                Task::none()
+                Task::future(async {
+                    backend::lock_signer().await;
+                })
+                .discard()
             }
             Message::SplitView(_)
             | Message::ClosePane(_)
@@ -234,11 +249,20 @@ impl Ducktape {
                 self.unlock_error.clear();
                 Task::none()
             }
+            // Every submit below copies the typed secret instead of taking
+            // it: the field on screen still shows what was typed, so a
+            // failed try leaves model and field in agreement and a retry
+            // sends what the person sees. Success, or leaving the screen,
+            // wipes both (`forget_secrets`).
             Message::UnlockSubmit => {
                 if self.unlock_busy {
                     return Task::none();
                 }
-                let password = zeroize::Zeroizing::new(std::mem::take(&mut self.password));
+                if self.password.is_empty() {
+                    self.unlock_error = "Type this key's password first.".into();
+                    return Task::none();
+                }
+                let password = zeroize::Zeroizing::new(self.password.clone());
                 let network = self.network.clone();
                 self.unlock_busy = true;
                 self.unlock_error.clear();
@@ -253,16 +277,18 @@ impl Ducktape {
                     }
                 })
             }
+            // Minting only when there is no key yet, or the person has seen
+            // what replacing it costs (`ShowNewKey`): this message never
+            // doubles as "New key" on the Unlock screen.
             Message::CreateWalletSubmit => {
-                if self.unlock_busy {
+                if self.unlock_busy || (self.key_exists && !self.replacing) {
                     return Task::none();
                 }
                 if let Some(error) = weak_password(&self.password, &self.confirm_password) {
                     self.unlock_error = error;
                     return Task::none();
                 }
-                let password = zeroize::Zeroizing::new(std::mem::take(&mut self.password));
-                self.confirm_password.clear();
+                let password = zeroize::Zeroizing::new(self.password.clone());
                 let network = self.network.clone();
                 self.unlock_busy = true;
                 self.unlock_error.clear();
@@ -270,7 +296,7 @@ impl Ducktape {
                     let created = tokio::task::spawn_blocking({
                         let network = network.clone();
                         let password = password.clone();
-                        move || backend::create_wallet(&network, "default", &password)
+                        move || backend::create_wallet(&network, &password)
                     })
                     .await
                     .unwrap_or_else(|_| Err("creating the wallet did not finish".into()));
@@ -293,16 +319,59 @@ impl Ducktape {
                 self.signer_key = pubkey;
                 self.phrase = phrase;
                 self.key_exists = true;
+                self.replacing = false;
+                self.forget_secrets();
                 self.push_props();
                 self.resolve_account()
             }
             Message::PhraseWrittenDown => {
-                self.phrase.clear();
+                self.phrase_quiz = Some(quiz_positions(self.phrase.split_whitespace().count()));
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::PhraseWordTyped(nth, text) => {
+                if let Some(answer) = self.quiz_answers.get_mut(nth) {
+                    answer.zeroize();
+                    *answer = text;
+                }
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::PhraseCheckSubmit => {
+                let Some(asked) = self.phrase_quiz else {
+                    return Task::none();
+                };
+                match quiz_matches(&self.phrase, asked, &self.quiz_answers) {
+                    true => self.forget_phrase(),
+                    false => {
+                        self.unlock_error =
+                            "Those words don't match your phrase. Check them, or show the phrase again."
+                                .into();
+                    }
+                }
+                Task::none()
+            }
+            Message::PhraseShowAgain => {
+                self.phrase_quiz = None;
+                self.quiz_answers.iter_mut().for_each(Zeroize::zeroize);
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::ShowNewKey => {
+                self.replacing = true;
+                self.forget_secrets();
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::NewKeyCancel => {
+                self.replacing = false;
+                self.forget_secrets();
+                self.unlock_error.clear();
                 Task::none()
             }
             Message::BrowseWithoutKey => {
                 self.browsing = true;
-                self.password.clear();
+                self.forget_secrets();
                 self.unlock_error.clear();
                 Task::none()
             }
@@ -312,11 +381,13 @@ impl Ducktape {
             }
             Message::ShowRestore => {
                 self.restoring = true;
+                self.forget_secrets();
                 self.unlock_error.clear();
                 Task::none()
             }
             Message::RestoreCancel => {
                 self.restoring = false;
+                self.forget_secrets();
                 self.unlock_error.clear();
                 Task::none()
             }
@@ -350,8 +421,7 @@ impl Ducktape {
                     self.unlock_error = error;
                     return Task::none();
                 }
-                let password = zeroize::Zeroizing::new(std::mem::take(&mut self.restore_password));
-                self.restore_confirm_password.clear();
+                let password = zeroize::Zeroizing::new(self.restore_password.clone());
                 let network = self.network.clone();
                 self.unlock_busy = true;
                 self.unlock_error.clear();
@@ -381,7 +451,7 @@ impl Ducktape {
                 self.signer_key = pubkey;
                 self.key_exists = true;
                 self.restoring = false;
-                self.restore_phrase.clear();
+                self.forget_secrets();
                 self.push_props();
                 self.resolve_account()
             }
@@ -393,6 +463,7 @@ impl Ducktape {
             Message::Unlocked(pubkey) => {
                 self.unlock_busy = false;
                 self.signer_key = pubkey;
+                self.forget_secrets();
                 self.push_props();
                 self.resolve_account()
             }
@@ -427,6 +498,7 @@ impl Ducktape {
                 self.signer_key = pubkey;
                 self.key_exists = true;
                 self.account_name.clear();
+                self.forget_secrets();
                 self.push_props();
                 self.resolve_account()
             }
@@ -556,6 +628,29 @@ impl Ducktape {
         .and_then(Task::done)
     }
 
+    /// Wipes every password and typed phrase the sign-in screens hold. The
+    /// fields on screen mirror these (`DesktopWindow::input`), so they empty
+    /// on the next draw too.
+    fn forget_secrets(&mut self) {
+        for secret in [
+            &mut self.password,
+            &mut self.confirm_password,
+            &mut self.restore_phrase,
+            &mut self.restore_password,
+            &mut self.restore_confirm_password,
+        ] {
+            secret.zeroize();
+        }
+    }
+
+    /// The recovery phrase and its check, gone once passed (or abandoned).
+    fn forget_phrase(&mut self) {
+        self.phrase.zeroize();
+        self.phrase_quiz = None;
+        self.quiz_answers.iter_mut().for_each(Zeroize::zeroize);
+        self.unlock_error.clear();
+    }
+
     /// Every seated view is handed the props again; the shell reads them
     /// off the state on its next draw.
     fn push_props(&mut self) {}
@@ -586,6 +681,7 @@ fn status_ticks() -> impl futures::Stream<Item = Message> {
 }
 
 use futures::StreamExt as _;
+use zeroize::Zeroize;
 
 /// The one password rule enforced before minting or restoring a key: long
 /// enough (the keystore's own floor), and its confirmation matches.
@@ -609,8 +705,7 @@ impl Ducktape {
             self.unlock_error = error;
             return Task::none();
         }
-        let password = zeroize::Zeroizing::new(std::mem::take(&mut self.password));
-        self.confirm_password.clear();
+        let password = zeroize::Zeroizing::new(self.password.clone());
         let network = self.network.clone();
         let client = backend::RpcClient::new(self.connected_rpc.clone());
         self.unlock_busy = true;
@@ -622,7 +717,7 @@ impl Ducktape {
             if mint {
                 let minted = tokio::task::spawn_blocking({
                     let (network, password) = (network.clone(), password.clone());
-                    move || backend::create_wallet(&network, "default", &password)
+                    move || backend::create_wallet(&network, &password)
                 })
                 .await
                 .unwrap_or_else(|_| Err("creating this device's key did not finish".into()));
@@ -669,6 +764,25 @@ fn weak_password(password: &str, confirm: &str) -> Option<String> {
         ));
     }
     (password != confirm).then(|| "The passwords don't match.".to_string())
+}
+
+/// Three distinct word positions (0-based, ascending) out of `words` to ask
+/// back — the old app's "Words 5, 12 and 20" check.
+fn quiz_positions(words: usize) -> [usize; 3] {
+    let mut picked = rand::seq::index::sample(&mut rand::thread_rng(), words.max(3), 3).into_vec();
+    picked.sort_unstable();
+    [picked[0], picked[1], picked[2]]
+}
+
+/// Whether each answer is the phrase's word at the position asked,
+/// ignoring case and surrounding space.
+fn quiz_matches(phrase: &str, asked: [usize; 3], answers: &[String; 3]) -> bool {
+    let words: Vec<&str> = phrase.split_whitespace().collect();
+    asked.iter().zip(answers).all(|(&nth, answer)| {
+        words
+            .get(nth)
+            .is_some_and(|word| word.eq_ignore_ascii_case(answer.trim()))
+    })
 }
 
 /// Whatever a person pastes for a recovery phrase — any run of whitespace
@@ -720,6 +834,90 @@ mod tests {
         }));
         assert!(!state.reconnecting());
         assert_eq!(state.status, "Connected · block 9");
+    }
+
+    #[test]
+    fn the_quiz_takes_the_asked_words_in_any_case() {
+        let phrase = (1..=24)
+            .map(|n| format!("w{n}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let answers = |a: &str, b: &str, c: &str| [a.to_string(), b.to_string(), c.to_string()];
+        assert!(quiz_matches(
+            &phrase,
+            [4, 11, 19],
+            &answers("w5", " W12 ", "w20")
+        ));
+        assert!(!quiz_matches(
+            &phrase,
+            [4, 11, 19],
+            &answers("w5", "w12", "w21")
+        ));
+        assert!(!quiz_matches(&phrase, [4, 11, 19], &answers("", "", "")));
+        let asked = quiz_positions(24);
+        assert!(asked[0] < asked[1] && asked[1] < asked[2] && asked[2] < 24);
+    }
+
+    fn signing_in() -> Ducktape {
+        let (mut state, _) = Ducktape::boot();
+        state.screen = Screen::Console;
+        state
+    }
+
+    #[test]
+    fn a_new_try_clears_the_last_connect_failure() {
+        let mut state = signing_in();
+        state.error = "Can't reach http://a.".into();
+        let _ = state.update(Message::EndpointTyped("not a url at all".into()));
+        assert!(state.error.is_empty());
+        state.error = "Can't reach http://a.".into();
+        let _ = state.update(Message::ConnectSubmit);
+        assert!(state.error.is_empty(), "the stale failure hid the refusal");
+        assert_eq!(state.endpoint_error, backend::ENDPOINT_REFUSAL);
+    }
+
+    #[test]
+    fn a_failed_unlock_keeps_the_typed_password_and_success_wipes_it() {
+        let mut state = signing_in();
+        state.key_exists = true;
+        let _ = state.update(Message::UnlockSubmit);
+        assert!(!state.unlock_busy, "an empty password is not sent");
+        let _ = state.update(Message::PasswordTyped("hunter22".into()));
+        let _ = state.update(Message::UnlockSubmit);
+        assert_eq!(state.password, "hunter22");
+        let _ = state.update(Message::UnlockFailed("wrong".into()));
+        assert_eq!(
+            state.password, "hunter22",
+            "a retry must send what the field shows"
+        );
+        let _ = state.update(Message::Unlocked("ab".into()));
+        assert!(state.password.is_empty());
+    }
+
+    #[test]
+    fn create_never_stands_in_for_new_key_without_its_confirm_step() {
+        let mut state = signing_in();
+        state.key_exists = true;
+        state.password = "longenough1".into();
+        state.confirm_password = "longenough1".into();
+        let _ = state.update(Message::CreateWalletSubmit);
+        assert!(
+            !state.unlock_busy,
+            "minted over an existing key without asking"
+        );
+        let _ = state.update(Message::ShowNewKey);
+        assert!(state.replacing && state.password.is_empty());
+        let _ = state.update(Message::NewKeyCancel);
+        assert!(!state.replacing);
+    }
+
+    #[test]
+    fn switching_node_leaves_no_key_seated() {
+        let mut state = signing_in();
+        state.signer_key = "ab".into();
+        state.password = "hunter22".into();
+        let _ = state.update(Message::Disconnect);
+        assert!(state.signer_key.is_empty() && state.password.is_empty());
     }
 
     #[test]
