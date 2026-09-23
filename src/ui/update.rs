@@ -87,6 +87,7 @@ impl Ducktape {
                 self.connected_rpc = origin;
                 self.network = status.network.clone();
                 self.connected = true;
+                self.status_misses = 0;
                 self.browsing = false;
                 self.key_exists = backend::key_exists(&self.network);
                 self.screen = Screen::Console;
@@ -115,9 +116,25 @@ impl Ducktape {
             }
             Message::StatusPushed(status) => {
                 let moved = i64::try_from(status.height).unwrap_or(-1) != self.height;
+                self.status_misses = 0;
                 self.apply_status(&status);
-                if moved {
-                    drop(crate::runtime::deployments_checked());
+                if !moved {
+                    return Task::none();
+                }
+                drop(crate::runtime::deployments_checked());
+                // a block may have created the account, or renamed it
+                self.resolve_account()
+            }
+            Message::StatusMissed => {
+                self.status_misses = self.status_misses.saturating_add(1);
+                if self.reconnecting() {
+                    self.status = "Reconnecting…".into();
+                }
+                Task::none()
+            }
+            Message::AccountResolved { key, account } => {
+                if key == self.signer_key {
+                    self.account = Some(account);
                 }
                 Task::none()
             }
@@ -126,6 +143,8 @@ impl Ducktape {
                 self.connect_task = None;
                 self.connected = false;
                 self.connecting = false;
+                self.status_misses = 0;
+                self.account = None;
                 self.connected_rpc.clear();
                 self.network.clear();
                 self.active = None;
@@ -275,7 +294,7 @@ impl Ducktape {
                 self.phrase = phrase;
                 self.key_exists = true;
                 self.push_props();
-                Task::none()
+                self.resolve_account()
             }
             Message::PhraseWrittenDown => {
                 self.phrase.clear();
@@ -364,7 +383,7 @@ impl Ducktape {
                 self.restoring = false;
                 self.restore_phrase.clear();
                 self.push_props();
-                Task::none()
+                self.resolve_account()
             }
             Message::ForgetEndpoint(url) => {
                 backend::forget_endpoint(&url);
@@ -375,7 +394,7 @@ impl Ducktape {
                 self.unlock_busy = false;
                 self.signer_key = pubkey;
                 self.push_props();
-                Task::none()
+                self.resolve_account()
             }
             Message::AccountNameTyped(text) => {
                 self.account_name = text;
@@ -409,7 +428,7 @@ impl Ducktape {
                 self.key_exists = true;
                 self.account_name.clear();
                 self.push_props();
-                Task::none()
+                self.resolve_account()
             }
             Message::UnlockFailed(error) => {
                 self.passkey_task = None;
@@ -420,6 +439,7 @@ impl Ducktape {
             }
             Message::Lock => {
                 self.signer_key.clear();
+                self.account = None;
                 self.browsing = false;
                 self.push_props();
                 Task::future(async {
@@ -449,15 +469,16 @@ impl Ducktape {
                 }
                 let client = backend::RpcClient::new(self.connected_rpc.clone());
                 Task::future(async move {
-                    match client.status().await {
-                        Ok(status) => Some(Message::StatusPushed(status)),
-                        Err(error) => {
+                    // a node that hangs is as gone as one that refuses
+                    match tokio::time::timeout(STATUS_EVERY, client.status()).await {
+                        Ok(Ok(status)) => Message::StatusPushed(status),
+                        Ok(Err(error)) => {
                             tracing::debug!(target: "ducktape::app", %error, "status not answered");
-                            None
+                            Message::StatusMissed
                         }
+                        Err(_) => Message::StatusMissed,
                     }
                 })
-                .and_then(Task::done)
             }
             Message::WallTick => {
                 self.wall_now += 1;
@@ -505,6 +526,34 @@ impl Ducktape {
     fn apply_status(&mut self, status: &backend::NodeStatus) {
         self.height = i64::try_from(status.height).unwrap_or(-1);
         self.status = format!("Connected · block {}", status.height);
+    }
+
+    /// Asks the node which account the seated key belongs to; the answer
+    /// lands as [`Message::AccountResolved`]. A failed ask keeps what the
+    /// rail already shows — the next block asks again.
+    fn resolve_account(&self) -> Task<Message> {
+        let Ok(key) = backend::hex_decode(&self.signer_key) else {
+            return Task::none();
+        };
+        if key.is_empty() || !self.connected {
+            return Task::none();
+        }
+        let client = backend::RpcClient::new(self.connected_rpc.clone());
+        let network = self.network.clone();
+        let signer = self.signer_key.clone();
+        Task::future(async move {
+            match backend::passkey::account_of_key(&client, &network, key).await {
+                Ok(account) => Some(Message::AccountResolved {
+                    key: signer,
+                    account,
+                }),
+                Err(error) => {
+                    tracing::debug!(target: "ducktape::app", %error, "account not resolved");
+                    None
+                }
+            }
+        })
+        .and_then(Task::done)
     }
 
     /// Every seated view is handed the props again; the shell reads them
@@ -641,6 +690,36 @@ mod tests {
             normalize_phrase("  Canoe\n Pond\tFOREST  "),
             "canoe pond forest"
         );
+    }
+
+    #[test]
+    fn two_missed_polls_read_reconnecting_and_one_answer_recovers() {
+        let (mut state, _) = Ducktape::boot();
+        state.connected = true;
+        state.status = "Connected · block 7".into();
+        let _ = state.update(Message::StatusMissed);
+        assert!(!state.reconnecting(), "one miss is a hiccup");
+        assert_eq!(state.status, "Connected · block 7");
+        let _ = state.update(Message::StatusMissed);
+        assert!(state.reconnecting());
+        assert_eq!(state.status, "Reconnecting…");
+        assert!(state.connected, "the poll keeps running");
+        // same height: no block moved, so nothing else is asked for
+        state.height = 9;
+        let _ = state.update(Message::StatusPushed(backend::NodeStatus {
+            network: "testkit".into(),
+            time: 0,
+            block_time_ms: 0,
+            epoch_length: 0,
+            height: 9,
+            tip: [0; 32],
+            root: abi::Root([0; 32]),
+            epoch: 0,
+            identity: Vec::new(),
+            contract: backend::noded::NODE_CONTRACT,
+        }));
+        assert!(!state.reconnecting());
+        assert_eq!(state.status, "Connected · block 9");
     }
 
     #[test]

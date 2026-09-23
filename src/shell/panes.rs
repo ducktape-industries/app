@@ -141,6 +141,10 @@ impl DesktopWindow {
                         module: pane.module,
                     };
                     let source = cx.weak_entity();
+                    let at = super::windows::cascade(
+                        window.bounds(),
+                        window.display(cx).map(|display| display.bounds()),
+                    );
                     self.model.update(cx, |model, cx| {
                         let (reply, _) = oneshot::channel();
                         model.open_window(
@@ -148,6 +152,7 @@ impl DesktopWindow {
                             kind,
                             reply,
                             Some((pane, mounted, source)),
+                            Some(at),
                             cx,
                         );
                     });

@@ -1,4 +1,26 @@
 use super::*;
+use gpui_kit::{Bounds, Pixels, point, px, size};
+
+/// A window's size before the person resizes it.
+const WINDOW_SIZE: (f32, f32) = (1280., 800.);
+
+/// How far a pop-out steps down and right of the window it left.
+const CASCADE: f32 = 32.;
+
+/// Where a pop-out opens: stepped off its source window so it does not
+/// land exactly on top of it, and pulled back inside `display` when the
+/// step would push it off an edge.
+pub(super) fn cascade(source: Bounds<Pixels>, display: Option<Bounds<Pixels>>) -> Bounds<Pixels> {
+    let extent = size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1));
+    let mut origin = point(source.origin.x + px(CASCADE), source.origin.y + px(CASCADE));
+    if let Some(display) = display {
+        let right = display.origin.x + display.size.width - extent.width;
+        let bottom = display.origin.y + display.size.height - extent.height;
+        origin.x = origin.x.min(right).max(display.origin.x);
+        origin.y = origin.y.min(bottom).max(display.origin.y);
+    }
+    Bounds::new(origin, extent)
+}
 
 impl Desktop {
     pub(super) fn open_window(
@@ -11,6 +33,7 @@ impl Desktop {
             panes::MountedPane,
             gpui_kit::WeakEntity<DesktopWindow>,
         )>,
+        at: Option<Bounds<Pixels>>,
         cx: &mut Context<Self>,
     ) {
         use gpui_kit::*;
@@ -18,10 +41,12 @@ impl Desktop {
             crate::shell::WindowKind::Console => "Ducktape".to_owned(),
             crate::shell::WindowKind::View { module } => panes::label(module),
         };
-        let size = size(px(1280.0), px(800.0));
+        let extent = size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1));
         let model = cx.entity();
         let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
+            window_bounds: Some(WindowBounds::Windowed(
+                at.unwrap_or_else(|| Bounds::centered(None, extent, cx)),
+            )),
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
                 appears_transparent: cfg!(target_os = "macos"),
@@ -124,5 +149,33 @@ impl Desktop {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
+        Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
+    }
+
+    #[test]
+    fn a_popout_steps_off_its_source_window() {
+        let display = frame(0., 0., 1600., 1000.);
+        let at = cascade(frame(160., 100., 1280., 800.), Some(display));
+        assert_eq!(at, frame(192., 132., 1280., 800.));
+    }
+
+    #[test]
+    fn a_popout_stays_on_the_display() {
+        let display = frame(0., 0., 1600., 1000.);
+        let at = cascade(frame(320., 200., 1280., 800.), Some(display));
+        assert_eq!(at, frame(320., 200., 1280., 800.));
+        let small = frame(0., 0., 1024., 700.);
+        assert_eq!(
+            cascade(frame(0., 0., 1024., 700.), Some(small)).origin,
+            point(px(0.), px(0.))
+        );
     }
 }

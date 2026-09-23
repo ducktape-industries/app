@@ -251,3 +251,12 @@ fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &m
         "Tab after a screen change should reach a control, not be swallowed: {nodes}"
     );
 }
+
+#[test]
+fn initials_take_the_first_letter_of_two_words() {
+    use super::screens::initials;
+    assert_eq!(initials("Ada Lovelace King"), "AL");
+    assert_eq!(initials("ada"), "A");
+    assert_eq!(initials("  "), "?");
+    assert_eq!(initials("émile zola"), "ÉZ");
+}

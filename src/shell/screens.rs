@@ -10,10 +10,13 @@ pub(crate) struct Facts {
     pub(crate) recent_endpoints: Vec<crate::backend::RecentEndpoint>,
     pub(crate) connected: bool,
     pub(crate) connecting: bool,
+    /// Connected, but the node stopped answering its status polls.
+    pub(crate) reconnecting: bool,
     pub(crate) network: String,
     pub(crate) status: String,
     pub(crate) error: String,
     pub(crate) signer_key: String,
+    pub(crate) account: Option<Option<(u64, String)>>,
     pub(crate) unlock_error: String,
     pub(crate) unlock_busy: bool,
     pub(crate) key_exists: bool,
@@ -36,10 +39,12 @@ impl Ducktape {
             recent_endpoints: self.recent_endpoints.clone(),
             connected: self.connected,
             connecting: self.connecting,
+            reconnecting: self.reconnecting(),
             network: self.network.clone(),
             status: self.status.clone(),
             error: self.error.clone(),
             signer_key: self.signer_key.clone(),
+            account: self.account.clone(),
             unlock_error: self.unlock_error.clone(),
             unlock_busy: self.unlock_busy,
             key_exists: self.key_exists,
@@ -71,6 +76,25 @@ fn prettify(id: &str) -> String {
         None => spaced,
     }
 }
+
+/// The avatar's letters for an account `name`: the first letter of its
+/// first two words ("Ada Lovelace" → "AL", "ada" → "A"), "?" for none.
+pub(super) fn initials(name: &str) -> String {
+    let letters: String = name
+        .split_whitespace()
+        .filter_map(|word| word.chars().next())
+        .take(2)
+        .flat_map(char::to_uppercase)
+        .collect();
+    match letters.is_empty() {
+        true => "?".into(),
+        false => letters,
+    }
+}
+
+/// The program whose view holds the account's settings — "Create
+/// account" for a key with none — which the rail's account row opens.
+const SETTINGS: &str = "module-registry";
 
 impl DesktopWindow {
     /// A native text field; Enter dispatches `on_enter`, every change
@@ -187,7 +211,7 @@ impl DesktopWindow {
         Some(
             div()
                 .id("toast")
-                .role(Role::Status)
+                .control(Role::Status, SharedString::from(toast.clone()))
                 .absolute()
                 .bottom_4()
                 .right_4()
@@ -203,16 +227,54 @@ impl DesktopWindow {
                 .bg(theme.popover)
                 .shadow_md()
                 .child(
+                    // `Text` hands its words to the AX value, leaving the
+                    // node's name empty; a reader announces the name.
                     div()
+                        .id("toast-message")
+                        .control(Role::Label, SharedString::from(toast.clone()))
                         .flex_1()
                         .text_size(px(12.5))
-                        .child(Text::new("toast-message".into(), toast.into())),
+                        .child(toast),
                 )
                 .child(
                     self.action("toast-dismiss", "Dismiss", || Message::DismissToast, false)
                         .ghost()
                         .h_7(),
                 ),
+        )
+    }
+
+    /// A small icon button on the always-dark rail, named for a reader
+    /// the way its label would read.
+    fn rail_icon(
+        &self,
+        key: &'static str,
+        name: &'static str,
+        icon: gpui_kit::assets::IconName,
+        message: fn() -> Message,
+        ink: gpui_kit::Hsla,
+        hover: gpui_kit::Hsla,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        use gpui_kit::*;
+        let model = self.model.clone();
+        crate::a11y::keyboard(
+            div()
+                .id(key)
+                .control(Role::Button, name)
+                .size(px(26.))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(design::radius::CONTROL as f32))
+                .cursor_pointer()
+                .text_color(ink)
+                .hover(move |style| style.bg(hover))
+                .on_click(move |_, _, cx| {
+                    cx.stop_propagation();
+                    model.update(cx, |model, cx| model.dispatch(message(), cx))
+                })
+                .child(gpui_kit::component::Icon::new(icon).size(px(14.))),
         )
     }
 
@@ -366,6 +428,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        use gpui_kit::assets::IconName;
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let state = self.model.read(cx).state.clone_facts();
@@ -499,43 +562,185 @@ impl DesktopWindow {
         });
         let rows: Vec<_> = rows.collect();
         let unlocked = !state.signer_key.is_empty();
-        // The key's lock; signing in itself is a screen of its own (sign_in.rs).
+        let dot = if state.connected && !state.reconnecting {
+            accent
+        } else {
+            faint
+        };
+        // Who is signed in, and the two ways out of the console. The row
+        // opens the account's settings — it never signs anyone out (the
+        // old app's "Account" row did, d049a14a); Lock and Switch node sit
+        // beside it as quieter icon buttons.
         let foot = match unlocked {
-            true => div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(ink_muted)
-                        .truncate()
-                        .child(format!(
+            true => {
+                let (who, detail, letters, has_account) = match &state.account {
+                    Some(Some((number, name))) => (
+                        name.clone(),
+                        format!("account {number}"),
+                        initials(name),
+                        true,
+                    ),
+                    Some(None) => (
+                        "No account yet".to_owned(),
+                        "Create one".to_owned(),
+                        "?".to_owned(),
+                        false,
+                    ),
+                    None => (
+                        "Signed in".to_owned(),
+                        format!(
                             "key {}…",
                             &state.signer_key[..state.signer_key.len().min(12)]
-                        )),
-                )
-                .child(
-                    self.action("lock", "Lock", || Message::Lock, false)
-                        .custom(rail_button)
-                        .w_full(),
-                ),
+                        ),
+                        "·".to_owned(),
+                        false,
+                    ),
+                };
+                let avatar = div()
+                    .size(px(24.))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_full()
+                    .text_size(px(10.5))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .map(|avatar| match has_account {
+                        true => avatar.bg(accent).text_color(hsla_of(palette.background)),
+                        false => avatar
+                            .bg(ink_raised)
+                            .text_color(ink_muted)
+                            .border_1()
+                            .border_color(ink_border),
+                    })
+                    .child(letters);
+                let model = self.model.clone();
+                let account = crate::a11y::keyboard(
+                    div()
+                        .id("rail-account")
+                        .control(
+                            Role::Button,
+                            SharedString::from(format!("Account: {who} — open Settings")),
+                        )
+                        .flex()
+                        .items_center()
+                        .when(narrow, |row| row.justify_center())
+                        .gap_2()
+                        .min_w_0()
+                        .when(!narrow, |row| row.flex_1())
+                        .p_1()
+                        .rounded(px(design::radius::CONTROL as f32))
+                        .cursor_pointer()
+                        .hover(move |style| style.bg(ink_raised))
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            let settings = crate::runtime::intern(SETTINGS);
+                            model.update(cx, |model, cx| {
+                                model.dispatch(Message::SelectView(settings), cx)
+                            });
+                        })
+                        .child(avatar)
+                        .when(!narrow, |row| {
+                            row.child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(
+                                        div()
+                                            .text_size(px(12.5))
+                                            .text_color(ink_fg)
+                                            .truncate()
+                                            .child(who),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(ink_muted)
+                                            .truncate()
+                                            .child(detail),
+                                    ),
+                            )
+                        }),
+                );
+                let controls = div()
+                    .flex()
+                    .when(narrow, |row| row.flex_col().items_center())
+                    .child(self.rail_icon(
+                        "lock",
+                        "Lock",
+                        IconName::Lock,
+                        || Message::Lock,
+                        ink_muted,
+                        ink_raised,
+                    ))
+                    .child(self.rail_icon(
+                        "disconnect",
+                        "Switch node",
+                        IconName::ArrowLeftRight,
+                        || Message::Disconnect,
+                        ink_muted,
+                        ink_raised,
+                    ));
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_1()
+                    .when(narrow, |row| row.flex_col())
+                    .child(account)
+                    .child(controls)
+            }
             false => div()
                 .flex()
                 .flex_col()
                 .gap_1()
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(ink_muted)
-                        .child("Reading without a key"),
-                )
-                .child(
-                    self.action("sign-in", "Sign in", || Message::SignIn, false)
-                        .primary()
-                        .w_full(),
-                ),
+                .when(narrow, |column| column.items_center())
+                .when(!narrow, |column| {
+                    column
+                        .child(
+                            div()
+                                .px_1()
+                                .text_size(px(11.))
+                                .text_color(ink_muted)
+                                .child("Reading without a key"),
+                        )
+                        .child(
+                            self.action("sign-in", "Sign in", || Message::SignIn, false)
+                                .primary()
+                                .w_full(),
+                        )
+                        .child(
+                            self.action("disconnect", "Switch node", || Message::Disconnect, false)
+                                .custom(rail_button)
+                                .w_full(),
+                        )
+                })
+                .when(narrow, |column| {
+                    column
+                        .child(self.rail_icon(
+                            "sign-in",
+                            "Sign in",
+                            IconName::LogIn,
+                            || Message::SignIn,
+                            ink_fg,
+                            ink_raised,
+                        ))
+                        .child(self.rail_icon(
+                            "disconnect",
+                            "Switch node",
+                            IconName::ArrowLeftRight,
+                            || Message::Disconnect,
+                            ink_muted,
+                            ink_raised,
+                        ))
+                }),
         };
+        // macOS draws the traffic lights over the rail's top on a
+        // transparent titlebar; that strip is the window's only handle, so
+        // it moves the window. On mouse DOWN: a click fires on release,
+        // when there is nothing left to drag.
+        let titlebar = cfg!(target_os = "macos") && !window.is_fullscreen();
         let sidebar = div()
             .id("rail")
             .w(px(if narrow {
@@ -552,53 +757,66 @@ impl DesktopWindow {
             .border_color(ink_border)
             .child(
                 div()
+                    .id("rail-header")
                     .flex()
-                    .items_center()
-                    .when(narrow, |row| row.justify_center())
-                    .gap_2()
+                    .flex_col()
+                    .when(narrow, |column| column.items_center())
                     .px(px(if narrow { 0. } else { 12. }))
-                    .pt(px(if cfg!(target_os = "macos") { 44. } else { 12. }))
+                    .pt(px(if titlebar { 44. } else { 12. }))
                     .pb_2()
+                    .when(titlebar, |strip| {
+                        strip.on_mouse_down(MouseButton::Left, |event, window, _| {
+                            match event.click_count {
+                                2 => window.titlebar_double_click(),
+                                _ => window.start_window_move(),
+                            }
+                        })
+                    })
+                    .when(!narrow, |column| {
+                        column.child(
+                            div()
+                                .text_size(px(13.))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(ink_fg)
+                                .truncate()
+                                .child(state.network.clone()),
+                        )
+                    })
                     .child(
                         div()
-                            .id("rail-connection")
-                            .control(
-                                Role::Status,
-                                SharedString::from(if state.connected {
-                                    "Connected"
-                                } else {
-                                    "Not connected"
-                                }),
+                            .flex()
+                            .items_center()
+                            .gap_1p5()
+                            .child(
+                                div()
+                                    .id("rail-connection")
+                                    .control(
+                                        Role::Status,
+                                        SharedString::from(
+                                            match (state.connected, state.reconnecting) {
+                                                (true, false) => "Connected",
+                                                (true, true) => "Reconnecting",
+                                                (false, _) => "Not connected",
+                                            },
+                                        ),
+                                    )
+                                    .size(px(6.))
+                                    .flex_shrink_0()
+                                    .rounded_full()
+                                    .bg(dot),
                             )
-                            .size(px(6.))
-                            .flex_shrink_0()
-                            .rounded_full()
-                            .bg(if state.connected { accent } else { faint }),
-                    )
-                    .when(!narrow, |row| {
-                        row.child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(
+                            .when(!narrow, |row| {
+                                row.child(
                                     div()
-                                        .text_size(px(13.))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(ink_fg)
-                                        .truncate()
-                                        .child(state.network.clone()),
-                                )
-                                .child(
-                                    div()
+                                        .id("rail-status")
+                                        .min_w_0()
                                         .text_size(px(11.))
                                         .text_color(ink_muted)
                                         .truncate()
                                         .child(state.status.clone()),
-                                ),
-                        )
-                    }),
+                                )
+                            }),
+                    ),
             )
             .child(
                 div()
@@ -643,13 +861,7 @@ impl DesktopWindow {
                                 .child(recording),
                         )
                     })
-                    .child(foot)
-                    .child(
-                        self.action("disconnect", "Switch node", || Message::Disconnect, false)
-                            .custom(rail_button)
-                            .w_full()
-                            .mt_1(),
-                    ),
+                    .child(foot),
             );
         let seat = self.pane_stage(window, cx);
         div()
