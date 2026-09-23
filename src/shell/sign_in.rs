@@ -246,7 +246,7 @@ impl DesktopWindow {
                             ..Default::default()
                         })),
                 )
-                .child(
+                .child(crate::a11y::whole(
                     div()
                         .id("passkey-qr-url")
                         .role(Role::Label)
@@ -255,7 +255,7 @@ impl DesktopWindow {
                         .text_size(px(11.))
                         .text_color(colors.muted_foreground)
                         .child(url.clone()),
-                )
+                ))
                 .child({
                     let url = url.clone();
                     gpui_kit::component::button::Button::new("passkey-qr-copy")
