@@ -76,22 +76,19 @@ impl Ducktape {
                 }
                 self.connect_task = None;
                 self.connecting = false;
+                // refused like a node that never answered — a switch keeps
+                // the network in hand
                 if status.contract != backend::noded::NODE_CONTRACT {
-                    self.status = "Not connected".into();
-                    self.error = format!(
+                    let error = format!(
                         "this node speaks contract {}; this app speaks {}",
                         status.contract,
                         backend::noded::NODE_CONTRACT
                     );
-                    return Task::none();
+                    return self.update(Message::ConnectFailed { generation, error });
                 }
                 let keyring = match backend::bind_keyring(&status.network, status.time) {
                     Ok(keyring) => keyring,
-                    Err(error) => {
-                        self.status = "Not connected".into();
-                        self.error = error;
-                        return Task::none();
-                    }
+                    Err(error) => return self.update(Message::ConnectFailed { generation, error }),
                 };
                 let left = self.take_up(keyring.clone());
                 let client = backend::RpcClient::new(origin.clone());
