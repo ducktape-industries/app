@@ -184,6 +184,7 @@ fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut Test
     state.recent_endpoints = vec![crate::backend::RecentEndpoint {
         url: "http://127.0.0.1:9000".to_string(),
         network: "testkit".to_string(),
+        ..Default::default()
     }];
     let (_view, mut native) = open(state, cx);
     let nodes = native.update(draw);
@@ -328,4 +329,48 @@ fn a_draw_leaves_text_the_model_has_not_heard_yet(cx: &mut TestAppContext) {
             .to_string()
     });
     assert_eq!(shown, "abcdef", "a draw wiped keys the model had not heard");
+}
+
+/// The rail's network name is the switcher: a button that says which
+/// network is in hand and whether its menu is open, and the menu lists
+/// every node reached — the current one checked, a different chain that
+/// shares its name marked — plus the way to add another.
+#[gpui_kit::test]
+fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
+    cx: &mut TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let (mut state, _) = Ducktape::boot();
+    state.screen = Screen::Console;
+    state.connected = true;
+    state.browsing = true;
+    state.network = "testkit".into();
+    state.connected_rpc = "http://127.0.0.1:1".into();
+    state.recent_endpoints = vec![
+        crate::backend::RecentEndpoint {
+            url: "http://127.0.0.1:1".into(),
+            network: "testkit".into(),
+            founded: 1,
+            other_chain: false,
+        },
+        crate::backend::RecentEndpoint {
+            url: "http://127.0.0.1:2".into(),
+            network: "testkit".into(),
+            founded: 2,
+            other_chain: true,
+        },
+    ];
+    state.network_menu = true;
+    let (_view, mut native) = open(state, cx);
+    let nodes = native.update(draw);
+    let switcher = find(&nodes, "Button", "Network: testkit");
+    assert_eq!(switcher["id"], "shell:network-switcher");
+    find(&nodes, "Menu", "Networks");
+    find(&nodes, "MenuItemRadio", "testkit · 127.0.0.1:1 (current)");
+    find(
+        &nodes,
+        "MenuItemRadio",
+        "testkit · 127.0.0.1:2 · different network",
+    );
+    find(&nodes, "MenuItem", "Add a network…");
 }

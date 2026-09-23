@@ -101,6 +101,21 @@ impl DesktopWindow {
             ),
             (true, false) => None,
         };
+        // Two chains can share a name; this one's keys are its own
+        // (`backend::bind_keyring`), and the person hears why it asks anew.
+        let other_chain = state.other_chain.then(|| {
+            div()
+                .id("other-chain")
+                .control(
+                    Role::Note,
+                    format!("This is a different network also called {}", state.network),
+                )
+                .text_size(px(12.5))
+                .child(format!(
+                    "This is a different network also called {}. It gets its own key on this device; the other {}'s key stays with that one.",
+                    state.network, state.network
+                ))
+        });
         let warning = state.replacing.then(|| {
             div()
                 .id("new-key-warning")
@@ -202,6 +217,7 @@ impl DesktopWindow {
                             .text_color(colors.muted_foreground)
                             .child(lead),
                     )
+                    .children(other_chain)
                     .children(warning)
                     .child(password)
                     .children(confirm)

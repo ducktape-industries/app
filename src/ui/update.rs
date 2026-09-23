@@ -76,36 +76,46 @@ impl Ducktape {
                 }
                 self.connect_task = None;
                 self.connecting = false;
+                // refused like a node that never answered — a switch keeps
+                // the network in hand
                 if status.contract != backend::noded::NODE_CONTRACT {
-                    self.status = "Not connected".into();
-                    self.error = format!(
+                    let error = format!(
                         "this node speaks contract {}; this app speaks {}",
                         status.contract,
                         backend::noded::NODE_CONTRACT
                     );
-                    return Task::none();
+                    return self.update(Message::ConnectFailed { generation, error });
                 }
+                let keyring = match backend::bind_keyring(&status.network, status.time) {
+                    Ok(keyring) => keyring,
+                    Err(error) => return self.update(Message::ConnectFailed { generation, error }),
+                };
+                let left = self.take_up(keyring.clone());
                 let client = backend::RpcClient::new(origin.clone());
-                backend::note_endpoint(&origin, &status.network);
+                backend::note_endpoint(backend::RecentEndpoint {
+                    url: origin.clone(),
+                    network: status.network.clone(),
+                    founded: status.time,
+                    other_chain: keyring.other_chain,
+                });
                 self.recent_endpoints = backend::recent_endpoints();
                 self.connected_rpc = origin;
                 self.network = status.network.clone();
                 self.connected = true;
                 self.status_misses = 0;
-                self.browsing = false;
-                self.key_exists = backend::key_exists(&self.network);
                 self.screen = Screen::Console;
                 self.apply_status(&status);
                 drop(crate::runtime::connected(&client, &self.network));
                 self.push_props();
-                match self.console_win {
+                let window = match self.console_win {
                     Some(key) => crate::shell::raise(key),
                     None => {
                         let (key, opened) = crate::shell::open(crate::shell::WindowKind::Console);
                         self.console_win = Some(key);
                         opened.map(Message::ConsoleOpened)
                     }
-                }
+                };
+                Task::batch([left, window, self.resolve_account()])
             }
             Message::ConnectFailed { generation, error } => {
                 if generation != self.connect_generation {
@@ -113,8 +123,6 @@ impl Ducktape {
                 }
                 self.connect_task = None;
                 self.connecting = false;
-                self.connected = false;
-                self.status = "Not connected".into();
                 // A node this device reached before is named by its network,
                 // the way the Recent list names it.
                 let who = self
@@ -123,7 +131,16 @@ impl Ducktape {
                     .find(|entry| entry.url == self.endpoint && !entry.network.is_empty())
                     .map(|entry| format!("{} ({})", entry.network, entry.url))
                     .unwrap_or_else(|| self.endpoint.clone());
-                self.error = backend::connect_error(&who, error);
+                let error = backend::connect_error(&who, error);
+                // A switch that did not land: the network in hand stays, as
+                // it was, and the failure is said over it.
+                if self.connected {
+                    self.endpoint = self.connected_rpc.clone();
+                    self.status = format!("Connected · block {}", self.height);
+                    return self.update(Message::ShowToast(error));
+                }
+                self.status = "Not connected".into();
+                self.error = error;
                 Task::none()
             }
             Message::StatusPushed(status) => {
@@ -150,8 +167,8 @@ impl Ducktape {
             // account (the usual Unlock) never sees a "checking…" screen.
             // After a new key the answer landed during the phrase check, so
             // the step follows the check with no console in between.
-            Message::AccountResolved { key, account } => {
-                if key == self.signer_key {
+            Message::AccountResolved { node, key, account } => {
+                if node == self.connected_rpc && key == self.signer_key {
                     self.account_step |=
                         offers_account_step(std::mem::take(&mut self.account_offer), &account);
                     self.account = Some(account);
@@ -164,32 +181,30 @@ impl Ducktape {
                 self.connected = false;
                 self.connecting = false;
                 self.status_misses = 0;
-                self.account = None;
-                self.account_offer = false;
-                self.account_step = false;
                 self.connected_rpc.clear();
                 self.network.clear();
-                self.active = None;
                 self.status = "Not connected".into();
                 self.screen = Screen::Connect;
-                self.browsing = false;
-                self.forget_secrets();
-                self.forget_phrase();
-                self.unlock_error.clear();
-                self.key_exists = false;
-                self.restoring = false;
-                self.replacing = false;
-                self.account_name.clear();
-                self.passkey_task = None;
-                self.unlock_busy = false;
-                // The seated key belongs to the network being left; the
-                // next node may be another one.
-                self.signer_key.clear();
                 self.push_props();
-                Task::future(async {
-                    backend::lock_signer().await;
-                })
-                .discard()
+                self.leave_network()
+            }
+            Message::ToggleNetworkMenu => {
+                self.network_menu = !self.network_menu;
+                Task::none()
+            }
+            Message::CloseNetworkMenu => {
+                self.network_menu = false;
+                Task::none()
+            }
+            // The console stays on the network in hand while the other is
+            // reached: the rail reads "Reaching …", and a node that does not
+            // answer leaves everything as it was (`ConnectFailed`).
+            Message::SwitchNetwork(origin) => {
+                self.network_menu = false;
+                if origin == self.connected_rpc && !self.connecting {
+                    return Task::none();
+                }
+                self.update(Message::ConnectTo(origin))
             }
             Message::SplitView(_)
             | Message::ClosePane(_)
@@ -273,11 +288,11 @@ impl Ducktape {
                     return Task::none();
                 }
                 let password = zeroize::Zeroizing::new(self.password.clone());
-                let network = self.network.clone();
+                let keyring = self.keyring.clone();
                 self.unlock_busy = true;
                 self.unlock_error.clear();
                 Task::future(async move {
-                    let path = match backend::session_key_path(&network) {
+                    let path = match backend::session_key_path(&keyring) {
                         Ok(path) => path,
                         Err(error) => return Message::UnlockFailed(backend::user_error(error)),
                     };
@@ -299,14 +314,14 @@ impl Ducktape {
                     return Task::none();
                 }
                 let password = zeroize::Zeroizing::new(self.password.clone());
-                let network = self.network.clone();
+                let keyring = self.keyring.clone();
                 self.unlock_busy = true;
                 self.unlock_error.clear();
                 Task::future(async move {
                     let created = tokio::task::spawn_blocking({
-                        let network = network.clone();
+                        let keyring = keyring.clone();
                         let password = password.clone();
-                        move || backend::create_wallet(&network, &password)
+                        move || backend::create_wallet(&keyring, &password)
                     })
                     .await
                     .unwrap_or_else(|_| Err("creating the wallet did not finish".into()));
@@ -314,7 +329,7 @@ impl Ducktape {
                         Ok(phrase) => phrase,
                         Err(error) => return Message::UnlockFailed(backend::user_error(error)),
                     };
-                    let path = match backend::session_key_path(&network) {
+                    let path = match backend::session_key_path(&keyring) {
                         Ok(path) => path,
                         Err(error) => return Message::UnlockFailed(backend::user_error(error)),
                     };
@@ -433,21 +448,21 @@ impl Ducktape {
                     return Task::none();
                 }
                 let password = zeroize::Zeroizing::new(self.restore_password.clone());
-                let network = self.network.clone();
+                let keyring = self.keyring.clone();
                 self.unlock_busy = true;
                 self.unlock_error.clear();
                 Task::future(async move {
                     let restored = tokio::task::spawn_blocking({
-                        let network = network.clone();
+                        let keyring = keyring.clone();
                         let password = password.clone();
-                        move || backend::restore_wallet(&network, &phrase, &password)
+                        move || backend::restore_wallet(&keyring, &phrase, &password)
                     })
                     .await
                     .unwrap_or_else(|_| Err("restoring the key did not finish".into()));
                     if let Err(error) = restored {
                         return Message::UnlockFailed(backend::user_error(error));
                     }
-                    let path = match backend::session_key_path(&network) {
+                    let path = match backend::session_key_path(&keyring) {
                         Ok(path) => path,
                         Err(error) => return Message::UnlockFailed(backend::user_error(error)),
                     };
@@ -499,7 +514,7 @@ impl Ducktape {
             Message::PasskeyCancel => {
                 self.passkey_task = None;
                 self.unlock_busy = false;
-                self.key_exists = backend::key_exists(&self.network);
+                self.key_exists = backend::key_exists(&self.keyring);
                 Task::future(async {
                     backend::lock_signer().await;
                     Message::ShowToast("Passkey step cancelled".into())
@@ -560,7 +575,7 @@ impl Ducktape {
             }
             Message::UnlockFailed(error) => {
                 self.passkey_task = None;
-                self.key_exists = backend::key_exists(&self.network);
+                self.key_exists = backend::key_exists(&self.keyring);
                 self.unlock_busy = false;
                 self.unlock_error = error;
                 Task::none()
@@ -655,7 +670,55 @@ impl Ducktape {
 
     fn apply_status(&mut self, status: &backend::NodeStatus) {
         self.height = i64::try_from(status.height).unwrap_or(-1);
-        self.status = format!("Connected · block {}", status.height);
+        // mid-switch the line reads "Reaching …" until the other node answers
+        if !self.connecting {
+            self.status = format!("Connected · block {}", status.height);
+        }
+    }
+
+    /// The network `keyring` names becomes the one in hand. Another chain
+    /// than the last (a switch, not a second node of the same network):
+    /// nothing of the last one — its seated key, account, open view —
+    /// carries over.
+    fn take_up(&mut self, keyring: backend::Keyring) -> Task<Message> {
+        let left = match keyring.dir != self.keyring {
+            true => self.leave_network(),
+            false => Task::none(),
+        };
+        self.keyring = keyring.dir;
+        self.other_chain = keyring.other_chain;
+        self.key_exists = backend::key_exists(&self.keyring);
+        left
+    }
+
+    /// Everything that belonged to the network being left: its seated key
+    /// (the seat is one for the whole app), the account it resolved to, the
+    /// open view and its badges, and any sign-in half done.
+    fn leave_network(&mut self) -> Task<Message> {
+        self.account = None;
+        self.account_offer = false;
+        self.account_step = false;
+        self.active = None;
+        self.badges.clear();
+        self.network_menu = false;
+        self.browsing = false;
+        self.forget_secrets();
+        self.forget_phrase();
+        self.unlock_error.clear();
+        self.keyring.clear();
+        self.other_chain = false;
+        self.key_exists = false;
+        self.restoring = false;
+        self.replacing = false;
+        self.account_name.clear();
+        self.passkey_task = None;
+        self.unlock_busy = false;
+        self.signer_key.clear();
+        self.push_props();
+        Task::future(async {
+            backend::lock_signer().await;
+        })
+        .discard()
     }
 
     /// Asks the node which account the seated key belongs to; the answer
@@ -668,12 +731,14 @@ impl Ducktape {
         if key.is_empty() || !self.connected {
             return Task::none();
         }
-        let client = backend::RpcClient::new(self.connected_rpc.clone());
+        let node = self.connected_rpc.clone();
+        let client = backend::RpcClient::new(node.clone());
         let network = self.network.clone();
         let signer = self.signer_key.clone();
         Task::future(async move {
             match backend::passkey::account_of_key(&client, &network, key).await {
                 Ok(account) => Some(Message::AccountResolved {
+                    node,
                     key: signer,
                     account,
                 }),
@@ -765,6 +830,7 @@ impl Ducktape {
         }
         let password = zeroize::Zeroizing::new(self.password.clone());
         let network = self.network.clone();
+        let keyring = self.keyring.clone();
         let client = backend::RpcClient::new(self.connected_rpc.clone());
         self.unlock_busy = true;
         self.unlock_error.clear();
@@ -774,8 +840,8 @@ impl Ducktape {
         let flow = async move {
             if mint {
                 let minted = tokio::task::spawn_blocking({
-                    let (network, password) = (network.clone(), password.clone());
-                    move || backend::create_wallet(&network, &password)
+                    let (keyring, password) = (keyring.clone(), password.clone());
+                    move || backend::create_wallet(&keyring, &password)
                 })
                 .await
                 .unwrap_or_else(|_| Err("creating this device's key did not finish".into()));
@@ -783,7 +849,7 @@ impl Ducktape {
                     return Message::UnlockFailed(backend::user_error(error));
                 }
             }
-            let seated = match backend::session_key_path(&network) {
+            let seated = match backend::session_key_path(&keyring) {
                 Ok(path) => backend::seat_signer(path, password).await,
                 Err(error) => Err(error),
             };
@@ -997,7 +1063,8 @@ mod tests {
 
     fn resolved(state: &mut Ducktape, account: Option<(u64, String)>) {
         let key = state.signer_key.clone();
-        let _ = state.update(Message::AccountResolved { key, account });
+        let node = state.connected_rpc.clone();
+        let _ = state.update(Message::AccountResolved { node, key, account });
     }
 
     #[test]
@@ -1035,6 +1102,7 @@ mod tests {
         let mut state = signing_in();
         let _ = state.update(Message::Unlocked("ab".into()));
         let _ = state.update(Message::AccountResolved {
+            node: state.connected_rpc.clone(),
             key: "cd".into(),
             account: None,
         });
@@ -1060,6 +1128,104 @@ mod tests {
         let _ = state.update(Message::AccountCreated(Ok((9, "ada".into()))));
         assert!(!state.account_step);
         assert_eq!(state.account, Some(Some((9, "ada".into()))));
+    }
+
+    fn on_testkit() -> Ducktape {
+        let mut state = signing_in();
+        state.connected = true;
+        state.connected_rpc = "http://a".into();
+        state.network = "testkit".into();
+        state.keyring = "testkit".into();
+        state.height = 7;
+        state.status = "Connected · block 7".into();
+        state.signer_key = "ab".into();
+        state.account = Some(Some((7, "Grace Hopper".into())));
+        state.active = Some("chat");
+        state.badges.insert("chat", 3);
+        state
+    }
+
+    #[test]
+    fn a_switch_keeps_the_network_in_hand_until_the_other_answers() {
+        let mut state = on_testkit();
+        let _ = state.update(Message::ToggleNetworkMenu);
+        assert!(state.network_menu);
+        let _ = state.update(Message::SwitchNetwork("http://b".into()));
+        assert!(!state.network_menu && state.connecting);
+        assert_eq!(state.status, "Reaching http://b…");
+        assert_eq!(state.signer_key, "ab", "still signed in while reaching");
+        // A's poll lands mid-switch: the rail keeps saying where it is going
+        let _ = state.update(Message::StatusPushed(status(8)));
+        assert_eq!(state.status, "Reaching http://b…");
+        let _ = state.update(Message::ConnectFailed {
+            generation: state.connect_generation,
+            error: "error sending request for url (http://b/v1/status)".into(),
+        });
+        assert!(state.connected && !state.connecting);
+        assert_eq!(state.status, "Connected · block 8");
+        assert_eq!(state.endpoint, "http://a");
+        assert!(state.error.is_empty() && state.toast.contains("http://b"));
+        assert_eq!(state.account, Some(Some((7, "Grace Hopper".into()))));
+    }
+
+    #[test]
+    fn taking_up_another_chain_resets_the_last_ones_state() {
+        let mut state = on_testkit();
+        let _ = state.take_up(backend::Keyring {
+            dir: "testkit".into(),
+            other_chain: false,
+        });
+        assert_eq!(
+            state.signer_key, "ab",
+            "a second node of one network keeps the key"
+        );
+        assert_eq!(state.active, Some("chat"));
+        let _ = state.take_up(backend::Keyring {
+            dir: "testkit+200".into(),
+            other_chain: true,
+        });
+        assert!(
+            state.signer_key.is_empty(),
+            "the seat is locked on a switch"
+        );
+        assert_eq!(state.account, None, "the account is asked again");
+        assert_eq!(state.active, None);
+        assert!(state.badges.is_empty());
+        assert!(state.other_chain);
+        assert_eq!(state.keyring, "testkit+200");
+    }
+
+    #[test]
+    fn an_account_answer_from_before_a_switch_is_dropped() {
+        let mut state = on_testkit();
+        state.account = None;
+        let _ = state.update(Message::AccountResolved {
+            node: "http://old".into(),
+            key: "ab".into(),
+            account: Some((1, "Stale".into())),
+        });
+        assert_eq!(state.account, None);
+        let _ = state.update(Message::AccountResolved {
+            node: "http://a".into(),
+            key: "ab".into(),
+            account: None,
+        });
+        assert_eq!(state.account, Some(None));
+    }
+
+    fn status(height: u64) -> backend::NodeStatus {
+        backend::NodeStatus {
+            network: "testkit".into(),
+            time: 0,
+            block_time_ms: 0,
+            epoch_length: 0,
+            height,
+            tip: [0; 32],
+            root: abi::Root([0; 32]),
+            epoch: 0,
+            identity: Vec::new(),
+            contract: backend::noded::NODE_CONTRACT,
+        }
     }
 
     #[test]

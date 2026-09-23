@@ -120,9 +120,47 @@ fn reader_key() -> &'static ed25519::PrivateKey {
 
 // ---------- keys on disk ----------
 
-/// Where this device keeps its wallets for `network`: one directory per
-/// network under the ducktape home.
-pub(crate) fn keystore_root(network: &str) -> Result<PathBuf, String> {
+/// Where this device keeps its wallets for a network: the directory
+/// [`bind_keyring`] named, under the ducktape home.
+pub(crate) fn keystore_root(keyring: &str) -> Result<PathBuf, String> {
+    let named = !keyring.is_empty() && !keyring.contains(['/', '\\']) && keyring != "..";
+    if !named {
+        return Err("the node named no network".into());
+    }
+    Ok(ducktape_home::root()?.join("remotes").join(keyring))
+}
+
+/// The file in a network's key directory that says which chain it belongs
+/// to: that chain's founding time, as the node's status reports it.
+const FOUNDED: &str = "network-founded";
+
+/// Where a network's keys live on this device, and whether its NAME was
+/// already here for another chain.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Keyring {
+    /// The directory under `remotes/` ([`keystore_root`]).
+    pub(crate) dir: String,
+    /// Another chain holds this name's directory: this one is a different
+    /// network that happens to share it.
+    pub(crate) other_chain: bool,
+}
+
+/// Binds `network` as the node names it, founded at `founded` (the node's
+/// `Status::time`), to a key directory. A name is not an identity — two
+/// chains can both be called "testkit" — but a name AND its founding time
+/// are: the genesis block is built from exactly those two
+/// (`Block::genesis(name, time)` in core). So the first chain seen under a
+/// name keeps `remotes/<name>` (a directory from before this binding is
+/// claimed by whichever chain connects first, and keeps working for it),
+/// and any other chain with that name gets `remotes/<name>+<founded>` —
+/// its own keys, never the first chain's.
+pub(crate) fn bind_keyring(network: &str, founded: u64) -> Result<Keyring, String> {
+    bind_in(&ducktape_home::root()?.join("remotes"), network, founded)
+}
+
+fn bind_in(remotes: &std::path::Path, network: &str, founded: u64) -> Result<Keyring, String> {
+    // `+` is never in a sanitized name, so `<name>+<founded>` can not be
+    // another network's own directory.
     let name: String = network
         .chars()
         .map(
@@ -132,29 +170,55 @@ pub(crate) fn keystore_root(network: &str) -> Result<PathBuf, String> {
             },
         )
         .collect();
-    if name.is_empty() {
+    if name.is_empty() || name.chars().all(|c| c == '.') {
         return Err("the node named no network".into());
     }
-    Ok(ducktape_home::root()?.join("remotes").join(name))
+    let mark = remotes.join(&name).join(FOUNDED);
+    let known = std::fs::read_to_string(&mark)
+        .ok()
+        .and_then(|text| text.trim().parse::<u64>().ok());
+    match known {
+        Some(known) if known != founded => Ok(Keyring {
+            dir: format!("{name}+{founded}"),
+            other_chain: true,
+        }),
+        Some(_) => Ok(Keyring {
+            dir: name,
+            other_chain: false,
+        }),
+        None => {
+            // An unwritten mark only means the claim is made again next
+            // time; the keys themselves are where they always were.
+            let written = std::fs::create_dir_all(remotes.join(&name))
+                .and_then(|()| std::fs::write(&mark, founded.to_string()));
+            if let Err(error) = written {
+                tracing::warn!(target: "ducktape::app", %error, network, "chain mark not written");
+            }
+            Ok(Keyring {
+                dir: name,
+                other_chain: false,
+            })
+        }
+    }
 }
 
-/// The key file a sign-in opens: `DUCKTAPE_USER_KEY`, else the network's
+/// The key file a sign-in opens: `DUCKTAPE_USER_KEY`, else the keyring's
 /// active wallet.
-pub(crate) fn session_key_path(network: &str) -> Result<PathBuf, String> {
+pub(crate) fn session_key_path(keyring: &str) -> Result<PathBuf, String> {
     if let Some(path) = keystore::wallet::env_user_key() {
         return Ok(path);
     }
-    keystore::wallet::active_user_key(&keystore_root(network)?)
+    keystore::wallet::active_user_key(&keystore_root(keyring)?)
 }
 
-/// Mints a fresh key for `network` under `password`, makes it the active
+/// Mints a fresh key into `keyring` under `password`, makes it the active
 /// one, and answers its recovery phrase. Never overwrites a key already on
 /// this device: the first key is `default`, a later one ("New key") lands in
 /// the first unused `default-2`, `default-3`, … slot. The keystore's own
 /// write refuses an occupied file too; picking a free slot here turns that
 /// refusal into a working "New key" instead of an error.
-pub(crate) fn create_wallet(network: &str, password: &str) -> Result<String, String> {
-    let root = keystore_root(network)?;
+pub(crate) fn create_wallet(keyring: &str, password: &str) -> Result<String, String> {
+    let root = keystore_root(keyring)?;
     let name = unused_wallet_name(&root, "default");
     let path = keystore::wallet::key_file(&root, &name);
     if let Some(parent) = path.parent() {
@@ -165,10 +229,10 @@ pub(crate) fn create_wallet(network: &str, password: &str) -> Result<String, Str
     Ok(phrase)
 }
 
-/// Whether this device already holds a signing key for `network` — the
+/// Whether this device already holds a signing key in `keyring` — the
 /// question the sign-in screen answers before offering Unlock or Create.
-pub(crate) fn key_exists(network: &str) -> bool {
-    let Ok(path) = session_key_path(network) else {
+pub(crate) fn key_exists(keyring: &str) -> bool {
+    let Ok(path) = session_key_path(keyring) else {
         return false;
     };
     !matches!(
@@ -177,12 +241,12 @@ pub(crate) fn key_exists(network: &str) -> bool {
     )
 }
 
-/// Restores a wallet from its 24-word phrase for `network`, under
+/// Restores a wallet from its 24-word phrase into `keyring`, under
 /// `password`, and makes it the active key. Never overwrites a key that is
 /// already active: if this device already has one, the phrase lands under a
 /// fresh wallet name instead, and THAT becomes active.
-pub(crate) fn restore_wallet(network: &str, mnemonic: &str, password: &str) -> Result<(), String> {
-    let root = keystore_root(network)?;
+pub(crate) fn restore_wallet(keyring: &str, mnemonic: &str, password: &str) -> Result<(), String> {
+    let root = keystore_root(keyring)?;
     let had_one = keystore::wallet::active_name(&root).is_some();
     let name = match had_one {
         false => "default".to_string(),
@@ -284,10 +348,36 @@ pub(crate) fn endpoint_origin(url: &str) -> Option<String> {
 
 /// A node URL this device connected to, and the network name it reported —
 /// empty for an entry saved before the app kept names.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RecentEndpoint {
     pub(crate) url: String,
     pub(crate) network: String,
+    /// The network's founding time (0 for an entry from before the app
+    /// kept it), which tells two chains with one name apart.
+    pub(crate) founded: u64,
+    /// This node's chain is not the one this device first met under its
+    /// name ([`Keyring::other_chain`]).
+    pub(crate) other_chain: bool,
+}
+
+impl RecentEndpoint {
+    /// The node's host and port — the URL without its scheme.
+    pub(crate) fn host(&self) -> &str {
+        self.url
+            .split_once("://")
+            .map_or(self.url.as_str(), |(_, host)| host)
+    }
+
+    /// How a list names this node: its network and host, and — when two
+    /// chains share the name — which one is the other chain. Two rows
+    /// never read the same: the list holds one row per URL.
+    pub(crate) fn label(&self) -> String {
+        match (self.network.is_empty(), self.other_chain) {
+            (true, _) => self.host().to_owned(),
+            (false, false) => format!("{} · {}", self.network, self.host()),
+            (false, true) => format!("{} · {} · different network", self.network, self.host()),
+        }
+    }
 }
 
 /// Node URLs this device connected to, most recent first. Reads either
@@ -304,31 +394,27 @@ fn endpoint_of_json(value: &serde_json::Value) -> Option<RecentEndpoint> {
     if let Some(url) = value.as_str() {
         return Some(RecentEndpoint {
             url: url.to_owned(),
-            network: String::new(),
+            ..RecentEndpoint::default()
         });
     }
     Some(RecentEndpoint {
         url: value.get("url")?.as_str()?.to_owned(),
         network: value["network"].as_str().unwrap_or_default().to_owned(),
+        founded: value["founded"].as_u64().unwrap_or_default(),
+        other_chain: value["other_chain"].as_bool().unwrap_or_default(),
     })
 }
 
-/// Moves `endpoint` to the front, tagged with the network it just reported.
-pub(crate) fn note_endpoint(endpoint: &str, network: &str) {
+/// Moves `entry` to the front: its URL, with the network it just reported.
+pub(crate) fn note_endpoint(entry: RecentEndpoint) {
     let mut recent = recent_endpoints();
-    note(&mut recent, endpoint, network);
+    note(&mut recent, entry);
     write_endpoints(&recent);
 }
 
-fn note(recent: &mut Vec<RecentEndpoint>, endpoint: &str, network: &str) {
-    recent.retain(|known| known.url != endpoint);
-    recent.insert(
-        0,
-        RecentEndpoint {
-            url: endpoint.to_owned(),
-            network: network.to_owned(),
-        },
-    );
+fn note(recent: &mut Vec<RecentEndpoint>, entry: RecentEndpoint) {
+    recent.retain(|known| known.url != entry.url);
+    recent.insert(0, entry);
     recent.truncate(8);
 }
 
@@ -343,7 +429,14 @@ fn write_endpoints(recent: &[RecentEndpoint]) {
     let mut prefs = read_prefs();
     let entries: Vec<serde_json::Value> = recent
         .iter()
-        .map(|entry| serde_json::json!({"url": entry.url, "network": entry.network}))
+        .map(|entry| {
+            serde_json::json!({
+                "url": entry.url,
+                "network": entry.network,
+                "founded": entry.founded,
+                "other_chain": entry.other_chain,
+            })
+        })
         .collect();
     prefs["endpoints"] = serde_json::Value::Array(entries);
     write_prefs(&prefs);
@@ -419,17 +512,81 @@ mod tests {
 
     #[test]
     fn noting_an_endpoint_moves_it_to_the_front_and_dedupes() {
-        let mut recent = vec![RecentEndpoint {
-            url: "http://a".into(),
-            network: "x".into(),
-        }];
-        note(&mut recent, "http://b", "testkit");
-        note(&mut recent, "http://a", "renamed");
+        let entry = |url: &str, network: &str| RecentEndpoint {
+            url: url.into(),
+            network: network.into(),
+            ..RecentEndpoint::default()
+        };
+        let mut recent = vec![entry("http://a", "x")];
+        note(&mut recent, entry("http://b", "testkit"));
+        note(&mut recent, entry("http://a", "renamed"));
         assert_eq!(
             recent.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
             ["http://a", "http://b"]
         );
         assert_eq!(recent[0].network, "renamed");
+    }
+
+    #[test]
+    fn a_name_binds_to_the_chain_first_seen_under_it() {
+        let remotes = tempfile::tempdir().unwrap();
+        let first = bind_in(remotes.path(), "testkit", 100).unwrap();
+        assert_eq!(first.dir, "testkit");
+        assert!(!first.other_chain);
+        // the same chain again: the same keys
+        assert_eq!(bind_in(remotes.path(), "testkit", 100).unwrap(), first);
+        // another chain with the name: its own directory, never the first's
+        let other = bind_in(remotes.path(), "testkit", 200).unwrap();
+        assert_eq!(other.dir, "testkit+200");
+        assert!(other.other_chain);
+        assert_eq!(bind_in(remotes.path(), "testkit", 200).unwrap(), other);
+        // the first chain still owns the name afterwards
+        assert_eq!(bind_in(remotes.path(), "testkit", 100).unwrap(), first);
+        assert!(bind_in(remotes.path(), "", 1).is_err());
+        assert!(bind_in(remotes.path(), "..", 1).is_err());
+    }
+
+    #[test]
+    fn a_key_directory_from_before_the_binding_goes_to_the_first_chain_that_connects() {
+        let remotes = tempfile::tempdir().unwrap();
+        let keys = keystore::wallet::key_file(&remotes.path().join("testkit"), "default");
+        std::fs::create_dir_all(keys.parent().unwrap()).unwrap();
+        std::fs::write(&keys, "sealed").unwrap();
+        assert_eq!(
+            bind_in(remotes.path(), "testkit", 7).unwrap().dir,
+            "testkit"
+        );
+        assert!(keys.exists(), "the old key is left where it was");
+        assert!(bind_in(remotes.path(), "testkit", 8).unwrap().other_chain);
+    }
+
+    #[test]
+    fn recent_rows_name_the_host_and_mark_the_other_chain() {
+        let row = |url: &str, other_chain| RecentEndpoint {
+            url: url.into(),
+            network: "testkit".into(),
+            founded: 1,
+            other_chain,
+        };
+        assert_eq!(
+            row("http://127.0.0.1:36817", false).label(),
+            "testkit · 127.0.0.1:36817"
+        );
+        assert_eq!(
+            row("http://127.0.0.1:34329", true).label(),
+            "testkit · 127.0.0.1:34329 · different network"
+        );
+        let bare = RecentEndpoint {
+            url: "https://node.example".into(),
+            ..RecentEndpoint::default()
+        };
+        assert_eq!(bare.label(), "node.example");
+        let saved = serde_json::json!({"url": "http://c", "network": "testkit", "founded": 9, "other_chain": true});
+        assert_eq!(endpoint_of_json(&saved).unwrap(), {
+            let mut c = row("http://c", true);
+            c.founded = 9;
+            c
+        });
     }
 
     #[tokio::test]
