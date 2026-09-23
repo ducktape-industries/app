@@ -363,6 +363,9 @@ pub(crate) struct DesktopWindow {
 
 struct NativeInput {
     state: Entity<gpui_kit::component::input::InputState>,
+    /// A digest of the model text the field last agreed with — what it
+    /// sent on its last change, or what the model last pushed into it.
+    mirrored: std::rc::Rc<std::cell::Cell<u64>>,
     _subscription: gpui_kit::Subscription,
 }
 

@@ -301,3 +301,31 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
         "the field kept a password the model wiped"
     );
 }
+
+/// Keys can land in a field before their change event reaches the model —
+/// the AX door's `type` sends a word's keys in one update. A draw in
+/// between must not put the model's older text back over them: the door
+/// typed "abcdef" into a phrase-check word and the field showed "ef".
+#[gpui_kit::test]
+fn a_draw_leaves_text_the_model_has_not_heard_yet(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (mut state, _) = Ducktape::boot();
+    state.screen = Screen::Console;
+    state.key_exists = true;
+    let (view, mut native) = open(state, cx);
+    native.update(draw);
+    native.update(|window, cx| {
+        let field = view.read(cx).inputs["password"].state.clone();
+        // set_value emits no change: the model has not heard of this text.
+        field.update(cx, |field, cx| field.set_value("abcdef", window, cx));
+    });
+    native.update(draw);
+    let shown = native.update(|_, cx| {
+        view.read(cx).inputs["password"]
+            .state
+            .read(cx)
+            .value()
+            .to_string()
+    });
+    assert_eq!(shown, "abcdef", "a draw wiped keys the model had not heard");
+}
