@@ -916,7 +916,7 @@ impl DesktopWindow {
                     })
                     .child(
                         div()
-                            .h(px(56.))
+                            .h(px(super::ink::tall(56.)))
                             .px(px(16.))
                             .flex()
                             .items_center()

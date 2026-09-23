@@ -58,7 +58,7 @@ impl DesktopWindow {
             .flex_1()
             .min_h_0()
             .flex()
-            .text_size(px(14.))
+            .text_size(px(ink::fit(14.)))
             .child(
                 div()
                     .id("settings-nav")

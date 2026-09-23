@@ -330,7 +330,10 @@ impl DesktopWindow {
                 self.field(
                     "Name",
                     sans(400, 22.)
-                        .child(field_box(name, ink.strong, 56., &ink).text_size(px(22.)))
+                        .child(
+                            field_box(name, ink.strong, 56., &ink)
+                                .text_size(px(super::ink::fit(22.))),
+                        )
                         .into_any_element(),
                     Some(below),
                     &ink,
