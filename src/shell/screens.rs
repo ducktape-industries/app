@@ -232,16 +232,14 @@ impl DesktopWindow {
             "spotlight" => 20.,
             _ => 15.,
         };
-        // the kit fixes an input's line at `1.25rem` (20px) and its height
-        // by `Size`: a larger face is clipped top and bottom. The line
-        // follows the face instead; the box around it sets the height.
-        let line = gpui_kit::px((size * 1.4f32).round());
+        // the kit fixes an input's line at `1.25rem` (20px) inside `8px`
+        // padding: a larger face is clipped top and bottom. The line follows
+        // the face; the canvas's box around it sets height and inset.
         let input = Input::new(state)
             .id(key)
             .appearance(false)
             .text_size(gpui_kit::px(size))
-            .line_height(line)
-            .h(line)
+            .line_height(gpui_kit::relative(1.4))
             .py_0()
             .px_0();
         let input = match masked {
