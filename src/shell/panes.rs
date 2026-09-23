@@ -214,7 +214,7 @@ impl DesktopWindow {
         // for the AX door and tests); the AX name is a phrase a screen
         // reader can announce on its own, not the bare verb.
         let name = match action {
-            "split" => "Split pane",
+            "split" => "Open another window",
             "popout" => "Open in new window",
             "popin" => "Move to main window",
             _ => "Close pane",
@@ -233,6 +233,8 @@ impl DesktopWindow {
                         button.cursor_pointer().hover(move |style| style.bg(hover))
                     })
                     .opacity(if enabled { 1. } else { 0.35 })
+                    // a press on a control isn't a hold on the title bar
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         if !enabled {
@@ -249,6 +251,15 @@ impl DesktopWindow {
                     .child(gpui_kit::component::Icon::new(glyph).size(px(18.))),
             ),
             !enabled,
+        )
+    }
+
+    /// The desk windows sit on: the window below its bar.
+    fn desk(&self, window: &Window) -> (f32, f32) {
+        let size = window.viewport_size();
+        (
+            f32::from(size.width),
+            f32::from(size.height) - super::desk::BAR,
         )
     }
 
@@ -284,44 +295,30 @@ impl DesktopWindow {
                 .into_any_element();
         }
         let props = self.model.read(cx).state.view_props();
-        let measured = self.measured_widths.clone();
-        let mut stage = div()
-            .on_children_prepainted(move |bounds, _, _| {
-                *measured.borrow_mut() = bounds
-                    .into_iter()
-                    .step_by(2)
-                    .map(|bounds| f32::from(bounds.size.width))
-                    .collect();
-            })
-            .id("panes")
-            .size_full()
-            .flex()
-            .p(px(12.))
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, _, cx| {
-                if event.pressed_button != Some(MouseButton::Left) {
-                    this.resize = None;
-                    return;
-                }
-                if let Some((index, start, left, right)) = this.resize {
-                    if left + right < 640. {
-                        return;
-                    }
-                    let delta =
-                        (f32::from(event.position.x) - start).clamp(320. - left, right - 320.);
-                    this.layout.resize_pair(index, left + delta, right - delta);
-                    cx.notify();
-                }
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _, _, _| this.resize = None),
+        let console = self.kind == crate::shell::WindowKind::Console;
+        let desk = self.desk(window);
+        self.layout.place(desk);
+        let this = cx.entity();
+        let mut stage = div().id("panes").relative().size_full().child(
+            canvas(
+                |_, _, _| {},
+                move |bounds, _, window, _| raise(this, bounds, window),
+            )
+            .absolute()
+            .size_full(),
+        );
+        if self.drag.is_some() {
+            // window-wide, so a fast pointer can't slip off the window it holds
+            let this = cx.entity();
+            stage = stage.child(
+                canvas(|_, _, _| {}, move |_, _, window, _| follow(this, window))
+                    .absolute()
+                    .size_full(),
             );
-        // No title: the program's view is the window (the Pane board: its
-        // controls `28px` at `top: 8px; right: 8px`). With two or more,
-        // the focused one is drawn in ink and shows its controls; the others
-        // show theirs only under the pointer.
+        }
         let multi = self.layout.panes.len() > 1;
-        for (index, pane) in self.layout.panes.iter().enumerate() {
+        for index in self.layout.stacking() {
+            let pane = &self.layout.panes[index];
             let focused = index == self.layout.focused;
             let view = self.mounted[&pane.instance].view.clone();
             view.update(cx, |view, cx| {
@@ -329,22 +326,16 @@ impl DesktopWindow {
                 view.set_props(props.clone(), cx);
             });
             use gpui_kit::assets::IconName;
-            let group = SharedString::from(format!("pane-{index}"));
             let controls = div()
                 .flex()
                 .items_center()
                 .gap(px(2.))
-                .when(multi && !focused, |controls| {
-                    controls
-                        .opacity(0.)
-                        .group_hover(group.clone(), |style| style.opacity(1.))
-                })
-                .when(self.kind == crate::shell::WindowKind::Console, |strip| {
+                .when(console, |strip| {
                     strip
                         .child(self.pane_button(
                             index,
                             "split",
-                            IconName::Columns2,
+                            IconName::Plus,
                             self.layout.panes.len() < layout::MAX_PANES,
                             cx,
                         ))
@@ -356,76 +347,354 @@ impl DesktopWindow {
                             cx,
                         ))
                 })
-                .when(self.kind != crate::shell::WindowKind::Console, |strip| {
+                .when(!console, |strip| {
                     strip.child(self.pane_button(index, "popin", IconName::ArrowDownLeft, true, cx))
                 })
                 .child(self.pane_button(index, "close", IconName::X, true, cx));
-            // the Pane board: no title strip; the view runs to the frame and
-            // the controls float over its top-right corner, which a view
-            // leaves free (`design::pane`)
-            let strip = div()
-                .id(SharedString::from(format!("pane/{index}/strip")))
-                .absolute()
-                .top(px(8.))
-                .right(px(8.))
-                .bg(ink.bg)
-                .child(controls);
             let context = self.mounted[&pane.instance].context.borrow().clone();
-            if index > 0 {
-                stage = stage.child(
-                    div()
-                        .id(SharedString::from(format!("pane/{index}/divider")))
-                        .w(px(12.))
-                        .h_full()
+            let body = div()
+                .id(SharedString::from(format!("pane/{index}")))
+                .flex()
+                .flex_col()
+                .bg(ink.bg)
+                .overflow_hidden()
+                .role(gpui_kit::Role::Group)
+                .when(!context.is_empty(), |pane| pane.aria_label(context.clone()));
+            let seated = match (console, pane.frame) {
+                // a window of its own: the view is the window, its controls
+                // float over the top-right corner a view leaves free
+                // (`design::pane`)
+                (false, _) | (true, None) => body
+                    .relative()
+                    .size_full()
+                    .child(div().flex_1().min_h_0().w_full().child(view))
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("pane/{index}/strip")))
+                            .absolute()
+                            .top(px(8.))
+                            .right(px(8.))
+                            .bg(ink.bg)
+                            .child(controls),
+                    ),
+                // on the desk: a title bar to hold it by, edges to size it by
+                (true, Some(frame)) => {
+                    let title = div()
+                        .id(SharedString::from(format!("pane/{index}/strip")))
+                        .h(px(TITLE))
                         .flex_shrink_0()
-                        .cursor(CursorStyle::ResizeLeftRight)
+                        .flex()
+                        .items_center()
+                        .gap(px(8.))
+                        .pl(px(12.))
+                        .pr(px(2.))
+                        .border_b_1()
+                        .border_color(ink.line)
+                        .bg(match focused {
+                            true => ink.surface,
+                            false => ink.bg,
+                        })
                         .on_mouse_down(
                             MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                                let widths = this.measured_widths.borrow();
-                                for (pane, width) in this.layout.panes.iter_mut().zip(widths.iter())
-                                {
-                                    pane.width = *width;
+                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                                if event.click_count == 2 {
+                                    let desk = this.desk(window);
+                                    this.layout.toggle_fill(index, desk);
+                                    cx.notify();
+                                } else {
+                                    this.hold(index, [false; 4], event.position);
                                 }
-                                let left = this.layout.panes[index - 1].width;
-                                let right = this.layout.panes[index].width;
-                                this.resize =
-                                    Some((index - 1, event.position.x.into(), left, right));
-                                cx.stop_propagation();
                             }),
-                        ),
-                );
-            }
-            stage = stage.child(
-                div()
-                    .id(SharedString::from(format!("pane/{index}")))
-                    .flex()
-                    .flex_col()
-                    .flex_basis(px(0.))
-                    .flex_grow(pane.width)
-                    .min_w_0()
-                    .h_full()
-                    .group(group)
-                    .border(px(1.))
-                    .border_color(match focused && multi {
-                        true => ink.ink,
-                        false => ink.line,
-                    })
-                    .bg(ink.bg)
-                    .overflow_hidden()
-                    .capture_any_mouse_down(cx.listener(move |this, _, window, cx| {
-                        if this.layout.focused != index {
-                            this.pane_message(Message::FocusPane(index), window, cx);
-                        }
-                    }))
-                    .relative()
-                    .role(gpui_kit::Role::Group)
-                    .when(!context.is_empty(), |pane| pane.aria_label(context))
-                    .child(div().flex_1().min_h_0().w_full().child(view))
-                    .child(strip),
-            );
+                        )
+                        .child(
+                            super::ink::mono(500, 12.)
+                                .flex_shrink_0()
+                                .text_color(ink.ink)
+                                .child(label(pane.module)),
+                        )
+                        .child(
+                            super::ink::sans(400, 13.)
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .text_color(ink.muted)
+                                .child(context),
+                        )
+                        .child(controls);
+                    // what's behind a window doesn't hear presses on it
+                    body.occlude()
+                        .absolute()
+                        .left(px(frame.x))
+                        .top(px(frame.y))
+                        .w(px(frame.w))
+                        .h(px(frame.h))
+                        .border_1()
+                        .border_color(match focused && multi {
+                            true => ink.ink,
+                            false => ink.strong,
+                        })
+                        .when(focused, |pane| pane.shadow_lg())
+                        .when(!focused, |pane| pane.shadow_sm())
+                        .child(title)
+                        .child(div().flex_1().min_h_0().w_full().child(view))
+                        .children(self.grips(index, cx))
+                }
+            };
+            stage = stage.child(seated);
         }
         stage.into_any_element()
+    }
+
+    /// Takes hold of window `index` at `at`: `sides` (left, top, right,
+    /// bottom) follow the pointer; none, and the whole window does.
+    fn hold(&mut self, index: usize, sides: [bool; 4], at: gpui_kit::Point<gpui_kit::Pixels>) {
+        if let Some(start) = self.layout.panes.get(index).and_then(|pane| pane.frame) {
+            self.drag = Some(Drag {
+                index,
+                sides,
+                from: (at.x.into(), at.y.into()),
+                start,
+            });
+        }
+    }
+
+    /// The edges and corners a window is sized by, laid over its border.
+    fn grips(
+        &self,
+        index: usize,
+        cx: &mut Context<Self>,
+    ) -> Vec<gpui_kit::Stateful<gpui_kit::Div>> {
+        use gpui_kit::*;
+        const EDGE: f32 = 5.;
+        const CORNER: f32 = 12.;
+        let grips: [(&str, [bool; 4], CursorStyle); 8] = [
+            (
+                "left",
+                [true, false, false, false],
+                CursorStyle::ResizeLeftRight,
+            ),
+            (
+                "right",
+                [false, false, true, false],
+                CursorStyle::ResizeLeftRight,
+            ),
+            (
+                "top",
+                [false, true, false, false],
+                CursorStyle::ResizeUpDown,
+            ),
+            (
+                "bottom",
+                [false, false, false, true],
+                CursorStyle::ResizeUpDown,
+            ),
+            (
+                "top-left",
+                [true, true, false, false],
+                CursorStyle::ResizeUpLeftDownRight,
+            ),
+            (
+                "bottom-right",
+                [false, false, true, true],
+                CursorStyle::ResizeUpLeftDownRight,
+            ),
+            (
+                "top-right",
+                [false, true, true, false],
+                CursorStyle::ResizeUpRightDownLeft,
+            ),
+            (
+                "bottom-left",
+                [true, false, false, true],
+                CursorStyle::ResizeUpRightDownLeft,
+            ),
+        ];
+        grips
+            .into_iter()
+            .map(|(name, sides, cursor)| {
+                let [left, top, right, bottom] = sides;
+                let corner = (left || right) && (top || bottom);
+                let grip = div()
+                    .id(SharedString::from(format!("pane/{index}/grip/{name}")))
+                    .absolute()
+                    .cursor(cursor)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, event: &MouseDownEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.hold(index, sides, event.position);
+                        }),
+                    );
+                let grip = match corner {
+                    true => grip.size(px(CORNER)),
+                    false if left || right => grip.w(px(EDGE)).top(px(CORNER)).bottom(px(CORNER)),
+                    false => grip.h(px(EDGE)).left(px(CORNER)).right(px(CORNER)),
+                };
+                let grip = if left {
+                    grip.left_0()
+                } else if right {
+                    grip.right_0()
+                } else {
+                    grip
+                };
+                if top {
+                    grip.top_0()
+                } else if bottom {
+                    grip.bottom_0()
+                } else {
+                    grip
+                }
+            })
+            .collect()
+    }
+}
+
+/// A title bar's height.
+const TITLE: f32 = 32.;
+
+/// A window held by the pointer.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Drag {
+    index: usize,
+    sides: [bool; 4],
+    from: (f32, f32),
+    start: layout::Frame,
+}
+
+impl Drag {
+    /// The frame with the pointer at `to`. A side held past the smallest
+    /// window stops; the side across from it stays put.
+    fn frame(&self, to: (f32, f32)) -> layout::Frame {
+        let (dx, dy) = (to.0 - self.from.0, to.1 - self.from.1);
+        let start = self.start;
+        let [left, top, right, bottom] = self.sides;
+        let mut frame = start;
+        if self.sides == [false; 4] {
+            frame.x += dx;
+            frame.y += dy;
+        }
+        if right {
+            frame.w = (start.w + dx).max(layout::MIN_WIDTH);
+        }
+        if bottom {
+            frame.h = (start.h + dy).max(layout::MIN_HEIGHT);
+        }
+        if left {
+            frame.w = (start.w - dx).max(layout::MIN_WIDTH);
+            frame.x = start.x + start.w - frame.w;
+        }
+        if top {
+            frame.h = (start.h - dy).max(layout::MIN_HEIGHT);
+            frame.y = start.y + start.h - frame.h;
+        }
+        frame
+    }
+}
+
+/// A press anywhere on a window brings it to the front. Window-wide and
+/// before anything under the pointer sees it: a program's view may block
+/// the pointer from the window it sits in.
+fn raise(
+    this: gpui_kit::Entity<DesktopWindow>,
+    desk: gpui_kit::Bounds<gpui_kit::Pixels>,
+    window: &mut Window,
+) {
+    use gpui_kit::*;
+    window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
+        if phase != DispatchPhase::Capture {
+            return;
+        }
+        let at = (
+            f32::from(event.position.x - desk.origin.x),
+            f32::from(event.position.y - desk.origin.y),
+        );
+        this.update(cx, |this, cx| {
+            let Some(index) = this.layout.under(at) else {
+                return;
+            };
+            let on_top = this.layout.stacking().last() == Some(&index);
+            if index != this.layout.focused || !on_top {
+                this.pane_message(Message::FocusPane(index), window, cx);
+            }
+        });
+    });
+}
+
+/// The pointer, window-wide, while a window is held: a move carries it, a
+/// release lets it go.
+fn follow(this: gpui_kit::Entity<DesktopWindow>, window: &mut Window) {
+    use gpui_kit::*;
+    let held = this.clone();
+    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+        if phase != DispatchPhase::Bubble {
+            return;
+        }
+        held.update(cx, |this, cx| {
+            let Some(drag) = this.drag else {
+                return;
+            };
+            if event.pressed_button != Some(MouseButton::Left) {
+                this.drag = None;
+            } else {
+                let desk = this.desk(window);
+                let to = (event.position.x.into(), event.position.y.into());
+                this.layout.set_frame(drag.index, drag.frame(to), desk);
+            }
+            cx.notify();
+        });
+    });
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
+        if phase == DispatchPhase::Bubble && event.button == MouseButton::Left {
+            this.update(cx, |this, cx| {
+                if this.drag.take().is_some() {
+                    cx.notify();
+                }
+            });
+        }
+    });
+}
+
+#[cfg(test)]
+mod drag_tests {
+    use super::{Drag, layout::*};
+
+    #[test]
+    fn a_title_bar_moves_and_an_edge_sizes_from_its_own_side() {
+        let start = Frame {
+            x: 100.,
+            y: 100.,
+            w: 500.,
+            h: 400.,
+        };
+        let drag = |sides| Drag {
+            index: 0,
+            sides,
+            from: (0., 0.),
+            start,
+        };
+        let moved = drag([false; 4]).frame((30., -20.));
+        assert_eq!(
+            moved,
+            Frame {
+                x: 130.,
+                y: 80.,
+                ..start
+            }
+        );
+        let corner = drag([false, false, true, true]).frame((40., 50.));
+        assert_eq!(
+            corner,
+            Frame {
+                w: 540.,
+                h: 450.,
+                ..start
+            }
+        );
+        // the left edge past the smallest window: the right edge stays put
+        let left = drag([true, false, false, false]).frame((1000., 0.));
+        assert_eq!((left.w, left.x + left.w), (MIN_WIDTH, 600.));
+        let top = drag([false, true, false, false]).frame((0., -60.));
+        assert_eq!((top.y, top.h), (40., 460.));
     }
 }
 

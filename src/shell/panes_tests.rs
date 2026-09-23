@@ -40,8 +40,15 @@ fn press(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
     );
 }
 
-#[gpui_kit::test]
-fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext) {
+/// A console window on a desk with a program to show, as the AX door sees it.
+fn console(
+    cx: &mut TestAppContext,
+) -> (
+    Entity<Desktop>,
+    WindowKey,
+    Entity<DesktopWindow>,
+    VisualTestContext,
+) {
     cx.update(gpui_kit::init);
     let model = cx.new(|cx| {
         let (mut state, _) = Ducktape::boot();
@@ -67,8 +74,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             layout: layout::Layout::default(),
             mounted: BTreeMap::new(),
             initialized: false,
-            resize: None,
-            measured_widths: Default::default(),
+            drag: None,
             inputs: HashMap::new(),
             spotlight_focused: false,
             focus: cx.focus_handle(),
@@ -85,7 +91,17 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
         model.windows.insert(key, handle.into());
         model.views.insert(key, view.downgrade());
     });
-    let mut native = VisualTestContext::from_window(handle.into(), cx);
+    (
+        model,
+        key,
+        view,
+        VisualTestContext::from_window(handle.into(), cx),
+    )
+}
+
+#[gpui_kit::test]
+fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext) {
+    let (model, key, view, mut native) = console(cx);
     let nodes = native.update(draw);
     for control in ["split", "close", "popout"] {
         let id = format!("console:pane/0/{control}");
@@ -98,7 +114,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             "missing {id}: {nodes}"
         );
     }
-    for expected in [2, 3] {
+    for expected in 2..=layout::MAX_PANES {
         native.update(|window, cx| press("pane/0/split", window, cx));
         native.update(|window, cx| {
             draw(window, cx);
@@ -121,13 +137,13 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
                 .any(|state| state == "disabled")
         );
         press("pane/0/split", window, cx);
-        assert_eq!(view.read(cx).layout.panes.len(), 3);
+        assert_eq!(view.read(cx).layout.panes.len(), layout::MAX_PANES);
     });
     let instance = native.update(|_, cx| view.read(cx).layout.panes[0].instance);
     native.update(|window, cx| press("pane/0/popout", window, cx));
     native.run_until_parked();
     let (popped_key, popped_handle, popped) = native.update(|_, cx| {
-        assert_eq!(view.read(cx).layout.panes.len(), 2);
+        assert_eq!(view.read(cx).layout.panes.len(), layout::MAX_PANES - 1);
         let model = model.read(cx);
         let (&key, popped) = model
             .views
@@ -146,19 +162,60 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
     native.run_until_parked();
     native.update(|window, cx| {
         draw(window, cx);
-        assert_eq!(view.read(cx).layout.panes.len(), 3);
-        assert_eq!(view.read(cx).layout.panes[2].instance, instance);
+        assert_eq!(view.read(cx).layout.panes.len(), layout::MAX_PANES);
+        assert_eq!(
+            view.read(cx).layout.panes[layout::MAX_PANES - 1].instance,
+            instance
+        );
         assert!(popped.read(cx).layout.panes.is_empty());
         model.update(cx, |model, _| {
             model.views.remove(&popped_key);
             model.windows.remove(&popped_key);
         });
     });
-    for remaining in [2, 1, 0] {
+    for remaining in (0..layout::MAX_PANES).rev() {
         native.update(|window, cx| press("pane/0/close", window, cx));
         native.update(|window, cx| {
             draw(window, cx);
             assert_eq!(view.read(cx).layout.panes.len(), remaining);
         });
     }
+}
+
+#[gpui_kit::test]
+fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = console(cx);
+    native.update(|window, cx| press("pane/0/split", window, cx));
+    native.update(|window, cx| {
+        draw(window, cx);
+        assert_eq!(view.read(cx).layout.focused, 1);
+    });
+    // the first window fills the desk; the second covers its top-left
+    let behind = gpui_kit::point(px(1200.), px(700.));
+    native.simulate_click(behind, gpui_kit::Modifiers::none());
+    native.update(|window, cx| {
+        draw(window, cx);
+        let layout = &view.read(cx).layout;
+        assert_eq!(layout.focused, 0);
+        assert_eq!(layout.stacking(), vec![1, 0]);
+    });
+    // a double press where both title bars lie fills the front window alone
+    let title = gpui_kit::point(px(600.), px(desk::BAR + 42.));
+    native.simulate_click(title, gpui_kit::Modifiers::none());
+    native.simulate_event(gpui_kit::MouseDownEvent {
+        button: gpui_kit::MouseButton::Left,
+        position: title,
+        modifiers: gpui_kit::Modifiers::none(),
+        click_count: 2,
+        first_mouse: false,
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+        let layout = &view.read(cx).layout;
+        assert!(layout.panes[0].restore.is_some(), "the front window filled");
+        assert!(
+            layout.panes[1].restore.is_none(),
+            "the one behind heard nothing"
+        );
+    });
 }
