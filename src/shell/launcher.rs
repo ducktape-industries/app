@@ -254,7 +254,7 @@ pub(super) fn drawing(
                 SharedString::from(format!("figure/{figure:?}")),
                 Animation::new(std::time::Duration::from_millis(figure::LOOP_MS))
                     .repeat()
-                    .with_max_fps(4.),
+                    .with_max_fps(figure::FPS),
                 move |frame, delta| frame.child(lines((delta * figure::LOOP_MS as f32) as u64)),
             )
             .into_any_element(),

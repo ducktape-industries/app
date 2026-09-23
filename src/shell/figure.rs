@@ -3,10 +3,12 @@
 //! of glyphs, one frame per step of a short loop. Built once per shape and
 //! kept; a frame is picked by the clock at draw time.
 
-use std::f32::consts::TAU;
+use std::f32::consts::{PI, TAU};
 use std::sync::OnceLock;
 
-const RAMP: [char; 9] = [' ', '.', '·', ':', '-', '=', '+', '*', '#'];
+/// Dark to light, in twelve steps: enough that a lit curve reads as a
+/// gradient rather than as bands of one glyph.
+const RAMP: [char; 12] = [' ', '.', '·', ':', ';', '-', '=', '+', '*', '#', '%', '@'];
 pub(super) const COLS: usize = 46;
 pub(super) const ROWS: usize = 30;
 /// The glyph box the frames are drawn for: the mono face's advance at
@@ -14,72 +16,83 @@ pub(super) const ROWS: usize = 30;
 /// distance as x, so a sphere stays round.
 pub(super) const SIZE: f32 = 11.;
 pub(super) const ADVANCE: f32 = 6.6;
-const FRAMES: usize = 16;
+/// Enough frames that a step is under a character's width of movement.
+const FRAMES: usize = 96;
 /// One loop, start to start.
-pub(super) const LOOP_MS: u64 = 4800;
-const FRONT: [f32; 3] = [-0.55, -0.6, -0.58];
+pub(super) const LOOP_MS: u64 = 6000;
+/// How often the drawing is redrawn: one loop frame each time.
+pub(super) const FPS: f32 = FRAMES as f32 * 1000. / LOOP_MS as f32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Figure {
-    /// A lit sphere, its light circling: a node.
+    /// A globe turning under a still light: a node.
     Node,
     /// A turning ring: a key.
     Ring,
-    /// Three sheets, rocking: the recovery phrase on paper.
+    /// A written card, turning: the recovery phrase on paper.
     Sheets,
     /// A sphere and its small moon: you, and the network you joined.
     Pair,
 }
 
 impl Figure {
-    /// The frame to show `elapsed_ms` into the loop.
+    /// The frame to show `elapsed_ms` into the loop. Each frame is drawn
+    /// the first time it is asked for, then kept.
     pub(super) fn frame(self, elapsed_ms: u64) -> &'static [String] {
-        static CACHE: [OnceLock<Vec<Vec<String>>>; 4] = [const { OnceLock::new() }; 4];
-        let frames = CACHE[self as usize].get_or_init(|| {
-            (0..FRAMES)
-                .map(|nth| self.draw(nth as f32 / FRAMES as f32))
-                .collect()
-        });
-        let step = LOOP_MS / FRAMES as u64;
-        &frames[(elapsed_ms / step) as usize % FRAMES]
+        static CACHE: [[OnceLock<Vec<String>>; FRAMES]; 4] =
+            [const { [const { OnceLock::new() }; FRAMES] }; 4];
+        let nth = (elapsed_ms % LOOP_MS) as usize * FRAMES / LOOP_MS as usize;
+        CACHE[self as usize][nth].get_or_init(|| self.draw(nth as f32 / FRAMES as f32))
     }
 
     fn draw(self, t: f32) -> Vec<String> {
+        let turn = TAU * t;
         match self {
-            Figure::Node => {
-                let light = [(TAU * t).cos() * 0.8, -0.55, -0.6 + (TAU * t).sin() * 0.5];
-                raymarch(|p| sphere(p, [0., 0., 0.], 1.), light)
-            }
+            // meridians carved into the sphere make its turning visible
+            Figure::Node => raymarch(
+                |p| sphere(p, [0., 0., 0.], 1.),
+                move |p| {
+                    let q = rot(p, 0.35, turn, 0.);
+                    let longitude = q[2].atan2(q[0]);
+                    let latitude = q[1].clamp(-1., 1.).asin();
+                    // how near a meridian (every 30°) or a parallel (every 36°)
+                    let near = |angle: f32, every: f32| {
+                        let off = (angle / every).fract().abs();
+                        off.min(1. - off) * every
+                    };
+                    let line = near(longitude + PI, PI / 6.).min(near(latitude + PI, PI / 5.));
+                    1. - 0.5 * (-(line * line) / 0.004).exp()
+                },
+            ),
             Figure::Ring => raymarch(
-                |p| torus(rot(p, 1.05, TAU * t / 2., 0.35), 0.78, 0.28),
-                FRONT,
+                |p| {
+                    torus(
+                        rot(p, 1.05 + 0.25 * turn.sin(), turn / 2., 0.35),
+                        0.78,
+                        0.28,
+                    )
+                },
+                |_| 1.,
             ),
             Figure::Sheets => raymarch(
-                |p| {
-                    (0..3)
-                        .map(|k| {
-                            let k = k as f32;
-                            let q = [p[0] + 0.12 * k - 0.12, p[1] + 0.16 * k - 0.16, p[2]];
-                            rounded_box(
-                                rot(q, 0.95, 0.25 * (TAU * t).sin(), 0.45),
-                                [0.72, 0.035, 0.95],
-                            )
-                        })
-                        .fold(f32::MAX, f32::min)
+                move |p| rounded_box(rot(p, 0.2, 0.7 * turn.sin(), 0.12), [0.62, 0.84, 0.025]),
+                // lines of writing across the card
+                |p| match (p[1] * 5.5).rem_euclid(1.) < 0.4 {
+                    true => 0.55,
+                    false => 1.,
                 },
-                FRONT,
             ),
             Figure::Pair => {
-                let (c, s) = ((TAU * t).cos(), (TAU * t).sin());
+                let (c, s) = (turn.cos(), turn.sin());
                 raymarch(
-                    |p| {
+                    move |p| {
                         sphere(p, [-0.15, 0.1, 0.], 0.82).min(sphere(
                             p,
                             [-0.15 + c, 0.1 - 0.3 * c, s],
                             0.2,
                         ))
                     },
-                    FRONT,
+                    |_| 1.,
                 )
             }
         }
@@ -115,17 +128,24 @@ fn rounded_box(p: [f32; 3], b: [f32; 3]) -> f32 {
     length(q[0].max(0.), q[1].max(0.), q[2].max(0.)) + q[0].max(q[1]).max(q[2]).min(0.) - 0.04
 }
 
-fn raymarch(sdf: impl Fn([f32; 3]) -> f32, light: [f32; 3]) -> Vec<String> {
-    // the light stays in front of the shape, never behind it
-    let light = match light[2] < 0. {
-        true => light,
-        false => [light[0], light[1], -0.05],
-    };
+/// Light from the upper left, in front; the eye looks down +z.
+const LIGHT: [f32; 3] = [-0.55, -0.6, -0.58];
+
+/// One frame: a ray per cell straight into the scene, stepped by the
+/// distance field. A hit is shaded by ambient, diffuse and a small
+/// highlight, times the surface's own `tone` there.
+fn raymarch(sdf: impl Fn([f32; 3]) -> f32, tone: impl Fn([f32; 3]) -> f32) -> Vec<String> {
     let span = 1.25;
     let ux = span / (COLS as f32 / 2.);
     let uy = ux * SIZE / ADVANCE;
-    let n = length(light[0], light[1], light[2]);
-    let light = light.map(|l| l / n);
+    let n = length(LIGHT[0], LIGHT[1], LIGHT[2]);
+    let light = LIGHT.map(|l| l / n);
+    // halfway between the light and the eye (0, 0, -1)
+    let half = {
+        let h = [light[0], light[1], light[2] - 1.];
+        let n = length(h[0], h[1], h[2]);
+        h.map(|v| v / n)
+    };
     (0..ROWS)
         .map(|j| {
             let line: String = (0..COLS)
@@ -134,7 +154,7 @@ fn raymarch(sdf: impl Fn([f32; 3]) -> f32, light: [f32; 3]) -> Vec<String> {
                     let y = (j as f32 - ROWS as f32 / 2. + 0.5) * uy;
                     let mut z = -3.;
                     let mut hit = false;
-                    for _ in 0..70 {
+                    for _ in 0..80 {
                         let d = sdf([x, y, z]);
                         if d < 0.002 {
                             hit = true;
@@ -149,13 +169,21 @@ fn raymarch(sdf: impl Fn([f32; 3]) -> f32, light: [f32; 3]) -> Vec<String> {
                         return ' ';
                     }
                     let e = 0.002;
-                    let nx = sdf([x + e, y, z]) - sdf([x - e, y, z]);
-                    let ny = sdf([x, y + e, z]) - sdf([x, y - e, z]);
-                    let nz = sdf([x, y, z + e]) - sdf([x, y, z - e]);
-                    let norm = length(nx, ny, nz).max(f32::EPSILON);
-                    let lit = ((nx * light[0] + ny * light[1] + nz * light[2]) / norm).max(0.);
-                    let v = 0.1 + 0.8 * lit.powf(1.2);
-                    RAMP[((v * (RAMP.len() - 1) as f32 + 0.5) as usize).min(RAMP.len() - 1)]
+                    let normal = [
+                        sdf([x + e, y, z]) - sdf([x - e, y, z]),
+                        sdf([x, y + e, z]) - sdf([x, y - e, z]),
+                        sdf([x, y, z + e]) - sdf([x, y, z - e]),
+                    ];
+                    let norm = length(normal[0], normal[1], normal[2]).max(f32::EPSILON);
+                    let normal = normal.map(|v| v / norm);
+                    let dot = |v: [f32; 3]| normal[0] * v[0] + normal[1] * v[1] + normal[2] * v[2];
+                    let diffuse = dot(light).max(0.);
+                    let shine = dot(half).max(0.).powf(24.);
+                    let lit = (0.12 + 0.7 * diffuse + 0.35 * shine) * tone([x, y, z]);
+                    let steps = (RAMP.len() - 1) as f32;
+                    let level = lit.clamp(0., 1.) * steps;
+                    // a hit is never blank: the shape keeps its outline
+                    RAMP[(level.round() as usize).clamp(1, RAMP.len() - 1)]
                 })
                 .collect();
             line.trim_end().to_owned()
@@ -166,6 +194,21 @@ fn raymarch(sdf: impl Fn([f32; 3]) -> f32, light: [f32; 3]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `cargo test dump_frames -- --ignored --nocapture` prints frames to
+    /// look at.
+    #[test]
+    #[ignore]
+    fn dump_frames() {
+        for figure in [Figure::Node, Figure::Ring, Figure::Sheets, Figure::Pair] {
+            for nth in 0..4 {
+                println!("== {figure:?} {nth}");
+                for line in figure.frame(nth * LOOP_MS / 16) {
+                    println!("{line}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn every_figure_draws_a_shape_that_fits_its_box() {
@@ -185,10 +228,12 @@ mod tests {
                 );
             }
         }
-        assert_ne!(
-            Figure::Ring.frame(0),
-            Figure::Ring.frame(LOOP_MS / 4),
-            "the ring turns"
-        );
+        for figure in [Figure::Node, Figure::Ring, Figure::Sheets, Figure::Pair] {
+            assert_ne!(
+                figure.frame(0),
+                figure.frame(LOOP_MS / 4),
+                "{figure:?} is still"
+            );
+        }
     }
 }
