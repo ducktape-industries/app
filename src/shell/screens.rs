@@ -79,6 +79,15 @@ fn prettify(id: &str) -> String {
     }
 }
 
+/// A field's text reduced to what `input` compares, so a mirrored password
+/// is not kept a second time in the clear.
+fn digest(text: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::hash::DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// The avatar's letters for an account `name`: the first letter of its
 /// first two words ("Ada Lovelace" → "AL", "ada" → "A"), "?" for none.
 pub(super) fn initials(name: &str) -> String {
@@ -103,14 +112,18 @@ impl DesktopWindow {
     /// dispatches `on_change` with the text.
     ///
     /// The model owns the text; the field mirrors it. `value` reads the
-    /// model's copy, and every draw writes it back into the field when the
-    /// two differ. Typing moves the model first (`on_change` runs before
-    /// the next draw), so this only fires when the model changed on its
-    /// own: a password wiped after Unlock or Lock, a new key's form reset,
-    /// the endpoint rewritten to the origin actually reached. The field
-    /// state is kept per window for as long as the window lives, so without
-    /// this a field would keep showing text the model no longer holds, and
-    /// a retry would send something other than what is on screen.
+    /// model's copy, and a draw writes it into the field when the MODEL
+    /// moved since the two last agreed (`mirrored`): a password wiped after
+    /// Unlock or Lock, a new key's form reset, the endpoint rewritten to
+    /// the origin actually reached. The field state is kept per window for
+    /// as long as the window lives, so without this a field would keep
+    /// showing text the model no longer holds, and a retry would send
+    /// something other than what is on screen.
+    ///
+    /// It compares against what was last agreed, not against the field's
+    /// own text: keys can land in the field before their change event
+    /// reaches the model (a burst of keys in one update, as the AX door's
+    /// `type` sends), and a draw in between would otherwise wipe them.
     ///
     /// Its accessible name is
     /// `label`, or `placeholder` when a field's hint text already reads as
@@ -141,6 +154,8 @@ impl DesktopWindow {
                     .masked(masked)
             });
             let model = self.model.clone();
+            let mirrored = std::rc::Rc::new(std::cell::Cell::new(digest("")));
+            let agreed = mirrored.clone();
             let subscription = cx.subscribe_in(&state, window, move |_, input, event, _, cx| {
                 match event {
                     InputEvent::PressEnter { .. } => {
@@ -148,6 +163,7 @@ impl DesktopWindow {
                     }
                     InputEvent::Change => {
                         let text = input.read(cx).value().to_string();
+                        agreed.set(digest(&text));
                         model.update(cx, |model, cx| model.dispatch(on_change(text), cx));
                     }
                     _ => {}
@@ -158,14 +174,19 @@ impl DesktopWindow {
                 key,
                 NativeInput {
                     state,
+                    mirrored,
                     _subscription: subscription,
                 },
             );
         }
         use gpui_kit::{Focusable as _, StatefulInteractiveElement as _};
-        let state = &self.inputs[key].state;
+        let NativeInput {
+            state, mirrored, ..
+        } = &self.inputs[key];
         // set_value emits no Change, so mirroring never echoes back.
-        if state.read(cx).value().as_ref() != value(&self.model.read(cx).state) {
+        let now = digest(value(&self.model.read(cx).state));
+        if now != mirrored.get() {
+            mirrored.set(now);
             let text = value(&self.model.read(cx).state).to_owned();
             state.update(cx, |state, cx| state.set_value(text, window, cx));
         }
