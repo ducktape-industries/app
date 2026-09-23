@@ -551,7 +551,7 @@ impl DesktopWindow {
                 sans(500, 14.)
                     .id(SharedString::from(format!("notify-ask/{module}/{id}")))
                     .control(Role::Button, text)
-                    .h(px(30.))
+                    .h(px(tall(30.)))
                     .px(px(12.))
                     .flex()
                     .flex_shrink_0()

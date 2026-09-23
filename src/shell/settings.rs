@@ -68,7 +68,7 @@ impl DesktopWindow {
             .flex_1()
             .min_h_0()
             .flex()
-            .text_size(px(14.))
+            .text_size(px(ink::fit(14.)))
             .child(
                 div()
                     .id("settings-nav")
@@ -406,7 +406,7 @@ impl DesktopWindow {
                                     true => gpui_kit::accesskit::Toggled::True,
                                     false => gpui_kit::accesskit::Toggled::False,
                                 })
-                                .h(px(26.))
+                                .h(px(ink::tall(26.)))
                                 .px(px(10.))
                                 .flex()
                                 .items_center()
