@@ -86,7 +86,14 @@ impl DesktopWindow {
                     .items_center()
                     .justify_center()
                     .bg(ink.surface)
-                    .child(drawing(figure, state.motion, ink.figure)),
+                    .child(super::spin::drawing(
+                        "launcher-figure-drawing",
+                        figure,
+                        state.motion,
+                        ink.figure,
+                        window,
+                        cx,
+                    )),
             )
             .child(tag(caption, &ink));
         // the phrase's 24 words need the room: its column sits tighter
@@ -152,41 +159,5 @@ impl DesktopWindow {
             .child(label(text, ink))
             .child(control)
             .children(below)
-    }
-}
-
-/// The drawing, one line per row, turning while `moving`. Hidden from a
-/// reader: it is the screen's mood, not its content.
-pub(super) fn drawing(figure: Figure, moving: bool, ink: gpui_kit::Hsla) -> gpui_kit::AnyElement {
-    use gpui_kit::*;
-    let lines = move |elapsed: u64| {
-        div()
-            .flex()
-            .flex_col()
-            .w(px(figure::COLS as f32 * figure::ADVANCE))
-            .font_family(super::theme::FAMILY_MONO)
-            // "===" is one glyph in the mono face; a drawing wants three
-            .font_features(FontFeatures::disable_ligatures())
-            .text_size(px(figure::GLYPH))
-            .line_height(px(figure::SIZE))
-            .text_color(ink)
-            .children(figure.frame(elapsed).iter().map(|line| {
-                div()
-                    .h(px(figure::SIZE))
-                    .whitespace_nowrap()
-                    .child(line.clone())
-            }))
-    };
-    match moving {
-        false => lines(0).into_any_element(),
-        true => div()
-            .with_animation(
-                SharedString::from(format!("figure/{figure:?}")),
-                Animation::new(std::time::Duration::from_millis(figure::LOOP_MS))
-                    .repeat()
-                    .with_max_fps(figure::FPS),
-                move |frame, delta| frame.child(lines((delta * figure::LOOP_MS as f32) as u64)),
-            )
-            .into_any_element(),
     }
 }
