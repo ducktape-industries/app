@@ -78,6 +78,7 @@ impl Render for TreeFixtureFrame {
         use gpui_kit::*;
         let mut frame = div();
         frame.text_style().font_fallbacks = Some(fallback_chain());
+        frame.text_style().font_family = Some(super::theme::FAMILY_UI.into());
         frame
             .size_full()
             .bg(cx.theme().background)

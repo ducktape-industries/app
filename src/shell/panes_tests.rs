@@ -54,6 +54,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             windows: BTreeMap::new(),
             views: BTreeMap::new(),
             streams: HashMap::new(),
+            desk_bounds: None,
         }
     });
     let key = WindowKey::unique();
@@ -69,6 +70,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             resize: None,
             measured_widths: Default::default(),
             inputs: HashMap::new(),
+            spotlight_focused: false,
             focus: cx.focus_handle(),
             _activation: cx.observe_window_activation(window, |_, _, _| {}),
             _observer: cx.observe(&model, |_, _, cx| cx.notify()),

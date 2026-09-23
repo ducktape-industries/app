@@ -17,29 +17,29 @@ lookup runs at and no system font declares 500 or 600
 Hangul has no italic in any open font. Pretendard and D2Coding ship upright
 only, so an italic run slants its Latin and leaves its Hangul upright.
 
-Inter 4.1 — https://github.com/rsms/inter/releases/download/v4.1/Inter-4.1.zip
-  zip sha256 9883fdd4a49d4fb66bd8177ba6625ef9a64aa45899767dde3d36aa425756b11e
-  extras/ttf/Inter-Regular.ttf     -> Inter-Regular.ttf
-    40d692fce188e4471e2b3cba937be967878f631ad3ebbbdcd587687c7ebe0c82
-  extras/ttf/Inter-Bold.ttf        -> Inter-Bold.ttf
-    288316099b1e0a47a4716d159098005eef7c0066921f34e3200393dbdb01947f
-  extras/ttf/Inter-Italic.ttf      -> Inter-Italic.ttf
-    bbc051dd204b5019a1aa0bc0ae2aa8a05ab13e7a3f979fa357631dc7feb6833a
-  extras/ttf/Inter-BoldItalic.ttf  -> Inter-BoldItalic.ttf
-    948405a16cdc62701da5f4005ed068ca5f4d27061d98f7974ccfc37831d9581d
-  LICENSE.txt -> OFL-Inter.txt
+Instrument Sans (repo @ 7fa22308a3d0c94ee2b3cd537a1196b65db34a3e) — https://github.com/Instrument/instrument-sans
+  fonts/ttf/InstrumentSans-Regular.ttf    -> InstrumentSans-Regular.ttf
+    69fd3f7c467c70c1f73b232812407f688f3d87dd7a801ea7281aa97d29cf53d5
+  fonts/ttf/InstrumentSans-Bold.ttf       -> InstrumentSans-Bold.ttf
+    735badeb8b2046cee6f5e1226412ab6c29db04accbca413af03d70e991dce10d
+  fonts/ttf/InstrumentSans-Italic.ttf     -> InstrumentSans-Italic.ttf
+    7e6ebe089d1a62b73840f74fcfa477f2f5e43c4df5db18fb790908938e5aef96
+  fonts/ttf/InstrumentSans-BoldItalic.ttf -> InstrumentSans-BoldItalic.ttf
+    c423640296fc5c59442320aa673f4214010a2989b93cc83396bed9f341f8322b
+  OFL.txt -> OFL-InstrumentSans.txt
 
-JetBrains Mono 2.304 — https://github.com/JetBrains/JetBrainsMono/releases/download/v2.304/JetBrainsMono-2.304.zip
-  zip sha256 6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf
-  fonts/ttf/JetBrainsMono-Regular.ttf    -> JetBrainsMono-Regular.ttf
-    a0bf60ef0f83c5ed4d7a75d45838548b1f6873372dfac88f71804491898d138f
-  fonts/ttf/JetBrainsMono-Bold.ttf       -> JetBrainsMono-Bold.ttf
-    5590990c82e097397517f275f430af4546e1c45cff408bde4255dad142479dcb
-  fonts/ttf/JetBrainsMono-Italic.ttf     -> JetBrainsMono-Italic.ttf
-    9d0a1f7a708e6af183f1193b7e81d40da294f5c67682c085d8401c60aac8ded4
-  fonts/ttf/JetBrainsMono-BoldItalic.ttf -> JetBrainsMono-BoldItalic.ttf
-    4039d5ce0ed225bf9c8b2c8c6436290ae2f356b7e90d70fa666227238324aa3b
-  OFL.txt -> OFL-JetBrainsMono.txt
+IBM Plex Mono 2.5.0 — https://github.com/IBM/plex/releases/download/%40ibm%2Fplex-mono%402.5.0/ibm-plex-mono.zip
+  zip sha256 6d23f01257663d8cc49a0d64c22ced630b79e0e2a0ac08a0da86e9a38bbc481c
+  ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-Regular.ttf    -> IBMPlexMono-Regular.ttf
+    7c6fbddca4b700be918f5f6183d9bd4464fa427fe435f0b480d77fe2bb8c5a43
+  ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-Bold.ttf       -> IBMPlexMono-Bold.ttf
+    74e5eedcfa4596497d34e19023cabdabd3a8c852b903007a5654a59591a72ffb
+  ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-Italic.ttf     -> IBMPlexMono-Italic.ttf
+    a55368deb953f594ac18336a1029009ed820e2d9abbb57ad601f61e22bec072b
+  ibm-plex-mono/fonts/complete/ttf/IBMPlexMono-BoldItalic.ttf -> IBMPlexMono-BoldItalic.ttf
+    c8b00068fd2fd69bbcf62059148623f09d19e9ada8bf9e8caf1aedd01347046a
+  LICENSE.txt -> OFL-IBMPlexMono.txt
+  Reserved Font Name: Plex.
 
 Pretendard 1.3.9 — https://github.com/orioncactus/pretendard/releases/download/v1.3.9/Pretendard-1.3.9.zip
   zip sha256 04be351a74d6bf7d60c480a3087e51d185485d35a52023142af1df19eb8c428a

@@ -32,6 +32,8 @@ pub(super) fn with_syntax_colors(
     palette: &design::Palette,
 ) -> std::rc::Rc<gpui_kit::component::ThemeConfig> {
     let mut theme = (**product).clone();
+    theme.font_family = Some(FAMILY_UI.into());
+    theme.mono_font_family = Some(FAMILY_MONO.into());
     let mut style = defaults.highlight.clone().unwrap_or_default();
     style.editor_background = Some(hsla_of(palette.background));
     theme.highlight = Some(style);
@@ -43,24 +45,25 @@ pub(super) fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
     gpui_kit::Rgba { r, g, b, a }.into()
 }
 
-pub(super) const RAIL_WIDTH: f32 = 200.;
-/// Below this window width the rail collapses to `RAIL_COMPACT_WIDTH`: at
-/// 200px fixed, a ~380px window left the open program's pane narrower than
-/// `layout::MIN_PANE_WIDTH`, squeezed into an unreadable column.
+/// Below this window width the menu bar folds its words to initials and
+/// drops the ones it can spare, so the program tabs keep their room.
 pub(super) const NARROW_WINDOW_WIDTH: f32 = 720.;
-/// Wide enough for a row's initial and the connection dot; narrow enough to
-/// give most of a small window back to the pane.
-pub(super) const RAIL_COMPACT_WIDTH: f32 = 52.;
+
+/// The app's two faces, the design canvas's: they stand in for the
+/// `design` crate's everywhere the app draws, a guest view's text included
+/// (`refine_fallbacks` maps the crate's names onto these).
+pub(crate) const FAMILY_UI: &str = "Instrument Sans";
+pub(crate) const FAMILY_MONO: &str = "IBM Plex Mono";
 
 pub(super) const BUNDLED_FACES: &[&[u8]] = &[
-    include_bytes!("../../assets/fonts/Inter-Regular.ttf"),
-    include_bytes!("../../assets/fonts/Inter-Italic.ttf"),
-    include_bytes!("../../assets/fonts/Inter-Bold.ttf"),
-    include_bytes!("../../assets/fonts/Inter-BoldItalic.ttf"),
-    include_bytes!("../../assets/fonts/JetBrainsMono-Regular.ttf"),
-    include_bytes!("../../assets/fonts/JetBrainsMono-Italic.ttf"),
-    include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf"),
-    include_bytes!("../../assets/fonts/JetBrainsMono-BoldItalic.ttf"),
+    include_bytes!("../../assets/fonts/InstrumentSans-Regular.ttf"),
+    include_bytes!("../../assets/fonts/InstrumentSans-Italic.ttf"),
+    include_bytes!("../../assets/fonts/InstrumentSans-Bold.ttf"),
+    include_bytes!("../../assets/fonts/InstrumentSans-BoldItalic.ttf"),
+    include_bytes!("../../assets/fonts/IBMPlexMono-Regular.ttf"),
+    include_bytes!("../../assets/fonts/IBMPlexMono-Italic.ttf"),
+    include_bytes!("../../assets/fonts/IBMPlexMono-Bold.ttf"),
+    include_bytes!("../../assets/fonts/IBMPlexMono-BoldItalic.ttf"),
     include_bytes!("../../assets/fonts/Pretendard-Regular.otf"),
     include_bytes!("../../assets/fonts/Pretendard-Bold.otf"),
     include_bytes!("../../assets/fonts/D2Coding-Regular.ttf"),
@@ -101,16 +104,29 @@ pub(super) fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
     )
 }
 
+/// The face the app draws for `family`: a guest names the design crate's
+/// faces, and the app's own stand in for them.
+pub(crate) fn app_family(family: &gpui_kit::SharedString) -> gpui_kit::SharedString {
+    match family.as_ref() {
+        design::fonts::FAMILY_UI => FAMILY_UI.into(),
+        design::fonts::FAMILY_MONO => FAMILY_MONO.into(),
+        _ => family.clone(),
+    }
+}
+
 /// Pairs the family a guest asked for with the fallback chain that carries its
 /// Hangul: code faces fall back to the monospace Hangul face, everything else
 /// to the proportional one. Wire styles arrive by assignment, so this runs at
 /// the assignment sites rather than through the Styled builder.
 pub(crate) fn refine_fallbacks(style: &mut gpui_kit::StyleRefinement) {
+    if let Some(family) = &mut style.text.font_family {
+        *family = app_family(family);
+    }
     let is_code_face = style
         .text
         .font_family
         .as_deref()
-        .is_some_and(|family| family == design::fonts::FAMILY_MONO);
+        .is_some_and(|family| family == FAMILY_MONO);
     style.text.font_fallbacks = Some(if is_code_face {
         mono_fallback_chain()
     } else {

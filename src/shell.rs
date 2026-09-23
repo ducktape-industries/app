@@ -1,5 +1,5 @@
 //! The native chrome, and nothing a network decides: a window, a screen to
-//! reach a node and unlock a key, a rail of whatever programs that node
+//! reach a node and unlock a key, a menu bar of whatever programs that node
 //! runs, and one seat that draws the open program's view.
 
 use crate::a11y::Control as _;
@@ -25,7 +25,10 @@ use crate::{AppMessage as Message, Ducktape, Screen};
 mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
+mod desk;
+mod figure;
 mod launch;
+mod launcher;
 mod layout;
 mod panes;
 #[cfg(test)]
@@ -38,17 +41,15 @@ mod screens_tests;
 mod windows;
 
 pub(crate) use launch::run;
+mod settings;
 mod sign_in;
 mod switcher;
 mod theme;
 
 #[cfg(not(target_os = "macos"))]
 use theme::EMOJI_FACE;
-use theme::{
-    BUNDLED_FACES, NARROW_WINDOW_WIDTH, RAIL_COMPACT_WIDTH, RAIL_WIDTH, configure_native_theme,
-    hsla_of,
-};
-pub(crate) use theme::{fallback_chain, refine_fallbacks};
+use theme::{BUNDLED_FACES, NARROW_WINDOW_WIDTH, configure_native_theme, hsla_of};
+pub(crate) use theme::{app_family, fallback_chain, refine_fallbacks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WindowKey(u64);
@@ -63,7 +64,11 @@ impl WindowKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowKind {
     Console,
-    View { module: &'static str },
+    View {
+        module: &'static str,
+    },
+    /// The app's settings, floating over the desk.
+    Settings,
 }
 
 #[derive(Clone, Debug)]
@@ -183,17 +188,30 @@ struct Desktop {
     windows: BTreeMap<WindowKey, gpui_kit::AnyWindowHandle>,
     views: BTreeMap<WindowKey, gpui_kit::WeakEntity<DesktopWindow>>,
     streams: HashMap<u64, gpui_kit::Task<()>>,
+    /// Where the desk window was when it last gave way to the launcher:
+    /// it comes back there.
+    desk_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
 }
 
 impl Desktop {
-    fn ax_windows(&self, _cx: &gpui_kit::App) -> Vec<(String, gpui_kit::AnyWindowHandle)> {
+    fn ax_windows(&self, cx: &gpui_kit::App) -> Vec<(String, gpui_kit::AnyWindowHandle)> {
+        let settings = |key: &WindowKey| {
+            self.views
+                .get(key)
+                .and_then(|view| view.upgrade())
+                .is_some_and(|view| view.read(cx).kind == WindowKind::Settings)
+        };
+        let mut nth = 0;
         self.windows
             .iter()
-            .enumerate()
-            .map(|(nth, (_, handle))| {
+            .map(|(key, handle)| {
+                if settings(key) {
+                    return ("settings".to_owned(), *handle);
+                }
+                nth += 1;
                 let name = match nth {
-                    0 => "console".to_owned(),
-                    nth => format!("console{}", nth + 1),
+                    1 => "console".to_owned(),
+                    nth => format!("console{nth}"),
                 };
                 (name, *handle)
             })
@@ -205,7 +223,11 @@ impl Desktop {
         let _runtime = runtime.enter();
         let appearance = self.state.appearance;
         let active = self.state.active;
+        let launcher = self.state.in_launcher();
         let task = self.state.update(message);
+        if launcher != self.state.in_launcher() {
+            self.swap_console(cx);
+        }
         if appearance != self.state.appearance {
             self.sync_appearance(cx);
         }
@@ -236,6 +258,30 @@ impl Desktop {
         self.start(task, cx).detach();
         self.subscriptions(cx);
         cx.notify();
+    }
+
+    /// The launcher and the desk are two windows, the way a game client
+    /// signs in before its main window opens: crossing from one to the
+    /// other opens the next (centred, or where the desk last was) and
+    /// closes the last.
+    fn swap_console(&mut self, cx: &mut Context<Self>) {
+        let Some(old) = self.state.console_win else {
+            return;
+        };
+        if self.state.in_launcher()
+            && let Some(handle) = self.windows.get(&old)
+        {
+            self.desk_bounds = handle.update(cx, |_, window, _| window.bounds()).ok();
+        }
+        let key = WindowKey::unique();
+        self.state.console_win = Some(key);
+        let at = match self.state.in_launcher() {
+            true => None,
+            false => self.desk_bounds,
+        };
+        let (reply, _) = oneshot::channel();
+        self.open_window(key, WindowKind::Console, reply, None, at, cx);
+        self.close_window(old, cx);
     }
 
     fn sync_appearance(&mut self, cx: &mut Context<Self>) {
@@ -355,6 +401,9 @@ pub(crate) struct DesktopWindow {
     resize: Option<(usize, f32, f32, f32)>,
     measured_widths: std::rc::Rc<std::cell::RefCell<Vec<f32>>>,
     inputs: HashMap<&'static str, NativeInput>,
+    /// ⌘K's field took focus when it opened; it is not taken again while
+    /// Spotlight stays open.
+    spotlight_focused: bool,
     focus: gpui_kit::FocusHandle,
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
@@ -420,9 +469,30 @@ impl DesktopWindow {
             cx.stop_propagation();
             return;
         }
+        if command && key.key == "k" && self.kind == WindowKind::Console && self.on_desk(cx) {
+            let message = match self.model.read(cx).state.spotlight {
+                true => Message::CloseSpotlight,
+                false => Message::OpenSpotlight,
+            };
+            self.model
+                .update(cx, |model, cx| model.dispatch(message, cx));
+            cx.stop_propagation();
+            return;
+        }
+        if key.key == "escape" && self.model.read(cx).state.popover.is_some() {
+            self.model
+                .update(cx, |model, cx| model.dispatch(Message::ClosePopover, cx));
+            cx.stop_propagation();
+            return;
+        }
         if !in_guest_editor && self.deliver_chord(&key, cx) {
             cx.stop_propagation();
         }
+    }
+
+    /// On the desk: connected, and past the key and account steps.
+    fn on_desk(&self, cx: &gpui_kit::App) -> bool {
+        !self.model.read(cx).state.in_launcher()
     }
 
     /// ⌘W closes a window, never the app. A pop-out closes as its pane's ×
@@ -504,27 +574,32 @@ impl Render for DesktopWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::InteractiveElement as _;
         use gpui_kit::component::ActiveTheme as _;
-        let content = match self.model.read(cx).state.screen {
-            Screen::Connect => self.connect(window, cx),
-            Screen::Console => {
+        let content = match self.kind {
+            WindowKind::Settings => self.settings(window, cx),
+            WindowKind::View { .. } => self.console(window, cx),
+            WindowKind::Console => {
                 let state = self.model.read(cx).state.clone_facts();
-                match (
-                    !state.phrase.is_empty(),
-                    state.signer_key.is_empty() && !state.browsing,
-                    state.restoring,
-                ) {
-                    (true, _, _) => self.phrase(&state, window, cx),
-                    (_, true, true) => self.restore(&state, window, cx),
-                    (_, true, false) => self.unlock(&state, window, cx),
-                    _ if state.account_step && !state.signer_key.is_empty() => {
-                        self.account_step(&state, window, cx)
-                    }
-                    _ => self.console(window, cx),
+                match self.model.read(cx).state.screen {
+                    Screen::Connect => self.connect(window, cx),
+                    Screen::Console => match (
+                        !state.phrase.is_empty(),
+                        state.signer_key.is_empty() && !state.browsing,
+                        state.restoring,
+                    ) {
+                        (true, _, _) => self.phrase(&state, window, cx),
+                        (_, true, true) => self.restore(&state, window, cx),
+                        (_, true, false) => self.unlock(&state, window, cx),
+                        _ if state.account_step && !state.signer_key.is_empty() => {
+                            self.account_step(&state, window, cx)
+                        }
+                        _ => self.console(window, cx),
+                    },
                 }
             }
         };
         let mut root = gpui_kit::div();
         root.text_style().font_fallbacks = Some(fallback_chain());
+        root.text_style().font_family = Some(theme::FAMILY_UI.into());
         root.id("desktop-root")
             .size_full()
             .bg(cx.theme().background)
