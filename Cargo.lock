@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=167128fd#167128fd83762e5c21e765238bf27b0c974577da"
+source = "git+https://github.com/ducktape-industries/modules?rev=0b3181c8#0b3181c88787e18276d44304447d54751f7c5bc9"
 dependencies = [
  "borsh",
 ]
@@ -2338,7 +2338,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=167128fd#167128fd83762e5c21e765238bf27b0c974577da"
+source = "git+https://github.com/ducktape-industries/modules?rev=0b3181c8#0b3181c88787e18276d44304447d54751f7c5bc9"
 
 [[package]]
 name = "digest"
@@ -2489,7 +2489,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=167128fd#167128fd83762e5c21e765238bf27b0c974577da"
+source = "git+https://github.com/ducktape-industries/modules?rev=0b3181c8#0b3181c88787e18276d44304447d54751f7c5bc9"
 dependencies = [
  "abi",
 ]
@@ -4621,11 +4621,12 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=167128fd#167128fd83762e5c21e765238bf27b0c974577da"
+source = "git+https://github.com/ducktape-industries/modules?rev=0b3181c8#0b3181c88787e18276d44304447d54751f7c5bc9"
 dependencies = [
  "abi",
  "borsh",
  "module-registry",
+ "store",
 ]
 
 [[package]]
@@ -5574,10 +5575,11 @@ dependencies = [
 [[package]]
 name = "module-registry"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=167128fd#167128fd83762e5c21e765238bf27b0c974577da"
+source = "git+https://github.com/ducktape-industries/modules?rev=0b3181c8#0b3181c88787e18276d44304447d54751f7c5bc9"
 dependencies = [
  "abi",
  "borsh",
+ "store",
 ]
 
 [[package]]
@@ -8658,6 +8660,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 
 [[package]]
+name = "store"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/modules?rev=0b3181c8#0b3181c88787e18276d44304447d54751f7c5bc9"
+dependencies = [
+ "abi",
+ "borsh",
+ "serde",
+ "sha1",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "str_indices"
 version = "0.4.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9824,8 +9838,9 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=167128fd#167128fd83762e5c21e765238bf27b0c974577da"
+source = "git+https://github.com/ducktape-industries/modules?rev=0b3181c8#0b3181c88787e18276d44304447d54751f7c5bc9"
 dependencies = [
+ "abi",
  "accesskit",
  "borsh",
  "design",
