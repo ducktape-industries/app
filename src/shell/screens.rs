@@ -240,7 +240,7 @@ impl DesktopWindow {
         let input = Input::new(state)
             .id(key)
             .appearance(false)
-            .text_size(gpui_kit::px(size))
+            .text_size(gpui_kit::px(super::ink::fit(size)))
             .line_height(gpui_kit::relative(1.4))
             .py_0()
             .px_0();
@@ -290,7 +290,7 @@ impl DesktopWindow {
                 .id(id)
                 .w(px(560.))
                 .max_w_full()
-                .min_h(px(56.))
+                .min_h(px(super::ink::tall(56.)))
                 .flex()
                 .items_center()
                 .gap(px(14.))

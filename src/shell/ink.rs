@@ -61,12 +61,28 @@ impl Ink {
     }
 }
 
+/// The canvas is a board to present: its type reads large in a desktop
+/// window. Every size in these ports is the canvas's own, put through this:
+/// up to 13px it stands, above it the step is roughly halved (32 → 23,
+/// 16 → 14.7, 15 → 14.1). The one knob for the whole shell's scale.
+pub(super) fn fit(size: f32) -> f32 {
+    match size <= 13. {
+        true => size,
+        false => 13. + (size - 13.) * 0.55,
+    }
+}
+
+/// A control's height, shrunk with its type (44 → 36, 34 → 28, 56 → 46).
+pub(super) fn tall(height: f32) -> f32 {
+    (height * 0.82).round()
+}
+
 /// `font: <weight> <size>px 'Instrument Sans'`.
 pub(super) fn sans(weight: u16, size: f32) -> Div {
     div()
         .font_family(super::theme::FAMILY_UI)
         .font_weight(FontWeight(weight as f32))
-        .text_size(px(size))
+        .text_size(px(fit(size)))
 }
 
 /// `font: <weight> <size>px 'IBM Plex Mono'`.
@@ -74,13 +90,13 @@ pub(super) fn mono(weight: u16, size: f32) -> Div {
     div()
         .font_family(super::theme::FAMILY_MONO)
         .font_weight(FontWeight(weight as f32))
-        .text_size(px(size))
+        .text_size(px(fit(size)))
 }
 
 /// `<h1>`: `400 32px/1.18`.
 pub(super) fn h1(text: impl Into<SharedString>, ink: &Ink) -> Div {
     sans(400, 32.)
-        .line_height(px(32. * 1.18))
+        .line_height(px(fit(32.) * 1.18))
         .text_color(ink.ink)
         .child(text.into())
 }
@@ -88,7 +104,7 @@ pub(super) fn h1(text: impl Into<SharedString>, ink: &Ink) -> Div {
 /// The lead under a headline: `400 16px/1.65`, in ink.
 pub(super) fn lead(text: impl Into<SharedString>, ink: &Ink) -> Div {
     sans(400, 16.)
-        .line_height(px(16. * 1.65))
+        .line_height(px(fit(16.) * 1.65))
         .text_color(ink.ink)
         .child(text.into())
 }
@@ -145,7 +161,7 @@ impl DesktopWindow {
         let button = sans(500, size)
             .id(id)
             .control(Role::Button, text.clone())
-            .h(px(height))
+            .h(px(tall(height)))
             .px(px(pad))
             .flex()
             .flex_shrink_0()
@@ -217,7 +233,7 @@ impl DesktopWindow {
 /// error's danger, a match's green).
 pub(super) fn field_box(field: AnyElement, border: Hsla, height: f32, ink: &Ink) -> Div {
     sans(400, 15.)
-        .h(px(height))
+        .h(px(tall(height)))
         .px(px(12.))
         .flex()
         .items_center()
