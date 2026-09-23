@@ -49,7 +49,7 @@ mod theme;
 #[cfg(not(target_os = "macos"))]
 use theme::EMOJI_FACE;
 use theme::{BUNDLED_FACES, NARROW_WINDOW_WIDTH, configure_native_theme, hsla_of};
-pub(crate) use theme::{fallback_chain, refine_fallbacks};
+pub(crate) use theme::{app_family, fallback_chain, refine_fallbacks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WindowKey(u64);
@@ -599,6 +599,7 @@ impl Render for DesktopWindow {
         };
         let mut root = gpui_kit::div();
         root.text_style().font_fallbacks = Some(fallback_chain());
+        root.text_style().font_family = Some(theme::FAMILY_UI.into());
         root.id("desktop-root")
             .size_full()
             .bg(cx.theme().background)

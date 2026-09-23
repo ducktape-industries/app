@@ -6,7 +6,7 @@ use std::borrow::Cow;
 
 fn text_system() -> CosmicTextSystem {
     // No installed fonts: the application must be sufficient on a fresh Linux host.
-    let system = CosmicTextSystem::new_without_system_fonts(design::fonts::FAMILY_UI);
+    let system = CosmicTextSystem::new_without_system_fonts(super::FAMILY_UI);
     system
         .add_fonts(
             BUNDLED_FACES
@@ -22,10 +22,10 @@ fn text_system() -> CosmicTextSystem {
 
 #[test]
 fn emoji_runs_resolve_to_bundled_color_face() {
-    for family in [design::fonts::FAMILY_UI, design::fonts::FAMILY_MONO] {
+    for family in [super::FAMILY_UI, super::FAMILY_MONO] {
         let system = text_system();
         let mut descriptor = font(family);
-        descriptor.fallbacks = Some(if family == design::fonts::FAMILY_MONO {
+        descriptor.fallbacks = Some(if family == super::FAMILY_MONO {
             mono_fallback_chain()
         } else {
             fallback_chain()
@@ -68,8 +68,8 @@ fn emoji_runs_resolve_to_bundled_color_face() {
 fn every_bundled_static_face_is_selected_and_shapes() {
     let system = text_system();
     for (family, sample, italic) in [
-        (design::fonts::FAMILY_UI, "Am", true),
-        (design::fonts::FAMILY_MONO, "Am", true),
+        (super::FAMILY_UI, "Am", true),
+        (super::FAMILY_MONO, "Am", true),
         (design::fonts::FAMILY_UI_HANGUL, "한글", false),
         (design::fonts::FAMILY_MONO_HANGUL, "한글", false),
     ] {

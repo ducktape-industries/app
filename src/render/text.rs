@@ -234,11 +234,21 @@ impl ViewTree {
                     .cloned()
                     .map(|(range, style)| (range, style.into())),
             ),
-            wire::RichTextRuns::Runs(runs) => {
-                styled.with_runs(runs.iter().cloned().map(Into::into).collect())
-            }
+            wire::RichTextRuns::Runs(runs) => styled.with_runs(
+                runs.iter()
+                    .cloned()
+                    .map(|mut run| {
+                        run.font_family = crate::shell::app_family(&run.font_family);
+                        run.into()
+                    })
+                    .collect(),
+            ),
         };
-        styled = styled.with_font_family_overrides(font_family_overrides.iter().cloned());
+        styled = styled.with_font_family_overrides(
+            font_family_overrides
+                .iter()
+                .map(|(range, family)| (range.clone(), crate::shell::app_family(family))),
+        );
         let layout = styled.layout().clone();
         let rich_id: ElementId = "rich-text".into();
         let mut interactive = InteractiveText::new(rich_id, styled);

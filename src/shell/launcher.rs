@@ -214,7 +214,7 @@ pub(super) fn mono(
 ) -> gpui_kit::Div {
     use gpui_kit::*;
     div()
-        .font_family(design::fonts::FAMILY_MONO)
+        .font_family(super::theme::FAMILY_MONO)
         .text_size(px(12.))
         .text_color(color)
         .child(text.into())
@@ -234,7 +234,7 @@ pub(super) fn drawing(
             .flex()
             .flex_col()
             .w(px(figure::COLS as f32 * figure::ADVANCE))
-            .font_family(design::fonts::FAMILY_MONO)
+            .font_family(super::theme::FAMILY_MONO)
             // "===" is one glyph in the mono face; a drawing wants three
             .font_features(FontFeatures::disable_ligatures())
             .text_size(px(figure::SIZE))
