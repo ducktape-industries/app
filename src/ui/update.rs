@@ -144,8 +144,16 @@ impl Ducktape {
                 }
                 Task::none()
             }
+            // The console opens at once after a sign-in, and the account
+            // step follows when the node says the key holds no account: a
+            // slow node never holds the console back, and a key that has an
+            // account (the usual Unlock) never sees a "checking…" screen.
+            // After a new key the answer landed during the phrase check, so
+            // the step follows the check with no console in between.
             Message::AccountResolved { key, account } => {
                 if key == self.signer_key {
+                    self.account_step |=
+                        offers_account_step(std::mem::take(&mut self.account_offer), &account);
                     self.account = Some(account);
                 }
                 Task::none()
@@ -157,6 +165,8 @@ impl Ducktape {
                 self.connecting = false;
                 self.status_misses = 0;
                 self.account = None;
+                self.account_offer = false;
+                self.account_step = false;
                 self.connected_rpc.clear();
                 self.network.clear();
                 self.active = None;
@@ -320,6 +330,7 @@ impl Ducktape {
                 self.phrase = phrase;
                 self.key_exists = true;
                 self.replacing = false;
+                self.account_offer = true;
                 self.forget_secrets();
                 self.push_props();
                 self.resolve_account()
@@ -451,6 +462,7 @@ impl Ducktape {
                 self.signer_key = pubkey;
                 self.key_exists = true;
                 self.restoring = false;
+                self.account_offer = true;
                 self.forget_secrets();
                 self.push_props();
                 self.resolve_account()
@@ -463,6 +475,7 @@ impl Ducktape {
             Message::Unlocked(pubkey) => {
                 self.unlock_busy = false;
                 self.signer_key = pubkey;
+                self.account_offer = true;
                 self.forget_secrets();
                 self.push_props();
                 self.resolve_account()
@@ -498,9 +511,52 @@ impl Ducktape {
                 self.signer_key = pubkey;
                 self.key_exists = true;
                 self.account_name.clear();
+                // the passkey made (or joined) the account already
+                self.account_offer = false;
                 self.forget_secrets();
                 self.push_props();
                 self.resolve_account()
+            }
+            Message::ShowCreateAccount => {
+                self.account_step = true;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::CreateAccountLater => {
+                self.account_step = false;
+                self.unlock_error.clear();
+                Task::none()
+            }
+            Message::CreateAccountSubmit => {
+                if self.unlock_busy {
+                    return Task::none();
+                }
+                let name = self.account_name.trim().to_owned();
+                if name.is_empty() {
+                    self.unlock_error = "Type the name others will see first.".into();
+                    return Task::none();
+                }
+                let client = backend::RpcClient::new(self.connected_rpc.clone());
+                let network = self.network.clone();
+                self.unlock_busy = true;
+                self.unlock_error.clear();
+                Task::future(async move {
+                    Message::AccountCreated(
+                        backend::passkey::create_plain_account(&client, &network, &name).await,
+                    )
+                })
+            }
+            Message::AccountCreated(created) => {
+                self.unlock_busy = false;
+                match created {
+                    Ok(account) => {
+                        self.account = Some(Some(account));
+                        self.account_step = false;
+                        self.account_name.clear();
+                    }
+                    Err(error) => self.unlock_error = account_error(&self.network, error),
+                }
+                Task::none()
             }
             Message::UnlockFailed(error) => {
                 self.passkey_task = None;
@@ -512,6 +568,8 @@ impl Ducktape {
             Message::Lock => {
                 self.signer_key.clear();
                 self.account = None;
+                self.account_offer = false;
+                self.account_step = false;
                 self.browsing = false;
                 self.push_props();
                 Task::future(async {
@@ -756,6 +814,23 @@ impl Ducktape {
     }
 }
 
+/// Whether an answer about the seated key opens the account step: only the
+/// first one after a sign-in that armed the offer, and only when the key
+/// holds no account on this network.
+fn offers_account_step(armed: bool, account: &Option<(u64, String)>) -> bool {
+    armed && account.is_none()
+}
+
+/// A failed `Create` in plain words: a node that could not be reached
+/// reads as that, not as a transport string; a refusal names the network
+/// and says why.
+fn account_error(network: &str, error: String) -> String {
+    if error.contains("error sending request") {
+        return format!("Can't reach {network}'s node right now. Try again in a moment.");
+    }
+    format!("{network} didn't create the account: {error}")
+}
+
 fn weak_password(password: &str, confirm: &str) -> Option<String> {
     if keystore::userkey::check_password_len(password).is_err() {
         return Some(format!(
@@ -918,6 +993,73 @@ mod tests {
         state.password = "hunter22".into();
         let _ = state.update(Message::Disconnect);
         assert!(state.signer_key.is_empty() && state.password.is_empty());
+    }
+
+    fn resolved(state: &mut Ducktape, account: Option<(u64, String)>) {
+        let key = state.signer_key.clone();
+        let _ = state.update(Message::AccountResolved { key, account });
+    }
+
+    #[test]
+    fn a_sign_in_without_an_account_opens_the_account_step_once() {
+        for signed_in in [
+            Message::Unlocked("ab".into()),
+            Message::Restored("ab".into()),
+            Message::WalletCreated {
+                pubkey: "ab".into(),
+                phrase: "w1 w2 w3".into(),
+            },
+        ] {
+            let mut state = signing_in();
+            let _ = state.update(signed_in);
+            assert!(!state.account_step, "shown before the node answered");
+            resolved(&mut state, None);
+            assert!(state.account_step);
+            let _ = state.update(Message::CreateAccountLater);
+            resolved(&mut state, None);
+            assert!(!state.account_step, "a later block reopened it");
+        }
+    }
+
+    #[test]
+    fn the_account_step_is_skipped_for_a_key_with_an_account_or_a_passkey() {
+        let mut state = signing_in();
+        let _ = state.update(Message::Unlocked("ab".into()));
+        resolved(&mut state, Some((7, "ada".into())));
+        assert!(!state.account_step);
+        let mut state = signing_in();
+        let _ = state.update(Message::PasskeyDone("ab".into()));
+        resolved(&mut state, None);
+        assert!(!state.account_step, "the passkey made the account");
+        // another key's answer neither opens nor disarms it
+        let mut state = signing_in();
+        let _ = state.update(Message::Unlocked("ab".into()));
+        let _ = state.update(Message::AccountResolved {
+            key: "cd".into(),
+            account: None,
+        });
+        resolved(&mut state, None);
+        assert!(state.account_step);
+    }
+
+    #[test]
+    fn the_rail_reopens_the_step_and_a_created_account_closes_it() {
+        let mut state = signing_in();
+        state.signer_key = "ab".into();
+        let _ = state.update(Message::ShowCreateAccount);
+        assert!(state.account_step);
+        let _ = state.update(Message::CreateAccountSubmit);
+        assert!(!state.unlock_busy, "an empty name is not sent");
+        assert!(!state.unlock_error.is_empty());
+        let _ = state.update(Message::AccountCreated(Err("refused".into())));
+        assert!(state.account_step && state.unlock_error.contains("refused"));
+        let _ = state.update(Message::AccountCreated(Err(
+            "error sending request for url (http://127.0.0.1:1/)".into(),
+        )));
+        assert!(!state.unlock_error.contains("url"), "a transport string");
+        let _ = state.update(Message::AccountCreated(Ok((9, "ada".into()))));
+        assert!(!state.account_step);
+        assert_eq!(state.account, Some(Some((9, "ada".into()))));
     }
 
     #[test]

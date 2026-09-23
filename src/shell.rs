@@ -515,6 +515,9 @@ impl Render for DesktopWindow {
                     (true, _, _) => self.phrase(&state, window, cx),
                     (_, true, true) => self.restore(&state, window, cx),
                     (_, true, false) => self.unlock(&state, window, cx),
+                    _ if state.account_step && !state.signer_key.is_empty() => {
+                        self.account_step(&state, window, cx)
+                    }
                     _ => self.console(window, cx),
                 }
             }
