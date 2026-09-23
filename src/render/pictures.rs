@@ -9,7 +9,7 @@ pub(super) struct ViewerState {
     pub(super) drag: Option<Point<Pixels>>,
 }
 
-pub(super) fn qr(code: &wire::Qr) -> AnyElement {
+pub(crate) fn qr(code: &wire::Qr) -> AnyElement {
     let Some(payload) = &code.payload else {
         return div().into_any_element();
     };

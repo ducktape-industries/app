@@ -65,7 +65,8 @@ use inputs::{EditorMount, Field, RangeControl};
 use pickers::Picker;
 #[cfg(test)]
 use picture_resources::decode_image;
-use pictures::{ViewerState, qr};
+use pictures::ViewerState;
+pub(crate) use pictures::qr;
 use scroll::{ScrollRequest, VirtualScroll};
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};

@@ -20,6 +20,8 @@ pub(crate) struct Facts {
     pub(crate) browsing: bool,
     pub(crate) restoring: bool,
     pub(crate) passkey_waiting: bool,
+    /// The QR URL, once the person picked the phone.
+    pub(crate) passkey_qr: Option<String>,
     pub(crate) phrase: String,
     pub(crate) active: Option<&'static str>,
     pub(crate) badges: BTreeMap<&'static str, i64>,
@@ -44,6 +46,12 @@ impl Ducktape {
             browsing: self.browsing,
             restoring: self.restoring,
             passkey_waiting: self.passkey_task.is_some(),
+            passkey_qr: (self.passkey_task.is_some()
+                && self
+                    .passkey_phone
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                && !self.passkey_qr.is_empty())
+            .then(|| self.passkey_qr.clone()),
             phrase: self.phrase.clone(),
             active: self.active,
             badges: self.badges.clone(),
