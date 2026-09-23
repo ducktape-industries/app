@@ -22,6 +22,7 @@ pub(crate) struct Facts {
     pub(crate) browsing: bool,
     pub(crate) restoring: bool,
     pub(crate) passkey_waiting: bool,
+    pub(crate) account_step: bool,
     /// The QR URL, once the person picked the phone.
     pub(crate) passkey_qr: Option<String>,
     pub(crate) replacing: bool,
@@ -51,6 +52,7 @@ impl Ducktape {
             browsing: self.browsing,
             restoring: self.restoring,
             passkey_waiting: self.passkey_task.is_some(),
+            account_step: self.account_step,
             passkey_qr: (self.passkey_task.is_some()
                 && self
                     .passkey_phone
@@ -103,8 +105,9 @@ pub(super) fn initials(name: &str) -> String {
     }
 }
 
-/// The program whose view holds the account's settings — "Create
-/// account" for a key with none — which the rail's account row opens.
+/// The program whose view holds the account's settings, which the rail's
+/// account row opens once the key has an account (with none, the row opens
+/// the shell's own account step instead).
 const SETTINGS: &str = "module-registry";
 
 impl DesktopWindow {
@@ -619,7 +622,8 @@ impl DesktopWindow {
             faint
         };
         // Who is signed in, and the two ways out of the console. The row
-        // opens the account's settings — it never signs anyone out (the
+        // opens the account's settings, or the account step while the key
+        // holds none — it never signs anyone out (the
         // old app's "Account" row did, d049a14a); Lock and Switch node sit
         // beside it as quieter icon buttons.
         let foot = match unlocked {
@@ -666,12 +670,17 @@ impl DesktopWindow {
                     })
                     .child(letters);
                 let model = self.model.clone();
+                let no_account = matches!(state.account, Some(None));
+                let opens = match no_account {
+                    true => "create one",
+                    false => "open Settings",
+                };
                 let account = crate::a11y::keyboard(
                     div()
                         .id("rail-account")
                         .control(
                             Role::Button,
-                            SharedString::from(format!("Account: {who} — open Settings")),
+                            SharedString::from(format!("Account: {who} — {opens}")),
                         )
                         .flex()
                         .items_center()
@@ -685,10 +694,11 @@ impl DesktopWindow {
                         .hover(move |style| style.bg(ink_raised))
                         .on_click(move |_, _, cx| {
                             cx.stop_propagation();
-                            let settings = crate::runtime::intern(SETTINGS);
-                            model.update(cx, |model, cx| {
-                                model.dispatch(Message::SelectView(settings), cx)
-                            });
+                            let message = match no_account {
+                                true => Message::ShowCreateAccount,
+                                false => Message::SelectView(crate::runtime::intern(SETTINGS)),
+                            };
+                            model.update(cx, |model, cx| model.dispatch(message, cx));
                         })
                         .child(avatar)
                         .when(!narrow, |row| {

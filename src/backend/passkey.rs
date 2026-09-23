@@ -77,14 +77,7 @@ pub(crate) async fn create_account(
     .await?
     {
         Reply::Number(Some(number)) => number,
-        _ => {
-            let create = Op::Create {
-                name: name.to_owned(),
-                scheme: abi::Scheme::Ed25519,
-            };
-            let output = submit_seated(client, network, &create).await?;
-            abi::decode::<u64>(&output).map_err(|refusal| refusal.sentence)?
-        }
+        _ => create_seated(client, network, name).await?,
     };
     let passkey = created(
         Request::Create {
@@ -127,6 +120,32 @@ pub(crate) async fn create_account(
     let frame = passkey_frame(body, &assertion)
         .ok_or("That was a different passkey than the one just made. Choose the new one.")?;
     submit(client, frame.encode()).await.map(drop)
+}
+
+/// A self-serve account on `network` whose one key is this device's
+/// (seated) key: identity's `Create`, no passkey. Its number and name, as
+/// the rail shows them. A key that already holds an account (a retry after
+/// a lost answer) is not an error here: that account is the answer.
+pub(crate) async fn create_plain_account(
+    client: &RpcClient,
+    network: &str,
+    name: &str,
+) -> Result<(u64, String), String> {
+    let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
+    if let Some(account) = account_of_key(client, network, device).await? {
+        return Ok(account);
+    }
+    let number = create_seated(client, network, name).await?;
+    Ok((number, name.trim().to_owned()))
+}
+
+async fn create_seated(client: &RpcClient, network: &str, name: &str) -> Result<u64, String> {
+    let create = Op::Create {
+        name: name.to_owned(),
+        scheme: abi::Scheme::Ed25519,
+    };
+    let output = submit_seated(client, network, &create).await?;
+    abi::decode::<u64>(&output).map_err(|refusal| refusal.sentence)
 }
 
 /// This device's (seated) key joins the account a passkey holds.

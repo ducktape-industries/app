@@ -397,6 +397,100 @@ impl DesktopWindow {
             .into_any_element()
     }
 
+    /// The account step: the seated key holds no account on this network,
+    /// so name one here (identity's self-serve `Create`, signed by the
+    /// key) rather than in a module's settings. "Not now" goes to the
+    /// console; reading and signing work there without an account, and the
+    /// rail's "Create one" comes back here.
+    pub(super) fn account_step(
+        &mut self,
+        state: &Facts,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::component::Sizable as _;
+        use gpui_kit::component::button::ButtonVariants as _;
+        use gpui_kit::*;
+        let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let name = self.input(
+            "create-account-name",
+            "Name",
+            false,
+            |state| &state.account_name,
+            Message::AccountNameTyped,
+            || Message::CreateAccountSubmit,
+            Some("Account name".into()),
+            false,
+            window,
+            cx,
+        );
+        let label = match state.unlock_busy {
+            true => "Creating…",
+            false => "Create account",
+        };
+        div()
+            .id("account-step")
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div()
+                    .w(px(460.))
+                    .flex()
+                    .flex_col()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_size(px(20.))
+                            .font_weight(FontWeight::MEDIUM)
+                            .child(format!("Create your account on {}", state.network)),
+                    )
+                    .child(
+                        div()
+                            .text_size(px(12.5))
+                            .text_color(colors.muted_foreground)
+                            .child("An account is how others here know you. Its name is what they see, and this device's key signs for it."),
+                    )
+                    .child(name)
+                    .child(
+                        self.action(
+                            "create-account",
+                            label,
+                            || Message::CreateAccountSubmit,
+                            state.unlock_busy,
+                        )
+                        .primary()
+                        .w_full(),
+                    )
+                    .when(!state.unlock_error.is_empty(), |card| {
+                        card.child(
+                            div()
+                                .id("create-account-error")
+                                .role(Role::Alert)
+                                .aria_label(state.unlock_error.clone())
+                                .text_size(px(12.5))
+                                .text_color(hsla_of(design::palette(state.dark).danger))
+                                .child(state.unlock_error.clone()),
+                        )
+                    })
+                    .child(
+                        div().flex().child(
+                            self.action(
+                                "create-account-later",
+                                "Not now",
+                                || Message::CreateAccountLater,
+                                state.unlock_busy,
+                            )
+                            .ghost()
+                            .small(),
+                        ),
+                    ),
+            )
+            .children(self.toast(cx))
+            .into_any_element()
+    }
+
     /// Rebuilding this device's key from its 24 words, under a fresh
     /// password for this copy.
     pub(super) fn restore(
