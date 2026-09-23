@@ -101,7 +101,8 @@ pub struct Ducktape {
     pub(crate) spotlight: bool,
     pub(crate) spotlight_query: String,
     pub(crate) spotlight_pick: usize,
-    pub(crate) settings_win: Option<WindowKey>,
+    /// Settings are open over the desk.
+    pub(crate) settings: bool,
     pub(crate) settings_page: SettingsPage,
     /// The drawings in characters turn; off keeps them on their first frame.
     pub(crate) motion: bool,
@@ -221,7 +222,7 @@ pub(crate) enum AppMessage {
     SpotlightSubmit,
     Spot(Spot),
     OpenSettings,
-    SettingsOpened(WindowKey),
+    CloseSettings,
     ShowSettingsPage(SettingsPage),
     SetMotion(bool),
     /// Another node from the switcher: reached first, and only once it
@@ -332,7 +333,7 @@ impl Ducktape {
             spotlight: false,
             spotlight_query: String::new(),
             spotlight_pick: 0,
-            settings_win: None,
+            settings: false,
             settings_page: SettingsPage::Appearance,
             motion: backend::load_motion(),
             error: String::new(),

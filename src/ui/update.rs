@@ -269,17 +269,12 @@ impl Ducktape {
             Message::OpenSettings => {
                 self.popover = None;
                 self.spotlight = false;
-                match self.settings_win {
-                    Some(key) => crate::shell::raise(key),
-                    None => {
-                        let (key, opened) = crate::shell::open(crate::shell::WindowKind::Settings);
-                        self.settings_win = Some(key);
-                        opened.map(Message::SettingsOpened)
-                    }
-                }
+                self.network_menu = false;
+                self.settings = true;
+                Task::none()
             }
-            Message::SettingsOpened(key) => {
-                self.settings_win = Some(key);
+            Message::CloseSettings => {
+                self.settings = false;
                 Task::none()
             }
             Message::ShowSettingsPage(page) => {
@@ -797,9 +792,6 @@ impl Ducktape {
             Message::WindowWasClosed(key) => {
                 if self.console_win == Some(key) {
                     self.console_win = None;
-                }
-                if self.settings_win == Some(key) {
-                    self.settings_win = None;
                 }
                 if self.focused_win == Some(key) {
                     self.focused_win = None;

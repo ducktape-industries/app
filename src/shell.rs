@@ -65,11 +65,7 @@ impl WindowKey {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowKind {
     Console,
-    View {
-        module: &'static str,
-    },
-    /// The app's settings, floating over the desk.
-    Settings,
+    View { module: &'static str },
 }
 
 #[derive(Clone, Debug)]
@@ -195,20 +191,11 @@ struct Desktop {
 }
 
 impl Desktop {
-    fn ax_windows(&self, cx: &gpui_kit::App) -> Vec<(String, gpui_kit::AnyWindowHandle)> {
-        let settings = |key: &WindowKey| {
-            self.views
-                .get(key)
-                .and_then(|view| view.upgrade())
-                .is_some_and(|view| view.read(cx).kind == WindowKind::Settings)
-        };
+    fn ax_windows(&self) -> Vec<(String, gpui_kit::AnyWindowHandle)> {
         let mut nth = 0;
         self.windows
-            .iter()
-            .map(|(key, handle)| {
-                if settings(key) {
-                    return ("settings".to_owned(), *handle);
-                }
+            .values()
+            .map(|handle| {
                 nth += 1;
                 let name = match nth {
                     1 => "console".to_owned(),
@@ -261,28 +248,45 @@ impl Desktop {
         cx.notify();
     }
 
-    /// The launcher and the desk are two windows, the way a game client
-    /// signs in before its main window opens: crossing from one to the
-    /// other opens the next (centred, or where the desk last was) and
-    /// closes the last.
+    /// The launcher and the desk are one window: crossing from one to
+    /// the other resizes it in place (the desk to the size it last had),
+    /// rather than closing it and opening another.
     fn swap_console(&mut self, cx: &mut Context<Self>) {
-        let Some(old) = self.state.console_win else {
+        let Some(handle) = self
+            .state
+            .console_win
+            .and_then(|key| self.windows.get(&key).copied())
+        else {
             return;
         };
-        if self.state.in_launcher()
-            && let Some(handle) = self.windows.get(&old)
-        {
-            self.desk_bounds = handle.update(cx, |_, window, _| window.bounds()).ok();
-        }
-        let key = WindowKey::unique();
-        self.state.console_win = Some(key);
-        let at = match self.state.in_launcher() {
-            true => None,
-            false => self.desk_bounds,
-        };
-        let (reply, _) = oneshot::channel();
-        self.open_window(key, WindowKind::Console, reply, None, at, cx);
-        self.close_window(old, cx);
+        let launcher = self.state.in_launcher();
+        let last = self.desk_bounds.map(|bounds| bounds.size);
+        // deferred: the crossing is often dispatched from inside this very
+        // window's update (a click on Lock), where it can't be updated again
+        cx.spawn(async move |desktop, cx| {
+            let left = handle
+                .update(cx, |_, window, _| {
+                    let bounds = window.bounds();
+                    let to = match (launcher, last) {
+                        (true, _) => gpui_kit::size(
+                            gpui_kit::px(launcher::LAUNCHER_SIZE.0),
+                            gpui_kit::px(launcher::LAUNCHER_SIZE.1),
+                        ),
+                        (false, Some(size)) => size,
+                        (false, None) => gpui_kit::size(
+                            gpui_kit::px(windows::WINDOW_SIZE.0),
+                            gpui_kit::px(windows::WINDOW_SIZE.1),
+                        ),
+                    };
+                    window.resize(to);
+                    bounds
+                })
+                .ok();
+            if launcher {
+                let _ = desktop.update(cx, |this, _| this.desk_bounds = left);
+            }
+        })
+        .detach();
     }
 
     fn sync_appearance(&mut self, cx: &mut Context<Self>) {
@@ -480,6 +484,12 @@ impl DesktopWindow {
             cx.stop_propagation();
             return;
         }
+        if key.key == "escape" && self.model.read(cx).state.settings {
+            self.model
+                .update(cx, |model, cx| model.dispatch(Message::CloseSettings, cx));
+            cx.stop_propagation();
+            return;
+        }
         if key.key == "escape" && self.model.read(cx).state.popover.is_some() {
             self.model
                 .update(cx, |model, cx| model.dispatch(Message::ClosePopover, cx));
@@ -575,7 +585,6 @@ impl Render for DesktopWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::InteractiveElement as _;
         let content = match self.kind {
-            WindowKind::Settings => self.settings(window, cx),
             WindowKind::View { .. } => self.console(window, cx),
             WindowKind::Console => {
                 let state = self.model.read(cx).state.clone_facts();

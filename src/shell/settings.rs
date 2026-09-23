@@ -1,21 +1,17 @@
-//! Settings: the app's own, in a window of their own that floats over the
-//! desk (its title bar says "Settings"). The account's settings are the
-//! network's, in its program; these are this device's.
+//! Settings: the app's own, in a dialog over the desk (the Settings
+//! board). The account's settings are the network's, in its program;
+//! these are this device's.
 
 use super::*;
 use crate::SettingsPage;
 use ink::{Ink, mono, sans};
 
-pub(super) const SETTINGS_SIZE: (f32, f32) = (760., 540.);
-
 impl DesktopWindow {
-    pub(super) fn settings(
-        &mut self,
-        _: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
+    /// The dialog: `760 × 540; border: 1.5px solid ink`, a 34px title strip
+    /// with its close, on a scrim below the bar. A click on the scrim, or
+    /// Escape, closes it.
+    pub(super) fn settings(&mut self, state: &screens::Facts) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
         // the Settings board: nav `padding: 12px 8px; gap: 2px`, each
         // entry `padding: 8px 14px; font: 400 14px`; the page `24px 32px`
         let ink = Ink::of(state.dark);
@@ -53,17 +49,15 @@ impl DesktopWindow {
             )
         });
         let page = match state.settings_page {
-            SettingsPage::Appearance => self.appearance_page(&state),
-            SettingsPage::Networks => self.networks_page(&state),
+            SettingsPage::Appearance => self.appearance_page(state),
+            SettingsPage::Networks => self.networks_page(state),
             SettingsPage::About => about_page(&ink),
         };
-        div()
-            .id("settings-window")
-            .size_full()
+        let body = div()
+            .id("settings-body")
+            .flex_1()
+            .min_h_0()
             .flex()
-            .bg(ink.bg)
-            .text_color(ink.ink)
-            .font_family(super::theme::FAMILY_UI)
             .text_size(px(14.))
             .child(
                 div()
@@ -91,6 +85,83 @@ impl DesktopWindow {
                     .px(px(32.))
                     .py(px(24.))
                     .child(page),
+            );
+        let close = self.model.clone();
+        let escape = self.model.clone();
+        let shut = self.model.clone();
+        let surface = ink.surface;
+        let title = div()
+            .h(px(34.))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .justify_between()
+            .pl(px(14.))
+            .pr(px(6.))
+            .border_b_1()
+            .border_color(ink.line)
+            .child(sans(500, 13.).child("Settings"))
+            .child(crate::a11y::keyboard(
+                div()
+                    .id("settings-close")
+                    .control(Role::Button, "Close settings")
+                    .size(px(28.))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .text_color(ink.muted)
+                    .hover(move |style| style.bg(surface))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        shut.update(cx, |model, cx| model.dispatch(Message::CloseSettings, cx))
+                    })
+                    .child(
+                        gpui_kit::component::Icon::new(gpui_kit::assets::IconName::X).size(px(16.)),
+                    ),
+            ));
+        div()
+            .id("settings-backdrop")
+            .absolute()
+            .top(px(desk::BAR))
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .occlude()
+            .bg(ink.bg.opacity(0.6))
+            .flex()
+            .justify_center()
+            .on_click(move |_, _, cx| {
+                close.update(cx, |model, cx| model.dispatch(Message::CloseSettings, cx));
+            })
+            .child(
+                div()
+                    .id("settings-window")
+                    .control(Role::Dialog, "Settings")
+                    .occlude()
+                    .mt(px(74.))
+                    .w(px(760.))
+                    .h(px(540.))
+                    .max_w_full()
+                    .max_h_full()
+                    .self_start()
+                    .flex()
+                    .flex_col()
+                    .bg(ink.bg)
+                    .text_color(ink.ink)
+                    .border(px(1.5))
+                    .border_color(ink.ink)
+                    .shadow_lg()
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
+                        if event.keystroke.key == "escape" {
+                            cx.stop_propagation();
+                            escape
+                                .update(cx, |model, cx| model.dispatch(Message::CloseSettings, cx));
+                        }
+                    })
+                    .child(title)
+                    .child(body),
             )
             .into_any_element()
     }
