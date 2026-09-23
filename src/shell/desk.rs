@@ -5,7 +5,6 @@
 
 use super::*;
 use crate::{Popover, Spot};
-use launcher::{mono, square};
 use screens::{Facts, pulse};
 
 /// The menu bar's height.
@@ -43,7 +42,7 @@ impl DesktopWindow {
             false => None,
             true if state.spotlight => Some(self.spotlight(&state, window, cx)),
             true if state.approving => Some(self.approve(&state, window, cx)),
-            true if state.network_menu => Some(self.network_menu(&state, narrow, cx)),
+            true if state.network_menu => Some(self.network_menu(&state, narrow)),
             true => state.popover.map(|popover| match popover {
                 Popover::Node => self.node_menu(&state, cx),
                 Popover::Account => self.account_menu(&state, cx),
@@ -64,6 +63,9 @@ impl DesktopWindow {
             .into_any_element()
     }
 
+    /// The menu bar (the Menubar board): `height: 36px; padding: 0 8px;
+    /// border-bottom: 1px solid line`; every item `height: 36px; padding: 0
+    /// 10px; gap: 8px; font: 400 13px`, on `surface` while its menu is open.
     fn menubar(
         &self,
         state: &Facts,
@@ -72,11 +74,9 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        use super::ink::*;
         use gpui_kit::*;
-        let palette = design::palette(state.dark);
-        let fg = hsla_of(palette.foreground);
-        let muted = hsla_of(palette.muted);
-        let raised = hsla_of(palette.surface_raised);
+        let ink = Ink::of(state.dark);
         let open: Vec<&'static str> = self.layout.panes.iter().map(|pane| pane.module).collect();
         let focused = self
             .layout
@@ -101,7 +101,8 @@ impl DesktopWindow {
                 true => shown.chars().next().map(String::from).unwrap_or_default(),
                 false => shown,
             };
-            div()
+            let hover = ink.ink;
+            sans(400, 13.)
                 .id(SharedString::from(format!("rail/{module}")))
                 .control(Role::Tab, SharedString::from(name))
                 .aria_selected(selected)
@@ -111,15 +112,14 @@ impl DesktopWindow {
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .gap_1p5()
-                .px_2p5()
+                .gap(px(8.))
+                .px(px(10.))
                 .cursor_pointer()
                 .text_color(match selected || open.contains(&module) {
-                    true => fg,
-                    false => muted,
+                    true => ink.ink,
+                    false => ink.muted,
                 })
-                .when(selected, |tab| tab.font_weight(FontWeight::MEDIUM))
-                .hover(move |style| style.text_color(fg))
+                .hover(move |style| style.text_color(hover))
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     let message = match event.modifiers().shift {
                         true => Message::SplitView(module),
@@ -129,31 +129,33 @@ impl DesktopWindow {
                 }))
                 .child(shown)
                 .when(row.note == Some("Failed"), |tab| {
-                    tab.child(
-                        div()
-                            .size(px(5.))
-                            .rounded_full()
-                            .bg(hsla_of(palette.danger)),
-                    )
+                    tab.child(div().size(px(5.)).rounded_full().bg(ink.danger))
                 })
                 .when(badge > 0, |tab| {
-                    tab.child(mono(badge.to_string(), muted).text_size(px(11.)))
+                    tab.child(
+                        mono(400, 12.)
+                            .text_color(ink.muted)
+                            .child(badge.to_string()),
+                    )
                 })
         });
-        let item = |id: &'static str, name: SharedString, message: fn() -> Message| {
+        let item = |id: &'static str, name: SharedString, open: bool, message: fn() -> Message| {
             let model = self.model.clone();
+            let surface = ink.surface;
             crate::a11y::keyboard(
-                div()
+                sans(400, 13.)
                     .id(id)
                     .control(Role::Button, name)
                     .h(px(BAR))
                     .flex_shrink_0()
                     .flex()
                     .items_center()
-                    .gap_2()
-                    .px_2p5()
+                    .gap(px(8.))
+                    .px(px(10.))
                     .cursor_pointer()
-                    .hover(move |style| style.bg(raised))
+                    .text_color(ink.ink)
+                    .when(open, |item| item.bg(surface))
+                    .hover(move |style| style.bg(surface))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         model.update(cx, |model, cx| model.dispatch(message(), cx));
@@ -163,56 +165,52 @@ impl DesktopWindow {
         let network = item(
             "network-switcher",
             SharedString::from(format!("Network: {}", state.network)),
+            state.network_menu,
             || Message::ToggleNetworkMenu,
         )
         .aria_expanded(state.network_menu)
-        .when(state.network_menu, |item| item.bg(raised))
-        .child(
-            div()
-                .font_weight(FontWeight::MEDIUM)
-                .child(state.network.clone()),
-        )
-        .child(
-            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::ChevronDown)
-                .size(px(13.))
-                .text_color(muted),
-        );
+        .child(sans(500, 13.).child(state.network.clone()))
+        .child(div().text_color(ink.muted).child("⌄"));
         let chord = match cfg!(target_os = "macos") {
             true => "⌘K",
             false => "Ctrl K",
         };
-        let search = item("rail-search", "Search".into(), || Message::OpenSpotlight)
-            .when(!narrow, |item| {
-                item.child(div().text_color(muted).child("Search"))
-            })
-            .child(
-                mono(chord, muted)
-                    .text_size(px(11.))
-                    .px_1()
-                    .border_1()
-                    .border_color(hsla_of(palette.border)),
-            );
+        let search = item("rail-search", "Search".into(), false, || {
+            Message::OpenSpotlight
+        })
+        .when(!narrow, |item| {
+            item.child(div().text_color(ink.muted).child("Search"))
+        })
+        .child(
+            mono(400, 12.)
+                .text_color(ink.muted)
+                .px(px(5.))
+                .py(px(1.))
+                .border_1()
+                .border_color(ink.line)
+                .child(chord),
+        );
         let (breath, said) = match (state.connecting, state.reconnecting) {
             (true, _) => (true, "Node: switching".to_owned()),
             (_, true) => (false, "Node: not answering".to_owned()),
             (false, false) => (true, format!("Node: in sync, block {}", state.height)),
         };
-        let node = item("rail-connection", said.into(), || {
+        let node_open = state.popover == Some(Popover::Node);
+        let node = item("rail-connection", said.into(), node_open, || {
             Message::TogglePopover(Popover::Node)
         })
-        .aria_expanded(state.popover == Some(Popover::Node))
-        .when(state.popover == Some(Popover::Node), |item| item.bg(raised))
-        .child(pulse(breath, state.motion, palette))
-        .when(!breath && !narrow, |item| {
-            item.child(mono("reconnecting", muted))
-        });
+        .aria_expanded(node_open)
+        .px(px(12.))
+        .child(pulse(breath, state.motion, &ink));
         let unlocked = !state.signer_key.is_empty();
+        let account_open = state.popover == Some(Popover::Account);
         let who = match (&state.account, unlocked) {
-            (_, false) => item("sign-in", "Sign in".into(), || Message::SignIn)
+            (_, false) => item("sign-in", "Sign in".into(), false, || Message::SignIn)
                 .child(div().underline().child("Sign in")),
             (Some(None), true) => item(
                 "rail-account",
                 "Account: no account yet — create one".into(),
+                false,
                 || Message::ShowCreateAccount,
             )
             .child(div().underline().child("Create account")),
@@ -228,25 +226,23 @@ impl DesktopWindow {
                 item(
                     "rail-account",
                     SharedString::from(format!("Account: {name}")),
+                    account_open,
                     || Message::TogglePopover(Popover::Account),
                 )
-                .aria_expanded(state.popover == Some(Popover::Account))
-                .when(state.popover == Some(Popover::Account), |item| {
-                    item.bg(raised)
-                })
+                .aria_expanded(account_open)
                 .child(shown)
             }
         };
         // Settings are the app's, not the account's: their own spot at the
         // edge.
-        let gear = item("settings", "Ducktape settings".into(), || {
+        let gear = item("settings", "Ducktape settings".into(), false, || {
             Message::OpenSettings
         })
-        .px_2()
+        .px(px(8.))
         .child(
             gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Settings)
-                .size(px(15.))
-                .text_color(muted),
+                .size(px(16.))
+                .text_color(ink.muted),
         );
         // macOS draws the traffic lights over the bar's left end, and the
         // bar is the window's handle: its empty middle moves the window.
@@ -273,20 +269,13 @@ impl DesktopWindow {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .pl(px(if titlebar { 78. } else { 6. }))
-            .pr_1()
+            .pl(px(if titlebar { 78. } else { 8. }))
+            .pr(px(8.))
             .border_b_1()
-            .border_color(hsla_of(palette.border))
-            .bg(hsla_of(palette.background))
-            .text_size(px(13.))
+            .border_color(ink.line)
+            .bg(ink.bg)
             .child(network)
-            .child(
-                div()
-                    .w(px(1.))
-                    .h(px(16.))
-                    .mx_1p5()
-                    .bg(hsla_of(palette.border)),
-            )
+            .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(ink.line))
             .child(
                 div()
                     .id("rail-rows")
@@ -297,9 +286,9 @@ impl DesktopWindow {
                     .children(tabs)
                     .when(rail.is_empty(), |list| {
                         list.child(
-                            div()
-                                .px_2()
-                                .text_color(muted)
+                            sans(400, 13.)
+                                .px(px(10.))
+                                .text_color(ink.muted)
                                 .child("No programs listed yet"),
                         )
                     }),
@@ -310,14 +299,13 @@ impl DesktopWindow {
             // listed.
             .when_some(crate::runtime::capturing(), |bar, recording| {
                 bar.child(
-                    div()
+                    mono(400, 11.)
                         .id("capture-indicator")
                         .role(Role::Status)
                         .mx_1()
                         .px_1p5()
-                        .bg(hsla_of(palette.danger))
-                        .text_size(px(11.))
-                        .text_color(hsla_of(palette.background))
+                        .bg(ink.danger)
+                        .text_color(ink.bg)
                         .child(recording),
                 )
             })
@@ -328,8 +316,10 @@ impl DesktopWindow {
             .into_any_element()
     }
 
-    /// A menu hanging from the bar's right side, over a backdrop that
-    /// closes it; Escape closes it too.
+    /// A menu hanging below the bar (the canvas's menus: `top: 40px;
+    /// border: 1.5px solid ink; box-shadow: 0 10px 30px`), over a backdrop
+    /// that closes it; Escape closes it too. `right` places it from the
+    /// window's right edge.
     fn hanging(
         &self,
         id: &'static str,
@@ -339,8 +329,9 @@ impl DesktopWindow {
         body: impl IntoElement,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        use super::ink::*;
         use gpui_kit::*;
-        let palette = design::palette(self.model.read(cx).state.dark());
+        let ink = Ink::of(self.model.read(cx).state.dark());
         let close = self.model.clone();
         let escape = self.model.clone();
         div()
@@ -367,11 +358,11 @@ impl DesktopWindow {
                     .w(px(width))
                     .flex()
                     .flex_col()
-                    .bg(hsla_of(palette.background))
+                    .bg(ink.bg)
+                    .text_color(ink.ink)
                     .border(px(1.5))
-                    .border_color(hsla_of(palette.foreground))
+                    .border_color(ink.ink)
                     .shadow_lg()
-                    .text_size(px(13.))
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .on_key_down(move |event: &KeyDownEvent, _, cx| {
                         if event.keystroke.key == "escape" {
@@ -385,7 +376,8 @@ impl DesktopWindow {
             .into_any_element()
     }
 
-    /// A row in a hanging menu that does one thing.
+    /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`, a mono
+    /// hint at its right end.
     fn menu_row(
         &self,
         id: &'static str,
@@ -393,21 +385,38 @@ impl DesktopWindow {
         run: impl Fn(&mut gpui_kit::App) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        self.menu_row_hint(id, label, "", run, cx)
+    }
+
+    fn menu_row_hint(
+        &self,
+        id: &'static str,
+        label: &'static str,
+        hint: &'static str,
+        run: impl Fn(&mut gpui_kit::App) + 'static,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::Stateful<gpui_kit::Div> {
+        use super::ink::{Ink, mono, sans};
         use gpui_kit::*;
-        let raised = hsla_of(design::palette(self.model.read(cx).state.dark()).surface_raised);
+        let ink = Ink::of(self.model.read(cx).state.dark());
+        let surface = ink.surface;
         crate::a11y::keyboard(
-            div()
+            sans(400, 14.)
                 .id(id)
                 .control(Role::MenuItem, label)
-                .px_4()
-                .py_2()
+                .h(px(36.))
+                .px(px(16.))
+                .flex()
+                .items_center()
+                .justify_between()
                 .cursor_pointer()
-                .hover(move |style| style.bg(raised))
+                .hover(move |style| style.bg(surface))
                 .on_click(move |_, _, cx| {
                     cx.stop_propagation();
                     run(cx)
                 })
-                .child(label),
+                .child(label)
+                .child(mono(400, 12.).text_color(ink.muted).child(hint)),
         )
     }
 
@@ -416,73 +425,78 @@ impl DesktopWindow {
         move |cx| model.update(cx, |model, cx| model.dispatch(message(), cx))
     }
 
-    /// What the breath means: in sync or not, and the node's own numbers.
+    /// What the breath means (the NodeStatus board): in sync or not, and
+    /// the node's own numbers, `padding: 7px 16px` each.
     fn node_menu(&self, state: &Facts, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        use super::ink::*;
         use gpui_kit::*;
-        let palette = design::palette(state.dark);
-        let muted = hsla_of(palette.muted);
-        let border = hsla_of(palette.border);
+        let ink = Ink::of(state.dark);
         let ok = !state.reconnecting;
         let host = state
             .connected_rpc
             .split_once("://")
             .map_or(state.connected_rpc.as_str(), |(_, host)| host)
             .to_owned();
-        let row = |key: &'static str, value: String| {
+        let row = |key: &'static str, value: String, code: bool| {
             div()
                 .flex()
                 .justify_between()
-                .gap_4()
-                .px_4()
-                .py(px(5.))
-                .child(div().text_color(muted).child(key))
-                .child(mono(value, hsla_of(palette.foreground)))
+                .items_baseline()
+                .px(px(16.))
+                .py(px(7.))
+                .child(sans(400, 13.).text_color(ink.muted).child(key))
+                .child(
+                    match code {
+                        true => mono(400, 13.),
+                        false => sans(400, 13.),
+                    }
+                    .text_color(ink.ink)
+                    .child(value),
+                )
         };
         let mut rows = vec![];
         if let Some(node) = &state.node {
-            rows.push(row("Height", grouped(node.height)));
+            rows.push(row("Height", grouped(node.height), true));
             rows.push(row(
                 "Last block",
                 match state.block_age {
                     ..=0 => "just now".to_owned(),
                     age => format!("{age} s ago"),
                 },
+                false,
             ));
-            rows.push(row("Block time", format!("{} ms", node.block_time_ms)));
-            let into = match node.epoch_length {
+            rows.push(row(
+                "Block time",
+                format!("{:.1} s", node.block_time_ms as f64 / 1000.),
+                false,
+            ));
+            let (into, of) = match node.epoch_length {
+                0 => (0, 0),
+                length => (node.height % length, length),
+            };
+            rows.push(row(
+                "Epoch",
+                format!("{} · {into} / {of}", node.epoch),
+                true,
+            ));
+            let share = match of {
                 0 => 0.,
-                length => (node.height % length) as f32 / length as f32,
+                of => into as f32 / of as f32,
             };
             rows.push(
                 div()
-                    .flex()
-                    .justify_between()
-                    .items_center()
-                    .gap_4()
-                    .px_4()
-                    .py(px(5.))
-                    .child(div().text_color(muted).child("Epoch"))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap_2()
-                            .child(
-                                div().w(px(60.)).h(px(2.)).bg(border).child(
-                                    div()
-                                        .h_full()
-                                        .w(px(60. * into))
-                                        .bg(hsla_of(palette.foreground)),
-                                ),
-                            )
-                            .child(mono(node.epoch.to_string(), hsla_of(palette.foreground))),
-                    ),
+                    .mx(px(16.))
+                    .mt(px(2.))
+                    .mb(px(8.))
+                    .h(px(2.))
+                    .bg(ink.line)
+                    .child(div().h_full().w(relative(share)).bg(ink.ink)),
             );
-            rows.push(row("Tip", short_hex(&node.tip)));
-            rows.push(row("State root", short_hex(&node.root.0)));
-            rows.push(row("Node key", short_hex(&node.identity)));
-            rows.push(row("Contract", format!("v{}", node.contract)));
-            rows.push(row("Founded", founded(node.time)));
+            rows.push(row("Tip", short_hex(&node.tip), true));
+            rows.push(row("State root", short_hex(&node.root.0), true));
+            rows.push(row("Node key", short_hex(&node.identity), true));
+            rows.push(row("Contract", format!("v{}", node.contract), true));
+            rows.push(row("Chain founded", founded(node.time), false));
         }
         let copy = {
             let url = state.connected_rpc.clone();
@@ -494,52 +508,53 @@ impl DesktopWindow {
             )
         };
         let body = div()
+            .pb(px(6.))
             .flex()
             .flex_col()
             .child(
                 div()
                     .flex()
                     .items_center()
-                    .gap_3()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(pulse(ok, state.motion, palette))
+                    .gap(px(12.))
+                    .pt(px(14.))
+                    .px(px(16.))
+                    .pb(px(12.))
+                    .child(pulse(ok, state.motion, &ink))
                     .child(
                         div()
+                            .flex_1()
                             .flex()
                             .flex_col()
-                            .child(div().font_weight(FontWeight::MEDIUM).child(match ok {
+                            .gap(px(2.))
+                            .child(sans(500, 15.).child(match ok {
                                 true => "In sync",
                                 false => "Not answering",
                             }))
-                            .child(mono(format!("{} · {host}", state.network), muted)),
+                            .child(
+                                mono(400, 12.)
+                                    .text_color(ink.muted)
+                                    .child(format!("{} · {host}", state.network)),
+                            ),
                     ),
             )
-            .child(div().py_2().flex().flex_col().children(rows))
-            .child(
-                div()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(border)
-                    .child(copy)
-                    .child(self.menu_row(
-                        "node-switch",
-                        "Switch node…",
-                        self.dispatching(|| Message::ToggleNetworkMenu),
-                        cx,
-                    )),
-            );
+            .child(div().h(px(1.)).mb(px(6.)).bg(ink.line))
+            .children(rows)
+            .child(div().h(px(1.)).my(px(6.)).bg(ink.line))
+            .child(copy)
+            .child(self.menu_row(
+                "node-switch",
+                "Switch node…",
+                self.dispatching(|| Message::ToggleNetworkMenu),
+                cx,
+            ));
         self.hanging("node-status", "Node status", 120., 340., body, cx)
     }
 
     /// Who is signed in, and the ways out.
     fn account_menu(&self, state: &Facts, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        use super::ink::*;
         use gpui_kit::*;
-        let palette = design::palette(state.dark);
-        let muted = hsla_of(palette.muted);
-        let border = hsla_of(palette.border);
+        let ink = Ink::of(state.dark);
         let (name, number) = match &state.account {
             Some(Some((number, name))) => (name.clone(), Some(*number)),
             _ => ("Signed in".to_owned(), None),
@@ -548,7 +563,7 @@ impl DesktopWindow {
             Some(number) => format!("account {number} · {}", state.network),
             None => state.network.clone(),
         };
-        let mut rows = div().py_1().flex().flex_col();
+        let mut rows = div().flex().flex_col();
         if number.is_some() {
             rows = rows.child(self.menu_row(
                 "account-settings",
@@ -583,36 +598,28 @@ impl DesktopWindow {
         let body = div()
             .flex()
             .flex_col()
+            .py(px(6.))
             .child(
                 div()
                     .flex()
                     .flex_col()
-                    .gap_1()
-                    .px_4()
-                    .py_3()
-                    .border_b_1()
-                    .border_color(border)
+                    .gap(px(4.))
+                    .pt(px(10.))
+                    .px(px(16.))
+                    .pb(px(12.))
+                    .child(sans(500, 16.).child(name))
+                    .child(mono(400, 12.).text_color(ink.muted).child(detail))
                     .child(
-                        div()
-                            .text_size(px(14.))
-                            .font_weight(FontWeight::MEDIUM)
-                            .child(name),
-                    )
-                    .child(mono(detail, muted))
-                    .child(
-                        div()
-                            .pt_1()
-                            .text_size(px(12.5))
-                            .text_color(muted)
+                        sans(400, 13.)
+                            .text_color(ink.muted)
                             .child("This device's key, kept by the system"),
                     ),
             )
+            .child(div().h(px(1.)).mb(px(6.)).bg(ink.line))
             .child(rows)
+            .child(div().h(px(1.)).my(px(6.)).bg(ink.line))
             .child(
                 div()
-                    .py_1()
-                    .border_t_1()
-                    .border_color(border)
                     .child(self.menu_row("lock", "Lock", self.dispatching(|| Message::Lock), cx))
                     .child(self.menu_row(
                         "disconnect",
@@ -626,17 +633,19 @@ impl DesktopWindow {
 
     /// "Add a device…": the code a new device shows, then its fingerprint
     /// to compare, then this device's yes — consent it signs for the
-    /// account and hands over the relay.
+    /// account and hands over the relay. Dressed as the canvas's dialogs:
+    /// `border: 1.5px solid ink`, a soft shadow, on a scrim below the bar.
     fn approve(
         &mut self,
         state: &Facts,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::component::button::ButtonVariants as _;
+        use super::ink::{self, *};
         use gpui_kit::*;
-        let palette = design::palette(state.dark);
-        let muted = hsla_of(palette.muted);
+        let ink = Ink::of(state.dark);
+        let error = (!state.unlock_error.is_empty())
+            .then(|| self.alert("approve-error", state.unlock_error.clone(), &ink));
         let (said, fields) = match &state.approve_fingerprint {
             None => {
                 let code = self.input(
@@ -652,28 +661,29 @@ impl DesktopWindow {
                     cx,
                 );
                 (
-                    "On the new device, choose \"From another device\". Type the code it shows.",
+                    "On the new device, choose \"Add this device from another device\". Type the code it shows.",
                     div()
                         .flex()
                         .flex_col()
-                        .gap_3()
-                        .child(self.field("Code", code))
-                        .children(
-                            (!state.unlock_error.is_empty()).then(|| {
-                                self.alert("approve-error", state.unlock_error.clone(), cx)
-                            }),
-                        )
+                        .gap(px(16.))
                         .child(
-                            div().flex().gap_2().child(square(
-                                self.action(
-                                    "approve-find",
-                                    "Next",
-                                    || Message::ApproveFind,
-                                    state.unlock_busy,
-                                )
-                                .primary(),
-                            )),
-                        ),
+                            self.field(
+                                "Code",
+                                field_box(code, ink.strong, 44., &ink)
+                                    .font_family(super::theme::FAMILY_MONO)
+                                    .into_any_element(),
+                                error,
+                                &ink,
+                            ),
+                        )
+                        .child(div().flex().child(self.button(
+                            "approve-find",
+                            "Next",
+                            Kind::Primary,
+                            || Message::ApproveFind,
+                            state.unlock_busy,
+                            &ink,
+                        ))),
                 )
             }
             Some(fingerprint) => (
@@ -681,35 +691,26 @@ impl DesktopWindow {
                 div()
                     .flex()
                     .flex_col()
-                    .gap_3()
+                    .gap(px(16.))
                     .child(crate::a11y::whole(
-                        div()
+                        mono(400, 28.)
                             .id("approve-fingerprint")
                             .role(Role::Label)
                             .aria_label(fingerprint.clone())
-                            .text_size(px(28.))
-                            .font_family(super::theme::FAMILY_MONO)
                             .child(fingerprint.clone()),
                     ))
-                    .children(
-                        (!state.unlock_error.is_empty())
-                            .then(|| self.alert("approve-error", state.unlock_error.clone(), cx)),
-                    )
-                    .child(
-                        div().flex().gap_2().child(square(
-                            self.action(
-                                "approve-confirm",
-                                "Approve",
-                                || Message::ApproveConfirm,
-                                state.unlock_busy,
-                            )
-                            .primary(),
-                        )),
-                    ),
+                    .children(error)
+                    .child(div().flex().child(self.button(
+                        "approve-confirm",
+                        "Approve",
+                        Kind::Primary,
+                        || Message::ApproveConfirm,
+                        state.unlock_busy,
+                        &ink,
+                    ))),
             ),
         };
         let close = self.model.clone();
-        let scrim = hsla_of(palette.background).opacity(0.6);
         div()
             .id("approve-backdrop")
             .absolute()
@@ -718,7 +719,7 @@ impl DesktopWindow {
             .right_0()
             .bottom_0()
             .occlude()
-            .bg(scrim)
+            .bg(ink.bg.opacity(0.6))
             .flex()
             .justify_center()
             .on_click(move |_, _, cx| {
@@ -729,34 +730,28 @@ impl DesktopWindow {
                     .id("approve")
                     .control(Role::Dialog, "Add a device")
                     .occlude()
-                    .mt(px(60.))
+                    .mt(px(84.))
                     .w(px(440.))
                     .max_w_full()
                     .self_start()
                     .flex()
                     .flex_col()
-                    .gap_4()
-                    .p_6()
-                    .bg(hsla_of(palette.background))
+                    .gap(px(18.))
+                    .p(px(24.))
+                    .bg(ink.bg)
                     .border(px(1.5))
-                    .border_color(hsla_of(palette.foreground))
+                    .border_color(ink.ink)
                     .shadow_lg()
-                    .text_size(px(14.))
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(mono("Add a device", muted))
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .line_height(px(20.))
-                            .text_color(muted)
-                            .child(said),
-                    )
+                    .child(tag("Add a device", &ink))
+                    .child(ink::note(said, ink.muted))
                     .child(fields)
-                    .child(self.quiet_link(
+                    .child(self.link(
                         "approve-cancel",
                         "Cancel",
                         || Message::ApproveClose,
-                        cx,
+                        false,
+                        &ink,
                     )),
             )
             .into_any_element()
@@ -770,10 +765,9 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        use super::ink::*;
         use gpui_kit::*;
-        let palette = design::palette(state.dark);
-        let muted = hsla_of(palette.muted);
-        let border = hsla_of(palette.border);
+        let ink = Ink::of(state.dark);
         let field = self.input(
             "spotlight",
             "Search programs, networks, actions",
@@ -803,12 +797,22 @@ impl DesktopWindow {
             .role(Role::Menu)
             .max_h(px(380.))
             .overflow_y_scroll()
-            .py_1();
+            .py(px(6.));
         let mut group = "";
         for (nth, row) in rows.into_iter().enumerate() {
             if row.group != group {
                 group = row.group;
-                list = list.child(mono(group, muted).px_4().pt_2().pb_1());
+                // groups `padding: 6px 0`, a hairline between them
+                if nth > 0 {
+                    list = list.child(div().mt(px(6.)).mb(px(6.)).h(px(1.)).bg(ink.line));
+                }
+                list = list.child(
+                    mono(400, 12.)
+                        .text_color(ink.muted)
+                        .px(px(16.))
+                        .py(px(6.))
+                        .child(group),
+                );
             }
             let model = self.model.clone();
             let spot = row.spot.clone();
@@ -819,44 +823,48 @@ impl DesktopWindow {
                 (_, true) => "↵",
             };
             list = list.child(
-                div()
+                sans(400, 13.)
                     .id(SharedString::from(format!("spotlight/{nth}")))
                     .control(Role::MenuItem, SharedString::from(row.title.clone()))
                     .flex()
                     .items_baseline()
-                    .gap_3()
-                    .px_4()
-                    .py_2()
+                    .gap(px(12.))
+                    .px(px(16.))
+                    .py(px(10.))
                     .cursor_pointer()
-                    .when(picked, |row| row.bg(hsla_of(palette.surface_raised)))
+                    .when(picked, |row| row.bg(ink.surface))
                     .on_click(move |_, _, cx| {
                         let spot = spot.clone();
                         model.update(cx, |model, cx| model.dispatch(Message::Spot(spot), cx));
                     })
-                    .child(div().text_size(px(14.)).child(row.title))
+                    .child(
+                        sans(if picked { 500 } else { 400 }, 15.)
+                            .text_color(ink.ink)
+                            .child(row.title),
+                    )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .text_color(muted)
+                            .text_color(ink.muted)
                             .child(row.meta),
                     )
-                    .child(mono(hint, muted)),
+                    .child(mono(400, 12.).text_color(ink.muted).child(hint)),
             );
         }
         if count == 0 {
             list = list.child(
-                div()
-                    .px_4()
-                    .py_3()
-                    .text_color(muted)
+                sans(400, 14.)
+                    .px(px(16.))
+                    .py(px(12.))
+                    .text_color(ink.muted)
                     .child("Nothing here by that name."),
             );
         }
         let keys = self.model.clone();
         let close = self.model.clone();
-        let scrim = hsla_of(palette.background).opacity(0.6);
+        let scrim = ink.bg.opacity(0.6);
         div()
             .id("spotlight-backdrop")
             .absolute()
@@ -876,18 +884,18 @@ impl DesktopWindow {
                     .id("spotlight")
                     .control(Role::Dialog, "Search")
                     .occlude()
-                    .mt(px(60.))
+                    .mt(px(84.))
                     .w(px(600.))
                     .max_w_full()
                     .h_auto()
                     .self_start()
                     .flex()
                     .flex_col()
-                    .bg(hsla_of(palette.background))
+                    .bg(ink.bg)
+                    .text_color(ink.ink)
                     .border(px(1.5))
-                    .border_color(hsla_of(palette.foreground))
+                    .border_color(ink.ink)
                     .shadow_lg()
-                    .text_size(px(13.))
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .capture_key_down(move |event: &KeyDownEvent, _, cx| {
                         let message = match event.keystroke.key.as_str() {
@@ -905,14 +913,31 @@ impl DesktopWindow {
                         cx.stop_propagation();
                         keys.update(cx, |model, cx| model.dispatch(message, cx));
                     })
-                    .child(div().p_2().border_b_1().border_color(border).child(field))
+                    .child(
+                        div()
+                            .h(px(56.))
+                            .px(px(16.))
+                            .flex()
+                            .items_center()
+                            .border_b_1()
+                            .border_color(ink.line)
+                            .gap(px(12.))
+                            .child(div().flex_1().child(field))
+                            .child(mono(400, 12.).text_color(ink.muted).child("esc")),
+                    )
                     .child(list)
                     .child(
-                        mono("↑↓ move   ↵ open   esc close", muted)
-                            .px_4()
-                            .py_2()
+                        mono(400, 12.)
+                            .flex()
+                            .gap(px(20.))
+                            .px(px(16.))
+                            .py(px(10.))
                             .border_t_1()
-                            .border_color(border),
+                            .border_color(ink.line)
+                            .text_color(ink.muted)
+                            .child("↑↓ move")
+                            .child("↵ open")
+                            .child("esc close"),
                     ),
             )
             .into_any_element()

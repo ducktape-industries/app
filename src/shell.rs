@@ -27,6 +27,7 @@ mod fixtures;
 pub(crate) use fixtures::render_tree_fixture;
 mod desk;
 mod figure;
+mod ink;
 mod launch;
 mod launcher;
 mod layout;
@@ -48,7 +49,7 @@ mod theme;
 
 #[cfg(not(target_os = "macos"))]
 use theme::EMOJI_FACE;
-use theme::{BUNDLED_FACES, NARROW_WINDOW_WIDTH, configure_native_theme, hsla_of};
+use theme::{BUNDLED_FACES, NARROW_WINDOW_WIDTH, configure_native_theme};
 pub(crate) use theme::{app_family, fallback_chain, refine_fallbacks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -573,7 +574,6 @@ impl DesktopWindow {
 impl Render for DesktopWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::InteractiveElement as _;
-        use gpui_kit::component::ActiveTheme as _;
         let content = match self.kind {
             WindowKind::Settings => self.settings(window, cx),
             WindowKind::View { .. } => self.console(window, cx),
@@ -598,13 +598,14 @@ impl Render for DesktopWindow {
                 }
             }
         };
+        let ink = ink::Ink::of(self.model.read(cx).state.dark());
         let mut root = gpui_kit::div();
         root.text_style().font_fallbacks = Some(fallback_chain());
         root.text_style().font_family = Some(theme::FAMILY_UI.into());
         root.id("desktop-root")
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
+            .bg(ink.bg)
+            .text_color(ink.ink)
             .track_focus(&self.focus)
             .on_modifiers_changed(cx.listener(
                 |this, event: &gpui_kit::ModifiersChangedEvent, _, cx| {
