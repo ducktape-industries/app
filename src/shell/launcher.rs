@@ -47,13 +47,15 @@ impl DesktopWindow {
         use gpui_kit::*;
         let state = self.model.read(cx).state.clone_facts();
         let ink = Ink::of(state.dark);
-        // The canvas draws a 34px title bar. macOS lends the window's own
+        // The canvas draws a title bar. macOS lends the window's own
         // (transparent, the traffic lights in it); elsewhere the system's
-        // title bar is that bar.
+        // title bar is that bar. It is the desk's menu bar height: one
+        // window serves both, and its traffic lights sit where they were
+        // put when it opened.
         let titlebar = (cfg!(target_os = "macos") && !window.is_fullscreen()).then(|| {
             div()
                 .id("launcher-titlebar")
-                .h(px(34.))
+                .h(px(super::desk::BAR))
                 .flex_shrink_0()
                 .flex()
                 .items_center()

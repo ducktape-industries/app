@@ -58,7 +58,8 @@ impl Desktop {
             titlebar: Some(TitlebarOptions {
                 title: Some(title.into()),
                 appears_transparent: cfg!(target_os = "macos"),
-                traffic_light_position: Some(point(px(12.), px(12.))),
+                // the buttons are 14px tall: centred in the 36px bar
+                traffic_light_position: Some(point(px(11.), px(11.))),
             }),
             // one window serves the launcher and the desk, so it resizes
             window_min_size: Some(gpui_kit::size(px(720.), px(480.))),
