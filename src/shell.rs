@@ -404,8 +404,7 @@ pub(crate) struct DesktopWindow {
     layout: layout::Layout,
     mounted: BTreeMap<u64, panes::MountedPane>,
     initialized: bool,
-    resize: Option<(usize, f32, f32, f32)>,
-    measured_widths: std::rc::Rc<std::cell::RefCell<Vec<f32>>>,
+    drag: Option<panes::Drag>,
     inputs: HashMap<&'static str, NativeInput>,
     /// ⌘K's field took focus when it opened; it is not taken again while
     /// Spotlight stays open.
