@@ -229,9 +229,10 @@ mod tests {
             }
         }
         for figure in [Figure::Node, Figure::Ring, Figure::Sheets, Figure::Pair] {
+            // not a quarter turn: the globe's meridians repeat every 30°
             assert_ne!(
                 figure.frame(0),
-                figure.frame(LOOP_MS / 4),
+                figure.frame(LOOP_MS / 7),
                 "{figure:?} is still"
             );
         }
