@@ -322,6 +322,17 @@ pub(crate) fn save_appearance(mode: crate::Appearance) -> bool {
     write_prefs(&prefs)
 }
 
+/// Whether the launcher's drawings move; on unless turned off.
+pub(crate) fn load_motion() -> bool {
+    read_prefs()["motion"].as_bool().unwrap_or(true)
+}
+
+pub(crate) fn save_motion(on: bool) -> bool {
+    let mut prefs = read_prefs();
+    prefs["motion"] = serde_json::json!(on);
+    write_prefs(&prefs)
+}
+
 pub(crate) const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8844";
 
 pub(crate) const ENDPOINT_REFUSAL: &str = "A node address is a host and an optional port (127.0.0.1:8844), with http:// or https:// in front if you like, and nothing else.";

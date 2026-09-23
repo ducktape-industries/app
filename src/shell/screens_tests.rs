@@ -61,6 +61,7 @@ fn open(state: Ducktape, cx: &mut TestAppContext) -> (Entity<DesktopWindow>, Vis
         windows: BTreeMap::new(),
         views: BTreeMap::new(),
         streams: HashMap::new(),
+        desk_bounds: None,
     });
     let key = WindowKey::unique();
     let mut view = None;
@@ -80,6 +81,7 @@ fn open(state: Ducktape, cx: &mut TestAppContext) -> (Entity<DesktopWindow>, Vis
                 resize: None,
                 measured_widths: Default::default(),
                 inputs: HashMap::new(),
+                spotlight_focused: false,
                 focus,
                 _activation: cx.observe_window_activation(window, |_, _, _| {}),
                 _observer: cx.observe(&model, |_, _, cx| cx.notify()),
@@ -143,10 +145,8 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
         "wrong password"
     );
 
-    native.update(|window, cx| type_into("account-name/field", "duck", window, cx));
     native.update(|window, cx| type_into("password/field", "hunter2", window, cx));
     let nodes = native.update(draw);
-    assert_eq!(find(&nodes, "TextInput", "Account name")["value"], "duck");
     let password = find(&nodes, "PasswordInput", "Password");
     assert!(
         password.get("value").is_none(),
@@ -171,6 +171,41 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
         phrase.get("value").is_none(),
         "recovery phrase leaked into the AX tree: {phrase}"
     );
+}
+
+/// The key and the account are two steps: the key screen is only about
+/// this device's key (no passkey there), and the account step, once a key
+/// is unlocked, offers creating an account or adding this device to one.
+#[gpui_kit::test]
+fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let (mut state, _) = Ducktape::boot();
+    state.screen = Screen::Console;
+    let (view, mut native) = open(state, cx);
+    let nodes = native.update(draw);
+    find(&nodes, "Button", "Create key");
+    let passkeys = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| {
+            node["name"]
+                .as_str()
+                .is_some_and(|name| name.contains("passkey"))
+        })
+        .count();
+    assert_eq!(passkeys, 0, "the key screen offered a passkey: {nodes}");
+
+    let model = native.update(|_, cx| view.read(cx).model.clone());
+    model.update(cx, |model, _| {
+        model.state.signer_key = "ab".into();
+        model.state.account_step = true;
+    });
+    native.update(|window, cx| type_into("create-account-name/field", "duck", window, cx));
+    let nodes = native.update(draw);
+    assert_eq!(find(&nodes, "TextInput", "Account name")["value"], "duck");
+    find(&nodes, "Button", "Create account");
+    find(&nodes, "Button", "Add this device with a passkey");
 }
 
 /// The Connect screen's "Recent" list had no tab stop at all: a

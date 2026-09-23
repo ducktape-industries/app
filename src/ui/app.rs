@@ -19,6 +19,44 @@ pub(crate) enum Appearance {
     Dark,
 }
 
+/// A menu hanging off the menu bar; one at a time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Popover {
+    /// The breathing dot: how the node is doing.
+    Node,
+    /// The account's name: who is signed in, and Lock.
+    Account,
+}
+
+/// The Settings window's sections.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SettingsPage {
+    Appearance,
+    Networks,
+    About,
+}
+
+/// What a Spotlight row does when picked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Spot {
+    Open(&'static str),
+    Switch(String),
+    Settings,
+    CreateAccount,
+    Lock,
+    Appearance(Appearance),
+    OtherNetwork,
+}
+
+/// One Spotlight row, under its group's heading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SpotRow {
+    pub(crate) group: &'static str,
+    pub(crate) title: String,
+    pub(crate) meta: String,
+    pub(crate) spot: Spot,
+}
+
 /// Where the person is: reaching a node, or inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Screen {
@@ -44,15 +82,29 @@ pub struct Ducktape {
     /// The network shares its name with another chain this device met
     /// first: its keys are its own, and the sign-in screen says so.
     pub(crate) other_chain: bool,
-    /// The rail's network switcher is open.
+    /// The menu bar's network menu is open.
     pub(crate) network_menu: bool,
     pub(crate) connected: bool,
     pub(crate) connecting: bool,
     pub(crate) status: String,
     pub(crate) height: i64,
     /// Status polls gone unanswered in a row; from [`LOST_AFTER`] on the
-    /// rail reads "Reconnecting…" (the poll keeps running) until one lands.
+    /// footer says the node is not answering (the poll keeps running) until
+    /// one lands.
     pub(crate) status_misses: u32,
+    /// The node's last answer, whole: the node status menu reads it.
+    pub(crate) node: Option<backend::NodeStatus>,
+    /// `wall_now` when the height last moved: "last block 2 s ago".
+    pub(crate) block_seen: i64,
+    pub(crate) popover: Option<Popover>,
+    /// ⌘K is open, and what it holds: the typed text, the picked row.
+    pub(crate) spotlight: bool,
+    pub(crate) spotlight_query: String,
+    pub(crate) spotlight_pick: usize,
+    pub(crate) settings_win: Option<WindowKey>,
+    pub(crate) settings_page: SettingsPage,
+    /// The drawings in characters turn; off keeps them on their first frame.
+    pub(crate) motion: bool,
     pub(crate) error: String,
     /// The seated key's public half, hex; empty while locked.
     pub(crate) signer_key: String,
@@ -146,6 +198,23 @@ pub(crate) enum AppMessage {
     Disconnect,
     ToggleNetworkMenu,
     CloseNetworkMenu,
+    TogglePopover(Popover),
+    ClosePopover,
+    OpenSpotlight,
+    CloseSpotlight,
+    SpotlightTyped(String),
+    /// Up or down a row among `rows` shown.
+    SpotlightMove {
+        down: bool,
+        rows: usize,
+    },
+    /// Enter: the picked row's action.
+    SpotlightSubmit,
+    Spot(Spot),
+    OpenSettings,
+    SettingsOpened(WindowKey),
+    ShowSettingsPage(SettingsPage),
+    SetMotion(bool),
     /// Another node from the switcher: reached first, and only once it
     /// answers does the console leave the network in hand.
     SwitchNetwork(String),
@@ -189,6 +258,7 @@ pub(crate) enum AppMessage {
     PasskeyUsePhone,
     PasskeyQr(String),
     PasskeyDone(String),
+    PasskeyFailed(String),
     ShowCreateAccount,
     CreateAccountSubmit,
     CreateAccountLater,
@@ -235,6 +305,15 @@ impl Ducktape {
             status: "Not connected".into(),
             height: -1,
             status_misses: 0,
+            node: None,
+            block_seen: 0,
+            popover: None,
+            spotlight: false,
+            spotlight_query: String::new(),
+            spotlight_pick: 0,
+            settings_win: None,
+            settings_page: SettingsPage::Appearance,
+            motion: backend::load_motion(),
             error: String::new(),
             signer_key: String::new(),
             account: None,
@@ -277,6 +356,20 @@ impl Ducktape {
             None => view_wire::Task::none(),
         };
         (state, first)
+    }
+
+    /// Before the desk: reaching a node, this device's key and its
+    /// phrase, or the account step. The console window is the launcher's
+    /// size meanwhile.
+    pub(crate) fn in_launcher(&self) -> bool {
+        match self.screen {
+            Screen::Connect => true,
+            Screen::Console => {
+                !self.phrase.is_empty()
+                    || (self.signer_key.is_empty() && !self.browsing)
+                    || (self.account_step && !self.signer_key.is_empty())
+            }
+        }
     }
 
     /// Connected, but the last [`LOST_AFTER`] status polls went unanswered.

@@ -1,6 +1,6 @@
 //! The reducer: one message in, the state moved, a task out.
 
-use super::{AppMessage as Message, Ducktape, Screen};
+use super::{AppMessage as Message, Appearance, Ducktape, Screen, Spot, SpotRow};
 use crate::backend;
 use view_wire::Subscription;
 use view_wire::Task;
@@ -189,6 +189,7 @@ impl Ducktape {
                 self.leave_network()
             }
             Message::ToggleNetworkMenu => {
+                self.popover = None;
                 self.network_menu = !self.network_menu;
                 Task::none()
             }
@@ -197,7 +198,7 @@ impl Ducktape {
                 Task::none()
             }
             // The console stays on the network in hand while the other is
-            // reached: the rail reads "Reaching …", and a node that does not
+            // reached: the status reads "Reaching …", and a node that does not
             // answer leaves everything as it was (`ConnectFailed`).
             Message::SwitchNetwork(origin) => {
                 self.network_menu = false;
@@ -205,6 +206,90 @@ impl Ducktape {
                     return Task::none();
                 }
                 self.update(Message::ConnectTo(origin))
+            }
+            Message::TogglePopover(which) => {
+                self.network_menu = false;
+                self.popover = match self.popover == Some(which) {
+                    true => None,
+                    false => Some(which),
+                };
+                Task::none()
+            }
+            Message::ClosePopover => {
+                self.popover = None;
+                Task::none()
+            }
+            Message::OpenSpotlight => {
+                self.popover = None;
+                self.network_menu = false;
+                self.spotlight = true;
+                self.spotlight_query.clear();
+                self.spotlight_pick = 0;
+                Task::none()
+            }
+            Message::CloseSpotlight => {
+                self.spotlight = false;
+                self.spotlight_query.clear();
+                Task::none()
+            }
+            Message::SpotlightTyped(text) => {
+                self.spotlight_query = text;
+                self.spotlight_pick = 0;
+                Task::none()
+            }
+            Message::SpotlightMove { down, rows } => {
+                self.spotlight_pick = match (down, rows) {
+                    (_, 0) => 0,
+                    (true, rows) => (self.spotlight_pick + 1).min(rows - 1),
+                    (false, _) => self.spotlight_pick.saturating_sub(1),
+                };
+                Task::none()
+            }
+            Message::SpotlightSubmit => {
+                let rows = self.spotlight_rows();
+                match rows.into_iter().nth(self.spotlight_pick) {
+                    Some(row) => self.update(Message::Spot(row.spot)),
+                    None => Task::none(),
+                }
+            }
+            Message::Spot(spot) => {
+                self.spotlight = false;
+                self.spotlight_query.clear();
+                let message = match spot {
+                    Spot::Open(module) => Message::SelectView(module),
+                    Spot::Switch(url) => Message::SwitchNetwork(url),
+                    Spot::Settings => Message::OpenSettings,
+                    Spot::CreateAccount => Message::ShowCreateAccount,
+                    Spot::Lock => Message::Lock,
+                    Spot::Appearance(mode) => Message::SetAppearance(mode),
+                    Spot::OtherNetwork => Message::Disconnect,
+                };
+                self.update(message)
+            }
+            Message::OpenSettings => {
+                self.popover = None;
+                self.spotlight = false;
+                match self.settings_win {
+                    Some(key) => crate::shell::raise(key),
+                    None => {
+                        let (key, opened) = crate::shell::open(crate::shell::WindowKind::Settings);
+                        self.settings_win = Some(key);
+                        opened.map(Message::SettingsOpened)
+                    }
+                }
+            }
+            Message::SettingsOpened(key) => {
+                self.settings_win = Some(key);
+                Task::none()
+            }
+            Message::ShowSettingsPage(page) => {
+                self.settings_page = page;
+                Task::none()
+            }
+            Message::SetMotion(on) => {
+                self.motion = on;
+                backend::save_motion(on);
+                Task::none()
             }
             Message::SplitView(_)
             | Message::ClosePane(_)
@@ -514,22 +599,24 @@ impl Ducktape {
             Message::PasskeyCancel => {
                 self.passkey_task = None;
                 self.unlock_busy = false;
-                self.key_exists = backend::key_exists(&self.keyring);
-                Task::future(async {
-                    backend::lock_signer().await;
-                    Message::ShowToast("Passkey step cancelled".into())
-                })
+                Task::done(Message::ShowToast("Passkey step cancelled".into()))
+            }
+            Message::PasskeyFailed(error) => {
+                self.passkey_task = None;
+                self.unlock_busy = false;
+                self.unlock_error = error;
+                Task::none()
             }
             Message::PasskeyDone(pubkey) => {
                 self.passkey_task = None;
                 self.unlock_busy = false;
-                self.signer_key = pubkey;
-                self.key_exists = true;
+                if pubkey != self.signer_key {
+                    return Task::none();
+                }
                 self.account_name.clear();
                 // the passkey made (or joined) the account already
                 self.account_offer = false;
-                self.forget_secrets();
-                self.push_props();
+                self.account_step = false;
                 self.resolve_account()
             }
             Message::ShowCreateAccount => {
@@ -581,6 +668,7 @@ impl Ducktape {
                 Task::none()
             }
             Message::Lock => {
+                self.popover = None;
                 self.signer_key.clear();
                 self.account = None;
                 self.account_offer = false;
@@ -637,6 +725,9 @@ impl Ducktape {
                 if self.console_win == Some(key) {
                     self.console_win = None;
                 }
+                if self.settings_win == Some(key) {
+                    self.settings_win = None;
+                }
                 if self.focused_win == Some(key) {
                     self.focused_win = None;
                 }
@@ -669,7 +760,12 @@ impl Ducktape {
     }
 
     fn apply_status(&mut self, status: &backend::NodeStatus) {
-        self.height = i64::try_from(status.height).unwrap_or(-1);
+        let height = i64::try_from(status.height).unwrap_or(-1);
+        if height != self.height {
+            self.block_seen = self.wall_now;
+        }
+        self.height = height;
+        self.node = Some(status.clone());
         // mid-switch the line reads "Reaching …" until the other node answers
         if !self.connecting {
             self.status = format!("Connected · block {}", status.height);
@@ -701,6 +797,9 @@ impl Ducktape {
         self.active = None;
         self.badges.clear();
         self.network_menu = false;
+        self.popover = None;
+        self.spotlight = false;
+        self.node = None;
         self.browsing = false;
         self.forget_secrets();
         self.forget_phrase();
@@ -723,7 +822,7 @@ impl Ducktape {
 
     /// Asks the node which account the seated key belongs to; the answer
     /// lands as [`Message::AccountResolved`]. A failed ask keeps what the
-    /// rail already shows — the next block asks again.
+    /// menu bar already shows — the next block asks again.
     fn resolve_account(&self) -> Task<Message> {
         let Ok(key) = backend::hex_decode(&self.signer_key) else {
             return Task::none();
@@ -749,6 +848,95 @@ impl Ducktape {
             }
         })
         .and_then(Task::done)
+    }
+
+    /// What ⌘K offers for the text typed, in the order shown: the
+    /// network's programs, the other networks this device reached, then
+    /// things to do. A row matches when its title or detail holds the text,
+    /// ignoring case.
+    pub(crate) fn spotlight_rows(&self) -> Vec<SpotRow> {
+        let row = |group, title: String, meta: String, spot| SpotRow {
+            group,
+            title,
+            meta,
+            spot,
+        };
+        let mut rows: Vec<SpotRow> = crate::runtime::rail()
+            .into_iter()
+            .filter(|program| !program.empty)
+            .map(|program| {
+                row(
+                    "Programs",
+                    program.label.clone(),
+                    "Open".into(),
+                    Spot::Open(program.module),
+                )
+            })
+            .collect();
+        rows.extend(
+            self.recent_endpoints
+                .iter()
+                .filter(|entry| entry.url != self.connected_rpc)
+                .map(|entry| {
+                    let name = match entry.network.is_empty() {
+                        true => entry.host().to_owned(),
+                        false => entry.network.clone(),
+                    };
+                    row(
+                        "Networks",
+                        name,
+                        entry.host().to_owned(),
+                        Spot::Switch(entry.url.clone()),
+                    )
+                }),
+        );
+        rows.push(row(
+            "Actions",
+            "Ducktape settings".into(),
+            "theme, networks".into(),
+            Spot::Settings,
+        ));
+        if matches!(self.account, Some(None)) && !self.signer_key.is_empty() {
+            rows.push(row(
+                "Actions",
+                "Create account".into(),
+                self.network.clone(),
+                Spot::CreateAccount,
+            ));
+        }
+        if !self.signer_key.is_empty() {
+            rows.push(row(
+                "Actions",
+                "Lock".into(),
+                "this device's key".into(),
+                Spot::Lock,
+            ));
+        }
+        for (title, mode) in [
+            ("Light appearance", Appearance::Light),
+            ("Dark appearance", Appearance::Dark),
+            ("Match the system's appearance", Appearance::System),
+        ] {
+            rows.push(row(
+                "Actions",
+                title.into(),
+                String::new(),
+                Spot::Appearance(mode),
+            ));
+        }
+        rows.push(row(
+            "Actions",
+            "Add a network…".into(),
+            String::new(),
+            Spot::OtherNetwork,
+        ));
+        let query = self.spotlight_query.trim().to_lowercase();
+        rows.retain(|row| {
+            query.is_empty()
+                || row.title.to_lowercase().contains(&query)
+                || row.meta.to_lowercase().contains(&query)
+        });
+        rows
     }
 
     /// Wipes every password and typed phrase the sign-in screens hold. The
@@ -809,13 +997,16 @@ use zeroize::Zeroize;
 /// The one password rule enforced before minting or restoring a key: long
 /// enough (the keystore's own floor), and its confirmation matches.
 impl Ducktape {
-    /// A passkey creates an account (`create`) or admits this device into
-    /// one. Either way this device's key signs the writes: an existing key
-    /// is unlocked with the password, else one is minted under it. The
-    /// minted key's recovery phrase is not shown — the passkey admits a
-    /// fresh device key whenever this one is lost.
+    /// A passkey creates an account (`create`) or admits this device's key
+    /// into the account it holds. Both are about the ACCOUNT: the device
+    /// key is already set up and seated (unlocked, or minted with its
+    /// phrase) before either is offered, and it signs the writes.
     fn passkey(&mut self, create: bool) -> Task<Message> {
         if self.unlock_busy {
+            return Task::none();
+        }
+        if self.signer_key.is_empty() {
+            self.unlock_error = "Unlock this device's key first.".into();
             return Task::none();
         }
         let name = self.account_name.trim().to_owned();
@@ -823,50 +1014,22 @@ impl Ducktape {
             self.unlock_error = "Name your account first.".into();
             return Task::none();
         }
-        let mint = !self.key_exists;
-        if mint && let Some(error) = weak_password(&self.password, &self.confirm_password) {
-            self.unlock_error = error;
-            return Task::none();
-        }
-        let password = zeroize::Zeroizing::new(self.password.clone());
         let network = self.network.clone();
-        let keyring = self.keyring.clone();
         let client = backend::RpcClient::new(self.connected_rpc.clone());
+        let pubkey = self.signer_key.clone();
         self.unlock_busy = true;
         self.unlock_error.clear();
         self.passkey_phone = Default::default();
         self.passkey_qr.clear();
         let (phone, urls) = backend::passkey::Phone::new(self.passkey_phone.clone());
         let flow = async move {
-            if mint {
-                let minted = tokio::task::spawn_blocking({
-                    let (keyring, password) = (keyring.clone(), password.clone());
-                    move || backend::create_wallet(&keyring, &password)
-                })
-                .await
-                .unwrap_or_else(|_| Err("creating this device's key did not finish".into()));
-                if let Err(error) = minted {
-                    return Message::UnlockFailed(backend::user_error(error));
-                }
-            }
-            let seated = match backend::session_key_path(&keyring) {
-                Ok(path) => backend::seat_signer(path, password).await,
-                Err(error) => Err(error),
-            };
-            let pubkey = match seated {
-                Ok(pubkey) => pubkey,
-                Err(error) => return Message::UnlockFailed(backend::user_error(error)),
-            };
             let joined = match create {
                 true => backend::passkey::create_account(&client, &network, &name, &phone).await,
                 false => backend::passkey::sign_in(&client, &network, &phone).await,
             };
             match joined {
                 Ok(()) => Message::PasskeyDone(pubkey),
-                Err(error) => {
-                    backend::lock_signer().await;
-                    Message::UnlockFailed(error)
-                }
+                Err(error) => Message::PasskeyFailed(error),
             }
         };
         // the flow owns the only URL sender: the QR updates end with it
@@ -1154,7 +1317,7 @@ mod tests {
         assert!(!state.network_menu && state.connecting);
         assert_eq!(state.status, "Reaching http://b…");
         assert_eq!(state.signer_key, "ab", "still signed in while reaching");
-        // A's poll lands mid-switch: the rail keeps saying where it is going
+        // A's poll lands mid-switch: the status keeps saying where it is going
         let _ = state.update(Message::StatusPushed(status(8)));
         assert_eq!(state.status, "Reaching http://b…");
         let _ = state.update(Message::ConnectFailed {

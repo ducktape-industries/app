@@ -21,6 +21,7 @@ pub(crate) fn run() {
             windows: BTreeMap::new(),
             views: BTreeMap::new(),
             streams: HashMap::new(),
+            desk_bounds: None,
         });
         desktop.update(cx, |desktop, cx| desktop.sync_appearance(cx));
         let url_desktop = desktop.downgrade();
