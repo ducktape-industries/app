@@ -105,6 +105,9 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         let secret = private || role == Role::PasswordInput;
         let name = match (private, node.label()) {
             (true, Some(_)) => MASK.to_owned(),
+            (_, label) if node.class_name() == Some(crate::a11y::AX_WHOLE) => {
+                label.unwrap_or_default().to_owned()
+            }
             (_, label) => truncate(label.unwrap_or_default()),
         };
         let description = node.description().map(|text| {

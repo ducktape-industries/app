@@ -60,6 +60,10 @@ pub struct Ducktape {
     /// A passkey ceremony in flight (the browser has it); dropping the
     /// handle cancels it.
     pub(crate) passkey_task: Option<view_wire::task::Handle>,
+    /// Set once the person picks "Use a phone instead"; the ceremony reads it.
+    pub(crate) passkey_phone: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The QR URL of the touch in flight (its callback is the relay slot).
+    pub(crate) passkey_qr: String,
     /// A freshly minted key's recovery phrase, shown once until written down.
     pub(crate) phrase: String,
     /// The program whose view is open.
@@ -130,6 +134,8 @@ pub(crate) enum AppMessage {
     PasskeyCreateSubmit,
     PasskeySignInSubmit,
     PasskeyCancel,
+    PasskeyUsePhone,
+    PasskeyQr(String),
     PasskeyDone(String),
     ForgetEndpoint(String),
     Lock,
@@ -183,6 +189,8 @@ impl Ducktape {
             restore_confirm_password: String::new(),
             account_name: String::new(),
             passkey_task: None,
+            passkey_phone: Default::default(),
+            passkey_qr: String::new(),
             phrase: String::new(),
             active: None,
             badges: BTreeMap::new(),

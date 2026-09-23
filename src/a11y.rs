@@ -93,6 +93,17 @@ pub fn text_field(
 /// still reads them — they are on the screen.
 pub const AX_PRIVATE: &str = "ax_private";
 
+/// Class name of a node whose name the AX tree gives whole, past its
+/// length cap: a URL an agent must read back in full.
+pub const AX_WHOLE: &str = "ax_whole";
+
+/// Marks the element's accessible node [`AX_WHOLE`]: the passkey QR's URL.
+pub fn whole<E: InteractiveElement>(element: E) -> E {
+    aria(element, |node| {
+        node.a11y_synthetic_children(|tree| tree.parent_node().set_class_name(AX_WHOLE))
+    })
+}
+
 /// Marks the element's accessible node [`AX_PRIVATE`]: the recovery phrase.
 pub fn private<E: InteractiveElement>(element: E) -> E {
     aria(element, |node| {

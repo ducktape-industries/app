@@ -384,6 +384,15 @@ impl Ducktape {
             }
             Message::PasskeyCreateSubmit => self.passkey(true),
             Message::PasskeySignInSubmit => self.passkey(false),
+            Message::PasskeyUsePhone => {
+                self.passkey_phone
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                Task::none()
+            }
+            Message::PasskeyQr(url) => {
+                self.passkey_qr = url;
+                Task::none()
+            }
             Message::PasskeyCancel => {
                 self.passkey_task = None;
                 self.unlock_busy = false;
@@ -557,7 +566,10 @@ impl Ducktape {
         let client = backend::RpcClient::new(self.connected_rpc.clone());
         self.unlock_busy = true;
         self.unlock_error.clear();
-        let (task, handle) = Task::future(async move {
+        self.passkey_phone = Default::default();
+        self.passkey_qr.clear();
+        let (phone, urls) = backend::passkey::Phone::new(self.passkey_phone.clone());
+        let flow = async move {
             if mint {
                 let minted = tokio::task::spawn_blocking({
                     let (network, password) = (network.clone(), password.clone());
@@ -578,8 +590,8 @@ impl Ducktape {
                 Err(error) => return Message::UnlockFailed(backend::user_error(error)),
             };
             let joined = match create {
-                true => backend::passkey::create_account(&client, &network, &name).await,
-                false => backend::passkey::sign_in(&client, &network).await,
+                true => backend::passkey::create_account(&client, &network, &name, &phone).await,
+                false => backend::passkey::sign_in(&client, &network, &phone).await,
             };
             match joined {
                 Ok(()) => Message::PasskeyDone(pubkey),
@@ -588,7 +600,12 @@ impl Ducktape {
                     Message::UnlockFailed(error)
                 }
             }
-        })
+        };
+        // the flow owns the only URL sender: the QR updates end with it
+        let (task, handle) = Task::stream(futures::stream::select(
+            urls.map(Message::PasskeyQr),
+            futures::stream::once(flow),
+        ))
         .abortable();
         self.passkey_task = Some(handle.abort_on_drop());
         task

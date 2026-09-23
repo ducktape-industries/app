@@ -21,7 +21,7 @@ impl DesktopWindow {
         use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         if state.passkey_waiting {
-            return self.passkey_waiting(cx);
+            return self.passkey_waiting(state, cx);
         }
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
         let account_name = self.input(
@@ -213,10 +213,69 @@ impl DesktopWindow {
             .into_any_element()
     }
 
-    /// A passkey ceremony is in the browser: say so, and offer to stop.
-    fn passkey_waiting(&mut self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    /// A passkey ceremony is in the browser, or on a phone through the QR:
+    /// say so, and offer to stop.
+    fn passkey_waiting(&mut self, state: &Facts, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        use gpui_kit::component::button::ButtonVariants as _;
         use gpui_kit::*;
         let colors = gpui_kit::component::Theme::global(cx).color_tokens();
+        let (title, hint) = match state.passkey_qr {
+            Some(_) => (
+                "Scan with your phone",
+                "Open your phone's camera on the code and follow it. It asks for your passkey twice; a new code shows here for the second time.",
+            ),
+            None => (
+                "Continue in your browser…",
+                "Your browser asks for your passkey twice. Come back here once it says you're done.",
+            ),
+        };
+        let phone = match &state.passkey_qr {
+            Some(url) => div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap_2()
+                .child(
+                    div()
+                        .id("passkey-qr")
+                        .role(Role::Image)
+                        .aria_label("Passkey QR code")
+                        .child(crate::render::qr(&view_wire::Qr {
+                            payload: Some(url.clone().into_bytes()),
+                            size: Some(view_wire::QrSize::Total(240.)),
+                            ..Default::default()
+                        })),
+                )
+                .child(crate::a11y::whole(
+                    div()
+                        .id("passkey-qr-url")
+                        .role(Role::Label)
+                        .aria_label(url.clone())
+                        .w_full()
+                        .text_size(px(11.))
+                        .text_color(colors.muted_foreground)
+                        .child(url.clone()),
+                ))
+                .child({
+                    let url = url.clone();
+                    gpui_kit::component::button::Button::new("passkey-qr-copy")
+                        .label("Copy link")
+                        .outline()
+                        .on_click(move |_, _, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
+                        })
+                })
+                .into_any_element(),
+            None => self
+                .action(
+                    "passkey-use-phone",
+                    "Use a phone instead",
+                    || Message::PasskeyUsePhone,
+                    false,
+                )
+                .ghost()
+                .into_any_element(),
+        };
         div()
             .id("passkey-waiting")
             .size_full()
@@ -233,18 +292,24 @@ impl DesktopWindow {
                         div()
                             .id("passkey-waiting-status")
                             .role(Role::Status)
-                            .aria_label("Continue in your browser")
+                            .aria_label(title)
                             .text_size(px(20.))
                             .font_weight(FontWeight::MEDIUM)
-                            .child("Continue in your browser…"),
+                            .child(title),
                     )
                     .child(
                         div()
                             .text_size(px(12.5))
                             .text_color(colors.muted_foreground)
-                            .child("Your browser asks for your passkey twice. Come back here once it says you're done."),
+                            .child(hint),
                     )
-                    .child(self.action("passkey-cancel", "Cancel", || Message::PasskeyCancel, false)),
+                    .child(phone)
+                    .child(self.action(
+                        "passkey-cancel",
+                        "Cancel",
+                        || Message::PasskeyCancel,
+                        false,
+                    )),
             )
             .into_any_element()
     }
