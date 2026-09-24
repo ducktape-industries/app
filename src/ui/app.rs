@@ -19,7 +19,35 @@ pub(crate) enum Appearance {
     Dark,
 }
 
-/// A menu hanging off the menu bar; one at a time.
+/// What is open over the desk: one at a time, and it keeps the desk's
+/// keys while it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Overlay {
+    /// ⌘K.
+    Spotlight,
+    /// "Add a device…".
+    Approve,
+    Settings,
+    /// The network switcher.
+    Network,
+    /// A menu off the bar.
+    Menu(Popover),
+}
+
+impl Overlay {
+    /// What closes it (a click on its backdrop, Escape).
+    pub(crate) fn close(self) -> AppMessage {
+        match self {
+            Self::Spotlight => AppMessage::CloseSpotlight,
+            Self::Approve => AppMessage::ApproveClose,
+            Self::Settings => AppMessage::CloseSettings,
+            Self::Network => AppMessage::CloseNetworkMenu,
+            Self::Menu(_) => AppMessage::ClosePopover,
+        }
+    }
+}
+
+/// A menu hanging off the menu bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Popover {
     /// The breathing dot: how the node is doing.
@@ -119,8 +147,6 @@ pub struct Ducktape {
     /// The network shares its name with another chain this device met
     /// first: its keys are its own, and the sign-in screen says so.
     pub(crate) other_chain: bool,
-    /// The menu bar's network menu is open.
-    pub(crate) network_menu: bool,
     pub(crate) connected: bool,
     pub(crate) connecting: bool,
     pub(crate) status: String,
@@ -133,13 +159,12 @@ pub struct Ducktape {
     pub(crate) node: Option<backend::NodeStatus>,
     /// `wall_now` when the height last moved: "last block 2 s ago".
     pub(crate) block_seen: i64,
-    pub(crate) popover: Option<Popover>,
-    /// ⌘K is open, and what it holds: the typed text, the picked row.
-    pub(crate) spotlight: bool,
+    /// What is open over the desk.
+    pub(crate) overlay: Option<Overlay>,
+    /// What ⌘K holds: the typed text, the picked row.
     pub(crate) spotlight_query: String,
     pub(crate) spotlight_pick: usize,
-    /// Settings are open over the desk.
-    pub(crate) settings: bool,
+    /// The Settings page shown, kept while Settings is closed.
     pub(crate) settings_page: SettingsPage,
     /// The drawings in characters turn; off keeps them on their first frame.
     pub(crate) motion: bool,
@@ -155,9 +180,6 @@ pub struct Ducktape {
     pub(crate) key_exists: bool,
     /// Reading without a key: the console opens, writes are refused.
     pub(crate) browsing: bool,
-    /// A device on the account approving a new one: the dialog is open
-    /// (its code and the request found are `sign_in`'s).
-    pub(crate) approving: bool,
     /// The key and account steps, and the device-approval dialog: what a
     /// sign-in half done holds, secrets included. Leaving a network drops
     /// it whole.
@@ -395,7 +417,6 @@ impl Ducktape {
             seat_request: None,
             keyring: String::new(),
             other_chain: false,
-            network_menu: false,
             connected: false,
             connecting: false,
             status: "Not connected".into(),
@@ -403,11 +424,9 @@ impl Ducktape {
             status_misses: 0,
             node: None,
             block_seen: 0,
-            popover: None,
-            spotlight: false,
+            overlay: None,
             spotlight_query: String::new(),
             spotlight_pick: 0,
-            settings: false,
             settings_page: SettingsPage::Appearance,
             motion: backend::load_motion(),
             error: String::new(),
@@ -415,7 +434,6 @@ impl Ducktape {
             account: None,
             key_exists: false,
             browsing: false,
-            approving: false,
             sign_in: SignIn::default(),
             active: None,
             badges: BTreeMap::new(),

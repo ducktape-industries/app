@@ -163,7 +163,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
 
 #[gpui_kit::test]
 fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
-    let (_, _, view, mut native) = console(cx);
+    let (model, _, view, mut native) = console(cx);
     native.update(|window, cx| press("pane/0/split", window, cx));
     native.update(|window, cx| {
         draw(window, cx);
@@ -171,6 +171,19 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     });
     // the first window fills the desk; the second covers its top-left
     let behind = gpui_kit::point(px(1200.), px(700.));
+    // over a menu's backdrop the press closes the menu, and raises nothing
+    model.update(&mut native, |model, _| {
+        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Account))
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    native.simulate_click(behind, gpui_kit::Modifiers::none());
+    native.update(|window, cx| {
+        draw(window, cx);
+        assert_eq!(view.read(cx).layout.focused, 1, "raised under a menu");
+        assert_eq!(model.read(cx).state.overlay, None);
+    });
     native.simulate_click(behind, gpui_kit::Modifiers::none());
     native.update(|window, cx| {
         draw(window, cx);
@@ -230,39 +243,22 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
     key(&mut native, "secondary-1");
     assert_eq!(panes(&mut native, &view), (2, 0), "⌘1 focuses the first");
 
-    type Open = fn(&mut Ducktape);
-    let overlays: [(&str, Open); 5] = [
-        ("spotlight", |state| state.spotlight = true),
-        ("approve", |state| state.approving = true),
-        ("settings", |state| state.settings = true),
-        ("network menu", |state| state.network_menu = true),
-        ("popover", |state| {
-            state.popover = Some(crate::Popover::Node)
-        }),
-    ];
-    for (name, open) in overlays {
-        model.update(&mut native, |model, _| open(&mut model.state));
+    for name in ALL_OVERLAYS {
+        model.update(&mut native, |model, _| model.state.overlay = Some(name));
         assert_eq!(
             native.update(|_, cx| view.read(cx).command_w_pane(cx)),
             None,
-            "⌘W under the {name} closes the window, not a pane"
+            "⌘W under {name:?} closes the window, not a pane"
         );
         for stroke in ["secondary-d", "secondary-2"] {
             key(&mut native, stroke);
             assert_eq!(
                 panes(&mut native, &view),
                 (2, 0),
-                "{stroke} reached the desk under the {name}"
+                "{stroke} reached the desk under {name:?}"
             );
         }
-        model.update(&mut native, |model, _| {
-            let state = &mut model.state;
-            state.spotlight = false;
-            state.approving = false;
-            state.settings = false;
-            state.network_menu = false;
-            state.popover = None;
-        });
+        model.update(&mut native, |model, _| model.state.overlay = None);
     }
 
     assert_eq!(
@@ -284,28 +280,45 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
     );
 }
 
-/// ⌘K opens and closes Spotlight; Escape closes Settings and a menu.
+const ALL_OVERLAYS: [crate::Overlay; 7] = [
+    crate::Overlay::Spotlight,
+    crate::Overlay::Approve,
+    crate::Overlay::Settings,
+    crate::Overlay::Network,
+    crate::Overlay::Menu(crate::Popover::Node),
+    crate::Overlay::Menu(crate::Popover::Account),
+    crate::Overlay::Menu(crate::Popover::Notifications),
+];
+
+/// ⌘K opens and closes Spotlight; Escape closes whatever is open, and a
+/// click on its backdrop does too.
 #[gpui_kit::test]
-fn command_k_toggles_spotlight_and_escape_closes_settings_and_menus(cx: &mut TestAppContext) {
+fn command_k_toggles_spotlight_and_escape_closes_any_overlay(cx: &mut TestAppContext) {
     let (model, _, _, mut native) = console(cx);
-    let read = |native: &mut VisualTestContext| {
-        native.update(|_, cx| {
-            let state = &model.read(cx).state;
-            (state.spotlight, state.settings, state.popover)
-        })
-    };
+    let open = |native: &mut VisualTestContext| native.update(|_, cx| model.read(cx).state.overlay);
     key(&mut native, "secondary-k");
-    assert_eq!(read(&mut native), (true, false, None));
+    assert_eq!(open(&mut native), Some(crate::Overlay::Spotlight));
     key(&mut native, "secondary-k");
-    assert_eq!(read(&mut native), (false, false, None));
-    model.update(&mut native, |model, _| model.state.settings = true);
-    key(&mut native, "escape");
-    assert_eq!(read(&mut native), (false, false, None));
-    model.update(&mut native, |model, _| {
-        model.state.popover = Some(crate::Popover::Account)
-    });
-    key(&mut native, "escape");
-    assert_eq!(read(&mut native), (false, false, None));
+    assert_eq!(open(&mut native), None);
+    for overlay in ALL_OVERLAYS {
+        model.update(&mut native, |model, _| model.state.overlay = Some(overlay));
+        key(&mut native, "escape");
+        assert_eq!(open(&mut native), None, "Escape left {overlay:?} open");
+        // a click outside its card, low on the window: on its backdrop
+        model.update(&mut native, |model, _| model.state.overlay = Some(overlay));
+        native.update(|window, cx| {
+            draw(window, cx);
+        });
+        native.simulate_click(
+            gpui_kit::point(px(640.), px(790.)),
+            gpui_kit::Modifiers::none(),
+        );
+        assert_eq!(
+            open(&mut native),
+            None,
+            "its backdrop left {overlay:?} open"
+        );
+    }
 }
 
 /// The window in front is the model's active program, however it got

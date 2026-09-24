@@ -106,63 +106,36 @@ impl DesktopWindow {
                 .child("Add a network"),
         );
         let count = state.recent_endpoints.len();
-        let close = self.model.clone();
-        let escape = self.model.clone();
-        let menu = div()
-            .id("network-menu")
-            .control(Role::Menu, "Networks")
-            .occlude()
-            .absolute()
-            .top(px(4.))
-            .left(px(if cfg!(target_os = "macos") { 78. } else { 8. }))
-            .w(px(if narrow { 300. } else { 400. }))
-            .flex()
-            .flex_col()
-            .border(px(1.5))
-            .border_color(ink.ink)
-            .bg(ink.bg)
-            .shadow_lg()
-            // a click on the menu's own padding is not a click outside it
-            .on_click(|_, _, cx| cx.stop_propagation())
-            .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                if event.keystroke.key == "escape" {
-                    cx.stop_propagation();
-                    escape.update(cx, |model, cx| {
-                        model.dispatch(Message::CloseNetworkMenu, cx)
-                    });
-                }
-            })
-            .child(
-                mono(400, 12.)
-                    .px(px(16.))
-                    .py(px(12.))
-                    .text_color(ink.muted)
-                    .child(format!("Networks · {count}")),
-            )
-            .children(rows)
-            .child(
-                div()
-                    .flex()
-                    .px(px(16.))
-                    .py(px(12.))
-                    .border_t_1()
-                    .border_color(ink.line)
-                    .child(add),
-            );
-        div()
-            .id("network-menu-backdrop")
-            .absolute()
-            .top(px(36.))
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .occlude()
-            .on_click(move |_, _, cx| {
-                close.update(cx, |model, cx| {
-                    model.dispatch(Message::CloseNetworkMenu, cx)
-                });
-            })
-            .child(menu)
-            .into_any_element()
+        self.overlay(
+            "network-menu",
+            Role::Menu,
+            "Networks",
+            || Message::CloseNetworkMenu,
+            false,
+            &ink,
+            |card| {
+                card.absolute()
+                    .top(px(4.))
+                    .left(px(if cfg!(target_os = "macos") { 78. } else { 8. }))
+                    .w(px(if narrow { 300. } else { 400. }))
+                    .child(
+                        mono(400, 12.)
+                            .px(px(16.))
+                            .py(px(12.))
+                            .text_color(ink.muted)
+                            .child(format!("Networks · {count}")),
+                    )
+                    .children(rows)
+                    .child(
+                        div()
+                            .flex()
+                            .px(px(16.))
+                            .py(px(12.))
+                            .border_t_1()
+                            .border_color(ink.line)
+                            .child(add),
+                    )
+            },
+        )
     }
 }

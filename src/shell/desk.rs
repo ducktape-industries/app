@@ -4,7 +4,7 @@
 //! status on a click), who is signed in (their menu), and Settings.
 
 use super::*;
-use crate::{Popover, Spot};
+use crate::{Overlay, Popover, Spot};
 use screens::{Facts, pulse};
 
 /// The menu bar's height.
@@ -46,19 +46,19 @@ impl DesktopWindow {
         let console = self.kind == crate::shell::WindowKind::Console;
         let bar = console.then(|| self.menubar(&state, &rail, narrow, window, cx));
         let seat = self.pane_stage(window, cx);
-        let overlay = match console {
-            false => None,
-            true if state.spotlight => Some(self.spotlight(&state, window, cx)),
-            true if state.approving => Some(self.approve(&state, window, cx)),
-            true if state.settings => Some(self.settings(&state)),
-            true if state.network_menu => Some(self.network_menu(&state, narrow)),
-            true => state.popover.map(|popover| match popover {
-                Popover::Node => self.node_menu(&state, cx),
-                Popover::Account => self.account_menu(&state, cx),
-                Popover::Notifications => self.notifications(&state, window, cx),
-            }),
+        let overlay = match state.overlay.filter(|_| console) {
+            None => None,
+            Some(Overlay::Spotlight) => Some(self.spotlight(&state, window, cx)),
+            Some(Overlay::Approve) => Some(self.approve(&state, window, cx)),
+            Some(Overlay::Settings) => Some(self.settings(&state)),
+            Some(Overlay::Network) => Some(self.network_menu(&state, narrow)),
+            Some(Overlay::Menu(Popover::Node)) => Some(self.node_menu(&state, cx)),
+            Some(Overlay::Menu(Popover::Account)) => Some(self.account_menu(&state, cx)),
+            Some(Overlay::Menu(Popover::Notifications)) => {
+                Some(self.notifications(&state, window, cx))
+            }
         };
-        if !state.spotlight {
+        if state.overlay != Some(Overlay::Spotlight) {
             self.spotlight_focused = false;
         }
         div()
@@ -171,10 +171,10 @@ impl DesktopWindow {
         let network = item(
             "network-switcher",
             SharedString::from(format!("Network: {}", state.network)),
-            state.network_menu,
+            state.overlay == Some(Overlay::Network),
             || Message::ToggleNetworkMenu,
         )
-        .aria_expanded(state.network_menu)
+        .aria_expanded(state.overlay == Some(Overlay::Network))
         .child(sans(500, 13.).child(state.network.clone()))
         .child(div().text_color(ink.muted).child("⌄"));
         let chord = chord_label("K");
@@ -194,7 +194,7 @@ impl DesktopWindow {
                 .child(chord),
         );
         let unread = crate::runtime::notify::center().unread();
-        let bell_open = state.popover == Some(Popover::Notifications);
+        let bell_open = state.overlay == Some(Overlay::Menu(Popover::Notifications));
         let bell = item(
             "rail-notifications",
             SharedString::from(match unread {
@@ -240,7 +240,7 @@ impl DesktopWindow {
             (_, true) => (false, "Node: not answering".to_owned()),
             (false, false) => (true, format!("Node: in sync, block {}", state.height)),
         };
-        let node_open = state.popover == Some(Popover::Node);
+        let node_open = state.overlay == Some(Overlay::Menu(Popover::Node));
         let node = item("rail-connection", said.into(), node_open, || {
             Message::TogglePopover(Popover::Node)
         })
@@ -248,7 +248,7 @@ impl DesktopWindow {
         .px(px(12.))
         .child(pulse(breath, state.motion, &ink));
         let unlocked = !state.signer_key.is_empty();
-        let account_open = state.popover == Some(Popover::Account);
+        let account_open = state.overlay == Some(Overlay::Menu(Popover::Account));
         let who = match (&state.account, unlocked) {
             (_, false) => item("sign-in", "Sign in".into(), false, || Message::SignIn)
                 .child(div().underline().child("Sign in")),
@@ -362,10 +362,56 @@ impl DesktopWindow {
             .into_any_element()
     }
 
-    /// A menu hanging below the bar (the canvas's menus: `top: 40px;
-    /// border: 1.5px solid ink; box-shadow: 0 10px 30px`), over a backdrop
-    /// that closes it; Escape closes it too. `right` places it from the
-    /// window's right edge.
+    /// Something open over the desk, below the bar (its items stay live,
+    /// and one menu gives way to the next in one click): a backdrop that
+    /// closes it on a click, dimmed when `scrim`, and on it the card the
+    /// canvas dresses its menus and dialogs in, `border: 1.5px solid ink`
+    /// and a soft shadow. `dress` places and fills the card. Escape is
+    /// `global_key`'s.
+    #[allow(clippy::too_many_arguments, reason = "one frame, five overlays")]
+    pub(super) fn overlay(
+        &self,
+        id: &'static str,
+        role: gpui_kit::Role,
+        name: &'static str,
+        close: fn() -> Message,
+        scrim: bool,
+        ink: &super::ink::Ink,
+        dress: impl FnOnce(gpui_kit::Stateful<gpui_kit::Div>) -> gpui_kit::Stateful<gpui_kit::Div>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::*;
+        let model = self.model.clone();
+        let backdrop = div()
+            .id(SharedString::from(format!("{id}-backdrop")))
+            .absolute()
+            .top(px(BAR))
+            .left_0()
+            .right_0()
+            .bottom_0()
+            .occlude()
+            .when(scrim, |backdrop| {
+                backdrop.bg(ink.bg.opacity(0.6)).flex().justify_center()
+            })
+            .on_click(move |_, _, cx| {
+                model.update(cx, |model, cx| model.dispatch(close(), cx));
+            });
+        let card = div()
+            .id(id)
+            .control(role, name)
+            .occlude()
+            .flex()
+            .flex_col()
+            .bg(ink.bg)
+            .text_color(ink.ink)
+            .border(px(1.5))
+            .border_color(ink.ink)
+            .shadow_lg()
+            .on_click(|_, _, cx| cx.stop_propagation());
+        backdrop.child(dress(card)).into_any_element()
+    }
+
+    /// A menu hanging below the bar (the canvas's menus: `top: 40px`), `right`
+    /// from the window's right edge.
     fn hanging(
         &self,
         id: &'static str,
@@ -375,51 +421,23 @@ impl DesktopWindow {
         body: impl IntoElement,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use super::ink::*;
         use gpui_kit::*;
-        let ink = Ink::of(self.model.read(cx).state.dark());
-        let close = self.model.clone();
-        let escape = self.model.clone();
-        div()
-            .id(SharedString::from(format!("{id}-backdrop")))
-            // below the bar: its items stay live, and one menu gives way to
-            // the next in one click
-            .absolute()
-            .top(px(BAR))
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .occlude()
-            .on_click(move |_, _, cx| {
-                close.update(cx, |model, cx| model.dispatch(Message::ClosePopover, cx));
-            })
-            .child(
-                div()
-                    .id(id)
-                    .control(Role::Dialog, name)
-                    .occlude()
-                    .absolute()
+        let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
+        self.overlay(
+            id,
+            Role::Dialog,
+            name,
+            || Message::ClosePopover,
+            false,
+            &ink,
+            |card| {
+                card.absolute()
                     .top(px(4.))
                     .right(px(right))
                     .w(px(width))
-                    .flex()
-                    .flex_col()
-                    .bg(ink.bg)
-                    .text_color(ink.ink)
-                    .border(px(1.5))
-                    .border_color(ink.ink)
-                    .shadow_lg()
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "escape" {
-                            cx.stop_propagation();
-                            escape
-                                .update(cx, |model, cx| model.dispatch(Message::ClosePopover, cx));
-                        }
-                    })
-                    .child(body),
-            )
-            .into_any_element()
+                    .child(body)
+            },
+        )
     }
 
     /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`, a mono
@@ -1019,51 +1037,33 @@ impl DesktopWindow {
                     ))),
             ),
         };
-        let close = self.model.clone();
-        div()
-            .id("approve-backdrop")
-            .absolute()
-            .top(px(BAR))
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .occlude()
-            .bg(ink.bg.opacity(0.6))
-            .flex()
-            .justify_center()
-            .on_click(move |_, _, cx| {
-                close.update(cx, |model, cx| model.dispatch(Message::ApproveClose, cx));
-            })
-            .child(
-                div()
-                    .id("approve")
-                    .control(Role::Dialog, "Add a device")
-                    .occlude()
-                    .mt(px(84.))
+        let cancel = self.link(
+            "approve-cancel",
+            "Cancel",
+            || Message::ApproveClose,
+            false,
+            &ink,
+        );
+        self.overlay(
+            "approve",
+            Role::Dialog,
+            "Add a device",
+            || Message::ApproveClose,
+            true,
+            &ink,
+            |card| {
+                card.mt(px(84.))
                     .w(px(440.))
                     .max_w_full()
                     .self_start()
-                    .flex()
-                    .flex_col()
                     .gap(px(18.))
                     .p(px(24.))
-                    .bg(ink.bg)
-                    .border(px(1.5))
-                    .border_color(ink.ink)
-                    .shadow_lg()
-                    .on_click(|_, _, cx| cx.stop_propagation())
                     .child(tag("Add a device", &ink))
                     .child(ink::note(said, ink.muted))
                     .child(fields)
-                    .child(self.link(
-                        "approve-cancel",
-                        "Cancel",
-                        || Message::ApproveClose,
-                        false,
-                        &ink,
-                    )),
-            )
-            .into_any_element()
+                    .child(cancel)
+            },
+        )
     }
 
     /// ⌘K: one field, and what it finds among the programs, the networks
@@ -1173,40 +1173,19 @@ impl DesktopWindow {
             );
         }
         let keys = self.model.clone();
-        let close = self.model.clone();
-        let scrim = ink.bg.opacity(0.6);
-        div()
-            .id("spotlight-backdrop")
-            .absolute()
-            .top(px(BAR))
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .occlude()
-            .bg(scrim)
-            .flex()
-            .justify_center()
-            .on_click(move |_, _, cx| {
-                close.update(cx, |model, cx| model.dispatch(Message::CloseSpotlight, cx));
-            })
-            .child(
-                div()
-                    .id("spotlight")
-                    .control(Role::Dialog, "Search")
-                    .occlude()
-                    .mt(px(84.))
+        self.overlay(
+            "spotlight",
+            Role::Dialog,
+            "Search",
+            || Message::CloseSpotlight,
+            true,
+            &ink,
+            |card| {
+                card.mt(px(84.))
                     .w(px(600.))
                     .max_w_full()
                     .h_auto()
                     .self_start()
-                    .flex()
-                    .flex_col()
-                    .bg(ink.bg)
-                    .text_color(ink.ink)
-                    .border(px(1.5))
-                    .border_color(ink.ink)
-                    .shadow_lg()
-                    .on_click(|_, _, cx| cx.stop_propagation())
                     .capture_key_down(move |event: &KeyDownEvent, _, cx| {
                         let message = match event.keystroke.key.as_str() {
                             "up" => Message::SpotlightMove {
@@ -1217,7 +1196,6 @@ impl DesktopWindow {
                                 down: true,
                                 rows: count,
                             },
-                            "escape" => Message::CloseSpotlight,
                             _ => return,
                         };
                         cx.stop_propagation();
@@ -1248,9 +1226,9 @@ impl DesktopWindow {
                             .child("↑↓ move")
                             .child("↵ open")
                             .child("esc close"),
-                    ),
-            )
-            .into_any_element()
+                    )
+            },
+        )
     }
 }
 

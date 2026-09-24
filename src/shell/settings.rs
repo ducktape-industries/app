@@ -92,8 +92,6 @@ impl DesktopWindow {
                     .py(px(24.))
                     .child(page),
             );
-        let close = self.model.clone();
-        let escape = self.model.clone();
         let shut = self.model.clone();
         let surface = ink.surface;
         let title = div()
@@ -126,50 +124,24 @@ impl DesktopWindow {
                         gpui_kit::component::Icon::new(gpui_kit::assets::IconName::X).size(px(16.)),
                     ),
             ));
-        div()
-            .id("settings-backdrop")
-            .absolute()
-            .top(px(desk::BAR))
-            .left_0()
-            .right_0()
-            .bottom_0()
-            .occlude()
-            .bg(ink.bg.opacity(0.6))
-            .flex()
-            .justify_center()
-            .on_click(move |_, _, cx| {
-                close.update(cx, |model, cx| model.dispatch(Message::CloseSettings, cx));
-            })
-            .child(
-                div()
-                    .id("settings-window")
-                    .control(Role::Dialog, "Settings")
-                    .occlude()
-                    .mt(px(74.))
+        self.overlay(
+            "settings-window",
+            Role::Dialog,
+            "Settings",
+            || Message::CloseSettings,
+            true,
+            &ink,
+            |card| {
+                card.mt(px(74.))
                     .w(px(760.))
                     .h(px(540.))
                     .max_w_full()
                     .max_h_full()
                     .self_start()
-                    .flex()
-                    .flex_col()
-                    .bg(ink.bg)
-                    .text_color(ink.ink)
-                    .border(px(1.5))
-                    .border_color(ink.ink)
-                    .shadow_lg()
-                    .on_click(|_, _, cx| cx.stop_propagation())
-                    .on_key_down(move |event: &KeyDownEvent, _, cx| {
-                        if event.keystroke.key == "escape" {
-                            cx.stop_propagation();
-                            escape
-                                .update(cx, |model, cx| model.dispatch(Message::CloseSettings, cx));
-                        }
-                    })
                     .child(title)
-                    .child(body),
-            )
-            .into_any_element()
+                    .child(body)
+            },
+        )
     }
 
     fn appearance_page(&self, state: &screens::Facts) -> gpui_kit::AnyElement {
