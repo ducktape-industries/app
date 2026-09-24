@@ -2,6 +2,7 @@
 
 use super::{AppMessage as Message, Appearance, Ducktape, Screen, Spot, SpotRow};
 use crate::backend;
+use crate::runtime::Intent;
 use view_wire::Subscription;
 use view_wire::Task;
 
@@ -288,37 +289,24 @@ impl Ducktape {
                 backend::save_motion(on);
                 Task::none()
             }
-            Message::SplitView(_)
-            | Message::ClosePane(_)
-            | Message::FocusPane(_)
-            | Message::PopOut(_)
-            | Message::PopIn(_) => Task::none(),
             Message::SelectView(module) => {
                 self.active = Some(module);
                 self.badges.remove(module);
                 Task::none()
             }
-            Message::ViewEvent(module, event) => {
-                match event.kind.as_str() {
-                    "badge" => {
-                        let count = crate::runtime::event_int(&event, "count");
-                        match count > 0 {
-                            true => {
-                                self.badges.insert(module, count);
-                            }
-                            false => {
-                                self.badges.remove(module);
-                            }
-                        }
-                    }
-                    "open_link" => {
-                        let link = crate::runtime::event_text(&event, "link");
-                        return self.update(Message::OpenLink(link));
-                    }
-                    _ => {}
+            Message::ViewEvent(module, intent) => match intent {
+                Intent::Badge(count) if count > 0 => {
+                    self.badges.insert(module, count);
+                    Task::none()
                 }
-                Task::none()
-            }
+                Intent::Badge(_) => {
+                    self.badges.remove(module);
+                    Task::none()
+                }
+                Intent::OpenLink(link) => self.update(Message::OpenLink(link)),
+                // the dispatch redraws
+                Intent::Notified => Task::none(),
+            },
             Message::NotifyOpen(id) => {
                 self.popover = None;
                 let entry = crate::runtime::notify::center().open(id);
@@ -1290,29 +1278,19 @@ mod tests {
     #[test]
     fn a_view_event_sets_its_badge_and_opens_its_link() {
         let (mut state, _) = Ducktape::boot();
-        let event = |kind: &str, detail: &str| crate::runtime::ModuleViewEvent {
-            kind: kind.into(),
-            detail: detail.into(),
-        };
-        let _ = state.update(Message::ViewEvent("chat", event("badge", r#"{"count":3}"#)));
+        let _ = state.update(Message::ViewEvent("chat", Intent::Badge(3)));
         assert_eq!(state.badges.get("chat"), Some(&3));
-        let _ = state.update(Message::ViewEvent("chat", event("badge", r#"{"count":0}"#)));
+        let _ = state.update(Message::ViewEvent("chat", Intent::Badge(0)));
         assert!(state.badges.is_empty(), "a zero count clears the badge");
-        let _ = state.update(Message::ViewEvent(
-            "chat",
-            event("badge", r#"{"count":-2}"#),
-        ));
+        let _ = state.update(Message::ViewEvent("chat", Intent::Badge(-2)));
         assert!(state.badges.is_empty());
-        let _ = state.update(Message::ViewEvent("chat", event("vote", "{}")));
-        assert!(
-            state.badges.is_empty() && state.active.is_none(),
-            "unknown kinds do nothing"
-        );
+        let _ = state.update(Message::ViewEvent("chat", Intent::Notified));
+        assert!(state.badges.is_empty() && state.active.is_none());
 
         crate::runtime::list_for_test("view-event-link");
         let _ = state.update(Message::ViewEvent(
             "chat",
-            event("open_link", r#"{"link":"duck://view-event-link/room/7"}"#),
+            Intent::OpenLink("duck://view-event-link/room/7".into()),
         ));
         assert_eq!(state.active, Some("view-event-link"));
         assert!(state.reveal, "a link brings its seat forward");

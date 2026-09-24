@@ -28,7 +28,7 @@ use std::time::Instant;
 
 use super::kernel::spawn_device;
 use super::wire::doors::{self, Notice, Post, Posted};
-use super::{Guest, ModuleViewEvent, wire};
+use super::{Guest, Intent, wire};
 use crate::backend::{read_prefs, write_prefs};
 use crate::shell::WindowKey;
 
@@ -522,10 +522,7 @@ pub(super) fn answer(
         (posted, banner, entry)
     };
     // the bell and the bar redraw
-    guest.intents.push(ModuleViewEvent {
-        kind: "notified".into(),
-        detail: String::from("{}"),
-    });
+    guest.intents.push(Intent::Notified);
     let show = operation == "show";
     spawn_device(guest, id, async move {
         let raised = match banner {

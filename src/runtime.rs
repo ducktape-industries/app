@@ -62,12 +62,15 @@ use wasmtime::{
     StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
 
-/// What a module view asked the app to do: `kind` is the operation
-/// (`vote`, `execute`), `detail` the guest's JSON for it.
-#[derive(Clone, Debug, Hash, PartialEq, Default)]
-pub struct ModuleViewEvent {
-    pub kind: String,
-    pub detail: String,
+/// What a module view asked the app itself to do, off its `host.*` doors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Intent {
+    /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
+    Badge(i64),
+    /// `host.open_link`: a link it pressed.
+    OpenLink(String),
+    /// A notice was posted: the bell and the permission bar redraw.
+    Notified,
 }
 
 /// Instruction budget for one call into a view.
@@ -90,22 +93,6 @@ const MAX_OP_BYTES: usize = 16 << 20;
 /// transport recoverable: nothing is suppressed for good, only spaced out.
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
-
-pub fn event_text(event: &ModuleViewEvent, field: &str) -> String {
-    detail(event)
-        .and_then(|detail| detail.get(field)?.as_str().map(str::to_owned))
-        .unwrap_or_default()
-}
-
-fn detail(event: &ModuleViewEvent) -> Option<serde_json::Value> {
-    serde_json::from_str(&event.detail).ok()
-}
-
-pub fn event_int(event: &ModuleViewEvent, field: &str) -> i64 {
-    detail(event)
-        .and_then(|detail| detail.get(field).and_then(serde_json::Value::as_i64))
-        .unwrap_or_default()
-}
 
 // ---------- the node seat ----------
 

@@ -129,7 +129,7 @@ impl DesktopWindow {
                 // own); shift-click shows it in the focused window instead
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     match event.modifiers().shift {
-                        true => this.pane_message(Message::SelectView(module), window, cx),
+                        true => this.pane_message(panes::PaneMessage::Select(module), window, cx),
                         false => this.open_view(module, window, cx),
                     }
                 }))

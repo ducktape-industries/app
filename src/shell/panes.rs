@@ -111,37 +111,37 @@ impl DesktopWindow {
 
     pub(super) fn pane_message(
         &mut self,
-        message: Message,
+        message: PaneMessage,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.initialized = true;
         match message {
-            Message::SelectView(module) => {
+            PaneMessage::Select(module) => {
                 self.layout.select(module);
                 self.model.update(cx, |model, cx| {
                     model.dispatch(Message::SelectView(module), cx)
                 });
             }
-            Message::SplitView(module) => {
+            PaneMessage::Split(module) => {
                 self.layout.split(module);
             }
-            Message::PopOut(index)
+            PaneMessage::PopOut(index)
                 if self
                     .layout
                     .panes
                     .get(index)
                     .is_none_or(|pane| pane.is_empty()) => {}
-            Message::ClosePane(index) => {
+            PaneMessage::Close(index) => {
                 self.layout.close(index);
                 if matches!(self.kind, crate::shell::WindowKind::View { .. }) {
                     window.remove_window();
                 }
             }
-            Message::FocusPane(index) => {
+            PaneMessage::Focus(index) => {
                 self.layout.focus(index);
             }
-            Message::PopOut(index) => {
+            PaneMessage::PopOut(index) => {
                 if let Some(pane) = self.layout.close(index)
                     && let Some(mut mounted) = self.mounted.remove(&pane.instance)
                 {
@@ -168,7 +168,7 @@ impl DesktopWindow {
                     });
                 }
             }
-            Message::PopIn(key) if key == self.key => {
+            PaneMessage::PopIn => {
                 let destination = self
                     .model
                     .read(cx)
@@ -194,7 +194,6 @@ impl DesktopWindow {
                     window.remove_window();
                 }
             }
-            _ => return,
         }
         self.settle(window, cx);
     }
@@ -253,7 +252,7 @@ impl DesktopWindow {
             if self.layout.panes.is_empty() {
                 return false;
             }
-            self.pane_message(Message::ClosePane(self.layout.focused), window, cx);
+            self.pane_message(PaneMessage::Close(self.layout.focused), window, cx);
         } else if cycle {
             self.layout.cycle(!shift);
         } else if command && name == "d" {
@@ -432,11 +431,11 @@ impl DesktopWindow {
                         }
                         let message = match action {
                             PaneAction::Split => {
-                                Message::SplitView(this.layout.panes[index].module)
+                                PaneMessage::Split(this.layout.panes[index].module)
                             }
-                            PaneAction::Close => Message::ClosePane(index),
-                            PaneAction::PopOut => Message::PopOut(index),
-                            PaneAction::PopIn => Message::PopIn(this.key),
+                            PaneAction::Close => PaneMessage::Close(index),
+                            PaneAction::PopOut => PaneMessage::PopOut(index),
+                            PaneAction::PopIn => PaneMessage::PopIn,
                         };
                         this.pane_message(message, window, cx);
                     }))
@@ -846,6 +845,22 @@ impl DesktopWindow {
     }
 }
 
+/// What is done to this window's panes: the desk's own business, not the
+/// model's.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum PaneMessage {
+    /// `module` in the focused pane (shift-click on the bar).
+    Select(&'static str),
+    /// Another pane showing `module`.
+    Split(&'static str),
+    Close(usize),
+    Focus(usize),
+    /// The pane into a window of its own.
+    PopOut(usize),
+    /// This pop-out's pane back onto the console's desk.
+    PopIn,
+}
+
 /// A button on a window's title bar.
 #[derive(Clone, Copy)]
 enum PaneAction {
@@ -937,7 +952,7 @@ fn raise(
             };
             let on_top = this.layout.stacking().last() == Some(&index);
             if index != this.layout.focused || !on_top {
-                this.pane_message(Message::FocusPane(index), window, cx);
+                this.pane_message(PaneMessage::Focus(index), window, cx);
             }
         });
     });
