@@ -936,23 +936,32 @@ mod tests {
     }
 
     /// A fake auth host: each GET of `/r/<id>` takes the next of `answers`
-    /// (then 204s); `polls` counts them.
+    /// (then 204s); `polls` counts them. It answers one request at a time,
+    /// in the order they connected, so [`barrier`] is served only after
+    /// every poll already on the wire has been counted.
     async fn fake_relay(
         answers: Vec<(&'static str, String)>,
-    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+    ) -> (String, tokio::sync::watch::Receiver<usize>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let page = format!("http://{}/.duck/auth", listener.local_addr().unwrap());
-        let polls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let counted = polls.clone();
+        let (count, polls) = tokio::sync::watch::channel(0);
         tokio::spawn(async move {
             let mut answers = answers.into_iter();
             loop {
                 let (mut stream, _) = listener.accept().await.unwrap();
-                let (method, path, _) = read_request(&mut stream).await.unwrap();
+                // a poll cut off by a cancel sends nothing whole
+                let Ok((method, path, _)) = read_request(&mut stream).await else {
+                    continue;
+                };
                 assert_eq!(method, "GET");
-                assert!(path.starts_with("/r/") && path.len() == 46, "{path}");
-                counted.fetch_add(1, Ordering::SeqCst);
-                let (status, body) = answers.next().unwrap_or(("204 No Content", String::new()));
+                let (status, body) = match path.as_str() {
+                    "/barrier" => ("204 No Content", String::new()),
+                    _ => {
+                        assert!(path.starts_with("/r/") && path.len() == 46, "{path}");
+                        count.send_modify(|polls| *polls += 1);
+                        answers.next().unwrap_or(("204 No Content", String::new()))
+                    }
+                };
                 let reply = format!(
                     "HTTP/1.1 {status}\r\nContent-Type: application/json\r\n\
                      Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -962,6 +971,13 @@ mod tests {
             }
         });
         (page, polls)
+    }
+
+    /// Returns once the fake host has answered every request that reached
+    /// it before this one.
+    async fn barrier(page: &str) {
+        let origin = page.trim_end_matches("/.duck/auth");
+        reqwest::get(format!("{origin}/barrier")).await.unwrap();
     }
 
     /// A relay polling every 10 ms, and a phone already picked.
@@ -1006,46 +1022,57 @@ mod tests {
         let listener = Listener::bind().await.unwrap();
         let outcome = answer(listener, relay, &phone, Duration::from_secs(10)).await;
         assert_eq!(outcome, Ok(Outcome::Created(key)));
-        assert_eq!(polls.load(Ordering::SeqCst), 3);
+        assert_eq!(*polls.borrow(), 3);
     }
 
     #[tokio::test]
     async fn the_relay_is_not_polled_until_the_phone_is_picked_and_then_times_out() {
-        let (page, polls) = fake_relay(vec![]).await;
-        let (relay, _) = phone_relay(&page);
+        let (page, mut polls) = fake_relay(vec![]).await;
         let chosen = Arc::new(AtomicBool::new(false));
         let phone = Phone::new(chosen.clone()).0;
+        // never picked: the ceremony times out, the slot never asked
+        let (relay, _) = phone_relay(&page);
         let listener = Listener::bind().await.unwrap();
-        let waiting = answer(listener, relay, &phone, Duration::from_millis(300));
-        let pick = async {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            assert_eq!(polls.load(Ordering::SeqCst), 0);
-            chosen.store(true, Ordering::Relaxed);
-        };
-        let (outcome, ()) = tokio::join!(waiting, pick);
+        let outcome = answer(listener, relay, &phone, Duration::from_millis(100)).await;
         assert_eq!(
             outcome,
             Err("Nothing came back from the passkey. Try again.".into())
         );
-        assert!(polls.load(Ordering::SeqCst) > 0);
+        barrier(&page).await;
+        assert_eq!(*polls.borrow(), 0);
+        // picked: the slot is asked
+        chosen.store(true, Ordering::Relaxed);
+        let (relay, _) = phone_relay(&page);
+        let listener = Listener::bind().await.unwrap();
+        tokio::select! {
+            outcome = answer(listener, relay, &phone, Duration::from_secs(60)) => {
+                panic!("answered with nothing to answer: {outcome:?}")
+            }
+            polled = polls.wait_for(|polls| *polls > 0) => {
+                polled.unwrap();
+            }
+        }
     }
 
     #[tokio::test]
     async fn cancelling_stops_the_polling() {
-        let (page, polls) = fake_relay(vec![]).await;
+        let (page, mut polls) = fake_relay(vec![]).await;
         let (relay, phone) = phone_relay(&page);
         let listener = Listener::bind().await.unwrap();
         let waiting =
             tokio::spawn(
                 async move { answer(listener, relay, &phone, Duration::from_secs(60)).await },
             );
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        polls.wait_for(|polls| *polls > 0).await.unwrap();
         waiting.abort();
         assert!(waiting.await.unwrap_err().is_cancelled());
-        let stopped = polls.load(Ordering::SeqCst);
-        assert!(stopped > 0);
+        barrier(&page).await;
+        let stopped = *polls.borrow();
+        // ten of the relay's periods: a poll here would be one after the
+        // cancel (a pause can only hide one, never invent one)
         tokio::time::sleep(Duration::from_millis(100)).await;
-        assert_eq!(polls.load(Ordering::SeqCst), stopped);
+        barrier(&page).await;
+        assert_eq!(*polls.borrow(), stopped);
     }
 
     #[tokio::test]

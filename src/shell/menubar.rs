@@ -233,13 +233,13 @@ impl DesktopWindow {
         );
         // macOS draws the traffic lights over the bar's left end, and the
         // bar is the window's handle: its empty middle moves the window.
-        let titlebar = cfg!(target_os = "macos") && !window.is_fullscreen();
+        let titlebar = theme::traffic_lights(window);
         let handle = div()
             .id("menubar-handle")
             .flex_1()
             .min_w(px(8.))
             .h_full()
-            .when(titlebar, |strip| {
+            .when(titlebar.is_some(), |strip| {
                 strip.on_mouse_down(MouseButton::Left, |event, window, _| {
                     match event.click_count {
                         2 => window.titlebar_double_click(),
@@ -256,7 +256,7 @@ impl DesktopWindow {
             .flex_shrink_0()
             .flex()
             .items_center()
-            .pl(px(if titlebar { 78. } else { 8. }))
+            .pl(px(titlebar.unwrap_or(8.)))
             .pr(px(8.))
             .border_b_1()
             .border_color(ink.line)

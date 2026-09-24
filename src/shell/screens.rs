@@ -493,6 +493,7 @@ impl DesktopWindow {
         };
         self.launcher(
             "connect",
+            false,
             figure::Figure::Node,
             caption.into(),
             None,

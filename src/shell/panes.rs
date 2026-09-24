@@ -575,7 +575,8 @@ impl DesktopWindow {
             // A window of its own on macOS draws no title bar of the
             // system's: this bar is its handle, and the traffic lights sit
             // over its left end. Elsewhere the system's bar names it.
-            let handle = !on_desk && cfg!(target_os = "macos") && !window.is_fullscreen();
+            let lights = theme::traffic_lights(window).filter(|_| !on_desk);
+            let handle = lights.is_some();
             let title = div()
                 .id(SharedString::from(format!("pane/{index}/strip")))
                 .h(px(TITLE))
@@ -583,7 +584,7 @@ impl DesktopWindow {
                 .flex()
                 .items_center()
                 .gap(px(8.))
-                .pl(px(if handle { 78. } else { 12. }))
+                .pl(px(lights.unwrap_or(12.)))
                 .pr(px(2.))
                 .border_b_1()
                 .border_color(ink.line)

@@ -143,7 +143,9 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
             .send_replace(());
     }
     drop(registry);
-    Loads(vec![spawn_roster_read(snapshot)])
+    Loads {
+        _threads: vec![spawn_roster_read(snapshot)],
+    }
 }
 
 /// The node moved (a block landed): the roster is read again, and a
@@ -152,18 +154,24 @@ pub fn deployments_checked() -> Loads {
     static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     use std::sync::atomic::Ordering;
     if IN_FLIGHT.swap(true, Ordering::SeqCst) {
-        return Loads(Vec::new());
+        return Loads {
+            _threads: Vec::new(),
+        };
     }
     let snapshot = connection().lock().expect("views rpc").clone();
     if snapshot.client.is_none() {
         IN_FLIGHT.store(false, Ordering::SeqCst);
-        return Loads(Vec::new());
+        return Loads {
+            _threads: Vec::new(),
+        };
     }
-    Loads(vec![std::thread::spawn(move || {
-        let read = spawn_roster_read(snapshot);
-        let _ = read.join();
-        IN_FLIGHT.store(false, Ordering::SeqCst);
-    })])
+    Loads {
+        _threads: vec![std::thread::spawn(move || {
+            let read = spawn_roster_read(snapshot);
+            let _ = read.join();
+            IN_FLIGHT.store(false, Ordering::SeqCst);
+        })],
+    }
 }
 
 pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle<()> {
