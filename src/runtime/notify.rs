@@ -1,5 +1,5 @@
 //! Desktop notices. VIEWS ASK, THE HOST DECIDES: a view hands the host a
-//! notice (`notify.post`, or the older `notify.show`) and the host records
+//! notice (`notify.post`) and the host records
 //! it in its notification centre (per network, on this device) and decides
 //! whether a banner reaches the screen:
 //!
@@ -27,10 +27,19 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use super::kernel::spawn_device;
-use super::wire::doors::{self, Notice, Post, Posted};
+use super::wire::doors::{self, Post, Posted};
 use super::{Guest, Intent};
 use crate::backend::{read_prefs, write_prefs};
 use crate::shell::WindowKey;
+
+/// One banner as the host words it; a later one under the same non-empty
+/// `tag` replaces the standing one.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Notice {
+    pub title: String,
+    pub body: String,
+    pub tag: String,
+}
 
 /// The prefs keys, device-global like `appearance`.
 const NOTIFY_PREF: &str = "desktop_notifications";
@@ -489,13 +498,6 @@ pub(super) fn answer(
 ) -> bool {
     let post = match (capability, operation) {
         ("notify", "post") => doors::decode::<Post>(payload),
-        // the older door: a post with no link, answered with a bool
-        ("notify", "show") => doors::decode::<Notice>(payload).map(|notice| Post {
-            title: notice.title,
-            body: notice.body,
-            tag: notice.tag,
-            link: String::new(),
-        }),
         _ => return false,
     };
     let post = match post.and_then(|post| shortened(post).map_err(str::to_owned)) {
@@ -523,7 +525,6 @@ pub(super) fn answer(
     };
     // the bell and the bar redraw
     guest.intents.push(Intent::Notified);
-    let show = operation == "show";
     // queued now, in the order the view posted, not when the task runs
     let raised = banner.map(|notice| {
         let (tell, told) = tokio::sync::oneshot::channel();
@@ -541,10 +542,7 @@ pub(super) fn answer(
             Posted::Banner if !raised => Posted::Logged,
             posted => posted,
         };
-        Ok(match show {
-            true => doors::encode(&(posted == Posted::Banner)),
-            false => doors::encode(&posted),
-        })
+        Ok(doors::encode(&posted))
     });
     true
 }

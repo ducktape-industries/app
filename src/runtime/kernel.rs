@@ -35,8 +35,8 @@
 //! - `fs.*`, `clipboard.*` — device file grants and the clipboard, in
 //!   `filesystem`.
 //! - `media.*`, `audio.*`, `video.*` — the raw capture and playout devices,
-//!   in `media`; `notify.post` (and the older `notify.show`) — a notice
-//!   the host logs and decides a banner for, in `notify`.
+//!   in `media`; `notify.post` — a notice the host logs and decides a
+//!   banner for, in `notify`.
 //!
 //! A query and a submit go to the node off the window thread, on the
 //! kernel's own runtime, and their answers wait in [`Replies`] for the
