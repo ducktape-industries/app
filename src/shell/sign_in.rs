@@ -336,27 +336,38 @@ impl DesktopWindow {
                     &ink,
                 ),
             )
-            .child(buttons([
-                self.button(
-                    "create-account",
-                    match busy {
-                        true => "Creating…",
-                        false => "Create account",
-                    },
-                    Kind::Primary,
-                    || Message::CreateAccountSubmit,
-                    busy,
-                    &ink,
-                ),
-                self.button(
-                    "create-account-later",
-                    "Not now",
-                    Kind::Secondary,
-                    || Message::CreateAccountLater,
-                    false,
-                    &ink,
-                ),
-            ]));
+            .child(
+                buttons([
+                    self.button(
+                        "create-account",
+                        match busy {
+                            true => "Creating…",
+                            false => "Create account",
+                        },
+                        Kind::Primary,
+                        || Message::CreateAccountSubmit,
+                        busy,
+                        &ink,
+                    ),
+                    self.button(
+                        "passkey-create",
+                        "Create with a passkey",
+                        Kind::Secondary,
+                        || Message::PasskeyCreateSubmit,
+                        busy,
+                        &ink,
+                    ),
+                    self.link(
+                        "create-account-later",
+                        "Not now",
+                        || Message::CreateAccountLater,
+                        true,
+                        &ink,
+                    ),
+                ])
+                .items_center(),
+            );
+        // The common way in gets its own line; the other two share one.
         let join = closing(
             [
                 sans(500, 14.)
@@ -369,27 +380,28 @@ impl DesktopWindow {
                     false,
                     &ink,
                 ),
-                self.link(
-                    "passkey-sign-in",
-                    "Add this device with a passkey",
-                    || Message::PasskeySignInSubmit,
-                    false,
-                    &ink,
-                ),
-                self.link(
-                    "recover",
-                    "Add this device with a recovery key",
-                    || Message::RecoverShow,
-                    false,
-                    &ink,
-                ),
-                self.link(
-                    "passkey-create",
-                    "Or create the account with a passkey",
-                    || Message::PasskeyCreateSubmit,
-                    false,
-                    &ink,
-                ),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_baseline()
+                    .gap(px(5.))
+                    .child(ink::note("Or use", ink.muted))
+                    .child(self.link(
+                        "passkey-sign-in",
+                        "a passkey",
+                        || Message::PasskeySignInSubmit,
+                        true,
+                        &ink,
+                    ))
+                    .child(ink::note("or", ink.muted))
+                    .child(self.link(
+                        "recover",
+                        "a recovery key",
+                        || Message::RecoverShow,
+                        true,
+                        &ink,
+                    ))
+                    .into_any_element(),
             ],
             &ink,
         )

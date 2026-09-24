@@ -211,8 +211,9 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     assert_eq!(find(&nodes, "TextInput", "Account name")["value"], "duck");
     find(&nodes, "Button", "Create account");
     find(&nodes, "Button", "Add this device from another device");
-    find(&nodes, "Button", "Add this device with a passkey");
-    find(&nodes, "Button", "Add this device with a recovery key");
+    find(&nodes, "Button", "a passkey");
+    find(&nodes, "Button", "a recovery key");
+    find(&nodes, "Button", "Create with a passkey");
 }
 
 /// The Connect screen's "Recent" list had no tab stop at all: a
