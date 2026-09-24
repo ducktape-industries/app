@@ -1302,6 +1302,41 @@ mod tests {
     }
 
     #[test]
+    fn a_view_event_sets_its_badge_and_opens_its_link() {
+        let (mut state, _) = Ducktape::boot();
+        let event = |kind: &str, detail: &str| crate::runtime::ModuleViewEvent {
+            kind: kind.into(),
+            detail: detail.into(),
+        };
+        let _ = state.update(Message::ViewEvent("chat", event("badge", r#"{"count":3}"#)));
+        assert_eq!(state.badges.get("chat"), Some(&3));
+        let _ = state.update(Message::ViewEvent("chat", event("badge", r#"{"count":0}"#)));
+        assert!(state.badges.is_empty(), "a zero count clears the badge");
+        let _ = state.update(Message::ViewEvent(
+            "chat",
+            event("badge", r#"{"count":-2}"#),
+        ));
+        assert!(state.badges.is_empty());
+        let _ = state.update(Message::ViewEvent("chat", event("vote", "{}")));
+        assert!(
+            state.badges.is_empty() && state.active.is_none(),
+            "unknown kinds do nothing"
+        );
+
+        crate::runtime::list_for_test("view-event-link");
+        let _ = state.update(Message::ViewEvent(
+            "chat",
+            event("open_link", r#"{"link":"duck://view-event-link/room/7"}"#),
+        ));
+        assert_eq!(state.active, Some("view-event-link"));
+        assert!(state.reveal, "a link brings its seat forward");
+        assert_eq!(
+            crate::runtime::take_route("view-event-link").as_deref(),
+            Some("room/7")
+        );
+    }
+
+    #[test]
     fn two_missed_polls_read_reconnecting_and_one_answer_recovers() {
         let (mut state, _) = Ducktape::boot();
         state.connected = true;
