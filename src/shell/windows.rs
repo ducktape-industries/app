@@ -1,5 +1,5 @@
 use super::*;
-use gpui_kit::{Bounds, Pixels, point, px, size};
+use gpui_kit::{Bounds, Pixels, Size, point, px, size};
 
 /// A window's size before the person resizes it.
 pub(super) const WINDOW_SIZE: (f32, f32) = (1280., 800.);
@@ -19,6 +19,16 @@ pub(super) fn cascade(source: Bounds<Pixels>, display: Option<Bounds<Pixels>>) -
         origin.x = origin.x.min(right).max(display.origin.x);
         origin.y = origin.y.min(bottom).max(display.origin.y);
     }
+    Bounds::new(origin, extent)
+}
+
+/// Where the launcher sits when the desk shrinks to it: centred in
+/// `display`, and never past its top-left corner when it doesn't fit.
+pub(super) fn centered(extent: Size<Pixels>, display: Bounds<Pixels>) -> Bounds<Pixels> {
+    let origin = point(
+        display.origin.x + ((display.size.width - extent.width) / 2.).max(px(0.)),
+        display.origin.y + ((display.size.height - extent.height) / 2.).max(px(0.)),
+    );
     Bounds::new(origin, extent)
 }
 
@@ -228,5 +238,19 @@ mod tests {
             cascade(frame(0., 0., 1024., 700.), Some(small)).origin,
             point(px(0.), px(0.))
         );
+    }
+
+    #[test]
+    fn the_launcher_comes_up_centred_on_its_display() {
+        let launcher = size(px(960.), px(640.));
+        // a second display to the right, under a 25px menu bar
+        let display = frame(1920., 25., 2560., 1415.);
+        assert_eq!(
+            centered(launcher, display),
+            frame(1920. + 800., 25. + 387.5, 960., 640.)
+        );
+        // too small to hold it: pinned to the corner, not pushed off it
+        let small = frame(0., 0., 800., 600.);
+        assert_eq!(centered(launcher, small).origin, point(px(0.), px(0.)));
     }
 }
