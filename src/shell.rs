@@ -25,25 +25,29 @@ use crate::{AppMessage as Message, Ducktape, Screen, Stage};
 mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
+mod approve;
 mod desk;
 mod figure;
 mod ink;
 mod launch;
 mod launcher;
 mod layout;
+mod menubar;
+mod menus;
+mod notifications;
 mod panes;
 #[cfg(test)]
 mod panes_tests;
 mod screens;
 #[cfg(test)]
 mod screens_tests;
+mod spotlight;
 mod windows;
 
 pub(crate) use launch::run;
 mod settings;
 mod sign_in;
 mod spin;
-mod switcher;
 mod theme;
 
 #[cfg(not(target_os = "macos"))]
@@ -463,6 +467,9 @@ pub(crate) struct DesktopWindow {
     /// ⌘K's field took focus when it opened; it is not taken again while
     /// Spotlight stays open.
     spotlight_focused: bool,
+    /// Where the bar's menu buttons were last painted: each menu hangs
+    /// under its own.
+    bar_buttons: HashMap<crate::Overlay, gpui_kit::Bounds<gpui_kit::Pixels>>,
     focus: gpui_kit::FocusHandle,
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,

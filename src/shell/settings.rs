@@ -142,6 +142,7 @@ impl DesktopWindow {
                     .self_start()
                     .child(title)
                     .child(body)
+                    .into_any_element()
             },
         )
     }
@@ -239,7 +240,7 @@ impl DesktopWindow {
             .filter(|row| !row.empty)
             .map(|row| {
                 let module = row.module;
-                let name = super::desk::tab_label(&row);
+                let name = super::menubar::tab_label(&row);
                 let chosen = settings.views.get(module).copied();
                 let week = notify::center().this_week(module, now);
                 let hint = match week {
