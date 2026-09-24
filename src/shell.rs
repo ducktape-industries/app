@@ -444,6 +444,18 @@ fn release_window_input(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
     window.draw(cx).clear(cx);
 }
 
+/// Takes a window off the screen, its input let go first. Deferred:
+/// releasing input draws the window, and the caller is most often in the
+/// middle of updating it. `on_window_closed` (launch.rs) then forgets it.
+fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
+    cx.defer(move |cx| {
+        let _ = window.update(cx, |_, window, cx| {
+            release_window_input(window, cx);
+            window.remove_window();
+        });
+    });
+}
+
 // ---------- the window ----------
 
 pub(crate) struct DesktopWindow {
@@ -502,9 +514,9 @@ impl DesktopWindow {
         })
     }
 
-    /// ⌘Q quits and ⌘W closes (the focused desk window, else the app's);
-    /// the desk's own keys (`desk_key`) come next; any other command chord
-    /// goes to the seated view if it claimed it.
+    /// ⌘Q quits, then ⌘W closes (`command_w_pane`: the focused desk
+    /// window, else the app's); the desk's own keys (`desk_key`) come next;
+    /// any other command chord goes to the seated view if it claimed it.
     fn global_key(
         &mut self,
         key: KeyPress,
@@ -519,20 +531,15 @@ impl DesktopWindow {
             cx.stop_propagation();
             return;
         }
-        let state = &self.model.read(cx).state;
-        // an overlay (Spotlight, a menu, Settings) keeps its keys
-        let overlay = state.spotlight
-            || state.approving
-            || state.settings
-            || state.network_menu
-            || state.popover.is_some();
-        let console = self.kind == WindowKind::Console && self.on_desk(cx) && !overlay;
-        if console && self.desk_key(&key, in_guest_editor, window, cx) {
+        if command && key.key == "w" {
+            match self.command_w_pane(cx) {
+                Some(index) => self.pane_message(panes::PaneMessage::Close(index), window, cx),
+                None => self.close_by_key(window, cx),
+            }
             cx.stop_propagation();
             return;
         }
-        if command && key.key == "w" {
-            self.close_by_key(window, cx);
+        if self.desk_keys(cx) && self.desk_key(&key, in_guest_editor, window, cx) {
             cx.stop_propagation();
             return;
         }
@@ -568,6 +575,24 @@ impl DesktopWindow {
         !self.model.read(cx).state.in_launcher()
     }
 
+    /// The desk's own keys reach its windows: the console, on the desk,
+    /// with no overlay (Spotlight, a menu, Settings) keeping its keys.
+    fn desk_keys(&self, cx: &gpui_kit::App) -> bool {
+        let state = &self.model.read(cx).state;
+        let overlay = state.spotlight
+            || state.approving
+            || state.settings
+            || state.network_menu
+            || state.popover.is_some();
+        self.kind == WindowKind::Console && self.on_desk(cx) && !overlay
+    }
+
+    /// What ⌘W closes: the focused desk window, when the desk's keys reach
+    /// it and it has one; `None` is the app's window (`close_by_key`).
+    fn command_w_pane(&self, cx: &gpui_kit::App) -> Option<usize> {
+        (self.desk_keys(cx) && !self.layout.panes.is_empty()).then_some(self.layout.focused)
+    }
+
     /// ⌘W closes a window, never the app. A pop-out closes as its pane's ×
     /// does. The console closes too where the status item reopens it
     /// (macOS); elsewhere there is no tray to bring it back from, and the
@@ -575,17 +600,7 @@ impl DesktopWindow {
     fn close_by_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match (self.kind, cfg!(target_os = "macos")) {
             (WindowKind::Console, false) => window.minimize_window(),
-            // deferred: releasing input draws the window, and this view is
-            // mid-update
-            _ => {
-                let handle = window.window_handle();
-                cx.defer(move |cx| {
-                    let _ = handle.update(cx, |_, window, cx| {
-                        release_window_input(window, cx);
-                        window.remove_window();
-                    });
-                });
-            }
+            _ => remove(window.window_handle(), cx),
         }
     }
 
