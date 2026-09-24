@@ -19,6 +19,7 @@ mod media;
 pub(crate) mod notify;
 mod roster;
 mod seat;
+mod store;
 mod widget;
 
 pub(crate) use kernel::{chord_of, command_held};

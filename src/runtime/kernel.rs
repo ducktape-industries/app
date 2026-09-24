@@ -127,6 +127,7 @@ pub(super) fn answer(
     if super::filesystem::answer(guest, capability, operation, id, payload)
         || super::media::answer(guest, capability, operation, id, payload)
         || super::notify::answer(guest, capability, operation, id, payload)
+        || super::store::answer(guest, capability, operation, id, payload)
     {
         return true;
     }
