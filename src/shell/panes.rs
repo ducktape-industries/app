@@ -353,12 +353,13 @@ impl DesktopWindow {
                         .child(if picked { "↵" } else { "" }),
                 )
         });
-        let footer = format!(
-            "1–{} open   {} search everything   {} close",
-            rows.len().clamp(1, 9),
-            chord_label("K"),
-            chord_label("W"),
-        );
+        // each hint whole, wrapping to the next line on a narrow window
+        let hints = [
+            format!("1–{} open", rows.len().clamp(1, 9)),
+            format!("{} search everything", chord_label("K")),
+            format!("{} close", chord_label("W")),
+        ]
+        .map(|hint| div().whitespace_nowrap().child(hint));
         div()
             .id("empty-window")
             .role(Role::Menu)
@@ -387,10 +388,12 @@ impl DesktopWindow {
                 mono(400, 12.)
                     .px(px(12.))
                     .pt(px(12.))
-                    .whitespace_nowrap()
-                    .truncate()
+                    .flex()
+                    .flex_wrap()
+                    .gap_x(px(24.))
+                    .gap_y(px(4.))
                     .text_color(ink.muted)
-                    .child(footer),
+                    .children(hints),
             )
             .into_any_element()
     }

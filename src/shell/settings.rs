@@ -7,8 +7,8 @@ use crate::SettingsPage;
 use ink::{Ink, mono, sans};
 
 impl DesktopWindow {
-    /// The dialog: `760 × 540; border: 1.5px solid ink`, a 34px title strip
-    /// with its close, on a scrim below the bar. A click on the scrim, or
+    /// The dialog: `760 × 680; border: 1.5px solid ink` (the board's 540,
+    /// taller so every view's row fits), a 34px title strip with its close, on a scrim below the bar. A click on the scrim, or
     /// Escape, closes it.
     pub(super) fn settings(&mut self, state: &screens::Facts) -> gpui_kit::AnyElement {
         use gpui_kit::*;
@@ -134,7 +134,7 @@ impl DesktopWindow {
             |card| {
                 card.mt(px(74.))
                     .w(px(760.))
-                    .h(px(540.))
+                    .h(px(680.))
                     .max_w_full()
                     .max_h_full()
                     .self_start()
@@ -148,79 +148,29 @@ impl DesktopWindow {
         use crate::Appearance;
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
-        let (fg, bg, line) = (ink.ink, ink.bg, ink.strong);
-        let theme = div()
-            .id("theme")
-            .role(Role::RadioGroup)
-            .aria_label("Theme")
-            .flex()
-            .border_1()
-            .border_color(line)
-            .children(
-                [
-                    ("Light", Appearance::Light),
-                    ("Dark", Appearance::Dark),
-                    ("System", Appearance::System),
-                ]
-                .into_iter()
-                .enumerate()
-                .map(|(nth, (label, mode))| {
-                    let model = self.model.clone();
-                    let on = state.appearance == mode;
-                    crate::a11y::keyboard(
-                        sans(400, 13.)
-                            .id(SharedString::from(format!("theme/{label}")))
-                            .control(Role::RadioButton, label)
-                            .aria_toggled(match on {
-                                true => gpui_kit::accesskit::Toggled::True,
-                                false => gpui_kit::accesskit::Toggled::False,
-                            })
-                            .h(px(32.))
-                            .px(px(12.))
-                            .flex()
-                            .items_center()
-                            .cursor_pointer()
-                            .when(nth > 0, |cell| cell.border_l_1().border_color(line))
-                            .when(on, |cell| cell.bg(fg).text_color(bg))
-                            .on_click(move |_, _, cx| {
-                                model.update(cx, |model, cx| {
-                                    model.dispatch(Message::SetAppearance(mode), cx)
-                                })
-                            })
-                            .child(label),
-                    )
-                }),
-            );
-        let motion = {
-            let model = self.model.clone();
-            let on = state.motion;
-            crate::a11y::keyboard(
-                div()
-                    .id("motion")
-                    .control(Role::CheckBox, "Moving figures")
-                    .aria_toggled(match on {
-                        true => gpui_kit::accesskit::Toggled::True,
-                        false => gpui_kit::accesskit::Toggled::False,
-                    })
-                    .size(px(18.))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .border(px(1.5))
-                    .border_color(fg)
-                    .when(on, |check| {
-                        check.bg(fg).child(
-                            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Check)
-                                .size(px(12.))
-                                .text_color(bg),
-                        )
-                    })
-                    .on_click(move |_, _, cx| {
-                        model.update(cx, |model, cx| model.dispatch(Message::SetMotion(!on), cx))
-                    }),
-            )
-        };
+        // one look for every choice in Settings: the segmented row
+        let theme = self.segmented(
+            "theme",
+            "Theme",
+            [
+                ("Light", Appearance::Light),
+                ("Dark", Appearance::Dark),
+                ("System", Appearance::System),
+            ]
+            .map(|(label, mode)| {
+                (label.into(), state.appearance == mode, move || {
+                    Message::SetAppearance(mode)
+                })
+            }),
+            &ink,
+        );
+        let motion = self.switch(
+            "motion",
+            "Moving figures",
+            state.motion,
+            Message::SetMotion,
+            &ink,
+        );
         div()
             .flex()
             .flex_col()
@@ -247,37 +197,13 @@ impl DesktopWindow {
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
         let settings = notify::Settings::load();
-        let banners = {
-            let model = self.model.clone();
-            let on = settings.banners;
-            crate::a11y::keyboard(
-                div()
-                    .id("notify/banners")
-                    .control(Role::Switch, "Desktop banners")
-                    .aria_toggled(match on {
-                        true => gpui_kit::accesskit::Toggled::True,
-                        false => gpui_kit::accesskit::Toggled::False,
-                    })
-                    .w(px(32.))
-                    .h(px(18.))
-                    .p(px(2.))
-                    .flex()
-                    .when(on, |switch| switch.justify_end())
-                    .cursor_pointer()
-                    .border(px(1.5))
-                    .border_color(ink.ink)
-                    .when(on, |switch| switch.bg(ink.ink))
-                    .on_click(move |_, _, cx| {
-                        model.update(cx, |model, cx| {
-                            model.dispatch(Message::SetNotifyBanners(!on), cx)
-                        })
-                    })
-                    .child(div().size(px(11.)).bg(match on {
-                        true => ink.bg,
-                        false => ink.ink,
-                    })),
-            )
-        };
+        let banners = self.switch(
+            "notify/banners",
+            "Desktop banners",
+            settings.banners,
+            Message::SetNotifyBanners,
+            &ink,
+        );
         let front = self.segmented(
             "notify/front",
             "While Ducktape is in front",
@@ -314,9 +240,9 @@ impl DesktopWindow {
                 let name = super::desk::tab_label(&row);
                 let chosen = settings.views.get(module).copied();
                 let week = notify::center().this_week(module, now);
-                let hint = match (chosen, week) {
-                    (None, 0) => "Has not asked".to_owned(),
-                    (_, week) => format!("{week} this week"),
+                let hint = match week {
+                    0 => "None yet".to_owned(),
+                    week => format!("{week} this week"),
                 };
                 let control = self.segmented(
                     &format!("notify/view/{module}"),
@@ -330,7 +256,25 @@ impl DesktopWindow {
                     }),
                     &ink,
                 );
-                setting(name, hint, control, &ink)
+                // one line a view, so the whole roster fits under the fold
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(24.))
+                    .py(px(10.))
+                    .border_b_1()
+                    .border_color(ink.line)
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .items_baseline()
+                            .gap(px(12.))
+                            .child(sans(500, 14.).child(name))
+                            .child(sans(400, 13.).text_color(ink.muted).child(hint)),
+                    )
+                    .child(div().flex_shrink_0().child(control))
             });
         div()
             .flex()
@@ -375,6 +319,51 @@ impl DesktopWindow {
             )
             .children(views)
             .into_any_element()
+    }
+
+    /// An on/off setting: on, an ink track with the knob at the right; off,
+    /// a `strong` outline with a muted knob at the left.
+    fn switch(
+        &self,
+        id: &'static str,
+        name: &'static str,
+        on: bool,
+        message: fn(bool) -> Message,
+        ink: &Ink,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::*;
+        let model = self.model.clone();
+        crate::a11y::keyboard(
+            div()
+                .id(id)
+                .control(Role::Switch, name)
+                .aria_toggled(match on {
+                    true => gpui_kit::accesskit::Toggled::True,
+                    false => gpui_kit::accesskit::Toggled::False,
+                })
+                .w(px(36.))
+                .h(px(20.))
+                .p(px(3.))
+                .flex()
+                .items_center()
+                .when(on, |track| track.justify_end())
+                .cursor_pointer()
+                .rounded_full()
+                .border_1()
+                .border_color(match on {
+                    true => ink.ink,
+                    false => ink.strong,
+                })
+                .when(on, |track| track.bg(ink.ink))
+                .on_click(move |_, _, cx| {
+                    model.update(cx, |model, cx| model.dispatch(message(!on), cx))
+                })
+                .child(div().size(px(12.)).rounded_full().bg(match on {
+                    true => ink.bg,
+                    false => ink.muted,
+                })),
+        )
+        .into_any_element()
     }
 
     /// A row of choices, the chosen one on `surface` (the NotifSettings
