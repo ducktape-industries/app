@@ -180,6 +180,7 @@ impl DesktopWindow {
         on_enter: fn() -> Message,
         label: Option<gpui_kit::SharedString>,
         secret: bool,
+        size: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
@@ -228,12 +229,7 @@ impl DesktopWindow {
             state.update(cx, |state, cx| state.set_value(text, window, cx));
         }
         // bare: the canvas's box around it is `ink::field_box`; its text
-        // is the canvas's `15px` (the account name's `22px`)
-        let size = match key {
-            "create-account-name" => 22.,
-            "spotlight" => 20.,
-            _ => 15.,
-        };
+        // is `size` (the canvas's `15px`, the account name's `22px`)
         // the kit fixes an input's line at `1.25rem` (20px) inside `8px`
         // padding: a larger face is clipped top and bottom. The line follows
         // the face; the canvas's box around it sets height and inset.
@@ -376,6 +372,7 @@ impl DesktopWindow {
             || Message::ConnectSubmit,
             Some("Node address".into()),
             false,
+            15.,
             window,
             cx,
         );
@@ -426,10 +423,7 @@ impl DesktopWindow {
             let pick_target = entry.url.clone();
             let forget_model = self.model.clone();
             let forget_target = entry.url.clone();
-            let name = match entry.network.is_empty() {
-                true => entry.host().to_owned(),
-                false => entry.network.clone(),
-            };
+            let name = entry.name();
             let danger = ink.danger;
             // `display: flex; align-items: baseline; gap: 16px;
             // padding: 12px 0; border-bottom: 1px solid line`

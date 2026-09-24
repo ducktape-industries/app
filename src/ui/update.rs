@@ -14,7 +14,6 @@ impl Ducktape {
             Message::SetAppearance(mode) => {
                 self.appearance = mode;
                 backend::save_appearance(mode);
-                self.push_props();
                 Task::none()
             }
             // A new address or a new try makes the last failure's sentence
@@ -110,7 +109,6 @@ impl Ducktape {
                 self.screen = Screen::Console;
                 self.apply_status(&status);
                 drop(crate::runtime::connected(&client, &self.network));
-                self.push_props();
                 let window = match self.console_win {
                     Some(key) => crate::shell::raise(key),
                     None => {
@@ -190,7 +188,6 @@ impl Ducktape {
                 self.chain.clear();
                 self.status = "Not connected".into();
                 self.screen = Screen::Connect;
-                self.push_props();
                 self.leave_network()
             }
             Message::ToggleNetworkMenu => {
@@ -708,7 +705,6 @@ impl Ducktape {
                 self.signer_key = pubkey;
                 self.account_offer = true;
                 self.forget_secrets();
-                self.push_props();
                 self.resolve_account()
             }
             Message::AccountNameTyped(text) => {
@@ -806,7 +802,6 @@ impl Ducktape {
                 self.account_offer = false;
                 self.account_step = false;
                 self.browsing = false;
-                self.push_props();
                 Task::future(async {
                     backend::lock_signer().await;
                     Message::ShowToast("Locked".into())
@@ -961,7 +956,6 @@ impl Ducktape {
         self.passkey_task = None;
         self.unlock_busy = false;
         self.signer_key.clear();
-        self.push_props();
         Task::future(async {
             backend::lock_signer().await;
         })
@@ -1026,13 +1020,9 @@ impl Ducktape {
                 .iter()
                 .filter(|entry| entry.url != self.connected_rpc)
                 .map(|entry| {
-                    let name = match entry.network.is_empty() {
-                        true => entry.host().to_owned(),
-                        false => entry.network.clone(),
-                    };
                     row(
                         "Networks",
-                        name,
+                        entry.name(),
                         entry.host().to_owned(),
                         Spot::Switch(entry.url.clone()),
                     )
@@ -1131,10 +1121,6 @@ impl Ducktape {
         self.quiz_answers.iter_mut().for_each(Zeroize::zeroize);
         self.unlock_error.clear();
     }
-
-    /// Every seated view is handed the props again; the shell reads them
-    /// off the state on its next draw.
-    fn push_props(&mut self) {}
 
     /// What runs while the app does: the clocks, and nothing else.
     pub(crate) fn subscriptions(&self) -> Subscription<Message> {

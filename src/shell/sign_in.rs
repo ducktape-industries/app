@@ -40,8 +40,7 @@ fn closing(children: impl IntoIterator<Item = gpui_kit::AnyElement>, ink: &Ink) 
 impl DesktopWindow {
     /// The node reached, as the drawing's caption: "testkit · 127.0.0.1:8844".
     fn where_(state: &Facts) -> String {
-        let rpc = &state.connected_rpc;
-        let host = rpc.split_once("://").map_or(rpc.as_str(), |(_, host)| host);
+        let host = crate::backend::host_of(&state.connected_rpc);
         format!("{} · {host}", state.network)
     }
 
@@ -104,6 +103,7 @@ impl DesktopWindow {
                 || Message::UnlockSubmit,
                 Some("Password".into()),
                 true,
+                15.,
                 window,
                 cx,
             );
@@ -310,6 +310,7 @@ impl DesktopWindow {
             || Message::CreateAccountSubmit,
             Some("Account name".into()),
             false,
+            22.,
             window,
             cx,
         );
@@ -515,6 +516,7 @@ impl DesktopWindow {
             || Message::RecoverSubmit,
             Some("Recovery key".into()),
             true,
+            15.,
             window,
             cx,
         );
@@ -687,6 +689,7 @@ impl DesktopWindow {
                     || Message::PhraseCheckSubmit,
                     Some(format!("Word {}", nth + 1).into()),
                     true,
+                    15.,
                     window,
                     cx,
                 );

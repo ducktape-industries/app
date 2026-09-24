@@ -177,10 +177,7 @@ impl DesktopWindow {
         .aria_expanded(state.network_menu)
         .child(sans(500, 13.).child(state.network.clone()))
         .child(div().text_color(ink.muted).child("⌄"));
-        let chord = match cfg!(target_os = "macos") {
-            true => "⌘K",
-            false => "Ctrl K",
-        };
+        let chord = chord_label("K");
         let search = item("rail-search", "Search".into(), false, || {
             Message::OpenSpotlight
         })
@@ -481,11 +478,7 @@ impl DesktopWindow {
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
         let ok = !state.reconnecting;
-        let host = state
-            .connected_rpc
-            .split_once("://")
-            .map_or(state.connected_rpc.as_str(), |(_, host)| host)
-            .to_owned();
+        let host = crate::backend::host_of(&state.connected_rpc).to_owned();
         let row = |key: &'static str, value: String, code: bool| {
             div()
                 .flex()
@@ -972,6 +965,7 @@ impl DesktopWindow {
                     || Message::ApproveFind,
                     Some("Code".into()),
                     false,
+                    15.,
                     window,
                     cx,
                 );
@@ -1092,6 +1086,7 @@ impl DesktopWindow {
             || Message::SpotlightSubmit,
             Some("Search".into()),
             false,
+            20.,
             window,
             cx,
         );
