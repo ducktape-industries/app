@@ -360,3 +360,20 @@ fn the_focused_window_is_the_active_program(cx: &mut TestAppContext) {
     assert_eq!(panes(&mut native, &view), (2, 0));
     assert_eq!(active(&mut native), (Some("pane-ax-test"), None));
 }
+
+/// The empty window keeps the design's spacing while its rows fit, tightens
+/// as the window gets short, and past that shows whole rows only.
+#[test]
+fn a_short_empty_window_tightens_its_rows() {
+    use super::panes::{EmptySpacing, empty_spacing};
+    let spacing = |row, outer| EmptySpacing {
+        row,
+        outer,
+        shown: None,
+    };
+    assert_eq!(empty_spacing(6, 600.), spacing(10., 28.));
+    assert_eq!(empty_spacing(6, 360.), spacing(6., 16.));
+    assert_eq!(empty_spacing(6, 290.), spacing(3., 10.));
+    // 185 tall: 185 - 20 - 76 = 89 of room, two whole 30px rows
+    assert_eq!(empty_spacing(6, 185.).shown, Some(60.));
+}

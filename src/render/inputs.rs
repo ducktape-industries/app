@@ -38,9 +38,9 @@ impl EditorView {
     /// words need. The field's own element decides its height, so the node's
     /// answer has to reach it — a box told to shrink around an element that
     /// still asks for all of its parent's height shrinks around nothing.
-    pub(super) fn fills(&self, fills: bool, cx: &mut App) {
+    pub(super) fn fills(&self, fills: bool, cap: Option<usize>, cx: &mut App) {
         match self {
-            Self::Text(view) => view.update(cx, |editor, cx| editor.set_fills(fills, cx)),
+            Self::Text(view) => view.update(cx, |editor, cx| editor.set_fills(fills, cap, cx)),
         }
     }
 
@@ -454,7 +454,11 @@ impl ViewTree {
             );
         }
         let editor = self.editors.get(&path).expect("editor inserted");
-        editor.view.fills(true, cx);
+        // A height the guest gave is a box to fill; none (a composer's
+        // `min_h`..`max_h`) is a field as tall as its lines, which the
+        // field's own auto-grow reports up to the parent that waits on it.
+        let cap = field_rows(style);
+        editor.view.fills(style.size.height.is_some(), cap, cx);
         editor.view.announce(accessible(node), cx);
         editor.view.sync(window, cx);
         if self.presentation.editors.remove(&path).as_ref() == Some(document) {
@@ -555,4 +559,25 @@ impl ViewTree {
             .child(slider)
             .into_any_element()
     }
+}
+
+/// How many lines a field that grows with its words shows before it scrolls:
+/// what its node's `max_h` holds, less its vertical padding, at the field's
+/// line height (gpui's default, the golden ratio of the text size).
+fn field_rows(style: &gpui_kit::StyleRefinement) -> Option<usize> {
+    use gpui_kit::{AbsoluteLength, DefiniteLength, Length};
+    let pixels = |length: Option<DefiniteLength>| match length {
+        Some(DefiniteLength::Absolute(AbsoluteLength::Pixels(pixels))) => f32::from(pixels),
+        _ => 0.,
+    };
+    let Some(Length::Definite(max)) = style.max_size.height else {
+        return None;
+    };
+    let pad = pixels(style.padding.top) + pixels(style.padding.bottom);
+    let size = match style.text.font_size {
+        Some(AbsoluteLength::Pixels(size)) => f32::from(size),
+        _ => 14.,
+    };
+    let rows = (pixels(Some(max)) - pad) / (size * 1.618);
+    Some((rows.floor() as usize).max(1))
 }
