@@ -835,6 +835,7 @@ impl Ducktape {
             crate::runtime::route_to(module, route);
         }
         self.active = Some(module);
+        self.reveal = true;
         self.toast = format!("Opened {module}");
         self.toast_age = 0;
     }

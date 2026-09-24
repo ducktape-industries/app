@@ -220,14 +220,20 @@ impl Desktop {
         if appearance != self.state.appearance {
             self.sync_appearance(cx);
         }
-        if active != self.state.active {
+        let reveal = std::mem::take(&mut self.state.reveal);
+        if active != self.state.active || reveal {
             if let Some(module) = self.state.active {
                 let views: Vec<_> = self.views.values().cloned().collect();
                 cx.defer(move |cx| {
                     for view in views {
                         let _ = view.update(cx, |view, cx| {
                             if view.kind == WindowKind::Console {
-                                view.layout.select(module);
+                                // a link opens beside the view it was in,
+                                // not in place of it
+                                match reveal {
+                                    true => view.layout.open(module),
+                                    false => view.layout.select(module),
+                                };
                                 view.initialized = true;
                                 cx.notify();
                             }

@@ -77,6 +77,9 @@ pub struct Ducktape {
     pub(crate) network: String,
     /// The chain links name, `<network>#<salt>` ([`ducklink::ChainId`]).
     pub(crate) chain: String,
+    /// A link asked for its seat: the desk brings it forward even when it
+    /// is already the active one, behind another window.
+    pub(crate) reveal: bool,
     /// Where this network's keys live on this device
     /// ([`backend::bind_keyring`]): the name alone is not enough, two
     /// chains can share one.
@@ -322,6 +325,7 @@ impl Ducktape {
             connected_rpc: String::new(),
             network: String::new(),
             chain: String::new(),
+            reveal: false,
             keyring: String::new(),
             other_chain: false,
             network_menu: false,
