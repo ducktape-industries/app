@@ -1,4 +1,5 @@
 use super::*;
+use crate::backend::noded;
 
 pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
 type Call = fn(Node, Vec<u8>) -> Answered;
@@ -386,5 +387,53 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
             invite: minted.invite,
             notes,
         }))
+    })
+}
+
+fn block_of(block: noded::Finalized) -> doors::Block {
+    doors::Block {
+        height: block.height,
+        id: block.id,
+        parent: block.parent,
+        time: block.time,
+        epoch: block.epoch,
+        proposer: block.proposer,
+        txs: block
+            .txs
+            .into_iter()
+            .map(|tx| doors::Tx {
+                hash: tx.hash,
+                signer: tx.signer,
+                seq: tx.seq,
+                target: tx.target,
+                payload: tx.payload,
+            })
+            .collect(),
+    }
+}
+
+/// `rpc.blocks`: a page of finalized blocks from the node's archive.
+pub(super) fn blocks(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let page: doors::BlockPage = doors::decode(&ask).map_err(malformed)?;
+        let page = noded::Blocks {
+            before: page.before,
+            limit: page.limit,
+        };
+        let blocks = node.client.blocks(&page).await.map_err(refused)?;
+        let blocks: Vec<doors::Block> = blocks.into_iter().map(block_of).collect();
+        Ok(doors::encode(&blocks))
+    })
+}
+
+/// `rpc.block`: one finalized block by height or id, if the node has it.
+pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        let by = match doors::decode::<doors::BlockRef>(&ask).map_err(malformed)? {
+            doors::BlockRef::Height(height) => noded::BlockRef::Height(height),
+            doors::BlockRef::Id(id) => noded::BlockRef::Id(id),
+        };
+        let block = node.client.block(&by).await.map_err(refused)?;
+        Ok(doors::encode(&block.map(block_of)))
     })
 }

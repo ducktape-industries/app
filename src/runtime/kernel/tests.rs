@@ -290,6 +290,75 @@ async fn system_status_preserves_borsh_and_refusals() {
     server.join().unwrap();
 }
 
+#[tokio::test]
+async fn block_doors_carry_the_archive_s_blocks_as_door_types() {
+    let finalized = backend::noded::Finalized {
+        height: 9,
+        id: [1; 32],
+        parent: [2; 32],
+        time: 1_000,
+        epoch: 0,
+        proposer: Some(vec![3; 32]),
+        txs: vec![backend::noded::Tx {
+            hash: [4; 32],
+            signer: vec![5; 32],
+            seq: 6,
+            target: "chat".into(),
+            payload: vec![7],
+        }],
+    };
+    let (node, server) = node_server(
+        "200 OK",
+        abi::encode(&vec![finalized.clone()]),
+        "POST /v1/blocks HTTP/1.1",
+        None,
+    );
+    let page = doors::encode(&doors::BlockPage {
+        before: Some(10),
+        limit: 1,
+    });
+    let answer = blocks(node, page).await.unwrap();
+    let decoded: Vec<doors::Block> = doors::decode(&answer).unwrap();
+    assert_eq!(
+        decoded,
+        vec![doors::Block {
+            height: 9,
+            id: [1; 32],
+            parent: [2; 32],
+            time: 1_000,
+            epoch: 0,
+            proposer: Some(vec![3; 32]),
+            txs: vec![doors::Tx {
+                hash: [4; 32],
+                signer: vec![5; 32],
+                seq: 6,
+                target: "chat".into(),
+                payload: vec![7],
+            }],
+        }]
+    );
+    server.join().unwrap();
+
+    let (node, server) = node_server(
+        "200 OK",
+        abi::encode(&None::<backend::noded::Finalized>),
+        "POST /v1/block HTTP/1.1",
+        None,
+    );
+    let answer = block(node.clone(), doors::encode(&doors::BlockRef::Id([8; 32])))
+        .await
+        .unwrap();
+    assert_eq!(
+        doors::decode::<Option<doors::Block>>(&answer).unwrap(),
+        None
+    );
+    server.join().unwrap();
+    assert_eq!(
+        block(node, b"x".to_vec()).await.unwrap_err().reason,
+        "malformed_request"
+    );
+}
+
 /// `BlobGet`'s door is declared `door!(BlobGet, "blob.get", String, Vec<u8>)`
 /// — the standard macro, which borsh-wraps the reply on both ends, same as
 /// every other door here. A view's generic `Door::decode_reply` expects that
