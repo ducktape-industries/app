@@ -42,6 +42,7 @@ mod screens_tests;
 mod windows;
 
 pub(crate) use launch::run;
+pub(crate) use layout::GRAB;
 mod settings;
 mod sign_in;
 mod spin;
