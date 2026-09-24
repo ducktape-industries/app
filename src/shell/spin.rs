@@ -75,15 +75,18 @@ pub(super) struct Spin {
     drag: Option<Point<Pixels>>,
     /// The ramp step each cell shows, held against flicker.
     shown: Vec<f32>,
-    /// A frame is already asked for (`FRAME` from now).
-    due: bool,
+    /// The ramp, shaped on the first render.
+    glyphs: Option<Glyphs>,
+    /// The springs are being stepped (`FRAME` apart).
+    ticking: bool,
 }
 
-/// How often the figure redraws on its own. Every display frame (120 Hz on
+/// How often the springs step on their own. Every display frame (120 Hz on
 /// a ProMotion screen) held half a core of an M1 Max on the launcher alone,
-/// and a window drag lagged behind it; a drag on the figure itself still
-/// follows every frame.
+/// and a window drag lagged behind it; a drag on the figure itself steps at
+/// about the display's rate.
 const FRAME: std::time::Duration = std::time::Duration::from_millis(33);
+const DRAG_FRAME: std::time::Duration = std::time::Duration::from_millis(8);
 
 impl Spin {
     pub(super) fn new(figure: Figure, moving: bool, ink: Hsla) -> Self {
@@ -105,7 +108,8 @@ impl Spin {
             lean: (0., 0.),
             drag: None,
             shown: Vec::new(),
-            due: false,
+            glyphs: None,
+            ticking: false,
         }
     }
 
@@ -156,80 +160,174 @@ impl Spin {
         }
     }
 
-    /// The lines to draw: each cell's glyph, changed only once its
-    /// brightness has clearly left the one it shows.
-    fn lines(&mut self, shade: &[f32]) -> Vec<String> {
+    /// Moves each cell's ramp step on, changed only once its brightness
+    /// has clearly left the one it shows. True if any cell changed.
+    fn hold(&mut self, shade: &[f32]) -> bool {
         let steps = (figure::RAMP.len() - 1) as f32;
-        if self.shown.len() != shade.len() {
+        let mut changed = self.shown.len() != shade.len();
+        if changed {
             self.shown = vec![f32::NAN; shade.len()];
         }
         for (shown, &lum) in self.shown.iter_mut().zip(shade) {
+            let was = *shown;
             if lum < 0. {
                 *shown = f32::NAN;
-                continue;
+            } else {
+                let level = lum * steps;
+                if shown.is_nan() || (level - *shown).abs() > HOLD {
+                    *shown = level.round();
+                }
             }
-            let level = lum * steps;
-            if shown.is_nan() || (level - *shown).abs() > HOLD {
-                *shown = level.round();
-            }
+            // bitwise: a blank cell is always the one NaN
+            changed |= was.to_bits() != shown.to_bits();
         }
-        self.shown
-            .chunks(figure::COLS)
-            .map(|row| {
-                let line: String = row
-                    .iter()
-                    .map(|&step| match step.is_nan() {
-                        true => ' ',
-                        false => figure::RAMP[(step as usize).clamp(1, figure::RAMP.len() - 1)],
-                    })
-                    .collect();
-                line.trim_end().to_owned()
-            })
-            .collect()
+        changed
     }
-}
 
-impl Render for Spin {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    /// Steps the springs to now and marches the frame into `shown`:
+    /// whether anything still moves, and whether a cell's glyph changed.
+    fn step(&mut self) -> (bool, bool) {
         let now = Instant::now();
-        if self.tick(now) {
-            if self.drag.is_some() {
-                window.request_animation_frame();
-            } else if !self.due {
-                self.due = true;
-                cx.spawn(async move |spin, cx| {
-                    cx.background_executor().timer(FRAME).await;
-                    let _ = spin.update(cx, |spin, cx| {
-                        spin.due = false;
-                        cx.notify();
-                    });
-                })
-                .detach();
-            }
-        }
+        let moving = self.tick(now);
         let t = match self.moving {
             true => now.duration_since(self.born).as_secs_f32(),
             false => 0.,
         };
-        let shade = self.figure.shade(t, self.pose());
-        let lines = self.lines(&shade);
+        (moving, self.hold(&self.figure.shade(t, self.pose())))
+    }
+
+    /// Keeps the springs stepping while anything moves, until a glyph
+    /// changes and asks for a redraw.
+    fn run(&mut self, cx: &mut Context<Self>) {
+        if self.ticking {
+            return;
+        }
+        self.ticking = true;
+        cx.spawn(async move |spin, cx| {
+            loop {
+                let frame = match spin.update(cx, |spin, _| spin.drag.is_some()) {
+                    Ok(true) => DRAG_FRAME,
+                    Ok(false) => FRAME,
+                    Err(_) => return,
+                };
+                cx.background_executor().timer(frame).await;
+                let going = spin.update(cx, |spin, cx| {
+                    let (moving, changed) = spin.step();
+                    // an unchanged grid is not drawn again; a changed one
+                    // is, and its render steps on (so a hidden window,
+                    // never drawn, stops marching)
+                    if changed {
+                        cx.notify();
+                    }
+                    spin.ticking = moving && !changed;
+                    spin.ticking
+                });
+                if !matches!(going, Ok(true)) {
+                    return;
+                }
+            }
+        })
+        .detach();
+    }
+}
+
+/// The ramp's glyphs, shaped once: nothing is shaped per frame.
+#[derive(Clone, Copy)]
+struct Glyphs {
+    size: Pixels,
+    /// Each ramp step's face (a fallback, if the mono face lacks it) and glyph.
+    ids: [(FontId, GlyphId); figure::RAMP.len()],
+    /// From a cell's top to the baseline, as a line of text puts it.
+    baseline: Pixels,
+}
+
+impl Glyphs {
+    fn shape(window: &Window) -> Self {
+        // "===" is one glyph in the mono face; a drawing wants three
+        let font = Font {
+            features: FontFeatures::disable_ligatures(),
+            ..font(super::theme::FAMILY_MONO)
+        };
+        let size = px(figure::GLYPH);
+        let shaped = figure::RAMP.map(|glyph| {
+            let text = SharedString::from(glyph.to_string());
+            let run = TextRun {
+                len: text.len(),
+                font: font.clone(),
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window.text_system().shape_line(text, size, &[run], None)
+        });
+        let at = &shaped[figure::RAMP.len() - 1];
+        Self {
+            ids: shaped.each_ref().map(|line| {
+                line.runs
+                    .first()
+                    .and_then(|run| Some((run.font_id, run.glyphs.first()?.id)))
+                    .unwrap_or((at.runs[0].font_id, GlyphId(0)))
+            }),
+            size,
+            baseline: (px(figure::SIZE) - at.ascent - at.descent) / 2. + at.ascent,
+        }
+    }
+}
+
+/// Where each inked cell's glyph goes, from the drawing's top left, and
+/// which ramp step it is: a hit is never blank, so the shape keeps its
+/// outline.
+fn stamps(shown: &[f32]) -> Vec<(Point<Pixels>, usize)> {
+    shown
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| !step.is_nan())
+        .map(|(cell, &step)| {
+            let (col, row) = (cell % figure::COLS, cell / figure::COLS);
+            (
+                point(
+                    px(col as f32 * figure::ADVANCE),
+                    px(row as f32 * figure::SIZE),
+                ),
+                (step as usize).clamp(1, figure::RAMP.len() - 1),
+            )
+        })
+        .collect()
+}
+
+impl Render for Spin {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.shown.is_empty() {
+            self.step();
+        }
+        self.run(cx);
+        let glyphs = *self.glyphs.get_or_insert_with(|| Glyphs::shape(window));
+        let stamps = stamps(&self.shown);
+        let ink = self.ink;
         let spin = cx.entity();
         let grabbing = self.drag.is_some();
         div()
             .relative()
-            .flex()
-            .flex_col()
             .w(px(figure::COLS as f32 * figure::ADVANCE))
-            .font_family(super::theme::FAMILY_MONO)
-            // "===" is one glyph in the mono face; a drawing wants three
-            .font_features(FontFeatures::disable_ligatures())
-            .text_size(px(figure::GLYPH))
-            .line_height(px(figure::SIZE))
-            .text_color(self.ink)
-            .children(
-                lines
-                    .into_iter()
-                    .map(|line| div().h(px(figure::SIZE)).whitespace_nowrap().child(line)),
+            .h(px(figure::ROWS as f32 * figure::SIZE))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    // one layer, as a line of text paints: a thousand glyphs
+                    // take one draw order, not one bounds-tree insert each
+                    move |bounds, _, window, _| {
+                        window.paint_layer(bounds, |window| {
+                            for (at, step) in stamps {
+                                let (face, glyph) = glyphs.ids[step];
+                                let origin = bounds.origin + at + point(px(0.), glyphs.baseline);
+                                // a glyph the atlas can't take is left out, not fatal
+                                let _ = window.paint_glyph(origin, face, glyph, glyphs.size, ink);
+                            }
+                        })
+                    },
+                )
+                .size_full(),
             )
             .child(
                 div()
@@ -264,6 +362,8 @@ fn listen(spin: Entity<Spin>, bounds: Bounds<Pixels>, window: &mut Window) {
                 spin.drag = Some(event.position);
                 spin.fling = 0.;
                 spin.touched = Instant::now();
+                spin.run(cx);
+                // the cursor closes its hand
                 cx.notify();
             });
         }
@@ -292,7 +392,8 @@ fn listen(spin: Entity<Spin>, bounds: Bounds<Pixels>, window: &mut Window) {
             if spin.drag.is_some() || bounds.contains(&event.position) {
                 spin.touched = Instant::now();
             }
-            cx.notify();
+            // the springs follow; a redraw waits for a glyph to change
+            spin.run(cx);
         });
     });
     window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
@@ -301,6 +402,7 @@ fn listen(spin: Entity<Spin>, bounds: Bounds<Pixels>, window: &mut Window) {
                 if spin.drag.take().is_some() {
                     spin.fling = spin.yaw.v.clamp(-4., 4.);
                     spin.touched = Instant::now();
+                    spin.run(cx);
                     cx.notify();
                 }
             });
@@ -329,8 +431,89 @@ pub(super) fn drawing(
             spin.figure = figure;
             spin.moving = moving;
             spin.ink = ink;
+            spin.step();
+            spin.run(cx);
             cx.notify();
         }
     });
-    AnyView::from(spin).into_any_element()
+    // cached: the launcher redrawing (a caret, a hover) reuses the last
+    // drawing instead of marching every ray again
+    AnyView::from(spin)
+        .cached(
+            StyleRefinement::default()
+                .w(px(figure::COLS as f32 * figure::ADVANCE))
+                .h(px(figure::ROWS as f32 * figure::SIZE)),
+        )
+        .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Figure, Pose, Spin, figure, stamps};
+    use gpui_kit::{Hsla, point, px};
+
+    #[test]
+    fn stamps_put_each_inked_cell_at_its_column_and_row() {
+        let mut shown = vec![f32::NAN; figure::COLS * figure::ROWS];
+        shown[0] = 0.; // a hit at the darkest step still shows
+        shown[figure::COLS + 2] = 11.;
+        shown[figure::COLS * figure::ROWS - 1] = 5.;
+        assert_eq!(
+            stamps(&shown),
+            [
+                (point(px(0.), px(0.)), 1),
+                (
+                    point(px(2. * figure::ADVANCE), px(figure::SIZE)),
+                    figure::RAMP.len() - 1
+                ),
+                (
+                    point(
+                        px((figure::COLS - 1) as f32 * figure::ADVANCE),
+                        px((figure::ROWS - 1) as f32 * figure::SIZE)
+                    ),
+                    5
+                ),
+            ]
+        );
+    }
+
+    /// Only a changed grid asks for a redraw: a brightness inside the hold
+    /// keeps its glyph, one past it (or a cell lost or gained) does not.
+    #[test]
+    fn hold_says_whether_a_glyph_changed() {
+        let mut spin = Spin::new(Figure::Node, true, Hsla::default());
+        let steps = (figure::RAMP.len() - 1) as f32;
+        let mut shade = vec![-1.; figure::COLS * figure::ROWS];
+        shade[0] = 5. / steps;
+        assert!(spin.hold(&shade), "the first frame draws");
+        assert!(!spin.hold(&shade), "the same frame is not drawn again");
+        shade[0] = 5.5 / steps;
+        assert!(!spin.hold(&shade), "inside the hold: same glyph");
+        shade[0] = 6. / steps;
+        assert!(spin.hold(&shade), "past the hold: a new glyph");
+        shade[1] = 0.5;
+        assert!(spin.hold(&shade), "a cell the ray now hits");
+        shade[1] = -1.;
+        assert!(spin.hold(&shade), "a cell it now misses");
+    }
+
+    /// Stamped, every figure shows the glyphs its lines of text showed.
+    #[test]
+    fn stamps_draw_what_the_lines_of_text_drew() {
+        for figure in [Figure::Node, Figure::Ring, Figure::Sheets, Figure::Pair] {
+            let mut spin = Spin::new(figure, true, Hsla::default());
+            spin.hold(&figure.shade(1., Pose::default()));
+            let mut grid = vec![vec![' '; figure::COLS]; figure::ROWS];
+            for (at, step) in stamps(&spin.shown) {
+                let col = (f32::from(at.x) / figure::ADVANCE).round() as usize;
+                let row = (f32::from(at.y) / figure::SIZE).round() as usize;
+                grid[row][col] = figure::RAMP[step];
+            }
+            let drawn: Vec<String> = grid
+                .into_iter()
+                .map(|row| row.into_iter().collect::<String>().trim_end().to_owned())
+                .collect();
+            assert_eq!(drawn, figure.still(1., Pose::default()), "{figure:?}");
+        }
+    }
 }
