@@ -69,6 +69,7 @@ impl Guest {
         // Queued results precede becoming visible, so a view can distinguish
         // arrivals while hidden from data received after it returns to screen.
         self.sync_visibility();
+        self.sync_route();
         if self.staged {
             // a replacement's first tree is already here; only its
             // requests and cancels are still to route
@@ -104,6 +105,8 @@ impl Guest {
             }
             self.live_subscriptions.retain(|(live, _)| *live != id);
             self.visibility_subscriptions
+                .retain(|subscription| *subscription != id);
+            self.route_subscriptions
                 .retain(|subscription| *subscription != id);
             // dropping the stream aborts it: the node socket goes with the
             // subscription the view abandoned

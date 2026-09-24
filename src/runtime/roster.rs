@@ -229,6 +229,32 @@ pub fn local_link(link: &str) -> Option<&'static str> {
     local_seat(link, &rail())
 }
 
+/// `duck://<view>/<route>`: a known view and the route its view reads.
+pub fn local_route(link: &str) -> Option<(&'static str, String)> {
+    local_seat_route(link, &rail())
+}
+
+fn local_seat_route(link: &str, rows: &[RailRow]) -> Option<(&'static str, String)> {
+    let (seat, route) = link.strip_prefix("duck://")?.split_once('/')?;
+    let module = local_seat(&format!("duck://{seat}"), rows)?;
+    valid_route(route).then(|| (module, route.to_owned()))
+}
+
+/// A route a link may hand a view: at most 256 bytes of `/`-separated
+/// segments, each nonempty, not `.` or `..`, and of `[A-Za-z0-9._-]`.
+pub fn valid_route(route: &str) -> bool {
+    !route.is_empty()
+        && route.len() <= 256
+        && route.split('/').all(|segment| {
+            !segment.is_empty()
+                && segment != "."
+                && segment != ".."
+                && segment
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        })
+}
+
 fn local_seat(link: &str, rows: &[RailRow]) -> Option<&'static str> {
     let name = link.strip_prefix("duck://")?;
     if name.is_empty()
@@ -271,6 +297,25 @@ mod local_link_tests {
         ] {
             assert_eq!(local_seat(link, &rows), None);
         }
+        assert_eq!(
+            local_seat_route("duck://catalog/tx/00ff", &rows),
+            Some(("catalog", "tx/00ff".into()))
+        );
+        assert_eq!(
+            local_seat_route("duck://preferences/a.b_c-D", &rows),
+            Some(("catalog", "a.b_c-D".into()))
+        );
+        for link in [
+            "duck://catalog/",
+            "duck://catalog/tx//00ff",
+            "duck://catalog/../x",
+            "duck://catalog/tx?x",
+            "duck://unknown/tx/00ff",
+        ] {
+            assert_eq!(local_seat_route(link, &rows), None, "{link}");
+        }
+        assert!(valid_route(&"a".repeat(256)));
+        assert!(!valid_route(&"a".repeat(257)));
         rows.push(RailRow {
             module: "other",
             label: "Preferences".into(),

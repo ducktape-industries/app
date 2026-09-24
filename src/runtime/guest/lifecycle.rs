@@ -446,6 +446,7 @@ impl Guest {
             visible: false,
             visibility_change: None,
             visibility_subscriptions: Vec::new(),
+            route_subscriptions: Vec::new(),
             intents: Vec::new(),
             replies: Arc::default(),
             live_subscriptions: Vec::new(),
@@ -505,6 +506,21 @@ impl Guest {
             });
         }
         !claimed.is_empty()
+    }
+
+    /// A route a link left for this module goes to its first route
+    /// subscriber, once; with no subscriber it waits.
+    pub(crate) fn sync_route(&mut self) {
+        let Some(&id) = self.route_subscriptions.first() else {
+            return;
+        };
+        if let Some(route) = crate::runtime::take_route(self.module) {
+            self.pending.push(wire::Event::Response {
+                id,
+                result: Ok(wire::doors::encode(&route)),
+                done: false,
+            });
+        }
     }
 
     pub(crate) fn sync_visibility(&mut self) {

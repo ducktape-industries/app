@@ -23,7 +23,9 @@ mod widget;
 
 pub(crate) use kernel::chord_of;
 pub(crate) use media::capturing;
-pub use roster::{RailRow, connected, deployments_checked, local_link, props, rail};
+pub use roster::{
+    RailRow, connected, deployments_checked, local_link, local_route, props, rail, valid_route,
+};
 pub(crate) use seat::{Failure, NODE_UNREACHABLE, retry};
 pub use seat::{Loads, override_views_from};
 pub(crate) use widget::NativeModuleView;
@@ -168,6 +170,31 @@ pub(crate) fn chord_holder(chord: &str) -> Option<&'static str> {
         .expect("chord claims")
         .get(chord)
         .map(|(holder, _)| *holder)
+}
+
+/// The route a link asked of each module's view, waiting for that view's
+/// first `host.route` subscriber. One per module: a newer link replaces an
+/// older one no view has read yet.
+fn pending_routes() -> &'static Mutex<std::collections::BTreeMap<&'static str, String>> {
+    static ROUTES: OnceLock<Mutex<std::collections::BTreeMap<&'static str, String>>> =
+        OnceLock::new();
+    ROUTES.get_or_init(Mutex::default)
+}
+
+/// Hold `route` for `module`'s view until it asks.
+pub(crate) fn route_to(module: &'static str, route: String) {
+    pending_routes()
+        .lock()
+        .expect("pending routes")
+        .insert(module, route);
+}
+
+/// The route waiting for `module`, handed out once.
+pub(crate) fn take_route(module: &str) -> Option<String> {
+    pending_routes()
+        .lock()
+        .expect("pending routes")
+        .remove(module)
 }
 
 pub(crate) fn intern(id: &str) -> &'static str {

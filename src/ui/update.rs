@@ -101,6 +101,9 @@ impl Ducktape {
                 self.recent_endpoints = backend::recent_endpoints();
                 self.connected_rpc = origin;
                 self.network = status.network.clone();
+                // the chain id links name: the network and its genesis salt
+                self.chain = ducklink::ChainId::of(&status.network, &status.genesis)
+                    .map_or_else(|| status.network.clone(), |chain| chain.to_string());
                 self.connected = true;
                 self.status_misses = 0;
                 self.screen = Screen::Console;
@@ -183,6 +186,7 @@ impl Ducktape {
                 self.status_misses = 0;
                 self.connected_rpc.clear();
                 self.network.clear();
+                self.chain.clear();
                 self.status = "Not connected".into();
                 self.screen = Screen::Connect;
                 self.push_props();
@@ -318,29 +322,31 @@ impl Ducktape {
                 Task::none()
             }
             Message::OpenLink(link) => {
-                // `duck://<chain>/<program>/<tail>`: the program's view is the
-                // one that reads the tail. The app opens the seat; the rest
-                // is the view's, once it asks (a link door is not built yet).
+                // `duck://<chain>/<program>/<tail>` on this chain, or the short
+                // `duck://<view>/<route>`: the seat opens and its view is
+                // handed the route. A link to another chain opens the seat.
                 if let Some(module) = crate::runtime::local_link(&link) {
-                    self.active = Some(module);
-                    self.toast = format!("Opened {module}");
-                    self.toast_age = 0;
+                    self.open_seat(module, None);
                     return Task::none();
                 }
                 match ducklink::Link::parse(&link) {
                     Ok(parsed) => {
                         let module = crate::runtime::intern(&parsed.program);
-                        self.active = Some(module);
-                        self.toast = format!("Opened {}", parsed.program);
-                        self.toast_age = 0;
+                        let route = parsed.tail.join("/");
+                        let here = parsed.chain.to_string() == self.chain
+                            && crate::runtime::valid_route(&route);
+                        self.open_seat(module, here.then_some(route));
                     }
                     Err(_) if link.starts_with("http://") || link.starts_with("https://") => {
                         crate::shell::open_link(link);
                     }
-                    Err(_) => {
-                        self.toast = "This link is not one this app opens.".into();
-                        self.toast_age = 0;
-                    }
+                    Err(_) => match crate::runtime::local_route(&link) {
+                        Some((module, route)) => self.open_seat(module, Some(route)),
+                        None => {
+                            self.toast = "This link is not one this app opens.".into();
+                            self.toast_age = 0;
+                        }
+                    },
                 }
                 Task::none()
             }
@@ -824,6 +830,16 @@ impl Ducktape {
         }
     }
 
+    fn open_seat(&mut self, module: &'static str, route: Option<String>) {
+        if let Some(route) = route {
+            crate::runtime::route_to(module, route);
+        }
+        self.active = Some(module);
+        self.reveal = true;
+        self.toast = format!("Opened {module}");
+        self.toast_age = 0;
+    }
+
     fn apply_status(&mut self, status: &backend::NodeStatus) {
         let height = i64::try_from(status.height).unwrap_or(-1);
         if height != self.height {
@@ -1194,6 +1210,26 @@ mod tests {
     }
 
     #[test]
+    fn a_link_on_this_chain_hands_its_view_the_route() {
+        let (mut state, _) = Ducktape::boot();
+        state.chain = "testkit#0a1b2c3d".into();
+        let _ = state.update(Message::OpenLink(
+            "duck://testkit-0a1b2c3d/link-test-here/tx/00ff".into(),
+        ));
+        assert_eq!(state.active, Some("link-test-here"));
+        assert_eq!(
+            crate::runtime::take_route("link-test-here").as_deref(),
+            Some("tx/00ff")
+        );
+        // another chain's link opens the seat and routes nothing
+        let _ = state.update(Message::OpenLink(
+            "duck://othernet-0a1b2c3d/link-test-away/tx/00ff".into(),
+        ));
+        assert_eq!(state.active, Some("link-test-away"));
+        assert_eq!(crate::runtime::take_route("link-test-away"), None);
+    }
+
+    #[test]
     fn two_missed_polls_read_reconnecting_and_one_answer_recovers() {
         let (mut state, _) = Ducktape::boot();
         state.connected = true;
@@ -1218,6 +1254,7 @@ mod tests {
             epoch: 0,
             identity: Vec::new(),
             contract: backend::noded::NODE_CONTRACT,
+            genesis: [0; 32],
         }));
         assert!(!state.reconnecting());
         assert_eq!(state.status, "Connected · block 9");
@@ -1462,6 +1499,7 @@ mod tests {
             epoch: 0,
             identity: Vec::new(),
             contract: backend::noded::NODE_CONTRACT,
+            genesis: [0; 32],
         }
     }
 }

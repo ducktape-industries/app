@@ -25,6 +25,8 @@
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
 //! - `host.props` — subscribes to the session props (`Session`: the seated
 //!   account, theme, chain and read-only endpoint).
+//! - `host.route` — a subscription that gets the route a `duck://` link
+//!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once.
 //! - `host.visible`, `host.badge`, `host.open_link`, `host.chord`,
 //!   `host.id`, `clock.ticks`, `host.log`, `host.widget` — the app's own
 //!   doors: visibility, the tab badge, the one way out (a `duck://` link),
@@ -143,6 +145,18 @@ pub(super) fn answer(
                 result: Ok(doors::encode(&guest.visible)),
                 done: false,
             });
+        }
+        ("host", "route") => {
+            if !payload.is_empty() {
+                guest.refuse(
+                    id,
+                    "malformed_request",
+                    "route subscription takes no payload",
+                );
+                return true;
+            }
+            guest.route_subscriptions.push(id);
+            guest.sync_route();
         }
         ("rpc", "query") => spawn(guest, id, payload, query),
         ("rpc", "status") => spawn(guest, id, payload, status),

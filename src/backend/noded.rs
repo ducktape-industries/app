@@ -106,6 +106,8 @@ pub struct Status {
     pub epoch: u64,
     pub identity: Vec<u8>,
     pub contract: u32,
+    /// The genesis block's digest: with the network name, the chain's id.
+    pub genesis: [u8; 32],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
