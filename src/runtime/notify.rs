@@ -29,11 +29,11 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
+use super::WindowKey;
 use super::kernel::spawn_device;
 use super::wire::doors::{self, Post, Posted};
 use super::{Guest, Intent};
 use crate::backend::{read_prefs, write_prefs};
-use crate::shell::WindowKey;
 
 /// One banner as the host words it; a later one under the same non-empty
 /// `tag` replaces the standing one.
@@ -448,36 +448,6 @@ fn log_path(network: &str) -> Option<PathBuf> {
     Some(dir.join(format!("{file}.json")))
 }
 
-/// Unix seconds at the start of the local day `wall` falls in.
-pub(crate) fn local_midnight(wall: i64) -> i64 {
-    let offset = local_offset(wall);
-    (wall + offset).div_euclid(86_400) * 86_400 - offset
-}
-
-fn local_offset(wall: i64) -> i64 {
-    let time = wall as libc::time_t;
-    // SAFETY: `localtime_r` writes only the `tm` it is handed.
-    unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        match libc::localtime_r(&time, &mut tm).is_null() {
-            true => 0,
-            false => tm.tm_gmtoff as i64,
-        }
-    }
-}
-
-/// "now", "14m", "2h", "Yesterday", "3d".
-pub(crate) fn ago(at: i64, now: i64) -> String {
-    let seconds = (now - at).max(0);
-    match seconds {
-        ..60 => "now".into(),
-        60..3_600 => format!("{}m", seconds / 60),
-        _ if at >= local_midnight(now) => format!("{}h", seconds / 3_600),
-        _ if at >= local_midnight(now) - 86_400 => "Yesterday".into(),
-        _ => format!("{}d", seconds / 86_400),
-    }
-}
-
 /// Shortened to what a screen shows, on a character boundary; a notice
 /// with no words is not one, and a link is a `duck://` link or nothing.
 fn shortened(mut post: Post) -> Result<Post, &'static str> {
@@ -593,27 +563,36 @@ fn read(guest: &mut Guest, id: u64, payload: &[u8]) {
 
 /// A view's banners reach the desktop one at a time, in the order its
 /// notices came: raised concurrently, a burst's "N more" could land before
-/// the last banners it counts. One thread per view that has raised one, for
-/// the life of the process.
+/// the last banners it counts. One task per view on the kernel runtime runs
+/// its jobs one after another, each on the blocking pool (an OS call).
 fn in_order(module: &str, job: impl FnOnce() + Send + 'static) {
     type Job = Box<dyn FnOnce() + Send>;
-    static QUEUES: OnceLock<Mutex<HashMap<String, std::sync::mpsc::Sender<Job>>>> = OnceLock::new();
+    static QUEUES: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<Job>>>> =
+        OnceLock::new();
     let mut queues = QUEUES
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let queue = queues.entry(module.to_owned()).or_insert_with(|| {
-        let (queue, jobs) = std::sync::mpsc::channel::<Job>();
-        let spawned = std::thread::Builder::new()
-            .name(format!("banners-{module}"))
-            .spawn(move || jobs.into_iter().for_each(|job| job()));
-        if let Err(error) = spawned {
-            tracing::info!(target: "ducktape::app", %error, "banners are not raised");
-        }
+        let (queue, mut jobs) = tokio::sync::mpsc::unbounded_channel::<Job>();
+        super::kernel::handle().spawn(async move {
+            while let Some(job) = jobs.recv().await {
+                // a job that panicked is a banner not raised; the next goes on
+                let _ = tokio::task::spawn_blocking(job).await;
+            }
+        });
         queue
     });
-    // a queue with no thread drops the job, and its banner reads as not raised
     let _ = queue.send(Box::new(job));
+}
+
+/// What opens a clicked banner's link: the shell's, handed over at startup
+/// ([`on_open_link`]) so this layer never calls up into it.
+static OPEN_LINK: OnceLock<fn(String)> = OnceLock::new();
+
+/// The shell says how a link a banner click opens reaches the reducer.
+pub(crate) fn on_open_link(open: fn(String)) {
+    let _ = OPEN_LINK.set(open);
 }
 
 /// A banner clicked: its row opens as if picked in the centre — read now,
@@ -626,417 +605,22 @@ fn clicked(entry: u64) {
         true => format!("duck://{}", entry.module),
         false => entry.link,
     };
-    crate::shell::open_link(link);
+    match OPEN_LINK.get() {
+        Some(open) => open(link),
+        None => {
+            tracing::error!(target: "ducktape::app", reason = "no_link_opener", "a banner's link could not be opened")
+        }
+    }
 }
 
-/// macOS raises banners through the user-notification centre, which
-/// TERMINATES a process that has no bundle identifier — not an error a
-/// caller can catch, the process dies. `cargo test`, `cargo run` and any
-/// bare binary are exactly that process, so the identifier is read first.
 #[cfg(target_os = "macos")]
-mod platform {
-    use super::Notice;
-    use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
-    use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
-    use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSError, NSString};
-    use objc2_user_notifications::{
-        UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
-        UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
-        UNNotificationRequest, UNNotificationResponse, UNNotificationSound,
-        UNUserNotificationCenter, UNUserNotificationCenterDelegate,
-    };
-
-    /// The userInfo key a banner carries its centre row under: macOS does
-    /// not hand `targetContentIdentifier` back in a click's response.
-    const ROW: &str = "row";
-
-    fn bundled() -> bool {
-        // SAFETY: reading the main bundle's identifier is valid on any thread.
-        unsafe { NSBundle::mainBundle().bundleIdentifier().is_some() }
-    }
-
-    declare_class!(
-        /// The notification centre's delegate: a banner the host raised
-        /// shows even while this app is in front (the host already decided
-        /// it should), and a click on one opens the row it names.
-        struct Clicks;
-
-        unsafe impl ClassType for Clicks {
-            type Super = NSObject;
-            type Mutability = mutability::InteriorMutable;
-            const NAME: &'static str = "DucktapeNoticeClicks";
-        }
-
-        impl DeclaredClass for Clicks {}
-
-        unsafe impl NSObjectProtocol for Clicks {}
-
-        unsafe impl UNUserNotificationCenterDelegate for Clicks {
-            #[method(userNotificationCenter:willPresentNotification:withCompletionHandler:)]
-            fn will_present(
-                &self,
-                _centre: &UNUserNotificationCenter,
-                _notification: &UNNotification,
-                shown: &block2::Block<dyn Fn(UNNotificationPresentationOptions)>,
-            ) {
-                shown.call((UNNotificationPresentationOptions::UNNotificationPresentationOptionBanner
-                    | UNNotificationPresentationOptions::UNNotificationPresentationOptionList
-                    | UNNotificationPresentationOptions::UNNotificationPresentationOptionSound,));
-            }
-
-            #[method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:)]
-            fn did_receive(
-                &self,
-                _centre: &UNUserNotificationCenter,
-                response: &UNNotificationResponse,
-                done: &block2::Block<dyn Fn()>,
-            ) {
-                // SAFETY: reads off the response the framework hands in.
-                let (action, row) = unsafe {
-                    let info = response.notification().request().content().userInfo();
-                    let key = NSString::from_str(ROW);
-                    // the row is only ever written as a string (`post`)
-                    let row = info
-                        .objectForKey(AsRef::<AnyObject>::as_ref(&*key))
-                        .map(|row| Retained::cast::<NSString>(row).to_string());
-                    (response.actionIdentifier(), row)
-                };
-                // SAFETY: a framework constant.
-                let default = &*action == unsafe { UNNotificationDefaultActionIdentifier };
-                let entry = row.and_then(|row| row.parse::<u64>().ok());
-                if let Some(entry) = entry.filter(|_| default) {
-                    super::clicked(entry);
-                }
-                done.call(());
-            }
-        }
-    );
-
-    /// The centre holds its delegate weakly: this one is kept for the life
-    /// of the process.
-    fn listen(centre: &UNUserNotificationCenter) {
-        static LISTENING: std::sync::Once = std::sync::Once::new();
-        LISTENING.call_once(|| {
-            let clicks: Retained<Clicks> =
-                unsafe { msg_send_id![super(Clicks::alloc().set_ivars(())), init] };
-            // SAFETY: the delegate outlives the centre's use of it (leaked).
-            unsafe { centre.setDelegate(Some(ProtocolObject::from_ref(&*clicks))) };
-            std::mem::forget(clicks);
-        });
-    }
-
-    pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
-        if !bundled() {
-            tracing::debug!(
-                target: "ducktape::app",
-                reason = "no_bundle_identifier",
-                "skipped a desktop notice: this process is not an app bundle"
-            );
-            return false;
-        }
-        // SAFETY: plain framework work on objects this function owns; the
-        // centre is thread-safe by contract and copies what it is handed.
-        let (centre, request) = unsafe {
-            let centre = UNUserNotificationCenter::currentNotificationCenter();
-            listen(&centre);
-            let content = UNMutableNotificationContent::new();
-            content.setTitle(&NSString::from_str(&notice.title));
-            content.setBody(&NSString::from_str(&notice.body));
-            if !notice.tag.is_empty() {
-                content.setThreadIdentifier(&NSString::from_str(&notice.tag));
-            }
-            // the row a click opens
-            if let Some(entry) = entry {
-                let row = NSDictionary::<NSString, NSString>::from_vec(
-                    &[&*NSString::from_str(ROW)],
-                    vec![NSString::from_str(&entry.to_string())],
-                );
-                // a dictionary of strings is a property list, as userInfo holds
-                content.setUserInfo(&Retained::cast::<NSDictionary>(row));
-            }
-            content.setSound(Some(&UNNotificationSound::defaultSound()));
-            // A tag REPLACES: the banner standing under it goes, and this one
-            // takes its place. Not by reusing its identifier: two requests
-            // under one identifier added a moment apart cancel each other in
-            // the centre (a burst's second "N more" took both down).
-            let identifier = format!("ducktape-{}", fresh());
-            if !notice.tag.is_empty() {
-                let standing = standing()
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .insert(notice.tag.clone(), identifier.clone());
-                if let Some(standing) = standing {
-                    let standing = NSArray::from_vec(vec![NSString::from_str(&standing)]);
-                    centre.removePendingNotificationRequestsWithIdentifiers(&standing);
-                    centre.removeDeliveredNotificationsWithIdentifiers(&standing);
-                }
-            }
-            let request: Retained<UNNotificationRequest> =
-                UNNotificationRequest::requestWithIdentifier_content_trigger(
-                    &NSString::from_str(&identifier),
-                    &content,
-                    None,
-                );
-            (centre, request)
-        };
-        // The person's word comes first: macOS asks them on the first
-        // banner, and answers every later ask from what they said. Unasked,
-        // the centre refuses every request.
-        let (said, heard) = std::sync::mpsc::channel();
-        let asked = centre.clone();
-        let answered = block2::RcBlock::new(move |granted: Bool, _: *mut NSError| {
-            if !granted.as_bool() {
-                let _ = said.send(false);
-                return;
-            }
-            // the answer is whether the centre took it
-            let said = said.clone();
-            let added = block2::RcBlock::new(move |error: *mut NSError| {
-                let _ = said.send(error.is_null());
-            });
-            // SAFETY: as above.
-            unsafe { asked.addNotificationRequest_withCompletionHandler(&request, Some(&added)) };
-        });
-        // SAFETY: as above; the block is copied by the framework.
-        unsafe {
-            centre.requestAuthorizationWithOptions_completionHandler(
-                UNAuthorizationOptions::UNAuthorizationOptionAlert
-                    | UNAuthorizationOptions::UNAuthorizationOptionSound,
-                &answered,
-            );
-        }
-        // still asking the person: the banner goes up when they allow it
-        heard
-            .recv_timeout(std::time::Duration::from_secs(1))
-            .unwrap_or(true)
-    }
-
-    /// The banner standing under `tag`, taken down.
-    pub(super) fn withdraw(tag: &str) {
-        let standing = standing()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(tag);
-        let Some(standing) = standing.filter(|_| bundled()) else {
-            return;
-        };
-        // SAFETY: as in `post`.
-        unsafe {
-            let centre = UNUserNotificationCenter::currentNotificationCenter();
-            let standing = NSArray::from_vec(vec![NSString::from_str(&standing)]);
-            centre.removePendingNotificationRequestsWithIdentifiers(&standing);
-            centre.removeDeliveredNotificationsWithIdentifiers(&standing);
-        }
-    }
-
-    /// The banner each tag is standing under, by its request identifier.
-    fn standing() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
-        static STANDING: std::sync::OnceLock<
-            std::sync::Mutex<std::collections::HashMap<String, String>>,
-        > = std::sync::OnceLock::new();
-        STANDING.get_or_init(Default::default)
-    }
-
-    fn fresh() -> u64 {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        NEXT.fetch_add(1, Ordering::Relaxed)
-    }
-}
-
-/// Everywhere else the notifier is the freedesktop notifications service,
-/// which every desktop off macOS answers through its own daemon. Pure Rust,
-/// and no new dependency — zbus is already in this binary's graph.
+mod macos;
+#[cfg(target_os = "macos")]
+use macos as platform;
 #[cfg(not(target_os = "macos"))]
-mod platform {
-    use super::Notice;
-    use std::collections::HashMap;
-    use std::sync::{Mutex, OnceLock};
-
-    /// The desktop entry the banner is filed under (`packaging`), which
-    /// is what gives it this app's icon and lets the desktop group it.
-    const DESKTOP_ENTRY: &str = "dev.ducktape.app";
-
-    /// One session-bus connection per process. A host with no session bus
-    /// answers every banner the same way, and says so once.
-    fn session_bus() -> Option<&'static zbus::blocking::Connection> {
-        static BUS: OnceLock<Option<zbus::blocking::Connection>> = OnceLock::new();
-        BUS.get_or_init(|| match zbus::blocking::Connection::session() {
-            Ok(connection) => Some(connection),
-            Err(error) => {
-                tracing::info!(
-                    target: "ducktape::app",
-                    reason = "no_session_bus",
-                    %error,
-                    "desktop notices are off on this host"
-                );
-                None
-            }
-        })
-        .as_ref()
-    }
-
-    /// The banner a tag is standing under, so the next notice under that tag
-    /// replaces it instead of stacking a second one.
-    fn standing() -> &'static Mutex<HashMap<String, u32>> {
-        static STANDING: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
-        STANDING.get_or_init(Mutex::default)
-    }
-
-    /// The freedesktop body is markup for the servers that render it, so the
-    /// notice's own angle brackets and ampersands are escaped rather than
-    /// swallowed as tags.
-    pub(super) fn markup_escaped(text: &str) -> String {
-        text.replace('&', "&amp;")
-            .replace('<', "&lt;")
-            .replace('>', "&gt;")
-    }
-
-    /// The centre row each clickable banner stands for, by banner id.
-    fn clicks() -> &'static Mutex<HashMap<u32, u64>> {
-        static CLICKS: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
-        CLICKS.get_or_init(Mutex::default)
-    }
-
-    /// One thread for the life of the process, hearing the daemon say a
-    /// banner was clicked: its row is opened as if picked in the centre.
-    fn listen(bus: &'static zbus::blocking::Connection) {
-        static LISTENING: OnceLock<()> = OnceLock::new();
-        LISTENING.get_or_init(|| {
-            let rule = zbus::MatchRule::builder()
-                .msg_type(zbus::message::Type::Signal)
-                .interface("org.freedesktop.Notifications")
-                .and_then(|rule| rule.member("ActionInvoked"))
-                .map(|rule| rule.build());
-            let messages = rule.and_then(|rule| {
-                zbus::blocking::MessageIterator::for_match_rule(rule, bus, Some(64))
-            });
-            let messages = match messages {
-                Ok(messages) => messages,
-                Err(error) => {
-                    tracing::info!(target: "ducktape::app", %error, "banner clicks are not heard");
-                    return;
-                }
-            };
-            let spawned = std::thread::Builder::new()
-                .name("notice-clicks".into())
-                .spawn(move || {
-                    for message in messages.flatten() {
-                        let Ok((banner, action)) = message.body().deserialize::<(u32, String)>()
-                        else {
-                            continue;
-                        };
-                        let entry = clicks()
-                            .lock()
-                            .expect("banner clicks")
-                            .get(&banner)
-                            .copied();
-                        if let Some(entry) = entry.filter(|_| action == "default") {
-                            super::clicked(entry);
-                        }
-                    }
-                });
-            if let Err(error) = spawned {
-                tracing::info!(target: "ducktape::app", %error, "banner clicks are not heard");
-            }
-        });
-    }
-
-    pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
-        let Some(bus) = session_bus() else {
-            return false;
-        };
-        if entry.is_some() {
-            listen(bus);
-        }
-        // held across the call: two notices under one tag posted at once
-        // would otherwise both read "none standing" and stack
-        let mut standing = standing().lock().expect("standing notices");
-        let replaces = match notice.tag.is_empty() {
-            true => 0,
-            false => standing.get(&notice.tag).copied().unwrap_or(0),
-        };
-        match notify(bus, notice, replaces, entry.is_some()) {
-            Ok(raised) => {
-                if !notice.tag.is_empty() {
-                    standing.insert(notice.tag.clone(), raised);
-                }
-                let mut clicks = clicks().lock().expect("banner clicks");
-                match entry {
-                    Some(entry) => clicks.insert(raised, entry),
-                    None => clicks.remove(&raised),
-                };
-                true
-            }
-            Err(error) => {
-                tracing::debug!(
-                    target: "ducktape::app",
-                    reason = "notice_refused",
-                    %error,
-                    "the notification daemon refused a desktop notice"
-                );
-                false
-            }
-        }
-    }
-
-    /// The banner standing under `tag`, closed (`CloseNotification`).
-    pub(super) fn withdraw(tag: &str) {
-        let Some(banner) = standing().lock().expect("standing notices").remove(tag) else {
-            return;
-        };
-        clicks().lock().expect("banner clicks").remove(&banner);
-        let Some(bus) = session_bus() else {
-            return;
-        };
-        let closed = bus.call_method(
-            Some("org.freedesktop.Notifications"),
-            "/org/freedesktop/Notifications",
-            Some("org.freedesktop.Notifications"),
-            "CloseNotification",
-            &(banner,),
-        );
-        if let Err(error) = closed {
-            tracing::debug!(target: "ducktape::app", %error, "a standing banner was not closed");
-        }
-    }
-
-    /// One `Notify` request: `(app_name, replaces_id, app_icon, summary,
-    /// body, actions, hints, expire_timeout)` → the banner's id. A banner
-    /// that opens something declares the default action, a click on it.
-    pub(super) fn notify(
-        bus: &zbus::blocking::Connection,
-        notice: &Notice,
-        replaces: u32,
-        clickable: bool,
-    ) -> zbus::Result<u32> {
-        let actions = match clickable {
-            true => vec!["default", "Open"],
-            false => Vec::new(),
-        };
-        let body = markup_escaped(&notice.body);
-        let hints: HashMap<&str, zbus::zvariant::Value<'_>> =
-            HashMap::from([("desktop-entry", zbus::zvariant::Value::from(DESKTOP_ENTRY))]);
-        let reply = bus.call_method(
-            Some("org.freedesktop.Notifications"),
-            "/org/freedesktop/Notifications",
-            Some("org.freedesktop.Notifications"),
-            "Notify",
-            &(
-                "Ducktape",
-                replaces,
-                "",
-                notice.title.as_str(),
-                body.as_str(),
-                actions,
-                hints,
-                -1i32,
-            ),
-        )?;
-        reply.body().deserialize::<u32>()
-    }
-}
+mod freedesktop;
+#[cfg(not(target_os = "macos"))]
+use freedesktop as platform;
 
 #[cfg(test)]
 mod tests {
@@ -1292,17 +876,6 @@ mod tests {
         assert_eq!(Settings::of(&serde_json::json!({ BURST_PREF: 7 })).burst, 6);
     }
 
-    #[test]
-    fn times_read_short() {
-        let now = local_midnight(1_790_121_600) + 12 * 3_600;
-        assert_eq!(ago(now - 5, now), "now");
-        assert_eq!(ago(now - 14 * 60, now), "14m");
-        assert_eq!(ago(now - 2 * 3_600, now), "2h");
-        assert_eq!(ago(now - 20 * 3_600, now), "Yesterday");
-        assert_eq!(ago(now - 4 * 86_400, now), "4d");
-    }
-
-    /// The door takes words and a duck:// link or none; bytes past the
     /// post are refused, and a post with no words is not a notice.
     #[test]
     fn a_post_is_words_a_tag_and_a_duck_link() {
@@ -1337,17 +910,24 @@ mod tests {
     }
 
     /// A view's banners leave in the order they came, however long each
-    /// takes: here the first ones are the slowest.
+    /// takes: the first one holds until every other is queued behind it.
     #[test]
     fn a_views_banners_leave_in_order() {
         let (tell, told) = std::sync::mpsc::channel();
+        let (open, gate) = std::sync::mpsc::channel::<()>();
+        let mut gate = Some(gate);
         for nth in 0..10u64 {
             let tell = tell.clone();
+            let gate = gate.take();
             in_order("order-test", move || {
-                std::thread::sleep(Duration::from_millis(2 * (10 - nth)));
+                if let Some(gate) = gate {
+                    // held until all ten are queued: nothing may pass it
+                    let _ = gate.recv();
+                }
                 tell.send(nth).unwrap();
             });
         }
+        drop(open);
         drop(tell);
         assert_eq!(told.iter().collect::<Vec<_>>(), (0..10).collect::<Vec<_>>());
     }
