@@ -591,7 +591,7 @@ fn open_browser(url: &str) -> Result<(), String> {
             .map(drop)
             .map_err(|error| format!("Couldn't open the browser: {error}")),
         None => {
-            crate::shell::open_link(url.to_owned());
+            crate::shell::open_url_now(url.to_owned());
             Ok(())
         }
     }

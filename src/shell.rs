@@ -89,7 +89,10 @@ pub(crate) enum Command {
         reply: oneshot::Sender<WindowKey>,
     },
     Raise(WindowKey),
+    /// A link pressed off the window thread: the reducer reads it.
     OpenLink(String),
+    /// A web page, for the system browser.
+    OpenUrl(String),
     Quit,
 }
 
@@ -154,20 +157,34 @@ pub(crate) fn quit<M: 'static>() -> Task<M> {
     effect(Command::Quit)
 }
 
-/// A link a view or an editor pressed, handed to the app off any thread.
+/// A web page, in the system browser.
+pub(crate) fn open_url<M: 'static>(url: String) -> Task<M> {
+    effect(Command::OpenUrl(url))
+}
+
+/// A link pressed off the window thread (a banner's click), handed to the
+/// reducer as `Message::OpenLink`.
 pub(crate) fn open_link(url: String) {
+    post(Command::OpenLink(url));
+}
+
+/// A web page for the system browser, asked for off the window thread
+/// (the passkey ceremony's page).
+pub(crate) fn open_url_now(url: String) {
+    post(Command::OpenUrl(url));
+}
+
+/// A command sent without waiting for it to be done.
+fn post(command: Command) {
     let (completed, _dropped) = oneshot::channel();
-    let pending = PendingCommand {
-        command: Command::OpenLink(url),
-        completed,
-    };
+    let pending = PendingCommand { command, completed };
     let sent = sender()
         .lock()
         .expect("native shell commands")
         .as_ref()
         .is_some_and(|sender| sender.unbounded_send(pending).is_ok());
     if !sent {
-        tracing::error!(target: "ducktape::app", reason = "native_shell_closed", "a pressed link could not be delivered");
+        tracing::error!(target: "ducktape::app", reason = "native_shell_closed", "a link could not be delivered");
     }
 }
 
@@ -414,10 +431,8 @@ impl Desktop {
                 self.open_window(key, kind, reply, None, None, cx)
             }
             Command::Raise(key) => self.raise_window(key, cx),
-            Command::OpenLink(url) => match url.starts_with("duck://") {
-                true => self.dispatch(Message::OpenLink(url), cx),
-                false => cx.open_url(&url),
-            },
+            Command::OpenLink(link) => self.dispatch(Message::OpenLink(link), cx),
+            Command::OpenUrl(url) => cx.open_url(&url),
             Command::Quit => self.quit(cx),
         }
     }
