@@ -72,3 +72,56 @@ fn hostile_guest_position_size_and_overflow_remain_inside_host_slot(
         .unwrap();
     }
 }
+
+// A pane narrower than the window: a popup asked for near its right edge
+// fits the pane, whole, instead of fitting the window and being cut off.
+#[gpui_kit::test]
+fn an_anchored_popup_fits_its_slot_not_the_window(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    struct Pane {
+        tree: Entity<ViewTree>,
+    }
+    impl Render for Pane {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(div().w(px(200.)).h_full().child(self.tree.clone()))
+        }
+    }
+    let mut style = div().w(px(100.)).h(px(50.)).style().clone();
+    style.background = Some(rgb(0xff00ff).into());
+    let popup = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Integer(1)),
+        style,
+        interactivity: Default::default(),
+        children: vec![],
+    });
+    let root = wire::Node::Anchored {
+        anchor: wire::Anchor::TopLeft,
+        fit: wire::AnchoredFitMode::SnapToWindowWithMargin([8.; 4]),
+        position: Some([180., 170.]),
+        position_mode: wire::AnchoredPositionMode::Window,
+        offset: None,
+        children: vec![popup],
+    };
+    let window = cx.open_window(size(px(400.), px(200.)), move |_, cx| Pane {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    cx.update_window(window.into(), |_, window, cx| {
+        window.draw(cx).clear(cx);
+        let scale = window.scale_factor();
+        let quad = window
+            .painted_quads()
+            .into_iter()
+            .find(|quad| quad.background.as_solid() == Some(rgb(0xff00ff).into()))
+            .expect("the popup paints");
+        let (x, y) = (
+            quad.bounds.origin.x.0 / scale,
+            quad.bounds.origin.y.0 / scale,
+        );
+        // flipped to the left of and above the point, whole inside the pane
+        assert_eq!((x, y), (80., 120.), "{quad:?}");
+        assert!(quad.content_mask.bounds.size.width.0 / scale >= 100.);
+    })
+    .unwrap();
+}

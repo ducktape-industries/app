@@ -232,5 +232,6 @@ mod layout;
 mod picture_presentation;
 mod primitives;
 mod rich_tooltip;
+mod selection;
 mod uniform_list;
 mod variable_list;

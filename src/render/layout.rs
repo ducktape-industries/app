@@ -265,36 +265,33 @@ impl ViewTree {
             wire::Anchor::LeftCenter => gpui_kit::Anchor::LeftCenter,
             wire::Anchor::RightCenter => gpui_kit::Anchor::RightCenter,
         };
-        let mut element = gpui_kit::anchored().anchor(anchor);
-        if let Some([x, y]) = position {
-            element = element.position(point(px(*x), px(*y)));
-        }
-        if let Some([x, y]) = offset {
-            element = element.offset(point(px(*x), px(*y)));
-        }
-        element = match position_mode {
-            wire::AnchoredPositionMode::Window => {
-                element.position_mode(gpui_kit::AnchoredPositionMode::Window)
+        // every fit mode keeps the popup inside the slot: a guest cannot
+        // see its pane's edges, so the host fits to them for it
+        let margin = match fit {
+            wire::AnchoredFitMode::SnapToWindowWithMargin([top, right, bottom, left]) => {
+                gpui_kit::Edges {
+                    top: px(*top),
+                    right: px(*right),
+                    bottom: px(*bottom),
+                    left: px(*left),
+                }
             }
-            wire::AnchoredPositionMode::Local => {
-                element.position_mode(gpui_kit::AnchoredPositionMode::Local)
+            wire::AnchoredFitMode::SnapToWindow | wire::AnchoredFitMode::SwitchAnchor => {
+                Default::default()
             }
         };
-        element = match fit {
-            wire::AnchoredFitMode::SnapToWindow => element.snap_to_window(),
-            wire::AnchoredFitMode::SnapToWindowWithMargin(edges) => element
-                .snap_to_window_with_margin(gpui_kit::Edges {
-                    top: px(edges[0]),
-                    right: px(edges[1]),
-                    bottom: px(edges[2]),
-                    left: px(edges[3]),
-                }),
-            wire::AnchoredFitMode::SwitchAnchor => element,
-        };
-        for child in children {
-            element = element.child(self.node(child, window, cx));
+        super::anchored::Fitted {
+            children: children
+                .iter()
+                .map(|child| self.node(child, window, cx))
+                .collect(),
+            anchor,
+            position: position.map(|[x, y]| point(px(x), px(y))),
+            local: *position_mode == wire::AnchoredPositionMode::Local,
+            offset: offset.map_or_else(Point::default, |[x, y]| point(px(x), px(y))),
+            margin,
         }
-        element.into_any_element()
+        .into_any_element()
     }
 
     pub(super) fn measure(
