@@ -13,10 +13,7 @@ use gpui_kit::{
     Styled as _, Window,
 };
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{
-    Mutex, OnceLock,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::{Mutex, OnceLock};
 use view_wire::Task;
 
 use crate::{AppMessage as Message, Ducktape, Screen, Stage};
@@ -55,15 +52,7 @@ use crate::fonts::EMOJI_FACE;
 use crate::fonts::{BUNDLED_FACES, fallback_chain};
 use theme::{NARROW_WINDOW_WIDTH, configure_native_theme};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct WindowKey(u64);
-
-impl WindowKey {
-    pub(crate) fn unique() -> Self {
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        Self(NEXT.fetch_add(1, Ordering::Relaxed))
-    }
-}
+pub(crate) use crate::runtime::WindowKey;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowKind {
@@ -114,6 +103,9 @@ pub(crate) fn commands() -> mpsc::UnboundedReceiver<PendingCommand> {
     let (send, receive) = mpsc::unbounded();
     let mut current = sender().lock().expect("native shell commands");
     assert!(current.is_none(), "one native shell per process");
+    // the layers below hand these up without naming the shell
+    crate::runtime::notify::on_open_link(open_link);
+    crate::backend::passkey::on_open_url(open_url_now);
     *current = Some(send);
     receive
 }
@@ -168,13 +160,13 @@ pub(crate) fn open_url<M: 'static>(url: String) -> Task<M> {
 
 /// A link pressed off the window thread (a banner's click), handed to the
 /// reducer as `Message::OpenLink`.
-pub(crate) fn open_link(url: String) {
+fn open_link(url: String) {
     post(Command::OpenLink(url));
 }
 
 /// A web page for the system browser, asked for off the window thread
 /// (the passkey ceremony's page).
-pub(crate) fn open_url_now(url: String) {
+fn open_url_now(url: String) {
     post(Command::OpenUrl(url));
 }
 

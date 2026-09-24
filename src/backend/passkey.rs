@@ -590,11 +590,26 @@ fn open_browser(url: &str) -> Result<(), String> {
             .spawn()
             .map(drop)
             .map_err(|error| format!("Couldn't open the browser: {error}")),
-        None => {
-            crate::shell::open_url_now(url.to_owned());
-            Ok(())
-        }
+        None => match OPEN_URL.get() {
+            Some(open) => {
+                open(url.to_owned());
+                Ok(())
+            }
+            None => {
+                tracing::error!(target: "ducktape::auth", reason = "no_url_opener", "the browser page could not be opened");
+                Ok(())
+            }
+        },
     }
+}
+
+/// What opens a page in the system browser: the shell's, handed over at
+/// startup ([`on_open_url`]) so this layer never calls up into it.
+static OPEN_URL: std::sync::OnceLock<fn(String)> = std::sync::OnceLock::new();
+
+/// The shell says how a page reaches the system browser.
+pub(crate) fn on_open_url(open: fn(String)) {
+    let _ = OPEN_URL.set(open);
 }
 
 // ---------- the loopback listener ----------

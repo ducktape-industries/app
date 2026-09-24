@@ -22,7 +22,7 @@ impl DesktopWindow {
         let (wide, high) = (f32::from(viewport.width), f32::from(viewport.height));
         let width = WIDTH.min(wide - 16.).max(0.);
         let now = crate::runtime::notify::wall();
-        let midnight = crate::runtime::notify::local_midnight(now);
+        let midnight = local_midnight(now);
         let center = crate::runtime::notify::center();
         let unread = center.unread();
         let entries: Vec<_> = center.entries().cloned().collect();
@@ -197,7 +197,7 @@ impl DesktopWindow {
                                         mono(400, 12.)
                                             .flex_shrink_0()
                                             .text_color(ink.muted)
-                                            .child(crate::runtime::notify::ago(entry.at, now)),
+                                            .child(ago(entry.at, now)),
                                     ),
                             )
                             .when(!entry.body.is_empty(), |text| {
@@ -267,5 +267,50 @@ impl DesktopWindow {
             .child(list)
             .child(footer);
         self.hanging(crate::Popover::Notifications, width, body, window, cx)
+    }
+}
+
+/// Unix seconds at the start of the local day `wall` falls in.
+fn local_midnight(wall: i64) -> i64 {
+    let offset = local_offset(wall);
+    (wall + offset).div_euclid(86_400) * 86_400 - offset
+}
+
+fn local_offset(wall: i64) -> i64 {
+    let time = wall as libc::time_t;
+    // SAFETY: `localtime_r` writes only the `tm` it is handed.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        match libc::localtime_r(&time, &mut tm).is_null() {
+            true => 0,
+            false => tm.tm_gmtoff as i64,
+        }
+    }
+}
+
+/// "now", "14m", "2h", "Yesterday", "3d".
+fn ago(at: i64, now: i64) -> String {
+    let seconds = (now - at).max(0);
+    match seconds {
+        ..60 => "now".into(),
+        60..3_600 => format!("{}m", seconds / 60),
+        _ if at >= local_midnight(now) => format!("{}h", seconds / 3_600),
+        _ if at >= local_midnight(now) - 86_400 => "Yesterday".into(),
+        _ => format!("{}d", seconds / 86_400),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn times_read_short() {
+        let now = local_midnight(1_790_121_600) + 12 * 3_600;
+        assert_eq!(ago(now - 5, now), "now");
+        assert_eq!(ago(now - 14 * 60, now), "14m");
+        assert_eq!(ago(now - 2 * 3_600, now), "2h");
+        assert_eq!(ago(now - 20 * 3_600, now), "Yesterday");
+        assert_eq!(ago(now - 4 * 86_400, now), "4d");
     }
 }

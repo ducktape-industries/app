@@ -63,6 +63,19 @@ use wasmtime::{
     StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
 
+/// One desktop window, as the shell and the notification policy (which
+/// window is in front) name it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct WindowKey(u64);
+
+impl WindowKey {
+    pub(crate) fn unique() -> Self {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NEXT: AtomicU64 = AtomicU64::new(1);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
+
 /// What a module view asked the app itself to do, off its `host.*` doors.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
