@@ -188,7 +188,7 @@ struct Desktop {
     streams: HashMap<u64, gpui_kit::Task<()>>,
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
-    desk_bounds: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+    desk_bounds: Option<gpui_kit::WindowBounds>,
 }
 
 impl Desktop {
@@ -256,9 +256,12 @@ impl Desktop {
     }
 
     /// The launcher and the desk are one window: crossing from one to
-    /// the other resizes it in place (the desk to the size it last had),
-    /// rather than closing it and opening another.
+    /// the other resizes it in place rather than closing it and opening
+    /// another. The launcher comes up centred on the window's display; the
+    /// desk comes back where it was, at its size, maximized or fullscreen
+    /// again if it had been.
     fn swap_console(&mut self, cx: &mut Context<Self>) {
+        use gpui_kit::WindowBounds;
         let Some(handle) = self
             .state
             .console_win
@@ -267,28 +270,86 @@ impl Desktop {
             return;
         };
         let launcher = self.state.in_launcher();
-        let last = self.desk_bounds.map(|bounds| bounds.size);
+        let desk = self.desk_bounds;
         // deferred: the crossing is often dispatched from inside this very
         // window's update (a click on Lock), where it can't be updated again
         cx.spawn(async move |desktop, cx| {
-            let left = handle
+            // a full-size window ignores (or the window manager overrides) a
+            // new frame, so leave that state first
+            let mut left = handle
                 .update(cx, |_, window, _| {
-                    let bounds = window.bounds();
-                    let to = match (launcher, last) {
-                        (true, _) => gpui_kit::size(
-                            gpui_kit::px(launcher::LAUNCHER_SIZE.0),
-                            gpui_kit::px(launcher::LAUNCHER_SIZE.1),
-                        ),
-                        (false, Some(size)) => size,
-                        (false, None) => gpui_kit::size(
-                            gpui_kit::px(windows::WINDOW_SIZE.0),
-                            gpui_kit::px(windows::WINDOW_SIZE.1),
-                        ),
-                    };
-                    window.resize(to);
-                    bounds
+                    let bounds = window.window_bounds().get_bounds();
+                    if window.is_fullscreen() {
+                        window.toggle_fullscreen();
+                        WindowBounds::Fullscreen(bounds)
+                    } else if window.is_maximized() {
+                        // macOS "maximized" is only a size a new frame replaces
+                        if !cfg!(target_os = "macos") {
+                            window.zoom_window();
+                        }
+                        WindowBounds::Maximized(bounds)
+                    } else {
+                        WindowBounds::Windowed(bounds)
+                    }
                 })
                 .ok();
+            let full = matches!(left, Some(WindowBounds::Fullscreen(_)))
+                || matches!(left, Some(WindowBounds::Maximized(_))) && !cfg!(target_os = "macos");
+            if full {
+                // the window manager (or macOS's animation) puts back the
+                // frame the window had before it went full size: wait for it,
+                // and keep it as the frame the desk goes full size from again
+                // ponytail: polled, a window-bounds observer if this ever shows
+                let mut last = None;
+                for _ in 0..60 {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(50))
+                        .await;
+                    let now = handle
+                        .update(cx, |_, window, _| {
+                            (!window.is_fullscreen() && !window.is_maximized())
+                                .then(|| window.bounds())
+                        })
+                        .ok()
+                        .flatten();
+                    if now.is_some() && now == last {
+                        break;
+                    }
+                    last = now;
+                }
+                if let Some(restored) = last {
+                    left = left.map(|left| match left {
+                        WindowBounds::Fullscreen(_) => WindowBounds::Fullscreen(restored),
+                        _ => WindowBounds::Maximized(restored),
+                    });
+                }
+            }
+            let _ = handle.update(cx, |_, window, cx| {
+                let display = window.display(cx).map(|display| display.visible_bounds());
+                let centred = |extent: gpui_kit::Size<gpui_kit::Pixels>| match display {
+                    Some(display) => windows::centered(extent, display),
+                    None => gpui_kit::Bounds::new(window.bounds().origin, extent),
+                };
+                let to = match (launcher, desk) {
+                    (true, _) => centred(gpui_kit::size(
+                        gpui_kit::px(launcher::LAUNCHER_SIZE.0),
+                        gpui_kit::px(launcher::LAUNCHER_SIZE.1),
+                    )),
+                    (false, Some(desk)) => desk.get_bounds(),
+                    (false, None) => centred(gpui_kit::size(
+                        gpui_kit::px(windows::WINDOW_SIZE.0),
+                        gpui_kit::px(windows::WINDOW_SIZE.1),
+                    )),
+                };
+                window.set_bounds(to);
+                match (launcher, desk) {
+                    (false, Some(WindowBounds::Fullscreen(_))) => window.toggle_fullscreen(),
+                    (false, Some(WindowBounds::Maximized(_))) if !cfg!(target_os = "macos") => {
+                        window.zoom_window()
+                    }
+                    _ => {}
+                }
+            });
             if launcher {
                 let _ = desktop.update(cx, |this, _| this.desk_bounds = left);
             }

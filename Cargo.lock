@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=6589d29d#6589d29d39385db7146e3e0aa20e34a4d28bf22d"
+source = "git+https://github.com/ducktape-industries/modules?rev=3a7c1e47#3a7c1e472789a2a1976c3b129892565184b3f00c"
 dependencies = [
  "borsh",
 ]
@@ -2338,7 +2338,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=6589d29d#6589d29d39385db7146e3e0aa20e34a4d28bf22d"
+source = "git+https://github.com/ducktape-industries/modules?rev=3a7c1e47#3a7c1e472789a2a1976c3b129892565184b3f00c"
 
 [[package]]
 name = "digest"
@@ -2489,7 +2489,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=6589d29d#6589d29d39385db7146e3e0aa20e34a4d28bf22d"
+source = "git+https://github.com/ducktape-industries/modules?rev=3a7c1e47#3a7c1e472789a2a1976c3b129892565184b3f00c"
 dependencies = [
  "abi",
 ]
@@ -3656,7 +3656,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre"
 version = "0.3.5"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8b2f818e5841843f21b39dc189a1662fbdb1f340#8b2f818e5841843f21b39dc189a1662fbdb1f340"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=389089537a3782a5b3cb48a3d6ee72ce2f7e4c26#389089537a3782a5b3cb48a3d6ee72ce2f7e4c26"
 dependencies = [
  "accesskit",
  "anyhow",
@@ -3795,8 +3795,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-linux"
 version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6b427589681ec1fed27951fd82edc70a7e288bb2487ede26dbbd07c2ce23d4f"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=389089537a3782a5b3cb48a3d6ee72ce2f7e4c26#389089537a3782a5b3cb48a3d6ee72ce2f7e4c26"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -3842,8 +3841,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-macos"
 version = "0.3.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "806eac0cb5c0eebc0b032c6450c11d283264f9ac05754dda83fc80d0b86b4ee8"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=389089537a3782a5b3cb48a3d6ee72ce2f7e4c26#389089537a3782a5b3cb48a3d6ee72ce2f7e4c26"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -4002,7 +4000,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-scheduler"
 version = "0.3.5"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8b2f818e5841843f21b39dc189a1662fbdb1f340#8b2f818e5841843f21b39dc189a1662fbdb1f340"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=389089537a3782a5b3cb48a3d6ee72ce2f7e4c26#389089537a3782a5b3cb48a3d6ee72ce2f7e4c26"
 dependencies = [
  "async-task",
  "backtrace",
@@ -4148,7 +4146,7 @@ dependencies = [
 [[package]]
 name = "gpui-pre-zlog"
 version = "0.3.5"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8b2f818e5841843f21b39dc189a1662fbdb1f340#8b2f818e5841843f21b39dc189a1662fbdb1f340"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=389089537a3782a5b3cb48a3d6ee72ce2f7e4c26#389089537a3782a5b3cb48a3d6ee72ce2f7e4c26"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4622,7 +4620,7 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=6589d29d#6589d29d39385db7146e3e0aa20e34a4d28bf22d"
+source = "git+https://github.com/ducktape-industries/modules?rev=3a7c1e47#3a7c1e472789a2a1976c3b129892565184b3f00c"
 dependencies = [
  "abi",
  "borsh",
@@ -5576,7 +5574,7 @@ dependencies = [
 [[package]]
 name = "module-registry"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=6589d29d#6589d29d39385db7146e3e0aa20e34a4d28bf22d"
+source = "git+https://github.com/ducktape-industries/modules?rev=3a7c1e47#3a7c1e472789a2a1976c3b129892565184b3f00c"
 dependencies = [
  "abi",
  "borsh",
@@ -7784,7 +7782,7 @@ dependencies = [
 [[package]]
 name = "rmp-serde"
 version = "1.3.1"
-source = "git+https://github.com/ducktape-industries/gpui-pre?rev=8b2f818e5841843f21b39dc189a1662fbdb1f340#8b2f818e5841843f21b39dc189a1662fbdb1f340"
+source = "git+https://github.com/ducktape-industries/gpui-pre?rev=389089537a3782a5b3cb48a3d6ee72ce2f7e4c26#389089537a3782a5b3cb48a3d6ee72ce2f7e4c26"
 dependencies = [
  "rmp",
  "serde",
@@ -8663,7 +8661,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=6589d29d#6589d29d39385db7146e3e0aa20e34a4d28bf22d"
+source = "git+https://github.com/ducktape-industries/modules?rev=3a7c1e47#3a7c1e472789a2a1976c3b129892565184b3f00c"
 dependencies = [
  "abi",
  "borsh",
@@ -9839,7 +9837,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=6589d29d#6589d29d39385db7146e3e0aa20e34a4d28bf22d"
+source = "git+https://github.com/ducktape-industries/modules?rev=3a7c1e47#3a7c1e472789a2a1976c3b129892565184b3f00c"
 dependencies = [
  "abi",
  "accesskit",
