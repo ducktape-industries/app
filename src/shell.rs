@@ -537,24 +537,23 @@ impl DesktopWindow {
             return;
         }
         if command && key.key == "k" && self.kind == WindowKind::Console && self.on_desk(cx) {
-            let message = match self.model.read(cx).state.spotlight {
-                true => Message::CloseSpotlight,
-                false => Message::OpenSpotlight,
+            let message = match self.model.read(cx).state.overlay {
+                Some(crate::Overlay::Spotlight) => Message::CloseSpotlight,
+                _ => Message::OpenSpotlight,
             };
             self.model
                 .update(cx, |model, cx| model.dispatch(message, cx));
             cx.stop_propagation();
             return;
         }
-        if key.key == "escape" && self.model.read(cx).state.settings {
+        // Escape closes whatever is open over the desk
+        let overlay = self.model.read(cx).state.overlay;
+        if key.key == "escape"
+            && self.kind == WindowKind::Console
+            && let Some(overlay) = overlay
+        {
             self.model
-                .update(cx, |model, cx| model.dispatch(Message::CloseSettings, cx));
-            cx.stop_propagation();
-            return;
-        }
-        if key.key == "escape" && self.model.read(cx).state.popover.is_some() {
-            self.model
-                .update(cx, |model, cx| model.dispatch(Message::ClosePopover, cx));
+                .update(cx, |model, cx| model.dispatch(overlay.close(), cx));
             cx.stop_propagation();
             return;
         }
@@ -571,13 +570,9 @@ impl DesktopWindow {
     /// The desk's own keys reach its windows: the console, on the desk,
     /// with no overlay (Spotlight, a menu, Settings) keeping its keys.
     fn desk_keys(&self, cx: &gpui_kit::App) -> bool {
-        let state = &self.model.read(cx).state;
-        let overlay = state.spotlight
-            || state.approving
-            || state.settings
-            || state.network_menu
-            || state.popover.is_some();
-        self.kind == WindowKind::Console && self.on_desk(cx) && !overlay
+        self.kind == WindowKind::Console
+            && self.on_desk(cx)
+            && self.model.read(cx).state.overlay.is_none()
     }
 
     /// What ⌘W closes: the focused desk window, when the desk's keys reach

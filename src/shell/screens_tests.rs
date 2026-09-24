@@ -376,7 +376,7 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
             other_chain: true,
         },
     ];
-    state.network_menu = true;
+    state.overlay = Some(crate::Overlay::Network);
     let (_view, mut native) = open(state, cx);
     let nodes = native.update(draw);
     let switcher = find(&nodes, "Button", "Network: testkit");
@@ -403,7 +403,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     state.connected = true;
     state.browsing = true;
     state.network = "testkit".into();
-    state.popover = Some(crate::Popover::Notifications);
+    state.overlay = Some(crate::Overlay::Menu(crate::Popover::Notifications));
     let (view, mut native) = open(state, cx);
 
     let nodes = native.update(draw);

@@ -930,7 +930,8 @@ impl Drag {
     }
 }
 
-/// A press anywhere on a window brings it to the front. Window-wide and
+/// A press anywhere on a window brings it to the front, unless something
+/// is open over the desk. Window-wide and
 /// before anything under the pointer sees it: a program's view may block
 /// the pointer from the window it sits in.
 fn raise(
@@ -948,7 +949,10 @@ fn raise(
             f32::from(event.position.y - desk.origin.y),
         );
         this.update(cx, |this, cx| {
-            let Some(index) = this.layout.under(at) else {
+            // a press on something open over the desk is not on a window
+            let covered = this.kind == crate::shell::WindowKind::Console
+                && this.model.read(cx).state.overlay.is_some();
+            let Some(index) = this.layout.under(at).filter(|_| !covered) else {
                 return;
             };
             let on_top = this.layout.stacking().last() == Some(&index);

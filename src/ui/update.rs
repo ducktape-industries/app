@@ -1,6 +1,8 @@
 //! The reducer: one message in, the state moved, a task out.
 
-use super::{AppMessage as Message, Appearance, Ducktape, Screen, SeatRequest, Spot, SpotRow};
+use super::{
+    AppMessage as Message, Appearance, Ducktape, Overlay, Screen, SeatRequest, Spot, SpotRow,
+};
 use crate::backend;
 use crate::runtime::Intent;
 use view_wire::Subscription;
@@ -194,46 +196,39 @@ impl Ducktape {
                 self.leave_network()
             }
             Message::ToggleNetworkMenu => {
-                self.popover = None;
-                self.network_menu = !self.network_menu;
+                self.toggle(Overlay::Network);
                 Task::none()
             }
             Message::CloseNetworkMenu => {
-                self.network_menu = false;
+                self.close(Overlay::Network);
                 Task::none()
             }
             // The console stays on the network in hand while the other is
             // reached: the status reads "Reaching …", and a node that does not
             // answer leaves everything as it was (`ConnectFailed`).
             Message::SwitchNetwork(origin) => {
-                self.network_menu = false;
+                self.close(Overlay::Network);
                 if origin == self.connected_rpc && !self.connecting {
                     return Task::none();
                 }
                 self.update(Message::ConnectTo(origin))
             }
             Message::TogglePopover(which) => {
-                self.network_menu = false;
-                self.popover = match self.popover == Some(which) {
-                    true => None,
-                    false => Some(which),
-                };
+                self.toggle(Overlay::Menu(which));
                 Task::none()
             }
             Message::ClosePopover => {
-                self.popover = None;
+                self.close_menu();
                 Task::none()
             }
             Message::OpenSpotlight => {
-                self.popover = None;
-                self.network_menu = false;
-                self.spotlight = true;
+                self.overlay = Some(Overlay::Spotlight);
                 self.spotlight_query.clear();
                 self.spotlight_pick = 0;
                 Task::none()
             }
             Message::CloseSpotlight => {
-                self.spotlight = false;
+                self.close(Overlay::Spotlight);
                 self.spotlight_query.clear();
                 Task::none()
             }
@@ -258,7 +253,7 @@ impl Ducktape {
                 }
             }
             Message::Spot(spot) => {
-                self.spotlight = false;
+                self.close(Overlay::Spotlight);
                 self.spotlight_query.clear();
                 let message = match spot {
                     Spot::Open(module) => Message::SelectView(module),
@@ -272,14 +267,11 @@ impl Ducktape {
                 self.update(message)
             }
             Message::OpenSettings => {
-                self.popover = None;
-                self.spotlight = false;
-                self.network_menu = false;
-                self.settings = true;
+                self.overlay = Some(Overlay::Settings);
                 Task::none()
             }
             Message::CloseSettings => {
-                self.settings = false;
+                self.close(Overlay::Settings);
                 Task::none()
             }
             Message::ShowSettingsPage(page) => {
@@ -316,7 +308,7 @@ impl Ducktape {
                 Intent::Notified => Task::none(),
             },
             Message::NotifyOpen(id) => {
-                self.popover = None;
+                self.close_menu();
                 let entry = crate::runtime::notify::center().open(id);
                 match entry {
                     Some(entry) if !entry.link.is_empty() => {
@@ -455,7 +447,7 @@ impl Ducktape {
                 }
             }
             Message::RecoveryKeyStart => {
-                self.popover = None;
+                self.close_menu();
                 self.forget_phrase();
                 self.sign_in.phrase = backend::join::new_recovery_phrase();
                 Task::none()
@@ -615,15 +607,14 @@ impl Ducktape {
                 }
             }
             Message::ApproveOpen => {
-                self.popover = None;
-                self.approving = true;
+                self.overlay = Some(Overlay::Approve);
                 self.sign_in.approve_code.clear();
                 self.sign_in.approve_found = None;
                 self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::ApproveClose => {
-                self.approving = false;
+                self.close(Overlay::Approve);
                 self.sign_in.approve_found = None;
                 self.sign_in.unlock_error.clear();
                 Task::none()
@@ -675,7 +666,7 @@ impl Ducktape {
                 self.sign_in.unlock_busy = false;
                 match done {
                     Ok(()) => {
-                        self.approving = false;
+                        self.close(Overlay::Approve);
                         self.sign_in.approve_found = None;
                         self.update(Message::ShowToast(
                             "Approved. The new device finishes on its own.".into(),
@@ -791,7 +782,7 @@ impl Ducktape {
                 Task::none()
             }
             Message::Lock => {
-                self.popover = None;
+                self.close_menu();
                 self.sign_in.locked = true;
                 self.signer_key.clear();
                 self.account = None;
@@ -887,6 +878,28 @@ impl Ducktape {
         self.seat_request = Some(SeatRequest::Open(module));
     }
 
+    /// `overlay` open, or closed if it was the one open.
+    fn toggle(&mut self, overlay: Overlay) {
+        self.overlay = match self.overlay == Some(overlay) {
+            true => None,
+            false => Some(overlay),
+        };
+    }
+
+    /// `overlay` closed, if it is the one open.
+    fn close(&mut self, overlay: Overlay) {
+        if self.overlay == Some(overlay) {
+            self.overlay = None;
+        }
+    }
+
+    /// Whichever menu off the bar is open, closed.
+    fn close_menu(&mut self) {
+        if matches!(self.overlay, Some(Overlay::Menu(_))) {
+            self.overlay = None;
+        }
+    }
+
     fn notice(&mut self, said: String) {
         self.toast = said;
         self.toast_age = 0;
@@ -930,15 +943,12 @@ impl Ducktape {
         self.active = None;
         self.seat_request = Some(SeatRequest::Unseat);
         self.badges.clear();
-        self.network_menu = false;
-        self.popover = None;
-        self.spotlight = false;
+        self.overlay = None;
         self.node = None;
         self.browsing = false;
         self.keyring.clear();
         self.other_chain = false;
         self.key_exists = false;
-        self.approving = false;
         self.signer_key.clear();
         Task::future(async {
             backend::lock_signer().await;
@@ -1515,9 +1525,9 @@ mod tests {
     fn a_switch_keeps_the_network_in_hand_until_the_other_answers() {
         let mut state = on_testkit();
         let _ = state.update(Message::ToggleNetworkMenu);
-        assert!(state.network_menu);
+        assert_eq!(state.overlay, Some(Overlay::Network));
         let _ = state.update(Message::SwitchNetwork("http://b".into()));
-        assert!(!state.network_menu && state.connecting);
+        assert!(state.overlay.is_none() && state.connecting);
         assert_eq!(state.status, "Reaching http://b…");
         assert_eq!(state.signer_key, "ab", "still signed in while reaching");
         // A's poll lands mid-switch: the status keeps saying where it is going
