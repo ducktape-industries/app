@@ -28,6 +28,8 @@ pub mod route {
     pub const GET: &str = "/v1/get";
     pub const BLOB_GET: &str = "/v1/blob/get";
     pub const CHANGES: &str = "/v1/changes";
+    pub const BLOCKS: &str = "/v1/blocks";
+    pub const BLOCK: &str = "/v1/block";
 }
 
 /// `host::Layer`: which state a read sees.
@@ -135,6 +137,42 @@ pub struct Change {
     pub writes: Vec<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
+/// `wire::Blocks`: a page of finalized blocks, newest first.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Blocks {
+    pub before: Option<u64>,
+    pub limit: u32,
+}
+
+/// `wire::BlockRef`: a finalized block by height or by id.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum BlockRef {
+    Height(u64),
+    Id([u8; 32]),
+}
+
+/// `wire::Tx`: one applied frame; `hash` is sha256 of the frame's bytes.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Tx {
+    pub hash: [u8; 32],
+    pub signer: Vec<u8>,
+    pub seq: u64,
+    pub target: String,
+    pub payload: Vec<u8>,
+}
+
+/// `wire::Finalized`: a block as the node's marshal archive keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Finalized {
+    pub height: u64,
+    pub id: [u8; 32],
+    pub parent: [u8; 32],
+    pub time: u64,
+    pub epoch: u64,
+    pub proposer: Option<Vec<u8>>,
+    pub txs: Vec<Tx>,
+}
+
 #[derive(Debug)]
 pub enum Error {
     /// the node refused: a decoded `Refusal` (HTTP 400)
@@ -215,6 +253,16 @@ impl Client {
     /// The framed bytes (`kind len\0body`) of a blob the node holds.
     pub async fn blob(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
         self.post(route::BLOB_GET, &id).await
+    }
+
+    /// Finalized blocks, newest first: below `before` (the tip when
+    /// `None`), at most `limit` (the node caps it).
+    pub async fn blocks(&self, page: &Blocks) -> Result<Vec<Finalized>> {
+        self.post(route::BLOCKS, page).await
+    }
+
+    pub async fn block(&self, by: &BlockRef) -> Result<Option<Finalized>> {
+        self.post(route::BLOCK, by).await
     }
 
     pub async fn changes(

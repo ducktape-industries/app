@@ -14,6 +14,9 @@
 //!   at the signer's next sequence and submitted; answered with the
 //!   receipt's output, or the program's refusal.
 //! - `rpc.status` — node status as `NodeStatus`.
+//! - `rpc.blocks` `BlockPage` — finalized blocks, newest first, from the
+//!   node's block archive (`/v1/blocks`); `rpc.block` `BlockRef` — one by
+//!   height or id (`/v1/block`).
 //! - `rpc.invite` `Mint{ttl_days}` — mint once; `Minted{invite, notes}`.
 //!   Node refusals retain their tokens.
 //! - `rpc.live` `<program>` — a subscription that gets one item per block
@@ -83,7 +86,7 @@ mod node;
 mod replies;
 
 pub(super) use node::{Items, NodeTask, spawn_device, spawn_subscription};
-use node::{blob_get, invite, live, query, spawn, spawn_once, status, submit};
+use node::{blob_get, block, blocks, invite, live, query, spawn, spawn_once, status, submit};
 pub(super) use replies::Replies;
 
 /// The kernel's own runtime, on its own thread: the window thread never
@@ -143,6 +146,8 @@ pub(super) fn answer(
         }
         ("rpc", "query") => spawn(guest, id, payload, query),
         ("rpc", "status") => spawn(guest, id, payload, status),
+        ("rpc", "blocks") => spawn(guest, id, payload, blocks),
+        ("rpc", "block") => spawn(guest, id, payload, block),
         ("rpc", "invite") => spawn_once(guest, id, payload, invite),
         ("op", "submit") => spawn(guest, id, payload, submit),
         ("blob", "get") => spawn(guest, id, payload, blob_get),
