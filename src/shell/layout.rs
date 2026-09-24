@@ -237,10 +237,6 @@ impl Layout {
         Some(pane)
     }
 
-    pub(crate) fn popout(&mut self, index: usize) -> Option<Pane> {
-        self.close(index)
-    }
-
     /// Returns the displaced view so its entity can be released by the caller.
     pub(crate) fn popin(&mut self, mut pane: Pane) -> Option<Pane> {
         pane.frame = None;
@@ -426,7 +422,7 @@ mod tests {
         let mut source = Layout::default();
         source.split("chat");
         let original = source.panes[0].instance;
-        let pane = source.popout(0).unwrap();
+        let pane = source.close(0).unwrap();
         assert!(source.panes.is_empty());
         let mut destination = Layout::default();
         assert!(destination.popin(pane).is_none());
@@ -439,7 +435,7 @@ mod tests {
         assert_eq!(destination.popin(pane).unwrap().instance, displaced);
         assert_eq!(destination.panes.len(), MAX_PANES);
         assert_eq!(destination.panes[1].instance, incoming);
-        assert!(destination.popout(MAX_PANES).is_none());
+        assert!(destination.close(MAX_PANES).is_none());
     }
 
     #[test]

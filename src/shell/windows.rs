@@ -57,7 +57,61 @@ pub(super) fn unseated(
     Bounds::new(origin, extent)
 }
 
+impl DesktopWindow {
+    /// A window of `kind`, focused on its own root (so the first Tab
+    /// reaches the first control), telling the model when it gains or
+    /// loses focus.
+    pub(super) fn new(
+        model: Entity<Desktop>,
+        key: WindowKey,
+        kind: WindowKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.on_release(Self::released).detach();
+        let observer = cx.observe(&model, |_, _, cx| cx.notify());
+        let activation =
+            cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
+                let message = match window.is_window_active() {
+                    true => Message::WindowFocused(key),
+                    false => Message::WindowUnfocused(key),
+                };
+                let model = this.model.clone();
+                cx.defer(move |cx| model.update(cx, |model, cx| model.dispatch(message, cx)));
+            });
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        Self {
+            model,
+            key,
+            kind,
+            layout: layout::Layout::default(),
+            mounted: BTreeMap::new(),
+            initialized: false,
+            drag: None,
+            inputs: HashMap::new(),
+            spotlight_focused: false,
+            focus,
+            _activation: activation,
+            _observer: observer,
+            _keystrokes: Self::intercept_global_keys(window, cx),
+            _focus_lost: cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
+        }
+    }
+}
+
 impl Desktop {
+    pub(super) fn new(state: Ducktape, tray: crate::tray::Tray) -> Self {
+        Self {
+            state,
+            tray,
+            windows: BTreeMap::new(),
+            views: BTreeMap::new(),
+            streams: HashMap::new(),
+            desk_bounds: None,
+        }
+    }
+
     pub(super) fn open_window(
         &mut self,
         key: WindowKey,
@@ -112,43 +166,7 @@ impl Desktop {
             let mut opened_view = None;
             let window_model = model.clone();
             let opened = cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| {
-                    cx.on_release(DesktopWindow::released).detach();
-                    let observer = cx.observe(&window_model, |_, _, cx| cx.notify());
-                    let activation = cx.observe_window_activation(
-                        window,
-                        move |this: &mut DesktopWindow, window, cx| {
-                            let message = match window.is_window_active() {
-                                true => Message::WindowFocused(key),
-                                false => Message::WindowUnfocused(key),
-                            };
-                            let model = this.model.clone();
-                            cx.defer(move |cx| {
-                                model.update(cx, |model, cx| model.dispatch(message, cx))
-                            });
-                        },
-                    );
-                    let focus = cx.focus_handle();
-                    focus.focus(window, cx);
-                    let keystrokes = DesktopWindow::intercept_global_keys(window, cx);
-                    DesktopWindow {
-                        model: window_model,
-                        key,
-                        kind,
-                        layout: layout::Layout::default(),
-                        mounted: BTreeMap::new(),
-                        initialized: false,
-                        drag: None,
-                        inputs: HashMap::new(),
-                        spotlight_focused: false,
-                        focus,
-                        _activation: activation,
-                        _observer: observer,
-                        _keystrokes: keystrokes,
-                        _focus_lost: cx
-                            .on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
-                    }
-                });
+                let view = cx.new(|cx| DesktopWindow::new(window_model, key, kind, window, cx));
                 if let Some((pane, mounted, _)) = transferred.take() {
                     view.update(cx, |this, _| {
                         this.mounted.insert(pane.instance, mounted);

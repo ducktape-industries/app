@@ -55,34 +55,13 @@ fn console(
         state.screen = Screen::Console;
         state.browsing = true;
         state.active = Some("pane-ax-test");
-        Desktop {
-            state,
-            tray: crate::tray::init(cx).0,
-            windows: BTreeMap::new(),
-            views: BTreeMap::new(),
-            streams: HashMap::new(),
-            desk_bounds: None,
-        }
+        Desktop::new(state, crate::tray::init(cx).0)
     });
     let key = WindowKey::unique();
     let mut view = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let desktop = cx.new(|cx| DesktopWindow {
-            model: model.clone(),
-            key,
-            kind: WindowKind::Console,
-            layout: layout::Layout::default(),
-            mounted: BTreeMap::new(),
-            initialized: false,
-            drag: None,
-            inputs: HashMap::new(),
-            spotlight_focused: false,
-            focus: cx.focus_handle(),
-            _activation: cx.observe_window_activation(window, |_, _, _| {}),
-            _observer: cx.observe(&model, |_, _, cx| cx.notify()),
-            _keystrokes: DesktopWindow::intercept_global_keys(window, cx),
-            _focus_lost: cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
-        });
+        let desktop =
+            cx.new(|cx| DesktopWindow::new(model.clone(), key, WindowKind::Console, window, cx));
         view = Some(desktop.clone());
         gpui_kit::component::Root::new(desktop, window, cx)
     });

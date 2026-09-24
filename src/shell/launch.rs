@@ -15,14 +15,7 @@ pub(crate) fn run() {
         let (state, initial) = Ducktape::boot();
         let (mut tray, mut tray_events) = crate::tray::init(cx);
         tray.sync(&state);
-        let desktop = cx.new(|_| Desktop {
-            state,
-            tray,
-            windows: BTreeMap::new(),
-            views: BTreeMap::new(),
-            streams: HashMap::new(),
-            desk_bounds: None,
-        });
+        let desktop = cx.new(|_| Desktop::new(state, tray));
         desktop.update(cx, |desktop, cx| desktop.sync_appearance(cx));
         let url_desktop = desktop.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {

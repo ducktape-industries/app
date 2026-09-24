@@ -44,10 +44,7 @@ impl DesktopWindow {
                 true => format!("{} (current)", entry.label()),
                 false => entry.label(),
             };
-            let network = match entry.network.is_empty() {
-                true => entry.host().to_owned(),
-                false => entry.network.clone(),
-            };
+            let network = entry.name();
             item(
                 SharedString::from(format!("network-menu/{}", entry.url)),
                 Role::MenuItemRadio,

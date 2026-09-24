@@ -466,10 +466,7 @@ impl DesktopWindow {
                 let model = self.model.clone();
                 let url = entry.url.clone();
                 let current = entry.url == state.connected_rpc;
-                let name = match entry.network.is_empty() {
-                    true => entry.host().to_owned(),
-                    false => entry.network.clone(),
-                };
+                let name = entry.name();
                 div()
                     .flex()
                     .items_baseline()

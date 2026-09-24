@@ -5,7 +5,6 @@ pub(super) struct MountedPane {
     pub(super) module: &'static str,
     pub(super) view: Entity<crate::runtime::NativeModuleView>,
     pub(super) route: Option<gpui_kit::Subscription>,
-    context: std::rc::Rc<std::cell::RefCell<String>>,
 }
 
 pub(super) fn label(module: &str) -> String {
@@ -24,14 +23,10 @@ pub(super) fn label(module: &str) -> String {
 /// closed or popped out, not that the network has nothing to show — that
 /// reused the "no program" sentence and read as if Chat/Forge/Settings had
 /// vanished from the rail right beside it.
-fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> &'static str {
-    if rail.iter().any(|row| !row.empty) {
-        match cfg!(target_os = "macos") {
-            true => "Press ⌘K to open something.",
-            false => "Press Ctrl K to open something.",
-        }
-    } else {
-        "This network runs no program with a view."
+fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> String {
+    match rail.iter().any(|row| !row.empty) {
+        true => format!("Press {} to open something.", chord_label("K")),
+        false => "This network runs no program with a view.".into(),
     }
 }
 
@@ -90,19 +85,13 @@ impl DesktopWindow {
                     module,
                     view,
                     route: None,
-                    context: Default::default(),
                 }
             });
             let mounted = self.mounted.get_mut(&pane.instance).expect("mounted pane");
             if mounted.route.is_none() {
                 let model = self.model.clone();
-                let context = mounted.context.clone();
                 let module = pane.module;
                 mounted.route = Some(cx.subscribe(&mounted.view, move |_, _, event, cx| {
-                    if event.kind == "context" {
-                        *context.borrow_mut() = crate::runtime::event_text(event, "text");
-                        cx.notify();
-                    }
                     model.update(cx, |model, cx| {
                         model.dispatch(Message::ViewEvent(module, event.clone()), cx)
                     });
@@ -153,7 +142,7 @@ impl DesktopWindow {
                 self.layout.focus(index);
             }
             Message::PopOut(index) => {
-                if let Some(pane) = self.layout.popout(index)
+                if let Some(pane) = self.layout.close(index)
                     && let Some(mut mounted) = self.mounted.remove(&pane.instance)
                 {
                     mounted.route = None;
@@ -191,7 +180,7 @@ impl DesktopWindow {
                             && view.read(cx).kind == crate::shell::WindowKind::Console
                     });
                 if let Some(destination) = destination
-                    && let Some(pane) = self.layout.popout(0)
+                    && let Some(pane) = self.layout.close(0)
                     && let Some(mut mounted) = self.mounted.remove(&pane.instance)
                 {
                     mounted.route = None;
@@ -318,10 +307,6 @@ impl DesktopWindow {
         let ink = Ink::of(state.dark);
         let rows = openable();
         let pick = self.layout.pick.min(rows.len().saturating_sub(1));
-        let chord = |key: &str| match cfg!(target_os = "macos") {
-            true => format!("⌘{key}"),
-            false => format!("Ctrl {key}"),
-        };
         let list = rows.iter().enumerate().map(|(nth, row)| {
             let module = row.module;
             let picked = nth == pick;
@@ -371,8 +356,8 @@ impl DesktopWindow {
         let footer = format!(
             "1–{} open   {} search everything   {} close",
             rows.len().clamp(1, 9),
-            chord("K"),
-            chord("W"),
+            chord_label("K"),
+            chord_label("W"),
         );
         div()
             .id("empty-window")
@@ -413,27 +398,21 @@ impl DesktopWindow {
     fn pane_button(
         &self,
         index: usize,
-        action: &'static str,
-        glyph: gpui_kit::assets::IconName,
+        action: PaneAction,
         enabled: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         use gpui_kit::*;
         let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
         let hover = ink.surface;
-        // The action drives the element id and the dispatch below (stable
-        // for the AX door and tests); the AX name is a phrase a screen
-        // reader can announce on its own, not the bare verb.
-        let name = match action {
-            "split" => "Open another window",
-            "popout" => "Open in new window",
-            "popin" => "Move to main window",
-            _ => "Close pane",
-        };
+        // The element id is stable for the AX door and tests; the AX name
+        // is a phrase a screen reader can announce on its own, not the bare
+        // verb.
+        let (id, name, glyph) = action.parts();
         crate::a11y::disabled(
             crate::a11y::keyboard(
                 div()
-                    .id(SharedString::from(format!("pane/{index}/{action}")))
+                    .id(SharedString::from(format!("pane/{index}/{id}")))
                     .control(Role::Button, name)
                     .size(px(28.))
                     .text_color(ink.muted)
@@ -452,10 +431,12 @@ impl DesktopWindow {
                             return;
                         }
                         let message = match action {
-                            "split" => Message::SplitView(this.layout.panes[index].module),
-                            "close" => Message::ClosePane(index),
-                            "popout" => Message::PopOut(index),
-                            _ => Message::PopIn(this.key),
+                            PaneAction::Split => {
+                                Message::SplitView(this.layout.panes[index].module)
+                            }
+                            PaneAction::Close => Message::ClosePane(index),
+                            PaneAction::PopOut => Message::PopOut(index),
+                            PaneAction::PopIn => Message::PopIn(this.key),
                         };
                         this.pane_message(message, window, cx);
                     }))
@@ -544,7 +525,6 @@ impl DesktopWindow {
                 None => self.empty_view(cx),
             };
             let pane = &self.layout.panes[index];
-            use gpui_kit::assets::IconName;
             let controls = div()
                 .flex()
                 .items_center()
@@ -552,39 +532,26 @@ impl DesktopWindow {
                 .when(console, |strip| {
                     strip.child(self.pane_button(
                         index,
-                        "split",
-                        IconName::Plus,
+                        PaneAction::Split,
                         self.layout.panes.len() < layout::MAX_PANES,
                         cx,
                     ))
                 })
                 // an empty window has no view to carry out
                 .when(console && !empty, |strip| {
-                    strip.child(self.pane_button(
-                        index,
-                        "popout",
-                        IconName::SquareArrowOutUpRight,
-                        true,
-                        cx,
-                    ))
+                    strip.child(self.pane_button(index, PaneAction::PopOut, true, cx))
                 })
                 .when(!console, |strip| {
-                    strip.child(self.pane_button(index, "popin", IconName::ArrowDownLeft, true, cx))
+                    strip.child(self.pane_button(index, PaneAction::PopIn, true, cx))
                 })
-                .child(self.pane_button(index, "close", IconName::X, true, cx));
-            let context = self
-                .mounted
-                .get(&pane.instance)
-                .map(|mounted| mounted.context.borrow().clone())
-                .unwrap_or_default();
+                .child(self.pane_button(index, PaneAction::Close, true, cx));
             let body = div()
                 .id(SharedString::from(format!("pane/{index}")))
                 .flex()
                 .flex_col()
                 .bg(ink.bg)
                 .overflow_hidden()
-                .role(gpui_kit::Role::Group)
-                .when(!context.is_empty(), |pane| pane.aria_label(context.clone()));
+                .role(gpui_kit::Role::Group);
             // Every window has a title bar, so a view owns all of its
             // rectangle: nothing floats over its corners.
             let on_desk = console && pane.frame.is_some();
@@ -631,14 +598,8 @@ impl DesktopWindow {
                             .child(label(pane.module)),
                     )
                 })
-                .child(
-                    super::ink::sans(400, 13.)
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(ink.muted)
-                        .child(context),
-                )
+                // pushes the controls to the bar's right end
+                .child(div().flex_1().min_w_0())
                 .child(controls);
             let asking = (!empty && crate::runtime::notify::center().asking(pane.module))
                 .then(|| self.permission_bar(pane.module, cx));
@@ -882,6 +843,32 @@ impl DesktopWindow {
                 }
             })
             .collect()
+    }
+}
+
+/// A button on a window's title bar.
+#[derive(Clone, Copy)]
+enum PaneAction {
+    Split,
+    PopOut,
+    PopIn,
+    Close,
+}
+
+impl PaneAction {
+    /// Its element id, its accessible name, its glyph.
+    fn parts(self) -> (&'static str, &'static str, gpui_kit::assets::IconName) {
+        use gpui_kit::assets::IconName;
+        match self {
+            Self::Split => ("split", "Open another window", IconName::Plus),
+            Self::PopOut => (
+                "popout",
+                "Open in new window",
+                IconName::SquareArrowOutUpRight,
+            ),
+            Self::PopIn => ("popin", "Move to main window", IconName::ArrowDownLeft),
+            Self::Close => ("close", "Close pane", IconName::X),
+        }
     }
 }
 

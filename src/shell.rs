@@ -76,13 +76,21 @@ pub(crate) struct KeyPress {
     pub(crate) modifiers: gpui_kit::Modifiers,
 }
 
+/// How the platform writes a command chord: "⌘K" on a Mac, "Ctrl K"
+/// elsewhere.
+pub(crate) fn chord_label(key: &str) -> String {
+    match cfg!(target_os = "macos") {
+        true => format!("⌘{key}"),
+        false => format!("Ctrl {key}"),
+    }
+}
+
 pub(crate) enum Command {
     Open {
         key: WindowKey,
         kind: WindowKind,
         reply: oneshot::Sender<WindowKey>,
     },
-    Close(WindowKey),
     Raise(WindowKey),
     OpenLink(String),
     Quit,
@@ -139,11 +147,6 @@ fn effect<M: 'static>(command: Command) -> Task<M> {
         send(command).await;
     })
     .discard()
-}
-
-#[allow(dead_code)]
-pub(crate) fn close<M: 'static>(key: WindowKey) -> Task<M> {
-    effect(Command::Close(key))
 }
 
 pub(crate) fn raise<M: 'static>(key: WindowKey) -> Task<M> {
@@ -413,7 +416,6 @@ impl Desktop {
             Command::Open { key, kind, reply } => {
                 self.open_window(key, kind, reply, None, None, cx)
             }
-            Command::Close(key) => self.close_window(key, cx),
             Command::Raise(key) => self.raise_window(key, cx),
             Command::OpenLink(url) => match url.starts_with("duck://") {
                 true => self.dispatch(Message::OpenLink(url), cx),
@@ -421,24 +423,6 @@ impl Desktop {
             },
             Command::Quit => self.quit(cx),
         }
-    }
-
-    fn close_window(&mut self, key: WindowKey, cx: &mut Context<Self>) {
-        let Some(handle) = self.windows.remove(&key) else {
-            return;
-        };
-        if let Some(view) = self.views.remove(&key) {
-            let _ = view.update(cx, |this, cx| {
-                this.observe_window(view_wire::events::Window::CloseRequested, cx)
-            });
-        }
-        cx.defer(move |cx| {
-            let _ = handle.update(cx, |_, window, cx| {
-                release_window_input(window, cx);
-                window.remove_window();
-            });
-        });
-        self.dispatch(Message::WindowWasClosed(key), cx);
     }
 
     fn raise_window(&mut self, key: WindowKey, cx: &mut Context<Self>) {

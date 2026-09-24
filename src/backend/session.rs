@@ -312,12 +312,23 @@ pub(crate) struct RecentEndpoint {
     pub(crate) other_chain: bool,
 }
 
+/// A node URL's host and port — the URL without its scheme.
+pub(crate) fn host_of(url: &str) -> &str {
+    url.split_once("://").map_or(url, |(_, host)| host)
+}
+
 impl RecentEndpoint {
     /// The node's host and port — the URL without its scheme.
     pub(crate) fn host(&self) -> &str {
-        self.url
-            .split_once("://")
-            .map_or(self.url.as_str(), |(_, host)| host)
+        host_of(&self.url)
+    }
+
+    /// The network's name, or the host for an entry that never learned it.
+    pub(crate) fn name(&self) -> String {
+        match self.network.is_empty() {
+            true => self.host().to_owned(),
+            false => self.network.clone(),
+        }
     }
 
     /// How a list names this node: its network and host, and — when two
