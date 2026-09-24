@@ -653,22 +653,17 @@ mod platform {
         let Some(bus) = session_bus() else {
             return false;
         };
+        // held across the call: two notices under one tag posted at once
+        // would otherwise both read "none standing" and stack
+        let mut standing = standing().lock().expect("standing notices");
         let replaces = match notice.tag.is_empty() {
             true => 0,
-            false => standing()
-                .lock()
-                .expect("standing notices")
-                .get(&notice.tag)
-                .copied()
-                .unwrap_or(0),
+            false => standing.get(&notice.tag).copied().unwrap_or(0),
         };
         match notify(bus, notice, replaces) {
             Ok(raised) => {
                 if !notice.tag.is_empty() {
-                    standing()
-                        .lock()
-                        .expect("standing notices")
-                        .insert(notice.tag.clone(), raised);
+                    standing.insert(notice.tag.clone(), raised);
                 }
                 true
             }
