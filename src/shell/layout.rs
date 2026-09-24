@@ -14,6 +14,9 @@ const KEEP: f32 = 96.;
 const CASCADE: f32 = 28.;
 /// The inset of a window that fills the desk.
 pub(crate) const INSET: f32 = 12.;
+/// How far past its border a window can still be taken hold of: its
+/// edges' grips reach out this much into the gap around it.
+pub(crate) const GRAB: f32 = 5.;
 
 /// A window's place on the desk, in pixels from the desk's top-left.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -234,12 +237,12 @@ impl Layout {
         }
     }
 
-    /// The window on top at `at` on the desk.
+    /// The window on top at `at` on the desk, its grips around it included.
     pub(crate) fn under(&self, at: (f32, f32)) -> Option<usize> {
         self.stacking().into_iter().rev().find(|&index| {
             self.panes[index].frame.is_some_and(|frame| {
-                (frame.x..frame.x + frame.w).contains(&at.0)
-                    && (frame.y..frame.y + frame.h).contains(&at.1)
+                (frame.x - GRAB..frame.x + frame.w + GRAB).contains(&at.0)
+                    && (frame.y - GRAB..frame.y + frame.h + GRAB).contains(&at.1)
             })
         })
     }
@@ -320,6 +323,7 @@ mod tests {
             Some(2),
             "only the last reaches here"
         );
+        assert_eq!(layout.under((990., 50.)), Some(2), "just past its border");
         assert_eq!(layout.under((5., 5.)), None, "the desk's inset");
         assert!(!layout.focus(0), "already focused and on top");
         assert!(layout.close(0).is_some());

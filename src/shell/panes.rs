@@ -420,14 +420,19 @@ impl DesktopWindow {
                 None => body
                     .size_full()
                     .child(title)
-                    .child(div().flex_1().min_h_0().w_full().child(view)),
-                // on the desk: a title bar to hold it by, edges to size it by
+                    .child(div().flex_1().min_h_0().w_full().child(view))
+                    .into_any_element(),
+                // on the desk: a title bar to hold it by, and edges to size
+                // it by that reach past its border, so the grips sit in a
+                // frame `GRAB` wider than the window (the body clips)
                 Some(frame) => {
-                    // what's behind a window doesn't hear presses on it
-                    body.occlude()
+                    let grab = layout::GRAB;
+                    let inner = body
+                        // what's behind a window doesn't hear presses on it
+                        .occlude()
                         .absolute()
-                        .left(px(frame.x))
-                        .top(px(frame.y))
+                        .left(px(grab))
+                        .top(px(grab))
                         .w(px(frame.w))
                         .h(px(frame.h))
                         .border_1()
@@ -438,8 +443,16 @@ impl DesktopWindow {
                         .when(focused, |pane| pane.shadow_lg())
                         .when(!focused, |pane| pane.shadow_sm())
                         .child(title)
-                        .child(div().flex_1().min_h_0().w_full().child(view))
+                        .child(div().flex_1().min_h_0().w_full().child(view));
+                    div()
+                        .absolute()
+                        .left(px(frame.x - grab))
+                        .top(px(frame.y - grab))
+                        .w(px(frame.w + 2. * grab))
+                        .h(px(frame.h + 2. * grab))
+                        .child(inner)
                         .children(self.grips(index, cx))
+                        .into_any_element()
                 }
             };
             stage = stage.child(seated);
@@ -460,15 +473,18 @@ impl DesktopWindow {
         }
     }
 
-    /// The edges and corners a window is sized by, laid over its border.
+    /// The edges and corners a window is sized by: each reaches `GRAB`
+    /// out past the border and `IN` over it, a corner further in.
     fn grips(
         &self,
         index: usize,
         cx: &mut Context<Self>,
     ) -> Vec<gpui_kit::Stateful<gpui_kit::Div>> {
         use gpui_kit::*;
-        const EDGE: f32 = 5.;
-        const CORNER: f32 = 12.;
+        // measured from the outside of the grips' frame, `GRAB` past the border
+        const IN: f32 = 4.;
+        const EDGE: f32 = layout::GRAB + IN;
+        const CORNER: f32 = layout::GRAB + 10.;
         let grips: [(&str, [bool; 4], CursorStyle); 8] = [
             (
                 "left",
