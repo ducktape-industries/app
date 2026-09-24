@@ -39,6 +39,7 @@ use view_wire as wire;
 pub(crate) const GRAB: f32 = 5.;
 
 mod accessibility;
+mod anchored;
 mod canvas;
 mod commands;
 mod deferred;
@@ -153,6 +154,8 @@ pub struct ViewTree {
     mounted: std::collections::HashSet<AuthoredPath>,
     presentation: NativePresentation,
     render_index: u64,
+    /// The document order the next rich paragraph registers for selection.
+    selection_order: std::rc::Rc<std::cell::Cell<u64>>,
     #[cfg(test)]
     renders: u64,
 }
@@ -189,6 +192,7 @@ impl ViewTree {
             mounted: Default::default(),
             presentation: NativePresentation::default(),
             render_index: 0,
+            selection_order: Default::default(),
             #[cfg(test)]
             renders: 0,
         }
@@ -300,6 +304,10 @@ impl Render for ViewTree {
         self.mounted.clear();
         self.authored_path.clear();
         self.render_index = 0;
+        // Each view counts its paragraphs from its own base, so two views'
+        // orders never interleave and a frame repeats the last one's.
+        self.selection_order
+            .set((cx.entity_id().as_u64() & u64::from(u32::MAX)) << 32);
         let node = self.node(&self.root.clone(), window, cx);
         // Only controls mounted by this replacement frame may recover focus.
         self.presentation = NativePresentation::default();

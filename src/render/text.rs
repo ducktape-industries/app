@@ -20,6 +20,20 @@ fn rich_tooltip_content(
         .find_map(|child| rich_tooltip_content(child, request, character_index))
 }
 
+thread_local! {
+    /// The clip a text drag began in, from the press to the release. While
+    /// it is held only paragraphs painted in that clip — the list or pane
+    /// the drag started in — take part, so a pointer that wanders into the
+    /// thread or the sidebar cannot pull their text into the selection.
+    static DRAG_CLIP: std::cell::Cell<Option<Bounds<Pixels>>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether a paragraph painted in `clip` takes part in the selection while
+/// a drag that began in `drag` is held.
+pub(super) fn joins_drag(drag: Option<Bounds<Pixels>>, clip: Bounds<Pixels>) -> bool {
+    drag.is_none_or(|drag| drag == clip)
+}
+
 pub(super) struct RichSelection {
     pub(super) handle: gpui_kit::base::TextSelectionHandle,
     pub(super) _refresh: Subscription,
@@ -36,6 +50,10 @@ pub(super) struct RichParagraph {
     pub(super) active_handle:
         std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
     pub(super) selection: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
+    /// The view's paint-order counter: each paragraph takes the next, so a
+    /// drag selects what lies between its ends in reading order, not every
+    /// line in the window between their heights.
+    pub(super) order: std::rc::Rc<std::cell::Cell<u64>>,
 }
 
 impl IntoElement for RichParagraph {
@@ -47,7 +65,7 @@ impl IntoElement for RichParagraph {
 
 impl Element for RichParagraph {
     type RequestLayoutState = ();
-    type PrepaintState = ();
+    type PrepaintState = (gpui_kit::Hitbox, Bounds<Pixels>);
     fn id(&self) -> Option<ElementId> {
         self.id.clone()
     }
@@ -71,14 +89,23 @@ impl Element for RichParagraph {
         _: &mut (),
         window: &mut Window,
         cx: &mut App,
-    ) {
+    ) -> Self::PrepaintState {
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         // Register the containing hitbox before link hitboxes, so selectable
         // paragraph geometry cannot cover its own interactive spans.
         self.content.prepaint(window, cx);
+        let clip = window.content_mask().bounds;
+        let order = self.order.get();
+        self.order.set(order + 1);
+        let joins = joins_drag(DRAG_CLIP.get(), clip);
         let text = self.text.clone();
         let layout_bounds = self.layout.bounds();
         let active = self.active_handle.clone();
+        let registration = || {
+            gpui_kit::base::TextSelectionRegistration::new(hitbox.clone(), bounds)
+                .with_text_bounds(vec![layout_bounds])
+                .with_document_order(order)
+        };
         window.with_optional_element_state::<RichSelection, _>(id, |state, window| {
             let state = match state {
                 Some(state) => state.unwrap_or_else(|| {
@@ -91,25 +118,20 @@ impl Element for RichParagraph {
                 }),
                 None => {
                     *active.borrow_mut() = Some(self.fallback.handle.clone());
-                    self.fallback.handle.register(
-                        gpui_kit::base::TextSelectionRegistration::new(hitbox.clone(), bounds)
-                            .with_text_bounds(vec![layout_bounds]),
-                        window,
-                        cx,
-                    );
+                    if joins {
+                        self.fallback.handle.register(registration(), window, cx);
+                    }
                     return ((), None);
                 }
             };
             state.handle.set_fallback_copy_text(text.to_string(), cx);
             *active.borrow_mut() = Some(state.handle.clone());
-            state.handle.register(
-                gpui_kit::base::TextSelectionRegistration::new(hitbox.clone(), bounds)
-                    .with_text_bounds(vec![layout_bounds]),
-                window,
-                cx,
-            );
+            if joins {
+                state.handle.register(registration(), window, cx);
+            }
             ((), Some(state))
         });
+        (hitbox, clip)
     }
     fn paint(
         &mut self,
@@ -117,10 +139,28 @@ impl Element for RichParagraph {
         _: Option<&InspectorElementId>,
         _: Bounds<Pixels>,
         _: &mut (),
-        _: &mut (),
+        (hitbox, clip): &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        let (hitbox, clip) = (hitbox.clone(), *clip);
+        window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
+            if phase == gpui_kit::DispatchPhase::Capture
+                && event.button == MouseButton::Left
+                && hitbox.is_hovered(window)
+            {
+                DRAG_CLIP.set(Some(clip));
+            }
+        });
+        window.on_mouse_event(|event: &MouseUpEvent, phase, window, _| {
+            if phase == gpui_kit::DispatchPhase::Capture
+                && event.button == MouseButton::Left
+                && DRAG_CLIP.take().is_some()
+            {
+                // the paragraphs the drag left out take part again
+                window.refresh();
+            }
+        });
         let run = gpui_kit::base::TextSelectionRun::new(
             self.text.clone(),
             self.layout.clone(),
@@ -345,6 +385,7 @@ impl ViewTree {
             },
             active_handle: Default::default(),
             selection: selection_range,
+            order: self.selection_order.clone(),
         }
         .into_any_element()
     }
