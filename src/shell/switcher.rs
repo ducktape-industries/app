@@ -110,7 +110,7 @@ impl DesktopWindow {
             "network-menu",
             Role::Menu,
             "Networks",
-            || Message::CloseNetworkMenu,
+            crate::Overlay::Network,
             false,
             &ink,
             |card| {

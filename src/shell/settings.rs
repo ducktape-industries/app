@@ -118,7 +118,9 @@ impl DesktopWindow {
                     .hover(move |style| style.bg(surface))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        shut.update(cx, |model, cx| model.dispatch(Message::CloseSettings, cx))
+                        shut.update(cx, |model, cx| {
+                            model.dispatch(Message::CloseOverlay(crate::Overlay::Settings), cx)
+                        })
                     })
                     .child(
                         gpui_kit::component::Icon::new(gpui_kit::assets::IconName::X).size(px(16.)),
@@ -128,7 +130,7 @@ impl DesktopWindow {
             "settings-window",
             Role::Dialog,
             "Settings",
-            || Message::CloseSettings,
+            crate::Overlay::Settings,
             true,
             &ink,
             |card| {

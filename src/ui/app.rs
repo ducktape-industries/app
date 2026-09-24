@@ -34,19 +34,6 @@ pub(crate) enum Overlay {
     Menu(Popover),
 }
 
-impl Overlay {
-    /// What closes it (a click on its backdrop, Escape).
-    pub(crate) fn close(self) -> AppMessage {
-        match self {
-            Self::Spotlight => AppMessage::CloseSpotlight,
-            Self::Approve => AppMessage::ApproveClose,
-            Self::Settings => AppMessage::CloseSettings,
-            Self::Network => AppMessage::CloseNetworkMenu,
-            Self::Menu(_) => AppMessage::ClosePopover,
-        }
-    }
-}
-
 /// A menu hanging off the menu bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Popover {
@@ -291,11 +278,11 @@ pub(crate) enum AppMessage {
     },
     Disconnect,
     ToggleNetworkMenu,
-    CloseNetworkMenu,
+    /// A click on its backdrop, Escape, its close button: `Menu(_)` closes
+    /// whichever menu is open.
+    CloseOverlay(Overlay),
     TogglePopover(Popover),
-    ClosePopover,
     OpenSpotlight,
-    CloseSpotlight,
     SpotlightTyped(String),
     /// Up or down a row among `rows` shown.
     SpotlightMove {
@@ -306,7 +293,6 @@ pub(crate) enum AppMessage {
     SpotlightSubmit,
     Spot(Spot),
     OpenSettings,
-    CloseSettings,
     ShowSettingsPage(SettingsPage),
     SetMotion(bool),
     /// Another node from the switcher: reached first, and only once it
@@ -349,7 +335,6 @@ pub(crate) enum AppMessage {
     Joined(Result<(), String>),
     /// The approving side, on a device already on the account.
     ApproveOpen,
-    ApproveClose,
     ApproveCodeTyped(String),
     ApproveFind,
     ApproveFound(Result<backend::join::Request, String>),
