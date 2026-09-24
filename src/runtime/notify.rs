@@ -15,6 +15,10 @@
 //! A non-empty `tag` replaces the view's standing banner under it, and
 //! folds the centre's rows under it into one with a count.
 //!
+//! A view that knows the reader has seen what it posted under a tag says so
+//! (`notify.read`): its own rows under the tag read, its standing banner
+//! under it taken down. Another view's rows are never touched.
+//!
 //! A click on a banner opens its row, the way the centre's row does:
 //! freedesktop's `ActionInvoked` on the banner's default action, and on
 //! macOS the notification centre's delegate hearing the default action on a
@@ -343,6 +347,22 @@ impl Center {
         Some(entry)
     }
 
+    /// `module` says the reader has seen what it posted under `tag`: its
+    /// rows under it are read, and no other view's. Whether any changed.
+    pub(crate) fn read_tag(&mut self, module: &str, tag: &str) -> bool {
+        let mut changed = false;
+        for entry in &mut self.entries {
+            if !tag.is_empty() && entry.module == module && entry.tag == tag && !entry.read {
+                entry.read = true;
+                changed = true;
+            }
+        }
+        if changed {
+            self.save();
+        }
+        changed
+    }
+
     pub(crate) fn mark_all_read(&mut self) {
         for entry in &mut self.entries {
             entry.read = true;
@@ -497,6 +517,10 @@ pub(super) fn answer(
 ) -> bool {
     let post = match (capability, operation) {
         ("notify", "post") => doors::decode::<Post>(payload),
+        ("notify", "read") => {
+            read(guest, id, payload);
+            return true;
+        }
         _ => return false,
     };
     let post = match post.and_then(|post| shortened(post).map_err(str::to_owned)) {
@@ -544,6 +568,27 @@ pub(super) fn answer(
         Ok(doors::encode(&posted))
     });
     true
+}
+
+/// `notify.read`: the view's rows under the tag read, and its standing
+/// banner under it down, queued behind the banners it already raised.
+fn read(guest: &mut Guest, id: u64, payload: &[u8]) {
+    let tag = match doors::decode::<String>(payload) {
+        Ok(tag) => tag,
+        Err(error) => {
+            guest.refuse(id, "malformed_request", error.to_string());
+            return;
+        }
+    };
+    if center().read_tag(guest.module, &tag) {
+        // the bell and the centre redraw
+        guest.intents.push(Intent::Notified);
+    }
+    if !tag.is_empty() {
+        let tag = format!("{}/{tag}", guest.module);
+        in_order(guest.module, move || platform::withdraw(&tag));
+    }
+    guest.reply(id, Ok(doors::encode(&())));
 }
 
 /// A view's banners reach the desktop one at a time, in the order its
@@ -767,6 +812,24 @@ mod platform {
             .unwrap_or(true)
     }
 
+    /// The banner standing under `tag`, taken down.
+    pub(super) fn withdraw(tag: &str) {
+        let standing = standing()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(tag);
+        let Some(standing) = standing.filter(|_| bundled()) else {
+            return;
+        };
+        // SAFETY: as in `post`.
+        unsafe {
+            let centre = UNUserNotificationCenter::currentNotificationCenter();
+            let standing = NSArray::from_vec(vec![NSString::from_str(&standing)]);
+            centre.removePendingNotificationRequestsWithIdentifiers(&standing);
+            centre.removeDeliveredNotificationsWithIdentifiers(&standing);
+        }
+    }
+
     /// The banner each tag is standing under, by its request identifier.
     fn standing() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
         static STANDING: std::sync::OnceLock<
@@ -915,6 +978,27 @@ mod platform {
                 );
                 false
             }
+        }
+    }
+
+    /// The banner standing under `tag`, closed (`CloseNotification`).
+    pub(super) fn withdraw(tag: &str) {
+        let Some(banner) = standing().lock().expect("standing notices").remove(tag) else {
+            return;
+        };
+        clicks().lock().expect("banner clicks").remove(&banner);
+        let Some(bus) = session_bus() else {
+            return;
+        };
+        let closed = bus.call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "CloseNotification",
+            &(banner,),
+        );
+        if let Err(error) = closed {
+            tracing::debug!(target: "ducktape::app", %error, "a standing banner was not closed");
         }
     }
 
@@ -1138,6 +1222,30 @@ mod tests {
         center.post(&silent, "chat", "Chat", post("new", ""), now, 5);
         center.clear_read();
         assert_eq!(center.entries().count(), 1);
+    }
+
+    /// A view reading a tag reads its own rows under it: another tag, an
+    /// untagged row and another view's row under the same tag stay unread.
+    #[test]
+    fn reading_a_tag_reads_only_the_views_own_rows_under_it() {
+        let now = Instant::now();
+        let mut center = Center::default();
+        let silent = settings(Some(Permission::Silent));
+        center.post(&silent, "chat", "Chat", post("a", "#design"), now, 1);
+        center.post(&silent, "chat", "Chat", post("b", "#design"), now, 2);
+        center.post(&silent, "chat", "Chat", post("c", "@alice"), now, 3);
+        center.post(&silent, "chat", "Chat", post("d", ""), now, 4);
+        center.post(&silent, "forge", "Forge", post("theirs", "#design"), now, 5);
+        assert!(center.read_tag("chat", "#design"));
+        let unread: Vec<_> = center
+            .entries()
+            .filter(|entry| !entry.read)
+            .map(|entry| entry.title.as_str())
+            .collect();
+        assert_eq!(unread, ["theirs", "d", "c"]);
+        assert!(!center.read_tag("chat", "#design"), "nothing left to read");
+        assert!(!center.read_tag("chat", ""), "an empty tag reads nothing");
+        assert_eq!(center.unread(), 3);
     }
 
     /// The log keeps 500 rows and thirty days, whichever is fewer.
