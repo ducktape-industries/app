@@ -462,7 +462,10 @@ impl Ducktape {
             Stage::Connect
         } else if !self.sign_in.phrase.is_empty() {
             Stage::Phrase
-        } else if self.signer_key.is_empty() && !self.browsing {
+        } else if (self.signer_key.is_empty() && !self.browsing) || self.sign_in.account_offer {
+            // a seated key waits here for the node's answer about its
+            // account: the desk opening before it would flash between the
+            // key step and the account step
             Stage::Unlock
         } else if self.sign_in.account_step && self.sign_in.recovering {
             Stage::Recover
