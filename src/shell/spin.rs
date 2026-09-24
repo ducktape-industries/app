@@ -75,7 +75,15 @@ pub(super) struct Spin {
     drag: Option<Point<Pixels>>,
     /// The ramp step each cell shows, held against flicker.
     shown: Vec<f32>,
+    /// A frame is already asked for (`FRAME` from now).
+    due: bool,
 }
+
+/// How often the figure redraws on its own. Every display frame (120 Hz on
+/// a ProMotion screen) held half a core of an M1 Max on the launcher alone,
+/// and a window drag lagged behind it; a drag on the figure itself still
+/// follows every frame.
+const FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 
 impl Spin {
     pub(super) fn new(figure: Figure, moving: bool, ink: Hsla) -> Self {
@@ -97,6 +105,7 @@ impl Spin {
             lean: (0., 0.),
             drag: None,
             shown: Vec::new(),
+            due: false,
         }
     }
 
@@ -184,7 +193,19 @@ impl Render for Spin {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         if self.tick(now) {
-            window.request_animation_frame();
+            if self.drag.is_some() {
+                window.request_animation_frame();
+            } else if !self.due {
+                self.due = true;
+                cx.spawn(async move |spin, cx| {
+                    cx.background_executor().timer(FRAME).await;
+                    let _ = spin.update(cx, |spin, cx| {
+                        spin.due = false;
+                        cx.notify();
+                    });
+                })
+                .detach();
+            }
         }
         let t = match self.moving {
             true => now.duration_since(self.born).as_secs_f32(),
