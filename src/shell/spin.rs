@@ -398,7 +398,15 @@ pub(super) fn drawing(
             cx.notify();
         }
     });
-    AnyView::from(spin).into_any_element()
+    // cached: the launcher redrawing (a caret, a hover) reuses the last
+    // drawing instead of marching every ray again
+    AnyView::from(spin)
+        .cached(
+            StyleRefinement::default()
+                .w(px(figure::COLS as f32 * figure::ADVANCE))
+                .h(px(figure::ROWS as f32 * figure::SIZE)),
+        )
+        .into_any_element()
 }
 
 #[cfg(test)]
