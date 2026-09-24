@@ -215,8 +215,9 @@ fn panes(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> (usize
 }
 
 /// The desk's own keys (⌘D, ⌘1, ⌘W) act on its windows only while no
-/// overlay is open; an overlay keeps its keys. (⌘W under an overlay falls
-/// through to the window, which minimizes — the test platform can't.)
+/// overlay is open; an overlay keeps its keys, and ⌘W is then the app
+/// window's (checked through `command_w_pane`: on Linux that window
+/// minimizes, which the test platform can't).
 #[gpui_kit::test]
 fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = console(cx);
@@ -241,6 +242,11 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
     ];
     for (name, open) in overlays {
         model.update(&mut native, |model, _| open(&mut model.state));
+        assert_eq!(
+            native.update(|_, cx| view.read(cx).command_w_pane(cx)),
+            None,
+            "⌘W under the {name} closes the window, not a pane"
+        );
         for stroke in ["secondary-d", "secondary-2"] {
             key(&mut native, stroke);
             assert_eq!(
@@ -259,11 +265,22 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
         });
     }
 
+    assert_eq!(
+        native.update(|_, cx| view.read(cx).command_w_pane(cx)),
+        Some(0)
+    );
     key(&mut native, "secondary-w");
     assert_eq!(
         panes(&mut native, &view).0,
         1,
         "⌘W closes the focused window"
+    );
+    key(&mut native, "secondary-w");
+    assert_eq!(panes(&mut native, &view).0, 0);
+    assert_eq!(
+        native.update(|_, cx| view.read(cx).command_w_pane(cx)),
+        None,
+        "with no window left, ⌘W is the app window's"
     );
 }
 

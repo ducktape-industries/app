@@ -135,7 +135,7 @@ impl DesktopWindow {
             PaneMessage::Close(index) => {
                 self.layout.close(index);
                 if matches!(self.kind, crate::shell::WindowKind::View { .. }) {
-                    window.remove_window();
+                    super::remove(window.window_handle(), cx);
                 }
             }
             PaneMessage::Focus(index) => {
@@ -191,7 +191,7 @@ impl DesktopWindow {
                         this.sync_panes(cx);
                         cx.notify();
                     });
-                    window.remove_window();
+                    super::remove(window.window_handle(), cx);
                 }
             }
         }
@@ -228,7 +228,7 @@ impl DesktopWindow {
         self.settle(window, cx);
     }
 
-    /// The desk's own keys, in the console: ⌘W closes the focused window,
+    /// The desk's own keys, in the console (⌘W is `global_key`'s):
     /// ⌘` / ⌘⇧` (and ctrl-tab) go to the next / previous one, ⌘1…⌘9 to
     /// the Nth, ⌘D / ⌘⇧D halve it; in an empty window ↑↓ pick, Enter and
     /// 1…9 open. True if the key was the desk's.
@@ -248,12 +248,7 @@ impl DesktopWindow {
         };
         let cycle =
             (command && (name == "`" || name == "~")) || (key.modifiers.control && name == "tab");
-        if command && name == "w" {
-            if self.layout.panes.is_empty() {
-                return false;
-            }
-            self.pane_message(PaneMessage::Close(self.layout.focused), window, cx);
-        } else if cycle {
+        if cycle {
             self.layout.cycle(!shift);
         } else if command && name == "d" {
             let desk = self.desk(window);
