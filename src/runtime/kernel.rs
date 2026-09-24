@@ -248,6 +248,15 @@ pub(super) struct Clock {
     due: std::time::Instant,
 }
 
+/// Whether `modifiers` hold the platform command key (⌘ on a Mac, Ctrl
+/// elsewhere).
+pub(crate) fn command_held(modifiers: gpui_kit::Modifiers) -> bool {
+    match cfg!(target_os = "macos") {
+        true => modifiers.platform,
+        false => modifiers.control,
+    }
+}
+
 /// WHICH CHORDS A VIEW MAY CLAIM, and why it is only these: a claim must
 /// hold the platform command modifier (⌘ on a Mac, Ctrl elsewhere). A view
 /// that could claim a bare letter would eat ordinary typing in every other
@@ -257,7 +266,7 @@ pub(super) struct Clock {
 /// spelling, so a claim and a press cannot disagree about how to say the
 /// same chord.
 pub(crate) fn chord_of(key: &str, modifiers: gpui_kit::Modifiers) -> Option<String> {
-    if !backend::command_held(modifiers) {
+    if !command_held(modifiers) {
         return None;
     }
     let key = key.trim().to_ascii_lowercase();

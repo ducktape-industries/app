@@ -487,6 +487,3 @@ impl Ducktape {
         )
     }
 }
-
-#[path = "update.rs"]
-mod update;

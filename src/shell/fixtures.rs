@@ -1,5 +1,5 @@
 use super::launch::initialize_rendering;
-use super::theme::fallback_chain;
+use crate::fonts::fallback_chain;
 use gpui_kit::{Context, Entity, IntoElement, Render, Window};
 
 /// Development-only host renderer: never creates a node, shell model, or network runtime.

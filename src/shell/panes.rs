@@ -239,7 +239,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let command = crate::backend::command_held(key.modifiers);
+        let command = crate::runtime::command_held(key.modifiers);
         let shift = key.modifiers.shift;
         let name = key.key.to_ascii_lowercase();
         let digit = match name.as_str() {

@@ -21,7 +21,7 @@ mod roster;
 mod seat;
 mod widget;
 
-pub(crate) use kernel::chord_of;
+pub(crate) use kernel::{chord_of, command_held};
 pub(crate) use media::capturing;
 #[cfg(test)]
 pub(crate) use roster::list_for_test;
@@ -200,12 +200,9 @@ pub(crate) fn intern(id: &str) -> &'static str {
     leaked
 }
 
-#[path = "runtime/display_diagnostics.rs"]
 mod display_diagnostics;
 
-#[path = "runtime/input.rs"]
 pub(crate) mod input;
-#[path = "runtime/pictures.rs"]
 mod pictures;
 
 /// The name a view's manifest gives it; "" for one whose manifest

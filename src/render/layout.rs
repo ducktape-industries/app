@@ -19,7 +19,7 @@ impl ViewTree {
         };
         let mut element = div();
         *element.style() = style.clone();
-        crate::shell::refine_fallbacks(element.style());
+        crate::fonts::refine_fallbacks(element.style());
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;
