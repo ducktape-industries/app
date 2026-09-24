@@ -9,6 +9,9 @@ pub(super) struct MountedPane {
 }
 
 pub(super) fn label(module: &str) -> String {
+    if module == layout::EMPTY {
+        return "Empty".to_owned();
+    }
     crate::runtime::rail()
         .into_iter()
         .find(|row| row.module == module)
@@ -30,6 +33,14 @@ fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> &'static str {
     } else {
         "This network runs no program with a view."
     }
+}
+
+/// What an empty window lists: the rail's programs, as the menu bar shows them.
+fn openable() -> Vec<crate::runtime::RailRow> {
+    crate::runtime::rail()
+        .into_iter()
+        .filter(|row| !row.empty)
+        .collect()
 }
 
 impl DesktopWindow {
@@ -71,7 +82,7 @@ impl DesktopWindow {
                 self.hide_pane(pane, cx);
             }
         }
-        for pane in &self.layout.panes {
+        for pane in self.layout.panes.iter().filter(|pane| !pane.is_empty()) {
             self.mounted.entry(pane.instance).or_insert_with(|| {
                 let module = pane.module;
                 let view = cx.new(|_| crate::runtime::NativeModuleView::new(module));
@@ -126,6 +137,12 @@ impl DesktopWindow {
             Message::SplitView(module) => {
                 self.layout.split(module);
             }
+            Message::PopOut(index)
+                if self
+                    .layout
+                    .panes
+                    .get(index)
+                    .is_none_or(|pane| pane.is_empty()) => {}
             Message::ClosePane(index) => {
                 self.layout.close(index);
                 if matches!(self.kind, crate::shell::WindowKind::View { .. }) {
@@ -190,14 +207,207 @@ impl DesktopWindow {
             }
             _ => return,
         }
+        self.settle(window, cx);
+    }
+
+    /// After the windows changed: views mounted for them, the focused one
+    /// told so, keys back at the desk.
+    fn settle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_panes(cx);
         for (index, pane) in self.layout.panes.iter().enumerate() {
-            self.mounted[&pane.instance].view.update(cx, |view, cx| {
-                view.set_focused(index == self.layout.focused, cx)
-            });
+            if let Some(mounted) = self.mounted.get(&pane.instance) {
+                mounted.view.update(cx, |view, cx| {
+                    view.set_focused(index == self.layout.focused, cx)
+                });
+            }
         }
         self.focus.focus(window, cx);
         cx.notify();
+    }
+
+    /// A menu bar click, or a pick in an empty window: see `Layout::open`.
+    pub(super) fn open_view(
+        &mut self,
+        module: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.initialized = true;
+        self.layout.open(module);
+        self.model.update(cx, |model, cx| {
+            model.dispatch(Message::SelectView(module), cx)
+        });
+        self.settle(window, cx);
+    }
+
+    /// The desk's own keys, in the console: ⌘W closes the focused window,
+    /// ⌘` / ⌘⇧` (and ctrl-tab) go to the next / previous one, ⌘1…⌘9 to
+    /// the Nth, ⌘D / ⌘⇧D halve it; in an empty window ↑↓ pick, Enter and
+    /// 1…9 open. True if the key was the desk's.
+    pub(super) fn desk_key(
+        &mut self,
+        key: &KeyPress,
+        in_guest_editor: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let command = crate::backend::command_held(key.modifiers);
+        let shift = key.modifiers.shift;
+        let name = key.key.to_ascii_lowercase();
+        let digit = match name.as_str() {
+            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => name.parse::<usize>().ok(),
+            _ => None,
+        };
+        let cycle =
+            (command && (name == "`" || name == "~")) || (key.modifiers.control && name == "tab");
+        if command && name == "w" {
+            if self.layout.panes.is_empty() {
+                return false;
+            }
+            self.pane_message(Message::ClosePane(self.layout.focused), window, cx);
+        } else if cycle {
+            self.layout.cycle(!shift);
+        } else if command && name == "d" {
+            let desk = self.desk(window);
+            self.layout.halve(shift, desk);
+        } else if command && let Some(nth) = digit {
+            self.layout.focus(nth - 1);
+        } else if !in_guest_editor
+            && !command
+            && !key.modifiers.alt
+            && self
+                .layout
+                .panes
+                .get(self.layout.focused)
+                .is_some_and(|pane| pane.is_empty())
+        {
+            let rows = openable();
+            let pick = self.layout.pick.min(rows.len().saturating_sub(1));
+            let open = match (name.as_str(), digit) {
+                ("up", _) => {
+                    self.layout.pick = pick.saturating_sub(1);
+                    None
+                }
+                ("down", _) => {
+                    self.layout.pick = (pick + 1).min(rows.len().saturating_sub(1));
+                    None
+                }
+                ("enter", _) => rows.get(pick),
+                (_, Some(nth)) => rows.get(nth - 1),
+                _ => return false,
+            };
+            match open {
+                Some(row) => self.open_view(row.module, window, cx),
+                None => cx.notify(),
+            }
+            return true;
+        } else {
+            return false;
+        }
+        self.initialized = true;
+        self.settle(window, cx);
+        true
+    }
+
+    /// An empty window's body (design "A"): what it can open, one row a
+    /// program, and the keys that open them.
+    fn empty_view(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        use super::ink::*;
+        use gpui_kit::*;
+        let state = self.model.read(cx).state.clone_facts();
+        let ink = Ink::of(state.dark);
+        let rows = openable();
+        let pick = self.layout.pick.min(rows.len().saturating_sub(1));
+        let chord = |key: &str| match cfg!(target_os = "macos") {
+            true => format!("⌘{key}"),
+            false => format!("Ctrl {key}"),
+        };
+        let list = rows.iter().enumerate().map(|(nth, row)| {
+            let module = row.module;
+            let picked = nth == pick;
+            let name = super::desk::tab_label(row);
+            let badge = state.badges.get(module).copied().unwrap_or(0);
+            let note = match badge {
+                0 => String::new(),
+                count => format!("{count} unread"),
+            };
+            sans(400, 13.)
+                .id(SharedString::from(format!("empty/{module}")))
+                .control(Role::MenuItem, SharedString::from(name.clone()))
+                .flex()
+                .items_baseline()
+                .gap(px(12.))
+                .px(px(12.))
+                .py(px(10.))
+                .cursor_pointer()
+                .when(picked, |row| row.bg(ink.surface))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    this.open_view(module, window, cx);
+                }))
+                .child(
+                    mono(400, 12.)
+                        .w(px(12.))
+                        .text_color(ink.strong)
+                        .child(match nth < 9 {
+                            true => (nth + 1).to_string(),
+                            false => String::new(),
+                        }),
+                )
+                .child(sans(400, 15.).text_color(ink.ink).child(name))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(ink.muted)
+                        .child(note),
+                )
+                .child(
+                    mono(400, 12.)
+                        .text_color(ink.muted)
+                        .child(if picked { "↵" } else { "" }),
+                )
+        });
+        let footer = format!(
+            "1–{} open   {} search everything   {} close",
+            rows.len().clamp(1, 9),
+            chord("K"),
+            chord("W"),
+        );
+        div()
+            .id("empty-window")
+            .role(Role::Menu)
+            .aria_label("Open in this window")
+            .size_full()
+            .flex()
+            .flex_col()
+            .px(px(16.))
+            .py(px(28.))
+            .child(
+                sans(400, 13.)
+                    .text_color(ink.muted)
+                    .px(px(12.))
+                    .pb(px(8.))
+                    .child("Open in this window"),
+            )
+            .child(
+                div()
+                    .id("empty-window/rows")
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .children(list),
+            )
+            .child(
+                mono(400, 12.)
+                    .px(px(12.))
+                    .pt(px(12.))
+                    .whitespace_nowrap()
+                    .truncate()
+                    .text_color(ink.muted)
+                    .child(footer),
+            )
+            .into_any_element()
     }
 
     fn pane_button(
@@ -321,38 +531,52 @@ impl DesktopWindow {
         for index in self.layout.stacking() {
             let pane = &self.layout.panes[index];
             let focused = index == self.layout.focused;
-            let view = self.mounted[&pane.instance].view.clone();
-            view.update(cx, |view, cx| {
-                view.set_focused(focused, cx);
-                view.set_props(props.clone(), cx);
-            });
+            let empty = pane.is_empty();
+            let view = match self.mounted.get(&pane.instance) {
+                Some(mounted) => {
+                    let view = mounted.view.clone();
+                    view.update(cx, |view, cx| {
+                        view.set_focused(focused, cx);
+                        view.set_props(props.clone(), cx);
+                    });
+                    view.into_any_element()
+                }
+                None => self.empty_view(cx),
+            };
+            let pane = &self.layout.panes[index];
             use gpui_kit::assets::IconName;
             let controls = div()
                 .flex()
                 .items_center()
                 .gap(px(2.))
                 .when(console, |strip| {
-                    strip
-                        .child(self.pane_button(
-                            index,
-                            "split",
-                            IconName::Plus,
-                            self.layout.panes.len() < layout::MAX_PANES,
-                            cx,
-                        ))
-                        .child(self.pane_button(
-                            index,
-                            "popout",
-                            IconName::SquareArrowOutUpRight,
-                            true,
-                            cx,
-                        ))
+                    strip.child(self.pane_button(
+                        index,
+                        "split",
+                        IconName::Plus,
+                        self.layout.panes.len() < layout::MAX_PANES,
+                        cx,
+                    ))
+                })
+                // an empty window has no view to carry out
+                .when(console && !empty, |strip| {
+                    strip.child(self.pane_button(
+                        index,
+                        "popout",
+                        IconName::SquareArrowOutUpRight,
+                        true,
+                        cx,
+                    ))
                 })
                 .when(!console, |strip| {
                     strip.child(self.pane_button(index, "popin", IconName::ArrowDownLeft, true, cx))
                 })
                 .child(self.pane_button(index, "close", IconName::X, true, cx));
-            let context = self.mounted[&pane.instance].context.borrow().clone();
+            let context = self
+                .mounted
+                .get(&pane.instance)
+                .map(|mounted| mounted.context.borrow().clone())
+                .unwrap_or_default();
             let body = div()
                 .id(SharedString::from(format!("pane/{index}")))
                 .flex()

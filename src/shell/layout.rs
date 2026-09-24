@@ -52,6 +52,9 @@ impl Frame {
     }
 }
 
+/// The module of a window with nothing in it yet: it lists what it can open.
+pub(crate) const EMPTY: &str = "";
+
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pane {
     pub(crate) module: &'static str,
@@ -75,12 +78,18 @@ impl Pane {
             restore: None,
         }
     }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.module == EMPTY
+    }
 }
 
 #[derive(Default, Debug)]
 pub(crate) struct Layout {
     pub(crate) panes: Vec<Pane>,
     pub(crate) focused: usize,
+    /// The row picked in an empty window's list.
+    pub(crate) pick: usize,
     top: u64,
 }
 
@@ -92,11 +101,38 @@ impl Layout {
         }
     }
 
-    /// Rail selection reuses an existing module before replacing a focused view.
+    /// Selection reuses an existing module (the focused window first)
+    /// before replacing a focused view.
     pub(crate) fn select(&mut self, module: &'static str) -> bool {
+        if self
+            .panes
+            .get(self.focused)
+            .is_some_and(|pane| pane.module == module)
+        {
+            return self.focus(self.focused);
+        }
         if let Some(index) = self.panes.iter().position(|pane| pane.module == module) {
             return self.focus(index);
         }
+        self.load(module);
+        true
+    }
+
+    /// A menu bar click: into the focused window if it is empty, else to
+    /// the window it is already open in, else in a window of its own.
+    pub(crate) fn open(&mut self, module: &'static str) -> bool {
+        if self.panes.get(self.focused).is_some_and(Pane::is_empty) {
+            self.load(module);
+            return true;
+        }
+        if let Some(index) = self.panes.iter().position(|pane| pane.module == module) {
+            return self.focus(index);
+        }
+        self.split(module)
+    }
+
+    /// `module` in the focused window, in place of what it showed.
+    pub(crate) fn load(&mut self, module: &'static str) {
         let mut pane = Pane::new(module);
         if let Some(current) = self.panes.get_mut(self.focused) {
             pane.frame = current.frame;
@@ -107,6 +143,55 @@ impl Layout {
             self.focused = 0;
             self.raise(0);
         }
+    }
+
+    /// Halves the focused window, left|right (or top|bottom when
+    /// `below`): it keeps the first half, a new empty window takes the
+    /// other. With no window, an empty one fills the desk.
+    pub(crate) fn halve(&mut self, below: bool, desk: (f32, f32)) -> bool {
+        self.pick = 0;
+        let Some(whole) = self.panes.get(self.focused).map(|pane| pane.frame) else {
+            return self.split(EMPTY);
+        };
+        if !self.split(EMPTY) {
+            return false;
+        }
+        let whole = whole.unwrap_or_else(|| Frame::fill(desk));
+        let (mut first, mut second) = (whole, whole);
+        match below {
+            false => {
+                first.w = (whole.w / 2.).floor();
+                second.x = whole.x + first.w;
+                second.w = whole.w - first.w;
+            }
+            true => {
+                first.h = (whole.h / 2.).floor();
+                second.y = whole.y + first.h;
+                second.h = whole.h - first.h;
+            }
+        }
+        let new = self.focused;
+        self.set_frame(new - 1, first, desk);
+        self.set_frame(new, second, desk);
+        true
+    }
+
+    /// The next window up (`forward`: the one at the bottom comes to the
+    /// top; back: the top one goes to the bottom), so repeating it visits
+    /// every window in turn.
+    pub(crate) fn cycle(&mut self, forward: bool) -> bool {
+        let mut order = self.stacking();
+        if order.len() < 2 {
+            return false;
+        }
+        match forward {
+            true => order.rotate_left(1),
+            false => order.rotate_right(1),
+        }
+        for &index in &order {
+            self.raise(index);
+        }
+        self.focused = order[order.len() - 1];
         true
     }
 
@@ -415,5 +500,83 @@ mod tests {
         assert_eq!(layout.panes[0].frame, Some(Frame::fill(DESK)));
         layout.toggle_fill(0, DESK);
         assert_eq!(layout.panes[0].frame, Some(small));
+    }
+
+    #[test]
+    fn halving_splits_the_focused_frame_into_an_empty_window() {
+        let mut layout = Layout::default();
+        assert!(layout.halve(false, DESK), "no window: an empty one");
+        layout.place(DESK);
+        assert!(layout.panes[0].is_empty());
+        assert_eq!(layout.panes[0].frame, Some(Frame::fill(DESK)));
+        layout.load("chat");
+        assert_eq!(layout.panes[0].module, "chat");
+        let whole = layout.panes[0].frame.unwrap();
+        assert!(layout.halve(false, DESK));
+        let (left, right) = (
+            layout.panes[0].frame.unwrap(),
+            layout.panes[1].frame.unwrap(),
+        );
+        assert_eq!(layout.focused, 1);
+        assert!(layout.panes[1].is_empty());
+        assert_eq!(
+            (left.x, left.w + right.w, right.x),
+            (whole.x, whole.w, whole.x + left.w)
+        );
+        assert_eq!((left.h, right.h), (whole.h, whole.h));
+        assert!(layout.halve(true, DESK));
+        let (top, bottom) = (
+            layout.panes[1].frame.unwrap(),
+            layout.panes[2].frame.unwrap(),
+        );
+        assert_eq!((top.h + bottom.h, bottom.y), (right.h, right.y + top.h));
+        assert_eq!((top.x, bottom.x, bottom.w), (right.x, right.x, right.w));
+        while layout.split("files") {}
+        assert!(!layout.halve(false, DESK), "no room for another");
+    }
+
+    #[test]
+    fn the_menu_bar_fills_an_empty_window_focuses_an_open_one_else_opens_another() {
+        let mut layout = Layout::default();
+        layout.split(EMPTY);
+        let empty = layout.panes[0].instance;
+        assert!(layout.open("chat"));
+        assert_eq!((layout.panes.len(), layout.panes[0].module), (1, "chat"));
+        assert_ne!(layout.panes[0].instance, empty);
+        assert!(layout.open("files"), "a window of its own");
+        assert_eq!(layout.panes.len(), 2);
+        assert!(layout.open("chat"));
+        assert_eq!((layout.panes.len(), layout.focused), (2, 0));
+        // shift: replaces the focused view, as a plain click once did
+        assert!(layout.select("calendar"));
+        assert_eq!(layout.panes[0].module, "calendar");
+        // a module open twice stays in the focused window
+        layout.split("files");
+        assert!(!layout.select("files"));
+        assert_eq!(layout.focused, 1);
+    }
+
+    #[test]
+    fn cycling_visits_every_window_and_back_returns() {
+        let mut layout = Layout::default();
+        for module in ["chat", "files", "calendar"] {
+            layout.split(module);
+        }
+        let mut seen = vec![];
+        for _ in 0..3 {
+            assert!(layout.cycle(true));
+            assert_eq!(*layout.stacking().last().unwrap(), layout.focused);
+            seen.push(layout.focused);
+        }
+        assert_eq!(seen, vec![0, 1, 2]);
+        assert!(layout.cycle(false));
+        assert_eq!(layout.focused, 1);
+        assert!(layout.cycle(true));
+        assert_eq!(layout.focused, 2);
+        layout.close(layout.focused);
+        assert_eq!(layout.panes.len(), 2);
+        assert_eq!(layout.focused, 1, "the one beneath takes focus");
+        layout.close(0);
+        assert!(!layout.cycle(true), "one window has nowhere to go");
     }
 }
