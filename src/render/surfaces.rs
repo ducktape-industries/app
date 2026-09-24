@@ -108,12 +108,19 @@ impl ViewTree {
                 // trap registers; drop an obscured ancestor before that pass.
                 self.dialogs.remove(&path);
             }
-            let shade = div()
-                .id("backdrop")
-                .absolute()
-                .inset_0()
-                .bg(rgb(0x000000))
-                .opacity(0.5);
+            let is_float = matches!(modal, wire::Node::Float { .. });
+            let anchored = matches!(
+                modal,
+                wire::Node::Float { .. } | wire::Node::Anchored { .. }
+            );
+            let shade = shades(anchored, style).then(|| {
+                div()
+                    .id("backdrop")
+                    .absolute()
+                    .inset_0()
+                    .bg(rgb(0x000000))
+                    .opacity(0.5)
+            });
             let opened = named && !self.dialogs.contains_key(&path);
             let entry = (named && !nested).then(|| {
                 self.dialogs
@@ -121,7 +128,6 @@ impl ViewTree {
                     .or_insert_with(|| cx.focus_handle())
                     .clone()
             });
-            let is_float = matches!(modal, wire::Node::Float { .. });
             let mut layer_style = style.clone();
             if is_float {
                 layer_style.padding = Default::default();
@@ -193,8 +199,41 @@ impl ViewTree {
             } else {
                 layer.into_any_element()
             };
-            element = element.child(shade).child(layer);
+            element = element.children(shade).child(layer);
         }
         element.into_any_element()
+    }
+}
+
+/// Whether the host dims what an overlay covers. A popover anchored to the
+/// view (a `Float`, an `Anchored`) covers nothing, and an overlay whose view asked for a
+/// backdrop (its style's background, drawn on the layer) has one already;
+/// only a bare dialog gets the host's shade.
+pub(super) fn shades(anchored: bool, style: &gpui_kit::StyleRefinement) -> bool {
+    let asked = style
+        .background
+        .as_ref()
+        .and_then(|fill| fill.color())
+        .and_then(|background| background.as_solid())
+        .is_some_and(|color| color.a > 0.);
+    !anchored && !asked
+}
+
+#[cfg(test)]
+mod shade_tests {
+    use gpui_kit::{Styled as _, hsla};
+
+    /// A popover anchored to the view is not shaded; a bare dialog is; a
+    /// view's own backdrop replaces the host's shade.
+    #[test]
+    fn only_a_bare_dialog_is_shaded() {
+        let bare = gpui_kit::StyleRefinement::default();
+        let clear = gpui_kit::StyleRefinement::default().bg(hsla(0., 0., 0., 0.));
+        let dim = gpui_kit::StyleRefinement::default().bg(hsla(0., 0., 0., 0.55));
+        assert!(!super::shades(true, &bare));
+        assert!(!super::shades(true, &clear));
+        assert!(super::shades(false, &bare));
+        assert!(super::shades(false, &clear));
+        assert!(!super::shades(false, &dim));
     }
 }
