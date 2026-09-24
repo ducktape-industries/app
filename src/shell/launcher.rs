@@ -26,7 +26,9 @@ impl DesktopWindow {
     /// `padding: 20px; gap: 12px`, the drawing on `surface` and its mono
     /// `caption`; on the right the reading column, `padding: 32px 40px 0;
     /// gap: 22px` — a small back link, then `[step]`, the `<h1>` and the
-    /// lead (`gap: 18px`), then the screen's own `body`.
+    /// lead (`gap: 18px`), then the screen's own `body`. A `tight` column
+    /// (`padding-top: 24px; gap: 16px`) gives a long body the room (the
+    /// phrase's 24 words).
     #[allow(
         clippy::too_many_arguments,
         reason = "one frame, every screen fills it"
@@ -34,6 +36,7 @@ impl DesktopWindow {
     pub(super) fn launcher(
         &self,
         id: &'static str,
+        tight: bool,
         figure: Figure,
         caption: String,
         back: Option<Back>,
@@ -52,14 +55,14 @@ impl DesktopWindow {
         // title bar is that bar. It is the desk's menu bar height: one
         // window serves both, and its traffic lights sit where they were
         // put when it opened.
-        let titlebar = (cfg!(target_os = "macos") && !window.is_fullscreen()).then(|| {
+        let titlebar = theme::traffic_lights(window).map(|lights| {
             div()
                 .id("launcher-titlebar")
                 .h(px(super::desk::BAR))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
-                .pl(px(78.))
+                .pl(px(lights))
                 .border_b_1()
                 .border_color(ink.line)
                 .on_mouse_down(MouseButton::Left, |event, window, _| {
@@ -98,8 +101,6 @@ impl DesktopWindow {
                     )),
             )
             .child(tag(caption, &ink));
-        // the phrase's 24 words need the room: its column sits tighter
-        let tight = id == "recovery";
         let reading =
             div()
                 .id(id)

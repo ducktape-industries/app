@@ -1,7 +1,9 @@
 use super::*;
 
 /// The loads an event started; nobody waits on them, the seats swap in place.
-pub struct Loads(#[allow(dead_code)] pub(super) Vec<std::thread::JoinHandle<()>>);
+pub struct Loads {
+    pub(super) _threads: Vec<std::thread::JoinHandle<()>>,
+}
 
 /// The node's deployments moved (a new block): every module-owned view
 /// whose module's active code is not the one it was drawn from is loaded
@@ -236,7 +238,9 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
 pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     let registry = registry().lock().expect("module views");
     let Some(seat) = registry.get(&(module, instance)) else {
-        return Loads(Vec::new());
+        return Loads {
+            _threads: Vec::new(),
+        };
     };
     let snapshot = connection().lock().expect("views rpc").clone();
     let mut locked = seat.lock().expect("module view lock");
@@ -248,7 +252,9 @@ pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     locked.retry = None;
     let generation = locked.start();
     drop(locked);
-    Loads(vec![spawn_load(module, seat, generation, snapshot)])
+    Loads {
+        _threads: vec![spawn_load(module, seat, generation, snapshot)],
+    }
 }
 
 /// Loads the view on its own thread — a cold cranelift compile is a second

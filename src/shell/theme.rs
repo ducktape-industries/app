@@ -45,6 +45,13 @@ pub(super) fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
     gpui_kit::Rgba { r, g, b, a }.into()
 }
 
+/// The room macOS's traffic lights take at a title bar's left end, when
+/// this window draws the bar itself (macOS, not fullscreen); `None`
+/// elsewhere, where the system draws the title bar.
+pub(super) fn traffic_lights(window: &gpui_kit::Window) -> Option<f32> {
+    (cfg!(target_os = "macos") && !window.is_fullscreen()).then_some(78.)
+}
+
 /// Below this window width the menu bar folds its words to initials and
 /// drops the ones it can spare, so the program tabs keep their room.
 pub(super) const NARROW_WINDOW_WIDTH: f32 = 720.;

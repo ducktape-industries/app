@@ -158,6 +158,7 @@ impl DesktopWindow {
         );
         self.launcher(
             "sign-in",
+            false,
             Figure::Ring,
             Self::where_(state),
             Some(("disconnect", "Other networks", || Message::Disconnect)),
@@ -273,6 +274,7 @@ impl DesktopWindow {
         );
         self.launcher(
             "passkey-waiting",
+            false,
             Figure::Pair,
             Self::where_(state),
             None,
@@ -411,6 +413,7 @@ impl DesktopWindow {
         .aria_label("Already have an account");
         self.launcher(
             "account-step",
+            false,
             Figure::Pair,
             Self::where_(state),
             None,
@@ -485,6 +488,7 @@ impl DesktopWindow {
         ];
         self.launcher(
             "link-waiting",
+            false,
             Figure::Pair,
             Self::where_(state),
             None,
@@ -555,6 +559,7 @@ impl DesktopWindow {
             )]));
         self.launcher(
             "recover",
+            false,
             Figure::Sheets,
             Self::where_(state),
             Some(("recover-back", "← Back", || Message::RecoverCancel)),
@@ -634,6 +639,7 @@ impl DesktopWindow {
             ));
         self.launcher(
             "recovery",
+            true, // tight: the 24 words need the room
             Figure::Sheets,
             "Twenty-four words, on paper.".into(),
             None,
@@ -738,6 +744,7 @@ impl DesktopWindow {
         let prompt = format!("Type words {a}, {b} and {c} from your paper.");
         self.launcher(
             "recovery-check",
+            false,
             Figure::Sheets,
             "Twenty-four words, on paper.".into(),
             None,
