@@ -166,12 +166,10 @@ impl Ducktape {
                 }
                 Task::none()
             }
-            // The console opens at once after a sign-in, and the account
-            // step follows when the node says the key holds no account: a
-            // slow node never holds the console back, and a key that has an
-            // account (the usual Unlock) never sees a "checking…" screen.
-            // After a new key the answer landed during the phrase check, so
-            // the step follows the check with no console in between.
+            // After a sign-in the key screen stays up (`stage()`, while the
+            // offer is armed) until the node answers: a key with no account
+            // goes on to the account step, one with an account to the
+            // console, and neither shows the other first.
             Message::AccountResolved { node, key, account } => {
                 if node == self.connected_rpc && key == self.signer_key {
                     self.sign_in.account_step |= offers_account_step(
@@ -1458,6 +1456,27 @@ mod tests {
             let _ = state.update(Message::CreateAccountLater);
             resolved(&mut state, None);
             assert!(!state.sign_in.account_step, "a later block reopened it");
+        }
+    }
+
+    /// The key step to what follows it, one message at a time: the desk
+    /// (and its window size) never shows before the node's answer, so a
+    /// key with no account never flashes the console on its way to the
+    /// account step.
+    #[test]
+    fn the_desk_waits_for_the_answer_after_the_key_step() {
+        use crate::Stage;
+        for (account, then) in [
+            (None, Stage::Account),
+            (Some((7, "ada".into())), Stage::Desk),
+        ] {
+            let mut state = signing_in();
+            assert_eq!(state.stage(), Stage::Unlock);
+            let _ = state.update(Message::DeviceKey(Ok(Some("ab".into()))));
+            assert_eq!(state.stage(), Stage::Unlock, "a stage before the answer");
+            assert!(state.in_launcher());
+            resolved(&mut state, account);
+            assert_eq!(state.stage(), then);
         }
     }
 
