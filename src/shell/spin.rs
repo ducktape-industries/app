@@ -75,6 +75,7 @@ pub(super) struct Spin {
     drag: Option<Point<Pixels>>,
     /// The ramp step each cell shows, held against flicker.
     shown: Vec<f32>,
+    glyphs: Option<Glyphs>,
     /// A frame is already asked for (`FRAME` from now).
     due: bool,
 }
@@ -105,6 +106,7 @@ impl Spin {
             lean: (0., 0.),
             drag: None,
             shown: Vec::new(),
+            glyphs: None,
             due: false,
         }
     }
@@ -156,9 +158,9 @@ impl Spin {
         }
     }
 
-    /// The lines to draw: each cell's glyph, changed only once its
-    /// brightness has clearly left the one it shows.
-    fn lines(&mut self, shade: &[f32]) -> Vec<String> {
+    /// Moves each cell's ramp step on, changed only once its brightness
+    /// has clearly left the one it shows.
+    fn hold(&mut self, shade: &[f32]) {
         let steps = (figure::RAMP.len() - 1) as f32;
         if self.shown.len() != shade.len() {
             self.shown = vec![f32::NAN; shade.len()];
@@ -173,20 +175,72 @@ impl Spin {
                 *shown = level.round();
             }
         }
-        self.shown
-            .chunks(figure::COLS)
-            .map(|row| {
-                let line: String = row
-                    .iter()
-                    .map(|&step| match step.is_nan() {
-                        true => ' ',
-                        false => figure::RAMP[(step as usize).clamp(1, figure::RAMP.len() - 1)],
-                    })
-                    .collect();
-                line.trim_end().to_owned()
-            })
-            .collect()
     }
+}
+
+/// The ramp's glyphs, shaped once: nothing is shaped per frame.
+#[derive(Clone, Copy)]
+struct Glyphs {
+    size: Pixels,
+    /// Each ramp step's face (a fallback, if the mono face lacks it) and glyph.
+    ids: [(FontId, GlyphId); figure::RAMP.len()],
+    /// From a cell's top to the baseline, as a line of text puts it.
+    baseline: Pixels,
+}
+
+impl Glyphs {
+    fn shape(window: &Window) -> Self {
+        // "===" is one glyph in the mono face; a drawing wants three
+        let font = Font {
+            features: FontFeatures::disable_ligatures(),
+            ..font(super::theme::FAMILY_MONO)
+        };
+        let size = px(figure::GLYPH);
+        let shaped = figure::RAMP.map(|glyph| {
+            let text = SharedString::from(glyph.to_string());
+            let run = TextRun {
+                len: text.len(),
+                font: font.clone(),
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window.text_system().shape_line(text, size, &[run], None)
+        });
+        let at = &shaped[figure::RAMP.len() - 1];
+        Self {
+            ids: shaped.each_ref().map(|line| {
+                line.runs
+                    .first()
+                    .and_then(|run| Some((run.font_id, run.glyphs.first()?.id)))
+                    .unwrap_or((at.runs[0].font_id, GlyphId(0)))
+            }),
+            size,
+            baseline: (px(figure::SIZE) - at.ascent - at.descent) / 2. + at.ascent,
+        }
+    }
+}
+
+/// Where each inked cell's glyph goes, from the drawing's top left, and
+/// which ramp step it is: a hit is never blank, so the shape keeps its
+/// outline.
+fn stamps(shown: &[f32]) -> Vec<(Point<Pixels>, usize)> {
+    shown
+        .iter()
+        .enumerate()
+        .filter(|(_, step)| !step.is_nan())
+        .map(|(cell, &step)| {
+            let (col, row) = (cell % figure::COLS, cell / figure::COLS);
+            (
+                point(
+                    px(col as f32 * figure::ADVANCE),
+                    px(row as f32 * figure::SIZE),
+                ),
+                (step as usize).clamp(1, figure::RAMP.len() - 1),
+            )
+        })
+        .collect()
 }
 
 impl Render for Spin {
@@ -212,24 +266,36 @@ impl Render for Spin {
             false => 0.,
         };
         let shade = self.figure.shade(t, self.pose());
-        let lines = self.lines(&shade);
+        self.hold(&shade);
+        let glyphs = self
+            .glyphs
+            .get_or_insert_with(|| Glyphs::shape(window))
+            .clone();
+        let stamps = stamps(&self.shown);
+        let ink = self.ink;
         let spin = cx.entity();
         let grabbing = self.drag.is_some();
         div()
             .relative()
-            .flex()
-            .flex_col()
             .w(px(figure::COLS as f32 * figure::ADVANCE))
-            .font_family(super::theme::FAMILY_MONO)
-            // "===" is one glyph in the mono face; a drawing wants three
-            .font_features(FontFeatures::disable_ligatures())
-            .text_size(px(figure::GLYPH))
-            .line_height(px(figure::SIZE))
-            .text_color(self.ink)
-            .children(
-                lines
-                    .into_iter()
-                    .map(|line| div().h(px(figure::SIZE)).whitespace_nowrap().child(line)),
+            .h(px(figure::ROWS as f32 * figure::SIZE))
+            .child(
+                canvas(
+                    |_, _, _| {},
+                    // one layer, as a line of text paints: a thousand glyphs
+                    // take one draw order, not one bounds-tree insert each
+                    move |bounds, _, window, _| {
+                        window.paint_layer(bounds, |window| {
+                            for (at, step) in stamps {
+                                let (face, glyph) = glyphs.ids[step];
+                                let origin = bounds.origin + at + point(px(0.), glyphs.baseline);
+                                // a glyph the atlas can't take is left out, not fatal
+                                let _ = window.paint_glyph(origin, face, glyph, glyphs.size, ink);
+                            }
+                        })
+                    },
+                )
+                .size_full(),
             )
             .child(
                 div()
@@ -333,4 +399,55 @@ pub(super) fn drawing(
         }
     });
     AnyView::from(spin).into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Figure, Pose, Spin, figure, stamps};
+    use gpui_kit::{Hsla, point, px};
+
+    #[test]
+    fn stamps_put_each_inked_cell_at_its_column_and_row() {
+        let mut shown = vec![f32::NAN; figure::COLS * figure::ROWS];
+        shown[0] = 0.; // a hit at the darkest step still shows
+        shown[figure::COLS + 2] = 11.;
+        shown[figure::COLS * figure::ROWS - 1] = 5.;
+        assert_eq!(
+            stamps(&shown),
+            [
+                (point(px(0.), px(0.)), 1),
+                (
+                    point(px(2. * figure::ADVANCE), px(figure::SIZE)),
+                    figure::RAMP.len() - 1
+                ),
+                (
+                    point(
+                        px((figure::COLS - 1) as f32 * figure::ADVANCE),
+                        px((figure::ROWS - 1) as f32 * figure::SIZE)
+                    ),
+                    5
+                ),
+            ]
+        );
+    }
+
+    /// Stamped, every figure shows the glyphs its lines of text showed.
+    #[test]
+    fn stamps_draw_what_the_lines_of_text_drew() {
+        for figure in [Figure::Node, Figure::Ring, Figure::Sheets, Figure::Pair] {
+            let mut spin = Spin::new(figure, true, Hsla::default());
+            spin.hold(&figure.shade(1., Pose::default()));
+            let mut grid = vec![vec![' '; figure::COLS]; figure::ROWS];
+            for (at, step) in stamps(&spin.shown) {
+                let col = (f32::from(at.x) / figure::ADVANCE).round() as usize;
+                let row = (f32::from(at.y) / figure::SIZE).round() as usize;
+                grid[row][col] = figure::RAMP[step];
+            }
+            let drawn: Vec<String> = grid
+                .into_iter()
+                .map(|row| row.into_iter().collect::<String>().trim_end().to_owned())
+                .collect();
+            assert_eq!(drawn, figure.still(1., Pose::default()), "{figure:?}");
+        }
+    }
 }
