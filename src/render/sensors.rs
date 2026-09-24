@@ -11,7 +11,7 @@ pub(super) struct SensorState {
 }
 
 /// The strip a resize handle is taken hold of by: its own box and
-/// [`crate::shell::GRAB`] past it on both sides of the axis it sizes, the
+/// [`crate::render::GRAB`] past it on both sides of the axis it sizes, the
 /// reach desk window borders have, so a near miss on a 1px divider still
 /// grips. It sits over its neighbours and keeps what is under it from
 /// hearing the press.
@@ -30,7 +30,7 @@ pub(super) fn grip(cursor: CursorStyle) -> gpui_kit::Stateful<Div> {
 
 /// How far a grip reaches past its handle, across and along.
 pub(super) fn grip_reach(cursor: CursorStyle) -> (f32, f32) {
-    let grab = crate::shell::GRAB;
+    let grab = crate::render::GRAB;
     match cursor {
         CursorStyle::ResizeLeftRight
         | CursorStyle::ResizeColumn

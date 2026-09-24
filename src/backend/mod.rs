@@ -110,15 +110,6 @@ pub(crate) fn retry_delay(attempt: u32) -> Duration {
     Duration::from_secs(1_u64 << exponent)
 }
 
-/// Whether `modifiers` hold the platform command key (⌘ on a Mac, Ctrl
-/// elsewhere).
-pub(crate) fn command_held(modifiers: gpui_kit::Modifiers) -> bool {
-    match cfg!(target_os = "macos") {
-        true => modifiers.platform,
-        false => modifiers.control,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -856,7 +856,7 @@ impl Ducktape {
                 Task::none()
             }
             Message::ModifierStateChanged(modifiers) => {
-                self.cmd_held = backend::command_held(modifiers);
+                self.cmd_held = crate::runtime::command_held(modifiers);
                 Task::none()
             }
             Message::TrayOpen => match self.console_win {

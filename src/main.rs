@@ -1,11 +1,11 @@
 mod a11y;
-#[path = "ui/app.rs"]
-mod app_state;
-pub(crate) use app_state::*;
+mod ui;
+pub(crate) use ui::*;
 
 mod ax;
 mod backend;
 mod editor;
+mod fonts;
 mod render;
 mod runtime;
 mod shell;

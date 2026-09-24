@@ -33,16 +33,13 @@ mod launcher;
 mod layout;
 mod panes;
 #[cfg(test)]
-#[path = "shell/panes_tests.rs"]
 mod panes_tests;
 mod screens;
 #[cfg(test)]
-#[path = "shell/screens_tests.rs"]
 mod screens_tests;
 mod windows;
 
 pub(crate) use launch::run;
-pub(crate) use layout::GRAB;
 mod settings;
 mod sign_in;
 mod spin;
@@ -50,9 +47,9 @@ mod switcher;
 mod theme;
 
 #[cfg(not(target_os = "macos"))]
-use theme::EMOJI_FACE;
-use theme::{BUNDLED_FACES, NARROW_WINDOW_WIDTH, configure_native_theme};
-pub(crate) use theme::{app_family, fallback_chain, refine_fallbacks};
+use crate::fonts::EMOJI_FACE;
+use crate::fonts::{BUNDLED_FACES, fallback_chain};
+use theme::{NARROW_WINDOW_WIDTH, configure_native_theme};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct WindowKey(u64);
@@ -515,7 +512,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let command = crate::backend::command_held(key.modifiers);
+        let command = crate::runtime::command_held(key.modifiers);
         if command && key.key == "q" {
             self.model
                 .update(cx, |model, cx| model.dispatch(Message::TrayQuit, cx));

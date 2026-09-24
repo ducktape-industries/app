@@ -82,7 +82,7 @@ fn a_divider_grips_a_near_miss_on_either_side(cx: &mut gpui_kit::TestAppContext)
 
 #[test]
 fn a_grip_reaches_along_the_axis_it_sizes() {
-    let grab = crate::shell::GRAB;
+    let grab = crate::render::GRAB;
     assert_eq!(
         super::sensors::grip_reach(CursorStyle::ResizeLeftRight),
         (grab, 0.)

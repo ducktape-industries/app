@@ -186,7 +186,7 @@ impl ViewTree {
         });
         let mut element = div();
         *element.style() = style.clone();
-        crate::shell::refine_fallbacks(element.style());
+        crate::fonts::refine_fallbacks(element.style());
         let element = element
             .id(native_id)
             // The div above is the Label `announce` names below; the text
@@ -238,7 +238,7 @@ impl ViewTree {
                 runs.iter()
                     .cloned()
                     .map(|mut run| {
-                        run.font_family = crate::shell::app_family(&run.font_family);
+                        run.font_family = crate::fonts::app_family(&run.font_family);
                         run.into()
                     })
                     .collect(),
@@ -247,7 +247,7 @@ impl ViewTree {
         styled = styled.with_font_family_overrides(
             font_family_overrides
                 .iter()
-                .map(|(range, family)| (range.clone(), crate::shell::app_family(family))),
+                .map(|(range, family)| (range.clone(), crate::fonts::app_family(family))),
         );
         let layout = styled.layout().clone();
         let rich_id: ElementId = "rich-text".into();

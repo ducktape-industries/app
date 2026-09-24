@@ -33,6 +33,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use view_wire as wire;
 
+/// How far past its border a thing that sizes can still be taken hold of:
+/// a desk window's edges, a view's divider. Its grip reaches this much out
+/// into the gap around it.
+pub(crate) const GRAB: f32 = 5.;
+
 mod accessibility;
 mod canvas;
 mod commands;

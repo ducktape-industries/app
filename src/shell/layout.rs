@@ -14,9 +14,7 @@ const KEEP: f32 = 96.;
 const CASCADE: f32 = 28.;
 /// The inset of a window that fills the desk.
 pub(crate) const INSET: f32 = 12.;
-/// How far past its border a window can still be taken hold of: its
-/// edges' grips reach out this much into the gap around it.
-pub(crate) const GRAB: f32 = 5.;
+pub(crate) use crate::render::GRAB;
 
 /// A window's place on the desk, in pixels from the desk's top-left.
 #[derive(Clone, Copy, Debug, PartialEq)]
