@@ -88,12 +88,7 @@ impl DesktopWindow {
             let module = row.module;
             let selected = focused == Some(module);
             let badge = state.badges.get(module).copied().unwrap_or(0);
-            // Before the manifest lands (or if it never does) the label is
-            // the program's own id, prettified.
-            let shown = match row.note {
-                Some(_) => screens::prettify(&row.label),
-                None => row.label.clone(),
-            };
+            let shown = tab_label(row);
             let name = match row.note {
                 Some(note) => format!("{shown} · {note}"),
                 None => shown.clone(),
@@ -121,12 +116,13 @@ impl DesktopWindow {
                     false => ink.muted,
                 })
                 .hover(move |style| style.text_color(hover))
+                // a click opens it (into an empty focused window, or its
+                // own); shift-click shows it in the focused window instead
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    let message = match event.modifiers().shift {
-                        true => Message::SplitView(module),
-                        false => Message::SelectView(module),
-                    };
-                    this.pane_message(message, window, cx);
+                    match event.modifiers().shift {
+                        true => this.pane_message(Message::SelectView(module), window, cx),
+                        false => this.open_view(module, window, cx),
+                    }
                 }))
                 .child(shown)
                 .when(row.note == Some("Failed"), |tab| {
@@ -942,6 +938,15 @@ impl DesktopWindow {
                     ),
             )
             .into_any_element()
+    }
+}
+
+/// A program's name on the bar. Before the manifest lands (or if it never
+/// does) the label is the program's own id, prettified.
+pub(super) fn tab_label(row: &crate::runtime::RailRow) -> String {
+    match row.note {
+        Some(_) => screens::prettify(&row.label),
+        None => row.label.clone(),
     }
 }
 

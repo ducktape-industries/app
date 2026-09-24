@@ -453,8 +453,9 @@ impl DesktopWindow {
         })
     }
 
-    /// ⌘Q quits and ⌘W closes; any other command chord goes to the seated
-    /// view if it claimed it.
+    /// ⌘Q quits and ⌘W closes (the focused desk window, else the app's);
+    /// the desk's own keys (`desk_key`) come next; any other command chord
+    /// goes to the seated view if it claimed it.
     fn global_key(
         &mut self,
         key: KeyPress,
@@ -466,6 +467,18 @@ impl DesktopWindow {
         if command && key.key == "q" {
             self.model
                 .update(cx, |model, cx| model.dispatch(Message::TrayQuit, cx));
+            cx.stop_propagation();
+            return;
+        }
+        let state = &self.model.read(cx).state;
+        // an overlay (Spotlight, a menu, Settings) keeps its keys
+        let overlay = state.spotlight
+            || state.approving
+            || state.settings
+            || state.network_menu
+            || state.popover.is_some();
+        let console = self.kind == WindowKind::Console && self.on_desk(cx) && !overlay;
+        if console && self.desk_key(&key, in_guest_editor, window, cx) {
             cx.stop_propagation();
             return;
         }
