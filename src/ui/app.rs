@@ -21,7 +21,7 @@ pub(crate) enum Appearance {
 
 /// What is open over the desk: one at a time, and it keeps the desk's
 /// keys while it is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Overlay {
     /// ⌘K.
     Spotlight,
@@ -35,7 +35,7 @@ pub(crate) enum Overlay {
 }
 
 /// A menu hanging off the menu bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Popover {
     /// The breathing dot: how the node is doing.
     Node,

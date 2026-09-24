@@ -91,6 +91,7 @@ impl DesktopWindow {
             drag: None,
             inputs: HashMap::new(),
             spotlight_focused: false,
+            bar_buttons: Default::default(),
             focus,
             _activation: activation,
             _observer: observer,

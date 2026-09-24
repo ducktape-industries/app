@@ -312,7 +312,7 @@ impl DesktopWindow {
         let list = rows.iter().enumerate().map(|(nth, row)| {
             let module = row.module;
             let picked = nth == pick;
-            let name = super::desk::tab_label(row);
+            let name = super::menubar::tab_label(row);
             let badge = state.badges.get(module).copied().unwrap_or(0);
             let note = match badge {
                 0 => String::new(),
