@@ -19,7 +19,7 @@ use std::sync::{
 };
 use view_wire::Task;
 
-use crate::{AppMessage as Message, Ducktape, Screen};
+use crate::{AppMessage as Message, Ducktape, Screen, Stage};
 
 #[cfg(debug_assertions)]
 mod fixtures;
@@ -653,22 +653,13 @@ impl Render for DesktopWindow {
             WindowKind::View { .. } => self.console(window, cx),
             WindowKind::Console => {
                 let state = self.model.read(cx).state.clone_facts();
-                match self.model.read(cx).state.screen {
-                    Screen::Connect => self.connect(window, cx),
-                    Screen::Console => match (
-                        !state.phrase.is_empty(),
-                        state.signer_key.is_empty() && !state.browsing,
-                    ) {
-                        (true, _) => self.phrase(&state, window, cx),
-                        (_, true) => self.unlock(&state, window, cx),
-                        _ if state.account_step && state.recovering => {
-                            self.recover(&state, window, cx)
-                        }
-                        _ if state.account_step && !state.signer_key.is_empty() => {
-                            self.account_step(&state, window, cx)
-                        }
-                        _ => self.console(window, cx),
-                    },
+                match self.model.read(cx).state.stage() {
+                    Stage::Connect => self.connect(window, cx),
+                    Stage::Phrase => self.phrase(&state, window, cx),
+                    Stage::Unlock => self.unlock(&state, window, cx),
+                    Stage::Recover => self.recover(&state, window, cx),
+                    Stage::Account => self.account_step(&state, window, cx),
+                    Stage::Desk => self.console(window, cx),
                 }
             }
         };
