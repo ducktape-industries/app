@@ -28,11 +28,11 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules dev @ 3a7c1e47 (gpui-pre 3890895, #102), crates/sdk (abi, view-wire, ducklink, design) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "3a7c1e47", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "3a7c1e47", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "3a7c1e47", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "3a7c1e47", package = "design" }
+# --- sdk-line: modules dev @ 652ba102 (gpui-pre 3890895, #103), crates/sdk (abi, view-wire, ducklink, design) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "652ba102", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "652ba102", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "652ba102", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "652ba102", package = "design" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -74,9 +74,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "3a7c1e47", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "652ba102", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "3a7c1e47", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "652ba102", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true

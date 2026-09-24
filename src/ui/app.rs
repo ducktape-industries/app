@@ -26,12 +26,15 @@ pub(crate) enum Popover {
     Node,
     /// The account's name: who is signed in, and Lock.
     Account,
+    /// The bell: the notification centre.
+    Notifications,
 }
 
 /// The Settings window's sections.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SettingsPage {
     Appearance,
+    Notifications,
     Networks,
     About,
 }
@@ -241,6 +244,18 @@ pub(crate) enum AppMessage {
     PopIn(WindowKey),
     ViewEvent(&'static str, ModuleViewEvent),
     OpenLink(String),
+    /// A notification centre row picked: read, and its link opened.
+    NotifyOpen(u64),
+    NotifyMarkAllRead,
+    NotifyClearRead,
+    /// The centre's footer: Settings, on Notifications.
+    NotifySettings,
+    /// A view's permission bar, or its row in Settings.
+    NotifyPermission(&'static str, crate::runtime::notify::Permission),
+    NotifyNotNow(&'static str),
+    SetNotifyBanners(bool),
+    SetNotifyInFront(bool),
+    SetNotifyBurst(u32),
     PasswordTyped(String),
     /// Unlock: the OS-kept key again after a Lock, or a password-locked
     /// key with its password.
