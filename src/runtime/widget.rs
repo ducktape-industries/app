@@ -28,7 +28,7 @@ pub(crate) struct NativeModuleView {
     pub(super) drawn: bool,
 }
 
-impl gpui_kit::EventEmitter<ModuleViewEvent> for NativeModuleView {}
+impl gpui_kit::EventEmitter<Intent> for NativeModuleView {}
 
 /// The guest's root, sized to the seat: a wire root that names no size
 /// would otherwise take its content's, and a Fill-sized pane inside it
@@ -222,7 +222,7 @@ impl NativeModuleView {
     }
 
     /// A hidden tab gets one bounded update before its native presenter leaves.
-    pub(crate) fn hide(&mut self) -> Vec<ModuleViewEvent> {
+    pub(crate) fn hide(&mut self) -> Vec<Intent> {
         let Some(alive) = &self.alive else {
             return Vec::new();
         };
@@ -248,7 +248,7 @@ impl NativeModuleView {
         &mut self,
         event: wire::events::Window,
         cx: &mut gpui_kit::Context<Self>,
-    ) -> Vec<ModuleViewEvent> {
+    ) -> Vec<Intent> {
         let Some(alive) = &self.alive else {
             return Vec::new();
         };

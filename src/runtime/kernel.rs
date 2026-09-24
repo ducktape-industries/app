@@ -45,7 +45,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
-use super::{Guest, ModuleViewEvent, wire};
+use super::{Guest, Intent, wire};
 use crate::backend::{self, RpcClient, refused};
 use wire::doors;
 
@@ -173,10 +173,7 @@ pub(super) fn answer(
                 .filter(|link| !link.is_empty());
             match link {
                 Some(link) => {
-                    guest.intents.push(ModuleViewEvent {
-                        kind: "open_link".into(),
-                        detail: serde_json::json!({ "link": link }).to_string(),
-                    });
+                    guest.intents.push(Intent::OpenLink(link));
                     guest.reply(id, Ok(Vec::new()));
                 }
                 None => guest.refuse(id, "malformed_request", "`host.open_link` names no link"),
@@ -184,10 +181,7 @@ pub(super) fn answer(
         }
         ("host", "badge") => match doors::decode::<i64>(payload).ok() {
             Some(count) => {
-                guest.intents.push(ModuleViewEvent {
-                    kind: "badge".into(),
-                    detail: format!("{{\"count\":{count}}}"),
-                });
+                guest.intents.push(Intent::Badge(count));
                 guest.reply(id, Ok(Vec::new()));
             }
             None => guest.refuse(id, "malformed_request", "`host.badge` carries no count"),

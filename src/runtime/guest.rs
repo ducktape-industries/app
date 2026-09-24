@@ -152,7 +152,7 @@ pub(super) struct Guest {
     /// `host.route` subscriptions; the first is handed a pending link route.
     pub(crate) route_subscriptions: Vec<u64>,
     /// What the guest asked the app to do this redraw.
-    pub(crate) intents: Vec<ModuleViewEvent>,
+    pub(crate) intents: Vec<Intent>,
     /// The kernel's answers to this guest's node calls, on their way in.
     pub(crate) replies: Arc<kernel::Replies>,
     /// The guest's `rpc.live` subscriptions, each with the plane it named:

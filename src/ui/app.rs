@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 
 use crate::backend;
-use crate::runtime::ModuleViewEvent;
+use crate::runtime::Intent;
 use crate::shell::WindowKey;
 
 /// Unanswered status polls in a row before the node counts as lost: one
@@ -253,12 +253,7 @@ pub(crate) enum AppMessage {
     /// answers does the console leave the network in hand.
     SwitchNetwork(String),
     SelectView(&'static str),
-    SplitView(&'static str),
-    ClosePane(usize),
-    FocusPane(usize),
-    PopOut(usize),
-    PopIn(WindowKey),
-    ViewEvent(&'static str, ModuleViewEvent),
+    ViewEvent(&'static str, Intent),
     OpenLink(String),
     /// A notification centre row picked: read, and its link opened.
     NotifyOpen(u64),
