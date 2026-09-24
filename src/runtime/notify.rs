@@ -28,7 +28,7 @@ use std::time::Instant;
 
 use super::kernel::spawn_device;
 use super::wire::doors::{self, Notice, Post, Posted};
-use super::{Guest, Intent, wire};
+use super::{Guest, Intent};
 use crate::backend::{read_prefs, write_prefs};
 use crate::shell::WindowKey;
 
@@ -524,12 +524,18 @@ pub(super) fn answer(
     // the bell and the bar redraw
     guest.intents.push(Intent::Notified);
     let show = operation == "show";
+    // queued now, in the order the view posted, not when the task runs
+    let raised = banner.map(|notice| {
+        let (tell, told) = tokio::sync::oneshot::channel();
+        in_order(guest.module, move || {
+            let _ = tell.send(platform::post(&notice, entry));
+        });
+        told
+    });
     spawn_device(guest, id, async move {
-        let raised = match banner {
+        let raised = match raised {
             None => false,
-            Some(notice) => tokio::task::spawn_blocking(move || platform::post(&notice, entry))
-                .await
-                .map_err(|error| wire::Refusal::new("host_fault", error.to_string()))?,
+            Some(told) => told.await.unwrap_or(false),
         };
         let posted = match posted {
             Posted::Banner if !raised => Posted::Logged,
@@ -541,6 +547,31 @@ pub(super) fn answer(
         })
     });
     true
+}
+
+/// A view's banners reach the desktop one at a time, in the order its
+/// notices came: raised concurrently, a burst's "N more" could land before
+/// the last banners it counts. One thread per view that has raised one, for
+/// the life of the process.
+fn in_order(module: &str, job: impl FnOnce() + Send + 'static) {
+    type Job = Box<dyn FnOnce() + Send>;
+    static QUEUES: OnceLock<Mutex<HashMap<String, std::sync::mpsc::Sender<Job>>>> = OnceLock::new();
+    let mut queues = QUEUES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let queue = queues.entry(module.to_owned()).or_insert_with(|| {
+        let (queue, jobs) = std::sync::mpsc::channel::<Job>();
+        let spawned = std::thread::Builder::new()
+            .name(format!("banners-{module}"))
+            .spawn(move || jobs.into_iter().for_each(|job| job()));
+        if let Err(error) = spawned {
+            tracing::info!(target: "ducktape::app", %error, "banners are not raised");
+        }
+        queue
+    });
+    // a queue with no thread drops the job, and its banner reads as not raised
+    let _ = queue.send(Box::new(job));
 }
 
 /// macOS raises banners through the user-notification centre, which
@@ -1059,6 +1090,22 @@ mod tests {
         assert!(long.title.len() <= MAX_TEXT && long.title.chars().all(|c| c == '가'));
         assert_eq!(long.body.len(), MAX_TEXT);
         assert!(long.link.is_empty(), "a cut link goes nowhere");
+    }
+
+    /// A view's banners leave in the order they came, however long each
+    /// takes: here the first ones are the slowest.
+    #[test]
+    fn a_views_banners_leave_in_order() {
+        let (tell, told) = std::sync::mpsc::channel();
+        for nth in 0..10u64 {
+            let tell = tell.clone();
+            in_order("order-test", move || {
+                std::thread::sleep(Duration::from_millis(2 * (10 - nth)));
+                tell.send(nth).unwrap();
+            });
+        }
+        drop(tell);
+        assert_eq!(told.iter().collect::<Vec<_>>(), (0..10).collect::<Vec<_>>());
     }
 
     /// A notice's own markup characters reach the freedesktop body escaped,
