@@ -111,7 +111,7 @@ tray-icon = { version = "0.24", default-features = false }
 core-graphics = "0.24"
 block2 = "0.5"
 objc2 = "0.5"
-objc2-foundation = { version = "0.2", default-features = false, features = ["std", "NSBundle", "NSString", "NSError"] }
+objc2-foundation = { version = "0.2", default-features = false, features = ["std", "NSBundle", "NSString", "NSError", "NSDictionary", "NSObject"] }
 objc2-user-notifications = { version = "0.2", default-features = false, features = ["std", "block2", "UNUserNotificationCenter", "UNNotificationRequest", "UNNotificationContent", "UNNotificationSound", "UNNotificationTrigger", "UNNotification", "UNNotificationResponse"] }
 
 # Everywhere else the notifier is the freedesktop notifications service, one

@@ -18,7 +18,7 @@
 //! A click on a banner opens its row, the way the centre's row does:
 //! freedesktop's `ActionInvoked` on the banner's default action, and on
 //! macOS the notification centre's delegate hearing the default action on a
-//! banner that names its row (`targetContentIdentifier`).
+//! banner that names its row (in its `userInfo`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -592,15 +592,19 @@ fn clicked(entry: u64) {
 mod platform {
     use super::Notice;
     use objc2::rc::Retained;
-    use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
+    use objc2::runtime::{AnyObject, Bool, NSObject, NSObjectProtocol, ProtocolObject};
     use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
-    use objc2_foundation::{NSBundle, NSError, NSString};
+    use objc2_foundation::{NSArray, NSBundle, NSDictionary, NSError, NSString};
     use objc2_user_notifications::{
         UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
         UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
         UNNotificationRequest, UNNotificationResponse, UNNotificationSound,
         UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
+
+    /// The userInfo key a banner carries its centre row under: macOS does
+    /// not hand `targetContentIdentifier` back in a click's response.
+    const ROW: &str = "row";
 
     fn bundled() -> bool {
         // SAFETY: reading the main bundle's identifier is valid on any thread.
@@ -644,15 +648,18 @@ mod platform {
                 done: &block2::Block<dyn Fn()>,
             ) {
                 // SAFETY: reads off the response the framework hands in.
-                let (action, target) = unsafe {
-                    (
-                        response.actionIdentifier(),
-                        response.notification().request().content().targetContentIdentifier(),
-                    )
+                let (action, row) = unsafe {
+                    let info = response.notification().request().content().userInfo();
+                    let key = NSString::from_str(ROW);
+                    // the row is only ever written as a string (`post`)
+                    let row = info
+                        .objectForKey(AsRef::<AnyObject>::as_ref(&*key))
+                        .map(|row| Retained::cast::<NSString>(row).to_string());
+                    (response.actionIdentifier(), row)
                 };
                 // SAFETY: a framework constant.
                 let default = &*action == unsafe { UNNotificationDefaultActionIdentifier };
-                let entry = target.and_then(|target| target.to_string().parse::<u64>().ok());
+                let entry = row.and_then(|row| row.parse::<u64>().ok());
                 if let Some(entry) = entry.filter(|_| default) {
                     super::clicked(entry);
                 }
@@ -696,15 +703,30 @@ mod platform {
             }
             // the row a click opens
             if let Some(entry) = entry {
-                content.setTargetContentIdentifier(Some(&NSString::from_str(&entry.to_string())));
+                let row = NSDictionary::<NSString, NSString>::from_vec(
+                    &[&*NSString::from_str(ROW)],
+                    vec![NSString::from_str(&entry.to_string())],
+                );
+                // a dictionary of strings is a property list, as userInfo holds
+                content.setUserInfo(&Retained::cast::<NSDictionary>(row));
             }
             content.setSound(Some(&UNNotificationSound::defaultSound()));
-            // A tag REPLACES: the platform keys a standing notice by this
-            // identifier, so a fresh one per untagged notice adds instead.
-            let identifier = match notice.tag.is_empty() {
-                true => format!("ducktape-{}", fresh()),
-                false => format!("ducktape-tag-{}", notice.tag),
-            };
+            // A tag REPLACES: the banner standing under it goes, and this one
+            // takes its place. Not by reusing its identifier: two requests
+            // under one identifier added a moment apart cancel each other in
+            // the centre (a burst's second "N more" took both down).
+            let identifier = format!("ducktape-{}", fresh());
+            if !notice.tag.is_empty() {
+                let standing = standing()
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .insert(notice.tag.clone(), identifier.clone());
+                if let Some(standing) = standing {
+                    let standing = NSArray::from_vec(vec![NSString::from_str(&standing)]);
+                    centre.removePendingNotificationRequestsWithIdentifiers(&standing);
+                    centre.removeDeliveredNotificationsWithIdentifiers(&standing);
+                }
+            }
             let request: Retained<UNNotificationRequest> =
                 UNNotificationRequest::requestWithIdentifier_content_trigger(
                     &NSString::from_str(&identifier),
@@ -719,11 +741,17 @@ mod platform {
         let (said, heard) = std::sync::mpsc::channel();
         let asked = centre.clone();
         let answered = block2::RcBlock::new(move |granted: Bool, _: *mut NSError| {
-            if granted.as_bool() {
-                // SAFETY: as above.
-                unsafe { asked.addNotificationRequest_withCompletionHandler(&request, None) };
+            if !granted.as_bool() {
+                let _ = said.send(false);
+                return;
             }
-            let _ = said.send(granted.as_bool());
+            // the answer is whether the centre took it
+            let said = said.clone();
+            let added = block2::RcBlock::new(move |error: *mut NSError| {
+                let _ = said.send(error.is_null());
+            });
+            // SAFETY: as above.
+            unsafe { asked.addNotificationRequest_withCompletionHandler(&request, Some(&added)) };
         });
         // SAFETY: as above; the block is copied by the framework.
         unsafe {
@@ -737,6 +765,14 @@ mod platform {
         heard
             .recv_timeout(std::time::Duration::from_secs(1))
             .unwrap_or(true)
+    }
+
+    /// The banner each tag is standing under, by its request identifier.
+    fn standing() -> &'static std::sync::Mutex<std::collections::HashMap<String, String>> {
+        static STANDING: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<String, String>>,
+        > = std::sync::OnceLock::new();
+        STANDING.get_or_init(Default::default)
     }
 
     fn fresh() -> u64 {
