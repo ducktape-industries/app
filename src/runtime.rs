@@ -73,7 +73,6 @@ pub struct ModuleViewEvent {
 /// Instruction budget for one call into a view.
 const FUEL_PER_TICK: u64 = 100_000_000;
 const MEMORY_LIMIT: usize = 64 << 20;
-const MAX_MODULE_BYTES: u64 = 64 << 20;
 /// A frame the view sends past this ends it: nothing a screen needs is
 /// megabytes, and the host would decode all of it on the window thread.
 const MAX_FRAME_BYTES: usize = 8 << 20;
