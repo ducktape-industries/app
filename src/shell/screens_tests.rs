@@ -418,3 +418,85 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
     );
     find(&nodes, "MenuItem", "Add a network");
 }
+
+/// The bell's panel: calm when there is nothing, and once notices land a
+/// row each (a fold's count in its name), the unread count on the bell and
+/// in the header, and Settings opening on Notifications.
+#[gpui_kit::test]
+fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
+    use crate::runtime::notify::{Permission, Settings, center};
+    cx.update(gpui_kit::init);
+    let (mut state, _) = Ducktape::boot();
+    state.screen = Screen::Console;
+    state.connected = true;
+    state.browsing = true;
+    state.network = "testkit".into();
+    state.popover = Some(crate::Popover::Notifications);
+    let (view, mut native) = open(state, cx);
+
+    let nodes = native.update(draw);
+    find(&nodes, "Button", "Notifications");
+    find(&nodes, "Dialog", "Notifications");
+    find(&nodes, "Status", "You’re all caught up");
+
+    let silent = Settings {
+        banners: true,
+        in_front: false,
+        burst: 6,
+        views: [("chat".to_owned(), Permission::Silent)].into(),
+    };
+    let now = crate::runtime::notify::wall();
+    let post = |title: &str, tag: &str| view_wire::doors::Post {
+        title: title.into(),
+        body: "@grace look".into(),
+        tag: tag.into(),
+        link: "duck://chat/design".into(),
+    };
+    {
+        let mut center = center();
+        let at = std::time::Instant::now();
+        center.post(
+            &silent,
+            "chat",
+            "Chat",
+            post("Ada mentioned you", "#design"),
+            at,
+            now,
+        );
+        center.post(
+            &silent,
+            "chat",
+            "Chat",
+            post("Ada mentioned you", "#design"),
+            at,
+            now,
+        );
+        center.post(
+            &silent,
+            "chat",
+            "Chat",
+            post("Lin", "direct"),
+            at,
+            now - 3 * 86_400,
+        );
+    }
+    view.update(&mut native, |_, cx| cx.notify());
+    let nodes = native.update(draw);
+    find(&nodes, "Button", "Notifications, 2 unread");
+    find(&nodes, "MenuItem", "Unread. Ada mentioned you: @grace look");
+    find(&nodes, "MenuItem", "Unread. Lin: @grace look");
+    find(&nodes, "Button", "Mark all read");
+    assert!(!nodes.to_string().contains("all caught up"));
+
+    view.update(&mut native, |view, cx| {
+        view.model.update(cx, |model, cx| {
+            model.dispatch(Message::NotifyMarkAllRead, cx);
+            model.dispatch(Message::NotifySettings, cx);
+        })
+    });
+    let nodes = native.update(draw);
+    find(&nodes, "Button", "Notifications");
+    find(&nodes, "Switch", "Desktop banners");
+    find(&nodes, "RadioGroup", "Burst limit");
+    center().clear_read();
+}

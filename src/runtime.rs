@@ -16,7 +16,7 @@ mod filesystem;
 mod guest;
 mod kernel;
 mod media;
-mod notify;
+pub(crate) mod notify;
 mod roster;
 mod seat;
 mod widget;

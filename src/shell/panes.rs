@@ -640,10 +640,13 @@ impl DesktopWindow {
                         .child(context),
                 )
                 .child(controls);
+            let asking = (!empty && crate::runtime::notify::center().asking(pane.module))
+                .then(|| self.permission_bar(pane.module, cx));
             let seated = match pane.frame.filter(|_| on_desk) {
                 None => body
                     .size_full()
                     .child(title)
+                    .children(asking)
                     .child(div().flex_1().min_h_0().w_full().child(view))
                     .into_any_element(),
                 // on the desk: a title bar to hold it by, and edges to size
@@ -667,6 +670,7 @@ impl DesktopWindow {
                         .when(focused, |pane| pane.shadow_lg())
                         .when(!focused, |pane| pane.shadow_sm())
                         .child(title)
+                        .children(asking)
                         .child(div().flex_1().min_h_0().w_full().child(view));
                     div()
                         .absolute()
@@ -682,6 +686,96 @@ impl DesktopWindow {
             stage = stage.child(seated);
         }
         stage.into_any_element()
+    }
+
+    /// The NotifPermission board: a view posted before the person said
+    /// anything about its notices, so its window asks, at the top. Until
+    /// they answer its notices wait in Notifications, silently.
+    fn permission_bar(&self, module: &'static str, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+        use super::ink::*;
+        use crate::runtime::notify::{self, Permission};
+        use gpui_kit::*;
+        let ink = Ink::of(self.model.read(cx).state.dark());
+        let name = super::panes::label(module);
+        let burst = notify::Settings::load().burst;
+        let button = |id: &'static str, text: &'static str, filled: bool, message: Message| {
+            let model = self.model.clone();
+            let message = std::cell::RefCell::new(Some(message));
+            crate::a11y::keyboard(
+                sans(500, 14.)
+                    .id(SharedString::from(format!("notify-ask/{module}/{id}")))
+                    .control(Role::Button, text)
+                    .h(px(30.))
+                    .px(px(12.))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .cursor_pointer()
+                    .border(px(1.5))
+                    .border_color(ink.ink)
+                    .when(filled, |button| button.bg(ink.ink).text_color(ink.bg))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(message) = message.borrow_mut().take() {
+                            model.update(cx, |model, cx| model.dispatch(message, cx));
+                        }
+                    })
+                    .child(text),
+            )
+        };
+        div()
+            .id(SharedString::from(format!("notify-ask/{module}")))
+            .role(Role::Group)
+            .aria_label(SharedString::from(format!(
+                "{name} wants to show desktop notifications"
+            )))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(12.))
+            .px(px(14.))
+            .py(px(10.))
+            .bg(ink.surface)
+            .border_b_1()
+            .border_color(ink.line)
+            .child(
+                gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
+                    .size(px(14.))
+                    .text_color(ink.ink),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(1.))
+                    .child(
+                        sans(500, 14.)
+                            .text_color(ink.ink)
+                            .child(format!("{name} wants to show desktop notifications")),
+                    )
+                    .child(note(
+                        format!(
+                            "At most {burst} banners a minute; the rest wait in Notifications."
+                        ),
+                        ink.muted,
+                    )),
+            )
+            .child(button(
+                "allow",
+                "Allow",
+                true,
+                Message::NotifyPermission(module, Permission::Allow),
+            ))
+            .child(button(
+                "not-now",
+                "Not now",
+                false,
+                Message::NotifyNotNow(module),
+            ))
+            .into_any_element()
     }
 
     /// Takes hold of window `index` at `at`: `sides` (left, top, right,
