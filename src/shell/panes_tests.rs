@@ -219,3 +219,95 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
         );
     });
 }
+
+fn key(native: &mut VisualTestContext, stroke: &str) {
+    native.update(|window, cx| {
+        draw(window, cx);
+        window.dispatch_keystroke(gpui_kit::Keystroke::parse(stroke).unwrap(), cx);
+        draw(window, cx);
+    });
+}
+
+fn panes(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> (usize, usize) {
+    native.update(|_, cx| {
+        let layout = &view.read(cx).layout;
+        (layout.panes.len(), layout.focused)
+    })
+}
+
+/// The desk's own keys (⌘D, ⌘1, ⌘W) act on its windows only while no
+/// overlay is open; an overlay keeps its keys. (⌘W under an overlay falls
+/// through to the window, which minimizes — the test platform can't.)
+#[gpui_kit::test]
+fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    assert_eq!(panes(&mut native, &view), (1, 0));
+    key(&mut native, "secondary-d");
+    assert_eq!(panes(&mut native, &view), (2, 1), "⌘D halves the window");
+    key(&mut native, "secondary-1");
+    assert_eq!(panes(&mut native, &view), (2, 0), "⌘1 focuses the first");
+
+    type Open = fn(&mut Ducktape);
+    let overlays: [(&str, Open); 5] = [
+        ("spotlight", |state| state.spotlight = true),
+        ("approve", |state| state.approving = true),
+        ("settings", |state| state.settings = true),
+        ("network menu", |state| state.network_menu = true),
+        ("popover", |state| {
+            state.popover = Some(crate::Popover::Node)
+        }),
+    ];
+    for (name, open) in overlays {
+        model.update(&mut native, |model, _| open(&mut model.state));
+        for stroke in ["secondary-d", "secondary-2"] {
+            key(&mut native, stroke);
+            assert_eq!(
+                panes(&mut native, &view),
+                (2, 0),
+                "{stroke} reached the desk under the {name}"
+            );
+        }
+        model.update(&mut native, |model, _| {
+            let state = &mut model.state;
+            state.spotlight = false;
+            state.approving = false;
+            state.settings = false;
+            state.network_menu = false;
+            state.popover = None;
+        });
+    }
+
+    key(&mut native, "secondary-w");
+    assert_eq!(
+        panes(&mut native, &view).0,
+        1,
+        "⌘W closes the focused window"
+    );
+}
+
+/// ⌘K opens and closes Spotlight; Escape closes Settings and a menu.
+#[gpui_kit::test]
+fn command_k_toggles_spotlight_and_escape_closes_settings_and_menus(cx: &mut TestAppContext) {
+    let (model, _, _, mut native) = console(cx);
+    let read = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            let state = &model.read(cx).state;
+            (state.spotlight, state.settings, state.popover)
+        })
+    };
+    key(&mut native, "secondary-k");
+    assert_eq!(read(&mut native), (true, false, None));
+    key(&mut native, "secondary-k");
+    assert_eq!(read(&mut native), (false, false, None));
+    model.update(&mut native, |model, _| model.state.settings = true);
+    key(&mut native, "escape");
+    assert_eq!(read(&mut native), (false, false, None));
+    model.update(&mut native, |model, _| {
+        model.state.popover = Some(crate::Popover::Account)
+    });
+    key(&mut native, "escape");
+    assert_eq!(read(&mut native), (false, false, None));
+}
