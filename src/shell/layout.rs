@@ -228,11 +228,43 @@ impl Layout {
             return None;
         }
         let pane = self.panes.remove(index);
+        if let Some(gone) = pane.frame {
+            self.reclaim(gone);
+        }
         // the next focus is the window now on top
         self.focused = (0..self.panes.len())
             .max_by_key(|&index| self.panes[index].z)
             .unwrap_or(0);
         Some(pane)
+    }
+
+    /// The window that shared a whole edge with a closed one (its other
+    /// half, once halved) grows back over the closed one's frame.
+    fn reclaim(&mut self, gone: Frame) {
+        // same span on one axis, touching or overlapping on the other
+        // (a half clamped to the smallest window overlaps its sibling)
+        let beside = |a: Frame, b: Frame| {
+            let touch = |a0: f32, a1: f32, b0: f32, b1: f32| a0 <= b1 && b0 <= a1;
+            (a.y == b.y && a.h == b.h && touch(a.x, a.x + a.w, b.x, b.x + b.w))
+                || (a.x == b.x && a.w == b.w && touch(a.y, a.y + a.h, b.y, b.y + b.h))
+        };
+        let Some(pane) = self
+            .panes
+            .iter_mut()
+            .filter(|pane| pane.frame.is_some_and(|frame| beside(frame, gone)))
+            .max_by_key(|pane| pane.z)
+        else {
+            return;
+        };
+        let frame = pane.frame.unwrap();
+        let (x, y) = (frame.x.min(gone.x), frame.y.min(gone.y));
+        pane.frame = Some(Frame {
+            x,
+            y,
+            w: (frame.x + frame.w).max(gone.x + gone.w) - x,
+            h: (frame.y + frame.h).max(gone.y + gone.h) - y,
+        });
+        pane.restore = None;
     }
 
     /// Returns the displaced view so its entity can be released by the caller.
@@ -527,6 +559,29 @@ mod tests {
         assert_eq!((top.x, bottom.x, bottom.w), (right.x, right.x, right.w));
         while layout.split("files") {}
         assert!(!layout.halve(false, DESK), "no room for another");
+    }
+
+    #[test]
+    fn closing_a_half_gives_its_sibling_the_whole_frame_back() {
+        let mut layout = Layout::default();
+        layout.split("chat");
+        layout.place(DESK);
+        let whole = layout.panes[0].frame.unwrap();
+        layout.halve(false, DESK);
+        let right = layout.panes[1].frame.unwrap();
+        layout.halve(true, DESK);
+        // the lower right quarter goes: the upper one takes the right half
+        layout.close(2);
+        assert_eq!(layout.panes[1].frame, Some(right));
+        // the right half goes: chat takes the whole desk again
+        layout.close(1);
+        assert_eq!(layout.panes[0].frame, Some(whole));
+        // a window placed on its own is left alone
+        layout.split("files");
+        layout.place(DESK);
+        let cascaded = layout.panes[1].frame;
+        layout.close(0);
+        assert_eq!(layout.panes[0].frame, cascaded);
     }
 
     #[test]
