@@ -42,6 +42,9 @@ pub struct TextEditor {
     projection: Option<Projection>,
     painted: Option<wire::EditorOptions>,
     fills: bool,
+    /// the most rows a field that does not fill grows to before it scrolls:
+    /// what the node's own `max_h` holds
+    cap: Option<usize>,
     /// the node's mapping; the field's text is added as its value
     accessible: crate::render::Accessible,
     ime: Option<crate::runtime::input::ImeState>,
@@ -86,6 +89,7 @@ impl TextEditor {
             projection: None,
             painted: None,
             fills: true,
+            cap: None,
             accessible: Default::default(),
             ime: None,
             _observation: observation,
@@ -102,11 +106,15 @@ impl TextEditor {
     /// Whether the field takes the box it was given or the room its own words
     /// need. Set from the node's height, because a field that always asked for
     /// all of its parent's height gave a shrinking box nothing to shrink to.
-    pub fn set_fills(&mut self, fills: bool, cx: &mut Context<Self>) {
-        if self.fills == fills {
+    pub fn set_fills(&mut self, fills: bool, cap: Option<usize>, cx: &mut Context<Self>) {
+        if (self.fills, self.cap) == (fills, cap) {
             return;
         }
         self.fills = fills;
+        self.cap = cap;
+        let rows = cap.filter(|_| !fills).unwrap_or(MAX_ROWS);
+        self.input
+            .update(cx, |input, cx| input.set_auto_grow(1, rows, cx));
         cx.notify();
     }
 
