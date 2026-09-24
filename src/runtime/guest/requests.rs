@@ -337,6 +337,9 @@ impl Guest {
             .tick(&mut self.store, &bytes)
             .map_err(|error| first_line(&error))
             .and_then(|frame| shape(&frame));
+        // `RUST_LOG=ducktape::fuel=debug`: how much of the budget a tick took
+        tracing::debug!(target: "ducktape::fuel", module = self.module,
+            used = FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0), limit = FUEL_PER_TICK);
         match outcome {
             Ok((mut frame, mut reports)) => {
                 let inherits = frame.root.is_none();

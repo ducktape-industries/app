@@ -73,8 +73,12 @@ pub enum Intent {
     Notified,
 }
 
-/// Instruction budget for one call into a view.
-const FUEL_PER_TICK: u64 = 100_000_000;
+/// Instruction budget for one call into a view: a ceiling that ends a
+/// runaway, not a cost. Measured 2026-09 (`RUST_LOG=ducktape::fuel=debug`):
+/// chat's heaviest tick ~72M (#general, a menu or the emoji picker opening),
+/// forge with a large file ~45M, explorer ~26M; the ceiling keeps the
+/// heaviest under 30% of it.
+const FUEL_PER_TICK: u64 = 250_000_000;
 const MEMORY_LIMIT: usize = 64 << 20;
 /// A frame the view sends past this ends it: nothing a screen needs is
 /// megabytes, and the host would decode all of it on the window thread.
