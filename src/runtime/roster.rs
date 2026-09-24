@@ -241,14 +241,51 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
     })
 }
 
-/// A short link names a program or a unique view label on this connection.
-pub fn local_link(link: &str) -> Option<&'static str> {
-    local_seat(link, &rail())
+/// What a link names, as far as the app can tell without the chain in
+/// hand. The `duck://` grammar is shared with the modules: this reads it,
+/// it does not change it.
+#[derive(Debug, PartialEq)]
+pub enum Link {
+    /// A view on this connection by its short name (`duck://<view>`, or
+    /// `duck://<view>/<route>` with the route its view reads).
+    View {
+        module: &'static str,
+        route: Option<String>,
+    },
+    /// `duck://<chain>/<program>/<tail>`: which chain is for the caller.
+    Chain(ducklink::Link),
+    /// An `http(s)` page, for the system browser.
+    Web(String),
+    /// Nothing this app opens.
+    Unknown,
 }
 
-/// `duck://<view>/<route>`: a known view and the route its view reads.
-pub fn local_route(link: &str) -> Option<(&'static str, String)> {
-    local_seat_route(link, &rail())
+/// The one reading of a link, against the views this connection lists.
+pub fn parse_link(link: &str) -> Link {
+    parse_link_among(link, &rail())
+}
+
+fn parse_link_among(link: &str, rows: &[RailRow]) -> Link {
+    // a short name first: `duck://chat` is also a well-formed chain link
+    if let Some(module) = local_seat(link, rows) {
+        return Link::View {
+            module,
+            route: None,
+        };
+    }
+    match ducklink::Link::parse(link) {
+        Ok(parsed) => Link::Chain(parsed),
+        Err(_) if link.starts_with("http://") || link.starts_with("https://") => {
+            Link::Web(link.to_owned())
+        }
+        Err(_) => match local_seat_route(link, rows) {
+            Some((module, route)) => Link::View {
+                module,
+                route: Some(route),
+            },
+            None => Link::Unknown,
+        },
+    }
 }
 
 fn local_seat_route(link: &str, rows: &[RailRow]) -> Option<(&'static str, String)> {
@@ -345,6 +382,37 @@ mod local_link_tests {
         rows[0].note = Some("Loading");
         assert_eq!(local_seat("duck://preferences", &rows), None);
     }
+
+    #[test]
+    fn a_link_reads_as_one_thing() {
+        let rows = [RailRow {
+            module: "catalog",
+            label: "Preferences".into(),
+            note: None,
+            empty: false,
+        }];
+        let view = |route: Option<&str>| Link::View {
+            module: "catalog",
+            route: route.map(str::to_owned),
+        };
+        assert_eq!(parse_link_among("duck://catalog", &rows), view(None));
+        assert_eq!(parse_link_among("duck://preferences", &rows), view(None));
+        assert_eq!(
+            parse_link_among("duck://catalog/tx/00ff", &rows),
+            view(Some("tx/00ff"))
+        );
+        assert!(matches!(
+            parse_link_among("duck://testkit-0a1b2c3d/chat/tx/00ff", &rows),
+            Link::Chain(link) if link.program == "chat"
+        ));
+        assert_eq!(
+            parse_link_among("https://ducktape.dev/x", &rows),
+            Link::Web("https://ducktape.dev/x".into())
+        );
+        for link in ["ftp://x", "duck://unknown/../x", "catalog"] {
+            assert_eq!(parse_link_among(link, &rows), Link::Unknown, "{link}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -392,7 +460,13 @@ mod rail_tests {
                 bare: true,
             });
         assert!(rail().iter().any(|row| row.module == "explorer"));
-        assert_eq!(local_link("duck://explorer"), Some("explorer"));
+        assert_eq!(
+            parse_link("duck://explorer"),
+            Link::View {
+                module: "explorer",
+                route: None
+            }
+        );
         assert_eq!(listed_code("explorer"), Some((view, true)));
     }
 }

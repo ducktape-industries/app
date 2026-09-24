@@ -360,15 +360,13 @@ impl Ducktape {
                 // `duck://<view>/<route>`: the seat opens and its view is
                 // handed the route. The window coming forward is the answer;
                 // a notice only says what there is nothing to see of.
-                if let Some(module) = crate::runtime::local_link(&link) {
-                    self.open_seat(module, None);
-                    return Task::none();
-                }
-                match ducklink::Link::parse(&link) {
-                    Ok(parsed) if !crate::runtime::listed_view(&parsed.program) => {
+                use crate::runtime::Link;
+                match crate::runtime::parse_link(&link) {
+                    Link::View { module, route } => self.open_seat(module, route),
+                    Link::Chain(parsed) if !crate::runtime::listed_view(&parsed.program) => {
                         self.notice(format!("No view here opens {} links.", parsed.program));
                     }
-                    Ok(parsed) => {
+                    Link::Chain(parsed) => {
                         let module = crate::runtime::intern(&parsed.program);
                         let route = parsed.tail.join("/");
                         if parsed.chain.to_string() != self.chain {
@@ -385,13 +383,8 @@ impl Ducktape {
                             self.notice(format!("{module} can't open that part of the link."));
                         }
                     }
-                    Err(_) if link.starts_with("http://") || link.starts_with("https://") => {
-                        crate::shell::open_link(link);
-                    }
-                    Err(_) => match crate::runtime::local_route(&link) {
-                        Some((module, route)) => self.open_seat(module, Some(route)),
-                        None => self.notice("This link is not one this app opens.".into()),
-                    },
+                    Link::Web(url) => return crate::shell::open_url(url),
+                    Link::Unknown => self.notice("This link is not one this app opens.".into()),
                 }
                 Task::none()
             }
