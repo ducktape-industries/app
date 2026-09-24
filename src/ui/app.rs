@@ -75,6 +75,8 @@ pub struct Ducktape {
     /// The node reached: its origin and the network it serves.
     pub(crate) connected_rpc: String,
     pub(crate) network: String,
+    /// The chain links name, `<network>#<salt>` ([`ducklink::ChainId`]).
+    pub(crate) chain: String,
     /// Where this network's keys live on this device
     /// ([`backend::bind_keyring`]): the name alone is not enough, two
     /// chains can share one.
@@ -319,6 +321,7 @@ impl Ducktape {
             recent_endpoints: recent,
             connected_rpc: String::new(),
             network: String::new(),
+            chain: String::new(),
             keyring: String::new(),
             other_chain: false,
             network_menu: false,
@@ -415,7 +418,7 @@ impl Ducktape {
         crate::runtime::props(
             self.dark(),
             self.connected,
-            &self.network,
+            &self.chain,
             &self.signer_key,
             // the node the views are on — not the address being typed or
             // tried (a switch in flight)

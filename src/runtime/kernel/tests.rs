@@ -254,6 +254,7 @@ async fn system_status_preserves_borsh_and_refusals() {
         epoch: 2,
         identity: vec![4; 32],
         contract: 1,
+        genesis: [5; 32],
     };
     let (node, server) = node_server(
         "200 OK",

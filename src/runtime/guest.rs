@@ -149,6 +149,8 @@ pub(super) struct Guest {
     pub(crate) visible: bool,
     pub(crate) visibility_change: Option<bool>,
     pub(crate) visibility_subscriptions: Vec<u64>,
+    /// `host.route` subscriptions; the first is handed a pending link route.
+    pub(crate) route_subscriptions: Vec<u64>,
     /// What the guest asked the app to do this redraw.
     pub(crate) intents: Vec<ModuleViewEvent>,
     /// The kernel's answers to this guest's node calls, on their way in.
