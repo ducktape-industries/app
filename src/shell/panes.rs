@@ -144,8 +144,9 @@ impl DesktopWindow {
                         module: pane.module,
                     };
                     let source = cx.weak_entity();
-                    let at = super::windows::cascade(
+                    let at = super::windows::unseated(
                         window.bounds(),
+                        pane.frame,
                         window.display(cx).map(|display| display.bounds()),
                     );
                     self.model.update(cx, |model, cx| {
@@ -360,67 +361,68 @@ impl DesktopWindow {
                 .overflow_hidden()
                 .role(gpui_kit::Role::Group)
                 .when(!context.is_empty(), |pane| pane.aria_label(context.clone()));
-            let seated = match (console, pane.frame) {
-                // a window of its own: the view is the window, its controls
-                // float over the top-right corner a view leaves free
-                // (`design::pane`)
-                (false, _) | (true, None) => body
-                    .relative()
+            // Every window has a title bar, so a view owns all of its
+            // rectangle: nothing floats over its corners.
+            let on_desk = console && pane.frame.is_some();
+            // A window of its own on macOS draws no title bar of the
+            // system's: this bar is its handle, and the traffic lights sit
+            // over its left end. Elsewhere the system's bar names it.
+            let handle = !on_desk && cfg!(target_os = "macos") && !window.is_fullscreen();
+            let title = div()
+                .id(SharedString::from(format!("pane/{index}/strip")))
+                .h(px(TITLE))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .gap(px(8.))
+                .pl(px(if handle { 78. } else { 12. }))
+                .pr(px(2.))
+                .border_b_1()
+                .border_color(ink.line)
+                .bg(match focused {
+                    true => ink.surface,
+                    false => ink.bg,
+                })
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                        match (on_desk, event.click_count) {
+                            (true, 2) => {
+                                let desk = this.desk(window);
+                                this.layout.toggle_fill(index, desk);
+                                cx.notify();
+                            }
+                            (true, _) => this.hold(index, [false; 4], event.position),
+                            (false, 2) if handle => window.titlebar_double_click(),
+                            (false, _) if handle => window.start_window_move(),
+                            (false, _) => {}
+                        }
+                    }),
+                )
+                .when(on_desk || handle, |title| {
+                    title.child(
+                        super::ink::mono(500, 12.)
+                            .flex_shrink_0()
+                            .text_color(ink.ink)
+                            .child(label(pane.module)),
+                    )
+                })
+                .child(
+                    super::ink::sans(400, 13.)
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(ink.muted)
+                        .child(context),
+                )
+                .child(controls);
+            let seated = match pane.frame.filter(|_| on_desk) {
+                None => body
                     .size_full()
-                    .child(div().flex_1().min_h_0().w_full().child(view))
-                    .child(
-                        div()
-                            .id(SharedString::from(format!("pane/{index}/strip")))
-                            .absolute()
-                            .top(px(8.))
-                            .right(px(8.))
-                            .bg(ink.bg)
-                            .child(controls),
-                    ),
+                    .child(title)
+                    .child(div().flex_1().min_h_0().w_full().child(view)),
                 // on the desk: a title bar to hold it by, edges to size it by
-                (true, Some(frame)) => {
-                    let title = div()
-                        .id(SharedString::from(format!("pane/{index}/strip")))
-                        .h(px(TITLE))
-                        .flex_shrink_0()
-                        .flex()
-                        .items_center()
-                        .gap(px(8.))
-                        .pl(px(12.))
-                        .pr(px(2.))
-                        .border_b_1()
-                        .border_color(ink.line)
-                        .bg(match focused {
-                            true => ink.surface,
-                            false => ink.bg,
-                        })
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                if event.click_count == 2 {
-                                    let desk = this.desk(window);
-                                    this.layout.toggle_fill(index, desk);
-                                    cx.notify();
-                                } else {
-                                    this.hold(index, [false; 4], event.position);
-                                }
-                            }),
-                        )
-                        .child(
-                            super::ink::mono(500, 12.)
-                                .flex_shrink_0()
-                                .text_color(ink.ink)
-                                .child(label(pane.module)),
-                        )
-                        .child(
-                            super::ink::sans(400, 13.)
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .text_color(ink.muted)
-                                .child(context),
-                        )
-                        .child(controls);
+                Some(frame) => {
                     // what's behind a window doesn't hear presses on it
                     body.occlude()
                         .absolute()
