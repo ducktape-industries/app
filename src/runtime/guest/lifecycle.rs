@@ -53,7 +53,7 @@ impl Guest {
                 reason.to_owned(),
             )));
         };
-        let Some(code) = listed_code(module) else {
+        let Some((code, bare)) = listed_code(module) else {
             let reason = format!("this network's roster does not list {module}");
             logged(None, "Failed", &reason);
             return Err(before_any_candidate(Failure::NotListed(reason)));
@@ -75,7 +75,7 @@ impl Guest {
             total: None,
         });
         let fetched = Instant::now();
-        let bytes = runtime.block_on(crate::backend::views::view_of(client, &code));
+        let bytes = runtime.block_on(crate::backend::views::view_of(client, &code, bare));
         timing.fetch = fetched.elapsed();
         let bytes = match bytes {
             Ok(bytes) => bytes,

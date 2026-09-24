@@ -1,15 +1,13 @@
-//! Where a view comes from: the connected node's roster. `/v1/programs`
+//! Where a view comes from: the connected node's roster. The registry
 //! names every program and the code blob it runs; a program that ships a
 //! view carries it inside that blob, as the custom section
 //! [`VIEW_SECTION`] — one artifact, one blob id. The app reads the section out and mounts it. A program without the section
-//! has no view, which is the network's fact, not a failure.
+//! has no view, which is the network's fact, not a failure. The registry
+//! also lists view-only entries: a name and a blob that is the view itself,
+//! with no program behind it (Explorer); they follow the programs.
 //!
 //! Nothing here knows a program by name: the roster's order is the rail's
 //! order, the manifest inside the view names the tab.
-//!
-//! ponytail: the view rides the program blob, so a view-only change
-//! re-publishes the program. A view blob id beside the entry would split
-//! them; that needs the roster contract (sdk `abi::roster`) to grow a field.
 
 use std::path::PathBuf;
 
@@ -25,6 +23,8 @@ pub const VIEW_SECTION: &str = "ducktape.view";
 pub struct Program {
     pub name: String,
     pub code: BlobId,
+    /// `code` is the view itself, with no program behind it.
+    pub bare: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -52,28 +52,56 @@ impl std::fmt::Display for Fetch {
 /// The roster, in the order the registry program answers it: asked of that
 /// program through the same query path every view's request takes.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
-    use abi::module_registry::{PROGRAM, Query, Reply};
-    let frame = super::query_frame(network, PROGRAM, abi::encode(&Query::At(0))).await;
+    use module_registry::{Query, Reply};
+    let Reply::Programs(entries) = ask(client, network, Query::At(0)).await? else {
+        return Err(Fetch::Refused("the registry answered no programs".into()));
+    };
+    // a registry from before view-only entries refuses the question: no views
+    let views = match ask(client, network, Query::Views(0)).await {
+        Ok(Reply::Views(views)) => views,
+        Ok(_) | Err(Fetch::Refused(_)) => Vec::new(),
+        Err(error) => return Err(error),
+    };
+    let programs = entries.into_iter().map(|entry| Program {
+        name: entry.program,
+        code: entry.code,
+        bare: false,
+    });
+    let views = views.into_iter().map(|view| Program {
+        name: view.name,
+        code: view.view,
+        bare: true,
+    });
+    Ok(programs.chain(views).collect())
+}
+
+async fn ask(
+    client: &RpcClient,
+    network: &str,
+    query: module_registry::Query,
+) -> Result<module_registry::Reply, Fetch> {
+    let frame = super::query_frame(network, module_registry::PROGRAM, abi::encode(&query)).await;
     let answer = client
         .query(Layer::Preconfirmed, frame)
         .await
         .map_err(unreachable)?;
-    let Reply::Programs(entries) =
-        abi::decode(&answer).map_err(|refusal| Fetch::Refused(refusal.sentence))?;
-    Ok(entries
-        .into_iter()
-        .map(|entry| Program {
-            name: entry.program,
-            code: entry.code,
-        })
-        .collect())
+    abi::decode(&answer).map_err(|refusal| Fetch::Refused(refusal.sentence))
 }
 
-/// The view inside `code`'s blob, or `None` when the program ships none.
-/// A blob read once is kept in the cache directory under its id.
-pub async fn view_of(client: &RpcClient, code: &BlobId) -> Result<Option<Vec<u8>>, Fetch> {
-    let program = program_bytes(client, code).await?;
-    Ok(view_section(&program))
+/// The view inside `code`'s blob, or `None` when the program ships none; a
+/// `bare` blob is the view itself. A blob read once is kept in the cache
+/// directory under its id.
+pub async fn view_of(
+    client: &RpcClient,
+    code: &BlobId,
+    bare: bool,
+) -> Result<Option<Vec<u8>>, Fetch> {
+    let bytes = program_bytes(client, code).await?;
+    Ok(if bare {
+        Some(bytes)
+    } else {
+        view_section(&bytes)
+    })
 }
 
 async fn program_bytes(client: &RpcClient, code: &BlobId) -> Result<Vec<u8>, Fetch> {

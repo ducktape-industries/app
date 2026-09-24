@@ -36,13 +36,15 @@ pub(super) fn listed() -> &'static Mutex<Vec<crate::backend::views::Program>> {
     LISTED.get_or_init(Mutex::default)
 }
 
-pub(super) fn listed_code(module: &str) -> Option<abi::BlobId> {
+/// The blob a listed module's view comes from, and whether that blob is the
+/// view itself (a view-only entry) rather than a program carrying it.
+pub(super) fn listed_code(module: &str) -> Option<(abi::BlobId, bool)> {
     listed()
         .lock()
         .expect("roster")
         .iter()
         .find(|program| program.name == module)
-        .map(|program| program.code)
+        .map(|program| (program.code, program.bare))
 }
 
 /// A code id as the 32-byte hash a seat records: sha256 as is, sha1 padded.
@@ -301,6 +303,7 @@ mod rail_tests {
             .push(crate::backend::views::Program {
                 name: module.into(),
                 code: abi::BlobId::Sha256([0; 32]),
+                bare: false,
             });
         // No entry for `module` is inserted into registry(): this is the
         // `None` seat case rail() must treat as loading.
@@ -311,5 +314,23 @@ mod rail_tests {
         assert_eq!(row.label, module);
         assert_eq!(row.note, Some("Loading"));
         assert!(!row.empty);
+    }
+
+    /// A view-only entry (no program behind it) is a rail row like any
+    /// program's view, keyed and linked by its own name.
+    #[test]
+    fn a_view_only_entry_is_a_rail_row_and_a_short_link() {
+        let view = abi::BlobId::Sha256([7; 32]);
+        listed()
+            .lock()
+            .unwrap()
+            .push(crate::backend::views::Program {
+                name: "explorer".into(),
+                code: view,
+                bare: true,
+            });
+        assert!(rail().iter().any(|row| row.module == "explorer"));
+        assert_eq!(local_link("duck://explorer"), Some("explorer"));
+        assert_eq!(listed_code("explorer"), Some((view, true)));
     }
 }
