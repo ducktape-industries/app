@@ -15,11 +15,11 @@
 //! A non-empty `tag` replaces the view's standing banner under it, and
 //! folds the centre's rows under it into one with a count.
 //!
-//! WHAT IS NOT HERE: a click on the banner is not delivered back. The
-//! freedesktop `ActionInvoked` signal needs declared actions and a standing
-//! bus listener, and the macOS side a notification-centre delegate on an app
-//! object this process does not own. The centre's row is the way to a
-//! notice's link.
+//! A click on a banner opens its row, the way the centre's row does, where
+//! the desktop says so: freedesktop's `ActionInvoked` on the banner's
+//! default action. macOS would need a notification-centre delegate on an
+//! app object this process does not own, so there a banner is fire and
+//! forget and the centre's row is the way to a notice's link.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -505,14 +505,22 @@ pub(super) fn answer(
             return true;
         }
     };
-    let (posted, banner) = center().post(
-        &Settings::load(),
-        guest.module,
-        &guest.name,
-        post,
-        Instant::now(),
-        wall(),
-    );
+    let (posted, banner, entry) = {
+        let mut center = center();
+        let (posted, banner) = center.post(
+            &Settings::load(),
+            guest.module,
+            &guest.name,
+            post,
+            Instant::now(),
+            wall(),
+        );
+        // the row just logged is the newest: a click on its banner opens it
+        let entry = (posted == Posted::Banner)
+            .then(|| center.entries().next().map(|entry| entry.id))
+            .flatten();
+        (posted, banner, entry)
+    };
     // the bell and the bar redraw
     guest.intents.push(ModuleViewEvent {
         kind: "notified".into(),
@@ -522,7 +530,7 @@ pub(super) fn answer(
     spawn_device(guest, id, async move {
         let raised = match banner {
             None => false,
-            Some(notice) => tokio::task::spawn_blocking(move || platform::post(&notice))
+            Some(notice) => tokio::task::spawn_blocking(move || platform::post(&notice, entry))
                 .await
                 .map_err(|error| wire::Refusal::new("host_fault", error.to_string()))?,
         };
@@ -557,7 +565,7 @@ mod platform {
         unsafe { NSBundle::mainBundle().bundleIdentifier().is_some() }
     }
 
-    pub(super) fn post(notice: &Notice) -> bool {
+    pub(super) fn post(notice: &Notice, _entry: Option<u64>) -> bool {
         if !bundled() {
             tracing::debug!(
                 target: "ducktape::app",
@@ -649,10 +657,72 @@ mod platform {
             .replace('>', "&gt;")
     }
 
-    pub(super) fn post(notice: &Notice) -> bool {
+    /// The centre row each clickable banner stands for, by banner id.
+    fn clicks() -> &'static Mutex<HashMap<u32, u64>> {
+        static CLICKS: OnceLock<Mutex<HashMap<u32, u64>>> = OnceLock::new();
+        CLICKS.get_or_init(Mutex::default)
+    }
+
+    /// One thread for the life of the process, hearing the daemon say a
+    /// banner was clicked: its row is opened as if picked in the centre.
+    fn listen(bus: &'static zbus::blocking::Connection) {
+        static LISTENING: OnceLock<()> = OnceLock::new();
+        LISTENING.get_or_init(|| {
+            let rule = zbus::MatchRule::builder()
+                .msg_type(zbus::message::Type::Signal)
+                .interface("org.freedesktop.Notifications")
+                .and_then(|rule| rule.member("ActionInvoked"))
+                .map(|rule| rule.build());
+            let messages = rule.and_then(|rule| {
+                zbus::blocking::MessageIterator::for_match_rule(rule, bus, Some(64))
+            });
+            let messages = match messages {
+                Ok(messages) => messages,
+                Err(error) => {
+                    tracing::info!(target: "ducktape::app", %error, "banner clicks are not heard");
+                    return;
+                }
+            };
+            let spawned = std::thread::Builder::new()
+                .name("notice-clicks".into())
+                .spawn(move || {
+                    for message in messages.flatten() {
+                        let Ok((banner, action)) = message.body().deserialize::<(u32, String)>()
+                        else {
+                            continue;
+                        };
+                        let entry = clicks()
+                            .lock()
+                            .expect("banner clicks")
+                            .get(&banner)
+                            .copied();
+                        if action != "default" {
+                            continue;
+                        }
+                        let Some(entry) = entry.and_then(|entry| super::center().open(entry))
+                        else {
+                            continue;
+                        };
+                        let link = match entry.link.is_empty() {
+                            true => format!("duck://{}", entry.module),
+                            false => entry.link,
+                        };
+                        crate::shell::open_link(link);
+                    }
+                });
+            if let Err(error) = spawned {
+                tracing::info!(target: "ducktape::app", %error, "banner clicks are not heard");
+            }
+        });
+    }
+
+    pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
         let Some(bus) = session_bus() else {
             return false;
         };
+        if entry.is_some() {
+            listen(bus);
+        }
         // held across the call: two notices under one tag posted at once
         // would otherwise both read "none standing" and stack
         let mut standing = standing().lock().expect("standing notices");
@@ -660,11 +730,16 @@ mod platform {
             true => 0,
             false => standing.get(&notice.tag).copied().unwrap_or(0),
         };
-        match notify(bus, notice, replaces) {
+        match notify(bus, notice, replaces, entry.is_some()) {
             Ok(raised) => {
                 if !notice.tag.is_empty() {
                     standing.insert(notice.tag.clone(), raised);
                 }
+                let mut clicks = clicks().lock().expect("banner clicks");
+                match entry {
+                    Some(entry) => clicks.insert(raised, entry),
+                    None => clicks.remove(&raised),
+                };
                 true
             }
             Err(error) => {
@@ -680,13 +755,18 @@ mod platform {
     }
 
     /// One `Notify` request: `(app_name, replaces_id, app_icon, summary,
-    /// body, actions, hints, expire_timeout)` → the banner's id. No actions,
-    /// because a click is not delivered back to the view.
+    /// body, actions, hints, expire_timeout)` → the banner's id. A banner
+    /// that opens something declares the default action, a click on it.
     pub(super) fn notify(
         bus: &zbus::blocking::Connection,
         notice: &Notice,
         replaces: u32,
+        clickable: bool,
     ) -> zbus::Result<u32> {
+        let actions = match clickable {
+            true => vec!["default", "Open"],
+            false => Vec::new(),
+        };
         let body = markup_escaped(&notice.body);
         let hints: HashMap<&str, zbus::zvariant::Value<'_>> =
             HashMap::from([("desktop-entry", zbus::zvariant::Value::from(DESKTOP_ENTRY))]);
@@ -701,7 +781,7 @@ mod platform {
                 "",
                 notice.title.as_str(),
                 body.as_str(),
-                Vec::<&str>::new(),
+                actions,
                 hints,
                 -1i32,
             ),
