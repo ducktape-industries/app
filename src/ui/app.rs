@@ -60,6 +60,22 @@ pub(crate) struct SpotRow {
     pub(crate) spot: Spot,
 }
 
+/// Which screen the console window shows: a launcher step, or the desk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Stage {
+    /// Reaching a node.
+    Connect,
+    /// This device's key: opening, locked, or behind an old password.
+    Unlock,
+    /// A new recovery key's words, and their check.
+    Phrase,
+    /// The account's recovery key, typed to add this device.
+    Recover,
+    /// Name an account for the seated key, or join one.
+    Account,
+    Desk,
+}
+
 /// Where the person is: reaching a node, or inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Screen {
@@ -405,18 +421,49 @@ impl Ducktape {
         (state, first)
     }
 
-    /// Before the desk: reaching a node, this device's key and its
-    /// phrase, or the account step. The console window is the launcher's
-    /// size meanwhile.
-    pub(crate) fn in_launcher(&self) -> bool {
-        match self.screen {
-            Screen::Connect => true,
-            Screen::Console => {
-                !self.phrase.is_empty()
-                    || (self.signer_key.is_empty() && !self.browsing)
-                    || (self.account_step && !self.signer_key.is_empty())
-            }
+    /// The screen the console window shows, first match wins.
+    pub(crate) fn stage(&self) -> Stage {
+        if self.screen == Screen::Connect {
+            Stage::Connect
+        } else if !self.phrase.is_empty() {
+            Stage::Phrase
+        } else if self.signer_key.is_empty() && !self.browsing {
+            Stage::Unlock
+        } else if self.account_step && self.recovering {
+            Stage::Recover
+        } else if self.account_step && !self.signer_key.is_empty() {
+            Stage::Account
+        } else {
+            Stage::Desk
         }
+    }
+
+    /// Before the desk: the console window is the launcher's size.
+    pub(crate) fn in_launcher(&self) -> bool {
+        self.stage() != Stage::Desk
+    }
+
+    /// The joining key's fingerprint, once its code was found.
+    pub(crate) fn approve_fingerprint(&self) -> Option<String> {
+        self.approve_found
+            .as_ref()
+            .map(|request| backend::join::fingerprint(&request.key))
+    }
+
+    /// The passkey QR URL, while a ceremony runs and the person picked the
+    /// phone.
+    pub(crate) fn passkey_qr_shown(&self) -> Option<String> {
+        (self.passkey_task.is_some()
+            && self
+                .passkey_phone
+                .load(std::sync::atomic::Ordering::Relaxed)
+            && !self.passkey_qr.is_empty())
+        .then(|| self.passkey_qr.clone())
+    }
+
+    /// Seconds since the height last moved.
+    pub(crate) fn block_age(&self) -> i64 {
+        self.wall_now - self.block_seen
     }
 
     /// Connected, but the last [`LOST_AFTER`] status polls went unanswered.

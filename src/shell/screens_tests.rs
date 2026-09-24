@@ -472,3 +472,77 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     find(&nodes, "RadioGroup", "Burst limit");
     center().clear_read();
 }
+
+/// The screen drawn: the id just inside the launcher's frame, or the
+/// desk's menu bar.
+fn drawn_ids(window: &mut Window, cx: &mut gpui_kit::App) -> std::collections::BTreeSet<String> {
+    draw(window, cx);
+    let nodes: Vec<_> = window
+        .a11y_tree()
+        .unwrap()
+        .nodes
+        .iter()
+        .map(|(node, _)| *node)
+        .collect();
+    nodes
+        .into_iter()
+        .filter_map(|node| window.a11y_element_id(node))
+        .filter_map(|path| {
+            let names: Vec<String> = path
+                .iter()
+                .filter_map(|element| match element {
+                    ElementId::Name(name) => Some(name.to_string()),
+                    _ => None,
+                })
+                .collect();
+            match names.iter().position(|name| name == "launcher") {
+                Some(at) => names.get(at + 1).cloned(),
+                None => names.into_iter().find(|name| name == "menubar"),
+            }
+        })
+        .collect()
+}
+
+/// For every mix of the onboarding flags, the console window draws the
+/// screen `stage()` names, and it is launcher-sized exactly when that
+/// screen is not the desk.
+#[gpui_kit::test]
+fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    for bits in 0..64u8 {
+        let on = |bit: u8| bits & (1 << bit) != 0;
+        let (mut state, _) = Ducktape::boot();
+        state.screen = match on(0) {
+            true => Screen::Console,
+            false => Screen::Connect,
+        };
+        if on(1) {
+            state.phrase = "canoe pond forest".into();
+        }
+        if on(2) {
+            state.signer_key = "ab".into();
+        }
+        state.browsing = on(3);
+        state.account_step = on(4);
+        state.recovering = on(5);
+        let stage = state.stage();
+        let launcher = state.in_launcher();
+        let (_view, mut native) = open(state, cx);
+        let ids = native.update(drawn_ids);
+        let screens = [
+            (Stage::Connect, "connect"),
+            (Stage::Unlock, "sign-in"),
+            (Stage::Phrase, "recovery"),
+            (Stage::Recover, "recover"),
+            (Stage::Account, "account-step"),
+            (Stage::Desk, "menubar"),
+        ];
+        let drawn: Vec<_> = screens
+            .iter()
+            .filter(|(_, id)| ids.contains(*id))
+            .map(|(stage, _)| *stage)
+            .collect();
+        assert_eq!(drawn, vec![stage], "flags {bits:06b}: drew {drawn:?}");
+        assert_eq!(launcher, stage != Stage::Desk, "flags {bits:06b}");
+    }
+}

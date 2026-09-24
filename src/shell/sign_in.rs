@@ -579,7 +579,9 @@ impl DesktopWindow {
             return self.phrase_check(state, asked, window, cx);
         }
         let ink = Ink::of(state.dark);
-        let words: Vec<&str> = state.phrase.split_whitespace().collect();
+        // read here, not copied into every draw's facts; wiped when dropped
+        let phrase = zeroize::Zeroizing::new(self.model.read(cx).state.phrase.clone());
+        let words: Vec<&str> = phrase.split_whitespace().collect();
         let per_column = words.len().div_ceil(3).max(1);
         // `grid-template-columns: repeat(3, 1fr); grid-auto-flow: column;
         // column-gap: 24px`, each `<li>` `gap 10px; padding 6px 0;
@@ -605,7 +607,7 @@ impl DesktopWindow {
             div()
                 .id("phrase")
                 .role(Role::Group)
-                .aria_label(state.phrase.clone())
+                .aria_label(phrase.as_str().to_owned())
                 .flex()
                 .gap(px(24.))
                 .children(columns),
