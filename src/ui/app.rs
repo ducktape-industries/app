@@ -136,21 +136,47 @@ pub struct Ducktape {
     /// The account the seated key belongs to, as `(number, name)`: `None`
     /// until the node was asked, `Some(None)` while the key holds none.
     pub(crate) account: Option<Option<(u64, String)>>,
+    /// A password-locked key file is here for `network` and this device's
+    /// OS-kept key is not: the key screen asks for its password, once, and
+    /// moves it into the OS.
+    pub(crate) key_exists: bool,
+    /// Reading without a key: the console opens, writes are refused.
+    pub(crate) browsing: bool,
+    /// A device on the account approving a new one: the dialog is open
+    /// (its code and the request found are `sign_in`'s).
+    pub(crate) approving: bool,
+    /// The key and account steps, and the device-approval dialog: what a
+    /// sign-in half done holds, secrets included. Leaving a network drops
+    /// it whole.
+    pub(crate) sign_in: SignIn,
+    /// The program whose view is open.
+    pub(crate) active: Option<&'static str>,
+    pub(crate) badges: BTreeMap<&'static str, i64>,
+    pub(crate) toast: String,
+    pub(crate) toast_age: i64,
+    pub(crate) console_win: Option<WindowKey>,
+    pub(crate) focused_win: Option<WindowKey>,
+    pub(crate) cmd_held: bool,
+    pub(crate) connect_generation: u64,
+    pub(crate) connect_task: Option<view_wire::task::Handle>,
+    pub(crate) wall_now: i64,
+}
+
+/// What the sign-in screens hold while a person is on them: this device's
+/// key opening, a recovery phrase and its check, the account step, a
+/// passkey ceremony, a device joining or being approved. Its secrets are
+/// wiped when it drops.
+#[derive(Default)]
+pub(crate) struct SignIn {
     /// A password-locked key's password (keys from before they moved into
     /// the OS; see [`backend::device_key`]).
     pub(crate) password: String,
     pub(crate) unlock_error: String,
     pub(crate) unlock_busy: bool,
-    /// A password-locked key file is here for `network` and this device's
-    /// OS-kept key is not: the key screen asks for its password, once, and
-    /// moves it into the OS.
-    pub(crate) key_exists: bool,
     /// This device's key is being opened (or made) for the network reached.
     pub(crate) seating: bool,
     /// Locked on purpose: the key is not reopened until Unlock.
     pub(crate) locked: bool,
-    /// Reading without a key: the console opens, writes are refused.
-    pub(crate) browsing: bool,
     /// The account step's "Use a recovery key": its 24 words being typed.
     pub(crate) recovering: bool,
     pub(crate) restore_phrase: String,
@@ -158,9 +184,7 @@ pub struct Ducktape {
     /// while it waits for one on the account to approve.
     pub(crate) link_code: String,
     pub(crate) link_task: Option<view_wire::task::Handle>,
-    /// A device on the account approving a new one: the dialog is open, the
-    /// code typed, and the request it found.
-    pub(crate) approving: bool,
+    /// "Add a device…": the code typed, and the request it found.
     pub(crate) approve_code: String,
     pub(crate) approve_found: Option<backend::join::Request>,
     /// The name a new passkey account takes.
@@ -187,17 +211,18 @@ pub struct Ducktape {
     /// (0-based, ascending) the person types back before the console opens.
     pub(crate) phrase_quiz: Option<[usize; 3]>,
     pub(crate) quiz_answers: [String; 3],
-    /// The program whose view is open.
-    pub(crate) active: Option<&'static str>,
-    pub(crate) badges: BTreeMap<&'static str, i64>,
-    pub(crate) toast: String,
-    pub(crate) toast_age: i64,
-    pub(crate) console_win: Option<WindowKey>,
-    pub(crate) focused_win: Option<WindowKey>,
-    pub(crate) cmd_held: bool,
-    pub(crate) connect_generation: u64,
-    pub(crate) connect_task: Option<view_wire::task::Handle>,
-    pub(crate) wall_now: i64,
+}
+
+impl Drop for SignIn {
+    fn drop(&mut self) {
+        use zeroize::Zeroize as _;
+        self.password.zeroize();
+        self.restore_phrase.zeroize();
+        self.phrase.zeroize();
+        self.quiz_answers
+            .iter_mut()
+            .for_each(|answer| answer.zeroize());
+    }
 }
 
 impl std::fmt::Debug for Ducktape {
@@ -372,29 +397,10 @@ impl Ducktape {
             error: String::new(),
             signer_key: String::new(),
             account: None,
-            password: String::new(),
-            unlock_error: String::new(),
-            unlock_busy: false,
             key_exists: false,
-            seating: false,
-            locked: false,
             browsing: false,
-            recovering: false,
-            restore_phrase: String::new(),
-            link_code: String::new(),
-            link_task: None,
             approving: false,
-            approve_code: String::new(),
-            approve_found: None,
-            account_name: String::new(),
-            passkey_task: None,
-            account_offer: false,
-            account_step: false,
-            passkey_phone: Default::default(),
-            passkey_qr: String::new(),
-            phrase: String::new(),
-            phrase_quiz: None,
-            quiz_answers: Default::default(),
+            sign_in: SignIn::default(),
             active: None,
             badges: BTreeMap::new(),
             toast: String::new(),
@@ -420,13 +426,13 @@ impl Ducktape {
     pub(crate) fn stage(&self) -> Stage {
         if self.screen == Screen::Connect {
             Stage::Connect
-        } else if !self.phrase.is_empty() {
+        } else if !self.sign_in.phrase.is_empty() {
             Stage::Phrase
         } else if self.signer_key.is_empty() && !self.browsing {
             Stage::Unlock
-        } else if self.account_step && self.recovering {
+        } else if self.sign_in.account_step && self.sign_in.recovering {
             Stage::Recover
-        } else if self.account_step && !self.signer_key.is_empty() {
+        } else if self.sign_in.account_step && !self.signer_key.is_empty() {
             Stage::Account
         } else {
             Stage::Desk
@@ -440,7 +446,8 @@ impl Ducktape {
 
     /// The joining key's fingerprint, once its code was found.
     pub(crate) fn approve_fingerprint(&self) -> Option<String> {
-        self.approve_found
+        self.sign_in
+            .approve_found
             .as_ref()
             .map(|request| backend::join::fingerprint(&request.key))
     }
@@ -448,12 +455,13 @@ impl Ducktape {
     /// The passkey QR URL, while a ceremony runs and the person picked the
     /// phone.
     pub(crate) fn passkey_qr_shown(&self) -> Option<String> {
-        (self.passkey_task.is_some()
+        (self.sign_in.passkey_task.is_some()
             && self
+                .sign_in
                 .passkey_phone
                 .load(std::sync::atomic::Ordering::Relaxed)
-            && !self.passkey_qr.is_empty())
-        .then(|| self.passkey_qr.clone())
+            && !self.sign_in.passkey_qr.is_empty())
+        .then(|| self.sign_in.passkey_qr.clone())
     }
 
     /// Seconds since the height last moved.

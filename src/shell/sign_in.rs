@@ -98,7 +98,7 @@ impl DesktopWindow {
                 "password",
                 "",
                 true,
-                |state| &state.password,
+                |state| &state.sign_in.password,
                 Message::PasswordTyped,
                 || Message::UnlockSubmit,
                 Some("Password".into()),
@@ -305,7 +305,7 @@ impl DesktopWindow {
             "create-account-name",
             "",
             false,
-            |state| &state.account_name,
+            |state| &state.sign_in.account_name,
             Message::AccountNameTyped,
             || Message::CreateAccountSubmit,
             Some("Account name".into()),
@@ -511,7 +511,7 @@ impl DesktopWindow {
             "restore-phrase",
             "24 words, separated by spaces",
             false,
-            |state| &state.restore_phrase,
+            |state| &state.sign_in.restore_phrase,
             Message::RestorePhraseTyped,
             || Message::RecoverSubmit,
             Some("Recovery key".into()),
@@ -580,7 +580,7 @@ impl DesktopWindow {
         }
         let ink = Ink::of(state.dark);
         // read here, not copied into every draw's facts; wiped when dropped
-        let phrase = zeroize::Zeroizing::new(self.model.read(cx).state.phrase.clone());
+        let phrase = zeroize::Zeroizing::new(self.model.read(cx).state.sign_in.phrase.clone());
         let words: Vec<&str> = phrase.split_whitespace().collect();
         let per_column = words.len().div_ceil(3).max(1);
         // `grid-template-columns: repeat(3, 1fr); grid-auto-flow: column;
@@ -663,17 +663,17 @@ impl DesktopWindow {
         let fields: [Field; 3] = [
             (
                 "phrase-word-1",
-                |state| &state.quiz_answers[0],
+                |state| &state.sign_in.quiz_answers[0],
                 |text| Message::PhraseWordTyped(0, text),
             ),
             (
                 "phrase-word-2",
-                |state| &state.quiz_answers[1],
+                |state| &state.sign_in.quiz_answers[1],
                 |text| Message::PhraseWordTyped(1, text),
             ),
             (
                 "phrase-word-3",
-                |state| &state.quiz_answers[2],
+                |state| &state.sign_in.quiz_answers[2],
                 |text| Message::PhraseWordTyped(2, text),
             ),
         ];

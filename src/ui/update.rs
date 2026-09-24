@@ -172,8 +172,10 @@ impl Ducktape {
             // the step follows the check with no console in between.
             Message::AccountResolved { node, key, account } => {
                 if node == self.connected_rpc && key == self.signer_key {
-                    self.account_step |=
-                        offers_account_step(std::mem::take(&mut self.account_offer), &account);
+                    self.sign_in.account_step |= offers_account_step(
+                        std::mem::take(&mut self.sign_in.account_offer),
+                        &account,
+                    );
                     self.account = Some(account);
                 }
                 Task::none()
@@ -394,8 +396,8 @@ impl Ducktape {
                 Task::none()
             }
             Message::PasswordTyped(text) => {
-                self.password = text;
-                self.unlock_error.clear();
+                self.sign_in.password = text;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             // With no password typed, Unlock reopens this device's OS-kept
@@ -404,21 +406,21 @@ impl Ducktape {
             // password is asked this once. The typed password is copied, not
             // taken: a failed try leaves model and field in agreement.
             Message::UnlockSubmit => {
-                if self.unlock_busy {
+                if self.sign_in.unlock_busy {
                     return Task::none();
                 }
-                self.locked = false;
-                self.unlock_error.clear();
+                self.sign_in.locked = false;
+                self.sign_in.unlock_error.clear();
                 if !self.key_exists {
                     return self.open_device_key();
                 }
-                if self.password.is_empty() {
-                    self.unlock_error = "Type this key's password first.".into();
+                if self.sign_in.password.is_empty() {
+                    self.sign_in.unlock_error = "Type this key's password first.".into();
                     return Task::none();
                 }
-                let password = zeroize::Zeroizing::new(self.password.clone());
+                let password = zeroize::Zeroizing::new(self.sign_in.password.clone());
                 let keyring = self.keyring.clone();
-                self.unlock_busy = true;
+                self.sign_in.unlock_busy = true;
                 Task::future(async move {
                     let opened = tokio::task::spawn_blocking(move || {
                         let path = backend::session_key_path(&keyring)?;
@@ -439,7 +441,7 @@ impl Ducktape {
                 })
             }
             Message::DeviceKey(found) => {
-                self.seating = false;
+                self.sign_in.seating = false;
                 match found {
                     Ok(Some(pubkey)) => {
                         self.key_exists = false;
@@ -448,7 +450,7 @@ impl Ducktape {
                     // only a password-locked key here: the key screen asks
                     Ok(None) => Task::none(),
                     Err(error) => {
-                        self.unlock_error = error;
+                        self.sign_in.unlock_error = error;
                         Task::none()
                     }
                 }
@@ -456,7 +458,7 @@ impl Ducktape {
             Message::RecoveryKeyStart => {
                 self.popover = None;
                 self.forget_phrase();
-                self.phrase = backend::join::new_recovery_phrase();
+                self.sign_in.phrase = backend::join::new_recovery_phrase();
                 Task::none()
             }
             Message::PhraseCancel => {
@@ -464,36 +466,38 @@ impl Ducktape {
                 Task::none()
             }
             Message::PhraseWrittenDown => {
-                self.phrase_quiz = Some(quiz_positions(self.phrase.split_whitespace().count()));
-                self.unlock_error.clear();
+                self.sign_in.phrase_quiz = Some(quiz_positions(
+                    self.sign_in.phrase.split_whitespace().count(),
+                ));
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::PhraseWordTyped(nth, text) => {
-                if let Some(answer) = self.quiz_answers.get_mut(nth) {
+                if let Some(answer) = self.sign_in.quiz_answers.get_mut(nth) {
                     answer.zeroize();
                     *answer = text;
                 }
-                self.unlock_error.clear();
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             // The words checked: the key they make goes onto the account.
             Message::PhraseCheckSubmit => {
-                let Some(asked) = self.phrase_quiz else {
+                let Some(asked) = self.sign_in.phrase_quiz else {
                     return Task::none();
                 };
-                if self.unlock_busy {
+                if self.sign_in.unlock_busy {
                     return Task::none();
                 }
-                if !quiz_matches(&self.phrase, asked, &self.quiz_answers) {
-                    self.unlock_error =
+                if !quiz_matches(&self.sign_in.phrase, asked, &self.sign_in.quiz_answers) {
+                    self.sign_in.unlock_error =
                         "Those words don't match your phrase. Check them, or show the phrase again."
                             .into();
                     return Task::none();
                 }
-                let phrase = zeroize::Zeroizing::new(self.phrase.clone());
+                let phrase = zeroize::Zeroizing::new(self.sign_in.phrase.clone());
                 let client = backend::RpcClient::new(self.connected_rpc.clone());
                 let network = self.network.clone();
-                self.unlock_busy = true;
+                self.sign_in.unlock_busy = true;
                 Task::future(async move {
                     Message::RecoveryKeyAdded(
                         backend::join::add_recovery_key(&client, &network, &phrase).await,
@@ -501,7 +505,7 @@ impl Ducktape {
                 })
             }
             Message::RecoveryKeyAdded(added) => {
-                self.unlock_busy = false;
+                self.sign_in.unlock_busy = false;
                 match added {
                     Ok(()) => {
                         self.forget_phrase();
@@ -510,58 +514,62 @@ impl Ducktape {
                         ))
                     }
                     Err(error) => {
-                        self.unlock_error = error;
+                        self.sign_in.unlock_error = error;
                         Task::none()
                     }
                 }
             }
             Message::PhraseShowAgain => {
-                self.phrase_quiz = None;
-                self.quiz_answers.iter_mut().for_each(Zeroize::zeroize);
-                self.unlock_error.clear();
+                self.sign_in.phrase_quiz = None;
+                self.sign_in
+                    .quiz_answers
+                    .iter_mut()
+                    .for_each(Zeroize::zeroize);
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::BrowseWithoutKey => {
                 self.browsing = true;
                 self.forget_secrets();
-                self.unlock_error.clear();
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::SignIn => {
                 self.browsing = false;
-                self.locked = false;
+                self.sign_in.locked = false;
                 self.open_device_key()
             }
             Message::RestorePhraseTyped(text) => {
-                self.restore_phrase = text;
-                self.unlock_error.clear();
+                self.sign_in.restore_phrase = text;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::RecoverShow => {
-                self.recovering = true;
-                self.unlock_error.clear();
+                self.sign_in.recovering = true;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::RecoverCancel => {
-                self.recovering = false;
+                self.sign_in.recovering = false;
                 self.forget_secrets();
-                self.unlock_error.clear();
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::RecoverSubmit => {
-                if self.unlock_busy {
+                if self.sign_in.unlock_busy {
                     return Task::none();
                 }
-                let phrase = zeroize::Zeroizing::new(normalize_phrase(&self.restore_phrase));
+                let phrase =
+                    zeroize::Zeroizing::new(normalize_phrase(&self.sign_in.restore_phrase));
                 if keystore::userkey::seed_of_mnemonic(&phrase).is_err() {
-                    self.unlock_error =
+                    self.sign_in.unlock_error =
                         "Those words aren't a recovery key — check each one.".into();
                     return Task::none();
                 }
                 let client = backend::RpcClient::new(self.connected_rpc.clone());
                 let network = self.network.clone();
-                self.unlock_busy = true;
-                self.unlock_error.clear();
+                self.sign_in.unlock_busy = true;
+                self.sign_in.unlock_error.clear();
                 Task::future(async move {
                     Message::Joined(
                         backend::join::join_with_recovery_key(&client, &network, &phrase).await,
@@ -569,40 +577,40 @@ impl Ducktape {
                 })
             }
             Message::LinkStart => {
-                if self.link_task.is_some() {
+                if self.sign_in.link_task.is_some() {
                     return Task::none();
                 }
                 let code = backend::join::new_code();
-                self.link_code = code.clone();
-                self.unlock_error.clear();
+                self.sign_in.link_code = code.clone();
+                self.sign_in.unlock_error.clear();
                 let client = backend::RpcClient::new(self.connected_rpc.clone());
                 let network = self.network.clone();
                 let (task, handle) = Task::future(async move {
                     Message::Joined(backend::join::join_from_device(&client, &network, &code).await)
                 })
                 .abortable();
-                self.link_task = Some(handle.abort_on_drop());
+                self.sign_in.link_task = Some(handle.abort_on_drop());
                 task
             }
             Message::LinkCancel => {
-                self.link_task = None;
-                self.link_code.clear();
+                self.sign_in.link_task = None;
+                self.sign_in.link_code.clear();
                 Task::none()
             }
             Message::Joined(joined) => {
-                self.unlock_busy = false;
-                self.link_task = None;
-                self.link_code.clear();
+                self.sign_in.unlock_busy = false;
+                self.sign_in.link_task = None;
+                self.sign_in.link_code.clear();
                 match joined {
                     Ok(()) => {
-                        self.recovering = false;
+                        self.sign_in.recovering = false;
                         self.forget_secrets();
-                        self.account_offer = false;
-                        self.account_step = false;
+                        self.sign_in.account_offer = false;
+                        self.sign_in.account_step = false;
                         self.resolve_account()
                     }
                     Err(error) => {
-                        self.unlock_error = error;
+                        self.sign_in.unlock_error = error;
                         Task::none()
                     }
                 }
@@ -610,54 +618,54 @@ impl Ducktape {
             Message::ApproveOpen => {
                 self.popover = None;
                 self.approving = true;
-                self.approve_code.clear();
-                self.approve_found = None;
-                self.unlock_error.clear();
+                self.sign_in.approve_code.clear();
+                self.sign_in.approve_found = None;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::ApproveClose => {
                 self.approving = false;
-                self.approve_found = None;
-                self.unlock_error.clear();
+                self.sign_in.approve_found = None;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::ApproveCodeTyped(text) => {
-                self.approve_code = text;
-                self.unlock_error.clear();
+                self.sign_in.approve_code = text;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::ApproveFind => {
-                if self.unlock_busy {
+                if self.sign_in.unlock_busy {
                     return Task::none();
                 }
-                let code = self.approve_code.clone();
-                self.unlock_busy = true;
-                self.unlock_error.clear();
+                let code = self.sign_in.approve_code.clone();
+                self.sign_in.unlock_busy = true;
+                self.sign_in.unlock_error.clear();
                 Task::future(async move {
                     Message::ApproveFound(backend::join::find_request(&code).await)
                 })
             }
             Message::ApproveFound(found) => {
-                self.unlock_busy = false;
+                self.sign_in.unlock_busy = false;
                 match found {
-                    Ok(request) => self.approve_found = Some(request),
-                    Err(error) => self.unlock_error = error,
+                    Ok(request) => self.sign_in.approve_found = Some(request),
+                    Err(error) => self.sign_in.unlock_error = error,
                 }
                 Task::none()
             }
             Message::ApproveConfirm => {
                 let (Some(request), Some(Some((account, _)))) =
-                    (self.approve_found.clone(), self.account.clone())
+                    (self.sign_in.approve_found.clone(), self.account.clone())
                 else {
                     return Task::none();
                 };
-                if self.unlock_busy {
+                if self.sign_in.unlock_busy {
                     return Task::none();
                 }
-                let code = self.approve_code.clone();
+                let code = self.sign_in.approve_code.clone();
                 let client = backend::RpcClient::new(self.connected_rpc.clone());
                 let network = self.network.clone();
-                self.unlock_busy = true;
+                self.sign_in.unlock_busy = true;
                 Task::future(async move {
                     Message::ApproveDone(
                         backend::join::approve(&client, &network, account, &code, &request).await,
@@ -665,17 +673,17 @@ impl Ducktape {
                 })
             }
             Message::ApproveDone(done) => {
-                self.unlock_busy = false;
+                self.sign_in.unlock_busy = false;
                 match done {
                     Ok(()) => {
                         self.approving = false;
-                        self.approve_found = None;
+                        self.sign_in.approve_found = None;
                         self.update(Message::ShowToast(
                             "Approved. The new device finishes on its own.".into(),
                         ))
                     }
                     Err(error) => {
-                        self.unlock_error = error;
+                        self.sign_in.unlock_error = error;
                         Task::none()
                     }
                 }
@@ -686,77 +694,78 @@ impl Ducktape {
                 Task::none()
             }
             Message::Unlocked(pubkey) => {
-                self.unlock_busy = false;
+                self.sign_in.unlock_busy = false;
                 self.key_exists = false;
-                self.seating = false;
-                self.locked = false;
+                self.sign_in.seating = false;
+                self.sign_in.locked = false;
                 self.signer_key = pubkey;
-                self.account_offer = true;
+                self.sign_in.account_offer = true;
                 self.forget_secrets();
                 self.resolve_account()
             }
             Message::AccountNameTyped(text) => {
-                self.account_name = text;
-                self.unlock_error.clear();
+                self.sign_in.account_name = text;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::PasskeyCreateSubmit => self.passkey(true),
             Message::PasskeySignInSubmit => self.passkey(false),
             Message::PasskeyUsePhone => {
-                self.passkey_phone
+                self.sign_in
+                    .passkey_phone
                     .store(true, std::sync::atomic::Ordering::Relaxed);
                 Task::none()
             }
             Message::PasskeyQr(url) => {
-                self.passkey_qr = url;
+                self.sign_in.passkey_qr = url;
                 Task::none()
             }
             Message::PasskeyCancel => {
-                self.passkey_task = None;
-                self.unlock_busy = false;
+                self.sign_in.passkey_task = None;
+                self.sign_in.unlock_busy = false;
                 Task::done(Message::ShowToast("Passkey step cancelled".into()))
             }
             Message::PasskeyFailed(error) => {
-                self.passkey_task = None;
-                self.unlock_busy = false;
-                self.unlock_error = error;
+                self.sign_in.passkey_task = None;
+                self.sign_in.unlock_busy = false;
+                self.sign_in.unlock_error = error;
                 Task::none()
             }
             Message::PasskeyDone(pubkey) => {
-                self.passkey_task = None;
-                self.unlock_busy = false;
+                self.sign_in.passkey_task = None;
+                self.sign_in.unlock_busy = false;
                 if pubkey != self.signer_key {
                     return Task::none();
                 }
-                self.account_name.clear();
+                self.sign_in.account_name.clear();
                 // the passkey made (or joined) the account already
-                self.account_offer = false;
-                self.account_step = false;
+                self.sign_in.account_offer = false;
+                self.sign_in.account_step = false;
                 self.resolve_account()
             }
             Message::ShowCreateAccount => {
-                self.account_step = true;
-                self.unlock_error.clear();
+                self.sign_in.account_step = true;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::CreateAccountLater => {
-                self.account_step = false;
-                self.unlock_error.clear();
+                self.sign_in.account_step = false;
+                self.sign_in.unlock_error.clear();
                 Task::none()
             }
             Message::CreateAccountSubmit => {
-                if self.unlock_busy {
+                if self.sign_in.unlock_busy {
                     return Task::none();
                 }
-                let name = self.account_name.trim().to_owned();
+                let name = self.sign_in.account_name.trim().to_owned();
                 if name.is_empty() {
-                    self.unlock_error = "Type the name others will see first.".into();
+                    self.sign_in.unlock_error = "Type the name others will see first.".into();
                     return Task::none();
                 }
                 let client = backend::RpcClient::new(self.connected_rpc.clone());
                 let network = self.network.clone();
-                self.unlock_busy = true;
-                self.unlock_error.clear();
+                self.sign_in.unlock_busy = true;
+                self.sign_in.unlock_error.clear();
                 Task::future(async move {
                     Message::AccountCreated(
                         backend::passkey::create_plain_account(&client, &network, &name).await,
@@ -764,31 +773,31 @@ impl Ducktape {
                 })
             }
             Message::AccountCreated(created) => {
-                self.unlock_busy = false;
+                self.sign_in.unlock_busy = false;
                 match created {
                     Ok(account) => {
                         self.account = Some(Some(account));
-                        self.account_step = false;
-                        self.account_name.clear();
+                        self.sign_in.account_step = false;
+                        self.sign_in.account_name.clear();
                     }
-                    Err(error) => self.unlock_error = account_error(&self.network, error),
+                    Err(error) => self.sign_in.unlock_error = account_error(&self.network, error),
                 }
                 Task::none()
             }
             Message::UnlockFailed(error) => {
-                self.passkey_task = None;
+                self.sign_in.passkey_task = None;
                 self.key_exists = backend::key_exists(&self.keyring);
-                self.unlock_busy = false;
-                self.unlock_error = error;
+                self.sign_in.unlock_busy = false;
+                self.sign_in.unlock_error = error;
                 Task::none()
             }
             Message::Lock => {
                 self.popover = None;
-                self.locked = true;
+                self.sign_in.locked = true;
                 self.signer_key.clear();
                 self.account = None;
-                self.account_offer = false;
-                self.account_step = false;
+                self.sign_in.account_offer = false;
+                self.sign_in.account_step = false;
                 self.browsing = false;
                 Task::future(async {
                     backend::lock_signer().await;
@@ -916,9 +925,9 @@ impl Ducktape {
     /// (the seat is one for the whole app), the account it resolved to, the
     /// open view and its badges, and any sign-in half done.
     fn leave_network(&mut self) -> Task<Message> {
+        // dropping the old one wipes its secrets and cancels its tasks
+        self.sign_in = Default::default();
         self.account = None;
-        self.account_offer = false;
-        self.account_step = false;
         self.active = None;
         self.badges.clear();
         self.network_menu = false;
@@ -926,23 +935,10 @@ impl Ducktape {
         self.spotlight = false;
         self.node = None;
         self.browsing = false;
-        self.forget_secrets();
-        self.forget_phrase();
-        self.unlock_error.clear();
         self.keyring.clear();
         self.other_chain = false;
         self.key_exists = false;
-        self.seating = false;
-        self.locked = false;
-        self.recovering = false;
-        self.link_task = None;
-        self.link_code.clear();
         self.approving = false;
-        self.approve_code.clear();
-        self.approve_found = None;
-        self.account_name.clear();
-        self.passkey_task = None;
-        self.unlock_busy = false;
         self.signer_key.clear();
         Task::future(async {
             backend::lock_signer().await;
@@ -1069,7 +1065,7 @@ impl Ducktape {
     /// fields on screen mirror these (`DesktopWindow::input`), so they empty
     /// on the next draw too.
     fn forget_secrets(&mut self) {
-        for secret in [&mut self.password, &mut self.restore_phrase] {
+        for secret in [&mut self.sign_in.password, &mut self.sign_in.restore_phrase] {
             secret.zeroize();
         }
     }
@@ -1079,10 +1075,14 @@ impl Ducktape {
     /// one is seated, or the person locked it; a password-locked key from
     /// before answers `Ok(None)` and waits for its password once.
     fn open_device_key(&mut self) -> Task<Message> {
-        if self.seating || self.locked || !self.signer_key.is_empty() || self.keyring.is_empty() {
+        if self.sign_in.seating
+            || self.sign_in.locked
+            || !self.signer_key.is_empty()
+            || self.keyring.is_empty()
+        {
             return Task::none();
         }
-        self.seating = true;
+        self.sign_in.seating = true;
         let keyring = self.keyring.clone();
         let legacy = self.key_exists;
         Task::future(async move {
@@ -1104,10 +1104,13 @@ impl Ducktape {
 
     /// The recovery phrase and its check, gone once passed (or abandoned).
     fn forget_phrase(&mut self) {
-        self.phrase.zeroize();
-        self.phrase_quiz = None;
-        self.quiz_answers.iter_mut().for_each(Zeroize::zeroize);
-        self.unlock_error.clear();
+        self.sign_in.phrase.zeroize();
+        self.sign_in.phrase_quiz = None;
+        self.sign_in
+            .quiz_answers
+            .iter_mut()
+            .for_each(Zeroize::zeroize);
+        self.sign_in.unlock_error.clear();
     }
 
     /// What runs while the app does: the clocks, and nothing else.
@@ -1146,26 +1149,26 @@ impl Ducktape {
     /// key is already set up and seated (unlocked, or minted with its
     /// phrase) before either is offered, and it signs the writes.
     fn passkey(&mut self, create: bool) -> Task<Message> {
-        if self.unlock_busy {
+        if self.sign_in.unlock_busy {
             return Task::none();
         }
         if self.signer_key.is_empty() {
-            self.unlock_error = "Unlock this device's key first.".into();
+            self.sign_in.unlock_error = "Unlock this device's key first.".into();
             return Task::none();
         }
-        let name = self.account_name.trim().to_owned();
+        let name = self.sign_in.account_name.trim().to_owned();
         if create && name.is_empty() {
-            self.unlock_error = "Name your account first.".into();
+            self.sign_in.unlock_error = "Name your account first.".into();
             return Task::none();
         }
         let network = self.network.clone();
         let client = backend::RpcClient::new(self.connected_rpc.clone());
         let pubkey = self.signer_key.clone();
-        self.unlock_busy = true;
-        self.unlock_error.clear();
-        self.passkey_phone = Default::default();
-        self.passkey_qr.clear();
-        let (phone, urls) = backend::passkey::Phone::new(self.passkey_phone.clone());
+        self.sign_in.unlock_busy = true;
+        self.sign_in.unlock_error.clear();
+        self.sign_in.passkey_phone = Default::default();
+        self.sign_in.passkey_qr.clear();
+        let (phone, urls) = backend::passkey::Phone::new(self.sign_in.passkey_phone.clone());
         let flow = async move {
             let joined = match create {
                 true => backend::passkey::create_account(&client, &network, &name, &phone).await,
@@ -1182,7 +1185,7 @@ impl Ducktape {
             futures::stream::once(flow),
         ))
         .abortable();
-        self.passkey_task = Some(handle.abort_on_drop());
+        self.sign_in.passkey_task = Some(handle.abort_on_drop());
         task
     }
 }
@@ -1376,17 +1379,17 @@ mod tests {
         let mut state = signing_in();
         state.key_exists = true;
         let _ = state.update(Message::UnlockSubmit);
-        assert!(!state.unlock_busy, "an empty password is not sent");
+        assert!(!state.sign_in.unlock_busy, "an empty password is not sent");
         let _ = state.update(Message::PasswordTyped("hunter22".into()));
         let _ = state.update(Message::UnlockSubmit);
-        assert_eq!(state.password, "hunter22");
+        assert_eq!(state.sign_in.password, "hunter22");
         let _ = state.update(Message::UnlockFailed("wrong".into()));
         assert_eq!(
-            state.password, "hunter22",
+            state.sign_in.password, "hunter22",
             "a retry must send what the field shows"
         );
         let _ = state.update(Message::Unlocked("ab".into()));
-        assert!(state.password.is_empty());
+        assert!(state.sign_in.password.is_empty());
     }
 
     #[test]
@@ -1394,20 +1397,28 @@ mod tests {
         let mut state = signing_in();
         let _ = state.update(Message::Unlocked("ab".into()));
         let _ = state.update(Message::Lock);
-        assert!(state.locked && state.signer_key.is_empty());
-        assert!(!state.seating, "a lock reopened the key on its own");
+        assert!(state.sign_in.locked && state.signer_key.is_empty());
+        assert!(!state.sign_in.seating, "a lock reopened the key on its own");
         let _ = state.update(Message::ApproveOpen);
         let _ = state.update(Message::ApproveConfirm);
-        assert!(!state.unlock_busy, "approved with nothing found");
+        assert!(!state.sign_in.unlock_busy, "approved with nothing found");
     }
 
     #[test]
     fn switching_node_leaves_no_key_seated() {
         let mut state = signing_in();
         state.signer_key = "ab".into();
-        state.password = "hunter22".into();
+        state.sign_in.password = "hunter22".into();
+        state.sign_in.phrase = "canoe pond forest".into();
+        state.sign_in.restore_phrase = "canoe pond".into();
+        state.sign_in.account_step = true;
+        state.sign_in.link_code = "ABCD-EFGH".into();
+        state.sign_in.unlock_error = "wrong".into();
         let _ = state.update(Message::Disconnect);
-        assert!(state.signer_key.is_empty() && state.password.is_empty());
+        assert!(state.signer_key.is_empty() && state.sign_in.password.is_empty());
+        let left = &state.sign_in;
+        assert!(left.phrase.is_empty() && left.restore_phrase.is_empty());
+        assert!(!left.account_step && left.link_code.is_empty() && left.unlock_error.is_empty());
     }
 
     fn resolved(state: &mut Ducktape, account: Option<(u64, String)>) {
@@ -1424,12 +1435,15 @@ mod tests {
         ] {
             let mut state = signing_in();
             let _ = state.update(signed_in);
-            assert!(!state.account_step, "shown before the node answered");
+            assert!(
+                !state.sign_in.account_step,
+                "shown before the node answered"
+            );
             resolved(&mut state, None);
-            assert!(state.account_step);
+            assert!(state.sign_in.account_step);
             let _ = state.update(Message::CreateAccountLater);
             resolved(&mut state, None);
-            assert!(!state.account_step, "a later block reopened it");
+            assert!(!state.sign_in.account_step, "a later block reopened it");
         }
     }
 
@@ -1438,11 +1452,11 @@ mod tests {
         let mut state = signing_in();
         let _ = state.update(Message::Unlocked("ab".into()));
         resolved(&mut state, Some((7, "ada".into())));
-        assert!(!state.account_step);
+        assert!(!state.sign_in.account_step);
         let mut state = signing_in();
         let _ = state.update(Message::PasskeyDone("ab".into()));
         resolved(&mut state, None);
-        assert!(!state.account_step, "the passkey made the account");
+        assert!(!state.sign_in.account_step, "the passkey made the account");
         // another key's answer neither opens nor disarms it
         let mut state = signing_in();
         let _ = state.update(Message::Unlocked("ab".into()));
@@ -1452,7 +1466,7 @@ mod tests {
             account: None,
         });
         resolved(&mut state, None);
-        assert!(state.account_step);
+        assert!(state.sign_in.account_step);
     }
 
     #[test]
@@ -1460,18 +1474,21 @@ mod tests {
         let mut state = signing_in();
         state.signer_key = "ab".into();
         let _ = state.update(Message::ShowCreateAccount);
-        assert!(state.account_step);
+        assert!(state.sign_in.account_step);
         let _ = state.update(Message::CreateAccountSubmit);
-        assert!(!state.unlock_busy, "an empty name is not sent");
-        assert!(!state.unlock_error.is_empty());
+        assert!(!state.sign_in.unlock_busy, "an empty name is not sent");
+        assert!(!state.sign_in.unlock_error.is_empty());
         let _ = state.update(Message::AccountCreated(Err("refused".into())));
-        assert!(state.account_step && state.unlock_error.contains("refused"));
+        assert!(state.sign_in.account_step && state.sign_in.unlock_error.contains("refused"));
         let _ = state.update(Message::AccountCreated(Err(
             "error sending request for url (http://127.0.0.1:1/)".into(),
         )));
-        assert!(!state.unlock_error.contains("url"), "a transport string");
+        assert!(
+            !state.sign_in.unlock_error.contains("url"),
+            "a transport string"
+        );
         let _ = state.update(Message::AccountCreated(Ok((9, "ada".into()))));
-        assert!(!state.account_step);
+        assert!(!state.sign_in.account_step);
         assert_eq!(state.account, Some(Some((9, "ada".into()))));
     }
 
