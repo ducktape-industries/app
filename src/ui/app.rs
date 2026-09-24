@@ -76,6 +76,19 @@ pub(crate) enum Stage {
     Desk,
 }
 
+/// What the model asks of the desk's windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SeatRequest {
+    /// Show the program: its window if one is open, else in the focused
+    /// one (Spotlight, a menu).
+    Select(&'static str),
+    /// Bring the program forward beside what is open, even when it is
+    /// already the active one behind another window (a link).
+    Open(&'static str),
+    /// Close every window: the network was left.
+    Unseat,
+}
+
 /// Where the person is: reaching a node, or inside it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Screen {
@@ -96,9 +109,9 @@ pub struct Ducktape {
     pub(crate) network: String,
     /// The chain links name, `<network>#<salt>` ([`ducklink::ChainId`]).
     pub(crate) chain: String,
-    /// A link asked for its seat: the desk brings it forward even when it
-    /// is already the active one, behind another window.
-    pub(crate) reveal: bool,
+    /// What the desk is asked to do with its windows, taken by the next
+    /// dispatch (`Desktop::dispatch`).
+    pub(crate) seat_request: Option<SeatRequest>,
     /// Where this network's keys live on this device
     /// ([`backend::bind_keyring`]): the name alone is not enough, two
     /// chains can share one.
@@ -277,7 +290,10 @@ pub(crate) enum AppMessage {
     /// Another node from the switcher: reached first, and only once it
     /// answers does the console leave the network in hand.
     SwitchNetwork(String),
+    /// Show a program on the desk (Spotlight, a menu).
     SelectView(&'static str),
+    /// A window now shows this program in front: it is the active one.
+    ViewShown(&'static str),
     ViewEvent(&'static str, Intent),
     OpenLink(String),
     /// A notification centre row picked: read, and its link opened.
@@ -376,7 +392,7 @@ impl Ducktape {
             connected_rpc: String::new(),
             network: String::new(),
             chain: String::new(),
-            reveal: false,
+            seat_request: None,
             keyring: String::new(),
             other_chain: false,
             network_menu: false,

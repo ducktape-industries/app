@@ -1,6 +1,6 @@
 //! The reducer: one message in, the state moved, a task out.
 
-use super::{AppMessage as Message, Appearance, Ducktape, Screen, Spot, SpotRow};
+use super::{AppMessage as Message, Appearance, Ducktape, Screen, SeatRequest, Spot, SpotRow};
 use crate::backend;
 use crate::runtime::Intent;
 use view_wire::Subscription;
@@ -292,6 +292,12 @@ impl Ducktape {
                 Task::none()
             }
             Message::SelectView(module) => {
+                self.active = Some(module);
+                self.badges.remove(module);
+                self.seat_request = Some(SeatRequest::Select(module));
+                Task::none()
+            }
+            Message::ViewShown(module) => {
                 self.active = Some(module);
                 self.badges.remove(module);
                 Task::none()
@@ -878,7 +884,7 @@ impl Ducktape {
             crate::runtime::route_to(module, route);
         }
         self.active = Some(module);
-        self.reveal = true;
+        self.seat_request = Some(SeatRequest::Open(module));
     }
 
     fn notice(&mut self, said: String) {
@@ -922,6 +928,7 @@ impl Ducktape {
         self.sign_in = Default::default();
         self.account = None;
         self.active = None;
+        self.seat_request = Some(SeatRequest::Unseat);
         self.badges.clear();
         self.network_menu = false;
         self.popover = None;
@@ -1289,7 +1296,11 @@ mod tests {
             Intent::OpenLink("duck://view-event-link/room/7".into()),
         ));
         assert_eq!(state.active, Some("view-event-link"));
-        assert!(state.reveal, "a link brings its seat forward");
+        assert_eq!(
+            state.seat_request,
+            Some(SeatRequest::Open("view-event-link")),
+            "a link brings its seat forward"
+        );
         assert_eq!(
             crate::runtime::take_route("view-event-link").as_deref(),
             Some("room/7")

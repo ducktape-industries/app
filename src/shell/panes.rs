@@ -119,9 +119,6 @@ impl DesktopWindow {
         match message {
             PaneMessage::Select(module) => {
                 self.layout.select(module);
-                self.model.update(cx, |model, cx| {
-                    model.dispatch(Message::SelectView(module), cx)
-                });
             }
             PaneMessage::Split(module) => {
                 self.layout.split(module);
@@ -199,9 +196,21 @@ impl DesktopWindow {
     }
 
     /// After the windows changed: views mounted for them, the focused one
-    /// told so, keys back at the desk.
+    /// told so (and the model: it is the active program), keys back at the
+    /// desk.
     fn settle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.sync_panes(cx);
+        let shown = self
+            .layout
+            .panes
+            .get(self.layout.focused)
+            .filter(|pane| !pane.is_empty())
+            .map(|pane| pane.module);
+        if let Some(module) = shown {
+            self.model.update(cx, |model, cx| {
+                model.dispatch(Message::ViewShown(module), cx)
+            });
+        }
         for (index, pane) in self.layout.panes.iter().enumerate() {
             if let Some(mounted) = self.mounted.get(&pane.instance) {
                 mounted.view.update(cx, |view, cx| {
@@ -222,9 +231,6 @@ impl DesktopWindow {
     ) {
         self.initialized = true;
         self.layout.open(module);
-        self.model.update(cx, |model, cx| {
-            model.dispatch(Message::SelectView(module), cx)
-        });
         self.settle(window, cx);
     }
 
