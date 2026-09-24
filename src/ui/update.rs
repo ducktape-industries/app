@@ -324,28 +324,39 @@ impl Ducktape {
             Message::OpenLink(link) => {
                 // `duck://<chain>/<program>/<tail>` on this chain, or the short
                 // `duck://<view>/<route>`: the seat opens and its view is
-                // handed the route. A link to another chain opens the seat.
+                // handed the route. The window coming forward is the answer;
+                // a notice only says what there is nothing to see of.
                 if let Some(module) = crate::runtime::local_link(&link) {
                     self.open_seat(module, None);
                     return Task::none();
                 }
                 match ducklink::Link::parse(&link) {
+                    Ok(parsed) if !crate::runtime::listed_view(&parsed.program) => {
+                        self.notice(format!("No view here opens {} links.", parsed.program));
+                    }
                     Ok(parsed) => {
                         let module = crate::runtime::intern(&parsed.program);
                         let route = parsed.tail.join("/");
-                        let here = parsed.chain.to_string() == self.chain
-                            && crate::runtime::valid_route(&route);
-                        self.open_seat(module, here.then_some(route));
+                        if parsed.chain.to_string() != self.chain {
+                            // another chain's page is not this chain's to show
+                            self.open_seat(module, None);
+                            self.notice(format!(
+                                "That link is to {}, not this network; opened {module}.",
+                                parsed.chain.label
+                            ));
+                        } else if route.is_empty() || crate::runtime::valid_route(&route) {
+                            self.open_seat(module, (!route.is_empty()).then_some(route));
+                        } else {
+                            self.open_seat(module, None);
+                            self.notice(format!("{module} can't open that part of the link."));
+                        }
                     }
                     Err(_) if link.starts_with("http://") || link.starts_with("https://") => {
                         crate::shell::open_link(link);
                     }
                     Err(_) => match crate::runtime::local_route(&link) {
                         Some((module, route)) => self.open_seat(module, Some(route)),
-                        None => {
-                            self.toast = "This link is not one this app opens.".into();
-                            self.toast_age = 0;
-                        }
+                        None => self.notice("This link is not one this app opens.".into()),
                     },
                 }
                 Task::none()
@@ -836,7 +847,10 @@ impl Ducktape {
         }
         self.active = Some(module);
         self.reveal = true;
-        self.toast = format!("Opened {module}");
+    }
+
+    fn notice(&mut self, said: String) {
+        self.toast = said;
         self.toast_age = 0;
     }
 
@@ -1213,20 +1227,31 @@ mod tests {
     fn a_link_on_this_chain_hands_its_view_the_route() {
         let (mut state, _) = Ducktape::boot();
         state.chain = "testkit#0a1b2c3d".into();
+        crate::runtime::list_for_test("link-test-here");
+        crate::runtime::list_for_test("link-test-away");
         let _ = state.update(Message::OpenLink(
             "duck://testkit-0a1b2c3d/link-test-here/tx/00ff".into(),
         ));
         assert_eq!(state.active, Some("link-test-here"));
+        assert!(state.toast.is_empty(), "the view coming forward says it");
         assert_eq!(
             crate::runtime::take_route("link-test-here").as_deref(),
             Some("tx/00ff")
         );
-        // another chain's link opens the seat and routes nothing
+        // another chain's link opens the seat, routes nothing, and says why
         let _ = state.update(Message::OpenLink(
             "duck://othernet-0a1b2c3d/link-test-away/tx/00ff".into(),
         ));
         assert_eq!(state.active, Some("link-test-away"));
         assert_eq!(crate::runtime::take_route("link-test-away"), None);
+        assert!(state.toast.contains("othernet"));
+        // a view nobody lists opens nothing
+        state.toast.clear();
+        let _ = state.update(Message::OpenLink(
+            "duck://testkit-0a1b2c3d/link-test-nowhere/x".into(),
+        ));
+        assert_eq!(state.active, Some("link-test-away"));
+        assert!(state.toast.contains("link-test-nowhere"));
     }
 
     #[test]

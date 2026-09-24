@@ -28,11 +28,11 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules dev @ 8e3cfe2d (host.route, chain links, #99), crates/sdk (abi, view-wire, ducklink, design) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "8e3cfe2d", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "8e3cfe2d", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "8e3cfe2d", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "8e3cfe2d", package = "design" }
+# --- sdk-line: modules dev @ 6589d29d (gpui-pre 8b2f818, #101), crates/sdk (abi, view-wire, ducklink, design) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "6589d29d", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "6589d29d", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "6589d29d", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "6589d29d", package = "design" }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -74,9 +74,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "8e3cfe2d", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "6589d29d", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "8e3cfe2d", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "6589d29d", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -149,10 +149,10 @@ gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.5" }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "7067cdfacd77d19fc6f78d03142987f90dfa59af" }
-rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
-gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
-gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
-gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "5545e0156ec81ef772c2af8c12283c67f646bd14" }
+rmp-serde = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8b2f818e5841843f21b39dc189a1662fbdb1f340" }
+gpui-pre-scheduler = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8b2f818e5841843f21b39dc189a1662fbdb1f340" }
+gpui-pre-zlog = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8b2f818e5841843f21b39dc189a1662fbdb1f340" }
+gpui-pre = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "8b2f818e5841843f21b39dc189a1662fbdb1f340" }
 
 # dev/test builds compile wasm guests through cranelift (module-owned view
 # fixtures); unoptimized cranelift is 10-30x slower, so the code generator

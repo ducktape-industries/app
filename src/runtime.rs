@@ -23,8 +23,11 @@ mod widget;
 
 pub(crate) use kernel::chord_of;
 pub(crate) use media::capturing;
+#[cfg(test)]
+pub(crate) use roster::list_for_test;
 pub use roster::{
-    RailRow, connected, deployments_checked, local_link, local_route, props, rail, valid_route,
+    RailRow, connected, deployments_checked, listed_view, local_link, local_route, props, rail,
+    valid_route,
 };
 pub(crate) use seat::{Failure, NODE_UNREACHABLE, retry};
 pub use seat::{Loads, override_views_from};

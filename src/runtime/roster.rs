@@ -47,6 +47,23 @@ pub(super) fn listed_code(module: &str) -> Option<(abi::BlobId, bool)> {
         .map(|program| (program.code, program.bare))
 }
 
+/// Whether the roster lists `module`: a link to anything else names nothing.
+pub fn listed_view(module: &str) -> bool {
+    listed_code(module).is_some()
+}
+
+#[cfg(test)]
+pub(crate) fn list_for_test(module: &str) {
+    listed()
+        .lock()
+        .unwrap()
+        .push(crate::backend::views::Program {
+            name: module.into(),
+            code: abi::BlobId::Sha256([0; 32]),
+            bare: false,
+        });
+}
+
 /// A code id as the 32-byte hash a seat records: sha256 as is, sha1 padded.
 pub(super) fn code_digest(code: &abi::BlobId) -> [u8; 32] {
     let mut digest = [0; 32];
