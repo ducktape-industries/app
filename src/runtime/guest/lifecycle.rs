@@ -320,12 +320,6 @@ impl Guest {
 
     pub(crate) fn load_from(module: &'static str, path: &std::path::Path) -> Result<Self, String> {
         let shown = path.display().to_string();
-        let metadata = std::fs::metadata(path).map_err(|error| format!("{shown}: {error}"))?;
-        if metadata.len() > MAX_MODULE_BYTES {
-            return Err(format!(
-                "{shown}: past the {MAX_MODULE_BYTES} byte module limit"
-            ));
-        }
         let bytes = std::fs::read(path).map_err(|error| format!("{shown}: {error}"))?;
         Self::from_bytes(module, &bytes, &shown)
     }
@@ -346,11 +340,6 @@ impl Guest {
     /// The view's bytes checked and compiled — the cranelift stage of
     /// a load, measured on its own.
     pub(crate) fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Module>, Failure> {
-        if bytes.len() as u64 > MAX_MODULE_BYTES {
-            return Err(Failure::Refused(format!(
-                "{shown}: past the {MAX_MODULE_BYTES} byte module limit"
-            )));
-        }
         // its preferred size is for placing a new window; the tab embeds
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
