@@ -22,6 +22,8 @@ pub fn props(dark: bool, connected: bool, network: &str, account: &str, endpoint
 pub(super) struct Connection {
     pub(super) client: Option<crate::backend::RpcClient>,
     pub(super) network: String,
+    /// The chain id (`<network>#<salt>`) a view's `store` is kept under.
+    pub(super) chain: String,
     pub(super) rev: u64,
 }
 
@@ -123,12 +125,13 @@ pub fn rail() -> Vec<RailRow> {
 
 /// A node was connected: every seat is asked again of it, and the roster
 /// is read so the rail lists what the network runs.
-pub fn connected(client: &crate::backend::RpcClient, network: &str) -> Loads {
+pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str) -> Loads {
     let snapshot = {
         let mut connection = connection().lock().expect("views rpc");
         connection.rev += 1;
         connection.client = Some(client.clone());
         connection.network = network.to_owned();
+        connection.chain = chain.to_owned();
         connection.clone()
     };
     let registry = registry().lock().expect("module views");

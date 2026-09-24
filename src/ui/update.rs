@@ -111,7 +111,11 @@ impl Ducktape {
                 self.status_misses = 0;
                 self.screen = Screen::Console;
                 self.apply_status(&status);
-                drop(crate::runtime::connected(&client, &self.network));
+                drop(crate::runtime::connected(
+                    &client,
+                    &self.network,
+                    &self.chain,
+                ));
                 let window = match self.console_win {
                     Some(key) => crate::shell::raise(key),
                     None => {
