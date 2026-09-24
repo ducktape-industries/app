@@ -22,6 +22,31 @@ pub(super) fn cascade(source: Bounds<Pixels>, display: Option<Bounds<Pixels>>) -
     Bounds::new(origin, extent)
 }
 
+/// Where a window leaving the desk opens: on the screen right where it sat,
+/// under the console's bar rather than over it, and inside `display`.
+/// With no place on the desk to keep, it cascades.
+pub(super) fn unseated(
+    source: Bounds<Pixels>,
+    frame: Option<layout::Frame>,
+    display: Option<Bounds<Pixels>>,
+) -> Bounds<Pixels> {
+    let Some(frame) = frame else {
+        return cascade(source, display);
+    };
+    let extent = size(px(frame.w.max(720.)), px(frame.h.max(480.)));
+    let mut origin = point(
+        source.origin.x + px(frame.x),
+        source.origin.y + px(desk::BAR + frame.y),
+    );
+    if let Some(display) = display {
+        let right = display.origin.x + display.size.width - extent.width;
+        let bottom = display.origin.y + display.size.height - extent.height;
+        origin.x = origin.x.min(right).max(display.origin.x);
+        origin.y = origin.y.min(bottom).max(display.origin.y);
+    }
+    Bounds::new(origin, extent)
+}
+
 impl Desktop {
     pub(super) fn open_window(
         &mut self,
@@ -167,6 +192,23 @@ mod tests {
 
     fn frame(x: f32, y: f32, width: f32, height: f32) -> Bounds<Pixels> {
         Bounds::new(point(px(x), px(y)), size(px(width), px(height)))
+    }
+
+    #[test]
+    fn a_window_leaving_the_desk_opens_where_it_sat_under_the_bar() {
+        let seat = layout::Frame {
+            x: 100.,
+            y: 50.,
+            w: 900.,
+            h: 600.,
+        };
+        let display = frame(0., 0., 2560., 1440.);
+        let at = unseated(frame(200., 100., 1280., 800.), Some(seat), Some(display));
+        assert_eq!(at, frame(300., 100. + desk::BAR + 50., 900., 600.));
+        assert!(
+            at.origin.y >= px(100. + desk::BAR),
+            "the console's bar stays uncovered"
+        );
     }
 
     #[test]
