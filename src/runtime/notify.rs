@@ -15,11 +15,10 @@
 //! A non-empty `tag` replaces the view's standing banner under it, and
 //! folds the centre's rows under it into one with a count.
 //!
-//! A click on a banner opens its row, the way the centre's row does, where
-//! the desktop says so: freedesktop's `ActionInvoked` on the banner's
-//! default action. macOS would need a notification-centre delegate on an
-//! app object this process does not own, so there a banner is fire and
-//! forget and the centre's row is the way to a notice's link.
+//! A click on a banner opens its row, the way the centre's row does:
+//! freedesktop's `ActionInvoked` on the banner's default action, and on
+//! macOS the notification centre's delegate hearing the default action on a
+//! banner that names its row (`targetContentIdentifier`).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
@@ -572,6 +571,19 @@ fn in_order(module: &str, job: impl FnOnce() + Send + 'static) {
     let _ = queue.send(Box::new(job));
 }
 
+/// A banner clicked: its row opens as if picked in the centre — read now,
+/// and its `duck://` link opened (the view's seat, when it carried none).
+fn clicked(entry: u64) {
+    let Some(entry) = center().open(entry) else {
+        return;
+    };
+    let link = match entry.link.is_empty() {
+        true => format!("duck://{}", entry.module),
+        false => entry.link,
+    };
+    crate::shell::open_link(link);
+}
+
 /// macOS raises banners through the user-notification centre, which
 /// TERMINATES a process that has no bundle identifier — not an error a
 /// caller can catch, the process dies. `cargo test`, `cargo run` and any
@@ -580,10 +592,14 @@ fn in_order(module: &str, job: impl FnOnce() + Send + 'static) {
 mod platform {
     use super::Notice;
     use objc2::rc::Retained;
-    use objc2_foundation::{NSBundle, NSString};
+    use objc2::runtime::{Bool, NSObject, NSObjectProtocol, ProtocolObject};
+    use objc2::{ClassType, DeclaredClass, declare_class, msg_send_id, mutability};
+    use objc2_foundation::{NSBundle, NSError, NSString};
     use objc2_user_notifications::{
-        UNMutableNotificationContent, UNNotificationRequest, UNNotificationSound,
-        UNUserNotificationCenter,
+        UNAuthorizationOptions, UNMutableNotificationContent, UNNotification,
+        UNNotificationDefaultActionIdentifier, UNNotificationPresentationOptions,
+        UNNotificationRequest, UNNotificationResponse, UNNotificationSound,
+        UNUserNotificationCenter, UNUserNotificationCenterDelegate,
     };
 
     fn bundled() -> bool {
@@ -591,7 +607,74 @@ mod platform {
         unsafe { NSBundle::mainBundle().bundleIdentifier().is_some() }
     }
 
-    pub(super) fn post(notice: &Notice, _entry: Option<u64>) -> bool {
+    declare_class!(
+        /// The notification centre's delegate: a banner the host raised
+        /// shows even while this app is in front (the host already decided
+        /// it should), and a click on one opens the row it names.
+        struct Clicks;
+
+        unsafe impl ClassType for Clicks {
+            type Super = NSObject;
+            type Mutability = mutability::InteriorMutable;
+            const NAME: &'static str = "DucktapeNoticeClicks";
+        }
+
+        impl DeclaredClass for Clicks {}
+
+        unsafe impl NSObjectProtocol for Clicks {}
+
+        unsafe impl UNUserNotificationCenterDelegate for Clicks {
+            #[method(userNotificationCenter:willPresentNotification:withCompletionHandler:)]
+            fn will_present(
+                &self,
+                _centre: &UNUserNotificationCenter,
+                _notification: &UNNotification,
+                shown: &block2::Block<dyn Fn(UNNotificationPresentationOptions)>,
+            ) {
+                shown.call((UNNotificationPresentationOptions::UNNotificationPresentationOptionBanner
+                    | UNNotificationPresentationOptions::UNNotificationPresentationOptionList
+                    | UNNotificationPresentationOptions::UNNotificationPresentationOptionSound,));
+            }
+
+            #[method(userNotificationCenter:didReceiveNotificationResponse:withCompletionHandler:)]
+            fn did_receive(
+                &self,
+                _centre: &UNUserNotificationCenter,
+                response: &UNNotificationResponse,
+                done: &block2::Block<dyn Fn()>,
+            ) {
+                // SAFETY: reads off the response the framework hands in.
+                let (action, target) = unsafe {
+                    (
+                        response.actionIdentifier(),
+                        response.notification().request().content().targetContentIdentifier(),
+                    )
+                };
+                // SAFETY: a framework constant.
+                let default = &*action == unsafe { UNNotificationDefaultActionIdentifier };
+                let entry = target.and_then(|target| target.to_string().parse::<u64>().ok());
+                if let Some(entry) = entry.filter(|_| default) {
+                    super::clicked(entry);
+                }
+                done.call(());
+            }
+        }
+    );
+
+    /// The centre holds its delegate weakly: this one is kept for the life
+    /// of the process.
+    fn listen(centre: &UNUserNotificationCenter) {
+        static LISTENING: std::sync::Once = std::sync::Once::new();
+        LISTENING.call_once(|| {
+            let clicks: Retained<Clicks> =
+                unsafe { msg_send_id![super(Clicks::alloc().set_ivars(())), init] };
+            // SAFETY: the delegate outlives the centre's use of it (leaked).
+            unsafe { centre.setDelegate(Some(ProtocolObject::from_ref(&*clicks))) };
+            std::mem::forget(clicks);
+        });
+    }
+
+    pub(super) fn post(notice: &Notice, entry: Option<u64>) -> bool {
         if !bundled() {
             tracing::debug!(
                 target: "ducktape::app",
@@ -602,13 +685,18 @@ mod platform {
         }
         // SAFETY: plain framework work on objects this function owns; the
         // centre is thread-safe by contract and copies what it is handed.
-        unsafe {
+        let (centre, request) = unsafe {
             let centre = UNUserNotificationCenter::currentNotificationCenter();
+            listen(&centre);
             let content = UNMutableNotificationContent::new();
             content.setTitle(&NSString::from_str(&notice.title));
             content.setBody(&NSString::from_str(&notice.body));
             if !notice.tag.is_empty() {
                 content.setThreadIdentifier(&NSString::from_str(&notice.tag));
+            }
+            // the row a click opens
+            if let Some(entry) = entry {
+                content.setTargetContentIdentifier(Some(&NSString::from_str(&entry.to_string())));
             }
             content.setSound(Some(&UNNotificationSound::defaultSound()));
             // A tag REPLACES: the platform keys a standing notice by this
@@ -623,9 +711,32 @@ mod platform {
                     &content,
                     None,
                 );
-            centre.addNotificationRequest_withCompletionHandler(&request, None);
+            (centre, request)
+        };
+        // The person's word comes first: macOS asks them on the first
+        // banner, and answers every later ask from what they said. Unasked,
+        // the centre refuses every request.
+        let (said, heard) = std::sync::mpsc::channel();
+        let asked = centre.clone();
+        let answered = block2::RcBlock::new(move |granted: Bool, _: *mut NSError| {
+            if granted.as_bool() {
+                // SAFETY: as above.
+                unsafe { asked.addNotificationRequest_withCompletionHandler(&request, None) };
+            }
+            let _ = said.send(granted.as_bool());
+        });
+        // SAFETY: as above; the block is copied by the framework.
+        unsafe {
+            centre.requestAuthorizationWithOptions_completionHandler(
+                UNAuthorizationOptions::UNAuthorizationOptionAlert
+                    | UNAuthorizationOptions::UNAuthorizationOptionSound,
+                &answered,
+            );
         }
-        true
+        // still asking the person: the banner goes up when they allow it
+        heard
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap_or(true)
     }
 
     fn fresh() -> u64 {
@@ -722,18 +833,9 @@ mod platform {
                             .expect("banner clicks")
                             .get(&banner)
                             .copied();
-                        if action != "default" {
-                            continue;
+                        if let Some(entry) = entry.filter(|_| action == "default") {
+                            super::clicked(entry);
                         }
-                        let Some(entry) = entry.and_then(|entry| super::center().open(entry))
-                        else {
-                            continue;
-                        };
-                        let link = match entry.link.is_empty() {
-                            true => format!("duck://{}", entry.module),
-                            false => entry.link,
-                        };
-                        crate::shell::open_link(link);
                     }
                 });
             if let Err(error) = spawned {
