@@ -345,6 +345,7 @@ impl Guest {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
         wire_epoch(manifest.wire_epoch)
+            .and_then(|()| doors_revision(manifest.doors))
             .map_err(|error| Failure::WireEpoch(format!("{shown}: {error}")))?;
         compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))
     }

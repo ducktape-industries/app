@@ -542,3 +542,43 @@ fn host_id_answers_a_borsh_string_a_view_can_decode() {
         doors::decode(&bytes).expect("a view decodes `host.id`'s reply as one borsh String");
     assert!(minted.starts_with("channel-"), "{minted}");
 }
+
+/// The kinds this host routes, read from its own `("<cap>", "<op>")` match
+/// arms under `src/runtime`, are exactly `doors::ALL`: `every_door_is_answered`
+/// is the one direction, this the other — nothing is served that is not a door.
+#[test]
+fn the_routed_kinds_are_exactly_the_doors() {
+    let mut served = std::collections::BTreeSet::new();
+    let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime")];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs")
+                && !path.to_string_lossy().contains("test")
+            {
+                for line in std::fs::read_to_string(&path).unwrap().lines() {
+                    served.extend(routed_kind(line));
+                }
+            }
+        }
+    }
+    let all: std::collections::BTreeSet<String> =
+        doors::ALL.iter().map(|kind| (*kind).to_owned()).collect();
+    let unserved: Vec<_> = all.difference(&served).collect();
+    let unknown: Vec<_> = served.difference(&all).collect();
+    assert!(
+        unserved.is_empty() && unknown.is_empty(),
+        "doors not routed: {unserved:?}; routed kinds that are not doors: {unknown:?}"
+    );
+}
+
+/// `("host", "badge")` on a line → `host.badge`.
+fn routed_kind(line: &str) -> Option<String> {
+    let (_, rest) = line.split_once("(\"")?;
+    let (capability, rest) = rest.split_once("\", \"")?;
+    let (operation, _) = rest.split_once("\")")?;
+    let word = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
+    (word(capability) && word(operation)).then(|| format!("{capability}.{operation}"))
+}

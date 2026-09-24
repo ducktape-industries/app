@@ -465,5 +465,18 @@ pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {
     })
 }
 
+/// The doors a view was built against, refused at load when this app has
+/// fewer: the view would otherwise run until it asks for one.
+pub(super) fn doors_revision(needed: u32) -> Result<(), String> {
+    (needed <= wire::doors::DOORS_REVISION)
+        .then_some(())
+        .ok_or_else(|| {
+            format!(
+                "this view needs doors revision {needed}; this app has {}",
+                wire::doors::DOORS_REVISION
+            )
+        })
+}
+
 #[cfg(test)]
 mod tests;

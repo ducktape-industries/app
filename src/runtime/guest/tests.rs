@@ -387,3 +387,12 @@ fn a_core_module_view_inits_ticks_snapshots_and_restores() {
     assert_eq!(next.fault, None);
     assert_eq!(label(&next).0, "1");
 }
+
+#[test]
+fn a_view_built_against_newer_doors_is_refused_at_load() {
+    let now = wire::doors::DOORS_REVISION;
+    assert!(doors_revision(0).is_ok(), "a v1 manifest names none");
+    assert!(doors_revision(now).is_ok());
+    let refused = doors_revision(now + 1).unwrap_err();
+    assert!(refused.contains(&format!("{}", now + 1)), "{refused}");
+}
