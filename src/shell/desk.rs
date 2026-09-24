@@ -374,7 +374,7 @@ impl DesktopWindow {
         id: &'static str,
         role: gpui_kit::Role,
         name: &'static str,
-        close: fn() -> Message,
+        closes: crate::Overlay,
         scrim: bool,
         ink: &super::ink::Ink,
         dress: impl FnOnce(gpui_kit::Stateful<gpui_kit::Div>) -> gpui_kit::Stateful<gpui_kit::Div>,
@@ -393,7 +393,9 @@ impl DesktopWindow {
                 backdrop.bg(ink.bg.opacity(0.6)).flex().justify_center()
             })
             .on_click(move |_, _, cx| {
-                model.update(cx, |model, cx| model.dispatch(close(), cx));
+                model.update(cx, |model, cx| {
+                    model.dispatch(Message::CloseOverlay(closes), cx)
+                });
             });
         let card = div()
             .id(id)
@@ -414,8 +416,7 @@ impl DesktopWindow {
     /// from the window's right edge.
     fn hanging(
         &self,
-        id: &'static str,
-        name: &'static str,
+        which: crate::Popover,
         right: f32,
         width: f32,
         body: impl IntoElement,
@@ -423,11 +424,16 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
+        let (id, name) = match which {
+            crate::Popover::Node => ("node-status", "Node status"),
+            crate::Popover::Account => ("account-menu", "Account"),
+            crate::Popover::Notifications => ("notifications", "Notifications"),
+        };
         self.overlay(
             id,
             Role::Dialog,
             name,
-            || Message::ClosePopover,
+            crate::Overlay::Menu(which),
             false,
             &ink,
             |card| {
@@ -607,7 +613,7 @@ impl DesktopWindow {
                 self.dispatching(|| Message::ToggleNetworkMenu),
                 cx,
             ));
-        self.hanging("node-status", "Node status", 120., 340., body, cx)
+        self.hanging(crate::Popover::Node, 120., 340., body, cx)
     }
 
     /// The bell's panel (the NotifCenter board): 400 wide under the bell,
@@ -873,7 +879,7 @@ impl DesktopWindow {
             .child(header)
             .child(list)
             .child(footer);
-        self.hanging("notifications", "Notifications", right, width, body, cx)
+        self.hanging(crate::Popover::Notifications, right, width, body, cx)
     }
 
     /// Who is signed in, and the ways out.
@@ -954,7 +960,7 @@ impl DesktopWindow {
                         cx,
                     )),
             );
-        self.hanging("account-menu", "Account", 44., 300., body, cx)
+        self.hanging(crate::Popover::Account, 44., 300., body, cx)
     }
 
     /// "Add a device…": the code a new device shows, then its fingerprint
@@ -1040,7 +1046,7 @@ impl DesktopWindow {
         let cancel = self.link(
             "approve-cancel",
             "Cancel",
-            || Message::ApproveClose,
+            || Message::CloseOverlay(crate::Overlay::Approve),
             false,
             &ink,
         );
@@ -1048,7 +1054,7 @@ impl DesktopWindow {
             "approve",
             Role::Dialog,
             "Add a device",
-            || Message::ApproveClose,
+            crate::Overlay::Approve,
             true,
             &ink,
             |card| {
@@ -1177,7 +1183,7 @@ impl DesktopWindow {
             "spotlight",
             Role::Dialog,
             "Search",
-            || Message::CloseSpotlight,
+            crate::Overlay::Spotlight,
             true,
             &ink,
             |card| {

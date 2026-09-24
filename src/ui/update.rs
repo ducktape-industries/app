@@ -1,1128 +1,106 @@
-//! The reducer: one message in, the state moved, a task out.
+//! The reducer: one message in, the state moved, a task out. Each domain
+//! has its own sub-reducer; this match only routes.
 
-use super::{
-    AppMessage as Message, Appearance, Ducktape, Overlay, Screen, SeatRequest, Spot, SpotRow,
-};
-use crate::backend;
-use crate::runtime::Intent;
+use super::{AppMessage as Message, Ducktape};
 use view_wire::Subscription;
 use view_wire::Task;
 
 /// How often the node's status is asked for while connected.
-const STATUS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+pub(super) const STATUS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Ducktape {
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        use Message as M;
         match message {
-            Message::SetAppearance(mode) => {
-                self.appearance = mode;
-                backend::save_appearance(mode);
-                Task::none()
-            }
-            // A new address or a new try makes the last failure's sentence
-            // stale: it named a node this attempt is not about.
-            Message::EndpointTyped(text) => {
-                self.endpoint = text;
-                self.endpoint_error.clear();
-                self.error.clear();
-                Task::none()
-            }
-            Message::ConnectSubmit => match backend::endpoint_origin(&self.endpoint) {
-                Some(origin) => self.update(Message::ConnectTo(origin)),
-                None => {
-                    self.error.clear();
-                    self.endpoint_error = backend::ENDPOINT_REFUSAL.into();
-                    Task::none()
-                }
-            },
-            Message::ConnectTo(origin) => {
-                self.endpoint = origin.clone();
-                self.endpoint_error.clear();
-                self.error.clear();
-                self.connecting = true;
-                self.status = format!("Reaching {origin}…");
-                self.connect_generation += 1;
-                let generation = self.connect_generation;
-                let (task, handle) = Task::future(async move {
-                    let client = backend::RpcClient::new(origin.clone());
-                    let status =
-                        tokio::time::timeout(std::time::Duration::from_secs(10), client.status())
-                            .await;
-                    match status {
-                        Ok(Ok(status)) => Message::Connected {
-                            generation,
-                            origin,
-                            status,
-                        },
-                        Ok(Err(error)) => Message::ConnectFailed {
-                            generation,
-                            error: error.to_string(),
-                        },
-                        Err(_) => Message::ConnectFailed {
-                            generation,
-                            error: "the node did not answer in time".into(),
-                        },
-                    }
-                })
-                .abortable();
-                self.connect_task = Some(handle.abort_on_drop());
-                task
-            }
-            Message::Connected {
-                generation,
-                origin,
-                status,
-            } => {
-                if generation != self.connect_generation {
-                    return Task::none();
-                }
-                self.connect_task = None;
-                self.connecting = false;
-                // refused like a node that never answered — a switch keeps
-                // the network in hand
-                if status.contract != backend::noded::NODE_CONTRACT {
-                    let error = format!(
-                        "this node speaks contract {}; this app speaks {}",
-                        status.contract,
-                        backend::noded::NODE_CONTRACT
-                    );
-                    return self.update(Message::ConnectFailed { generation, error });
-                }
-                let keyring = match backend::bind_keyring(&status.network, status.time) {
-                    Ok(keyring) => keyring,
-                    Err(error) => return self.update(Message::ConnectFailed { generation, error }),
-                };
-                let left = self.take_up(keyring.clone());
-                let client = backend::RpcClient::new(origin.clone());
-                backend::note_endpoint(backend::RecentEndpoint {
-                    url: origin.clone(),
-                    network: status.network.clone(),
-                    founded: status.time,
-                    other_chain: keyring.other_chain,
-                });
-                self.recent_endpoints = backend::recent_endpoints();
-                self.connected_rpc = origin;
-                self.network = status.network.clone();
-                // the chain id links name: the network and its genesis salt
-                self.chain = ducklink::ChainId::of(&status.network, &status.genesis)
-                    .map_or_else(|| status.network.clone(), |chain| chain.to_string());
-                crate::runtime::notify::center().set_network(&self.chain);
-                self.connected = true;
-                self.status_misses = 0;
-                self.screen = Screen::Console;
-                self.apply_status(&status);
-                drop(crate::runtime::connected(
-                    &client,
-                    &self.network,
-                    &self.chain,
-                ));
-                let window = match self.console_win {
-                    Some(key) => crate::shell::raise(key),
-                    None => {
-                        let (key, opened) = crate::shell::open(crate::shell::WindowKind::Console);
-                        self.console_win = Some(key);
-                        opened.map(Message::ConsoleOpened)
-                    }
-                };
-                Task::batch([left, window, self.open_device_key(), self.resolve_account()])
-            }
-            Message::ConnectFailed { generation, error } => {
-                if generation != self.connect_generation {
-                    return Task::none();
-                }
-                self.connect_task = None;
-                self.connecting = false;
-                // A node this device reached before is named by its network,
-                // the way the Recent list names it.
-                let who = self
-                    .recent_endpoints
-                    .iter()
-                    .find(|entry| entry.url == self.endpoint && !entry.network.is_empty())
-                    .map(|entry| format!("{} ({})", entry.network, entry.url))
-                    .unwrap_or_else(|| self.endpoint.clone());
-                let error = backend::connect_error(&who, error);
-                // A switch that did not land: the network in hand stays, as
-                // it was, and the failure is said over it.
-                if self.connected {
-                    self.endpoint = self.connected_rpc.clone();
-                    self.status = format!("Connected · block {}", self.height);
-                    return self.update(Message::ShowToast(error));
-                }
-                self.status = "Not connected".into();
-                self.error = error;
-                Task::none()
-            }
-            Message::StatusPushed(status) => {
-                let moved = i64::try_from(status.height).unwrap_or(-1) != self.height;
-                self.status_misses = 0;
-                self.apply_status(&status);
-                if !moved {
-                    return Task::none();
-                }
-                drop(crate::runtime::deployments_checked());
-                // a block may have created the account, or renamed it
-                self.resolve_account()
-            }
-            Message::StatusMissed => {
-                self.status_misses = self.status_misses.saturating_add(1);
-                if self.reconnecting() {
-                    self.status = "Reconnecting…".into();
-                }
-                Task::none()
-            }
-            // After a sign-in the key screen stays up (`stage()`, while the
-            // offer is armed) until the node answers: a key with no account
-            // goes on to the account step, one with an account to the
-            // console, and neither shows the other first.
-            Message::AccountResolved { node, key, account } => {
-                if node == self.connected_rpc && key == self.signer_key {
-                    self.sign_in.account_step |= offers_account_step(
-                        std::mem::take(&mut self.sign_in.account_offer),
-                        &account,
-                    );
-                    self.account = Some(account);
-                }
-                Task::none()
-            }
-            Message::Disconnect => {
-                self.connect_generation += 1;
-                self.connect_task = None;
-                self.connected = false;
-                self.connecting = false;
-                self.status_misses = 0;
-                self.connected_rpc.clear();
-                self.network.clear();
-                self.chain.clear();
-                self.status = "Not connected".into();
-                self.screen = Screen::Connect;
-                self.leave_network()
-            }
-            Message::ToggleNetworkMenu => {
-                self.toggle(Overlay::Network);
-                Task::none()
-            }
-            Message::CloseNetworkMenu => {
-                self.close(Overlay::Network);
-                Task::none()
-            }
-            // The console stays on the network in hand while the other is
-            // reached: the status reads "Reaching …", and a node that does not
-            // answer leaves everything as it was (`ConnectFailed`).
-            Message::SwitchNetwork(origin) => {
-                self.close(Overlay::Network);
-                if origin == self.connected_rpc && !self.connecting {
-                    return Task::none();
-                }
-                self.update(Message::ConnectTo(origin))
-            }
-            Message::TogglePopover(which) => {
-                self.toggle(Overlay::Menu(which));
-                Task::none()
-            }
-            Message::ClosePopover => {
-                self.close_menu();
-                Task::none()
-            }
-            Message::OpenSpotlight => {
-                self.overlay = Some(Overlay::Spotlight);
-                self.spotlight_query.clear();
-                self.spotlight_pick = 0;
-                Task::none()
-            }
-            Message::CloseSpotlight => {
-                self.close(Overlay::Spotlight);
-                self.spotlight_query.clear();
-                Task::none()
-            }
-            Message::SpotlightTyped(text) => {
-                self.spotlight_query = text;
-                self.spotlight_pick = 0;
-                Task::none()
-            }
-            Message::SpotlightMove { down, rows } => {
-                self.spotlight_pick = match (down, rows) {
-                    (_, 0) => 0,
-                    (true, rows) => (self.spotlight_pick + 1).min(rows - 1),
-                    (false, _) => self.spotlight_pick.saturating_sub(1),
-                };
-                Task::none()
-            }
-            Message::SpotlightSubmit => {
-                let rows = self.spotlight_rows();
-                match rows.into_iter().nth(self.spotlight_pick) {
-                    Some(row) => self.update(Message::Spot(row.spot)),
-                    None => Task::none(),
-                }
-            }
-            Message::Spot(spot) => {
-                self.close(Overlay::Spotlight);
-                self.spotlight_query.clear();
-                let message = match spot {
-                    Spot::Open(module) => Message::SelectView(module),
-                    Spot::Switch(url) => Message::SwitchNetwork(url),
-                    Spot::Settings => Message::OpenSettings,
-                    Spot::CreateAccount => Message::ShowCreateAccount,
-                    Spot::Lock => Message::Lock,
-                    Spot::Appearance(mode) => Message::SetAppearance(mode),
-                    Spot::OtherNetwork => Message::Disconnect,
-                };
-                self.update(message)
-            }
-            Message::OpenSettings => {
-                self.overlay = Some(Overlay::Settings);
-                Task::none()
-            }
-            Message::CloseSettings => {
-                self.close(Overlay::Settings);
-                Task::none()
-            }
-            Message::ShowSettingsPage(page) => {
-                self.settings_page = page;
-                Task::none()
-            }
-            Message::SetMotion(on) => {
-                self.motion = on;
-                backend::save_motion(on);
-                Task::none()
-            }
-            Message::SelectView(module) => {
-                self.active = Some(module);
-                self.badges.remove(module);
-                self.seat_request = Some(SeatRequest::Select(module));
-                Task::none()
-            }
-            Message::ViewShown(module) => {
-                self.active = Some(module);
-                self.badges.remove(module);
-                Task::none()
-            }
-            Message::ViewEvent(module, intent) => match intent {
-                Intent::Badge(count) if count > 0 => {
-                    self.badges.insert(module, count);
-                    Task::none()
-                }
-                Intent::Badge(_) => {
-                    self.badges.remove(module);
-                    Task::none()
-                }
-                Intent::OpenLink(link) => self.update(Message::OpenLink(link)),
-                // the dispatch redraws
-                Intent::Notified => Task::none(),
-            },
-            Message::NotifyOpen(id) => {
-                self.close_menu();
-                let entry = crate::runtime::notify::center().open(id);
-                match entry {
-                    Some(entry) if !entry.link.is_empty() => {
-                        return self.update(Message::OpenLink(entry.link));
-                    }
-                    Some(entry) if crate::runtime::listed_view(&entry.module) => {
-                        self.open_seat(crate::runtime::intern(&entry.module), None);
-                    }
-                    _ => {}
-                }
-                Task::none()
-            }
-            Message::NotifyMarkAllRead => {
-                crate::runtime::notify::center().mark_all_read();
-                Task::none()
-            }
-            Message::NotifyClearRead => {
-                crate::runtime::notify::center().clear_read();
-                Task::none()
-            }
-            Message::NotifySettings => {
-                self.settings_page = super::SettingsPage::Notifications;
-                self.update(Message::OpenSettings)
-            }
-            Message::NotifyPermission(module, permission) => {
-                crate::runtime::notify::set_permission(module, permission);
-                Task::none()
-            }
-            Message::NotifyNotNow(module) => {
-                crate::runtime::notify::not_now(module);
-                Task::none()
-            }
-            Message::SetNotifyBanners(on) => {
-                crate::runtime::notify::save_banners(on);
-                Task::none()
-            }
-            Message::SetNotifyInFront(show) => {
-                crate::runtime::notify::save_in_front(show);
-                Task::none()
-            }
-            Message::SetNotifyBurst(burst) => {
-                crate::runtime::notify::save_burst(burst);
-                Task::none()
-            }
-            Message::OpenLink(link) => {
-                // `duck://<chain>/<program>/<tail>` on this chain, or the short
-                // `duck://<view>/<route>`: the seat opens and its view is
-                // handed the route. The window coming forward is the answer;
-                // a notice only says what there is nothing to see of.
-                use crate::runtime::Link;
-                match crate::runtime::parse_link(&link) {
-                    Link::View { module, route } => self.open_seat(module, route),
-                    Link::Chain(parsed) if !crate::runtime::listed_view(&parsed.program) => {
-                        self.notice(format!("No view here opens {} links.", parsed.program));
-                    }
-                    Link::Chain(parsed) => {
-                        let module = crate::runtime::intern(&parsed.program);
-                        let route = parsed.tail.join("/");
-                        if parsed.chain.to_string() != self.chain {
-                            // another chain's page is not this chain's to show
-                            self.open_seat(module, None);
-                            self.notice(format!(
-                                "That link is to {}, not this network; opened {module}.",
-                                parsed.chain.label
-                            ));
-                        } else if route.is_empty() || crate::runtime::valid_route(&route) {
-                            self.open_seat(module, (!route.is_empty()).then_some(route));
-                        } else {
-                            self.open_seat(module, None);
-                            self.notice(format!("{module} can't open that part of the link."));
-                        }
-                    }
-                    Link::Web(url) => return crate::shell::open_url(url),
-                    Link::Unknown => self.notice("This link is not one this app opens.".into()),
-                }
-                Task::none()
-            }
-            Message::PasswordTyped(text) => {
-                self.sign_in.password = text;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            // With no password typed, Unlock reopens this device's OS-kept
-            // key (after a Lock). With one, it opens a password-locked key
-            // from before keys moved into the OS, and moves it there: the
-            // password is asked this once. The typed password is copied, not
-            // taken: a failed try leaves model and field in agreement.
-            Message::UnlockSubmit => {
-                if self.sign_in.unlock_busy {
-                    return Task::none();
-                }
-                self.sign_in.locked = false;
-                self.sign_in.unlock_error.clear();
-                if !self.key_exists {
-                    return self.open_device_key();
-                }
-                if self.sign_in.password.is_empty() {
-                    self.sign_in.unlock_error = "Type this key's password first.".into();
-                    return Task::none();
-                }
-                let password = zeroize::Zeroizing::new(self.sign_in.password.clone());
-                let keyring = self.keyring.clone();
-                self.sign_in.unlock_busy = true;
-                Task::future(async move {
-                    let opened = tokio::task::spawn_blocking(move || {
-                        let path = backend::session_key_path(&keyring)?;
-                        let key = keystore::userkey::open_user_key_at(&path, &password)?;
-                        // kept by the OS from now on; a refusal only means
-                        // the password is asked again next time
-                        if let Err(error) = backend::device_key::save(&keyring, &key) {
-                            tracing::info!(target: "ducktape::keys", %error, "password-locked key not moved into the OS");
-                        }
-                        Ok::<_, String>(key)
-                    })
-                    .await
-                    .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
-                    match opened {
-                        Ok(key) => Message::Unlocked(backend::seat_key(key).await),
-                        Err(error) => Message::UnlockFailed(backend::user_error(error)),
-                    }
-                })
-            }
-            Message::DeviceKey(found) => {
-                self.sign_in.seating = false;
-                match found {
-                    Ok(Some(pubkey)) => {
-                        self.key_exists = false;
-                        self.update(Message::Unlocked(pubkey))
-                    }
-                    // only a password-locked key here: the key screen asks
-                    Ok(None) => Task::none(),
-                    Err(error) => {
-                        self.sign_in.unlock_error = error;
-                        Task::none()
-                    }
-                }
-            }
-            Message::RecoveryKeyStart => {
-                self.close_menu();
-                self.forget_phrase();
-                self.sign_in.phrase = backend::join::new_recovery_phrase();
-                Task::none()
-            }
-            Message::PhraseCancel => {
-                self.forget_phrase();
-                Task::none()
-            }
-            Message::PhraseWrittenDown => {
-                self.sign_in.phrase_quiz = Some(quiz_positions(
-                    self.sign_in.phrase.split_whitespace().count(),
-                ));
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::PhraseWordTyped(nth, text) => {
-                if let Some(answer) = self.sign_in.quiz_answers.get_mut(nth) {
-                    answer.zeroize();
-                    *answer = text;
-                }
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            // The words checked: the key they make goes onto the account.
-            Message::PhraseCheckSubmit => {
-                let Some(asked) = self.sign_in.phrase_quiz else {
-                    return Task::none();
-                };
-                if self.sign_in.unlock_busy {
-                    return Task::none();
-                }
-                if !quiz_matches(&self.sign_in.phrase, asked, &self.sign_in.quiz_answers) {
-                    self.sign_in.unlock_error =
-                        "Those words don't match your phrase. Check them, or show the phrase again."
-                            .into();
-                    return Task::none();
-                }
-                let phrase = zeroize::Zeroizing::new(self.sign_in.phrase.clone());
-                let client = backend::RpcClient::new(self.connected_rpc.clone());
-                let network = self.network.clone();
-                self.sign_in.unlock_busy = true;
-                Task::future(async move {
-                    Message::RecoveryKeyAdded(
-                        backend::join::add_recovery_key(&client, &network, &phrase).await,
-                    )
-                })
-            }
-            Message::RecoveryKeyAdded(added) => {
-                self.sign_in.unlock_busy = false;
-                match added {
-                    Ok(()) => {
-                        self.forget_phrase();
-                        self.update(Message::ShowToast(
-                            "Recovery key added. Keep the paper somewhere safe.".into(),
-                        ))
-                    }
-                    Err(error) => {
-                        self.sign_in.unlock_error = error;
-                        Task::none()
-                    }
-                }
-            }
-            Message::PhraseShowAgain => {
-                self.sign_in.phrase_quiz = None;
-                self.sign_in
-                    .quiz_answers
-                    .iter_mut()
-                    .for_each(Zeroize::zeroize);
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::BrowseWithoutKey => {
-                self.browsing = true;
-                self.forget_secrets();
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::SignIn => {
-                self.browsing = false;
-                self.sign_in.locked = false;
-                self.open_device_key()
-            }
-            Message::RestorePhraseTyped(text) => {
-                self.sign_in.restore_phrase = text;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::RecoverShow => {
-                self.sign_in.recovering = true;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::RecoverCancel => {
-                self.sign_in.recovering = false;
-                self.forget_secrets();
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::RecoverSubmit => {
-                if self.sign_in.unlock_busy {
-                    return Task::none();
-                }
-                let phrase =
-                    zeroize::Zeroizing::new(normalize_phrase(&self.sign_in.restore_phrase));
-                if keystore::userkey::seed_of_mnemonic(&phrase).is_err() {
-                    self.sign_in.unlock_error =
-                        "Those words aren't a recovery key — check each one.".into();
-                    return Task::none();
-                }
-                let client = backend::RpcClient::new(self.connected_rpc.clone());
-                let network = self.network.clone();
-                self.sign_in.unlock_busy = true;
-                self.sign_in.unlock_error.clear();
-                Task::future(async move {
-                    Message::Joined(
-                        backend::join::join_with_recovery_key(&client, &network, &phrase).await,
-                    )
-                })
-            }
-            Message::LinkStart => {
-                if self.sign_in.link_task.is_some() {
-                    return Task::none();
-                }
-                let code = backend::join::new_code();
-                self.sign_in.link_code = code.clone();
-                self.sign_in.unlock_error.clear();
-                let client = backend::RpcClient::new(self.connected_rpc.clone());
-                let network = self.network.clone();
-                let (task, handle) = Task::future(async move {
-                    Message::Joined(backend::join::join_from_device(&client, &network, &code).await)
-                })
-                .abortable();
-                self.sign_in.link_task = Some(handle.abort_on_drop());
-                task
-            }
-            Message::LinkCancel => {
-                self.sign_in.link_task = None;
-                self.sign_in.link_code.clear();
-                Task::none()
-            }
-            Message::Joined(joined) => {
-                self.sign_in.unlock_busy = false;
-                self.sign_in.link_task = None;
-                self.sign_in.link_code.clear();
-                match joined {
-                    Ok(()) => {
-                        self.sign_in.recovering = false;
-                        self.forget_secrets();
-                        self.sign_in.account_offer = false;
-                        self.sign_in.account_step = false;
-                        self.resolve_account()
-                    }
-                    Err(error) => {
-                        self.sign_in.unlock_error = error;
-                        Task::none()
-                    }
-                }
-            }
-            Message::ApproveOpen => {
-                self.overlay = Some(Overlay::Approve);
-                self.sign_in.approve_code.clear();
-                self.sign_in.approve_found = None;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::ApproveClose => {
-                self.close(Overlay::Approve);
-                self.sign_in.approve_found = None;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::ApproveCodeTyped(text) => {
-                self.sign_in.approve_code = text;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::ApproveFind => {
-                if self.sign_in.unlock_busy {
-                    return Task::none();
-                }
-                let code = self.sign_in.approve_code.clone();
-                self.sign_in.unlock_busy = true;
-                self.sign_in.unlock_error.clear();
-                Task::future(async move {
-                    Message::ApproveFound(backend::join::find_request(&code).await)
-                })
-            }
-            Message::ApproveFound(found) => {
-                self.sign_in.unlock_busy = false;
-                match found {
-                    Ok(request) => self.sign_in.approve_found = Some(request),
-                    Err(error) => self.sign_in.unlock_error = error,
-                }
-                Task::none()
-            }
-            Message::ApproveConfirm => {
-                let (Some(request), Some(Some((account, _)))) =
-                    (self.sign_in.approve_found.clone(), self.account.clone())
-                else {
-                    return Task::none();
-                };
-                if self.sign_in.unlock_busy {
-                    return Task::none();
-                }
-                let code = self.sign_in.approve_code.clone();
-                let client = backend::RpcClient::new(self.connected_rpc.clone());
-                let network = self.network.clone();
-                self.sign_in.unlock_busy = true;
-                Task::future(async move {
-                    Message::ApproveDone(
-                        backend::join::approve(&client, &network, account, &code, &request).await,
-                    )
-                })
-            }
-            Message::ApproveDone(done) => {
-                self.sign_in.unlock_busy = false;
-                match done {
-                    Ok(()) => {
-                        self.close(Overlay::Approve);
-                        self.sign_in.approve_found = None;
-                        self.update(Message::ShowToast(
-                            "Approved. The new device finishes on its own.".into(),
-                        ))
-                    }
-                    Err(error) => {
-                        self.sign_in.unlock_error = error;
-                        Task::none()
-                    }
-                }
-            }
-            Message::ForgetEndpoint(url) => {
-                backend::forget_endpoint(&url);
-                self.recent_endpoints = backend::recent_endpoints();
-                Task::none()
-            }
-            Message::Unlocked(pubkey) => {
-                self.sign_in.unlock_busy = false;
-                self.key_exists = false;
-                self.sign_in.seating = false;
-                self.sign_in.locked = false;
-                self.signer_key = pubkey;
-                self.sign_in.account_offer = true;
-                self.forget_secrets();
-                self.resolve_account()
-            }
-            Message::AccountNameTyped(text) => {
-                self.sign_in.account_name = text;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::PasskeyCreateSubmit => self.passkey(true),
-            Message::PasskeySignInSubmit => self.passkey(false),
-            Message::PasskeyUsePhone => {
-                self.sign_in
-                    .passkey_phone
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                Task::none()
-            }
-            Message::PasskeyQr(url) => {
-                self.sign_in.passkey_qr = url;
-                Task::none()
-            }
-            Message::PasskeyCancel => {
-                self.sign_in.passkey_task = None;
-                self.sign_in.unlock_busy = false;
-                Task::done(Message::ShowToast("Passkey step cancelled".into()))
-            }
-            Message::PasskeyFailed(error) => {
-                self.sign_in.passkey_task = None;
-                self.sign_in.unlock_busy = false;
-                self.sign_in.unlock_error = error;
-                Task::none()
-            }
-            Message::PasskeyDone(pubkey) => {
-                self.sign_in.passkey_task = None;
-                self.sign_in.unlock_busy = false;
-                if pubkey != self.signer_key {
-                    return Task::none();
-                }
-                self.sign_in.account_name.clear();
-                // the passkey made (or joined) the account already
-                self.sign_in.account_offer = false;
-                self.sign_in.account_step = false;
-                self.resolve_account()
-            }
-            Message::ShowCreateAccount => {
-                self.sign_in.account_step = true;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::CreateAccountLater => {
-                self.sign_in.account_step = false;
-                self.sign_in.unlock_error.clear();
-                Task::none()
-            }
-            Message::CreateAccountSubmit => {
-                if self.sign_in.unlock_busy {
-                    return Task::none();
-                }
-                let name = self.sign_in.account_name.trim().to_owned();
-                if name.is_empty() {
-                    self.sign_in.unlock_error = "Type the name others will see first.".into();
-                    return Task::none();
-                }
-                let client = backend::RpcClient::new(self.connected_rpc.clone());
-                let network = self.network.clone();
-                self.sign_in.unlock_busy = true;
-                self.sign_in.unlock_error.clear();
-                Task::future(async move {
-                    Message::AccountCreated(
-                        backend::passkey::create_plain_account(&client, &network, &name).await,
-                    )
-                })
-            }
-            Message::AccountCreated(created) => {
-                self.sign_in.unlock_busy = false;
-                match created {
-                    Ok(account) => {
-                        self.account = Some(Some(account));
-                        self.sign_in.account_step = false;
-                        self.sign_in.account_name.clear();
-                    }
-                    Err(error) => self.sign_in.unlock_error = account_error(&self.network, error),
-                }
-                Task::none()
-            }
-            Message::UnlockFailed(error) => {
-                self.sign_in.passkey_task = None;
-                self.key_exists = backend::key_exists(&self.keyring);
-                self.sign_in.unlock_busy = false;
-                self.sign_in.unlock_error = error;
-                Task::none()
-            }
-            Message::Lock => {
-                self.close_menu();
-                self.sign_in.locked = true;
-                self.signer_key.clear();
-                self.account = None;
-                self.sign_in.account_offer = false;
-                self.sign_in.account_step = false;
-                self.browsing = false;
-                Task::future(async {
-                    backend::lock_signer().await;
-                    Message::ShowToast("Locked".into())
-                })
-            }
-            Message::ShowToast(said) => {
-                self.toast = said;
-                self.toast_age = 0;
-                Task::none()
-            }
-            Message::DismissToast => {
-                self.toast.clear();
-                Task::none()
-            }
-            Message::ToastTick => {
-                self.toast_age += 1;
-                if self.toast_age > 12 {
-                    self.toast.clear();
-                }
-                Task::none()
-            }
-            Message::Tick => {
-                if !self.connected {
-                    return Task::none();
-                }
-                let client = backend::RpcClient::new(self.connected_rpc.clone());
-                Task::future(async move {
-                    // a node that hangs is as gone as one that refuses
-                    match tokio::time::timeout(STATUS_EVERY, client.status()).await {
-                        Ok(Ok(status)) => Message::StatusPushed(status),
-                        Ok(Err(error)) => {
-                            tracing::debug!(target: "ducktape::app", %error, "status not answered");
-                            Message::StatusMissed
-                        }
-                        Err(_) => Message::StatusMissed,
-                    }
-                })
-            }
-            Message::WallTick => {
-                self.wall_now += 1;
-                Task::none()
-            }
-            Message::ConsoleOpened(key) => {
-                self.console_win = Some(key);
-                Task::none()
-            }
-            Message::WindowWasClosed(key) => {
-                if self.console_win == Some(key) {
-                    self.console_win = None;
-                }
-                if self.focused_win == Some(key) {
-                    self.focused_win = None;
-                }
-                Task::none()
-            }
-            Message::WindowFocused(key) => {
-                self.focused_win = Some(key);
-                Task::none()
-            }
-            Message::WindowUnfocused(key) => {
-                if self.focused_win == Some(key) {
-                    self.focused_win = None;
-                }
-                Task::none()
-            }
-            Message::ModifierStateChanged(modifiers) => {
-                self.cmd_held = crate::runtime::command_held(modifiers);
-                Task::none()
-            }
-            Message::TrayOpen => match self.console_win {
-                Some(key) => crate::shell::raise(key),
-                None => {
-                    let (key, opened) = crate::shell::open(crate::shell::WindowKind::Console);
-                    self.console_win = Some(key);
-                    opened.map(Message::ConsoleOpened)
-                }
-            },
-            Message::TrayQuit => crate::shell::quit(),
+            m @ (M::EndpointTyped(_)
+            | M::ConnectSubmit
+            | M::ConnectTo(_)
+            | M::Connected { .. }
+            | M::ConnectFailed { .. }
+            | M::StatusPushed(_)
+            | M::StatusMissed
+            | M::AccountResolved { .. }
+            | M::Disconnect
+            | M::SwitchNetwork(_)
+            | M::ForgetEndpoint(_)
+            | M::Tick) => self.on_connect(m),
+            m @ (M::ToggleNetworkMenu
+            | M::TogglePopover(_)
+            | M::CloseOverlay(_)
+            | M::OpenSpotlight
+            | M::SpotlightTyped(_)
+            | M::SpotlightMove { .. }
+            | M::SpotlightSubmit
+            | M::Spot(_)
+            | M::OpenSettings
+            | M::ShowSettingsPage(_)) => self.on_overlay(m),
+            m @ (M::NotifyOpen(_)
+            | M::NotifyMarkAllRead
+            | M::NotifyClearRead
+            | M::NotifySettings
+            | M::NotifyPermission(..)
+            | M::NotifyNotNow(_)
+            | M::SetNotifyBanners(_)
+            | M::SetNotifyInFront(_)
+            | M::SetNotifyBurst(_)) => self.on_notify(m),
+            m @ (M::PasswordTyped(_)
+            | M::UnlockSubmit
+            | M::DeviceKey(_)
+            | M::Unlocked(_)
+            | M::UnlockFailed(_)
+            | M::Lock
+            | M::BrowseWithoutKey
+            | M::SignIn
+            | M::RecoveryKeyStart
+            | M::PhraseCancel
+            | M::PhraseWrittenDown
+            | M::PhraseWordTyped(..)
+            | M::PhraseCheckSubmit
+            | M::RecoveryKeyAdded(_)
+            | M::PhraseShowAgain
+            | M::RestorePhraseTyped(_)
+            | M::RecoverShow
+            | M::RecoverCancel
+            | M::RecoverSubmit
+            | M::LinkStart
+            | M::LinkCancel
+            | M::Joined(_)
+            | M::ApproveOpen
+            | M::ApproveCodeTyped(_)
+            | M::ApproveFind
+            | M::ApproveFound(_)
+            | M::ApproveConfirm
+            | M::ApproveDone(_)
+            | M::AccountNameTyped(_)
+            | M::PasskeyCreateSubmit
+            | M::PasskeySignInSubmit
+            | M::PasskeyUsePhone
+            | M::PasskeyQr(_)
+            | M::PasskeyCancel
+            | M::PasskeyFailed(_)
+            | M::PasskeyDone(_)
+            | M::ShowCreateAccount
+            | M::CreateAccountLater
+            | M::CreateAccountSubmit
+            | M::AccountCreated(_)) => self.on_sign_in(m),
+            m @ (M::SetAppearance(_)
+            | M::SetMotion(_)
+            | M::SelectView(_)
+            | M::ViewShown(_)
+            | M::ViewEvent(..)
+            | M::OpenLink(_)
+            | M::ShowToast(_)
+            | M::DismissToast
+            | M::ToastTick
+            | M::WallTick
+            | M::ConsoleOpened(_)
+            | M::WindowWasClosed(_)
+            | M::WindowFocused(_)
+            | M::WindowUnfocused(_)
+            | M::ModifierStateChanged(_)
+            | M::TrayOpen
+            | M::TrayQuit) => self.on_desk(m),
         }
-    }
-
-    fn open_seat(&mut self, module: &'static str, route: Option<String>) {
-        if let Some(route) = route {
-            crate::runtime::route_to(module, route);
-        }
-        self.active = Some(module);
-        self.seat_request = Some(SeatRequest::Open(module));
-    }
-
-    /// `overlay` open, or closed if it was the one open.
-    fn toggle(&mut self, overlay: Overlay) {
-        self.overlay = match self.overlay == Some(overlay) {
-            true => None,
-            false => Some(overlay),
-        };
-    }
-
-    /// `overlay` closed, if it is the one open.
-    fn close(&mut self, overlay: Overlay) {
-        if self.overlay == Some(overlay) {
-            self.overlay = None;
-        }
-    }
-
-    /// Whichever menu off the bar is open, closed.
-    fn close_menu(&mut self) {
-        if matches!(self.overlay, Some(Overlay::Menu(_))) {
-            self.overlay = None;
-        }
-    }
-
-    fn notice(&mut self, said: String) {
-        self.toast = said;
-        self.toast_age = 0;
-    }
-
-    fn apply_status(&mut self, status: &backend::NodeStatus) {
-        let height = i64::try_from(status.height).unwrap_or(-1);
-        if height != self.height {
-            self.block_seen = self.wall_now;
-        }
-        self.height = height;
-        self.node = Some(status.clone());
-        // mid-switch the line reads "Reaching …" until the other node answers
-        if !self.connecting {
-            self.status = format!("Connected · block {}", status.height);
-        }
-    }
-
-    /// The network `keyring` names becomes the one in hand. Another chain
-    /// than the last (a switch, not a second node of the same network):
-    /// nothing of the last one — its seated key, account, open view —
-    /// carries over.
-    fn take_up(&mut self, keyring: backend::Keyring) -> Task<Message> {
-        let left = match keyring.dir != self.keyring {
-            true => self.leave_network(),
-            false => Task::none(),
-        };
-        self.keyring = keyring.dir;
-        self.other_chain = keyring.other_chain;
-        self.key_exists = backend::key_exists(&self.keyring);
-        left
-    }
-
-    /// Everything that belonged to the network being left: its seated key
-    /// (the seat is one for the whole app), the account it resolved to, the
-    /// open view and its badges, and any sign-in half done.
-    fn leave_network(&mut self) -> Task<Message> {
-        // dropping the old one wipes its secrets and cancels its tasks
-        self.sign_in = Default::default();
-        self.account = None;
-        self.active = None;
-        self.seat_request = Some(SeatRequest::Unseat);
-        self.badges.clear();
-        self.overlay = None;
-        self.node = None;
-        self.browsing = false;
-        self.keyring.clear();
-        self.other_chain = false;
-        self.key_exists = false;
-        self.signer_key.clear();
-        Task::future(async {
-            backend::lock_signer().await;
-        })
-        .discard()
-    }
-
-    /// Asks the node which account the seated key belongs to; the answer
-    /// lands as [`Message::AccountResolved`]. A failed ask keeps what the
-    /// menu bar already shows — the next block asks again.
-    fn resolve_account(&self) -> Task<Message> {
-        let Ok(key) = backend::hex_decode(&self.signer_key) else {
-            return Task::none();
-        };
-        if key.is_empty() || !self.connected {
-            return Task::none();
-        }
-        let node = self.connected_rpc.clone();
-        let client = backend::RpcClient::new(node.clone());
-        let network = self.network.clone();
-        let signer = self.signer_key.clone();
-        Task::future(async move {
-            match backend::passkey::account_of_key(&client, &network, key).await {
-                Ok(account) => Some(Message::AccountResolved {
-                    node,
-                    key: signer,
-                    account,
-                }),
-                Err(error) => {
-                    tracing::debug!(target: "ducktape::app", %error, "account not resolved");
-                    None
-                }
-            }
-        })
-        .and_then(Task::done)
-    }
-
-    /// What ⌘K offers for the text typed, in the order shown: the
-    /// network's programs, the other networks this device reached, then
-    /// things to do. A row matches when its title or detail holds the text,
-    /// ignoring case.
-    pub(crate) fn spotlight_rows(&self) -> Vec<SpotRow> {
-        let row = |group, title: String, meta: String, spot| SpotRow {
-            group,
-            title,
-            meta,
-            spot,
-        };
-        let mut rows: Vec<SpotRow> = crate::runtime::rail()
-            .into_iter()
-            .filter(|program| !program.empty)
-            .map(|program| {
-                row(
-                    "Programs",
-                    program.label.clone(),
-                    "Open".into(),
-                    Spot::Open(program.module),
-                )
-            })
-            .collect();
-        rows.extend(
-            self.recent_endpoints
-                .iter()
-                .filter(|entry| entry.url != self.connected_rpc)
-                .map(|entry| {
-                    row(
-                        "Networks",
-                        entry.name(),
-                        entry.host().to_owned(),
-                        Spot::Switch(entry.url.clone()),
-                    )
-                }),
-        );
-        rows.push(row(
-            "Actions",
-            "Ducktape settings".into(),
-            "theme, networks".into(),
-            Spot::Settings,
-        ));
-        if matches!(self.account, Some(None)) && !self.signer_key.is_empty() {
-            rows.push(row(
-                "Actions",
-                "Create account".into(),
-                self.network.clone(),
-                Spot::CreateAccount,
-            ));
-        }
-        if !self.signer_key.is_empty() {
-            rows.push(row(
-                "Actions",
-                "Lock".into(),
-                "this device's key".into(),
-                Spot::Lock,
-            ));
-        }
-        for (title, mode) in [
-            ("Light appearance", Appearance::Light),
-            ("Dark appearance", Appearance::Dark),
-            ("Match the system's appearance", Appearance::System),
-        ] {
-            rows.push(row(
-                "Actions",
-                title.into(),
-                String::new(),
-                Spot::Appearance(mode),
-            ));
-        }
-        rows.push(row(
-            "Actions",
-            "Add a network…".into(),
-            String::new(),
-            Spot::OtherNetwork,
-        ));
-        let query = self.spotlight_query.trim().to_lowercase();
-        rows.retain(|row| {
-            query.is_empty()
-                || row.title.to_lowercase().contains(&query)
-                || row.meta.to_lowercase().contains(&query)
-        });
-        rows
-    }
-
-    /// Wipes every password and typed phrase the sign-in screens hold. The
-    /// fields on screen mirror these (`DesktopWindow::input`), so they empty
-    /// on the next draw too.
-    fn forget_secrets(&mut self) {
-        for secret in [&mut self.sign_in.password, &mut self.sign_in.restore_phrase] {
-            secret.zeroize();
-        }
-    }
-
-    /// Opens this device's key for the network in hand and seats it — made
-    /// here the first time this device meets the network. Nothing to do when
-    /// one is seated, or the person locked it; a password-locked key from
-    /// before answers `Ok(None)` and waits for its password once.
-    fn open_device_key(&mut self) -> Task<Message> {
-        if self.sign_in.seating
-            || self.sign_in.locked
-            || !self.signer_key.is_empty()
-            || self.keyring.is_empty()
-        {
-            return Task::none();
-        }
-        self.sign_in.seating = true;
-        let keyring = self.keyring.clone();
-        let legacy = self.key_exists;
-        Task::future(async move {
-            let opened =
-                tokio::task::spawn_blocking(move || match backend::device_key::load(&keyring)? {
-                    Some(key) => Ok(Some(key)),
-                    None if legacy => Ok(None),
-                    None => backend::device_key::mint(&keyring).map(Some),
-                })
-                .await
-                .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
-            Message::DeviceKey(match opened {
-                Ok(Some(key)) => Ok(Some(backend::seat_key(key).await)),
-                Ok(None) => Ok(None),
-                Err(error) => Err(error),
-            })
-        })
-    }
-
-    /// The recovery phrase and its check, gone once passed (or abandoned).
-    fn forget_phrase(&mut self) {
-        self.sign_in.phrase.zeroize();
-        self.sign_in.phrase_quiz = None;
-        self.sign_in
-            .quiz_answers
-            .iter_mut()
-            .for_each(Zeroize::zeroize);
-        self.sign_in.unlock_error.clear();
     }
 
     /// What runs while the app does: the clocks, and nothing else.
@@ -1151,105 +129,14 @@ fn status_ticks() -> impl futures::Stream<Item = Message> {
 }
 
 use futures::StreamExt as _;
-use zeroize::Zeroize;
-
-/// The one password rule enforced before minting or restoring a key: long
-/// enough (the keystore's own floor), and its confirmation matches.
-impl Ducktape {
-    /// A passkey creates an account (`create`) or admits this device's key
-    /// into the account it holds. Both are about the ACCOUNT: the device
-    /// key is already set up and seated (unlocked, or minted with its
-    /// phrase) before either is offered, and it signs the writes.
-    fn passkey(&mut self, create: bool) -> Task<Message> {
-        if self.sign_in.unlock_busy {
-            return Task::none();
-        }
-        if self.signer_key.is_empty() {
-            self.sign_in.unlock_error = "Unlock this device's key first.".into();
-            return Task::none();
-        }
-        let name = self.sign_in.account_name.trim().to_owned();
-        if create && name.is_empty() {
-            self.sign_in.unlock_error = "Name your account first.".into();
-            return Task::none();
-        }
-        let network = self.network.clone();
-        let client = backend::RpcClient::new(self.connected_rpc.clone());
-        let pubkey = self.signer_key.clone();
-        self.sign_in.unlock_busy = true;
-        self.sign_in.unlock_error.clear();
-        self.sign_in.passkey_phone = Default::default();
-        self.sign_in.passkey_qr.clear();
-        let (phone, urls) = backend::passkey::Phone::new(self.sign_in.passkey_phone.clone());
-        let flow = async move {
-            let joined = match create {
-                true => backend::passkey::create_account(&client, &network, &name, &phone).await,
-                false => backend::passkey::sign_in(&client, &network, &phone).await,
-            };
-            match joined {
-                Ok(()) => Message::PasskeyDone(pubkey),
-                Err(error) => Message::PasskeyFailed(error),
-            }
-        };
-        // the flow owns the only URL sender: the QR updates end with it
-        let (task, handle) = Task::stream(futures::stream::select(
-            urls.map(Message::PasskeyQr),
-            futures::stream::once(flow),
-        ))
-        .abortable();
-        self.sign_in.passkey_task = Some(handle.abort_on_drop());
-        task
-    }
-}
-
-/// Whether an answer about the seated key opens the account step: only the
-/// first one after a sign-in that armed the offer, and only when the key
-/// holds no account on this network.
-fn offers_account_step(armed: bool, account: &Option<(u64, String)>) -> bool {
-    armed && account.is_none()
-}
-
-/// A failed `Create` in plain words: a node that could not be reached
-/// reads as that, not as a transport string; a refusal names the network
-/// and says why.
-fn account_error(network: &str, error: String) -> String {
-    if error.contains("error sending request") {
-        return format!("Can't reach {network}'s node right now. Try again in a moment.");
-    }
-    format!("{network} didn't create the account: {error}")
-}
-
-/// Three distinct word positions (0-based, ascending) out of `words` to ask
-/// back — the old app's "Words 5, 12 and 20" check.
-fn quiz_positions(words: usize) -> [usize; 3] {
-    let mut picked = rand::seq::index::sample(&mut rand::thread_rng(), words.max(3), 3).into_vec();
-    picked.sort_unstable();
-    [picked[0], picked[1], picked[2]]
-}
-
-/// Whether each answer is the phrase's word at the position asked,
-/// ignoring case and surrounding space.
-fn quiz_matches(phrase: &str, asked: [usize; 3], answers: &[String; 3]) -> bool {
-    let words: Vec<&str> = phrase.split_whitespace().collect();
-    asked.iter().zip(answers).all(|(&nth, answer)| {
-        words
-            .get(nth)
-            .is_some_and(|word| word.eq_ignore_ascii_case(answer.trim()))
-    })
-}
-
-/// Whatever a person pastes for a recovery phrase — any run of whitespace
-/// between words, any case — folded to what BIP39 checks.
-fn normalize_phrase(raw: &str) -> String {
-    raw.split_whitespace()
-        .map(str::to_lowercase)
-        .collect::<Vec<_>>()
-        .join(" ")
-}
 
 #[cfg(test)]
 mod tests {
+    use super::super::sign_in::{normalize_phrase, quiz_matches, quiz_positions};
+    use super::super::{Overlay, Screen, SeatRequest};
     use super::*;
+    use crate::backend;
+    use crate::runtime::Intent;
 
     #[test]
     fn normalize_phrase_folds_whitespace_and_case() {
@@ -1610,6 +497,28 @@ mod tests {
             account: None,
         });
         assert_eq!(state.account, Some(None));
+    }
+
+    #[test]
+    fn closing_an_overlay_lets_go_of_what_it_held() {
+        use super::super::Popover;
+        let mut state = on_testkit();
+        let _ = state.update(Message::OpenSpotlight);
+        let _ = state.update(Message::SpotlightTyped("chat".into()));
+        let _ = state.update(Message::CloseOverlay(Overlay::Spotlight));
+        assert!(state.overlay.is_none() && state.spotlight_query.is_empty());
+        // Escape on the account menu closes it whichever menu is named
+        let _ = state.update(Message::TogglePopover(Popover::Account));
+        let _ = state.update(Message::CloseOverlay(Overlay::Menu(Popover::Node)));
+        assert!(state.overlay.is_none());
+        // one overlay's close leaves another open
+        let _ = state.update(Message::OpenSettings);
+        let _ = state.update(Message::CloseOverlay(Overlay::Network));
+        assert_eq!(state.overlay, Some(Overlay::Settings));
+        let _ = state.update(Message::ApproveOpen);
+        state.sign_in.unlock_error = "no such code".into();
+        let _ = state.update(Message::CloseOverlay(Overlay::Approve));
+        assert!(state.overlay.is_none() && state.sign_in.unlock_error.is_empty());
     }
 
     fn status(height: u64) -> backend::NodeStatus {

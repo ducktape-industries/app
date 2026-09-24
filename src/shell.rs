@@ -538,7 +538,7 @@ impl DesktopWindow {
         }
         if command && key.key == "k" && self.kind == WindowKind::Console && self.on_desk(cx) {
             let message = match self.model.read(cx).state.overlay {
-                Some(crate::Overlay::Spotlight) => Message::CloseSpotlight,
+                Some(crate::Overlay::Spotlight) => Message::CloseOverlay(crate::Overlay::Spotlight),
                 _ => Message::OpenSpotlight,
             };
             self.model
@@ -552,8 +552,9 @@ impl DesktopWindow {
             && self.kind == WindowKind::Console
             && let Some(overlay) = overlay
         {
-            self.model
-                .update(cx, |model, cx| model.dispatch(overlay.close(), cx));
+            self.model.update(cx, |model, cx| {
+                model.dispatch(Message::CloseOverlay(overlay), cx)
+            });
             cx.stop_propagation();
             return;
         }
