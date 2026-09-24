@@ -229,7 +229,6 @@ impl Desktop {
         let runtime = crate::runtime::handle();
         let _runtime = runtime.enter();
         let appearance = self.state.appearance;
-        let active = self.state.active;
         let launcher = self.state.in_launcher();
         let task = self.state.update(message);
         if launcher != self.state.in_launcher() {
@@ -238,34 +237,13 @@ impl Desktop {
         if appearance != self.state.appearance {
             self.sync_appearance(cx);
         }
-        let reveal = std::mem::take(&mut self.state.reveal);
-        if active != self.state.active || reveal {
-            if let Some(module) = self.state.active {
-                let views: Vec<_> = self.views.values().cloned().collect();
-                cx.defer(move |cx| {
-                    for view in views {
-                        let _ = view.update(cx, |view, cx| {
-                            if view.kind == WindowKind::Console {
-                                // a link opens beside the view it was in,
-                                // not in place of it
-                                match reveal {
-                                    true => view.layout.open(module),
-                                    false => view.layout.select(module),
-                                };
-                                view.initialized = true;
-                                cx.notify();
-                            }
-                        });
-                    }
-                });
-            } else {
-                let views: Vec<_> = self.views.values().cloned().collect();
-                cx.defer(move |cx| {
-                    for view in views {
-                        let _ = view.update(cx, |view, cx| view.unseat(cx));
-                    }
-                });
-            }
+        if let Some(request) = self.state.seat_request.take() {
+            let views: Vec<_> = self.views.values().cloned().collect();
+            cx.defer(move |cx| {
+                for view in views {
+                    let _ = view.update(cx, |view, cx| view.seat(request, cx));
+                }
+            });
         }
         self.tray.sync(&self.state);
         self.start(task, cx).detach();
@@ -648,6 +626,20 @@ impl DesktopWindow {
     fn released(&mut self, cx: &mut gpui_kit::App) {
         self.unseat(cx);
         self.observe_window(view_wire::events::Window::Closed, cx);
+    }
+
+    /// The model's ask of the desk: the console's windows follow it.
+    fn seat(&mut self, request: crate::SeatRequest, cx: &mut Context<Self>) {
+        use crate::SeatRequest;
+        match request {
+            SeatRequest::Unseat => return self.unseat(cx),
+            _ if self.kind != WindowKind::Console => return,
+            SeatRequest::Select(module) => self.layout.select(module),
+            // a link opens beside the view it was in, not in place of it
+            SeatRequest::Open(module) => self.layout.open(module),
+        };
+        self.initialized = true;
+        cx.notify();
     }
 
     fn unseat(&mut self, cx: &mut gpui_kit::App) {

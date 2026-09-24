@@ -307,3 +307,43 @@ fn command_k_toggles_spotlight_and_escape_closes_settings_and_menus(cx: &mut Tes
     key(&mut native, "escape");
     assert_eq!(read(&mut native), (false, false, None));
 }
+
+/// The window in front is the model's active program, however it got
+/// there, and a window's own change asks nothing back of the desk.
+#[gpui_kit::test]
+fn the_focused_window_is_the_active_program(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    let active = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            let state = &model.read(cx).state;
+            (state.active, state.seat_request)
+        })
+    };
+    native.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.pane_message(panes::PaneMessage::Split("pane-ax-other"), window, cx)
+        })
+    });
+    assert_eq!(active(&mut native), (Some("pane-ax-other"), None));
+    native.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.pane_message(panes::PaneMessage::Focus(0), window, cx)
+        })
+    });
+    assert_eq!(active(&mut native), (Some("pane-ax-test"), None));
+    key(&mut native, "secondary-2");
+    assert_eq!(active(&mut native), (Some("pane-ax-other"), None));
+    // the model's own ask (Spotlight) is carried out by the window
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::SelectView("pane-ax-test"), cx)
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    assert_eq!(panes(&mut native, &view), (2, 0));
+    assert_eq!(active(&mut native), (Some("pane-ax-test"), None));
+}
