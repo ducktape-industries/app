@@ -226,6 +226,7 @@ fn seed_editor_text(store: &crate::editor::wire::EditorStore, text: &str) {
 mod accessibility;
 mod gpui_activation;
 mod gpui_clip;
+mod grip;
 mod inputs;
 mod layout;
 mod picture_presentation;

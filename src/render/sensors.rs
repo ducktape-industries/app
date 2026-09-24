@@ -10,6 +10,40 @@ pub(super) struct SensorState {
     pub(super) pending: Option<(Size<Pixels>, Task<()>)>,
 }
 
+/// The strip a resize handle is taken hold of by: its own box and
+/// [`crate::shell::GRAB`] past it on both sides of the axis it sizes, the
+/// reach desk window borders have, so a near miss on a 1px divider still
+/// grips. It sits over its neighbours and keeps what is under it from
+/// hearing the press.
+pub(super) fn grip(cursor: CursorStyle) -> gpui_kit::Stateful<Div> {
+    let (x, y) = grip_reach(cursor);
+    div()
+        .id("grip")
+        .absolute()
+        .left(px(-x))
+        .right(px(-x))
+        .top(px(-y))
+        .bottom(px(-y))
+        .cursor(cursor)
+        .occlude()
+}
+
+/// How far a grip reaches past its handle, across and along.
+pub(super) fn grip_reach(cursor: CursorStyle) -> (f32, f32) {
+    let grab = crate::shell::GRAB;
+    match cursor {
+        CursorStyle::ResizeLeftRight
+        | CursorStyle::ResizeColumn
+        | CursorStyle::ResizeLeft
+        | CursorStyle::ResizeRight => (grab, 0.),
+        CursorStyle::ResizeUpDown
+        | CursorStyle::ResizeRow
+        | CursorStyle::ResizeUp
+        | CursorStyle::ResizeDown => (0., grab),
+        _ => (grab, grab),
+    }
+}
+
 impl ViewTree {
     pub(super) fn resize_handle(
         &mut self,
@@ -84,22 +118,30 @@ impl ViewTree {
         )
         .absolute()
         .inset_0();
+        let cursor = native_cursor(*cursor);
+        // on the way down: the grip reaches over the panes on either side,
+        // and the press is the divider's, never a click or a text drag in
+        // the pane painted over it
+        let grip = grip(cursor).capture_any_mouse_down(cx.listener(
+            move |this, event: &MouseDownEvent, _, cx| {
+                if event.button != MouseButton::Left {
+                    return;
+                }
+                cx.stop_propagation();
+                this.drags.insert(press_key.clone(), event.position);
+                if let Some(message) = press {
+                    cx.emit(wire::Event::Message(message));
+                }
+            },
+        ));
         let element = div()
             .refine_style(style)
             .id(native_id(id))
             .relative()
-            .cursor(native_cursor(*cursor))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                    this.drags.insert(press_key.clone(), event.position);
-                    if let Some(message) = press {
-                        cx.emit(wire::Event::Message(message));
-                    }
-                }),
-            )
+            .cursor(cursor)
             .child(self.node(content, window, cx))
-            .child(capture);
+            .child(capture)
+            .child(grip);
         #[cfg(test)]
         let element = {
             use gpui_kit::test::TestSupportExt as _;
