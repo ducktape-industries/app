@@ -107,7 +107,7 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     state.screen = Screen::Console;
     // a password-locked key from before: its password is asked once
     state.key_exists = true;
-    state.unlock_error = "wrong password".to_string();
+    state.sign_in.unlock_error = "wrong password".to_string();
     let (view, mut native) = open(state, cx);
 
     // Typing into either field clears the error (screens.rs's own UX), so
@@ -131,8 +131,8 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     let model = native.update(|_, cx| view.read(cx).model.clone());
     model.update(cx, |model, _| {
         model.state.signer_key = "ab".into();
-        model.state.account_step = true;
-        model.state.recovering = true;
+        model.state.sign_in.account_step = true;
+        model.state.sign_in.recovering = true;
     });
     native.update(|window, cx| {
         type_into(
@@ -176,7 +176,7 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     let model = native.update(|_, cx| view.read(cx).model.clone());
     model.update(cx, |model, _| {
         model.state.signer_key = "ab".into();
-        model.state.account_step = true;
+        model.state.sign_in.account_step = true;
     });
     native.update(|window, cx| type_into("create-account-name/field", "duck", window, cx));
     let nodes = native.update(draw);
@@ -302,7 +302,7 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
     assert_eq!(field(&mut native), "hunter22");
     let model = native.update(|_, cx| view.read(cx).model.clone());
     assert_eq!(
-        model.read_with(cx, |model, _| model.state.password.clone()),
+        model.read_with(cx, |model, _| model.state.sign_in.password.clone()),
         "hunter22"
     );
 
@@ -517,14 +517,14 @@ fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
             false => Screen::Connect,
         };
         if on(1) {
-            state.phrase = "canoe pond forest".into();
+            state.sign_in.phrase = "canoe pond forest".into();
         }
         if on(2) {
             state.signer_key = "ab".into();
         }
         state.browsing = on(3);
-        state.account_step = on(4);
-        state.recovering = on(5);
+        state.sign_in.account_step = on(4);
+        state.sign_in.recovering = on(5);
         let stage = state.stage();
         let launcher = state.in_launcher();
         let (_view, mut native) = open(state, cx);

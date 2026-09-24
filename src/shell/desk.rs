@@ -960,7 +960,7 @@ impl DesktopWindow {
                     "approve-code",
                     "XXXX-XXXX",
                     false,
-                    |state| &state.approve_code,
+                    |state| &state.sign_in.approve_code,
                     Message::ApproveCodeTyped,
                     || Message::ApproveFind,
                     Some("Code".into()),
