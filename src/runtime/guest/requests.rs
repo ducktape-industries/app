@@ -97,8 +97,7 @@ impl Guest {
         }
         self.user_activation = None;
         for id in std::mem::take(&mut self.frame.cancels) {
-            self.filesystem.cancel(id);
-            self.media.cancel(id);
+            self.clipboard.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);
             if self.props_subscription == Some(id) {
                 self.props_subscription = None;
@@ -112,18 +111,6 @@ impl Guest {
             // subscription the view abandoned
             self.tasks.retain(|(task, _)| *task != id);
             self.clocks.retain(|clock| clock.id != id);
-            // a chord is given back with the subscription its presses were
-            // arriving on, or the next view could never claim it
-            let dropped: Vec<String> = self
-                .chords
-                .iter()
-                .filter(|(subscription, _)| *subscription == id)
-                .map(|(_, chord)| chord.clone())
-                .collect();
-            self.chords.retain(|(subscription, _)| *subscription != id);
-            for chord in dropped {
-                release_chord(&chord, self.module);
-            }
         }
         self.fault.is_none()
             && (self.frame.busy
@@ -137,7 +124,7 @@ impl Guest {
     /// goes to the log, and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
-        // an op rides a `doors::Call`: the target and two lengths around it;
+        // an op rides a `methods::Call`: the target and two lengths around it;
         // one to describe, beside its program's name
         let payload_limit = match kind.as_str() {
             "op.submit" | "program.describe" => MAX_OP_BYTES + 256,
@@ -152,9 +139,9 @@ impl Guest {
             return;
         }
         let (capability, operation) = kind.split_once('.').unwrap_or((kind.as_str(), ""));
-        // A view is untrusted code: it reaches only the doors its manifest
+        // A view is untrusted code: it reaches only the methods its manifest
         // declares. Consent (media, notifications) is asked on top of this.
-        let undeclared = wire::doors::is_capability(capability)
+        let undeclared = wire::methods::is_capability(capability)
             && !self
                 .capabilities
                 .iter()
@@ -188,12 +175,12 @@ impl Guest {
         }
         match (capability, operation) {
             ("host", "widget") => self.widget_request(id, &payload),
-            ("host", "props") => {
+            ("host", "session") => {
                 self.props_subscription = Some(id);
                 self.props_sent = None;
                 self.sync_props(props);
             }
-            ("host", "log") => match wire::doors::decode::<String>(&payload) {
+            ("host", "log") => match wire::methods::decode::<String>(&payload) {
                 Ok(line) => {
                     tracing::debug!(
                         target: "ducktape::app",

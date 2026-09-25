@@ -137,28 +137,8 @@ pub(super) struct Shortcut {
     action: String,
 }
 
-/// The named keys a view's chord may end in, besides a letter or a digit.
-const CHORD_KEYS: [&str; 14] = [
-    "enter",
-    "escape",
-    "space",
-    "tab",
-    "backspace",
-    "delete",
-    "up",
-    "down",
-    "left",
-    "right",
-    "home",
-    "end",
-    "pageup",
-    "pagedown",
-];
-
 /// The key bindings a keyboard can reach from where focus is now (the
-/// focused element's context, or the window's root when nothing is), and
-/// the chords the seated views hold (`runtime::claim_chord`): a view's
-/// chord is claimed, not bound, so no binding names it.
+/// focused element's context, or the window's root when nothing is).
 pub(super) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
     let focus = window.focused(cx);
     let mut out: Vec<Shortcut> = Vec::new();
@@ -180,26 +160,6 @@ pub(super) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
             };
             if !out.contains(&shortcut) {
                 out.push(shortcut);
-            }
-        }
-    }
-    let command = if cfg!(target_os = "macos") {
-        "cmd"
-    } else {
-        "ctrl"
-    };
-    let keys = ('a'..='z')
-        .chain('0'..='9')
-        .map(String::from)
-        .chain(CHORD_KEYS.map(String::from));
-    for key in keys {
-        for extra in ["", "-shift", "-alt", "-shift-alt"] {
-            let chord = format!("cmd{extra}-{key}");
-            if let Some(module) = crate::runtime::chord_holder(&chord) {
-                out.push(Shortcut {
-                    keys: format!("{command}{extra}-{key}"),
-                    action: format!("the {module} view's {chord}"),
-                });
             }
         }
     }

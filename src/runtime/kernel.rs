@@ -3,47 +3,45 @@
 //! contract is replaced by a program deployment alone — the app binary
 //! never changes for it.
 //!
-//! Every door, its request and its reply are the types in `wire::doors`,
+//! Every method, its request and its reply are the types in `wire::methods`,
 //! borsh on both sides; the host decodes a request by that type and nothing
-//! else, so there is no per-door parsing here to drift from a view.
+//! else, so there is no per-method parsing here to drift from a view.
 //!
-//! - `rpc.query` `Call{target, body}` — one query on the connected node:
+//! - `program.query` `Call{target, body}` — one query on the connected node:
 //!   `body` is the payload of a signed frame to `target`, and the bytes the
 //!   program `Respond`ed come back as they are.
 //! - `op.submit` `Call{target, body}` — one op, signed with the SEATED key
 //!   at the signer's next sequence and submitted; answered with the
 //!   receipt's output, or the program's refusal.
-//! - `rpc.status` — node status as `NodeStatus`.
-//! - `rpc.blocks` `BlockPage` — finalized blocks, newest first, from the
-//!   node's block archive (`/v1/blocks`); `rpc.block` `BlockRef` — one by
+//! - `chain.status` — node status as `NodeStatus`.
+//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
+//!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
 //!   height or id (`/v1/block`).
-//! - `rpc.invite` `Mint{ttl_days}` — mint once; `Minted{invite, notes}`.
+//! - `invite.mint` `Mint{ttl_days}` — mint once; `Minted{invite, notes}`.
 //!   Node refusals retain their tokens.
-//! - `rpc.live` `<program>` — a subscription that gets one item per block
+//! - `program.changes` `<program>` — a subscription that gets one item per block
 //!   that wrote to `program` (`/v1/changes/<program>`), so the view re-reads
 //!   what moved.
-//! - `rpc.heads` — a subscription that gets one `Head` per finalized block,
+//! - `chain.heads` — a subscription that gets one `Head` per finalized block,
 //!   oldest first: the host reads the node's status at half its block
 //!   time and fills each advance from the block archive.
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
 //! - `program.describe` `(program, op)` — the op as the program's own
 //!   describe module reads it, or `None` (`describe`).
-//! - `host.props` — subscribes to the session props (`Session`: the seated
+//! - `host.session` — subscribes to the session props (`Session`: the seated
 //!   account, theme, chain and read-only endpoint).
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
 //!   → `forge:web:3`), checked by `valid_route`.
-//! - `host.visible`, `host.badge`, `host.open_link`, `host.chord`,
-//!   `host.id`, `clock.ticks`, `host.log`, `host.widget` — the app's own
-//!   doors: visibility, the tab badge, the one way out (a `duck://` link),
-//!   a claimed command chord, a minted id, a clock, the log, a widget
-//!   command.
-//! - `fs.*`, `clipboard.*` — device file grants and the clipboard, in
-//!   `filesystem`.
-//! - `media.*`, `audio.*`, `video.*` — the raw capture and playout devices,
-//!   in `media`; `notify.post` — a notice the host logs and decides a
-//!   banner for, in `notify`.
+//! - `host.visible`, `host.badge`, `link.open`, `host.id`,
+//!   `clock.ticks`, `host.log`, `host.widget` — the app's own methods:
+//!   visibility, the tab badge, the one way out (a `duck://` link, or an
+//!   `https://` one for the system browser), a minted id, a clock, the log,
+//!   a widget command.
+//! - `clipboard.*` — the clipboard, in `clipboard`.
+//! - `notify.post` — a notice the host logs and decides a banner for, in
+//!   `notify`.
 //!
 //! A query and a submit go to the node off the window thread, on the
 //! kernel's own runtime, and their answers wait in [`Replies`] for the
@@ -54,7 +52,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{Guest, Intent, wire};
 use crate::backend::{self, RpcClient, refused};
-use wire::doors;
+use wire::methods;
 
 /// The longest `host.id` prefix: a word naming the kind of record, not a
 /// payload of its own.
@@ -89,14 +87,14 @@ fn unanswered(refusal: wire::Refusal) -> Result<String, wire::Refusal> {
 }
 
 /// One answer to a guest: the bytes it asked for, or the refusal that names
-/// why not. Every door in this file hands back exactly this.
+/// why not. Every method in this file hands back exactly this.
 pub(super) type Answer = Result<Vec<u8>, wire::Refusal>;
 
 mod describe;
 mod node;
 mod replies;
 
-pub(super) use node::{Items, NodeTask, spawn_device, spawn_subscription};
+pub(super) use node::{NodeTask, spawn_device};
 use node::{
     blob_get, block, blocks, heads, invite, live, query, spawn, spawn_once, status, submit,
 };
@@ -134,8 +132,7 @@ pub(super) fn answer(
     id: u64,
     payload: &[u8],
 ) -> bool {
-    if super::filesystem::answer(guest, capability, operation, id, payload)
-        || super::media::answer(guest, capability, operation, id, payload)
+    if super::clipboard::answer(guest, capability, operation, id, payload)
         || super::notify::answer(guest, capability, operation, id, payload)
         || super::store::answer(guest, capability, operation, id, payload)
     {
@@ -154,7 +151,7 @@ pub(super) fn answer(
             guest.visibility_subscriptions.push(id);
             guest.pending.push(wire::Event::Response {
                 id,
-                result: Ok(doors::encode(&guest.visible)),
+                result: Ok(methods::encode(&guest.visible)),
                 done: false,
             });
         }
@@ -170,60 +167,37 @@ pub(super) fn answer(
             guest.route_subscriptions.push(id);
             guest.sync_route();
         }
-        ("rpc", "query") => spawn(guest, id, payload, query),
-        ("rpc", "status") => spawn(guest, id, payload, status),
-        ("rpc", "blocks") => spawn(guest, id, payload, blocks),
-        ("rpc", "block") => spawn(guest, id, payload, block),
-        ("rpc", "invite") => spawn_once(guest, id, payload, invite),
+        ("program", "query") => spawn(guest, id, payload, query),
+        ("chain", "status") => spawn(guest, id, payload, status),
+        ("chain", "blocks") => spawn(guest, id, payload, blocks),
+        ("chain", "block") => spawn(guest, id, payload, block),
+        ("invite", "mint") => spawn_once(guest, id, payload, invite),
         ("op", "submit") => spawn(guest, id, payload, submit),
         ("blob", "get") => spawn(guest, id, payload, blob_get),
         ("program", "describe") => spawn(guest, id, payload, describe::describe),
-        ("rpc", "live") => live(guest, id, payload),
-        ("rpc", "heads") => heads(guest, id, payload),
-        ("host", "open_link") => {
-            let link = doors::decode::<String>(payload)
-                .ok()
-                .filter(|link| !link.is_empty());
-            match link {
-                Some(link) => {
-                    guest.intents.push(Intent::OpenLink(link));
-                    guest.reply(id, Ok(Vec::new()));
-                }
-                None => guest.refuse(id, "malformed_request", "`host.open_link` names no link"),
+        ("program", "changes") => live(guest, id, payload),
+        ("chain", "heads") => heads(guest, id, payload),
+        // the one way out: a `duck://` link, or an `https://` one for the
+        // system browser; any other scheme is refused here, at the method
+        ("link", "open") => match methods::decode::<String>(payload) {
+            Ok(link) if openable(&link) => {
+                guest.intents.push(Intent::OpenLink(link));
+                guest.reply(id, Ok(Vec::new()));
             }
-        }
-        ("host", "badge") => match doors::decode::<i64>(payload).ok() {
+            Ok(_) => guest.refuse(
+                id,
+                "malformed_request",
+                "`link.open` opens a duck:// or https:// link",
+            ),
+            Err(error) => guest.refuse(id, "malformed_request", error),
+        },
+        ("host", "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
                 guest.intents.push(Intent::Badge(count));
                 guest.reply(id, Ok(Vec::new()));
             }
             None => guest.refuse(id, "malformed_request", "`host.badge` carries no count"),
         },
-        // A CHORD IS CLAIMED, NOT WIRED: first claim holds it.
-        ("host", "chord") => {
-            let chord = doors::decode::<String>(payload).unwrap_or_default();
-            let chord = chord.trim();
-            if !is_chord(chord) {
-                guest.refuse(
-                    id,
-                    "malformed_request",
-                    format!("`{chord}` is not a claimable chord"),
-                );
-                return true;
-            }
-            if guest.chords.len() >= MAX_SUBSCRIPTIONS {
-                guest.refuse(id, "subscription_limit", "too many chord claims");
-                return true;
-            }
-            match super::claim_chord(chord, guest.module) {
-                Ok(()) => guest.chords.push((id, chord.to_owned())),
-                Err(holder) => guest.refuse(
-                    id,
-                    "chord_taken",
-                    format!("`{chord}` is already {holder}'s"),
-                ),
-            }
-        }
         ("clock", "ticks") => {
             let period = tick_period(payload);
             if guest.clocks.len() >= MAX_SUBSCRIPTIONS {
@@ -240,19 +214,28 @@ pub(super) fn answer(
             }
         }
         ("host", "id") => {
-            let prefix = doors::decode::<String>(payload).unwrap_or_default();
+            let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();
             let named = !prefix.is_empty()
                 && prefix.len() <= MAX_ID_PREFIX
                 && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
             match named {
-                true => guest.reply(id, Ok(doors::encode(&backend::fresh_id(prefix)))),
+                true => guest.reply(id, Ok(methods::encode(&backend::fresh_id(prefix)))),
                 false => guest.refuse(id, "malformed_request", "`host.id` names no prefix"),
             }
         }
         _ => return false,
     }
     true
+}
+
+/// Whether `link.open` may open `link`: `duck://` or `https://` with
+/// something after it.
+fn openable(link: &str) -> bool {
+    ["duck://", "https://"].iter().any(|scheme| {
+        link.strip_prefix(scheme)
+            .is_some_and(|rest| !rest.is_empty())
+    })
 }
 
 pub(super) struct Clock {
@@ -270,57 +253,6 @@ pub(crate) fn command_held(modifiers: gpui_kit::Modifiers) -> bool {
     }
 }
 
-/// WHICH CHORDS A VIEW MAY CLAIM, and why it is only these: a claim must
-/// hold the platform command modifier (⌘ on a Mac, Ctrl elsewhere). A view
-/// that could claim a bare letter would eat ordinary typing in every other
-/// seat, and one that could claim ⇧+letter would eat capitals.
-///
-/// The spelling is `cmd[-shift][-alt]-<key>`, lowercase, in that order — one
-/// spelling, so a claim and a press cannot disagree about how to say the
-/// same chord.
-pub(crate) fn chord_of(key: &str, modifiers: gpui_kit::Modifiers) -> Option<String> {
-    if !command_held(modifiers) {
-        return None;
-    }
-    let key = key.trim().to_ascii_lowercase();
-    let claimable = !key.is_empty()
-        && key.len() <= MAX_CHORD_KEY
-        && key
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
-    if !claimable {
-        return None;
-    }
-    let mut chord = String::from("cmd");
-    if modifiers.shift {
-        chord.push_str("-shift");
-    }
-    if modifiers.alt {
-        chord.push_str("-alt");
-    }
-    chord.push('-');
-    chord.push_str(&key);
-    Some(chord)
-}
-
-/// The longest key name a chord may end in (`escape` is six).
-const MAX_CHORD_KEY: usize = 12;
-
-/// Is this the spelling [`chord_of`] would produce? A claim is refused
-/// otherwise — a chord nothing can press is a view waiting forever.
-fn is_chord(chord: &str) -> bool {
-    let Some(rest) = chord.strip_prefix("cmd-") else {
-        return false;
-    };
-    let rest = rest.strip_prefix("shift-").unwrap_or(rest);
-    let rest = rest.strip_prefix("alt-").unwrap_or(rest);
-    !rest.is_empty()
-        && rest.len() <= MAX_CHORD_KEY
-        && rest
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-}
-
 /// The shortest and longest period a view may ask the clock for. Below the
 /// floor a tick is a spin the window thread pays for every frame; above the
 /// ceiling it is not a period but a date, which a view has no business
@@ -330,7 +262,7 @@ const MAX_TICK_MS: i64 = 60 * 60 * 1_000;
 
 /// A `clock.ticks` payload: the period in milliseconds.
 fn tick_period(payload: &[u8]) -> Option<std::time::Duration> {
-    let millis = doors::decode::<i64>(payload).ok()?;
+    let millis = methods::decode::<i64>(payload).ok()?;
     let named = (MIN_TICK_MS..=MAX_TICK_MS).contains(&millis);
     named.then(|| std::time::Duration::from_millis(millis as u64))
 }

@@ -8,8 +8,7 @@ impl Guest {
         }
         let ids: Vec<_> = self.tasks.iter().map(|(id, _)| *id).collect();
         self.tasks.clear();
-        self.filesystem = Default::default();
-        self.media = Default::default();
+        self.clipboard = Default::default();
         for id in ids {
             self.refuse(id, "stale_connection", "network connection changed");
         }
@@ -346,7 +345,7 @@ impl Guest {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
         wire_epoch(manifest.wire_epoch)
-            .and_then(|()| doors_revision(manifest.doors))
+            .and_then(|()| methods_revision(manifest.methods))
             .map_err(|error| Failure::WireEpoch(format!("{shown}: {error}")))?;
         compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))
     }
@@ -444,10 +443,8 @@ impl Guest {
             replies: Arc::default(),
             live_subscriptions: Vec::new(),
             tasks: Vec::new(),
-            filesystem: Default::default(),
-            media: Default::default(),
+            clipboard: Default::default(),
             clocks: Vec::new(),
-            chords: Vec::new(),
             fault: None,
             hash: None,
             alive: Arc::new(()),
@@ -481,26 +478,6 @@ impl Guest {
         self.visibility_change = Some(visible);
     }
 
-    /// A chord this guest claimed was pressed: every subscription that named
-    /// it gets one item. Says whether any did, which is how the shell knows
-    /// the press was spent and must not also be a native key.
-    pub(crate) fn chord_pressed(&mut self, chord: &str) -> bool {
-        let claimed: Vec<u64> = self
-            .chords
-            .iter()
-            .filter(|(_, named)| named == chord)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in &claimed {
-            self.pending.push(wire::Event::Response {
-                id: *id,
-                result: Ok(Vec::new()),
-                done: false,
-            });
-        }
-        !claimed.is_empty()
-    }
-
     /// A route a link left for this module goes to its first route
     /// subscriber, once; with no subscriber it waits.
     pub(crate) fn sync_route(&mut self) {
@@ -510,7 +487,7 @@ impl Guest {
         if let Some(route) = crate::runtime::take_route(self.module) {
             self.pending.push(wire::Event::Response {
                 id,
-                result: Ok(wire::doors::encode(&route)),
+                result: Ok(wire::methods::encode(&route)),
                 done: false,
             });
         }
@@ -523,7 +500,7 @@ impl Guest {
         for id in &self.visibility_subscriptions {
             self.pending.push(wire::Event::Response {
                 id: *id,
-                result: Ok(wire::doors::encode(&visible)),
+                result: Ok(wire::methods::encode(&visible)),
                 done: false,
             });
         }

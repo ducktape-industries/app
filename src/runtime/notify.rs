@@ -16,7 +16,7 @@
 //! folds the centre's rows under it into one with a count.
 //!
 //! A view that knows the reader has seen what it posted under a tag says so
-//! (`notify.read`): its own rows under the tag read, its standing banner
+//! (`notify.seen`): its own rows under the tag read, its standing banner
 //! under it taken down. Another view's rows are never touched.
 //!
 //! A click on a banner opens its row, the way the centre's row does:
@@ -31,7 +31,7 @@ use std::time::Instant;
 
 use super::WindowKey;
 use super::kernel::spawn_device;
-use super::wire::doors::{self, Post, Posted};
+use super::wire::methods::{self, Post, Posted};
 use super::{Guest, Intent};
 use crate::backend::{read_prefs, write_prefs};
 
@@ -486,8 +486,8 @@ pub(super) fn answer(
     payload: &[u8],
 ) -> bool {
     let post = match (capability, operation) {
-        ("notify", "post") => doors::decode::<Post>(payload),
-        ("notify", "read") => {
+        ("notify", "post") => methods::decode::<Post>(payload),
+        ("notify", "seen") => {
             read(guest, id, payload);
             return true;
         }
@@ -535,15 +535,15 @@ pub(super) fn answer(
             Posted::Banner if !raised => Posted::Logged,
             posted => posted,
         };
-        Ok(doors::encode(&posted))
+        Ok(methods::encode(&posted))
     });
     true
 }
 
-/// `notify.read`: the view's rows under the tag read, and its standing
+/// `notify.seen`: the view's rows under the tag read, and its standing
 /// banner under it down, queued behind the banners it already raised.
 fn read(guest: &mut Guest, id: u64, payload: &[u8]) {
-    let tag = match doors::decode::<String>(payload) {
+    let tag = match methods::decode::<String>(payload) {
         Ok(tag) => tag,
         Err(error) => {
             guest.refuse(id, "malformed_request", error.to_string());
@@ -558,7 +558,7 @@ fn read(guest: &mut Guest, id: u64, payload: &[u8]) {
         let tag = format!("{}/{tag}", guest.module);
         in_order(guest.module, move || platform::withdraw(&tag));
     }
-    guest.reply(id, Ok(doors::encode(&())));
+    guest.reply(id, Ok(methods::encode(&())));
 }
 
 /// A view's banners reach the desktop one at a time, in the order its
@@ -885,10 +885,10 @@ mod tests {
             tag: "t".into(),
             link: "duck://chat/room".into(),
         };
-        let mut bytes = doors::encode(&full);
-        assert_eq!(doors::decode::<Post>(&bytes).unwrap(), full);
+        let mut bytes = methods::encode(&full);
+        assert_eq!(methods::decode::<Post>(&bytes).unwrap(), full);
         bytes.extend_from_slice(b"icon");
-        assert!(doors::decode::<Post>(&bytes).is_err());
+        assert!(methods::decode::<Post>(&bytes).is_err());
         assert!(shortened(Post::default()).is_err());
         assert!(
             shortened(Post {

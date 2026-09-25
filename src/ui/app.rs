@@ -544,6 +544,7 @@ impl Ducktape {
             self.connected,
             &self.chain,
             &self.signer_key,
+            self.account.clone().flatten().map(|(number, _)| number),
             // the node the views are on — not the address being typed or
             // tried (a switch in flight)
             &self.connected_rpc,

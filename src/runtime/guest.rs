@@ -120,7 +120,7 @@ pub(super) struct Guest {
     pub(crate) module: &'static str,
     /// The manifest's name: what a registered view's tab is called.
     pub(crate) name: String,
-    /// The capabilities the manifest declares: a door whose capability is
+    /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
     pub(crate) capabilities: Vec<String>,
     /// The undeclared capabilities already logged, so each is logged once.
@@ -160,25 +160,18 @@ pub(super) struct Guest {
     pub(crate) intents: Vec<Intent>,
     /// The kernel's answers to this guest's node calls, on their way in.
     pub(crate) replies: Arc<kernel::Replies>,
-    /// The guest's `rpc.live` subscriptions, each with the plane it named:
+    /// The guest's `program.changes` subscriptions, each with the plane it named:
     /// told on every block that moves that plane.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
     /// Pending host requests and subscriptions, each owned by this guest
     /// the kernel opened for it: retired with the cancel, and with the guest.
     pub(crate) tasks: Vec<(u64, kernel::NodeTask)>,
-    pub(crate) filesystem: filesystem::Filesystem,
-    /// The capture and playout devices this guest holds, and the one consent
-    /// answer they all wait on.
-    pub(crate) media: media::Media,
+    pub(crate) clipboard: clipboard::Clipboard,
     /// The guest's `clock.ticks` subscriptions: the period it asked for and
     /// the instant its next item is due. A module has no clock of its own,
     /// so periodic guest subscriptions use this list — driven from the window
     /// thread's own redraw, never from a thread that would have to wake it.
     pub(crate) clocks: Vec<kernel::Clock>,
-    /// The chords this guest claimed, each with the subscription its presses
-    /// arrive on. The claim itself is global ([`claim_chord`]): two seats
-    /// cannot answer to one chord.
-    pub(crate) chords: Vec<(u64, String)>,
     /// The trap that ended the view, if one did. A faulted guest never ticks again.
     pub(crate) fault: Option<String>,
     /// The assets the deployment shipped beside this view, for the host
@@ -301,19 +294,6 @@ pub(super) fn engine() -> &'static Engine {
 /// Reset the instruction allowance before entering the guest.
 pub(super) fn arm(store: &mut Store<HostState>) {
     let _ = store.set_fuel(FUEL_PER_TICK);
-}
-
-/// EVERY CHORD LEAVES WITH THE GUEST. The claim table is global and outlives
-/// any one instance, so an instance that is retired, replaced, or ended by a
-/// trap and kept its chords would make them unclaimable until the app
-/// restarted — including by the view that takes its seat. This is the one
-/// place that covers all three, because all three end with the box dropped.
-impl Drop for Guest {
-    fn drop(&mut self) {
-        for (_, chord) in &self.chords {
-            release_chord(chord, self.module);
-        }
-    }
 }
 
 /// Brings the tree the host holds into `frame`: an `unchanged` frame takes
@@ -470,15 +450,15 @@ pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {
     })
 }
 
-/// The doors a view was built against, refused at load when this app has
+/// The methods a view was built against, refused at load when this app has
 /// fewer: the view would otherwise run until it asks for one.
-pub(super) fn doors_revision(needed: u32) -> Result<(), String> {
-    (needed <= wire::doors::DOORS_REVISION)
+pub(super) fn methods_revision(needed: u32) -> Result<(), String> {
+    (needed <= wire::methods::METHODS_REVISION)
         .then_some(())
         .ok_or_else(|| {
             format!(
-                "this view needs doors revision {needed}; this app has {}",
-                wire::doors::DOORS_REVISION
+                "this view needs methods revision {needed}; this app has {}",
+                wire::methods::METHODS_REVISION
             )
         })
 }

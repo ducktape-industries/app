@@ -12,18 +12,16 @@
 //! kernel contract (`kernel`) alone; its props are the session basics every
 //! view gets.
 
-mod filesystem;
+mod clipboard;
 mod guest;
 mod kernel;
-mod media;
 pub(crate) mod notify;
 mod roster;
 mod seat;
 mod store;
 mod widget;
 
-pub(crate) use kernel::{chord_of, command_held};
-pub(crate) use media::capturing;
+pub(crate) use kernel::command_held;
 #[cfg(test)]
 pub(crate) use roster::list_for_test;
 pub use roster::{
@@ -76,12 +74,12 @@ impl WindowKey {
     }
 }
 
-/// What a module view asked the app itself to do, off its `host.*` doors.
+/// What a module view asked the app itself to do, off its `host.*` methods.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
     Badge(i64),
-    /// `host.open_link`: a link it pressed.
+    /// `link.open`: a link it pressed.
     OpenLink(String),
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
@@ -113,71 +111,6 @@ const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 
 // ---------- the node seat ----------
-
-/// Which module holds each claimed chord, and how many live subscriptions
-/// hold it. Global, because the claim is: two seats answering to one chord
-/// would make the key mean whichever guest the shell reached first that
-/// frame.
-///
-/// The COUNT is what lets a chord move. A claim is made per subscription and
-/// given back per subscription — including the ones a torn-down guest still
-/// had — so a swap, in which the replacement claims before the instance it
-/// replaces is dropped, leaves the holder standing rather than releasing the
-/// key out from under the view that just took it.
-type ChordClaims = std::collections::BTreeMap<String, (&'static str, usize)>;
-
-fn chord_claims() -> &'static Mutex<ChordClaims> {
-    static CLAIMS: OnceLock<Mutex<ChordClaims>> = OnceLock::new();
-    CLAIMS.get_or_init(Mutex::default)
-}
-
-/// Claim `chord` for `module`, or name the module that already holds it.
-///
-/// FIRST COME HOLDS IT, and a module re-claiming its own is another claim on
-/// the same key: a swap installs a new instance of the same id, and a view
-/// must not lose its chord by being replaced with itself.
-pub(crate) fn claim_chord(chord: &str, module: &'static str) -> Result<(), &'static str> {
-    let mut claims = chord_claims().lock().expect("chord claims");
-    match claims.get_mut(chord) {
-        Some((holder, _)) if *holder != module => Err(holder),
-        Some((_, held)) => {
-            *held += 1;
-            Ok(())
-        }
-        None => {
-            claims.insert(chord.to_owned(), (module, 1));
-            Ok(())
-        }
-    }
-}
-
-/// Give one claim on `chord` back. The key is free again once the last one
-/// is given back — a chord nothing is listening for is a chord the next view
-/// may have, and a claim that outlived its guest would make the key
-/// unclaimable until the app restarted.
-pub(crate) fn release_chord(chord: &str, module: &'static str) {
-    let mut claims = chord_claims().lock().expect("chord claims");
-    let Some((holder, held)) = claims.get_mut(chord) else {
-        return;
-    };
-    if *holder != module {
-        return;
-    }
-    *held -= 1;
-    if *held == 0 {
-        claims.remove(chord);
-    }
-}
-
-/// The module that holds `chord`, if any — what the shell asks before it
-/// carries a press to a seat.
-pub(crate) fn chord_holder(chord: &str) -> Option<&'static str> {
-    chord_claims()
-        .lock()
-        .expect("chord claims")
-        .get(chord)
-        .map(|(holder, _)| *holder)
-}
 
 /// The route a link asked of each module's view, waiting for that view's
 /// first `host.route` subscriber. One per module: a newer link replaces an

@@ -13,6 +13,4 @@
 <key>NSHighResolutionCapable</key><true/>
 <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>
 <key>NSLocalNetworkUsageDescription</key><string>Ducktape connects to networks hosted on other devices on your local network.</string>
-<key>NSCameraUsageDescription</key><string>Ducktape uses the camera for video in huddles.</string>
-<key>NSMicrophoneUsageDescription</key><string>Ducktape uses the microphone for voice in huddles.</string>
 </dict></plist>
