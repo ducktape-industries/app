@@ -205,19 +205,6 @@ impl std::fmt::Debug for Account {
     }
 }
 
-/// What the model asks of the desk's windows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SeatRequest {
-    /// Show the program: its window if one is open, else in the focused
-    /// one (Spotlight, a menu).
-    Select(&'static str),
-    /// Bring the program forward beside what is open, even when it is
-    /// already the active one behind another window (a link).
-    Open(&'static str),
-    /// Close every window: the network was left.
-    Unseat,
-}
-
 pub struct Ducktape {
     pub(crate) appearance: Appearance,
     pub(crate) system_dark: bool,
@@ -232,9 +219,9 @@ pub struct Ducktape {
     pub(crate) network: String,
     /// The chain links name, `<network>#<salt>` ([`ducklink::ChainId`]).
     pub(crate) chain: String,
-    /// What the desk is asked to do with its windows, taken by the next
-    /// dispatch (`Desktop::dispatch`).
-    pub(crate) seat_request: Option<SeatRequest>,
+    /// Each native window's panes: which view is where, their frames and
+    /// focus. The console's is `console_win`'s.
+    pub(crate) layouts: BTreeMap<WindowKey, super::layout::Layout>,
     /// Where this network's keys live on this device
     /// ([`backend::bind_keyring`]): the name alone is not enough, two
     /// chains can share one.
@@ -358,8 +345,15 @@ pub(crate) enum AppMessage {
     SwitchNetwork(String),
     /// Show a program on the desk (Spotlight, a menu).
     SelectView(&'static str),
-    /// A window now shows this program in front: it is the active one.
-    ViewShown(&'static str),
+    /// Something done to a window's panes.
+    Pane(WindowKey, super::layout::PaneMessage),
+    /// A window drew its desk this size; `seed` is the program an
+    /// untouched desk opens.
+    DeskShown {
+        window: WindowKey,
+        desk: (f32, f32),
+        seed: Option<&'static str>,
+    },
     ViewEvent(&'static str, Intent),
     OpenLink(String),
     /// A notification centre row picked: read, and its link opened.
@@ -457,7 +451,7 @@ impl Ducktape {
             connected_rpc: String::new(),
             network: String::new(),
             chain: String::new(),
-            seat_request: None,
+            layouts: BTreeMap::new(),
             keyring: String::new(),
             other_chain: false,
             connected: false,

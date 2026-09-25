@@ -1,7 +1,7 @@
 //! Reaching a node, keeping up with it, and leaving it.
 
 use super::update::STATUS_EVERY;
-use super::{AppMessage as Message, Ducktape, Overlay, SeatRequest, Stage, Unlock};
+use super::{AppMessage as Message, Ducktape, Overlay, Stage, Unlock};
 use crate::backend;
 use view_wire::Task;
 
@@ -260,7 +260,10 @@ impl Ducktape {
         self.stage = Stage::Unlock(Unlock::default());
         self.account = None;
         self.active = None;
-        self.seat_request = Some(SeatRequest::Unseat);
+        // every window's panes go, each desk keeping its measure
+        for layout in self.layouts.values_mut() {
+            layout.clear();
+        }
         self.badges.clear();
         self.overlay = None;
         self.node = None;

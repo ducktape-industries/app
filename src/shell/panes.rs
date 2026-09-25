@@ -4,7 +4,55 @@ use super::*;
 pub(super) struct MountedPane {
     pub(super) module: &'static str,
     pub(super) view: Entity<crate::runtime::NativeModuleView>,
-    pub(super) route: Option<gpui_kit::Subscription>,
+    /// Its events, to the model.
+    _route: gpui_kit::Subscription,
+}
+
+impl Desktop {
+    /// A view for every pane the model has, and none for a pane it no
+    /// longer has (told it is hidden first).
+    pub(super) fn mount(&mut self, cx: &mut Context<Self>) {
+        let wanted: BTreeMap<u64, &'static str> = self
+            .state
+            .layouts
+            .values()
+            .flat_map(|layout| &layout.panes)
+            .filter(|pane| !pane.is_empty())
+            .map(|pane| (pane.instance, pane.module))
+            .collect();
+        let gone: Vec<u64> = self
+            .mounted
+            .keys()
+            .filter(|instance| !wanted.contains_key(instance))
+            .copied()
+            .collect();
+        for (instance, module) in wanted {
+            if self.mounted.contains_key(&instance) {
+                continue;
+            }
+            let view = cx.new(|_| crate::runtime::NativeModuleView::new(module));
+            let route = cx.subscribe(&view, move |model, _, event, cx| {
+                model.dispatch(Message::ViewEvent(module, event.clone()), cx)
+            });
+            self.mounted.insert(
+                instance,
+                MountedPane {
+                    module,
+                    view,
+                    _route: route,
+                },
+            );
+        }
+        for instance in gone {
+            let Some(pane) = self.mounted.remove(&instance) else {
+                continue;
+            };
+            let intents = pane.view.update(cx, |view, _| view.hide());
+            for intent in intents {
+                self.dispatch(Message::ViewEvent(pane.module, intent), cx);
+            }
+        }
+    }
 }
 
 pub(super) fn label(module: &str) -> String {
@@ -39,185 +87,43 @@ fn openable() -> Vec<crate::runtime::RailRow> {
 }
 
 impl DesktopWindow {
-    pub(super) fn focused_view(&self) -> Option<Entity<crate::runtime::NativeModuleView>> {
-        self.layout
-            .panes
-            .get(self.layout.focused)
-            .and_then(|pane| self.mounted.get(&pane.instance))
+    pub(super) fn focused_view(
+        &self,
+        cx: &gpui_kit::App,
+    ) -> Option<Entity<crate::runtime::NativeModuleView>> {
+        let layout = self.layout(cx);
+        let pane = layout.panes.get(layout.focused)?;
+        let model = self.model.read(cx);
+        model
+            .mounted
+            .get(&pane.instance)
             .map(|pane| pane.view.clone())
     }
 
-    pub(super) fn initialize_panes(
-        &mut self,
-        module: Option<&'static str>,
-        cx: &mut Context<Self>,
-    ) {
-        if !self.initialized {
-            let module = match self.kind {
-                crate::shell::WindowKind::View { module } => Some(module),
-                _ => module,
-            };
-            if let Some(module) = module {
-                self.layout.select(module);
-                self.initialized = true;
-            }
-        }
-        self.sync_panes(cx);
-    }
-
-    fn sync_panes(&mut self, cx: &mut Context<Self>) {
-        let obsolete: Vec<_> = self
-            .mounted
-            .keys()
-            .copied()
-            .filter(|id| !self.layout.panes.iter().any(|pane| pane.instance == *id))
-            .collect();
-        for id in obsolete {
-            if let Some(pane) = self.mounted.remove(&id) {
-                self.hide_pane(pane, cx);
-            }
-        }
-        for pane in self.layout.panes.iter().filter(|pane| !pane.is_empty()) {
-            self.mounted.entry(pane.instance).or_insert_with(|| {
-                let module = pane.module;
-                let view = cx.new(|_| crate::runtime::NativeModuleView::new(module));
-                MountedPane {
-                    module,
-                    view,
-                    route: None,
-                }
-            });
-            let mounted = self.mounted.get_mut(&pane.instance).expect("mounted pane");
-            if mounted.route.is_none() {
-                let model = self.model.clone();
-                let module = pane.module;
-                mounted.route = Some(cx.subscribe(&mounted.view, move |_, _, event, cx| {
-                    model.update(cx, |model, cx| {
-                        model.dispatch(Message::ViewEvent(module, event.clone()), cx)
-                    });
-                }));
-            }
-        }
-    }
-
-    pub(super) fn hide_pane(&self, pane: MountedPane, cx: &mut gpui_kit::App) {
-        let intents = pane.view.update(cx, |view, _| view.hide());
-        for intent in intents {
-            self.model.update(cx, |model, cx| {
-                model.dispatch(Message::ViewEvent(pane.module, intent), cx)
-            });
-        }
-    }
-
+    /// Something done to this window's panes: the model moves them, and
+    /// the keys come back to the window.
     pub(super) fn pane_message(
         &mut self,
         message: PaneMessage,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.initialized = true;
-        match message {
-            PaneMessage::Select(module) => {
-                self.layout.select(module);
-            }
-            PaneMessage::Split(module) => {
-                self.layout.split(module);
-            }
-            PaneMessage::PopOut(index)
-                if self
-                    .layout
-                    .panes
-                    .get(index)
-                    .is_none_or(|pane| pane.is_empty()) => {}
-            PaneMessage::Close(index) => {
-                self.layout.close(index);
-                if matches!(self.kind, crate::shell::WindowKind::View { .. }) {
-                    super::remove(window.window_handle(), cx);
-                }
-            }
-            PaneMessage::Focus(index) => {
-                self.layout.focus(index);
-            }
-            PaneMessage::PopOut(index) => {
-                if let Some(pane) = self.layout.close(index)
-                    && let Some(mut mounted) = self.mounted.remove(&pane.instance)
-                {
-                    mounted.route = None;
-                    let kind = crate::shell::WindowKind::View {
-                        module: pane.module,
-                    };
-                    let source = cx.weak_entity();
-                    let at = super::windows::unseated(
-                        window.bounds(),
-                        pane.frame,
-                        window.display(cx).map(|display| display.bounds()),
-                    );
-                    self.model.update(cx, |model, cx| {
-                        let (reply, _) = oneshot::channel();
-                        model.open_window(
-                            WindowKey::unique(),
-                            kind,
-                            reply,
-                            Some((pane, mounted, source)),
-                            Some(at),
-                            cx,
-                        );
-                    });
-                }
-            }
-            PaneMessage::PopIn => {
-                let destination = self
-                    .model
-                    .read(cx)
-                    .views
-                    .values()
-                    .filter_map(|view| view.upgrade())
-                    .find(|view| {
-                        view.entity_id() != cx.entity_id()
-                            && view.read(cx).kind == crate::shell::WindowKind::Console
-                    });
-                if let Some(destination) = destination
-                    && let Some(pane) = self.layout.close(0)
-                    && let Some(mut mounted) = self.mounted.remove(&pane.instance)
-                {
-                    mounted.route = None;
-                    destination.update(cx, |this, cx| {
-                        this.mounted.insert(pane.instance, mounted);
-                        this.layout.popin(pane);
-                        this.initialized = true;
-                        this.sync_panes(cx);
-                        cx.notify();
-                    });
-                    super::remove(window.window_handle(), cx);
-                }
-            }
-        }
-        self.settle(window, cx);
-    }
-
-    /// After the windows changed: views mounted for them, the focused one
-    /// told so (and the model: it is the active program), keys back at the
-    /// desk.
-    fn settle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.sync_panes(cx);
-        let shown = self
-            .layout
-            .panes
-            .get(self.layout.focused)
-            .filter(|pane| !pane.is_empty())
-            .map(|pane| pane.module);
-        if let Some(module) = shown {
-            self.model.update(cx, |model, cx| {
-                model.dispatch(Message::ViewShown(module), cx)
-            });
-        }
-        for (index, pane) in self.layout.panes.iter().enumerate() {
-            if let Some(mounted) = self.mounted.get(&pane.instance) {
-                mounted.view.update(cx, |view, cx| {
-                    view.set_focused(index == self.layout.focused, cx)
-                });
-            }
-        }
+        let message = match message {
+            // it opens where it sat on the desk
+            PaneMessage::PopOut { index, at: None } => PaneMessage::PopOut {
+                index,
+                at: Some(super::windows::unseated(
+                    window.bounds(),
+                    self.layout(cx).panes.get(index).and_then(|pane| pane.frame),
+                    window.display(cx).map(|display| display.bounds()),
+                )),
+            },
+            message => message,
+        };
+        let key = self.key;
+        self.model.update(cx, |model, cx| {
+            model.dispatch(Message::Pane(key, message), cx)
+        });
         self.focus.focus(window, cx);
         cx.notify();
     }
@@ -229,9 +135,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.initialized = true;
-        self.layout.open(module);
-        self.settle(window, cx);
+        self.pane_message(PaneMessage::Open(module), window, cx);
     }
 
     /// The desk's own keys, in the console (⌘W is `global_key`'s):
@@ -254,47 +158,42 @@ impl DesktopWindow {
         };
         let cycle =
             (command && (name == "`" || name == "~")) || (key.modifiers.control && name == "tab");
-        if cycle {
-            self.layout.cycle(!shift);
+        let layout = self.layout(cx);
+        let message = if cycle {
+            PaneMessage::Cycle { forward: !shift }
         } else if command && name == "d" {
-            let desk = self.desk(window);
-            self.layout.halve(shift, desk);
+            PaneMessage::Halve { below: shift }
         } else if command && let Some(nth) = digit {
-            self.layout.focus(nth - 1);
+            PaneMessage::Focus(nth - 1)
         } else if !in_guest_editor
             && !command
             && !key.modifiers.alt
-            && self
-                .layout
+            && layout
                 .panes
-                .get(self.layout.focused)
+                .get(layout.focused)
                 .is_some_and(|pane| pane.is_empty())
         {
             let rows = openable();
-            let pick = self.layout.pick.min(rows.len().saturating_sub(1));
-            let open = match (name.as_str(), digit) {
-                ("up", _) => {
-                    self.layout.pick = pick.saturating_sub(1);
-                    None
-                }
-                ("down", _) => {
-                    self.layout.pick = (pick + 1).min(rows.len().saturating_sub(1));
-                    None
-                }
-                ("enter", _) => rows.get(pick),
-                (_, Some(nth)) => rows.get(nth - 1),
+            let pick = layout.pick.min(rows.len().saturating_sub(1));
+            match (name.as_str(), digit) {
+                ("up" | "down", _) => PaneMessage::Pick {
+                    down: name == "down",
+                    rows: rows.len(),
+                },
+                ("enter", _) => match rows.get(pick) {
+                    Some(row) => PaneMessage::Open(row.module),
+                    None => return true,
+                },
+                (_, Some(nth)) => match rows.get(nth - 1) {
+                    Some(row) => PaneMessage::Open(row.module),
+                    None => return true,
+                },
                 _ => return false,
-            };
-            match open {
-                Some(row) => self.open_view(row.module, window, cx),
-                None => cx.notify(),
             }
-            return true;
         } else {
             return false;
-        }
-        self.initialized = true;
-        self.settle(window, cx);
+        };
+        self.pane_message(message, window, cx);
         true
     }
 
@@ -306,7 +205,7 @@ impl DesktopWindow {
         let state = self.model.read(cx).state.clone_facts();
         let ink = Ink::of(state.dark);
         let rows = openable();
-        let pick = self.layout.pick.min(rows.len().saturating_sub(1));
+        let pick = self.layout(cx).pick.min(rows.len().saturating_sub(1));
         let spacing = empty_spacing(rows.len(), body);
         let (row_pad, outer_pad) = (spacing.row, spacing.outer);
         let list = rows.iter().enumerate().map(|(nth, row)| {
@@ -442,11 +341,12 @@ impl DesktopWindow {
                             return;
                         }
                         let message = match action {
-                            PaneAction::Split => {
-                                PaneMessage::Split(this.layout.panes[index].module)
-                            }
+                            PaneAction::Split => match this.layout(cx).panes.get(index) {
+                                Some(pane) => PaneMessage::Split(pane.module),
+                                None => return,
+                            },
                             PaneAction::Close => PaneMessage::Close(index),
-                            PaneAction::PopOut => PaneMessage::PopOut(index),
+                            PaneAction::PopOut => PaneMessage::PopOut { index, at: None },
                             PaneAction::PopIn => PaneMessage::PopIn,
                         };
                         this.pane_message(message, window, cx);
@@ -458,7 +358,7 @@ impl DesktopWindow {
     }
 
     /// The desk windows sit on: the window below its bar.
-    fn desk(&self, window: &Window) -> (f32, f32) {
+    pub(super) fn desk(&self, window: &Window) -> (f32, f32) {
         let size = window.viewport_size();
         (
             f32::from(size.width),
@@ -473,7 +373,8 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
-        if self.layout.panes.is_empty() {
+        let layout = self.layout(cx);
+        if layout.panes.is_empty() {
             let moving = self.model.read(cx).state.motion;
             return div()
                 .size_full()
@@ -499,8 +400,6 @@ impl DesktopWindow {
         }
         let props = self.model.read(cx).state.view_props();
         let console = self.kind == crate::shell::WindowKind::Console;
-        let desk = self.desk(window);
-        self.layout.place(desk);
         let this = cx.entity();
         let mut stage = div().id("panes").relative().size_full().child(
             canvas(
@@ -519,14 +418,19 @@ impl DesktopWindow {
                     .size_full(),
             );
         }
-        let multi = self.layout.panes.len() > 1;
-        for index in self.layout.stacking() {
-            let pane = &self.layout.panes[index];
-            let focused = index == self.layout.focused;
+        let multi = layout.panes.len() > 1;
+        for index in layout.stacking() {
+            let pane = &layout.panes[index];
+            let focused = index == layout.focused;
             let empty = pane.is_empty();
-            let view = match self.mounted.get(&pane.instance) {
-                Some(mounted) => {
-                    let view = mounted.view.clone();
+            let mounted = self
+                .model
+                .read(cx)
+                .mounted
+                .get(&pane.instance)
+                .map(|mounted| mounted.view.clone());
+            let view = match mounted {
+                Some(view) => {
                     view.update(cx, |view, cx| {
                         view.set_focused(focused, cx);
                         view.set_props(props.clone(), cx);
@@ -534,14 +438,14 @@ impl DesktopWindow {
                     view.into_any_element()
                 }
                 None => {
-                    let pane = &self.layout.panes[index];
+                    let pane = &layout.panes[index];
                     let tall = pane
                         .frame
                         .map_or(f32::from(window.viewport_size().height), |frame| frame.h);
                     self.empty_view(tall - TITLE, cx)
                 }
             };
-            let pane = &self.layout.panes[index];
+            let pane = &layout.panes[index];
             let controls = div()
                 .flex()
                 .items_center()
@@ -550,7 +454,7 @@ impl DesktopWindow {
                     strip.child(self.pane_button(
                         index,
                         PaneAction::Split,
-                        self.layout.panes.len() < layout::MAX_PANES,
+                        layout.panes.len() < layout::MAX_PANES,
                         cx,
                     ))
                 })
@@ -596,12 +500,8 @@ impl DesktopWindow {
                     MouseButton::Left,
                     cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                         match (on_desk, event.click_count) {
-                            (true, 2) => {
-                                let desk = this.desk(window);
-                                this.layout.toggle_fill(index, desk);
-                                cx.notify();
-                            }
-                            (true, _) => this.hold(index, [false; 4], event.position),
+                            (true, 2) => this.pane_message(PaneMessage::Fill(index), window, cx),
+                            (true, _) => this.hold(index, [false; 4], event.position, cx),
                             (false, 2) if handle => window.titlebar_double_click(),
                             (false, _) if handle => window.start_window_move(),
                             (false, _) => {}
@@ -759,8 +659,14 @@ impl DesktopWindow {
 
     /// Takes hold of window `index` at `at`: `sides` (left, top, right,
     /// bottom) follow the pointer; none, and the whole window does.
-    fn hold(&mut self, index: usize, sides: [bool; 4], at: gpui_kit::Point<gpui_kit::Pixels>) {
-        if let Some(start) = self.layout.panes.get(index).and_then(|pane| pane.frame) {
+    fn hold(
+        &mut self,
+        index: usize,
+        sides: [bool; 4],
+        at: gpui_kit::Point<gpui_kit::Pixels>,
+        cx: &gpui_kit::App,
+    ) {
+        if let Some(start) = self.layout(cx).panes.get(index).and_then(|pane| pane.frame) {
             self.drag = Some(Drag {
                 index,
                 sides,
@@ -837,7 +743,7 @@ impl DesktopWindow {
                         MouseButton::Left,
                         cx.listener(move |this, event: &MouseDownEvent, _, cx| {
                             cx.stop_propagation();
-                            this.hold(index, sides, event.position);
+                            this.hold(index, sides, event.position, cx);
                         }),
                     );
                 let grip = match corner {
@@ -862,22 +768,6 @@ impl DesktopWindow {
             })
             .collect()
     }
-}
-
-/// What is done to this window's panes: the desk's own business, not the
-/// model's.
-#[derive(Clone, Copy, Debug)]
-pub(super) enum PaneMessage {
-    /// `module` in the focused pane (shift-click on the bar).
-    Select(&'static str),
-    /// Another pane showing `module`.
-    Split(&'static str),
-    Close(usize),
-    Focus(usize),
-    /// The pane into a window of its own.
-    PopOut(usize),
-    /// This pop-out's pane back onto the console's desk.
-    PopIn,
 }
 
 /// A button on a window's title bar.
@@ -1006,11 +896,12 @@ fn raise(
             // a press on something open over the desk is not on a window
             let covered = this.kind == crate::shell::WindowKind::Console
                 && this.model.read(cx).state.overlay.is_some();
-            let Some(index) = this.layout.under(at).filter(|_| !covered) else {
+            let layout = this.layout(cx);
+            let Some(index) = layout.under(at).filter(|_| !covered) else {
                 return;
             };
-            let on_top = this.layout.stacking().last() == Some(&index);
-            if index != this.layout.focused || !on_top {
+            let on_top = layout.stacking().last() == Some(&index);
+            if index != layout.focused || !on_top {
                 this.pane_message(PaneMessage::Focus(index), window, cx);
             }
         });
@@ -1022,7 +913,7 @@ fn raise(
 fn follow(this: gpui_kit::Entity<DesktopWindow>, window: &mut Window) {
     use gpui_kit::*;
     let held = this.clone();
-    window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+    window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
         if phase != DispatchPhase::Bubble {
             return;
         }
@@ -1032,12 +923,17 @@ fn follow(this: gpui_kit::Entity<DesktopWindow>, window: &mut Window) {
             };
             if event.pressed_button != Some(MouseButton::Left) {
                 this.drag = None;
+                cx.notify();
             } else {
-                let desk = this.desk(window);
                 let to = (event.position.x.into(), event.position.y.into());
-                this.layout.set_frame(drag.index, drag.frame(to), desk);
+                let (key, frame) = (this.key, drag.frame(to));
+                this.model.update(cx, |model, cx| {
+                    model.dispatch(
+                        Message::Pane(key, PaneMessage::Frame(drag.index, frame)),
+                        cx,
+                    )
+                });
             }
-            cx.notify();
         });
     });
     window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
