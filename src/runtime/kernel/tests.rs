@@ -20,7 +20,68 @@ fn guest() -> Guest {
             (func (export "restore") (param i32 i32 i32) (result i64) i64.const 0))"#,
     )
     .unwrap();
-    Guest::instantiate("request-test", &code, "request test").unwrap()
+    let mut guest = Guest::instantiate("request-test", &code, "request test").unwrap();
+    guest.capabilities = doors::CAPABILITIES.iter().map(|c| (*c).into()).collect();
+    guest
+}
+
+/// The reason `kind` is refused for, asked by a guest declaring `declared`;
+/// `None` if it is not refused at once.
+fn refused_with(declared: &[&str], kind: &str) -> Option<String> {
+    let mut guest = guest();
+    guest.capabilities = declared.iter().map(|c| (*c).into()).collect();
+    let payload = doors::encode(&doors::Call {
+        target: "registry".into(),
+        body: Vec::new(),
+    });
+    for id in [1, 2] {
+        let request = wire::Request {
+            id,
+            kind: kind.into(),
+            payload: payload.clone(),
+        };
+        guest.answer(request, &None);
+    }
+    assert!(guest.undeclared_logged.len() <= 1, "{kind} logged twice");
+    match guest.pending.pop() {
+        Some(wire::Event::Response {
+            result: Err(refusal),
+            ..
+        }) => Some(refusal.reason),
+        _ => None,
+    }
+}
+
+/// Every door of every capability family: refused when its capability is
+/// the one the manifest leaves out, answered past the gate when it is the
+/// only one declared.
+#[test]
+fn a_door_is_reached_only_through_its_declared_capability() {
+    for kind in doors::ALL {
+        let family = kind.split_once('.').unwrap().0;
+        let others: Vec<&str> = doors::CAPABILITIES
+            .iter()
+            .copied()
+            .filter(|c| *c != family)
+            .collect();
+        assert_eq!(
+            refused_with(&others, kind).as_deref(),
+            Some("undeclared_capability"),
+            "{kind} undeclared"
+        );
+        assert!(
+            !matches!(
+                refused_with(&[family], kind).as_deref(),
+                Some("undeclared_capability" | "unknown_request")
+            ),
+            "{kind} declared"
+        );
+    }
+    // an unknown kind is still unknown, declared or not
+    assert_eq!(
+        refused_with(&[], "chat.props").as_deref(),
+        Some("unknown_request")
+    );
 }
 
 #[test]
