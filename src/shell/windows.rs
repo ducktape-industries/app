@@ -92,7 +92,7 @@ impl DesktopWindow {
             focus,
             _activation: activation,
             _observer: observer,
-            _keystrokes: Self::intercept_global_keys(window, cx),
+            _keystrokes: Self::intercept_chords(window, cx),
             _focus_lost: cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
         }
     }

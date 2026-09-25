@@ -27,6 +27,7 @@ mod approve;
 mod desk;
 mod figure;
 mod ink;
+mod keys;
 mod launch;
 mod launcher;
 mod menubar;
@@ -58,12 +59,6 @@ pub(crate) use crate::runtime::WindowKey;
 pub(crate) enum WindowKind {
     Console,
     View { module: &'static str },
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct KeyPress {
-    pub(crate) key: String,
-    pub(crate) modifiers: gpui_kit::Modifiers,
 }
 
 /// How the platform writes a command chord: "⌘K" on a Mac, "Ctrl K"
@@ -511,7 +506,11 @@ struct NativeInput {
 }
 
 impl DesktopWindow {
-    fn intercept_global_keys(
+    /// A command chord a view claimed (`runtime::claim_chord`) goes to the
+    /// focused pane's view, ahead of the native bindings of whatever is
+    /// focused in it — but not ahead of the app's own keys (`keys`), and
+    /// never out of a guest editor, which takes its own.
+    fn intercept_chords(
         window: &gpui_kit::Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::Subscription {
@@ -525,74 +524,20 @@ impl DesktopWindow {
                 .context_stack
                 .iter()
                 .any(|context| context.contains(crate::editor::wire::GUEST_EDITOR_CONTEXT));
-            let _ = view.update(cx, |view, cx| {
-                view.global_key(
-                    KeyPress {
-                        key: event.keystroke.key.clone(),
-                        modifiers: event.keystroke.modifiers,
-                    },
-                    in_guest_editor,
-                    window,
-                    cx,
-                );
-            });
-        })
-    }
-
-    /// ⌘Q quits, then ⌘W closes (`command_w_pane`: the focused desk
-    /// window, else the app's); the desk's own keys (`desk_key`) come next;
-    /// any other command chord goes to the seated view if it claimed it.
-    fn global_key(
-        &mut self,
-        key: KeyPress,
-        in_guest_editor: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let command = crate::runtime::command_held(key.modifiers);
-        if command && key.key == "q" {
-            self.model
-                .update(cx, |model, cx| model.dispatch(Message::TrayQuit, cx));
-            cx.stop_propagation();
-            return;
-        }
-        if command && key.key == "w" {
-            match self.command_w_pane(cx) {
-                Some(index) => self.pane_message(PaneMessage::Close(index), window, cx),
-                None => self.close_by_key(window, cx),
+            let the_apps = window
+                .possible_bindings_for_input(std::slice::from_ref(&event.keystroke))
+                .iter()
+                .any(|binding| keys::is_ours(binding.action()));
+            if in_guest_editor || the_apps {
+                return;
             }
-            cx.stop_propagation();
-            return;
-        }
-        if self.desk_keys(cx) && self.desk_key(&key, in_guest_editor, window, cx) {
-            cx.stop_propagation();
-            return;
-        }
-        if command && key.key == "k" && self.kind == WindowKind::Console && self.on_desk(cx) {
-            let message = match self.model.read(cx).state.overlay {
-                Some(crate::Overlay::Spotlight) => Message::CloseOverlay(crate::Overlay::Spotlight),
-                _ => Message::OpenSpotlight,
-            };
-            self.model
-                .update(cx, |model, cx| model.dispatch(message, cx));
-            cx.stop_propagation();
-            return;
-        }
-        // Escape closes whatever is open over the desk
-        let overlay = self.model.read(cx).state.overlay;
-        if key.key == "escape"
-            && self.kind == WindowKind::Console
-            && let Some(overlay) = overlay
-        {
-            self.model.update(cx, |model, cx| {
-                model.dispatch(Message::CloseOverlay(overlay), cx)
-            });
-            cx.stop_propagation();
-            return;
-        }
-        if !in_guest_editor && self.deliver_chord(&key, cx) {
-            cx.stop_propagation();
-        }
+            let delivered = view
+                .update(cx, |view, cx| view.deliver_chord(&event.keystroke, cx))
+                .unwrap_or(false);
+            if delivered {
+                cx.stop_propagation();
+            }
+        })
     }
 
     /// On the desk: connected, and past the key and account steps.
@@ -638,7 +583,7 @@ impl DesktopWindow {
         self.focus.focus(window, cx);
     }
 
-    fn deliver_chord(&mut self, key: &KeyPress, cx: &mut Context<Self>) -> bool {
+    fn deliver_chord(&mut self, key: &gpui_kit::Keystroke, cx: &mut Context<Self>) -> bool {
         let Some(chord) = crate::runtime::chord_of(&key.key, key.modifiers) else {
             return false;
         };
@@ -711,7 +656,8 @@ impl Render for DesktopWindow {
         let mut root = gpui_kit::div();
         root.text_style().font_fallbacks = Some(fallback_chain());
         root.text_style().font_family = Some(theme::FAMILY_UI.into());
-        root.id("desktop-root")
+        let root = root.id("desktop-root");
+        self.on_keys(root, cx)
             .size_full()
             .bg(ink.bg)
             .text_color(ink.ink)

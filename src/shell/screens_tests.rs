@@ -74,7 +74,10 @@ fn open(state: Ducktape, cx: &mut TestAppContext) -> (Entity<DesktopWindow>, Vis
 
 #[gpui_kit::test]
 fn connect_screen_exposes_the_endpoint_and_names_its_error(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.endpoint = "127.0.0.1:9000".to_string();
     state.endpoint_error = "no route to host".to_string();
@@ -102,7 +105,10 @@ fn connect_screen_exposes_the_endpoint_and_names_its_error(cx: &mut TestAppConte
 
 #[gpui_kit::test]
 fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.stage = Stage::Unlock(Default::default());
     // a password-locked key from before: its password is asked once
@@ -154,7 +160,10 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
 /// is unlocked, offers creating an account or adding this device to one.
 #[gpui_kit::test]
 fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.stage = Stage::Unlock(Default::default());
     let (view, mut native) = open(state, cx);
@@ -192,7 +201,10 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
 /// (or its "Forget" button) with Tab, only a mouse.
 #[gpui_kit::test]
 fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.stage = Stage::Connect;
     state.recent_endpoints = vec![crate::backend::RecentEndpoint {
@@ -230,7 +242,10 @@ fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut Test
 /// window starts focused on, so Tab still reaches the new screen.
 #[gpui_kit::test]
 fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.stage = Stage::Connect;
     let (view, mut native) = open(state, cx);
@@ -284,7 +299,10 @@ fn initials_take_the_first_letter_of_two_words() {
 /// The field mirrors the model on every draw.
 #[gpui_kit::test]
 fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.stage = Stage::Unlock(Default::default());
     state.key_exists = true;
@@ -329,7 +347,10 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
 /// typed "abcdef" into a phrase-check word and the field showed "ef".
 #[gpui_kit::test]
 fn a_draw_leaves_text_the_model_has_not_heard_yet(cx: &mut TestAppContext) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.stage = Stage::Unlock(Default::default());
     state.key_exists = true;
@@ -359,7 +380,10 @@ fn a_draw_leaves_text_the_model_has_not_heard_yet(cx: &mut TestAppContext) {
 fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
     cx: &mut TestAppContext,
 ) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.stage = Stage::Desk;
     state.connected = true;
@@ -400,7 +424,10 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
 #[gpui_kit::test]
 fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     use crate::runtime::notify::{Permission, Settings, center};
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let (mut state, _) = Ducktape::boot();
     state.stage = Stage::Desk;
     state.connected = true;
@@ -511,7 +538,10 @@ fn drawn_ids(window: &mut Window, cx: &mut gpui_kit::App) -> std::collections::B
 #[gpui_kit::test]
 fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
     use crate::ui::{Account, Phrase, Unlock};
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     type Build = fn() -> Stage;
     let stages: Vec<(Build, &str)> = vec![
         (|| Stage::Connect, "connect"),

@@ -79,7 +79,7 @@ fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> String {
 }
 
 /// What an empty window lists: the rail's programs, as the menu bar shows them.
-fn openable() -> Vec<crate::runtime::RailRow> {
+pub(super) fn openable() -> Vec<crate::runtime::RailRow> {
     crate::runtime::rail()
         .into_iter()
         .filter(|row| !row.empty)
@@ -136,65 +136,6 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) {
         self.pane_message(PaneMessage::Open(module), window, cx);
-    }
-
-    /// The desk's own keys, in the console (⌘W is `global_key`'s):
-    /// ⌘` / ⌘⇧` (and ctrl-tab) go to the next / previous one, ⌘1…⌘9 to
-    /// the Nth, ⌘D / ⌘⇧D halve it; in an empty window ↑↓ pick, Enter and
-    /// 1…9 open. True if the key was the desk's.
-    pub(super) fn desk_key(
-        &mut self,
-        key: &KeyPress,
-        in_guest_editor: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        let command = crate::runtime::command_held(key.modifiers);
-        let shift = key.modifiers.shift;
-        let name = key.key.to_ascii_lowercase();
-        let digit = match name.as_str() {
-            "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" => name.parse::<usize>().ok(),
-            _ => None,
-        };
-        let cycle =
-            (command && (name == "`" || name == "~")) || (key.modifiers.control && name == "tab");
-        let layout = self.layout(cx);
-        let message = if cycle {
-            PaneMessage::Cycle { forward: !shift }
-        } else if command && name == "d" {
-            PaneMessage::Halve { below: shift }
-        } else if command && let Some(nth) = digit {
-            PaneMessage::Focus(nth - 1)
-        } else if !in_guest_editor
-            && !command
-            && !key.modifiers.alt
-            && layout
-                .panes
-                .get(layout.focused)
-                .is_some_and(|pane| pane.is_empty())
-        {
-            let rows = openable();
-            let pick = layout.pick.min(rows.len().saturating_sub(1));
-            match (name.as_str(), digit) {
-                ("up" | "down", _) => PaneMessage::Pick {
-                    down: name == "down",
-                    rows: rows.len(),
-                },
-                ("enter", _) => match rows.get(pick) {
-                    Some(row) => PaneMessage::Open(row.module),
-                    None => return true,
-                },
-                (_, Some(nth)) => match rows.get(nth - 1) {
-                    Some(row) => PaneMessage::Open(row.module),
-                    None => return true,
-                },
-                _ => return false,
-            }
-        } else {
-            return false;
-        };
-        self.pane_message(message, window, cx);
-        true
     }
 
     /// An empty window's body (design "A"): what it can open, one row a
