@@ -137,9 +137,10 @@ impl Guest {
     /// goes to the log, and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
-        // an op rides a `doors::Call`: the target and two lengths around it
+        // an op rides a `doors::Call`: the target and two lengths around it;
+        // one to describe, beside its program's name
         let payload_limit = match kind.as_str() {
-            "op.submit" => MAX_OP_BYTES + 256,
+            "op.submit" | "program.describe" => MAX_OP_BYTES + 256,
             _ => MAX_PAYLOAD_BYTES,
         };
         if payload.len() > payload_limit {
