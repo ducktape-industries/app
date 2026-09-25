@@ -222,6 +222,39 @@ pub(crate) fn every(period: std::time::Duration) -> impl futures::Stream<Item = 
     })
 }
 
+/// How long a window leaving full size has to report its frame.
+const LEAVE_FULL_SIZE: std::time::Duration = std::time::Duration::from_secs(3);
+/// How long a frame has to stand before it is the one: a window manager
+/// can send the state and the frame as separate events, in either order.
+const FRAME_SETTLES: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The frame a window leaving full size went back to, from the frames it
+/// reports (`None` while still full size): the last one once no other
+/// follows for a moment, or whatever it last said when time runs out.
+async fn left_full_size(
+    mut frames: futures::channel::mpsc::UnboundedReceiver<
+        Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+    >,
+    cx: &gpui_kit::AsyncApp,
+) -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
+    let clock = cx.background_executor();
+    let give_up = clock.now() + LEAVE_FULL_SIZE;
+    let mut last = None;
+    loop {
+        let left = give_up.saturating_duration_since(clock.now());
+        let wait = if last.is_some() {
+            FRAME_SETTLES.min(left)
+        } else {
+            left
+        };
+        let timer = std::pin::pin!(clock.timer(wait));
+        match futures::future::select(frames.next(), timer).await {
+            futures::future::Either::Left((Some(frame), _)) => last = frame.or(last),
+            _ => return last,
+        }
+    }
+}
+
 // ---------- the desktop actor ----------
 
 struct Desktop {
@@ -279,17 +312,26 @@ impl Desktop {
         else {
             return;
         };
+        let Some(view) = self
+            .state
+            .console_win
+            .and_then(|key| self.views.get(&key).cloned())
+        else {
+            return;
+        };
         let launcher = self.state.in_launcher();
         let desk = self.desk_bounds;
         // deferred: the crossing is often dispatched from inside this very
         // window's update (a click on Lock), where it can't be updated again
         cx.spawn(async move |desktop, cx| {
+            // the frames the window reports, `None` while still full size
+            let (heard, frames) = futures::channel::mpsc::unbounded();
             // a full-size window ignores (or the window manager overrides) a
             // new frame, so leave that state first
-            let mut left = handle
-                .update(cx, |_, window, _| {
+            let left = handle
+                .update(cx, |_, window, cx| {
                     let bounds = window.window_bounds().get_bounds();
-                    if window.is_fullscreen() {
+                    let left = if window.is_fullscreen() {
                         window.toggle_fullscreen();
                         WindowBounds::Fullscreen(bounds)
                     } else if window.is_maximized() {
@@ -299,35 +341,40 @@ impl Desktop {
                         }
                         WindowBounds::Maximized(bounds)
                     } else {
-                        WindowBounds::Windowed(bounds)
-                    }
+                        return (WindowBounds::Windowed(bounds), None);
+                    };
+                    let observing = view
+                        .update(cx, |_, cx| {
+                            cx.observe_window_bounds(window, move |_, window, _| {
+                                let frame = (!window.is_fullscreen() && !window.is_maximized())
+                                    .then(|| window.bounds());
+                                let _ = heard.unbounded_send(frame);
+                            })
+                        })
+                        .ok();
+                    (left, observing)
                 })
                 .ok();
+            // held until the wait is over
+            let (mut left, _observing) = left.unzip();
             let full = matches!(left, Some(WindowBounds::Fullscreen(_)))
                 || matches!(left, Some(WindowBounds::Maximized(_))) && !cfg!(target_os = "macos");
             if full {
                 // the window manager (or macOS's animation) puts back the
                 // frame the window had before it went full size: wait for it,
                 // and keep it as the frame the desk goes full size from again
-                // ponytail: polled, a window-bounds observer if this ever shows
-                let mut last = None;
-                for _ in 0..60 {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(50))
-                        .await;
-                    let now = handle
+                let restored = match left_full_size(frames, cx).await {
+                    Some(restored) => Some(restored),
+                    // it never said: take the window as it is
+                    None => handle
                         .update(cx, |_, window, _| {
                             (!window.is_fullscreen() && !window.is_maximized())
                                 .then(|| window.bounds())
                         })
                         .ok()
-                        .flatten();
-                    if now.is_some() && now == last {
-                        break;
-                    }
-                    last = now;
-                }
-                if let Some(restored) = last {
+                        .flatten(),
+                };
+                if let Some(restored) = restored {
                     left = left.map(|left| match left {
                         WindowBounds::Fullscreen(_) => WindowBounds::Fullscreen(restored),
                         _ => WindowBounds::Maximized(restored),
@@ -670,5 +717,34 @@ impl Render for DesktopWindow {
                 },
             ))
             .child(content)
+    }
+}
+
+#[cfg(test)]
+mod swap_tests {
+    use super::*;
+    use gpui_kit::{Bounds, point, px, size};
+
+    #[gpui_kit::test]
+    async fn a_window_leaving_full_size_is_taken_at_the_frame_it_settles_on(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let frame = |x: f32| Bounds::new(point(px(x), px(0.)), size(px(800.), px(600.)));
+        let (heard, frames) = futures::channel::mpsc::unbounded();
+        let wait = cx.spawn(async move |cx| left_full_size(frames, &cx).await);
+        // the state first, still at full size, then two frames
+        for reported in [None, Some(frame(1.)), Some(frame(2.))] {
+            heard.unbounded_send(reported).unwrap();
+        }
+        cx.run_until_parked();
+        cx.executor().advance_clock(FRAME_SETTLES);
+        assert_eq!(wait.await, Some(frame(2.)));
+
+        // a window that never says: given up on, not waited for forever
+        let (_heard, frames) = futures::channel::mpsc::unbounded();
+        let wait = cx.spawn(async move |cx| left_full_size(frames, &cx).await);
+        cx.run_until_parked();
+        cx.executor().advance_clock(LEAVE_FULL_SIZE);
+        assert_eq!(wait.await, None);
     }
 }
