@@ -16,7 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
 use view_wire::Task;
 
-use crate::{AppMessage as Message, Ducktape, Screen, Stage};
+use crate::{AppMessage as Message, Ducktape, Stage};
 
 #[cfg(debug_assertions)]
 mod fixtures;
@@ -667,12 +667,12 @@ impl Render for DesktopWindow {
             WindowKind::View { .. } => self.console(window, cx),
             WindowKind::Console => {
                 let state = self.model.read(cx).state.clone_facts();
-                match self.model.read(cx).state.stage() {
+                match self.model.read(cx).state.stage {
                     Stage::Connect => self.connect(window, cx),
-                    Stage::Phrase => self.phrase(&state, window, cx),
-                    Stage::Unlock => self.unlock(&state, window, cx),
-                    Stage::Recover => self.recover(&state, window, cx),
-                    Stage::Account => self.account_step(&state, window, cx),
+                    Stage::Phrase(_) => self.phrase(&state, window, cx),
+                    Stage::Unlock(_) => self.unlock(&state, window, cx),
+                    Stage::Recover(_) => self.recover(&state, window, cx),
+                    Stage::Account(_) => self.account_step(&state, window, cx),
                     Stage::Desk => self.console(window, cx),
                 }
             }

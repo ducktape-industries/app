@@ -66,11 +66,17 @@ impl Ducktape {
             key_exists: self.key_exists,
             seating: self.sign_in.seating,
             locked: self.sign_in.locked,
-            link_code: self.sign_in.link_code.clone(),
+            link_code: match &self.stage {
+                crate::Stage::Account(step) => step.link_code.clone(),
+                _ => String::new(),
+            },
             approve_fingerprint: self.approve_fingerprint(),
-            passkey_waiting: self.sign_in.passkey_task.is_some(),
+            passkey_waiting: matches!(&self.stage, crate::Stage::Account(step) if step.passkey_task.is_some()),
             passkey_qr: self.passkey_qr_shown(),
-            phrase_quiz: self.sign_in.phrase_quiz,
+            phrase_quiz: match &self.stage {
+                crate::Stage::Phrase(step) => step.quiz,
+                _ => None,
+            },
             active: self.active,
             badges: self.badges.clone(),
             motion: self.motion,
@@ -253,7 +259,7 @@ impl DesktopWindow {
         use super::ink::*;
         use gpui_kit::*;
         let state = &self.model.read(cx).state;
-        let lost = state.reconnecting() && state.screen == Screen::Console;
+        let lost = state.reconnecting() && !matches!(state.stage, Stage::Connect);
         let toast = state.toast.clone();
         if !lost && toast.is_empty() {
             return None;

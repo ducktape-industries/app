@@ -11,6 +11,14 @@ use super::*;
 use figure::Figure;
 use screens::Facts;
 
+/// The phrase check's `nth` typed word.
+fn answer(state: &Ducktape, nth: usize) -> &str {
+    match &state.stage {
+        crate::Stage::Phrase(step) => step.answers[nth].as_str(),
+        _ => "",
+    }
+}
+
 /// The canvas's button row: `display: flex; gap: 12px; margin-top: 4px`.
 fn buttons(children: impl IntoIterator<Item = gpui_kit::AnyElement>) -> gpui_kit::Div {
     use gpui_kit::*;
@@ -98,7 +106,10 @@ impl DesktopWindow {
                 "password",
                 "",
                 true,
-                |state| &state.sign_in.password,
+                |state| match &state.stage {
+                    crate::Stage::Unlock(step) => step.password.as_str(),
+                    _ => "",
+                },
                 Message::PasswordTyped,
                 || Message::UnlockSubmit,
                 Some("Password".into()),
@@ -307,7 +318,10 @@ impl DesktopWindow {
             "create-account-name",
             "",
             false,
-            |state| &state.sign_in.account_name,
+            |state| match &state.stage {
+                crate::Stage::Account(step) => &step.name,
+                _ => "",
+            },
             Message::AccountNameTyped,
             || Message::CreateAccountSubmit,
             Some("Account name".into()),
@@ -515,7 +529,10 @@ impl DesktopWindow {
             "restore-phrase",
             "24 words, separated by spaces",
             false,
-            |state| &state.sign_in.restore_phrase,
+            |state| match &state.stage {
+                crate::Stage::Recover(step) => step.phrase.as_str(),
+                _ => "",
+            },
             Message::RestorePhraseTyped,
             || Message::RecoverSubmit,
             Some("Recovery key".into()),
@@ -585,7 +602,10 @@ impl DesktopWindow {
         }
         let ink = Ink::of(state.dark);
         // read here, not copied into every draw's facts; wiped when dropped
-        let phrase = zeroize::Zeroizing::new(self.model.read(cx).state.sign_in.phrase.clone());
+        let phrase = zeroize::Zeroizing::new(match &self.model.read(cx).state.stage {
+            crate::Stage::Phrase(step) => step.words.to_string(),
+            _ => String::new(),
+        });
         let words: Vec<&str> = phrase.split_whitespace().collect();
         let per_column = words.len().div_ceil(3).max(1);
         // `grid-template-columns: repeat(3, 1fr); grid-auto-flow: column;
@@ -669,17 +689,17 @@ impl DesktopWindow {
         let fields: [Field; 3] = [
             (
                 "phrase-word-1",
-                |state| &state.sign_in.quiz_answers[0],
+                |state| answer(state, 0),
                 |text| Message::PhraseWordTyped(0, text),
             ),
             (
                 "phrase-word-2",
-                |state| &state.sign_in.quiz_answers[1],
+                |state| answer(state, 1),
                 |text| Message::PhraseWordTyped(1, text),
             ),
             (
                 "phrase-word-3",
-                |state| &state.sign_in.quiz_answers[2],
+                |state| answer(state, 2),
                 |text| Message::PhraseWordTyped(2, text),
             ),
         ];

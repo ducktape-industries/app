@@ -76,19 +76,133 @@ pub(crate) struct SpotRow {
 }
 
 /// Which screen the console window shows: a launcher step, or the desk.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Stored, and moved only by messages: what a step alone holds (a typed
+/// secret, a task in flight) lives in its variant and goes when it does.
+#[derive(Debug)]
 pub(crate) enum Stage {
     /// Reaching a node.
     Connect,
     /// This device's key: opening, locked, or behind an old password.
-    Unlock,
+    Unlock(Unlock),
     /// A new recovery key's words, and their check.
-    Phrase,
+    Phrase(Phrase),
     /// The account's recovery key, typed to add this device.
-    Recover,
+    Recover(Recover),
     /// Name an account for the seated key, or join one.
-    Account,
+    Account(Account),
+    /// The desk: signed in, or reading without a key.
     Desk,
+}
+
+#[cfg(test)]
+impl Stage {
+    /// The variant, and the sub-step it shows, for tests to compare:
+    /// "Unlock/awaiting", "Phrase/quiz", "Account/link".
+    pub(crate) fn step(&self) -> String {
+        let (name, sub) = match self {
+            Stage::Connect => ("Connect", None),
+            Stage::Unlock(step) => ("Unlock", step.awaiting.then_some("awaiting")),
+            Stage::Phrase(step) => ("Phrase", step.quiz.map(|_| "quiz")),
+            Stage::Recover(_) => ("Recover", None),
+            Stage::Account(step) => (
+                "Account",
+                match (step.passkey_task.is_some(), step.link_code.is_empty()) {
+                    (true, _) => Some("passkey"),
+                    (false, false) => Some("link"),
+                    (false, true) => None,
+                },
+            ),
+            Stage::Desk => ("Desk", None),
+        };
+        match sub {
+            Some(sub) => format!("{name}/{sub}"),
+            None => name.to_owned(),
+        }
+    }
+}
+
+/// A typed secret or a recovery phrase: wiped when it drops, so leaving
+/// a step wipes what it held.
+pub(crate) type Secret = zeroize::Zeroizing<String>;
+
+/// The key step.
+#[derive(Default)]
+pub(crate) struct Unlock {
+    /// A password-locked key's password (keys from before they moved into
+    /// the OS; see [`backend::device_key`]).
+    pub(crate) password: Secret,
+    /// The key is seated and the node's first answer about its account is
+    /// awaited: none goes on to the account step, one to the desk, and
+    /// neither shows the other first (#292).
+    pub(crate) awaiting: bool,
+}
+
+/// A new recovery key, from the account menu.
+#[derive(Default)]
+pub(crate) struct Phrase {
+    /// Its 24 words, held until the person has typed back the words `quiz`
+    /// asks for and the key is on the account.
+    pub(crate) words: Secret,
+    /// Once "I wrote it down" is pressed: the three word positions
+    /// (0-based, ascending) the person types back.
+    pub(crate) quiz: Option<[usize; 3]>,
+    pub(crate) answers: [Secret; 3],
+}
+
+/// "Use a recovery key", off the account step.
+#[derive(Default)]
+pub(crate) struct Recover {
+    /// Its 24 words being typed.
+    pub(crate) phrase: Secret,
+    /// The account step's name field, back as it was on "← Back".
+    pub(crate) name: String,
+}
+
+/// The account step, and the ways it joins one.
+#[derive(Default)]
+pub(crate) struct Account {
+    /// The name a new account takes.
+    pub(crate) name: String,
+    /// "From another device": the code this device shows while it waits
+    /// for one on the account to approve it.
+    pub(crate) link_code: String,
+    pub(crate) link_task: Option<view_wire::task::Handle>,
+    /// A passkey ceremony in flight (the browser has it); dropping the
+    /// handle cancels it.
+    pub(crate) passkey_task: Option<view_wire::task::Handle>,
+    /// Set once the person picks "Use a phone instead"; the ceremony reads it.
+    pub(crate) passkey_phone: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// The QR URL of the touch in flight (its callback is the relay slot).
+    pub(crate) passkey_qr: String,
+}
+
+impl std::fmt::Debug for Unlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Unlock {{ awaiting: {} }}", self.awaiting)
+    }
+}
+
+impl std::fmt::Debug for Phrase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Phrase {{ quiz: {:?} }}", self.quiz)
+    }
+}
+
+impl std::fmt::Debug for Recover {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Recover")
+    }
+}
+
+impl std::fmt::Debug for Account {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Account {{ linking: {}, passkey: {} }}",
+            self.link_task.is_some(),
+            self.passkey_task.is_some()
+        )
+    }
 }
 
 /// What the model asks of the desk's windows.
@@ -104,17 +218,11 @@ pub(crate) enum SeatRequest {
     Unseat,
 }
 
-/// Where the person is: reaching a node, or inside it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Screen {
-    Connect,
-    Console,
-}
-
 pub struct Ducktape {
     pub(crate) appearance: Appearance,
     pub(crate) system_dark: bool,
-    pub(crate) screen: Screen,
+    /// The console window's screen.
+    pub(crate) stage: Stage,
     /// The node URL being typed.
     pub(crate) endpoint: String,
     pub(crate) endpoint_error: String,
@@ -165,11 +273,9 @@ pub struct Ducktape {
     /// OS-kept key is not: the key screen asks for its password, once, and
     /// moves it into the OS.
     pub(crate) key_exists: bool,
-    /// Reading without a key: the console opens, writes are refused.
-    pub(crate) browsing: bool,
-    /// The key and account steps, and the device-approval dialog: what a
-    /// sign-in half done holds, secrets included. Leaving a network drops
-    /// it whole.
+    /// What outlives one sign-in step: the key's own state, the last
+    /// failure, and the device-approval dialog. Leaving a network drops it
+    /// whole.
     pub(crate) sign_in: SignIn,
     /// The program whose view is open.
     pub(crate) active: Option<&'static str>,
@@ -184,67 +290,19 @@ pub struct Ducktape {
     pub(crate) wall_now: i64,
 }
 
-/// What the sign-in screens hold while a person is on them: this device's
-/// key opening, a recovery phrase and its check, the account step, a
-/// passkey ceremony, a device joining or being approved. Its secrets are
-/// wiped when it drops.
+/// What the sign-in screens share: this device's key (opening, locked),
+/// the step's failure and busy mark, and the "Add a device…" dialog.
 #[derive(Default)]
 pub(crate) struct SignIn {
-    /// A password-locked key's password (keys from before they moved into
-    /// the OS; see [`backend::device_key`]).
-    pub(crate) password: String,
     pub(crate) unlock_error: String,
     pub(crate) unlock_busy: bool,
     /// This device's key is being opened (or made) for the network reached.
     pub(crate) seating: bool,
     /// Locked on purpose: the key is not reopened until Unlock.
     pub(crate) locked: bool,
-    /// The account step's "Use a recovery key": its 24 words being typed.
-    pub(crate) recovering: bool,
-    pub(crate) restore_phrase: String,
-    /// The account step's "From another device": the code this device shows
-    /// while it waits for one on the account to approve.
-    pub(crate) link_code: String,
-    pub(crate) link_task: Option<view_wire::task::Handle>,
     /// "Add a device…": the code typed, and the request it found.
     pub(crate) approve_code: String,
     pub(crate) approve_found: Option<backend::join::Request>,
-    /// The name a new passkey account takes.
-    pub(crate) account_name: String,
-    /// A passkey ceremony in flight (the browser has it); dropping the
-    /// handle cancels it.
-    pub(crate) passkey_task: Option<view_wire::task::Handle>,
-    /// Armed by a sign-in that did not make an account (a new key past its
-    /// phrase check, Unlock, Restore): the node's first answer about the
-    /// seated key opens the account step if it holds none. One answer
-    /// disarms it, so a later block never pulls the person out of a view.
-    pub(crate) account_offer: bool,
-    /// The account step is on screen: name an account for the seated key,
-    /// or "Not now" to the console.
-    pub(crate) account_step: bool,
-    /// Set once the person picks "Use a phone instead"; the ceremony reads it.
-    pub(crate) passkey_phone: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// The QR URL of the touch in flight (its callback is the relay slot).
-    pub(crate) passkey_qr: String,
-    /// A new recovery key's 24 words, held until the person has typed back
-    /// the words `phrase_quiz` asks for and the key is on the account.
-    pub(crate) phrase: String,
-    /// Once "I wrote it down" is pressed: the three word positions
-    /// (0-based, ascending) the person types back before the console opens.
-    pub(crate) phrase_quiz: Option<[usize; 3]>,
-    pub(crate) quiz_answers: [String; 3],
-}
-
-impl Drop for SignIn {
-    fn drop(&mut self) {
-        use zeroize::Zeroize as _;
-        self.password.zeroize();
-        self.restore_phrase.zeroize();
-        self.phrase.zeroize();
-        self.quiz_answers
-            .iter_mut()
-            .for_each(|answer| answer.zeroize());
-    }
 }
 
 impl std::fmt::Debug for Ducktape {
@@ -392,7 +450,7 @@ impl Ducktape {
         let state = Ducktape {
             appearance: backend::load_appearance(),
             system_dark: false,
-            screen: Screen::Connect,
+            stage: Stage::Connect,
             endpoint: endpoint.clone(),
             endpoint_error: String::new(),
             recent_endpoints: recent,
@@ -418,7 +476,6 @@ impl Ducktape {
             signer_key: String::new(),
             account: None,
             key_exists: false,
-            browsing: false,
             sign_in: SignIn::default(),
             active: None,
             badges: BTreeMap::new(),
@@ -441,29 +498,9 @@ impl Ducktape {
         (state, first)
     }
 
-    /// The screen the console window shows, first match wins.
-    pub(crate) fn stage(&self) -> Stage {
-        if self.screen == Screen::Connect {
-            Stage::Connect
-        } else if !self.sign_in.phrase.is_empty() {
-            Stage::Phrase
-        } else if (self.signer_key.is_empty() && !self.browsing) || self.sign_in.account_offer {
-            // a seated key waits here for the node's answer about its
-            // account: the desk opening before it would flash between the
-            // key step and the account step
-            Stage::Unlock
-        } else if self.sign_in.account_step && self.sign_in.recovering {
-            Stage::Recover
-        } else if self.sign_in.account_step && !self.signer_key.is_empty() {
-            Stage::Account
-        } else {
-            Stage::Desk
-        }
-    }
-
     /// Before the desk: the console window is the launcher's size.
     pub(crate) fn in_launcher(&self) -> bool {
-        self.stage() != Stage::Desk
+        !matches!(self.stage, Stage::Desk)
     }
 
     /// The joining key's fingerprint, once its code was found.
@@ -477,13 +514,15 @@ impl Ducktape {
     /// The passkey QR URL, while a ceremony runs and the person picked the
     /// phone.
     pub(crate) fn passkey_qr_shown(&self) -> Option<String> {
-        (self.sign_in.passkey_task.is_some()
-            && self
-                .sign_in
+        let Stage::Account(step) = &self.stage else {
+            return None;
+        };
+        (step.passkey_task.is_some()
+            && step
                 .passkey_phone
                 .load(std::sync::atomic::Ordering::Relaxed)
-            && !self.sign_in.passkey_qr.is_empty())
-        .then(|| self.sign_in.passkey_qr.clone())
+            && !step.passkey_qr.is_empty())
+        .then(|| step.passkey_qr.clone())
     }
 
     /// Seconds since the height last moved.
