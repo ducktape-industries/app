@@ -1,7 +1,8 @@
-//! Window-local view ownership and placement, independent of native view
-//! entities. The desk seats each program's view in a window of its own,
-//! free to move, resize and overlap: a frame on the desk and a place in the
-//! stacking order.
+//! Which view is where: each native window's panes, their frames on the
+//! desk, their stacking and focus. The model's, moved by the reducer; the
+//! shell draws it and reports the desk's size. The desk seats each
+//! program's view in a window of its own, free to move, resize and
+//! overlap: a frame on the desk and a place in the stacking order.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -82,16 +83,87 @@ impl Pane {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Clone, Default, Debug)]
 pub(crate) struct Layout {
     pub(crate) panes: Vec<Pane>,
     pub(crate) focused: usize,
     /// The row picked in an empty window's list.
     pub(crate) pick: usize,
     top: u64,
+    /// The desk's size as the shell last measured it; `None` until drawn.
+    pub(crate) desk: Option<(f32, f32)>,
+    /// Something was shown here: the desk no longer opens the active
+    /// program on its own.
+    pub(crate) initialized: bool,
+}
+
+/// What is done to one window's panes: the bar, a title bar's buttons,
+/// the desk's keys, a drag.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum PaneMessage {
+    /// `module` in the focused pane (shift-click on the bar).
+    Select(&'static str),
+    /// A bar click, or a pick in an empty window: see [`Layout::open`].
+    Open(&'static str),
+    /// Another pane showing `module`.
+    Split(&'static str),
+    Close(usize),
+    Focus(usize),
+    /// The pane into a window of its own, opened `at` (where it sat).
+    PopOut {
+        index: usize,
+        at: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+    },
+    /// This pop-out's pane back onto the console's desk.
+    PopIn,
+    /// ⌘D / ⌘⇧D.
+    Halve {
+        below: bool,
+    },
+    /// ⌘` / ⌘⇧` / ctrl-tab.
+    Cycle {
+        forward: bool,
+    },
+    /// ↑↓ in an empty window's list of `rows`.
+    Pick {
+        down: bool,
+        rows: usize,
+    },
+    /// A title bar's double press.
+    Fill(usize),
+    /// A drag moved or sized a window.
+    Frame(usize, Frame),
 }
 
 impl Layout {
+    /// The desk's size, or nothing yet measured.
+    pub(crate) fn desk(&self) -> (f32, f32) {
+        self.desk.unwrap_or_default()
+    }
+
+    /// The focused pane's program, unless it is empty.
+    pub(crate) fn shown(&self) -> Option<&'static str> {
+        self.panes
+            .get(self.focused)
+            .filter(|pane| !pane.is_empty())
+            .map(|pane| pane.module)
+    }
+
+    /// Every pane gone, the desk's measure kept.
+    pub(crate) fn clear(&mut self) {
+        *self = Self {
+            desk: self.desk,
+            ..Self::default()
+        };
+    }
+
+    /// Frames for the windows without one, once the desk is measured.
+    pub(crate) fn settle(&mut self) {
+        if let Some(desk) = self.desk {
+            self.place(desk);
+        }
+    }
+
     fn raise(&mut self, index: usize) {
         self.top += 1;
         if let Some(pane) = self.panes.get_mut(index) {

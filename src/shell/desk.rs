@@ -24,19 +24,29 @@ impl DesktopWindow {
             window.request_animation_frame();
         }
         let narrow = window.viewport_size().width < px(NARROW_WINDOW_WIDTH);
-        self.initialize_panes(
-            state
-                .active
-                .or_else(|| rail.iter().find(|row| !row.empty).map(|row| row.module)),
-            cx,
-        );
+        // the desk's size, and on an untouched console the program it opens
+        let desk = self.desk(window);
+        let layout = self.layout(cx);
+        let seed = (self.kind == crate::shell::WindowKind::Console && !layout.initialized)
+            .then(|| {
+                state
+                    .active
+                    .or_else(|| rail.iter().find(|row| !row.empty).map(|row| row.module))
+            })
+            .flatten();
+        if layout.desk != Some(desk) || seed.is_some() {
+            let window = self.key;
+            self.model.update(cx, |model, cx| {
+                model.dispatch(Message::DeskShown { window, desk, seed }, cx)
+            });
+        }
         // the policy's "in front": this window, if it is, and the view
         // focused in it
-        let focused = self
-            .layout
+        let layout = self.layout(cx);
+        let focused = layout
             .panes
-            .get(self.layout.focused)
-            .map_or(super::layout::EMPTY, |pane| pane.module);
+            .get(layout.focused)
+            .map_or(layout::EMPTY, |pane| pane.module);
         crate::runtime::notify::center().set_front(self.key, window.is_window_active(), focused);
         let console = self.kind == crate::shell::WindowKind::Console;
         let bar = console.then(|| self.menubar(&state, &rail, narrow, window, cx));

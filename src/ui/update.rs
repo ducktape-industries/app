@@ -9,6 +9,18 @@ use view_wire::Task;
 pub(super) const STATUS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 
 impl Ducktape {
+    /// One message from outside, and what it asks of the native side. A
+    /// message that crosses between the launcher and the desk also asks
+    /// the console window to take the other's size.
+    pub(crate) fn handle(&mut self, message: Message) -> Task<Message> {
+        let launcher = self.in_launcher();
+        let task = self.update(message);
+        match launcher == self.in_launcher() {
+            true => task,
+            false => Task::batch([task, crate::shell::swap_console()]),
+        }
+    }
+
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
         use Message as M;
         match message {
@@ -86,7 +98,6 @@ impl Ducktape {
             m @ (M::SetAppearance(_)
             | M::SetMotion(_)
             | M::SelectView(_)
-            | M::ViewShown(_)
             | M::ViewEvent(..)
             | M::OpenLink(_)
             | M::ShowToast(_)
@@ -100,6 +111,7 @@ impl Ducktape {
             | M::ModifierStateChanged(_)
             | M::TrayOpen
             | M::TrayQuit) => self.on_desk(m),
+            m @ (M::Pane(..) | M::DeskShown { .. }) => self.on_pane(m),
         }
     }
 
@@ -133,7 +145,7 @@ use futures::StreamExt as _;
 #[cfg(test)]
 mod tests {
     use super::super::sign_in::{normalize_phrase, quiz_matches, quiz_positions};
-    use super::super::{Overlay, SeatRequest, Stage};
+    use super::super::{Overlay, Stage};
     use super::*;
     use crate::backend;
     use crate::runtime::Intent;
@@ -190,14 +202,16 @@ mod tests {
         assert!(state.badges.is_empty() && state.active.is_none());
 
         crate::runtime::list_for_test("view-event-link");
+        let console = crate::shell::WindowKey::unique();
+        state.console_win = Some(console);
         let _ = state.update(Message::ViewEvent(
             "chat",
             Intent::OpenLink("duck://view-event-link/room/7".into()),
         ));
         assert_eq!(state.active, Some("view-event-link"));
         assert_eq!(
-            state.seat_request,
-            Some(SeatRequest::Open("view-event-link")),
+            state.layouts[&console].shown(),
+            Some("view-event-link"),
             "a link brings its seat forward"
         );
         assert_eq!(

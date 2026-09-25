@@ -1,6 +1,6 @@
 //! The desk itself: the open view, links, toasts, the windows and the tray.
 
-use super::{AppMessage as Message, Ducktape, SeatRequest};
+use super::{AppMessage as Message, Ducktape};
 use crate::backend;
 use crate::runtime::Intent;
 use view_wire::Task;
@@ -12,7 +12,7 @@ impl Ducktape {
             Message::SetAppearance(mode) => {
                 self.appearance = mode;
                 backend::save_appearance(mode);
-                Task::none()
+                crate::shell::sync_appearance()
             }
             Message::SetMotion(on) => {
                 self.motion = on;
@@ -22,12 +22,10 @@ impl Ducktape {
             Message::SelectView(module) => {
                 self.active = Some(module);
                 self.badges.remove(module);
-                self.seat_request = Some(SeatRequest::Select(module));
-                Task::none()
-            }
-            Message::ViewShown(module) => {
-                self.active = Some(module);
-                self.badges.remove(module);
+                if let Some(desk) = self.desk_layout() {
+                    desk.select(module);
+                    desk.settle();
+                }
                 Task::none()
             }
             Message::ViewEvent(module, intent) => match intent {
@@ -101,6 +99,7 @@ impl Ducktape {
                 Task::none()
             }
             Message::WindowWasClosed(key) => {
+                self.layouts.remove(&key);
                 if self.console_win == Some(key) {
                     self.console_win = None;
                 }
@@ -134,7 +133,11 @@ impl Ducktape {
             crate::runtime::route_to(module, route);
         }
         self.active = Some(module);
-        self.seat_request = Some(SeatRequest::Open(module));
+        // a link opens beside the view it was in, not in place of it
+        if let Some(desk) = self.desk_layout() {
+            desk.open(module);
+            desk.settle();
+        }
     }
 
     fn notice(&mut self, said: String) {

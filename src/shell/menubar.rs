@@ -21,12 +21,9 @@ impl DesktopWindow {
         use super::ink::*;
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
-        let open: Vec<&'static str> = self.layout.panes.iter().map(|pane| pane.module).collect();
-        let focused = self
-            .layout
-            .panes
-            .get(self.layout.focused)
-            .map(|pane| pane.module);
+        let layout = self.layout(cx);
+        let open: Vec<&'static str> = layout.panes.iter().map(|pane| pane.module).collect();
+        let focused = layout.panes.get(layout.focused).map(|pane| pane.module);
         let tabs = rail.iter().filter(|row| !row.empty).map(|row| {
             let module = row.module;
             let selected = focused == Some(module);
@@ -63,7 +60,7 @@ impl DesktopWindow {
                 // own); shift-click shows it in the focused window instead
                 .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
                     match event.modifiers().shift {
-                        true => this.pane_message(panes::PaneMessage::Select(module), window, cx),
+                        true => this.pane_message(PaneMessage::Select(module), window, cx),
                         false => this.open_view(module, window, cx),
                     }
                 }))

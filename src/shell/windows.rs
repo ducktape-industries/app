@@ -85,9 +85,6 @@ impl DesktopWindow {
             model,
             key,
             kind,
-            layout: layout::Layout::default(),
-            mounted: BTreeMap::new(),
-            initialized: false,
             drag: None,
             inputs: HashMap::new(),
             spotlight_focused: false,
@@ -109,6 +106,7 @@ impl Desktop {
             windows: BTreeMap::new(),
             views: BTreeMap::new(),
             streams: HashMap::new(),
+            mounted: BTreeMap::new(),
             desk_bounds: None,
         }
     }
@@ -118,11 +116,6 @@ impl Desktop {
         key: WindowKey,
         kind: WindowKind,
         reply: oneshot::Sender<WindowKey>,
-        mut transferred: Option<(
-            layout::Pane,
-            panes::MountedPane,
-            gpui_kit::WeakEntity<DesktopWindow>,
-        )>,
         at: Option<Bounds<Pixels>>,
         cx: &mut Context<Self>,
     ) {
@@ -168,13 +161,6 @@ impl Desktop {
             let window_model = model.clone();
             let opened = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| DesktopWindow::new(window_model, key, kind, window, cx));
-                if let Some((pane, mounted, _)) = transferred.take() {
-                    view.update(cx, |this, _| {
-                        this.mounted.insert(pane.instance, mounted);
-                        this.layout.popin(pane);
-                        this.initialized = true;
-                    });
-                }
                 opened_view = Some(view.downgrade());
                 let closing = view.downgrade();
                 window.on_window_should_close(cx, move |window, cx| {
@@ -197,15 +183,11 @@ impl Desktop {
                     let _ = reply.send(key);
                 }
                 Err(error) => {
-                    if let Some((pane, mounted, source)) = transferred.take() {
-                        let _ = source.update(cx, |source, cx| {
-                            source.mounted.insert(pane.instance, mounted);
-                            source.layout.popin(pane);
-                            cx.notify();
-                        });
-                    }
                     tracing::error!(target: "ducktape::app", reason = "native_window_open_failed", %error, "window could not be opened");
                     model.update(cx, |model, cx| {
+                        // a pane on its way to this window goes back to the desk
+                        model.dispatch(Message::Pane(key, PaneMessage::PopIn), cx);
+                        model.dispatch(Message::WindowWasClosed(key), cx);
                         model.state.error = format!("The window could not be opened: {error}");
                         cx.notify();
                     });

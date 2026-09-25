@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
 use view_wire::Task;
 
+use crate::ui::layout::{self, PaneMessage};
 use crate::{AppMessage as Message, Ducktape, Stage};
 
 #[cfg(debug_assertions)]
@@ -28,7 +29,6 @@ mod figure;
 mod ink;
 mod launch;
 mod launcher;
-mod layout;
 mod menubar;
 mod menus;
 mod notifications;
@@ -79,9 +79,18 @@ pub(crate) enum Command {
     Open {
         key: WindowKey,
         kind: WindowKind,
+        /// Where it opens; `None` is the display's centre.
+        at: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
         reply: oneshot::Sender<WindowKey>,
     },
     Raise(WindowKey),
+    /// A window off the screen (a pop-out whose pane left it).
+    Close(WindowKey),
+    /// The appearance the model holds, onto the app's theme.
+    SyncAppearance,
+    /// The console window to the launcher's size or the desk's, as the
+    /// stage now is.
+    SwapConsole,
     /// A link pressed off the window thread: the reducer reads it.
     OpenLink(String),
     /// A web page, for the system browser.
@@ -126,11 +135,25 @@ async fn send(command: Command) {
 }
 
 pub(crate) fn open(kind: WindowKind) -> (WindowKey, Task<WindowKey>) {
+    open_at(kind, None)
+}
+
+/// A window of `kind` opened at `at`, its key known before it is.
+pub(crate) fn open_at(
+    kind: WindowKind,
+    at: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
+) -> (WindowKey, Task<WindowKey>) {
     let key = WindowKey::unique();
     let task = Task::stream(
         futures::stream::once(async move {
             let (reply, receive) = oneshot::channel();
-            send(Command::Open { key, kind, reply }).await;
+            send(Command::Open {
+                key,
+                kind,
+                at,
+                reply,
+            })
+            .await;
             receive.await.ok()
         })
         .filter_map(std::future::ready),
@@ -147,6 +170,18 @@ fn effect<M: 'static>(command: Command) -> Task<M> {
 
 pub(crate) fn raise<M: 'static>(key: WindowKey) -> Task<M> {
     effect(Command::Raise(key))
+}
+
+pub(crate) fn close<M: 'static>(key: WindowKey) -> Task<M> {
+    effect(Command::Close(key))
+}
+
+pub(crate) fn swap_console<M: 'static>() -> Task<M> {
+    effect(Command::SwapConsole)
+}
+
+pub(crate) fn sync_appearance<M: 'static>() -> Task<M> {
+    effect(Command::SyncAppearance)
 }
 
 pub(crate) fn quit<M: 'static>() -> Task<M> {
@@ -200,6 +235,9 @@ struct Desktop {
     windows: BTreeMap<WindowKey, gpui_kit::AnyWindowHandle>,
     views: BTreeMap<WindowKey, gpui_kit::WeakEntity<DesktopWindow>>,
     streams: HashMap<u64, gpui_kit::Task<()>>,
+    /// Every pane's view, by its instance: a pane keeps its view whichever
+    /// window the model puts it in.
+    mounted: BTreeMap<u64, panes::MountedPane>,
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
     desk_bounds: Option<gpui_kit::WindowBounds>,
@@ -224,23 +262,8 @@ impl Desktop {
     fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         let runtime = crate::runtime::handle();
         let _runtime = runtime.enter();
-        let appearance = self.state.appearance;
-        let launcher = self.state.in_launcher();
-        let task = self.state.update(message);
-        if launcher != self.state.in_launcher() {
-            self.swap_console(cx);
-        }
-        if appearance != self.state.appearance {
-            self.sync_appearance(cx);
-        }
-        if let Some(request) = self.state.seat_request.take() {
-            let views: Vec<_> = self.views.values().cloned().collect();
-            cx.defer(move |cx| {
-                for view in views {
-                    let _ = view.update(cx, |view, cx| view.seat(request, cx));
-                }
-            });
-        }
+        let task = self.state.handle(message);
+        self.mount(cx);
         self.tray.sync(&self.state);
         self.start(task, cx).detach();
         self.subscriptions(cx);
@@ -401,10 +424,23 @@ impl Desktop {
 
     fn execute(&mut self, command: Command, cx: &mut Context<Self>) {
         match command {
-            Command::Open { key, kind, reply } => {
-                self.open_window(key, kind, reply, None, None, cx)
-            }
+            Command::Open {
+                key,
+                kind,
+                at,
+                reply,
+            } => self.open_window(key, kind, reply, at, cx),
             Command::Raise(key) => self.raise_window(key, cx),
+            Command::Close(key) => {
+                if let Some(handle) = self.windows.get(&key) {
+                    remove(*handle, cx);
+                }
+            }
+            Command::SwapConsole => self.swap_console(cx),
+            Command::SyncAppearance => {
+                self.sync_appearance(cx);
+                cx.notify();
+            }
             Command::OpenLink(link) => self.dispatch(Message::OpenLink(link), cx),
             Command::OpenUrl(url) => cx.open_url(&url),
             Command::Quit => self.quit(cx),
@@ -451,9 +487,6 @@ pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
-    layout: layout::Layout,
-    mounted: BTreeMap<u64, panes::MountedPane>,
-    initialized: bool,
     drag: Option<panes::Drag>,
     inputs: HashMap<&'static str, NativeInput>,
     /// ⌘K's field took focus when it opened; it is not taken again while
@@ -525,7 +558,7 @@ impl DesktopWindow {
         }
         if command && key.key == "w" {
             match self.command_w_pane(cx) {
-                Some(index) => self.pane_message(panes::PaneMessage::Close(index), window, cx),
+                Some(index) => self.pane_message(PaneMessage::Close(index), window, cx),
                 None => self.close_by_key(window, cx),
             }
             cx.stop_propagation();
@@ -578,7 +611,8 @@ impl DesktopWindow {
     /// What ⌘W closes: the focused desk window, when the desk's keys reach
     /// it and it has one; `None` is the app's window (`close_by_key`).
     fn command_w_pane(&self, cx: &gpui_kit::App) -> Option<usize> {
-        (self.desk_keys(cx) && !self.layout.panes.is_empty()).then_some(self.layout.focused)
+        let layout = self.layout(cx);
+        (self.desk_keys(cx) && !layout.panes.is_empty()).then_some(layout.focused)
     }
 
     /// ⌘W closes a window, never the app. A pop-out closes as its pane's ×
@@ -608,7 +642,7 @@ impl DesktopWindow {
         let Some(chord) = crate::runtime::chord_of(&key.key, key.modifiers) else {
             return false;
         };
-        let Some(view) = self.focused_view() else {
+        let Some(view) = self.focused_view(cx) else {
             return false;
         };
         let landed = view.update(cx, |view, cx| view.chord(&chord, cx));
@@ -619,41 +653,37 @@ impl DesktopWindow {
     }
 
     fn released(&mut self, cx: &mut gpui_kit::App) {
-        self.unseat(cx);
         self.observe_window(view_wire::events::Window::Closed, cx);
     }
 
-    /// The model's ask of the desk: the console's windows follow it.
-    fn seat(&mut self, request: crate::SeatRequest, cx: &mut Context<Self>) {
-        use crate::SeatRequest;
-        match request {
-            SeatRequest::Unseat => return self.unseat(cx),
-            _ if self.kind != WindowKind::Console => return,
-            SeatRequest::Select(module) => self.layout.select(module),
-            // a link opens beside the view it was in, not in place of it
-            SeatRequest::Open(module) => self.layout.open(module),
-        };
-        self.initialized = true;
-        cx.notify();
-    }
-
-    fn unseat(&mut self, cx: &mut gpui_kit::App) {
-        let mounted = std::mem::take(&mut self.mounted);
-        self.layout = layout::Layout::default();
-        self.initialized = false;
-        for (_, pane) in mounted {
-            self.hide_pane(pane, cx);
-        }
+    /// This window's panes, as the model has them.
+    fn layout(&self, cx: &gpui_kit::App) -> layout::Layout {
+        self.model
+            .read(cx)
+            .state
+            .layouts
+            .get(&self.key)
+            .cloned()
+            .unwrap_or_default()
     }
 
     fn observe_window(&mut self, event: view_wire::events::Window, cx: &mut gpui_kit::App) {
-        for pane in self.mounted.values() {
-            let intents = pane.view.update(cx, |view, cx| {
+        let panes = self.layout(cx).panes;
+        let views: Vec<_> = {
+            let mounted = &self.model.read(cx).mounted;
+            panes
+                .iter()
+                .filter_map(|pane| mounted.get(&pane.instance))
+                .map(|mounted| (mounted.module, mounted.view.clone()))
+                .collect()
+        };
+        for (module, view) in views {
+            let intents = view.update(cx, |view, cx| {
                 view.observe_final_window_event(event.clone(), cx)
             });
             for intent in intents {
                 self.model.update(cx, |model, cx| {
-                    model.dispatch(Message::ViewEvent(pane.module, intent), cx)
+                    model.dispatch(Message::ViewEvent(module, intent), cx)
                 });
             }
         }
