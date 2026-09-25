@@ -22,11 +22,16 @@
 //! - `rpc.live` `<program>` — a subscription that gets one item per block
 //!   that wrote to `program` (`/v1/changes/<program>`), so the view re-reads
 //!   what moved.
+//! - `rpc.heads` — a subscription that gets one `Head` per finalized block,
+//!   oldest first: the host reads the node's status at half its block
+//!   time and fills each advance from the block archive.
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
 //! - `host.props` — subscribes to the session props (`Session`: the seated
 //!   account, theme, chain and read-only endpoint).
 //! - `host.route` — a subscription that gets the route a `duck://` link
-//!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once.
+//!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
+//!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
+//!   → `forge:web:3`), checked by `valid_route`.
 //! - `host.visible`, `host.badge`, `host.open_link`, `host.chord`,
 //!   `host.id`, `clock.ticks`, `host.log`, `host.widget` — the app's own
 //!   doors: visibility, the tab badge, the one way out (a `duck://` link),
@@ -89,7 +94,9 @@ mod node;
 mod replies;
 
 pub(super) use node::{Items, NodeTask, spawn_device, spawn_subscription};
-use node::{blob_get, block, blocks, invite, live, query, spawn, spawn_once, status, submit};
+use node::{
+    blob_get, block, blocks, heads, invite, live, query, spawn, spawn_once, status, submit,
+};
 pub(super) use replies::Replies;
 
 /// The kernel's own runtime, on its own thread: the window thread never
@@ -168,6 +175,7 @@ pub(super) fn answer(
         ("op", "submit") => spawn(guest, id, payload, submit),
         ("blob", "get") => spawn(guest, id, payload, blob_get),
         ("rpc", "live") => live(guest, id, payload),
+        ("rpc", "heads") => heads(guest, id, payload),
         ("host", "open_link") => {
             let link = doors::decode::<String>(payload)
                 .ok()

@@ -233,6 +233,85 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
     guest.tasks.push((id, NodeTask { task }));
 }
 
+/// The most blocks one `/v1/blocks` page answers (the node's cap).
+const MAX_BLOCK_PAGE: u32 = 100;
+
+/// `rpc.heads`: one [`doors::Head`] per finalized block, oldest first. The
+/// node pushes no block stream, so this reads its status at half the block
+/// time and fills each advance from the archive (a page, at most the node's
+/// cap); where the archive holds none, the tip alone.
+pub(super) fn heads(guest: &mut Guest, id: u64, payload: &[u8]) {
+    if !payload.is_empty() {
+        guest.refuse(id, "malformed_request", "`rpc.heads` takes no payload");
+        return;
+    }
+    let Some(node) = connected(guest, id) else {
+        return;
+    };
+    spawn_subscription(guest, id, move |mut items| async move {
+        let mut last: Option<u64> = None;
+        loop {
+            let pace = match next_heads(&node, last).await {
+                Ok((heads, block_time_ms)) => {
+                    for head in heads {
+                        last = Some(head.height);
+                        if !items.send(Ok(doors::encode(&head))).await {
+                            return;
+                        }
+                    }
+                    std::time::Duration::from_millis(block_time_ms / 2).clamp(
+                        std::time::Duration::from_millis(100),
+                        std::time::Duration::from_secs(2),
+                    )
+                }
+                Err(error) => {
+                    tracing::debug!(target: "ducktape::app", %error, "heads not read");
+                    backend::retry_delay(2)
+                }
+            };
+            tokio::time::sleep(pace).await;
+        }
+    });
+}
+
+/// The heads past `last` (the tip alone at the first read), oldest first,
+/// and the node's block time.
+async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<doors::Head>, u64)> {
+    let status = node.client.status().await?;
+    let tip = status.height;
+    if last.is_some_and(|last| last >= tip) {
+        return Ok((Vec::new(), status.block_time_ms));
+    }
+    let wanted = last
+        .map_or(1, |last| tip - last)
+        .min(u64::from(MAX_BLOCK_PAGE));
+    let page = noded::Blocks {
+        before: tip.checked_add(1),
+        limit: wanted as u32,
+    };
+    let mut heads: Vec<doors::Head> = node
+        .client
+        .blocks(&page)
+        .await?
+        .into_iter()
+        .rev()
+        .filter(|block| last.is_none_or(|last| block.height > last))
+        .map(|block| doors::Head {
+            height: block.height,
+            time: block.time,
+            id: block.id,
+        })
+        .collect();
+    if heads.last().is_none_or(|head| head.height < tip) {
+        heads.push(doors::Head {
+            height: tip,
+            time: 0,
+            id: status.tip,
+        });
+    }
+    Ok((heads, status.block_time_ms))
+}
+
 pub(in crate::runtime) struct NodeTask {
     task: tokio::task::JoinHandle<()>,
 }
