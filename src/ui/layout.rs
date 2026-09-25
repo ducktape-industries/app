@@ -157,6 +157,43 @@ impl Layout {
         };
     }
 
+    /// The desk as the shell measured it. On a desk that changed size
+    /// (the window resized, filled the screen or left it) every window
+    /// keeps its share of it: its edges keep their place between the
+    /// desk's insets, so halves stay flush and a filled window stays filled.
+    pub(crate) fn measure(&mut self, desk: (f32, f32)) {
+        let Some(old) = self.desk.replace(desk).filter(|old| *old != desk) else {
+            return;
+        };
+        let scale = |at: f32, old: f32, new: f32| {
+            let (old, new) = (old - 2. * INSET, new - 2. * INSET);
+            match old > 0. && new > 0. {
+                true => INSET + (at - INSET) * new / old,
+                false => at,
+            }
+        };
+        let fit = |frame: Frame| {
+            let (x0, x1) = (
+                scale(frame.x, old.0, desk.0),
+                scale(frame.x + frame.w, old.0, desk.0),
+            );
+            let (y0, y1) = (
+                scale(frame.y, old.1, desk.1),
+                scale(frame.y + frame.h, old.1, desk.1),
+            );
+            Frame {
+                x: x0,
+                y: y0,
+                w: x1 - x0,
+                h: y1 - y0,
+            }
+        };
+        for pane in &mut self.panes {
+            pane.frame = pane.frame.map(fit);
+            pane.restore = pane.restore.map(fit);
+        }
+    }
+
     /// Frames for the windows without one, once the desk is measured.
     pub(crate) fn settle(&mut self) {
         if let Some(desk) = self.desk {
@@ -310,33 +347,75 @@ impl Layout {
         Some(pane)
     }
 
-    /// The window that shared a whole edge with a closed one (its other
-    /// half, once halved) grows back over the closed one's frame.
+    /// The windows beside a closed one grow back over its frame: the one
+    /// that shared a whole edge with it (its other half, once halved), or
+    /// else the windows lined up along one side of it that together span
+    /// that side (the two quarters beside a closed half).
     fn reclaim(&mut self, gone: Frame) {
-        // same span on one axis, touching or overlapping on the other
-        // (a half clamped to the smallest window overlaps its sibling)
-        let beside = |a: Frame, b: Frame| {
-            let touch = |a0: f32, a1: f32, b0: f32, b1: f32| a0 <= b1 && b0 <= a1;
-            (a.y == b.y && a.h == b.h && touch(a.x, a.x + a.w, b.x, b.x + b.w))
-                || (a.x == b.x && a.w == b.w && touch(a.y, a.y + a.h, b.y, b.y + b.h))
+        // a frame along the axis it grows on, then across it
+        let along = |frame: Frame, row: bool| match row {
+            true => (frame.x, frame.x + frame.w, frame.y, frame.y + frame.h),
+            false => (frame.y, frame.y + frame.h, frame.x, frame.x + frame.w),
         };
-        let Some(pane) = self
-            .panes
-            .iter_mut()
-            .filter(|pane| pane.frame.is_some_and(|frame| beside(frame, gone)))
-            .max_by_key(|pane| pane.z)
-        else {
+        let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+        let frames: &Vec<Option<Frame>> = &self.panes.iter().map(|pane| pane.frame).collect();
+        // same span, touching or overlapping (a half clamped to the
+        // smallest window overlaps its sibling): the one on top
+        let whole = [true, false]
+            .into_iter()
+            .flat_map(|row| {
+                let (g0, g1, s0, s1) = along(gone, row);
+                (0..frames.len())
+                    .filter(move |&index| {
+                        frames[index].is_some_and(|frame| {
+                            let (a0, a1, b0, b1) = along(frame, row);
+                            b0 == s0 && b1 == s1 && a0 <= g1 && g0 <= a1
+                        })
+                    })
+                    .map(move |index| (index, row))
+            })
+            .max_by_key(|&(index, _)| self.panes[index].z)
+            .map(|(index, row)| (vec![index], row));
+        // flush against one side, each within its span, together all of it
+        let lined = || {
+            [(true, false), (true, true), (false, false), (false, true)]
+                .into_iter()
+                .find_map(|(row, after)| {
+                    let (g0, g1, s0, s1) = along(gone, row);
+                    let lined: Vec<usize> = (0..frames.len())
+                        .filter(|&index| {
+                            frames[index].is_some_and(|frame| {
+                                let (a0, a1, b0, b1) = along(frame, row);
+                                let flush = if after { near(a0, g1) } else { near(a1, g0) };
+                                flush && b0 > s0 - 0.5 && b1 < s1 + 0.5
+                            })
+                        })
+                        .collect();
+                    let span: f32 = lined
+                        .iter()
+                        .map(|&index| {
+                            let (_, _, b0, b1) = along(frames[index].unwrap(), row);
+                            b1 - b0
+                        })
+                        .sum();
+                    (!lined.is_empty() && near(span, s1 - s0)).then_some((lined, row))
+                })
+        };
+        let Some((grown, row)) = whole.or_else(lined) else {
             return;
         };
-        let frame = pane.frame.unwrap();
-        let (x, y) = (frame.x.min(gone.x), frame.y.min(gone.y));
-        pane.frame = Some(Frame {
-            x,
-            y,
-            w: (frame.x + frame.w).max(gone.x + gone.w) - x,
-            h: (frame.y + frame.h).max(gone.y + gone.h) - y,
-        });
-        pane.restore = None;
+        let (g0, g1, _, _) = along(gone, row);
+        for index in grown {
+            let pane = &mut self.panes[index];
+            let frame = pane.frame.as_mut().unwrap();
+            let (a0, a1, _, _) = along(*frame, row);
+            let (from, to) = (a0.min(g0), a1.max(g1));
+            match row {
+                true => (frame.x, frame.w) = (from, to - from),
+                false => (frame.y, frame.h) = (from, to - from),
+            }
+            pane.restore = None;
+        }
     }
 
     /// Returns the displaced view so its entity can be released by the caller.
@@ -654,6 +733,113 @@ mod tests {
         let cascaded = layout.panes[1].frame;
         layout.close(0);
         assert_eq!(layout.panes[0].frame, cascaded);
+    }
+
+    #[test]
+    fn closing_a_half_gives_the_quarters_beside_it_the_whole_width() {
+        let mut layout = Layout::default();
+        layout.split("chat");
+        layout.place(DESK);
+        let whole = layout.panes[0].frame.unwrap();
+        layout.halve(false, DESK);
+        layout.halve(true, DESK);
+        let (top, bottom) = (
+            layout.panes[1].frame.unwrap(),
+            layout.panes[2].frame.unwrap(),
+        );
+        // the left half goes: the right column's quarters take its width
+        layout.close(0);
+        assert_eq!(
+            layout.panes[0].frame,
+            Some(Frame {
+                x: whole.x,
+                w: whole.w,
+                ..top
+            })
+        );
+        assert_eq!(
+            layout.panes[1].frame,
+            Some(Frame {
+                x: whole.x,
+                w: whole.w,
+                ..bottom
+            })
+        );
+        // and in the other direction: a row of halves under a closed top
+        let mut layout = Layout::default();
+        layout.split("chat");
+        layout.place(DESK);
+        layout.halve(true, DESK);
+        layout.halve(false, DESK);
+        layout.close(0);
+        let (left, right) = (
+            layout.panes[0].frame.unwrap(),
+            layout.panes[1].frame.unwrap(),
+        );
+        assert_eq!(
+            (left.y, left.h, right.y, right.h),
+            (whole.y, whole.h, whole.y, whole.h)
+        );
+        // a window that spans only part of the side is left alone
+        let mut layout = Layout::default();
+        layout.split("chat");
+        layout.place(DESK);
+        layout.halve(false, DESK);
+        layout.halve(true, DESK);
+        let top = layout.panes[1].frame;
+        layout.panes[2].frame = None;
+        layout.close(0);
+        assert_eq!(layout.panes[0].frame, top);
+    }
+
+    #[test]
+    fn a_resized_desk_scales_every_window_with_it() {
+        let mut layout = Layout::default();
+        layout.split("chat");
+        layout.measure(DESK);
+        layout.place(DESK);
+        layout.halve(false, DESK);
+        let small = Frame {
+            x: 100.,
+            y: 80.,
+            w: 500.,
+            h: 400.,
+        };
+        layout.split("files");
+        layout.place(DESK);
+        layout.set_frame(2, small, DESK);
+        let big = (DESK.0 * 1.6, DESK.1 * 1.5);
+        layout.measure(big);
+        layout.settle();
+        let (left, right) = (
+            layout.panes[0].frame.unwrap(),
+            layout.panes[1].frame.unwrap(),
+        );
+        assert_eq!((left.x, left.y), (INSET, INSET));
+        assert_eq!(left.x + left.w, right.x, "halves stay flush");
+        assert_eq!(right.x + right.w, big.0 - INSET);
+        assert_eq!(left.h, big.1 - 2. * INSET);
+        let floating = layout.panes[2].frame.unwrap();
+        let share = |at: f32, of: f32, desk: f32| {
+            (at - INSET) / (desk - 2. * INSET) - (of - INSET) / (DESK.0 - 2. * INSET)
+        };
+        assert!(share(floating.x, small.x, big.0).abs() < 1e-4);
+        // and back: the frames it had
+        layout.measure(DESK);
+        layout.settle();
+        let back = layout.panes[2].frame.unwrap();
+        for (a, b) in [
+            (back.x, small.x),
+            (back.y, small.y),
+            (back.w, small.w),
+            (back.h, small.h),
+        ] {
+            assert!((a - b).abs() < 1e-3, "{back:?} != {small:?}");
+        }
+        assert_eq!(
+            layout.panes[0].frame.unwrap().w + layout.panes[1].frame.unwrap().w,
+            DESK.0 - 2. * INSET
+        );
     }
 
     #[test]

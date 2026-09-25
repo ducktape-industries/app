@@ -449,6 +449,12 @@ impl Desktop {
     }
 
     fn subscriptions(&mut self, cx: &mut Context<Self>) {
+        // the ticks run on the wall clock and wake from the kernel's
+        // thread: under gpui's test scheduler a wake from another thread
+        // is nondeterminism, and fails whichever test outlasts a tick
+        if cfg!(test) {
+            return;
+        }
         let runtime = crate::runtime::handle();
         let _runtime = runtime.enter();
         let recipes = self.state.subscriptions().into_recipes();

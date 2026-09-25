@@ -13,7 +13,7 @@ impl Ducktape {
         match message {
             Message::DeskShown { window, desk, seed } => {
                 let layout = self.layouts.entry(window).or_default();
-                layout.desk = Some(desk);
+                layout.measure(desk);
                 if !layout.initialized
                     && let Some(module) = seed
                 {
