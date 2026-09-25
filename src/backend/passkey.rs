@@ -88,7 +88,7 @@ pub(crate) async fn create_account(
     )
     .await?;
     let admission = Admission {
-        network: network.as_bytes().to_vec(),
+        chain_id: network.as_bytes().to_vec(),
         scheme: abi::Scheme::Secp256r1,
         key: passkey.clone(),
         generation: generation(client, network, &passkey).await?,
@@ -166,7 +166,7 @@ pub(crate) async fn sign_in(
     };
     let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
     let admission = Admission {
-        network: network.as_bytes().to_vec(),
+        chain_id: network.as_bytes().to_vec(),
         scheme: abi::Scheme::Ed25519,
         key: device.clone(),
         generation: generation(client, network, &device).await?,
@@ -213,7 +213,7 @@ fn passkey_body(pubkey: &[u8], network: &str, seq: u64, payload: Vec<u8>) -> Bod
         signer: pubkey.to_vec(),
         network: network.as_bytes().to_vec(),
         seq,
-        target: identity::PROGRAM.to_owned(),
+        target: identity::MODULE.to_owned(),
         payload,
     }
 }
@@ -230,7 +230,7 @@ fn passkey_frame(body: Body, assertion: &Assertion) -> Option<Frame> {
 // ---------- the node ----------
 
 pub(super) async fn ask(client: &RpcClient, network: &str, query: Query) -> Result<Reply, String> {
-    let frame = query_frame(network, identity::PROGRAM, abi::encode(&query)).await;
+    let frame = query_frame(network, identity::MODULE, abi::encode(&query)).await;
     let reply = client
         .query(Layer::Preconfirmed, frame)
         .await
@@ -282,7 +282,7 @@ pub(super) async fn submit_seated(
     network: &str,
     op: &Op,
 ) -> Result<Vec<u8>, String> {
-    let frame = seated_frame(client, network, identity::PROGRAM, abi::encode(op))
+    let frame = seated_frame(client, network, identity::MODULE, abi::encode(op))
         .await
         .map_err(|refusal| refusal.sentence)?;
     submit(client, frame).await
@@ -813,7 +813,7 @@ mod tests {
     fn a_passkey_consent_verifies_and_names_the_key_that_gave_it() {
         let sk = testkit::passkey(5);
         let admission = Admission {
-            network: b"testkit".to_vec(),
+            chain_id: b"testkit".to_vec(),
             scheme: abi::Scheme::Ed25519,
             key: vec![7; 32],
             generation: 0,
