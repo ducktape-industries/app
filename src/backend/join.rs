@@ -225,7 +225,7 @@ pub(crate) async fn approve(
     }
     let code = normalized(code).ok_or("That code is malformed.")?;
     let admission = Admission {
-        chain_id: network.as_bytes().to_vec(),
+        network: network.as_bytes().to_vec(),
         scheme: abi::Scheme::Ed25519,
         key: request.key.clone(),
         generation: generation(client, network, &request.key).await?,
@@ -285,7 +285,7 @@ pub(crate) async fn add_recovery_key(
         .await?
         .ok_or("This device's key holds no account yet.")?;
     let admission = Admission {
-        chain_id: network.as_bytes().to_vec(),
+        network: network.as_bytes().to_vec(),
         scheme: abi::Scheme::Ed25519,
         key: public.clone(),
         generation: generation(client, network, &public).await?,
@@ -312,7 +312,7 @@ pub(crate) async fn add_recovery_key(
         &recovery,
         network.as_bytes(),
         seq,
-        identity::MODULE,
+        identity::PROGRAM,
         abi::encode(&add),
     );
     submit(client, frame.encode()).await.map(drop)
@@ -331,7 +331,7 @@ pub(crate) async fn join_with_recovery_key(
         .ok_or_else(|| format!("That recovery key isn't on an account on {network}."))?;
     let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
     let admission = Admission {
-        chain_id: network.as_bytes().to_vec(),
+        network: network.as_bytes().to_vec(),
         scheme: abi::Scheme::Ed25519,
         key: device.clone(),
         generation: generation(client, network, &device).await?,

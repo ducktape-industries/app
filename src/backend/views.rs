@@ -53,7 +53,7 @@ impl std::fmt::Display for Fetch {
 /// program through the same query path every view's request takes.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
     use module_registry::{Query, Reply};
-    let Reply::Modules(entries) = ask(client, network, Query::At(0)).await? else {
+    let Reply::Programs(entries) = ask(client, network, Query::At(0)).await? else {
         return Err(Fetch::Refused("the registry answered no programs".into()));
     };
     // a registry from before view-only entries refuses the question: no views
@@ -80,7 +80,7 @@ async fn ask(
     network: &str,
     query: module_registry::Query,
 ) -> Result<module_registry::Reply, Fetch> {
-    let frame = super::query_frame(network, module_registry::MODULE, abi::encode(&query)).await;
+    let frame = super::query_frame(network, module_registry::PROGRAM, abi::encode(&query)).await;
     let answer = client
         .query(Layer::Preconfirmed, frame)
         .await
