@@ -104,7 +104,7 @@ fn connect_screen_exposes_the_endpoint_and_names_its_error(cx: &mut TestAppConte
 fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
-    state.screen = Screen::Console;
+    state.stage = Stage::Unlock(Default::default());
     // a password-locked key from before: its password is asked once
     state.key_exists = true;
     state.sign_in.unlock_error = "wrong password".to_string();
@@ -131,8 +131,7 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     let model = native.update(|_, cx| view.read(cx).model.clone());
     model.update(cx, |model, _| {
         model.state.signer_key = "ab".into();
-        model.state.sign_in.account_step = true;
-        model.state.sign_in.recovering = true;
+        model.state.stage = Stage::Recover(Default::default());
     });
     native.update(|window, cx| {
         type_into(
@@ -157,7 +156,7 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
 fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
-    state.screen = Screen::Console;
+    state.stage = Stage::Unlock(Default::default());
     let (view, mut native) = open(state, cx);
     let nodes = native.update(draw);
     find(&nodes, "Button", "Read without a key");
@@ -176,7 +175,7 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     let model = native.update(|_, cx| view.read(cx).model.clone());
     model.update(cx, |model, _| {
         model.state.signer_key = "ab".into();
-        model.state.sign_in.account_step = true;
+        model.state.stage = Stage::Account(Default::default());
     });
     native.update(|window, cx| type_into("create-account-name/field", "duck", window, cx));
     let nodes = native.update(draw);
@@ -195,7 +194,7 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
 fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
-    state.screen = Screen::Connect;
+    state.stage = Stage::Connect;
     state.recent_endpoints = vec![crate::backend::RecentEndpoint {
         url: "http://127.0.0.1:9000".to_string(),
         network: "testkit".to_string(),
@@ -233,7 +232,7 @@ fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut Test
 fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
-    state.screen = Screen::Connect;
+    state.stage = Stage::Connect;
     let (view, mut native) = open(state, cx);
     native.update(draw);
     native.update(|window, cx| {
@@ -249,7 +248,9 @@ fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &m
     // ConnectSubmit swaps Connect for sign-in once the node answers: the
     // endpoint field the reader was on is gone.
     let model = native.update(|_, cx| view.read(cx).model.clone());
-    model.update(cx, |model, _| model.state.screen = Screen::Console);
+    model.update(cx, |model, _| {
+        model.state.stage = Stage::Unlock(Default::default())
+    });
     native.update(draw);
 
     // A keyboard-only reader's next Tab must still land somewhere on the
@@ -285,7 +286,7 @@ fn initials_take_the_first_letter_of_two_words() {
 fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
-    state.screen = Screen::Console;
+    state.stage = Stage::Unlock(Default::default());
     state.key_exists = true;
     let (view, mut native) = open(state, cx);
     native.update(|window, cx| type_into("password/field", "hunter22", window, cx));
@@ -302,7 +303,10 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
     assert_eq!(field(&mut native), "hunter22");
     let model = native.update(|_, cx| view.read(cx).model.clone());
     assert_eq!(
-        model.read_with(cx, |model, _| model.state.sign_in.password.clone()),
+        model.read_with(cx, |model, _| match &model.state.stage {
+            Stage::Unlock(step) => step.password.to_string(),
+            _ => String::new(),
+        }),
         "hunter22"
     );
 
@@ -327,7 +331,7 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
 fn a_draw_leaves_text_the_model_has_not_heard_yet(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
-    state.screen = Screen::Console;
+    state.stage = Stage::Unlock(Default::default());
     state.key_exists = true;
     let (view, mut native) = open(state, cx);
     native.update(draw);
@@ -357,9 +361,8 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
 ) {
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
-    state.screen = Screen::Console;
+    state.stage = Stage::Desk;
     state.connected = true;
-    state.browsing = true;
     state.network = "testkit".into();
     state.connected_rpc = "http://127.0.0.1:1".into();
     state.recent_endpoints = vec![
@@ -399,9 +402,8 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     use crate::runtime::notify::{Permission, Settings, center};
     cx.update(gpui_kit::init);
     let (mut state, _) = Ducktape::boot();
-    state.screen = Screen::Console;
+    state.stage = Stage::Desk;
     state.connected = true;
-    state.browsing = true;
     state.network = "testkit".into();
     state.overlay = Some(crate::Overlay::Menu(crate::Popover::Notifications));
     let (view, mut native) = open(state, cx);
@@ -503,46 +505,79 @@ fn drawn_ids(window: &mut Window, cx: &mut gpui_kit::App) -> std::collections::B
         .collect()
 }
 
-/// For every mix of the onboarding flags, the console window draws the
-/// screen `stage()` names, and it is launcher-sized exactly when that
-/// screen is not the desk.
+/// For every stage and the sub-steps it draws, the console window draws
+/// that stage's screen, and it is launcher-sized exactly when that screen
+/// is not the desk.
 #[gpui_kit::test]
 fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
+    use crate::ui::{Account, Phrase, Unlock};
     cx.update(gpui_kit::init);
-    for bits in 0..64u8 {
-        let on = |bit: u8| bits & (1 << bit) != 0;
-        let (mut state, _) = Ducktape::boot();
-        state.screen = match on(0) {
-            true => Screen::Console,
-            false => Screen::Connect,
-        };
-        if on(1) {
-            state.sign_in.phrase = "canoe pond forest".into();
+    type Build = fn() -> Stage;
+    let stages: Vec<(Build, &str)> = vec![
+        (|| Stage::Connect, "connect"),
+        (|| Stage::Unlock(Unlock::default()), "sign-in"),
+        (
+            || {
+                Stage::Unlock(Unlock {
+                    awaiting: true,
+                    ..Default::default()
+                })
+            },
+            "sign-in",
+        ),
+        (
+            || {
+                Stage::Phrase(Phrase {
+                    words: String::from("canoe pond forest").into(),
+                    ..Default::default()
+                })
+            },
+            "recovery",
+        ),
+        (
+            || {
+                Stage::Phrase(Phrase {
+                    words: String::from("canoe pond forest").into(),
+                    quiz: Some([0, 1, 2]),
+                    ..Default::default()
+                })
+            },
+            "recovery-check",
+        ),
+        (|| Stage::Recover(Default::default()), "recover"),
+        (|| Stage::Account(Account::default()), "account-step"),
+        (
+            || {
+                Stage::Account(Account {
+                    link_code: "ABCD-EFGH".into(),
+                    ..Default::default()
+                })
+            },
+            "link-waiting",
+        ),
+        (|| Stage::Desk, "menubar"),
+    ];
+    let screens: std::collections::BTreeSet<&str> = stages.iter().map(|(_, id)| *id).collect();
+    for (stage, id) in &stages {
+        // the key seated or not, locked or not, an old password key or not:
+        // none of it picks the screen
+        for bits in 0..8u8 {
+            let (mut state, _) = Ducktape::boot();
+            state.stage = stage();
+            if bits & 1 != 0 {
+                state.signer_key = "ab".into();
+            }
+            state.sign_in.locked = bits & 2 != 0;
+            state.key_exists = bits & 4 != 0;
+            let launcher = state.in_launcher();
+            let (_view, mut native) = open(state, cx);
+            let ids = native.update(drawn_ids);
+            let drawn: Vec<_> = screens
+                .iter()
+                .filter(|screen| ids.contains(**screen))
+                .collect();
+            assert_eq!(drawn, vec![id], "{id} with bits {bits:03b}");
+            assert_eq!(launcher, *id != "menubar", "{id} with bits {bits:03b}");
         }
-        if on(2) {
-            state.signer_key = "ab".into();
-        }
-        state.browsing = on(3);
-        state.sign_in.account_step = on(4);
-        state.sign_in.recovering = on(5);
-        let stage = state.stage();
-        let launcher = state.in_launcher();
-        let (_view, mut native) = open(state, cx);
-        let ids = native.update(drawn_ids);
-        let screens = [
-            (Stage::Connect, "connect"),
-            (Stage::Unlock, "sign-in"),
-            (Stage::Phrase, "recovery"),
-            (Stage::Recover, "recover"),
-            (Stage::Account, "account-step"),
-            (Stage::Desk, "menubar"),
-        ];
-        let drawn: Vec<_> = screens
-            .iter()
-            .filter(|(_, id)| ids.contains(*id))
-            .map(|(stage, _)| *stage)
-            .collect();
-        assert_eq!(drawn, vec![stage], "flags {bits:06b}: drew {drawn:?}");
-        assert_eq!(launcher, stage != Stage::Desk, "flags {bits:06b}");
     }
 }

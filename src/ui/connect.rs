@@ -1,8 +1,7 @@
 //! Reaching a node, keeping up with it, and leaving it.
 
-use super::sign_in::offers_account_step;
 use super::update::STATUS_EVERY;
-use super::{AppMessage as Message, Ducktape, Overlay, Screen, SeatRequest};
+use super::{AppMessage as Message, Ducktape, Overlay, SeatRequest, Stage, Unlock};
 use crate::backend;
 use view_wire::Task;
 
@@ -100,7 +99,6 @@ impl Ducktape {
                 crate::runtime::notify::center().set_network(&self.chain);
                 self.connected = true;
                 self.status_misses = 0;
-                self.screen = Screen::Console;
                 self.apply_status(&status);
                 drop(crate::runtime::connected(
                     &client,
@@ -154,18 +152,21 @@ impl Ducktape {
                 }
                 Task::none()
             }
-            // After a sign-in the key screen stays up (`stage()`, while the
-            // offer is armed) until the node answers: a key with no account
-            // goes on to the account step, one with an account to the
-            // console, and neither shows the other first.
+            // After a sign-in the key screen stays up (`Unlock::awaiting`)
+            // until the node answers: a key with no account goes on to the
+            // account step, one with an account to the console, and neither
+            // shows the other first. Later answers move no screen.
             Message::AccountResolved { node, key, account } => {
-                if node == self.connected_rpc && key == self.signer_key {
-                    self.sign_in.account_step |= offers_account_step(
-                        std::mem::take(&mut self.sign_in.account_offer),
-                        &account,
-                    );
-                    self.account = Some(account);
+                if node != self.connected_rpc || key != self.signer_key {
+                    return Task::none();
                 }
+                if let Stage::Unlock(Unlock { awaiting: true, .. }) = self.stage {
+                    self.stage = match account {
+                        None => Stage::Account(Default::default()),
+                        Some(_) => Stage::Desk,
+                    };
+                }
+                self.account = Some(account);
                 Task::none()
             }
             Message::Disconnect => {
@@ -178,8 +179,9 @@ impl Ducktape {
                 self.network.clear();
                 self.chain.clear();
                 self.status = "Not connected".into();
-                self.screen = Screen::Connect;
-                self.leave_network()
+                let left = self.leave_network();
+                self.stage = Stage::Connect;
+                left
             }
             // The console stays on the network in hand while the other is
             // reached: the status reads "Reaching …", and a node that does not
@@ -233,12 +235,16 @@ impl Ducktape {
     /// The network `keyring` names becomes the one in hand. Another chain
     /// than the last (a switch, not a second node of the same network):
     /// nothing of the last one — its seated key, account, open view —
-    /// carries over.
+    /// carries over, and the key step comes first. A second node of the
+    /// same network keeps the screen it was on.
     pub(super) fn take_up(&mut self, keyring: backend::Keyring) -> Task<Message> {
         let left = match keyring.dir != self.keyring {
             true => self.leave_network(),
             false => Task::none(),
         };
+        if matches!(self.stage, Stage::Connect) {
+            self.stage = Stage::Unlock(Unlock::default());
+        }
         self.keyring = keyring.dir;
         self.other_chain = keyring.other_chain;
         self.key_exists = backend::key_exists(&self.keyring);
@@ -249,15 +255,15 @@ impl Ducktape {
     /// (the seat is one for the whole app), the account it resolved to, the
     /// open view and its badges, and any sign-in half done.
     fn leave_network(&mut self) -> Task<Message> {
-        // dropping the old one wipes its secrets and cancels its tasks
+        // dropping the old ones wipes their secrets and cancels their tasks
         self.sign_in = Default::default();
+        self.stage = Stage::Unlock(Unlock::default());
         self.account = None;
         self.active = None;
         self.seat_request = Some(SeatRequest::Unseat);
         self.badges.clear();
         self.overlay = None;
         self.node = None;
-        self.browsing = false;
         self.keyring.clear();
         self.other_chain = false;
         self.key_exists = false;

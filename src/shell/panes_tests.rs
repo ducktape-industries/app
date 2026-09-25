@@ -52,8 +52,7 @@ fn console(
     cx.update(gpui_kit::init);
     let model = cx.new(|cx| {
         let (mut state, _) = Ducktape::boot();
-        state.screen = Screen::Console;
-        state.browsing = true;
+        state.stage = crate::Stage::Desk;
         state.active = Some("pane-ax-test");
         Desktop::new(state, crate::tray::init(cx).0)
     });
