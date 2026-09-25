@@ -389,10 +389,10 @@ fn a_core_module_view_inits_ticks_snapshots_and_restores() {
 }
 
 #[test]
-fn a_view_built_against_newer_doors_is_refused_at_load() {
-    let now = wire::doors::DOORS_REVISION;
-    assert!(doors_revision(0).is_ok(), "a v1 manifest names none");
-    assert!(doors_revision(now).is_ok());
-    let refused = doors_revision(now + 1).unwrap_err();
+fn a_view_built_against_newer_methods_is_refused_at_load() {
+    let now = wire::methods::METHODS_REVISION;
+    assert!(methods_revision(0).is_ok(), "a v1 manifest names none");
+    assert!(methods_revision(now).is_ok());
+    let refused = methods_revision(now + 1).unwrap_err();
     assert!(refused.contains(&format!("{}", now + 1)), "{refused}");
 }

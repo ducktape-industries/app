@@ -74,12 +74,12 @@ impl WindowKey {
     }
 }
 
-/// What a module view asked the app itself to do, off its `host.*` doors.
+/// What a module view asked the app itself to do, off its `host.*` methods.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
     Badge(i64),
-    /// `host.open_link`: a link it pressed.
+    /// `link.open`: a link it pressed.
     OpenLink(String),
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,

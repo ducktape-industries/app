@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use super::Guest;
 use super::kernel::Answer;
-use super::wire::{self, doors};
+use super::wire::{self, methods};
 
 type Kept = BTreeMap<String, Vec<u8>>;
 
@@ -82,7 +82,7 @@ fn key(key: &str) -> Result<(), wire::Refusal> {
 
 fn load(path: &Path) -> Result<Kept, wire::Refusal> {
     match std::fs::read(path) {
-        Ok(bytes) => doors::decode(&bytes).map_err(|error| refusal("host_fault", error)),
+        Ok(bytes) => methods::decode(&bytes).map_err(|error| refusal("host_fault", error)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Kept::new()),
         Err(error) => Err(refusal("host_fault", error)),
     }
@@ -90,15 +90,15 @@ fn load(path: &Path) -> Result<Kept, wire::Refusal> {
 
 fn get(path: &Path, payload: &[u8]) -> Answer {
     let asked: String =
-        doors::decode(payload).map_err(|error| refusal("malformed_request", error))?;
+        methods::decode(payload).map_err(|error| refusal("malformed_request", error))?;
     key(&asked)?;
-    Ok(doors::encode(&load(path)?.remove(&asked)))
+    Ok(methods::encode(&load(path)?.remove(&asked)))
 }
 
 // ponytail: the whole file rewritten on each set; a view keeps a few small keys
 fn set(path: &Path, payload: &[u8]) -> Answer {
     let (asked, value): (String, Option<Vec<u8>>) =
-        doors::decode(payload).map_err(|error| refusal("malformed_request", error))?;
+        methods::decode(payload).map_err(|error| refusal("malformed_request", error))?;
     key(&asked)?;
     let mut kept = load(path)?;
     match value {
@@ -110,11 +110,11 @@ fn set(path: &Path, payload: &[u8]) -> Answer {
             std::fs::create_dir_all(parent)?;
         }
         let temp = path.with_extension("borsh.tmp");
-        std::fs::write(&temp, doors::encode(&kept))?;
+        std::fs::write(&temp, methods::encode(&kept))?;
         std::fs::rename(&temp, path)
     };
     write().map_err(|error| refusal("host_fault", error))?;
-    Ok(doors::encode(&()))
+    Ok(methods::encode(&()))
 }
 
 #[cfg(test)]
@@ -128,12 +128,12 @@ mod tests {
     fn put(path: &Path, key: &str, value: Option<&[u8]>) -> Answer {
         set(
             path,
-            &doors::encode(&(key.to_owned(), value.map(<[u8]>::to_vec))),
+            &methods::encode(&(key.to_owned(), value.map(<[u8]>::to_vec))),
         )
     }
 
     fn read(path: &Path, key: &str) -> Option<Vec<u8>> {
-        doors::decode(&get(path, &doors::encode(&key.to_owned())).unwrap()).unwrap()
+        methods::decode(&get(path, &methods::encode(&key.to_owned())).unwrap()).unwrap()
     }
 
     /// Each view on each network has its own file, and a key kept by one is
@@ -168,7 +168,7 @@ mod tests {
             put(&file, "", Some(b"x")).unwrap_err().reason,
             "malformed_request"
         );
-        assert!(get(&file, &doors::encode(&String::new())).is_err());
+        assert!(get(&file, &methods::encode(&String::new())).is_err());
         put(&file, "a", Some(b"1")).unwrap();
         put(&file, "b", Some(b"2")).unwrap();
         put(&file, "a", None).unwrap();

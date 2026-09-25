@@ -167,9 +167,9 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
     }
 }
 
-/// `rpc.live <program>`: one item per block that wrote to the program.
+/// `program.changes <program>`: one item per block that wrote to the program.
 pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
-    let program = doors::decode::<String>(payload)
+    let program = methods::decode::<String>(payload)
         .unwrap_or_default()
         .trim()
         .to_owned();
@@ -177,7 +177,7 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
         guest.refuse(
             id,
             "malformed_request",
-            "`rpc.live` names no program, or too many",
+            "`program.changes` names no program, or too many",
         );
         return;
     }
@@ -205,7 +205,7 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
             };
             while let Some(change) = changes.next().await {
                 let item = match change {
-                    Ok(change) => Ok(doors::encode(&Some(change.height))),
+                    Ok(change) => Ok(methods::encode(&Some(change.height))),
                     Err(_) => break,
                 };
                 if !replies.subscription_item(&mut drained, id, item).await {
@@ -215,7 +215,7 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
             // the socket closed: the node restarted or the link dropped. Say
             // so once (the view re-reads) and open it again.
             if !replies
-                .subscription_item(&mut drained, id, Ok(doors::encode(&None::<u64>)))
+                .subscription_item(&mut drained, id, Ok(methods::encode(&None::<u64>)))
                 .await
             {
                 return;
@@ -229,13 +229,13 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
 /// The most blocks one `/v1/blocks` page answers (the node's cap).
 const MAX_BLOCK_PAGE: u32 = 100;
 
-/// `rpc.heads`: one [`doors::Head`] per finalized block, oldest first. The
+/// `chain.heads`: one [`methods::Head`] per finalized block, oldest first. The
 /// node pushes no block stream, so this reads its status at half the block
 /// time and fills each advance from the archive (a page, at most the node's
 /// cap); where the archive holds none, the tip alone.
 pub(super) fn heads(guest: &mut Guest, id: u64, payload: &[u8]) {
     if !payload.is_empty() {
-        guest.refuse(id, "malformed_request", "`rpc.heads` takes no payload");
+        guest.refuse(id, "malformed_request", "`chain.heads` takes no payload");
         return;
     }
     let Some(node) = connected(guest, id) else {
@@ -248,7 +248,7 @@ pub(super) fn heads(guest: &mut Guest, id: u64, payload: &[u8]) {
                 Ok((heads, block_time_ms)) => {
                     for head in heads {
                         last = Some(head.height);
-                        if !items.send(Ok(doors::encode(&head))).await {
+                        if !items.send(Ok(methods::encode(&head))).await {
                             return;
                         }
                     }
@@ -269,7 +269,7 @@ pub(super) fn heads(guest: &mut Guest, id: u64, payload: &[u8]) {
 
 /// The heads past `last` (the tip alone at the first read), oldest first,
 /// and the node's block time.
-async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<doors::Head>, u64)> {
+async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<methods::Head>, u64)> {
     let status = node.client.status().await?;
     let tip = status.height;
     if last.is_some_and(|last| last >= tip) {
@@ -282,21 +282,21 @@ async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<doors:
         before: tip.checked_add(1),
         limit: wanted as u32,
     };
-    let mut heads: Vec<doors::Head> = node
+    let mut heads: Vec<methods::Head> = node
         .client
         .blocks(&page)
         .await?
         .into_iter()
         .rev()
         .filter(|block| last.is_none_or(|last| block.height > last))
-        .map(|block| doors::Head {
+        .map(|block| methods::Head {
             height: block.height,
             time: block.time,
             id: block.id,
         })
         .collect();
     if heads.last().is_none_or(|head| head.height < tip) {
-        heads.push(doors::Head {
+        heads.push(methods::Head {
             height: tip,
             time: 0,
             id: status.tip,
@@ -315,10 +315,10 @@ impl Drop for NodeTask {
     }
 }
 
-/// The envelope of a node door, its target checked: a program name, not a
+/// The envelope of a node method, its target checked: a program name, not a
 /// path.
-fn call_of(ask: &[u8]) -> Result<doors::Call, wire::Refusal> {
-    let call: doors::Call = doors::decode(ask).map_err(malformed)?;
+fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Refusal> {
+    let call: methods::Call = methods::decode(ask).map_err(malformed)?;
     let target = call.target.trim();
     let named = !target.is_empty()
         && target.len() <= 64
@@ -326,7 +326,7 @@ fn call_of(ask: &[u8]) -> Result<doors::Call, wire::Refusal> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
     match named {
-        true => Ok(doors::Call {
+        true => Ok(methods::Call {
             target: target.to_owned(),
             body: call.body,
         }),
@@ -366,7 +366,7 @@ async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
 
 pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let id: String = doors::decode(&ask).map_err(malformed)?;
+        let id: String = methods::decode(&ask).map_err(malformed)?;
         let (kind, hex) = id
             .split_once(':')
             .ok_or_else(|| malformed("id is `sha256:<hex>` or `sha1:<hex>`"))?;
@@ -378,7 +378,7 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
         };
         // absent is `None`, never a refusal: the ask itself did not fail
         let Some(framed) = node.client.blob(id).await.map_err(refused)? else {
-            return Ok(doors::encode(&None::<Vec<u8>>));
+            return Ok(methods::encode(&None::<Vec<u8>>));
         };
         let body =
             backend::noded::unframe(&framed).ok_or_else(|| host_fault("blob has no header"))?;
@@ -388,17 +388,17 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
                 "blob exceeds the view's read limit",
             ));
         }
-        Ok(doors::encode(&Some(body.to_vec())))
+        Ok(methods::encode(&Some(body.to_vec())))
     })
 }
 
 pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
         if !ask.is_empty() {
-            return Err(malformed("rpc.status takes no payload"));
+            return Err(malformed("chain.status takes no payload"));
         }
         let status = node.client.status().await.map_err(refused)?;
-        Ok(doors::encode(&doors::NodeStatus {
+        Ok(methods::encode(&methods::NodeStatus {
             network: status.network,
             time: status.time,
             block_time_ms: status.block_time_ms,
@@ -415,7 +415,7 @@ pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
 
 pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let ttl = doors::decode::<doors::Mint>(&ask)
+        let ttl = methods::decode::<methods::Mint>(&ask)
             .map_err(malformed)?
             .ttl_days;
         if ttl == 0 {
@@ -435,20 +435,20 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
         let notes = minted
             .notes
             .into_iter()
-            .map(|note| doors::Note {
+            .map(|note| methods::Note {
                 reason: note.reason,
                 sentence: note.sentence,
             })
             .collect();
-        Ok(doors::encode(&doors::Minted {
+        Ok(methods::encode(&methods::Minted {
             invite: minted.invite,
             notes,
         }))
     })
 }
 
-fn block_of(block: noded::Finalized) -> doors::Block {
-    doors::Block {
+fn block_of(block: noded::Finalized) -> methods::Block {
+    methods::Block {
         height: block.height,
         id: block.id,
         parent: block.parent,
@@ -458,7 +458,7 @@ fn block_of(block: noded::Finalized) -> doors::Block {
         txs: block
             .txs
             .into_iter()
-            .map(|tx| doors::Tx {
+            .map(|tx| methods::Tx {
                 hash: tx.hash,
                 signer: tx.signer,
                 seq: tx.seq,
@@ -469,28 +469,28 @@ fn block_of(block: noded::Finalized) -> doors::Block {
     }
 }
 
-/// `rpc.blocks`: a page of finalized blocks from the node's archive.
+/// `chain.blocks`: a page of finalized blocks from the node's archive.
 pub(super) fn blocks(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let page: doors::BlockPage = doors::decode(&ask).map_err(malformed)?;
+        let page: methods::BlockPage = methods::decode(&ask).map_err(malformed)?;
         let page = noded::Blocks {
             before: page.before,
             limit: page.limit,
         };
         let blocks = node.client.blocks(&page).await.map_err(refused)?;
-        let blocks: Vec<doors::Block> = blocks.into_iter().map(block_of).collect();
-        Ok(doors::encode(&blocks))
+        let blocks: Vec<methods::Block> = blocks.into_iter().map(block_of).collect();
+        Ok(methods::encode(&blocks))
     })
 }
 
-/// `rpc.block`: one finalized block by height or id, if the node has it.
+/// `chain.block`: one finalized block by height or id, if the node has it.
 pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let by = match doors::decode::<doors::BlockRef>(&ask).map_err(malformed)? {
-            doors::BlockRef::Height(height) => noded::BlockRef::Height(height),
-            doors::BlockRef::Id(id) => noded::BlockRef::Id(id),
+        let by = match methods::decode::<methods::BlockRef>(&ask).map_err(malformed)? {
+            methods::BlockRef::Height(height) => noded::BlockRef::Height(height),
+            methods::BlockRef::Id(id) => noded::BlockRef::Id(id),
         };
         let block = node.client.block(&by).await.map_err(refused)?;
-        Ok(doors::encode(&block.map(block_of)))
+        Ok(methods::encode(&block.map(block_of)))
     })
 }

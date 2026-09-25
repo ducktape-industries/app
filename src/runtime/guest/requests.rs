@@ -124,7 +124,7 @@ impl Guest {
     /// goes to the log, and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
-        // an op rides a `doors::Call`: the target and two lengths around it;
+        // an op rides a `methods::Call`: the target and two lengths around it;
         // one to describe, beside its program's name
         let payload_limit = match kind.as_str() {
             "op.submit" | "program.describe" => MAX_OP_BYTES + 256,
@@ -139,9 +139,9 @@ impl Guest {
             return;
         }
         let (capability, operation) = kind.split_once('.').unwrap_or((kind.as_str(), ""));
-        // A view is untrusted code: it reaches only the doors its manifest
+        // A view is untrusted code: it reaches only the methods its manifest
         // declares. Consent (media, notifications) is asked on top of this.
-        let undeclared = wire::doors::is_capability(capability)
+        let undeclared = wire::methods::is_capability(capability)
             && !self
                 .capabilities
                 .iter()
@@ -175,12 +175,12 @@ impl Guest {
         }
         match (capability, operation) {
             ("host", "widget") => self.widget_request(id, &payload),
-            ("host", "props") => {
+            ("host", "session") => {
                 self.props_subscription = Some(id);
                 self.props_sent = None;
                 self.sync_props(props);
             }
-            ("host", "log") => match wire::doors::decode::<String>(&payload) {
+            ("host", "log") => match wire::methods::decode::<String>(&payload) {
                 Ok(line) => {
                     tracing::debug!(
                         target: "ducktape::app",

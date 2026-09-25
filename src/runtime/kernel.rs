@@ -3,39 +3,39 @@
 //! contract is replaced by a program deployment alone — the app binary
 //! never changes for it.
 //!
-//! Every door, its request and its reply are the types in `wire::doors`,
+//! Every method, its request and its reply are the types in `wire::methods`,
 //! borsh on both sides; the host decodes a request by that type and nothing
-//! else, so there is no per-door parsing here to drift from a view.
+//! else, so there is no per-method parsing here to drift from a view.
 //!
-//! - `rpc.query` `Call{target, body}` — one query on the connected node:
+//! - `program.query` `Call{target, body}` — one query on the connected node:
 //!   `body` is the payload of a signed frame to `target`, and the bytes the
 //!   program `Respond`ed come back as they are.
 //! - `op.submit` `Call{target, body}` — one op, signed with the SEATED key
 //!   at the signer's next sequence and submitted; answered with the
 //!   receipt's output, or the program's refusal.
-//! - `rpc.status` — node status as `NodeStatus`.
-//! - `rpc.blocks` `BlockPage` — finalized blocks, newest first, from the
-//!   node's block archive (`/v1/blocks`); `rpc.block` `BlockRef` — one by
+//! - `chain.status` — node status as `NodeStatus`.
+//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
+//!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
 //!   height or id (`/v1/block`).
-//! - `rpc.invite` `Mint{ttl_days}` — mint once; `Minted{invite, notes}`.
+//! - `invite.mint` `Mint{ttl_days}` — mint once; `Minted{invite, notes}`.
 //!   Node refusals retain their tokens.
-//! - `rpc.live` `<program>` — a subscription that gets one item per block
+//! - `program.changes` `<program>` — a subscription that gets one item per block
 //!   that wrote to `program` (`/v1/changes/<program>`), so the view re-reads
 //!   what moved.
-//! - `rpc.heads` — a subscription that gets one `Head` per finalized block,
+//! - `chain.heads` — a subscription that gets one `Head` per finalized block,
 //!   oldest first: the host reads the node's status at half its block
 //!   time and fills each advance from the block archive.
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
 //! - `program.describe` `(program, op)` — the op as the program's own
 //!   describe module reads it, or `None` (`describe`).
-//! - `host.props` — subscribes to the session props (`Session`: the seated
+//! - `host.session` — subscribes to the session props (`Session`: the seated
 //!   account, theme, chain and read-only endpoint).
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
 //!   → `forge:web:3`), checked by `valid_route`.
-//! - `host.visible`, `host.badge`, `host.open_link`, `host.id`,
-//!   `clock.ticks`, `host.log`, `host.widget` — the app's own doors:
+//! - `host.visible`, `host.badge`, `link.open`, `host.id`,
+//!   `clock.ticks`, `host.log`, `host.widget` — the app's own methods:
 //!   visibility, the tab badge, the one way out (a `duck://` link, or an
 //!   `https://` one for the system browser), a minted id, a clock, the log,
 //!   a widget command.
@@ -52,7 +52,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{Guest, Intent, wire};
 use crate::backend::{self, RpcClient, refused};
-use wire::doors;
+use wire::methods;
 
 /// The longest `host.id` prefix: a word naming the kind of record, not a
 /// payload of its own.
@@ -87,7 +87,7 @@ fn unanswered(refusal: wire::Refusal) -> Result<String, wire::Refusal> {
 }
 
 /// One answer to a guest: the bytes it asked for, or the refusal that names
-/// why not. Every door in this file hands back exactly this.
+/// why not. Every method in this file hands back exactly this.
 pub(super) type Answer = Result<Vec<u8>, wire::Refusal>;
 
 mod describe;
@@ -151,7 +151,7 @@ pub(super) fn answer(
             guest.visibility_subscriptions.push(id);
             guest.pending.push(wire::Event::Response {
                 id,
-                result: Ok(doors::encode(&guest.visible)),
+                result: Ok(methods::encode(&guest.visible)),
                 done: false,
             });
         }
@@ -167,19 +167,19 @@ pub(super) fn answer(
             guest.route_subscriptions.push(id);
             guest.sync_route();
         }
-        ("rpc", "query") => spawn(guest, id, payload, query),
-        ("rpc", "status") => spawn(guest, id, payload, status),
-        ("rpc", "blocks") => spawn(guest, id, payload, blocks),
-        ("rpc", "block") => spawn(guest, id, payload, block),
-        ("rpc", "invite") => spawn_once(guest, id, payload, invite),
+        ("program", "query") => spawn(guest, id, payload, query),
+        ("chain", "status") => spawn(guest, id, payload, status),
+        ("chain", "blocks") => spawn(guest, id, payload, blocks),
+        ("chain", "block") => spawn(guest, id, payload, block),
+        ("invite", "mint") => spawn_once(guest, id, payload, invite),
         ("op", "submit") => spawn(guest, id, payload, submit),
         ("blob", "get") => spawn(guest, id, payload, blob_get),
         ("program", "describe") => spawn(guest, id, payload, describe::describe),
-        ("rpc", "live") => live(guest, id, payload),
-        ("rpc", "heads") => heads(guest, id, payload),
+        ("program", "changes") => live(guest, id, payload),
+        ("chain", "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
-        // system browser; any other scheme is refused here, at the door
-        ("host", "open_link") => match doors::decode::<String>(payload) {
+        // system browser; any other scheme is refused here, at the method
+        ("link", "open") => match methods::decode::<String>(payload) {
             Ok(link) if openable(&link) => {
                 guest.intents.push(Intent::OpenLink(link));
                 guest.reply(id, Ok(Vec::new()));
@@ -187,11 +187,11 @@ pub(super) fn answer(
             Ok(_) => guest.refuse(
                 id,
                 "malformed_request",
-                "`host.open_link` opens a duck:// or https:// link",
+                "`link.open` opens a duck:// or https:// link",
             ),
             Err(error) => guest.refuse(id, "malformed_request", error),
         },
-        ("host", "badge") => match doors::decode::<i64>(payload).ok() {
+        ("host", "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
                 guest.intents.push(Intent::Badge(count));
                 guest.reply(id, Ok(Vec::new()));
@@ -214,13 +214,13 @@ pub(super) fn answer(
             }
         }
         ("host", "id") => {
-            let prefix = doors::decode::<String>(payload).unwrap_or_default();
+            let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();
             let named = !prefix.is_empty()
                 && prefix.len() <= MAX_ID_PREFIX
                 && prefix.bytes().all(|byte| byte.is_ascii_alphanumeric());
             match named {
-                true => guest.reply(id, Ok(doors::encode(&backend::fresh_id(prefix)))),
+                true => guest.reply(id, Ok(methods::encode(&backend::fresh_id(prefix)))),
                 false => guest.refuse(id, "malformed_request", "`host.id` names no prefix"),
             }
         }
@@ -229,7 +229,7 @@ pub(super) fn answer(
     true
 }
 
-/// Whether `host.open_link` may open `link`: `duck://` or `https://` with
+/// Whether `link.open` may open `link`: `duck://` or `https://` with
 /// something after it.
 fn openable(link: &str) -> bool {
     ["duck://", "https://"].iter().any(|scheme| {
@@ -262,7 +262,7 @@ const MAX_TICK_MS: i64 = 60 * 60 * 1_000;
 
 /// A `clock.ticks` payload: the period in milliseconds.
 fn tick_period(payload: &[u8]) -> Option<std::time::Duration> {
-    let millis = doors::decode::<i64>(payload).ok()?;
+    let millis = methods::decode::<i64>(payload).ok()?;
     let named = (MIN_TICK_MS..=MAX_TICK_MS).contains(&millis);
     named.then(|| std::time::Duration::from_millis(millis as u64))
 }

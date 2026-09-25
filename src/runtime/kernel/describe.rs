@@ -15,7 +15,7 @@ use super::node::{Answered, Node};
 use super::*;
 use crate::backend::views::{self, Fetch};
 
-type Description = Option<doors::Description>;
+type Description = Option<methods::Description>;
 
 /// Answers kept before the table starts over.
 const MAX_KEPT: usize = 4096;
@@ -36,8 +36,8 @@ fn answers() -> &'static Mutex<Answers> {
 
 pub(super) fn describe(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let (program, op): (String, Vec<u8>) = doors::decode(&ask).map_err(malformed)?;
-        Ok(doors::encode(&described(&node, &program, op).await?))
+        let (program, op): (String, Vec<u8>) = methods::decode(&ask).map_err(malformed)?;
+        Ok(methods::encode(&described(&node, &program, op).await?))
     })
 }
 
@@ -75,7 +75,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
     }
     let bytes = match views::program_bytes(&node.client, &code).await {
         Ok(bytes) => bytes,
-        // the transport: retried by the node door's loop
+        // the transport: retried by the node method's loop
         Err(Fetch::Unreachable(reason)) => return Err(wire::Refusal::new("rpc_client", reason)),
         // not held yet, or not the code asked for: nothing now, asked again later
         Err(_) => return Ok(None),
@@ -173,19 +173,19 @@ mod tests {
     }
 
     #[test]
-    fn the_door_decodes_its_request_or_refuses_it() {
+    fn the_method_decodes_its_request_or_refuses_it() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .build()
             .unwrap();
         let refused = runtime.block_on(describe(node(), vec![9])).unwrap_err();
         assert_eq!(refused.reason, "malformed_request");
-        let ask = doors::encode(&("unlisted".to_owned(), vec![1u8]));
+        let ask = methods::encode(&("unlisted".to_owned(), vec![1u8]));
         let answer = runtime.block_on(describe(node(), ask)).unwrap();
-        assert_eq!(doors::decode::<Description>(&answer), Ok(None));
+        assert_eq!(methods::decode::<Description>(&answer), Ok(None));
     }
 }
 
-/// The qa check: every op in a running stage's archive, through this door's
+/// The qa check: every op in a running stage's archive, through this method's
 /// own path (roster, code blob, section, module), and none of the programs
 /// that ship a describe module falls back to bytes. Against a stage:
 /// `DESCRIBE_STAGE=http://<listen> cargo test --release every_op_on_a_stage -- --ignored --nocapture`

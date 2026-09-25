@@ -345,7 +345,7 @@ impl Guest {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
         wire_epoch(manifest.wire_epoch)
-            .and_then(|()| doors_revision(manifest.doors))
+            .and_then(|()| methods_revision(manifest.methods))
             .map_err(|error| Failure::WireEpoch(format!("{shown}: {error}")))?;
         compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))
     }
@@ -487,7 +487,7 @@ impl Guest {
         if let Some(route) = crate::runtime::take_route(self.module) {
             self.pending.push(wire::Event::Response {
                 id,
-                result: Ok(wire::doors::encode(&route)),
+                result: Ok(wire::methods::encode(&route)),
                 done: false,
             });
         }
@@ -500,7 +500,7 @@ impl Guest {
         for id in &self.visibility_subscriptions {
             self.pending.push(wire::Event::Response {
                 id: *id,
-                result: Ok(wire::doors::encode(&visible)),
+                result: Ok(wire::methods::encode(&visible)),
                 done: false,
             });
         }

@@ -24,11 +24,13 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   seats it. The roster's order is the rail's order; a view's manifest names
   its tab. A program without the section is left off the rail.
 - **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`),
-  every door a borsh type in `view_wire::doors`: `rpc.query`/`op.submit`
-  `Call{target, body}`, `rpc.live <program>`, `rpc.status`, `rpc.invite`,
-  `blob.get`, `host.widget` (the one MessagePack door: a tree command), and
-  the app's own doors (`host.*`, `clock.ticks`, `clipboard.*`,
-  `notify.*`, `store.*`, `program.describe`). The app forwards the bytes to the
+  every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
+  `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
+  `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.mint`,
+  `blob.get`, `link.open`, `host.widget` (the one MessagePack method: a tree
+  command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
+  `notify.*`, `store.*`). A view reaches only the capabilities its manifest
+  declares. The app forwards the bytes to the
   program the view names and signs writes with the seated key; it never
   reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's

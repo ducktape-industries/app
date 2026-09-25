@@ -2,7 +2,7 @@ use super::*;
 use std::io::{BufRead as _, Read as _, Write as _};
 
 fn call(target: &str, body: &[u8]) -> Vec<u8> {
-    doors::encode(&doors::Call {
+    methods::encode(&methods::Call {
         target: target.into(),
         body: body.to_vec(),
     })
@@ -21,7 +21,7 @@ fn guest() -> Guest {
     )
     .unwrap();
     let mut guest = Guest::instantiate("request-test", &code, "request test").unwrap();
-    guest.capabilities = doors::CAPABILITIES.iter().map(|c| (*c).into()).collect();
+    guest.capabilities = methods::CAPABILITIES.iter().map(|c| (*c).into()).collect();
     guest
 }
 
@@ -30,7 +30,7 @@ fn guest() -> Guest {
 fn refused_with(declared: &[&str], kind: &str) -> Option<String> {
     let mut guest = guest();
     guest.capabilities = declared.iter().map(|c| (*c).into()).collect();
-    let payload = doors::encode(&doors::Call {
+    let payload = methods::encode(&methods::Call {
         target: "registry".into(),
         body: Vec::new(),
     });
@@ -52,14 +52,14 @@ fn refused_with(declared: &[&str], kind: &str) -> Option<String> {
     }
 }
 
-/// Every door of every capability family: refused when its capability is
+/// Every method of every capability family: refused when its capability is
 /// the one the manifest leaves out, answered past the gate when it is the
 /// only one declared.
 #[test]
-fn a_door_is_reached_only_through_its_declared_capability() {
-    for kind in doors::ALL {
+fn a_method_is_reached_only_through_its_declared_capability() {
+    for kind in methods::ALL {
         let family = kind.split_once('.').unwrap().0;
-        let others: Vec<&str> = doors::CAPABILITIES
+        let others: Vec<&str> = methods::CAPABILITIES
             .iter()
             .copied()
             .filter(|c| *c != family)
@@ -123,18 +123,18 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
     assert!(guest.pending.is_empty());
 }
 
-/// Every kind in `doors::ALL` has a handler on this side: none of them is
+/// Every kind in `methods::ALL` has a handler on this side: none of them is
 /// `unknown_request`, whatever else a bare guest with no node refuses it
-/// for. A door added to the list without a handler fails here.
+/// for. A method added to the list without a handler fails here.
 #[test]
-fn every_door_is_answered() {
-    for (id, kind) in doors::ALL.iter().enumerate() {
+fn every_method_is_answered() {
+    for (id, kind) in methods::ALL.iter().enumerate() {
         let mut guest = guest();
         guest.answer(
             wire::Request {
                 id: id as u64,
                 kind: (*kind).into(),
-                payload: doors::encode(&doors::Call {
+                payload: methods::encode(&methods::Call {
                     target: "registry".into(),
                     body: Vec::new(),
                 }),
@@ -156,13 +156,13 @@ fn every_door_is_answered() {
     }
 }
 
-/// A node door routes to the node handler, which answers for the missing
+/// A node method routes to the node handler, which answers for the missing
 /// node before it reads the request; what the request says is judged by
 /// `query` itself, below.
 #[test]
-fn node_doors_answer_for_the_missing_node_first() {
+fn node_methods_answer_for_the_missing_node_first() {
     let mut guest = guest();
-    assert!(answer(&mut guest, "rpc", "query", 7, b"not borsh"));
+    assert!(answer(&mut guest, "program", "query", 7, b"not borsh"));
     assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
         id: 7, result: Err(refusal), done: true
     }) if refusal.reason == "not_connected"));
@@ -324,7 +324,7 @@ async fn system_status_preserves_borsh_and_refusals() {
         None,
     );
     let answer = status(node.clone(), Vec::new()).await.unwrap();
-    let decoded: doors::NodeStatus = doors::decode(&answer).unwrap();
+    let decoded: methods::NodeStatus = methods::decode(&answer).unwrap();
     assert_eq!(
         (
             decoded.network.as_str(),
@@ -353,7 +353,7 @@ async fn system_status_preserves_borsh_and_refusals() {
 }
 
 #[tokio::test]
-async fn block_doors_carry_the_archive_s_blocks_as_door_types() {
+async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     let finalized = backend::noded::Finalized {
         height: 9,
         id: [1; 32],
@@ -375,22 +375,22 @@ async fn block_doors_carry_the_archive_s_blocks_as_door_types() {
         "POST /v1/blocks HTTP/1.1",
         None,
     );
-    let page = doors::encode(&doors::BlockPage {
+    let page = methods::encode(&methods::BlockPage {
         before: Some(10),
         limit: 1,
     });
     let answer = blocks(node, page).await.unwrap();
-    let decoded: Vec<doors::Block> = doors::decode(&answer).unwrap();
+    let decoded: Vec<methods::Block> = methods::decode(&answer).unwrap();
     assert_eq!(
         decoded,
-        vec![doors::Block {
+        vec![methods::Block {
             height: 9,
             id: [1; 32],
             parent: [2; 32],
             time: 1_000,
             epoch: 0,
             proposer: Some(vec![3; 32]),
-            txs: vec![doors::Tx {
+            txs: vec![methods::Tx {
                 hash: [4; 32],
                 signer: vec![5; 32],
                 seq: 6,
@@ -407,11 +407,14 @@ async fn block_doors_carry_the_archive_s_blocks_as_door_types() {
         "POST /v1/block HTTP/1.1",
         None,
     );
-    let answer = block(node.clone(), doors::encode(&doors::BlockRef::Id([8; 32])))
-        .await
-        .unwrap();
+    let answer = block(
+        node.clone(),
+        methods::encode(&methods::BlockRef::Id([8; 32])),
+    )
+    .await
+    .unwrap();
     assert_eq!(
-        doors::decode::<Option<doors::Block>>(&answer).unwrap(),
+        methods::decode::<Option<methods::Block>>(&answer).unwrap(),
         None
     );
     server.join().unwrap();
@@ -421,14 +424,14 @@ async fn block_doors_carry_the_archive_s_blocks_as_door_types() {
     );
 }
 
-/// `blob.get` replies `Option<Vec<u8>>`, borsh both ends like every door:
+/// `blob.get` replies `Option<Vec<u8>>`, borsh both ends like every method:
 /// the blob when the node holds it, `None` when it does not — absent is not
 /// a refusal.
 #[tokio::test]
 async fn blob_get_answers_the_blob_or_none() {
     let mut framed = b"sha256\0".to_vec();
     framed.extend_from_slice(b"blob body bytes");
-    let ask = doors::encode(&format!("sha256:{}", "00".repeat(32)));
+    let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
     let (node, server) = node_server(
         "200 OK",
         abi::encode(&Some(framed)),
@@ -436,7 +439,7 @@ async fn blob_get_answers_the_blob_or_none() {
         None,
     );
     let answer = blob_get(node, ask.clone()).await.unwrap();
-    let decoded: Option<Vec<u8>> = doors::decode(&answer).unwrap();
+    let decoded: Option<Vec<u8>> = methods::decode(&answer).unwrap();
     assert_eq!(decoded.as_deref(), Some(&b"blob body bytes"[..]));
     server.join().unwrap();
     let (node, server) = node_server(
@@ -446,12 +449,12 @@ async fn blob_get_answers_the_blob_or_none() {
         None,
     );
     let answer = blob_get(node, ask).await.unwrap();
-    assert_eq!(doors::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
+    assert_eq!(methods::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
     server.join().unwrap();
 }
 
-/// `host.open_link` opens `duck://` and `https://` and refuses every other
-/// scheme at the door, before the app is asked.
+/// `link.open` opens `duck://` and `https://` and refuses every other
+/// scheme at the method, before the app is asked.
 #[test]
 fn open_link_refuses_any_scheme_but_duck_and_https() {
     let open = |link: &str| {
@@ -459,8 +462,8 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
         guest.answer(
             wire::Request {
                 id: 5,
-                kind: "host.open_link".into(),
-                payload: doors::encode(&link.to_owned()),
+                kind: "link.open".into(),
+                payload: methods::encode(&link.to_owned()),
             },
             &None,
         );
@@ -497,14 +500,14 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
         "POST /v1/invite HTTP/1.1",
         Some(7),
     );
-    let mint = |ttl_days| doors::encode(&doors::Mint { ttl_days });
+    let mint = |ttl_days| methods::encode(&methods::Mint { ttl_days });
     let answer = invite(node.clone(), mint(7)).await.unwrap();
-    let decoded: doors::Minted = doors::decode(&answer).unwrap();
+    let decoded: methods::Minted = methods::decode(&answer).unwrap();
     assert_eq!(
         decoded,
-        doors::Minted {
+        methods::Minted {
             invite: "paste-me".into(),
-            notes: vec![doors::Note {
+            notes: vec![methods::Note {
                 reason: "local_only".into(),
                 sentence: "Use on this box".into()
             }]
@@ -560,9 +563,9 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
 
 #[test]
 fn system_kinds_route_to_the_node_handler() {
-    for kind in ["status", "invite"] {
+    for (capability, operation) in [("chain", "status"), ("invite", "mint")] {
         let mut guest = guest();
-        assert!(answer(&mut guest, "rpc", kind, 19, b"invalid"));
+        assert!(answer(&mut guest, capability, operation, 19, b"invalid"));
         assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
             id: 19, result: Err(refusal), done: true
         }) if refusal.reason == "not_connected"));
@@ -583,7 +586,7 @@ fn host_props_is_program_independent_and_tracks_updates() {
     guest.answer(
         wire::Request {
             id: 22,
-            kind: "host.props".into(),
+            kind: "host.session".into(),
             payload: Vec::new(),
         },
         &props,
@@ -597,7 +600,7 @@ fn host_props_is_program_independent_and_tracks_updates() {
     else {
         panic!("props must stay live")
     };
-    let decoded: doors::Session = doors::decode(&bytes).unwrap();
+    let decoded: methods::Session = methods::decode(&bytes).unwrap();
     assert_eq!(decoded.endpoint, "http://127.0.0.1:19001");
     assert_eq!((decoded.key.as_str(), decoded.account), ("abcd", None));
     assert!(decoded.dark);
@@ -619,15 +622,15 @@ fn host_props_is_program_independent_and_tracks_updates() {
     else {
         panic!("a changed session is pushed")
     };
-    let decoded: doors::Session = doors::decode(&bytes).unwrap();
+    let decoded: methods::Session = methods::decode(&bytes).unwrap();
     assert_eq!(decoded.account, Some(7));
 }
 
 /// Reproduces "Couldn't create this channel: Unexpected length of input":
 /// `create_channel` mints its id with `host.ask::<Id>("channel".into())`
-/// before it ever submits an op, and `Id` (`door!(Id, "host.id", String,
-/// String)`) answers borsh like every other door — so the reply the view
-/// decodes with `Id::decode_reply` (`doors::decode::<String>`) must be one
+/// before it ever submits an op, and `Id` (`method!(Id, "host.id", String,
+/// String)`) answers borsh like every other method — so the reply the view
+/// decodes with `Id::decode_reply` (`methods::decode::<String>`) must be one
 /// it, not raw UTF-8 with no length prefix, which the guest happily builds
 /// and only the view's decode fails on later.
 #[test]
@@ -637,7 +640,7 @@ fn host_id_answers_a_borsh_string_a_view_can_decode() {
         wire::Request {
             id: 9,
             kind: "host.id".into(),
-            payload: doors::encode(&"channel".to_string()),
+            payload: methods::encode(&"channel".to_string()),
         },
         &None,
     );
@@ -650,15 +653,15 @@ fn host_id_answers_a_borsh_string_a_view_can_decode() {
         panic!("host.id must answer once");
     };
     let minted: String =
-        doors::decode(&bytes).expect("a view decodes `host.id`'s reply as one borsh String");
+        methods::decode(&bytes).expect("a view decodes `host.id`'s reply as one borsh String");
     assert!(minted.starts_with("channel-"), "{minted}");
 }
 
 /// The kinds this host routes, read from its own `("<cap>", "<op>")` match
-/// arms under `src/runtime`, are exactly `doors::ALL`: `every_door_is_answered`
-/// is the one direction, this the other — nothing is served that is not a door.
+/// arms under `src/runtime`, are exactly `methods::ALL`: `every_method_is_answered`
+/// is the one direction, this the other — nothing is served that is not a method.
 #[test]
-fn the_routed_kinds_are_exactly_the_doors() {
+fn the_routed_kinds_are_exactly_the_methods() {
     let mut served = std::collections::BTreeSet::new();
     let mut stack = vec![std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/runtime")];
     while let Some(dir) = stack.pop() {
@@ -676,12 +679,12 @@ fn the_routed_kinds_are_exactly_the_doors() {
         }
     }
     let all: std::collections::BTreeSet<String> =
-        doors::ALL.iter().map(|kind| (*kind).to_owned()).collect();
+        methods::ALL.iter().map(|kind| (*kind).to_owned()).collect();
     let unserved: Vec<_> = all.difference(&served).collect();
     let unknown: Vec<_> = served.difference(&all).collect();
     assert!(
         unserved.is_empty() && unknown.is_empty(),
-        "doors not routed: {unserved:?}; routed kinds that are not doors: {unknown:?}"
+        "methods not routed: {unserved:?}; routed kinds that are not methods: {unknown:?}"
     );
 }
 

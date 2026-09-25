@@ -120,7 +120,7 @@ pub(super) struct Guest {
     pub(crate) module: &'static str,
     /// The manifest's name: what a registered view's tab is called.
     pub(crate) name: String,
-    /// The capabilities the manifest declares: a door whose capability is
+    /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
     pub(crate) capabilities: Vec<String>,
     /// The undeclared capabilities already logged, so each is logged once.
@@ -160,7 +160,7 @@ pub(super) struct Guest {
     pub(crate) intents: Vec<Intent>,
     /// The kernel's answers to this guest's node calls, on their way in.
     pub(crate) replies: Arc<kernel::Replies>,
-    /// The guest's `rpc.live` subscriptions, each with the plane it named:
+    /// The guest's `program.changes` subscriptions, each with the plane it named:
     /// told on every block that moves that plane.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
     /// Pending host requests and subscriptions, each owned by this guest
@@ -450,15 +450,15 @@ pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {
     })
 }
 
-/// The doors a view was built against, refused at load when this app has
+/// The methods a view was built against, refused at load when this app has
 /// fewer: the view would otherwise run until it asks for one.
-pub(super) fn doors_revision(needed: u32) -> Result<(), String> {
-    (needed <= wire::doors::DOORS_REVISION)
+pub(super) fn methods_revision(needed: u32) -> Result<(), String> {
+    (needed <= wire::methods::METHODS_REVISION)
         .then_some(())
         .ok_or_else(|| {
             format!(
-                "this view needs doors revision {needed}; this app has {}",
-                wire::doors::DOORS_REVISION
+                "this view needs methods revision {needed}; this app has {}",
+                wire::methods::METHODS_REVISION
             )
         })
 }

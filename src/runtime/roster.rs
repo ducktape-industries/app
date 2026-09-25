@@ -14,7 +14,7 @@ pub fn props(
     account: Option<u64>,
     endpoint: &str,
 ) -> Vec<u8> {
-    wire::doors::encode(&wire::doors::Session {
+    wire::methods::encode(&wire::methods::Session {
         connected,
         dark,
         chain: network.into(),
