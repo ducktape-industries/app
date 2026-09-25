@@ -25,8 +25,8 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   its tab. A program without the section is left off the rail.
 - **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`),
   every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
-  `program.query`/`op.submit` `Call{target, body}`, `program.changes <program>`,
-  `program.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.mint`,
+  `module.query`/`op.submit` `Call{target, body}`, `module.changes <program>`,
+  `module.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
   `blob.get`, `link.open`, `host.widget` (the one MessagePack method: a tree
   command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
   `notify.*`, `store.*`). A view reaches only the capabilities its manifest

@@ -127,7 +127,7 @@ impl Guest {
         // an op rides a `methods::Call`: the target and two lengths around it;
         // one to describe, beside its program's name
         let payload_limit = match kind.as_str() {
-            "op.submit" | "program.describe" => MAX_OP_BYTES + 256,
+            "op.submit" | "module.describe" => MAX_OP_BYTES + 256,
             _ => MAX_PAYLOAD_BYTES,
         };
         if payload.len() > payload_limit {
@@ -199,7 +199,7 @@ impl Guest {
     /// The host's own refusal, in the shape a guest gets a node's: a stable
     /// snake_case token it may branch on, and the sentence it may show.
     pub(crate) fn refuse(&mut self, id: u64, reason: &'static str, message: impl Into<String>) {
-        self.reply(id, Err(wire::Refusal::new(reason, message)));
+        self.reply(id, Err(wire::Error::new(reason, message)));
     }
 
     /// The key a command acts on, or `None` for the two that act on focus
@@ -311,8 +311,8 @@ impl Guest {
         for (id, command) in commands {
             let result = match self.target_is_mounted(&command) {
                 true => execute(command)
-                    .map_err(|error| wire::Refusal::new("widget_command_failed", error)),
-                false => Err(wire::Refusal::new(
+                    .map_err(|error| wire::Error::new("widget_command_failed", error)),
+                false => Err(wire::Error::new(
                     "widget_unmounted",
                     "widget target left the tree",
                 )),

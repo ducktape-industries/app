@@ -5,7 +5,7 @@ version = 4
 [[package]]
 name = "abi"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=c219782d#c219782dc881c633ce1bd30eebe1420c60f59503"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
 dependencies = [
  "borsh",
  "design",
@@ -2155,7 +2155,7 @@ dependencies = [
 [[package]]
 name = "describe"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=c219782d#c219782dc881c633ce1bd30eebe1420c60f59503"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
 dependencies = [
  "borsh",
  "serde",
@@ -2165,7 +2165,7 @@ dependencies = [
 [[package]]
 name = "design"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=c219782d#c219782dc881c633ce1bd30eebe1420c60f59503"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
 
 [[package]]
 name = "digest"
@@ -2316,7 +2316,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 [[package]]
 name = "ducklink"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=c219782d#c219782dc881c633ce1bd30eebe1420c60f59503"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
 dependencies = [
  "abi",
 ]
@@ -4005,6 +4005,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "guest"
+version = "0.1.0"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
+dependencies = [
+ "abi",
+ "borsh",
+ "sha1",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4411,12 +4422,14 @@ checksum = "3d3067d79b975e8844ca9eb072e16b31c3c1c36928edf9c6789548c524d0d954"
 [[package]]
 name = "identity"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=c219782d#c219782dc881c633ce1bd30eebe1420c60f59503"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
 dependencies = [
  "abi",
  "borsh",
  "describe",
+ "guest",
  "module-registry",
+ "serde",
  "store",
 ]
 
@@ -5314,11 +5327,12 @@ dependencies = [
 [[package]]
 name = "module-registry"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=c219782d#c219782dc881c633ce1bd30eebe1420c60f59503"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
 dependencies = [
  "abi",
  "borsh",
  "describe",
+ "guest",
  "store",
 ]
 
@@ -8198,13 +8212,12 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 [[package]]
 name = "store"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=c219782d#c219782dc881c633ce1bd30eebe1420c60f59503"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
 dependencies = [
  "abi",
  "borsh",
+ "guest",
  "serde",
- "sha1",
- "sha2 0.10.9",
 ]
 
 [[package]]
@@ -9354,15 +9367,15 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "view-wire"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/modules?rev=c219782d#c219782dc881c633ce1bd30eebe1420c60f59503"
+source = "git+https://github.com/ducktape-industries/modules?rev=47635667154269bd47d59dfa7fd2cb7c932e6986#47635667154269bd47d59dfa7fd2cb7c932e6986"
 dependencies = [
- "abi",
  "accesskit",
  "borsh",
  "describe",
  "design",
  "futures",
  "gpui-pre",
+ "guest",
  "memchr",
  "rmp-serde",
  "serde",

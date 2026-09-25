@@ -80,7 +80,7 @@ async fn ask(
     network: &str,
     query: module_registry::Query,
 ) -> Result<module_registry::Reply, Fetch> {
-    let frame = super::query_frame(network, module_registry::PROGRAM, abi::encode(&query)).await;
+    let frame = super::query_frame(network, module_registry::MODULE, abi::encode(&query)).await;
     let answer = client
         .query(Layer::Preconfirmed, frame)
         .await

@@ -66,7 +66,7 @@ pub(crate) async fn create_account(
     name: &str,
     phone: &Phone,
 ) -> Result<(), String> {
-    let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
+    let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let number = match ask(
         client,
         network,
@@ -97,7 +97,7 @@ pub(crate) async fn create_account(
     };
     let (device, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
-        .map_err(|refusal| refusal.sentence)?;
+        .map_err(|refusal| refusal.message)?;
     let add = Op::AddKey {
         scheme: abi::Scheme::Secp256r1,
         label: Some("Passkey".into()),
@@ -110,7 +110,7 @@ pub(crate) async fn create_account(
     };
     let seq = next_seq(client, &passkey)
         .await
-        .map_err(|refusal| refusal.sentence)?;
+        .map_err(|refusal| refusal.message)?;
     let body = passkey_body(&passkey, network, seq, abi::encode(&add));
     let assertion = asserted(
         keyscheme::webauthn_challenge(FRAME_NAMESPACE, &body.preimage()),
@@ -131,7 +131,7 @@ pub(crate) async fn create_plain_account(
     network: &str,
     name: &str,
 ) -> Result<(u64, String), String> {
-    let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
+    let device = seated_key().await.map_err(|refusal| refusal.message)?;
     if let Some(account) = account_of_key(client, network, device).await? {
         return Ok(account);
     }
@@ -164,7 +164,7 @@ pub(crate) async fn sign_in(
             ));
         }
     };
-    let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
+    let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = Admission {
         network: network.as_bytes().to_vec(),
         scheme: abi::Scheme::Ed25519,
@@ -213,7 +213,7 @@ fn passkey_body(pubkey: &[u8], network: &str, seq: u64, payload: Vec<u8>) -> Bod
         signer: pubkey.to_vec(),
         network: network.as_bytes().to_vec(),
         seq,
-        target: identity::PROGRAM.to_owned(),
+        target: identity::MODULE.to_owned(),
         payload,
     }
 }
@@ -230,7 +230,7 @@ fn passkey_frame(body: Body, assertion: &Assertion) -> Option<Frame> {
 // ---------- the node ----------
 
 pub(super) async fn ask(client: &RpcClient, network: &str, query: Query) -> Result<Reply, String> {
-    let frame = query_frame(network, identity::PROGRAM, abi::encode(&query)).await;
+    let frame = query_frame(network, identity::MODULE, abi::encode(&query)).await;
     let reply = client
         .query(Layer::Preconfirmed, frame)
         .await
@@ -282,9 +282,9 @@ pub(super) async fn submit_seated(
     network: &str,
     op: &Op,
 ) -> Result<Vec<u8>, String> {
-    let frame = seated_frame(client, network, identity::PROGRAM, abi::encode(op))
+    let frame = seated_frame(client, network, identity::MODULE, abi::encode(op))
         .await
-        .map_err(|refusal| refusal.sentence)?;
+        .map_err(|refusal| refusal.message)?;
     submit(client, frame).await
 }
 

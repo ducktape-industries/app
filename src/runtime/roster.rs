@@ -4,7 +4,7 @@ use super::*;
 
 // ---------- the roster ----------
 
-/// The session facts every view is handed as its props: the seated `key`
+/// The session facts every view is handed as its props: the seated key as `signer`
 /// (hex) and the `account` it holds, `None` until one is resolved.
 pub fn props(
     dark: bool,
@@ -17,8 +17,8 @@ pub fn props(
     wire::methods::encode(&wire::methods::Session {
         connected,
         dark,
-        chain: network.into(),
-        key: key.into(),
+        chain_id: network.into(),
+        signer: key.into(),
         account,
         endpoint: endpoint.into(),
     })

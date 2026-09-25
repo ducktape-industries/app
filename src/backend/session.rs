@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use commonware_cryptography::{Signer as _, ed25519};
-use view_wire::Refusal;
+use view_wire::Error;
 
 use super::noded::{Frame, Layer};
 use super::{RpcClient, hex_encode, refused};
@@ -22,8 +22,8 @@ static SIGNER: tokio::sync::Mutex<Option<Signer>> = tokio::sync::Mutex::const_ne
 
 pub(crate) const LOCKED: &str = "this device's key is locked; unlock it first";
 
-pub(crate) fn locked_seat() -> Refusal {
-    Refusal::new("session_locked", LOCKED)
+pub(crate) fn locked_seat() -> Error {
+    Error::new("session_locked", LOCKED)
 }
 
 /// Seats `key` as the one that signs; answers its public key.
@@ -44,7 +44,7 @@ pub(crate) async fn seated_frame(
     network: &str,
     target: &str,
     payload: Vec<u8>,
-) -> Result<Vec<u8>, Refusal> {
+) -> Result<Vec<u8>, Error> {
     let session = SIGNER.lock().await;
     let signer = session.as_ref().ok_or_else(locked_seat)?;
     let seq = next_seq(client, signer.key.public_key().as_ref()).await?;
@@ -52,19 +52,19 @@ pub(crate) async fn seated_frame(
 }
 
 /// The sequence the node expects next from `signer`.
-pub(crate) async fn next_seq(client: &RpcClient, signer: &[u8]) -> Result<u64, Refusal> {
+pub(crate) async fn next_seq(client: &RpcClient, signer: &[u8]) -> Result<u64, Error> {
     Ok(client
         .get(Layer::Preconfirmed, SIGNERS, signer)
         .await
         .map_err(refused)?
         .map(|bytes| abi::decode::<u64>(&bytes))
         .transpose()
-        .map_err(|refusal| Refusal::new("malformed_reply", refusal.sentence))?
+        .map_err(|refusal| Error::new(view_wire::code::UNEXPECTED_REPLY, refusal.sentence))?
         .unwrap_or(0))
 }
 
 /// The seated key's public half.
-pub(crate) async fn seated_key() -> Result<Vec<u8>, Refusal> {
+pub(crate) async fn seated_key() -> Result<Vec<u8>, Error> {
     let session = SIGNER.lock().await;
     let signer = session.as_ref().ok_or_else(locked_seat)?;
     Ok(signer.key.public_key().as_ref().to_vec())
@@ -75,7 +75,7 @@ pub(crate) async fn seated_key() -> Result<Vec<u8>, Refusal> {
 pub(crate) async fn seated_sign(
     namespace: &[u8],
     message: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), Refusal> {
+) -> Result<(Vec<u8>, Vec<u8>), Error> {
     let session = SIGNER.lock().await;
     let signer = session.as_ref().ok_or_else(locked_seat)?;
     Ok((

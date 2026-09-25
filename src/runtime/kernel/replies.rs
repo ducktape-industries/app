@@ -4,7 +4,7 @@ use super::*;
 fn result_bytes(result: &Answer) -> usize {
     match result {
         Ok(bytes) => bytes.len(),
-        Err(refusal) => refusal.reason.len() + refusal.sentence.len(),
+        Err(refusal) => refusal.code.len() + refusal.message.len(),
     }
 }
 

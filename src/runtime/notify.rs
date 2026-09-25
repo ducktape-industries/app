@@ -31,7 +31,7 @@ use std::time::Instant;
 
 use super::WindowKey;
 use super::kernel::spawn_device;
-use super::wire::methods::{self, Post, Posted};
+use super::wire::methods::{self, Delivery, Notification};
 use super::{Guest, Intent};
 use crate::backend::{read_prefs, write_prefs};
 
@@ -224,13 +224,13 @@ impl Center {
         settings: &Settings,
         module: &str,
         view: &str,
-        post: Post,
+        post: Notification,
         now: Instant,
         wall: i64,
-    ) -> (Posted, Option<Notice>) {
+    ) -> (Delivery, Option<Notice>) {
         let permission = settings.views.get(module).copied();
         if permission == Some(Permission::Block) {
-            return (Posted::Blocked, None);
+            return (Delivery::Blocked, None);
         }
         // a view's tags are its own: two views never replace each other's
         let notice = Notice {
@@ -247,14 +247,14 @@ impl Center {
                 if !self.not_now.contains(module) {
                     self.asking.insert(module.to_owned());
                 }
-                return (Posted::Logged, None);
+                return (Delivery::Logged, None);
             }
-            Some(Permission::Silent) => return (Posted::Logged, None),
+            Some(Permission::Silent) => return (Delivery::Logged, None),
             _ => {}
         }
         let in_front = self.front.is_some_and(|(_, focused)| focused == module);
         if !settings.banners || (in_front && !settings.in_front) {
-            return (Posted::Logged, None);
+            return (Delivery::Logged, None);
         }
         let burst = f64::from(settings.burst.max(1));
         let bucket = self.buckets.entry(module.to_owned()).or_insert(Bucket {
@@ -267,7 +267,7 @@ impl Center {
         if bucket.tokens >= 1. {
             bucket.tokens -= 1.;
             self.more.remove(module);
-            return (Posted::Banner, Some(notice));
+            return (Delivery::Banner, Some(notice));
         }
         let more = self.more.entry(module.to_owned()).or_default();
         *more += 1;
@@ -276,12 +276,12 @@ impl Center {
             body: "They're waiting in Notifications.".into(),
             tag: format!("more/{module}"),
         };
-        (Posted::Logged, Some(more))
+        (Delivery::Logged, Some(more))
     }
 
     /// Into the log: a notice under a tag the view already has a row for
     /// folds into that row and brings it back to the top, unread.
-    fn log(&mut self, module: &str, view: &str, post: Post, wall: i64) {
+    fn log(&mut self, module: &str, view: &str, post: Notification, wall: i64) {
         let folded = (!post.tag.is_empty())
             .then(|| {
                 self.entries
@@ -450,7 +450,7 @@ fn log_path(network: &str) -> Option<PathBuf> {
 
 /// Shortened to what a screen shows, on a character boundary; a notice
 /// with no words is not one, and a link is a `duck://` link or nothing.
-fn shortened(mut post: Post) -> Result<Post, &'static str> {
+fn shortened(mut post: Notification) -> Result<Notification, &'static str> {
     if post.title.is_empty() && post.body.is_empty() {
         return Err("a notice carries neither a title nor a body");
     }
@@ -486,7 +486,7 @@ pub(super) fn answer(
     payload: &[u8],
 ) -> bool {
     let post = match (capability, operation) {
-        ("notify", "post") => methods::decode::<Post>(payload),
+        ("notify", "post") => methods::decode::<Notification>(payload),
         ("notify", "seen") => {
             read(guest, id, payload);
             return true;
@@ -511,7 +511,7 @@ pub(super) fn answer(
             wall(),
         );
         // the row just logged is the newest: a click on its banner opens it
-        let entry = (posted == Posted::Banner)
+        let entry = (posted == Delivery::Banner)
             .then(|| center.entries().next().map(|entry| entry.id))
             .flatten();
         (posted, banner, entry)
@@ -532,7 +532,7 @@ pub(super) fn answer(
             Some(told) => told.await.unwrap_or(false),
         };
         let posted = match posted {
-            Posted::Banner if !raised => Posted::Logged,
+            Delivery::Banner if !raised => Delivery::Logged,
             posted => posted,
         };
         Ok(methods::encode(&posted))
@@ -627,8 +627,8 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn post(title: &str, tag: &str) -> Post {
-        Post {
+    fn post(title: &str, tag: &str) -> Notification {
+        Notification {
             title: title.into(),
             body: "b".into(),
             tag: tag.into(),
@@ -655,12 +655,12 @@ mod tests {
         let now = Instant::now();
         let mut center = Center::default();
         let (posted, banner) = center.post(&settings(None), "chat", "Chat", post("a", ""), now, 0);
-        assert_eq!((posted, banner.is_none()), (Posted::Logged, true));
+        assert_eq!((posted, banner.is_none()), (Delivery::Logged, true));
         assert!(center.asking("chat") && center.entries().count() == 1);
 
         let blocked = settings(Some(Permission::Block));
         let (posted, banner) = center.post(&blocked, "chat", "Chat", post("b", ""), now, 0);
-        assert_eq!((posted, banner), (Posted::Blocked, None));
+        assert_eq!((posted, banner), (Delivery::Blocked, None));
         assert_eq!(
             center.entries().count(),
             1,
@@ -669,11 +669,11 @@ mod tests {
 
         let silent = settings(Some(Permission::Silent));
         let (posted, banner) = center.post(&silent, "chat", "Chat", post("c", ""), now, 0);
-        assert_eq!((posted, banner), (Posted::Logged, None));
+        assert_eq!((posted, banner), (Delivery::Logged, None));
 
         let allowed = settings(Some(Permission::Allow));
         let (posted, banner) = center.post(&allowed, "chat", "Chat", post("d", "#room"), now, 0);
-        assert_eq!(posted, Posted::Banner);
+        assert_eq!(posted, Delivery::Banner);
         assert_eq!(
             banner.unwrap().tag,
             "chat/#room",
@@ -685,7 +685,7 @@ mod tests {
         off.banners = false;
         assert_eq!(
             center.post(&off, "chat", "Chat", post("e", ""), now, 0).0,
-            Posted::Logged
+            Delivery::Logged
         );
 
         // "Not now" keeps the bar away for the run
@@ -705,14 +705,14 @@ mod tests {
         center.set_front(window, true, "chat");
         assert_eq!(
             center.post(&allowed, "chat", "Chat", post("a", ""), now, 0),
-            (Posted::Logged, None)
+            (Delivery::Logged, None)
         );
         allowed.in_front = true;
         assert_eq!(
             center
                 .post(&allowed, "chat", "Chat", post("b", ""), now, 0)
                 .0,
-            Posted::Banner
+            Delivery::Banner
         );
         allowed.in_front = false;
         // another window losing focus leaves the front alone; this one's clears it
@@ -723,7 +723,7 @@ mod tests {
             center
                 .post(&allowed, "chat", "Chat", post("c", ""), now, 0)
                 .0,
-            Posted::Banner
+            Delivery::Banner
         );
     }
 
@@ -736,11 +736,11 @@ mod tests {
         let allowed = settings(Some(Permission::Allow));
         for nth in 0..3 {
             let (posted, _) = center.post(&allowed, "chat", "Chat", post("m", ""), start, nth);
-            assert_eq!(posted, Posted::Banner);
+            assert_eq!(posted, Delivery::Banner);
         }
         let (posted, more) = center.post(&allowed, "chat", "Chat", post("m", ""), start, 3);
         let more = more.unwrap();
-        assert_eq!(posted, Posted::Logged);
+        assert_eq!(posted, Delivery::Logged);
         assert_eq!(
             (more.title.as_str(), more.tag.as_str()),
             ("1 more from Chat", "more/chat")
@@ -755,7 +755,7 @@ mod tests {
             center
                 .post(&forge, "forge", "Forge", post("f", ""), start, 5)
                 .0,
-            Posted::Banner
+            Delivery::Banner
         );
         // twenty seconds refill one token at three a minute
         let later = start + Duration::from_secs(20);
@@ -763,7 +763,7 @@ mod tests {
             center
                 .post(&allowed, "chat", "Chat", post("m", ""), later, 6)
                 .0,
-            Posted::Banner
+            Delivery::Banner
         );
         assert_eq!(
             center
@@ -879,25 +879,25 @@ mod tests {
     /// post are refused, and a post with no words is not a notice.
     #[test]
     fn a_post_is_words_a_tag_and_a_duck_link() {
-        let full = Post {
+        let full = Notification {
             title: "a".into(),
             body: "b".into(),
             tag: "t".into(),
             link: "duck://chat/room".into(),
         };
         let mut bytes = methods::encode(&full);
-        assert_eq!(methods::decode::<Post>(&bytes).unwrap(), full);
+        assert_eq!(methods::decode::<Notification>(&bytes).unwrap(), full);
         bytes.extend_from_slice(b"icon");
-        assert!(methods::decode::<Post>(&bytes).is_err());
-        assert!(shortened(Post::default()).is_err());
+        assert!(methods::decode::<Notification>(&bytes).is_err());
+        assert!(shortened(Notification::default()).is_err());
         assert!(
-            shortened(Post {
+            shortened(Notification {
                 link: "https://example.com".into(),
                 ..full.clone()
             })
             .is_err()
         );
-        let long = shortened(Post {
+        let long = shortened(Notification {
             title: "가".repeat(MAX_TEXT),
             body: "b".repeat(MAX_TEXT * 2),
             link: format!("duck://{}", "x".repeat(MAX_TEXT)),

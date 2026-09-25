@@ -142,7 +142,7 @@ pub(crate) async fn join_from_device(
 ) -> Result<(), String> {
     let page = auth_page();
     let code = normalized(code).ok_or("That code is malformed.")?;
-    let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
+    let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let request = serde_json::json!({ "v": 1, "network": network, "key": hex_encode(&device) });
     post(&slot(&page, &code, "request")?, request.to_string()).await?;
     let answer = slot(&page, &code, "consent")?;
@@ -234,7 +234,7 @@ pub(crate) async fn approve(
     };
     let (key, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
-        .map_err(|refusal| refusal.sentence)?;
+        .map_err(|refusal| refusal.message)?;
     let consent = serde_json::json!({
         "v": 1,
         "account": account,
@@ -280,7 +280,7 @@ pub(crate) async fn add_recovery_key(
 ) -> Result<(), String> {
     let recovery = key_of_phrase(phrase)?;
     let public = recovery.public_key().as_ref().to_vec();
-    let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
+    let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let account = account_of(client, network, device)
         .await?
         .ok_or("This device's key holds no account yet.")?;
@@ -294,7 +294,7 @@ pub(crate) async fn add_recovery_key(
     };
     let (key, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
-        .map_err(|refusal| refusal.sentence)?;
+        .map_err(|refusal| refusal.message)?;
     let add = Op::AddKey {
         scheme: abi::Scheme::Ed25519,
         label: Some("Recovery key".into()),
@@ -307,12 +307,12 @@ pub(crate) async fn add_recovery_key(
     };
     let seq = next_seq(client, &public)
         .await
-        .map_err(|refusal| refusal.sentence)?;
+        .map_err(|refusal| refusal.message)?;
     let frame = Frame::sign(
         &recovery,
         network.as_bytes(),
         seq,
-        identity::PROGRAM,
+        identity::MODULE,
         abi::encode(&add),
     );
     submit(client, frame.encode()).await.map(drop)
@@ -329,7 +329,7 @@ pub(crate) async fn join_with_recovery_key(
     let account = account_of(client, network, recovery.public_key().as_ref().to_vec())
         .await?
         .ok_or_else(|| format!("That recovery key isn't on an account on {network}."))?;
-    let device = seated_key().await.map_err(|refusal| refusal.sentence)?;
+    let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = Admission {
         network: network.as_bytes().to_vec(),
         scheme: abi::Scheme::Ed25519,
