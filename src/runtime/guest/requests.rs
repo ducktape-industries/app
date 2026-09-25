@@ -152,6 +152,36 @@ impl Guest {
             return;
         }
         let (capability, operation) = kind.split_once('.').unwrap_or((kind.as_str(), ""));
+        // A view is untrusted code: it reaches only the doors its manifest
+        // declares. Consent (media, notifications) is asked on top of this.
+        let undeclared = wire::doors::is_capability(capability)
+            && !self
+                .capabilities
+                .iter()
+                .any(|declared| declared == capability);
+        if undeclared {
+            if !self
+                .undeclared_logged
+                .iter()
+                .any(|logged| logged == capability)
+            {
+                self.undeclared_logged.push(capability.to_owned());
+                tracing::warn!(
+                    target: "ducktape::app",
+                    module = self.module,
+                    capability,
+                    "view asked for a capability its manifest does not declare"
+                );
+            }
+            self.refuse(
+                id,
+                "undeclared_capability",
+                format!(
+                    "`{kind}` needs the `{capability}` capability, which this view does not declare"
+                ),
+            );
+            return;
+        }
         // the kernel contract first: what every view may ask, module-free
         if kernel::answer(self, capability, operation, id, &payload) {
             return;

@@ -120,6 +120,11 @@ pub(super) struct Guest {
     pub(crate) module: &'static str,
     /// The manifest's name: what a registered view's tab is called.
     pub(crate) name: String,
+    /// The capabilities the manifest declares: a door whose capability is
+    /// not among them is refused before it is routed.
+    pub(crate) capabilities: Vec<String>,
+    /// The undeclared capabilities already logged, so each is logged once.
+    pub(crate) undeclared_logged: Vec<String>,
     pub(crate) store: Store<HostState>,
     pub(crate) exports: Exports,
     /// The guest's events for its next tick.

@@ -223,10 +223,11 @@ mod display_diagnostics;
 pub(crate) mod input;
 mod pictures;
 
-/// The name a view's manifest gives it; "" for one whose manifest
-/// cannot be read (`compile` refuses those before a seat).
-fn manifest_name(bytes: &[u8]) -> String {
+/// The name a view's manifest gives it and the capabilities it declares;
+/// empty for one whose manifest cannot be read (`compile` refuses those
+/// before a seat).
+fn manifest_of(bytes: &[u8]) -> (String, Vec<String>) {
     view_wire::manifest::read_manifest(bytes)
-        .map(|manifest| manifest.name)
+        .map(|manifest| (manifest.name, manifest.capabilities))
         .unwrap_or_default()
 }

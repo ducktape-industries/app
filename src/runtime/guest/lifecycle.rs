@@ -118,11 +118,12 @@ impl Guest {
             timing.compile = compiled.elapsed();
             let code = code?;
             let seated = Instant::now();
-            let name = manifest_name(&view_bytes);
+            let (name, capabilities) = manifest_of(&view_bytes);
             let prepared = (|| -> Result<Self, Failure> {
                 let mut fresh =
                     Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
                 fresh.name = name.clone();
+                fresh.capabilities = capabilities.clone();
                 fresh.deployed(hash);
                 match &mut against {
                     // A once-valid view carries its state over. Only an
@@ -332,7 +333,7 @@ impl Guest {
     ) -> Result<Self, String> {
         let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
         let mut guest = Self::instantiate(module, &code, shown)?;
-        guest.name = manifest_name(bytes);
+        (guest.name, guest.capabilities) = manifest_of(bytes);
         guest.init(shown)?;
         Ok(guest)
     }
@@ -415,6 +416,8 @@ impl Guest {
             user_activation: None,
             module,
             name: String::new(),
+            capabilities: Vec::new(),
+            undeclared_logged: Vec::new(),
             store,
             exports,
             pending: Vec::new(),
