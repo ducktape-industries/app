@@ -10,6 +10,8 @@ pub(crate) fn run() {
     });
     application.run(move |cx| {
         gpui_kit::init(cx);
+        keys::bind(cx);
+        keys::menus(cx);
         initialize_rendering(cx);
         let mut commands = commands();
         let (state, initial) = Ducktape::boot();
@@ -17,6 +19,10 @@ pub(crate) fn run() {
         tray.sync(&state);
         let desktop = cx.new(|_| Desktop::new(state, tray));
         desktop.update(cx, |desktop, cx| desktop.sync_appearance(cx));
+        let quitting = desktop.downgrade();
+        cx.on_action(move |_: &keys::Quit, cx| {
+            let _ = quitting.update(cx, |desktop, cx| desktop.dispatch(Message::TrayQuit, cx));
+        });
         let url_desktop = desktop.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(urls) = urls.next().await {

@@ -49,7 +49,10 @@ fn console(
     Entity<DesktopWindow>,
     VisualTestContext,
 ) {
-    cx.update(gpui_kit::init);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
     let model = cx.new(|cx| {
         let (mut state, _) = Ducktape::boot();
         state.stage = crate::Stage::Desk;
