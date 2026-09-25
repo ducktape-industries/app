@@ -104,7 +104,7 @@ pub async fn view_of(
     })
 }
 
-async fn program_bytes(client: &RpcClient, code: &BlobId) -> Result<Vec<u8>, Fetch> {
+pub async fn program_bytes(client: &RpcClient, code: &BlobId) -> Result<Vec<u8>, Fetch> {
     let cached = cache_path(code);
     if let Some(path) = &cached
         && let Ok(bytes) = tokio::fs::read(path).await

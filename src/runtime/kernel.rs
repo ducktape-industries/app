@@ -26,6 +26,8 @@
 //!   oldest first: the host reads the node's status at half its block
 //!   time and fills each advance from the block archive.
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
+//! - `program.describe` `(program, op)` — the op as the program's own
+//!   describe module reads it, or `None` (`describe`).
 //! - `host.props` — subscribes to the session props (`Session`: the seated
 //!   account, theme, chain and read-only endpoint).
 //! - `host.route` — a subscription that gets the route a `duck://` link
@@ -90,6 +92,7 @@ fn unanswered(refusal: wire::Refusal) -> Result<String, wire::Refusal> {
 /// why not. Every door in this file hands back exactly this.
 pub(super) type Answer = Result<Vec<u8>, wire::Refusal>;
 
+mod describe;
 mod node;
 mod replies;
 
@@ -174,6 +177,7 @@ pub(super) fn answer(
         ("rpc", "invite") => spawn_once(guest, id, payload, invite),
         ("op", "submit") => spawn(guest, id, payload, submit),
         ("blob", "get") => spawn(guest, id, payload, blob_get),
+        ("program", "describe") => spawn(guest, id, payload, describe::describe),
         ("rpc", "live") => live(guest, id, payload),
         ("rpc", "heads") => heads(guest, id, payload),
         ("host", "open_link") => {

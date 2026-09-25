@@ -28,11 +28,13 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules dev @ 612e1cf4 (gpui-pre 3890895, #142), crates/sdk (abi, view-wire, ducklink, design) ---
+# --- sdk-line: modules dev @ 612e1cf4 (gpui-pre 3890895, #142), crates/sdk (abi, view-wire, ducklink, design, describe) ---
 abi = { git = "https://github.com/ducktape-industries/modules", rev = "612e1cf4", package = "abi" }
 view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "612e1cf4", package = "view-wire" }
 ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "612e1cf4", package = "ducklink" }
 design = { git = "https://github.com/ducktape-industries/modules", rev = "612e1cf4", package = "design" }
+# `program.describe`: the runner a program's untrusted describe module goes through
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "612e1cf4", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -63,6 +65,7 @@ unicode-segmentation = "1"
 qrcode = { version = "0.14", default-features = false }
 futures.workspace = true
 design.workspace = true
+describe.workspace = true
 sha2.workspace = true
 ducktape-home.workspace = true
 ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", rev = "cfaab4287624b8bf55ccf777559a3231d3b46c05" }
@@ -131,6 +134,8 @@ zbus = "5"
 # losing them if gpui ever stops asking.
 
 [dev-dependencies]
+# hand-written wasm for the describe door's hostile-section tests
+wat = "1"
 gpui-kit = { version = "=0.6.1", features = ["test-support"] }
 # walks the AccessKit tree the ax_contract gate reads (the adapters' version)
 accesskit_consumer = "=0.38.0"

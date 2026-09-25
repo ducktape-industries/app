@@ -2343,6 +2343,7 @@ source = "git+https://github.com/ducktape-industries/modules?rev=612e1cf4#612e1c
 dependencies = [
  "borsh",
  "serde",
+ "wasmtime",
 ]
 
 [[package]]
@@ -2517,6 +2518,7 @@ dependencies = [
  "commonware-cryptography",
  "core-graphics 0.24.0",
  "cpal",
+ "describe",
  "design",
  "ducklink",
  "ducktape-home",
@@ -2556,6 +2558,7 @@ dependencies = [
  "view-wire",
  "wasmparser 0.251.0",
  "wasmtime",
+ "wat",
  "zbus 5.19.0",
  "zeroize",
 ]
