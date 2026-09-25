@@ -176,7 +176,7 @@ impl NativeModuleView {
 
     /// One turn of a seated guest no layer draws: the props, replies and
     /// presses it is owed go in, and the requests its tick makes are
-    /// answered — a chord claim among them.
+    /// answered.
     pub(super) fn turn(&mut self, cx: &mut gpui_kit::Context<Self>) {
         let seat = self.seat.clone();
         let mut locked = seat.lock().expect("module view lock");
@@ -186,8 +186,7 @@ impl NativeModuleView {
         };
         guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
-        filesystem::mount(guest, cx);
-        media::mount(guest, cx);
+        clipboard::mount(guest, cx);
         let intents = std::mem::take(&mut guest.intents);
         drop(locked);
         for intent in intents {
@@ -196,29 +195,6 @@ impl NativeModuleView {
         if again {
             cx.notify();
         }
-    }
-
-    /// A chord was pressed: if this seat's module claimed it, its guest is
-    /// told and redrawn, and the press is spent. Says whether it landed, so
-    /// the shell stops at the seat that took it.
-    pub(crate) fn chord(&mut self, chord: &str, cx: &mut gpui_kit::Context<Self>) -> bool {
-        if !self.focused || chord_holder(chord) != Some(self.module) {
-            return false;
-        }
-        let seat = self.seat.clone();
-        let mut mounted = seat.lock().expect("module view lock");
-        let Slot::Ready(guest) = &mut mounted.slot else {
-            return false;
-        };
-        let taken = guest.chord_pressed(chord);
-        drop(mounted);
-        if taken && !self.drawn {
-            self.turn(cx);
-        }
-        if taken {
-            cx.notify();
-        }
-        taken
     }
 
     /// A hidden tab gets one bounded update before its native presenter leaves.
@@ -310,8 +286,7 @@ impl NativeModuleView {
         guest.set_visible(true);
         guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
-        filesystem::mount(guest, cx);
-        media::mount(guest, cx);
+        clipboard::mount(guest, cx);
         if again {
             window.request_animation_frame();
         }

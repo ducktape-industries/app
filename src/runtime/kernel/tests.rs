@@ -421,26 +421,71 @@ async fn block_doors_carry_the_archive_s_blocks_as_door_types() {
     );
 }
 
-/// `BlobGet`'s door is declared `door!(BlobGet, "blob.get", String, Vec<u8>)`
-/// — the standard macro, which borsh-wraps the reply on both ends, same as
-/// every other door here. A view's generic `Door::decode_reply` expects that
-/// wrapping on every blob it fetches, not just the ones this test happens to
-/// exercise.
+/// `blob.get` replies `Option<Vec<u8>>`, borsh both ends like every door:
+/// the blob when the node holds it, `None` when it does not — absent is not
+/// a refusal.
 #[tokio::test]
-async fn blob_get_answers_borsh_wrapped_bytes_a_view_can_decode() {
+async fn blob_get_answers_the_blob_or_none() {
     let mut framed = b"sha256\0".to_vec();
     framed.extend_from_slice(b"blob body bytes");
+    let ask = doors::encode(&format!("sha256:{}", "00".repeat(32)));
     let (node, server) = node_server(
         "200 OK",
         abi::encode(&Some(framed)),
         "POST /v1/blob/get HTTP/1.1",
         None,
     );
-    let ask = doors::encode(&format!("sha256:{}", "00".repeat(32)));
-    let answer = blob_get(node, ask).await.unwrap();
-    let decoded: Vec<u8> = doors::decode(&answer).unwrap();
-    assert_eq!(decoded, b"blob body bytes");
+    let answer = blob_get(node, ask.clone()).await.unwrap();
+    let decoded: Option<Vec<u8>> = doors::decode(&answer).unwrap();
+    assert_eq!(decoded.as_deref(), Some(&b"blob body bytes"[..]));
     server.join().unwrap();
+    let (node, server) = node_server(
+        "200 OK",
+        abi::encode(&None::<Vec<u8>>),
+        "POST /v1/blob/get HTTP/1.1",
+        None,
+    );
+    let answer = blob_get(node, ask).await.unwrap();
+    assert_eq!(doors::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
+    server.join().unwrap();
+}
+
+/// `host.open_link` opens `duck://` and `https://` and refuses every other
+/// scheme at the door, before the app is asked.
+#[test]
+fn open_link_refuses_any_scheme_but_duck_and_https() {
+    let open = |link: &str| {
+        let mut guest = guest();
+        guest.answer(
+            wire::Request {
+                id: 5,
+                kind: "host.open_link".into(),
+                payload: doors::encode(&link.to_owned()),
+            },
+            &None,
+        );
+        let refused = match guest.pending.pop() {
+            Some(wire::Event::Response {
+                result: Err(refusal),
+                ..
+            }) => Some(refusal.reason),
+            _ => None,
+        };
+        (refused, guest.intents.len())
+    };
+    for link in ["duck://chat/general", "https://example.com/a"] {
+        assert_eq!(open(link), (None, 1), "{link}");
+    }
+    for link in [
+        "http://example.com",
+        "file:///etc/passwd",
+        "javascript:alert(1)",
+        "mailto:a@b.c",
+        "duck://",
+        "",
+    ] {
+        assert_eq!(open(link), (Some("malformed_request".into()), 0), "{link}");
+    }
 }
 
 #[tokio::test]
@@ -532,6 +577,7 @@ fn host_props_is_program_independent_and_tracks_updates() {
         true,
         "test-network",
         "abcd",
+        None,
         "http://127.0.0.1:19001",
     ));
     guest.answer(
@@ -553,24 +599,28 @@ fn host_props_is_program_independent_and_tracks_updates() {
     };
     let decoded: doors::Session = doors::decode(&bytes).unwrap();
     assert_eq!(decoded.endpoint, "http://127.0.0.1:19001");
-    assert_eq!(decoded.account, "abcd");
+    assert_eq!((decoded.key.as_str(), decoded.account), ("abcd", None));
     assert!(decoded.dark);
+    // the key's account resolves: the same subscription hears it
     let changed = Some(super::super::props(
         false,
         true,
         "test-network",
         "abcd",
+        Some(7),
         "http://127.0.0.1:19001",
     ));
     guest.sync_props(&changed);
-    assert!(matches!(
-        guest.pending.pop(),
-        Some(wire::Event::Response {
-            id: 22,
-            result: Ok(_),
-            done: false
-        })
-    ));
+    let Some(wire::Event::Response {
+        id: 22,
+        result: Ok(bytes),
+        done: false,
+    }) = guest.pending.pop()
+    else {
+        panic!("a changed session is pushed")
+    };
+    let decoded: doors::Session = doors::decode(&bytes).unwrap();
+    assert_eq!(decoded.account, Some(7));
 }
 
 /// Reproduces "Couldn't create this channel: Unexpected length of input":

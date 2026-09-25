@@ -87,19 +87,6 @@ pub(super) fn openable() -> Vec<crate::runtime::RailRow> {
 }
 
 impl DesktopWindow {
-    pub(super) fn focused_view(
-        &self,
-        cx: &gpui_kit::App,
-    ) -> Option<Entity<crate::runtime::NativeModuleView>> {
-        let layout = self.layout(cx);
-        let pane = layout.panes.get(layout.focused)?;
-        let model = self.model.read(cx);
-        model
-            .mounted
-            .get(&pane.instance)
-            .map(|pane| pane.view.clone())
-    }
-
     /// Something done to this window's panes: the model moves them, and
     /// the keys come back to the window.
     pub(super) fn pane_message(

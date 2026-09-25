@@ -86,6 +86,11 @@ impl Ducktape {
                 self.key_exists = false;
                 self.sign_in.seating = false;
                 self.sign_in.locked = false;
+                // another key's account is not this one's: the views hear
+                // none until `AccountResolved` names this key's
+                if self.signer_key != pubkey {
+                    self.account = None;
+                }
                 self.signer_key = pubkey;
                 if !matches!(self.stage, Stage::Connect) {
                     self.stage = Stage::Unlock(Unlock {

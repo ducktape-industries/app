@@ -51,11 +51,6 @@ pub(crate) struct FocusPane(pub(crate) usize);
 #[action(namespace = desk, no_json)]
 pub(crate) struct OpenNth(pub(crate) usize);
 
-/// Whether `action` is one of the app's own (this module's).
-pub(super) fn is_ours(action: &dyn Action) -> bool {
-    action.name().starts_with("desk::")
-}
-
 /// The desk's context, on every window's root.
 pub(super) const CONTEXT: &str = "Ducktape";
 

@@ -4,13 +4,22 @@ use super::*;
 
 // ---------- the roster ----------
 
-/// The session facts every view is handed as its props.
-pub fn props(dark: bool, connected: bool, network: &str, account: &str, endpoint: &str) -> Vec<u8> {
+/// The session facts every view is handed as its props: the seated `key`
+/// (hex) and the `account` it holds, `None` until one is resolved.
+pub fn props(
+    dark: bool,
+    connected: bool,
+    network: &str,
+    key: &str,
+    account: Option<u64>,
+    endpoint: &str,
+) -> Vec<u8> {
     wire::doors::encode(&wire::doors::Session {
         connected,
         dark,
         chain: network.into(),
-        account: account.into(),
+        key: key.into(),
+        account,
         endpoint: endpoint.into(),
     })
 }

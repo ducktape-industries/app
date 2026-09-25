@@ -8,8 +8,7 @@ impl Guest {
         }
         let ids: Vec<_> = self.tasks.iter().map(|(id, _)| *id).collect();
         self.tasks.clear();
-        self.filesystem = Default::default();
-        self.media = Default::default();
+        self.clipboard = Default::default();
         for id in ids {
             self.refuse(id, "stale_connection", "network connection changed");
         }
@@ -444,10 +443,8 @@ impl Guest {
             replies: Arc::default(),
             live_subscriptions: Vec::new(),
             tasks: Vec::new(),
-            filesystem: Default::default(),
-            media: Default::default(),
+            clipboard: Default::default(),
             clocks: Vec::new(),
-            chords: Vec::new(),
             fault: None,
             hash: None,
             alive: Arc::new(()),
@@ -479,26 +476,6 @@ impl Guest {
         }
         self.visible = visible;
         self.visibility_change = Some(visible);
-    }
-
-    /// A chord this guest claimed was pressed: every subscription that named
-    /// it gets one item. Says whether any did, which is how the shell knows
-    /// the press was spent and must not also be a native key.
-    pub(crate) fn chord_pressed(&mut self, chord: &str) -> bool {
-        let claimed: Vec<u64> = self
-            .chords
-            .iter()
-            .filter(|(_, named)| named == chord)
-            .map(|(id, _)| *id)
-            .collect();
-        for id in &claimed {
-            self.pending.push(wire::Event::Response {
-                id: *id,
-                result: Ok(Vec::new()),
-                done: false,
-            });
-        }
-        !claimed.is_empty()
     }
 
     /// A route a link left for this module goes to its first route

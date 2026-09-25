@@ -27,11 +27,8 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   every door a borsh type in `view_wire::doors`: `rpc.query`/`op.submit`
   `Call{target, body}`, `rpc.live <program>`, `rpc.status`, `rpc.invite`,
   `blob.get`, `host.widget` (the one MessagePack door: a tree command), and
-  the app's own doors (`host.*`,
-  `clock.ticks`, `fs.*`, `clipboard.*`, plus the raw devices —
-  `media.devices`, `audio.capture`/`play`/`write`/`stop`, `video.capture`,
-  `notify.show` — behind a per-program consent prompt and an indicator the
-  view cannot hide). The app forwards the bytes to the
+  the app's own doors (`host.*`, `clock.ticks`, `clipboard.*`,
+  `notify.*`, `store.*`, `program.describe`). The app forwards the bytes to the
   program the view names and signs writes with the seated key; it never
   reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's

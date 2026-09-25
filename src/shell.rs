@@ -546,7 +546,6 @@ pub(crate) struct DesktopWindow {
     focus: gpui_kit::FocusHandle,
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
-    _keystrokes: gpui_kit::Subscription,
     _focus_lost: gpui_kit::Subscription,
 }
 
@@ -559,40 +558,6 @@ struct NativeInput {
 }
 
 impl DesktopWindow {
-    /// A command chord a view claimed (`runtime::claim_chord`) goes to the
-    /// focused pane's view, ahead of the native bindings of whatever is
-    /// focused in it — but not ahead of the app's own keys (`keys`), and
-    /// never out of a guest editor, which takes its own.
-    fn intercept_chords(
-        window: &gpui_kit::Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::Subscription {
-        let window_id = window.window_handle().window_id();
-        let view = cx.entity().downgrade();
-        cx.intercept_keystrokes(move |event, window, cx| {
-            if window.window_handle().window_id() != window_id {
-                return;
-            }
-            let in_guest_editor = event
-                .context_stack
-                .iter()
-                .any(|context| context.contains(crate::editor::wire::GUEST_EDITOR_CONTEXT));
-            let the_apps = window
-                .possible_bindings_for_input(std::slice::from_ref(&event.keystroke))
-                .iter()
-                .any(|binding| keys::is_ours(binding.action()));
-            if in_guest_editor || the_apps {
-                return;
-            }
-            let delivered = view
-                .update(cx, |view, cx| view.deliver_chord(&event.keystroke, cx))
-                .unwrap_or(false);
-            if delivered {
-                cx.stop_propagation();
-            }
-        })
-    }
-
     /// On the desk: connected, and past the key and account steps.
     fn on_desk(&self, cx: &gpui_kit::App) -> bool {
         !self.model.read(cx).state.in_launcher()
@@ -634,20 +599,6 @@ impl DesktopWindow {
     /// reach at all.
     fn focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.focus.focus(window, cx);
-    }
-
-    fn deliver_chord(&mut self, key: &gpui_kit::Keystroke, cx: &mut Context<Self>) -> bool {
-        let Some(chord) = crate::runtime::chord_of(&key.key, key.modifiers) else {
-            return false;
-        };
-        let Some(view) = self.focused_view(cx) else {
-            return false;
-        };
-        let landed = view.update(cx, |view, cx| view.chord(&chord, cx));
-        if landed {
-            cx.notify();
-        }
-        landed
     }
 
     fn released(&mut self, cx: &mut gpui_kit::App) {

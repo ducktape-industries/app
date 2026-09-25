@@ -22,9 +22,8 @@ use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 use view_wire as wire;
 
-/// The key context a guest editor sits in. The shell's keystroke interceptor
-/// runs before this editor's and cannot be stopped by it, so it reads this off
-/// the context stack to yield the chords a guest claims.
+/// The key context a guest editor sits in, which the app's own key bindings
+/// read off the context stack (`shell::keys`).
 pub const GUEST_EDITOR_CONTEXT: &str = "GuestEditor";
 
 /// The tallest a field grows before it scrolls inside itself. The document
@@ -421,8 +420,8 @@ impl Render for TextEditor {
             value: Some(self.input.read(cx).value().to_string()),
             ..self.accessible.clone()
         };
-        // The shell reads this context off a keystroke to yield the chords a
-        // guest editor claims — Ctrl+K is a link here, not the search palette.
+        // The app's bindings read this context off a keystroke: Ctrl+K is a
+        // link here, not the search palette.
         div()
             .key_context(GUEST_EDITOR_CONTEXT)
             .relative()

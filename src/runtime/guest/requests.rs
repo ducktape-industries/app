@@ -97,8 +97,7 @@ impl Guest {
         }
         self.user_activation = None;
         for id in std::mem::take(&mut self.frame.cancels) {
-            self.filesystem.cancel(id);
-            self.media.cancel(id);
+            self.clipboard.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);
             if self.props_subscription == Some(id) {
                 self.props_subscription = None;
@@ -112,18 +111,6 @@ impl Guest {
             // subscription the view abandoned
             self.tasks.retain(|(task, _)| *task != id);
             self.clocks.retain(|clock| clock.id != id);
-            // a chord is given back with the subscription its presses were
-            // arriving on, or the next view could never claim it
-            let dropped: Vec<String> = self
-                .chords
-                .iter()
-                .filter(|(subscription, _)| *subscription == id)
-                .map(|(_, chord)| chord.clone())
-                .collect();
-            self.chords.retain(|(subscription, _)| *subscription != id);
-            for chord in dropped {
-                release_chord(&chord, self.module);
-            }
         }
         self.fault.is_none()
             && (self.frame.busy

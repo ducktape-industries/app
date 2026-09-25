@@ -92,13 +92,6 @@ impl Items {
             .subscription_item(&mut self.drained, self.id, result)
             .await
     }
-
-    /// The LAST item, which ends the subscription for the guest: a device
-    /// that will not open, or one that stopped answering. Without it a dead
-    /// source would look to the view like a source that is merely quiet.
-    pub(in crate::runtime) fn end(self, result: Answer) {
-        self.replies.item(self.id, result, true);
-    }
 }
 
 /// A subscription the HOST feeds — a device rather than a node socket. The
@@ -383,12 +376,10 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
             ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
             _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
         };
-        let framed = node
-            .client
-            .blob(id)
-            .await
-            .map_err(refused)?
-            .ok_or_else(|| wire::Refusal::new("not_found", "the node does not hold this blob"))?;
+        // absent is `None`, never a refusal: the ask itself did not fail
+        let Some(framed) = node.client.blob(id).await.map_err(refused)? else {
+            return Ok(doors::encode(&None::<Vec<u8>>));
+        };
         let body =
             backend::noded::unframe(&framed).ok_or_else(|| host_fault("blob has no header"))?;
         if body.len() > MAX_BLOB_BYTES {
@@ -397,17 +388,7 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
                 "blob exceeds the view's read limit",
             ));
         }
-        // `BlobGet`'s door promises `Vec<u8>` through the standard `door!`
-        // macro, which borsh-wraps (length-prefixes) it on both ends — the
-        // guest's generic `Door::decode_reply` expects that prefix on every
-        // reply, this door included. Raw bytes here would desync it from
-        // the very first blob any view fetched.
-        // `BlobGet`'s door promises `Vec<u8>` through the standard `door!`
-        // macro, which borsh-wraps (length-prefixes) it on both ends — the
-        // guest's generic `Door::decode_reply` expects that prefix on every
-        // reply, this door included. Raw bytes here would desync it from
-        // the very first blob any view fetched.
-        Ok(doors::encode(&body.to_vec()))
+        Ok(doors::encode(&Some(body.to_vec())))
     })
 }
 

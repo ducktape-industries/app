@@ -278,21 +278,6 @@ impl DesktopWindow {
                     }),
             )
             .child(handle)
-            // THE HOST'S OWN WORD ON WHAT IS RECORDING: a seated view draws
-            // inside its seat and can neither paint here nor decline to be
-            // listed.
-            .when_some(crate::runtime::capturing(), |bar, recording| {
-                bar.child(
-                    mono(400, 11.)
-                        .id("capture-indicator")
-                        .role(Role::Status)
-                        .mx_1()
-                        .px_1p5()
-                        .bg(ink.danger)
-                        .text_color(ink.bg)
-                        .child(recording),
-                )
-            })
             .child(search)
             .child(bell)
             .child(node)

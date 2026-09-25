@@ -30,12 +30,7 @@ impl Snapshot {
             true => "No network".into(),
             false => state.network.clone(),
         };
-        // the capture indicator reaches the status item too: a person whose
-        // window is hidden still sees what is recording.
-        labels[1] = match crate::runtime::capturing() {
-            Some(recording) => format!("{} — {recording}", state.status),
-            None => state.status.clone(),
-        };
+        labels[1] = state.status.clone();
         labels[3] = "Open Ducktape".into();
         labels[5] = "Appearance".into();
         for (row, label, mode) in [
