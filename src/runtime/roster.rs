@@ -302,22 +302,21 @@ fn parse_link_among(link: &str, rows: &[RailRow]) -> Link {
 fn local_seat_route(link: &str, rows: &[RailRow]) -> Option<(&'static str, String)> {
     let (seat, route) = link.strip_prefix("duck://")?.split_once('/')?;
     let module = local_seat(&format!("duck://{seat}"), rows)?;
-    valid_route(route).then(|| (module, route.to_owned()))
+    let route = ducklink::tail(route).ok()?.join("/");
+    valid_route(&route).then_some((module, route))
 }
 
-/// A route a link may hand a view: at most 256 bytes of `/`-separated
-/// segments, each nonempty, not `.` or `..`, and of `[A-Za-z0-9._-]`.
+/// A DECODED route a link may hand a view (`host.route`): at most 256 bytes
+/// of `/`-separated segments, each nonempty, not `.` or `..`, and free of
+/// control characters. The link spelled it percent-encoded; `ducklink`
+/// decoded it.
 pub fn valid_route(route: &str) -> bool {
     !route.is_empty()
         && route.len() <= 256
-        && route.split('/').all(|segment| {
-            !segment.is_empty()
-                && segment != "."
-                && segment != ".."
-                && segment
-                    .bytes()
-                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-        })
+        && !route.contains(char::is_control)
+        && route
+            .split('/')
+            .all(|segment| !segment.is_empty() && segment != "." && segment != "..")
 }
 
 fn local_seat(link: &str, rows: &[RailRow]) -> Option<&'static str> {
@@ -423,6 +422,56 @@ mod local_link_tests {
         for link in ["ftp://x", "duck://unknown/../x", "catalog"] {
             assert_eq!(parse_link_among(link, &rows), Link::Unknown, "{link}");
         }
+    }
+
+    /// A route is percent-encoded in the link and handed to the view
+    /// decoded, whatever it names: a forge room's `:`, a space, Hangul.
+    #[test]
+    fn a_route_is_delivered_decoded() {
+        let rows = [RailRow {
+            module: "catalog",
+            label: "Preferences".into(),
+            note: None,
+            empty: false,
+        }];
+        for name in ["forge:web:3", "보고서 #1", "a b"] {
+            let link = ducklink::mint("testkit#0a1b2c3d", "chat", &[name, "42"]).unwrap();
+            let Link::Chain(parsed) = parse_link_among(&link, &rows) else {
+                panic!("{link}");
+            };
+            let route = parsed.tail.join("/");
+            assert_eq!(route, format!("{name}/42"));
+            assert!(valid_route(&route), "{route}");
+            let short = link.replacen("testkit-0a1b2c3d/chat", "catalog", 1);
+            assert_eq!(
+                parse_link_among(&short, &rows),
+                Link::View {
+                    module: "catalog",
+                    route: Some(route)
+                },
+                "{short}"
+            );
+        }
+        assert!(link_to_catalog("duck://catalog/forge%3Aweb%3A3", &rows));
+        for broken in [
+            "duck://catalog/forge%3aweb",
+            "duck://catalog/forge%3",
+            "duck://catalog/%ZZ",
+            "duck://catalog/a%2Fb",
+            "duck://catalog/a%0Ab",
+            "duck://catalog/forge:web",
+        ] {
+            assert!(!link_to_catalog(broken, &rows), "{broken}");
+        }
+        assert!(!valid_route("a\u{7f}b"), "a control character");
+        assert!(!valid_route(&"보".repeat(86)), "258 decoded bytes");
+    }
+
+    fn link_to_catalog(link: &str, rows: &[RailRow]) -> bool {
+        matches!(
+            parse_link_among(link, rows),
+            Link::View { route: Some(_), .. }
+        )
     }
 }
 
