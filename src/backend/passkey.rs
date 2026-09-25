@@ -295,14 +295,21 @@ pub(super) async fn submit(client: &RpcClient, frame: Vec<u8>) -> Result<Vec<u8>
         .map_err(|error| node_error(error.to_string()))?;
     match receipt.outcome {
         abi::Outcome::Applied { output } => Ok(output),
-        abi::Outcome::Rejected(refusal) => Err(node_error(refusal.sentence)),
+        abi::Outcome::Rejected(refusal) => Err(rejected(refusal)),
     }
 }
 
-fn node_error(sentence: String) -> String {
-    if sentence.contains("already belongs to an account") {
+fn rejected(refusal: abi::Refusal) -> String {
+    // identity's only already_exists is "this key already belongs to an account".
+    if refusal.reason == abi::reason::ALREADY_EXISTS {
         return "This device's key already belongs to an account. Unlock it instead.".into();
     }
+    node_error(refusal.sentence)
+}
+
+fn node_error(sentence: String) -> String {
+    // ponytail: identity refuses an expired consent as a generic `unauthorized`,
+    // so the sentence is the only tell until it gets its own token.
     if sentence.contains("expired") {
         return "That took too long and the consent expired. Try again.".into();
     }
@@ -1126,6 +1133,14 @@ mod tests {
             panic!("an assertion");
         };
         assert!(passkey_frame(body, &assertion).is_none());
+    }
+
+    #[test]
+    fn an_identity_refusal_reads_by_its_token() {
+        let taken = abi::Refusal::new(abi::reason::ALREADY_EXISTS, "reworded upstream");
+        assert!(rejected(taken).starts_with("This device's key already belongs"));
+        let expired = abi::Refusal::new("unauthorized", "the consent has expired");
+        assert!(rejected(expired).contains("consent expired"));
     }
 
     #[tokio::test]

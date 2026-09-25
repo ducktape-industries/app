@@ -2559,7 +2559,7 @@ source = "git+https://github.com/ducktape-industries/ducktape?branch=feat%2Fcapa
 [[package]]
 name = "ducktape-rpc"
 version = "0.1.0"
-source = "git+https://github.com/ducktape-industries/ducktape?rev=75fce331d60b942ab2f20b7d7bce9f53b3f9de8b#75fce331d60b942ab2f20b7d7bce9f53b3f9de8b"
+source = "git+https://github.com/ducktape-industries/ducktape?rev=cfaab4287624b8bf55ccf777559a3231d3b46c05#cfaab4287624b8bf55ccf777559a3231d3b46c05"
 dependencies = [
  "futures",
  "reqwest",
