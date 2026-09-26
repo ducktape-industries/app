@@ -33,16 +33,16 @@ pub(super) fn answer(
 
 /// This view's file on the network in hand; a view from before the last
 /// (re)connect is refused, so it never writes into the next network's.
-fn file(guest: &Guest) -> Result<PathBuf, wire::Refusal> {
+fn file(guest: &Guest) -> Result<PathBuf, wire::Error> {
     let connection = super::connection().lock().expect("views rpc");
     if connection.rev != guest.connection_rev {
-        return Err(wire::Refusal::new(
+        return Err(wire::Error::new(
             "stale_connection",
             "view belongs to a previous network connection",
         ));
     }
     if connection.chain.is_empty() {
-        return Err(wire::Refusal::new(
+        return Err(wire::Error::new(
             "not_connected",
             "not connected to a network",
         ));
@@ -69,18 +69,18 @@ fn escaped(name: &str) -> String {
         .collect()
 }
 
-fn refusal(reason: &'static str, error: impl std::fmt::Display) -> wire::Refusal {
-    wire::Refusal::new(reason, error.to_string())
+fn refusal(reason: &'static str, error: impl std::fmt::Display) -> wire::Error {
+    wire::Error::new(reason, error.to_string())
 }
 
-fn key(key: &str) -> Result<(), wire::Refusal> {
+fn key(key: &str) -> Result<(), wire::Error> {
     match key.is_empty() {
         true => Err(refusal("malformed_request", "a store key is not empty")),
         false => Ok(()),
     }
 }
 
-fn load(path: &Path) -> Result<Kept, wire::Refusal> {
+fn load(path: &Path) -> Result<Kept, wire::Error> {
     match std::fs::read(path) {
         Ok(bytes) => methods::decode(&bytes).map_err(|error| refusal("host_fault", error)),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Kept::new()),
@@ -165,7 +165,7 @@ mod tests {
         let config = scratch();
         let file = path(&config, "dev#01", "chat");
         assert_eq!(
-            put(&file, "", Some(b"x")).unwrap_err().reason,
+            put(&file, "", Some(b"x")).unwrap_err().code,
             "malformed_request"
         );
         assert!(get(&file, &methods::encode(&String::new())).is_err());

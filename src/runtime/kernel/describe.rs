@@ -1,4 +1,4 @@
-//! `program.describe`: an op as its program says a person reads it. The
+//! `module.describe`: an op as its program says a person reads it. The
 //! program's CURRENT code blob (the roster the app already holds) carries a
 //! wasm module in its `ducktape.describe` section; it is compiled once per
 //! code id and called in a fresh, import-free, fuel- and memory-bounded
@@ -41,7 +41,7 @@ pub(super) fn describe(node: Node, ask: Vec<u8>) -> Answered {
     })
 }
 
-async fn described(node: &Node, program: &str, op: Vec<u8>) -> Result<Description, wire::Refusal> {
+async fn described(node: &Node, program: &str, op: Vec<u8>) -> Result<Description, wire::Error> {
     // a view-only entry is no program: it runs no ops
     let Some((code, false)) = super::super::roster::listed_code(program) else {
         return Ok(None);
@@ -69,14 +69,14 @@ async fn described(node: &Node, program: &str, op: Vec<u8>) -> Result<Descriptio
 }
 
 /// The module in `code`'s describe section, compiled; fetched once per id.
-async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, wire::Refusal> {
+async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, wire::Error> {
     if let Some(known) = modules().lock().expect("describe modules").get(&code) {
         return Ok(known.clone());
     }
     let bytes = match views::program_bytes(&node.client, &code).await {
         Ok(bytes) => bytes,
         // the transport: retried by the node method's loop
-        Err(Fetch::Unreachable(reason)) => return Err(wire::Refusal::new("rpc_client", reason)),
+        Err(Fetch::Unreachable(reason)) => return Err(wire::Error::new("rpc_client", reason)),
         // not held yet, or not the code asked for: nothing now, asked again later
         Err(_) => return Ok(None),
     };
@@ -178,7 +178,7 @@ mod tests {
             .build()
             .unwrap();
         let refused = runtime.block_on(describe(node(), vec![9])).unwrap_err();
-        assert_eq!(refused.reason, "malformed_request");
+        assert_eq!(refused.code, "malformed_request");
         let ask = methods::encode(&("unlisted".to_owned(), vec![1u8]));
         let answer = runtime.block_on(describe(node(), ask)).unwrap();
         assert_eq!(methods::decode::<Description>(&answer), Ok(None));

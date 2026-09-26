@@ -19,15 +19,17 @@ use std::time::Duration;
 
 /// A refusal the NODE or the PROGRAM authored, carried through with its
 /// own token; a transport failure gets the app's.
-pub(crate) fn refused(error: noded::Error) -> view_wire::Refusal {
+pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
     use noded::Error;
     match error {
-        Error::Refused(refusal) => view_wire::Refusal::new(refusal.reason, refusal.sentence),
-        Error::Decode(refusal) => view_wire::Refusal::new("malformed_reply", refusal.sentence),
-        Error::Failed { status, sentence } => {
-            view_wire::Refusal::new("node_failed", format!("{status}: {sentence}"))
+        Error::Refused(refusal) => view_wire::Error::new(refusal.reason, refusal.sentence),
+        Error::Decode(refusal) => {
+            view_wire::Error::new(view_wire::code::UNEXPECTED_REPLY, refusal.sentence)
         }
-        Error::Transport(sentence) => view_wire::Refusal::new("rpc_client", sentence),
+        Error::Failed { status, sentence } => {
+            view_wire::Error::new("node_failed", format!("{status}: {sentence}"))
+        }
+        Error::Transport(sentence) => view_wire::Error::new("rpc_client", sentence),
     }
 }
 

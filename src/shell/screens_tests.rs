@@ -447,7 +447,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         views: [("chat".to_owned(), Permission::Silent)].into(),
     };
     let now = crate::runtime::notify::wall();
-    let post = |title: &str, tag: &str| view_wire::methods::Post {
+    let post = |title: &str, tag: &str| view_wire::methods::Notification {
         title: title.into(),
         body: "@grace look".into(),
         tag: tag.into(),

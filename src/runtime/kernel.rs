@@ -7,7 +7,7 @@
 //! borsh on both sides; the host decodes a request by that type and nothing
 //! else, so there is no per-method parsing here to drift from a view.
 //!
-//! - `program.query` `Call{target, body}` — one query on the connected node:
+//! - `module.query` `Call{target, body}` — one query on the connected node:
 //!   `body` is the payload of a signed frame to `target`, and the bytes the
 //!   program `Respond`ed come back as they are.
 //! - `op.submit` `Call{target, body}` — one op, signed with the SEATED key
@@ -17,16 +17,16 @@
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
 //!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
 //!   height or id (`/v1/block`).
-//! - `invite.mint` `Mint{ttl_days}` — mint once; `Minted{invite, notes}`.
+//! - `invite.create` `CreateInvite{ttl_days}` — mint once; `Invite{invite, notes}`.
 //!   Node refusals retain their tokens.
-//! - `program.changes` `<program>` — a subscription that gets one item per block
+//! - `module.changes` `<program>` — a subscription that gets one item per block
 //!   that wrote to `program` (`/v1/changes/<program>`), so the view re-reads
 //!   what moved.
 //! - `chain.heads` — a subscription that gets one `Head` per finalized block,
 //!   oldest first: the host reads the node's status at half its block
 //!   time and fills each advance from the block archive.
 //! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
-//! - `program.describe` `(program, op)` — the op as the program's own
+//! - `module.describe` `(program, op)` — the op as the program's own
 //!   describe module reads it, or `None` (`describe`).
 //! - `host.session` — subscribes to the session props (`Session`: the seated
 //!   account, theme, chain and read-only endpoint).
@@ -69,26 +69,26 @@ const MAX_REPLY_BYTES: usize = 32 << 20;
 const MAX_STREAM_BACKLOG_EVENTS: usize = MAX_REPLY_EVENTS / 2;
 const MAX_STREAM_BACKLOG_BYTES: usize = MAX_REPLY_BYTES / 2;
 
-fn host_fault(error: impl std::fmt::Display) -> wire::Refusal {
-    wire::Refusal::new("host_fault", error.to_string())
+fn host_fault(error: impl std::fmt::Display) -> wire::Error {
+    wire::Error::new("host_fault", error.to_string())
 }
 
-fn malformed(error: impl std::fmt::Display) -> wire::Refusal {
-    wire::Refusal::new("malformed_request", error.to_string())
+fn malformed(error: impl std::fmt::Display) -> wire::Error {
+    wire::Error::new("malformed_request", error.to_string())
 }
 
 /// A refusal that is the node's word ends the retry loop; one the transport
 /// produced is retried.
-fn unanswered(refusal: wire::Refusal) -> Result<String, wire::Refusal> {
-    match refusal.reason.as_str() {
-        "rpc_client" | "node_failed" => Ok(refusal.sentence),
+fn unanswered(refusal: wire::Error) -> Result<String, wire::Error> {
+    match refusal.code.as_str() {
+        "rpc_client" | "node_failed" => Ok(refusal.message),
         _ => Err(refusal),
     }
 }
 
 /// One answer to a guest: the bytes it asked for, or the refusal that names
 /// why not. Every method in this file hands back exactly this.
-pub(super) type Answer = Result<Vec<u8>, wire::Refusal>;
+pub(super) type Answer = Result<Vec<u8>, wire::Error>;
 
 mod describe;
 mod node;
@@ -167,15 +167,15 @@ pub(super) fn answer(
             guest.route_subscriptions.push(id);
             guest.sync_route();
         }
-        ("program", "query") => spawn(guest, id, payload, query),
+        ("module", "query") => spawn(guest, id, payload, query),
         ("chain", "status") => spawn(guest, id, payload, status),
         ("chain", "blocks") => spawn(guest, id, payload, blocks),
         ("chain", "block") => spawn(guest, id, payload, block),
-        ("invite", "mint") => spawn_once(guest, id, payload, invite),
+        ("invite", "create") => spawn_once(guest, id, payload, invite),
         ("op", "submit") => spawn(guest, id, payload, submit),
         ("blob", "get") => spawn(guest, id, payload, blob_get),
-        ("program", "describe") => spawn(guest, id, payload, describe::describe),
-        ("program", "changes") => live(guest, id, payload),
+        ("module", "describe") => spawn(guest, id, payload, describe::describe),
+        ("module", "changes") => live(guest, id, payload),
         ("chain", "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
         // system browser; any other scheme is refused here, at the method

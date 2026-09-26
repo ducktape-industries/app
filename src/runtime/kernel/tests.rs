@@ -47,7 +47,7 @@ fn refused_with(declared: &[&str], kind: &str) -> Option<String> {
         Some(wire::Event::Response {
             result: Err(refusal),
             ..
-        }) => Some(refusal.reason),
+        }) => Some(refusal.code),
         _ => None,
     }
 }
@@ -117,8 +117,8 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
         };
         assert_eq!(answered, id as u64);
         assert!(done);
-        assert_eq!(refusal.reason, "unknown_request");
-        assert!(refusal.sentence.contains(kind));
+        assert_eq!(refusal.code, "unknown_request");
+        assert!(refusal.message.contains(kind));
     }
     assert!(guest.pending.is_empty());
 }
@@ -145,7 +145,7 @@ fn every_method_is_answered() {
             Some(wire::Event::Response {
                 result: Err(refusal),
                 ..
-            }) => Some(refusal.reason),
+            }) => Some(refusal.code),
             _ => None,
         };
         assert_ne!(
@@ -162,10 +162,10 @@ fn every_method_is_answered() {
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
     let mut guest = guest();
-    assert!(answer(&mut guest, "program", "query", 7, b"not borsh"));
+    assert!(answer(&mut guest, "module", "query", 7, b"not borsh"));
     assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
         id: 7, result: Err(refusal), done: true
-    }) if refusal.reason == "not_connected"));
+    }) if refusal.code == "not_connected"));
 }
 
 #[tokio::test]
@@ -232,8 +232,8 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
         [255, 0, 129]
     );
     let refused = query(node.clone(), ask).await.unwrap_err();
-    assert_eq!(refused.reason, "query_denied");
-    assert_eq!(refused.sentence, "no read");
+    assert_eq!(refused.code, "query_denied");
+    assert_eq!(refused.message, "no read");
     server.join().unwrap();
 
     for ask in [
@@ -243,7 +243,7 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
         call("../registry", b""),
     ] {
         assert_eq!(
-            query(node.clone(), ask).await.unwrap_err().reason,
+            query(node.clone(), ask).await.unwrap_err().code,
             "malformed_request"
         );
     }
@@ -327,7 +327,7 @@ async fn system_status_preserves_borsh_and_refusals() {
     let decoded: methods::NodeStatus = methods::decode(&answer).unwrap();
     assert_eq!(
         (
-            decoded.network.as_str(),
+            decoded.chain_id.as_str(),
             decoded.height,
             decoded.root,
             decoded.contract
@@ -336,7 +336,7 @@ async fn system_status_preserves_borsh_and_refusals() {
     );
     server.join().unwrap();
     assert_eq!(
-        status(node, b"{}".to_vec()).await.unwrap_err().reason,
+        status(node, b"{}".to_vec()).await.unwrap_err().code,
         "malformed_request"
     );
     let (node, server) = node_server(
@@ -346,7 +346,7 @@ async fn system_status_preserves_borsh_and_refusals() {
         None,
     );
     assert_eq!(
-        status(node, Vec::new()).await.unwrap_err().reason,
+        status(node, Vec::new()).await.unwrap_err().code,
         "status_denied"
     );
     server.join().unwrap();
@@ -419,7 +419,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     );
     server.join().unwrap();
     assert_eq!(
-        block(node, b"x".to_vec()).await.unwrap_err().reason,
+        block(node, b"x".to_vec()).await.unwrap_err().code,
         "malformed_request"
     );
 }
@@ -471,7 +471,7 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
             Some(wire::Event::Response {
                 result: Err(refusal),
                 ..
-            }) => Some(refusal.reason),
+            }) => Some(refusal.code),
             _ => None,
         };
         (refused, guest.intents.len())
@@ -500,23 +500,23 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
         "POST /v1/invite HTTP/1.1",
         Some(7),
     );
-    let mint = |ttl_days| methods::encode(&methods::Mint { ttl_days });
+    let mint = |ttl_days| methods::encode(&methods::CreateInvite { ttl_days });
     let answer = invite(node.clone(), mint(7)).await.unwrap();
-    let decoded: methods::Minted = methods::decode(&answer).unwrap();
+    let decoded: methods::Invite = methods::decode(&answer).unwrap();
     assert_eq!(
         decoded,
-        methods::Minted {
+        methods::Invite {
             invite: "paste-me".into(),
-            notes: vec![methods::Note {
-                reason: "local_only".into(),
-                sentence: "Use on this box".into()
+            notes: vec![wire::Error {
+                code: "local_only".into(),
+                message: "Use on this box".into()
             }]
         }
     );
     server.join().unwrap();
     for ask in [Vec::new(), mint(0), b"7".to_vec()] {
         assert_eq!(
-            invite(node.clone(), ask).await.unwrap_err().reason,
+            invite(node.clone(), ask).await.unwrap_err().code,
             "malformed_request"
         );
     }
@@ -533,7 +533,7 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
     ] {
         let (node, server) = node_server(http, body, "POST /v1/invite HTTP/1.1", Some(1));
         let refusal = invite(node, mint(1)).await.unwrap_err();
-        assert_eq!(refusal.reason, reason);
+        assert_eq!(refusal.code, reason);
         server.join().unwrap();
     }
     let (node, server) = node_server(
@@ -543,7 +543,7 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
         Some(1),
     );
     assert_eq!(
-        invite(node, mint(1)).await.unwrap_err().sentence,
+        invite(node, mint(1)).await.unwrap_err().message,
         "This node doesn't mint invites."
     );
     server.join().unwrap();
@@ -556,19 +556,19 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
         Some(1),
     );
     let refusal = invite(node, mint(1)).await.unwrap_err();
-    assert_eq!(refusal.reason, "http_error");
-    assert!(refusal.sentence.starts_with("502"));
+    assert_eq!(refusal.code, "http_error");
+    assert!(refusal.message.starts_with("502"));
     server.join().unwrap();
 }
 
 #[test]
 fn system_kinds_route_to_the_node_handler() {
-    for (capability, operation) in [("chain", "status"), ("invite", "mint")] {
+    for (capability, operation) in [("chain", "status"), ("invite", "create")] {
         let mut guest = guest();
         assert!(answer(&mut guest, capability, operation, 19, b"invalid"));
         assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
             id: 19, result: Err(refusal), done: true
-        }) if refusal.reason == "not_connected"));
+        }) if refusal.code == "not_connected"));
     }
 }
 
@@ -602,7 +602,7 @@ fn host_props_is_program_independent_and_tracks_updates() {
     };
     let decoded: methods::Session = methods::decode(&bytes).unwrap();
     assert_eq!(decoded.endpoint, "http://127.0.0.1:19001");
-    assert_eq!((decoded.key.as_str(), decoded.account), ("abcd", None));
+    assert_eq!((decoded.signer.as_str(), decoded.account), ("abcd", None));
     assert!(decoded.dark);
     // the key's account resolves: the same subscription hears it
     let changed = Some(super::super::props(

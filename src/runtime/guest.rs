@@ -160,7 +160,7 @@ pub(super) struct Guest {
     pub(crate) intents: Vec<Intent>,
     /// The kernel's answers to this guest's node calls, on their way in.
     pub(crate) replies: Arc<kernel::Replies>,
-    /// The guest's `program.changes` subscriptions, each with the plane it named:
+    /// The guest's `module.changes` subscriptions, each with the plane it named:
     /// told on every block that moves that plane.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
     /// Pending host requests and subscriptions, each owned by this guest

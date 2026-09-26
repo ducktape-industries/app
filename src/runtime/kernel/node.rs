@@ -32,7 +32,7 @@ async fn until_answered(budget: std::time::Duration, mut call: impl FnMut() -> A
                 attempts = attempt,
                 "a view's node request got no answer within its retry budget"
             );
-            return Err(wire::Refusal::new(
+            return Err(wire::Error::new(
                 "rpc_client",
                 super::super::NODE_UNREACHABLE,
             ));
@@ -167,7 +167,7 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
     }
 }
 
-/// `program.changes <program>`: one item per block that wrote to the program.
+/// `module.changes <program>`: one item per block that wrote to the program.
 pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
     let program = methods::decode::<String>(payload)
         .unwrap_or_default()
@@ -177,7 +177,7 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
         guest.refuse(
             id,
             "malformed_request",
-            "`program.changes` names no program, or too many",
+            "`module.changes` names no program, or too many",
         );
         return;
     }
@@ -317,7 +317,7 @@ impl Drop for NodeTask {
 
 /// The envelope of a node method, its target checked: a program name, not a
 /// path.
-fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Refusal> {
+fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
     let call: methods::Call = methods::decode(ask).map_err(malformed)?;
     let target = call.target.trim();
     let named = !target.is_empty()
@@ -358,9 +358,7 @@ async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
     let receipt = node.client.submit(frame).await.map_err(refused)?;
     match receipt.outcome {
         abi::Outcome::Applied { output } => Ok(output),
-        abi::Outcome::Rejected(refusal) => {
-            Err(wire::Refusal::new(refusal.reason, refusal.sentence))
-        }
+        abi::Outcome::Rejected(refusal) => Err(wire::Error::new(refusal.reason, refusal.sentence)),
     }
 }
 
@@ -383,7 +381,7 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
         let body =
             backend::noded::unframe(&framed).ok_or_else(|| host_fault("blob has no header"))?;
         if body.len() > MAX_BLOB_BYTES {
-            return Err(wire::Refusal::new(
+            return Err(wire::Error::new(
                 "too_large",
                 "blob exceeds the view's read limit",
             ));
@@ -399,7 +397,7 @@ pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
         }
         let status = node.client.status().await.map_err(refused)?;
         Ok(methods::encode(&methods::NodeStatus {
-            network: status.network,
+            chain_id: status.network,
             time: status.time,
             block_time_ms: status.block_time_ms,
             epoch_length: status.epoch_length,
@@ -415,7 +413,7 @@ pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
 
 pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
-        let ttl = methods::decode::<methods::Mint>(&ask)
+        let ttl = methods::decode::<methods::CreateInvite>(&ask)
             .map_err(malformed)?
             .ttl_days;
         if ttl == 0 {
@@ -426,21 +424,21 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
         // not something to show a person as-is.
         let refusal = |error: ducktape_rpc::Error| {
             if error.reason() == "http_error" && error.status() == Some(404) {
-                return wire::Refusal::new("invite_unsupported", "This node doesn't mint invites.");
+                return wire::Error::new("invite_unsupported", "This node doesn't mint invites.");
             }
-            wire::Refusal::new(error.reason(), error.message())
+            wire::Error::new(error.reason(), error.message())
         };
         let client = ducktape_rpc::Client::new(node.client.endpoint()).map_err(refusal)?;
         let minted = client.mint_invite(ttl).await.map_err(refusal)?;
         let notes = minted
             .notes
             .into_iter()
-            .map(|note| methods::Note {
-                reason: note.reason,
-                sentence: note.sentence,
+            .map(|note| wire::Error {
+                code: note.reason,
+                message: note.sentence,
             })
             .collect();
-        Ok(methods::encode(&methods::Minted {
+        Ok(methods::encode(&methods::Invite {
             invite: minted.invite,
             notes,
         }))
