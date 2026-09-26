@@ -34,6 +34,8 @@
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
 //!   → `forge:web:3`), checked by `valid_route`.
+//! - `host.offset` — subscribes to the reader's UTC offset in minutes,
+//!   from the OS's local time, re-sent when it moves (a DST change).
 //! - `host.visible`, `host.badge`, `link.open`, `host.id`,
 //!   `clock.ticks`, `host.log`, `host.widget` — the app's own methods:
 //!   visibility, the tab badge, the one way out (a `duck://` link, or an
@@ -155,6 +157,24 @@ pub(super) fn answer(
                 done: false,
             });
         }
+        ("host", "offset") => {
+            if !payload.is_empty() {
+                guest.refuse(
+                    id,
+                    "malformed_request",
+                    "offset subscription takes no payload",
+                );
+                return true;
+            }
+            let minutes = offset_minutes();
+            guest.offset_subscriptions.push(id);
+            guest.offset_sent = Some(minutes);
+            guest.pending.push(wire::Event::Response {
+                id,
+                result: Ok(methods::encode(&minutes)),
+                done: false,
+            });
+        }
         ("host", "route") => {
             if !payload.is_empty() {
                 guest.refuse(
@@ -236,6 +256,28 @@ fn openable(link: &str) -> bool {
         link.strip_prefix(scheme)
             .is_some_and(|rest| !rest.is_empty())
     })
+}
+
+/// The UTC offset in seconds the OS keeps for the local time at unix
+/// second `wall`.
+pub(crate) fn local_offset(wall: i64) -> i64 {
+    let time = wall as libc::time_t;
+    // SAFETY: `localtime_r` writes only the `tm` it is handed.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        match libc::localtime_r(&time, &mut tm).is_null() {
+            true => 0,
+            false => tm.tm_gmtoff as i64,
+        }
+    }
+}
+
+/// The reader's UTC offset in minutes now, as `host.offset` hands it.
+pub(super) fn offset_minutes() -> i32 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs() as i64);
+    (local_offset(now) / 60) as i32
 }
 
 pub(super) struct Clock {

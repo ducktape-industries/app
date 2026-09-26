@@ -21,7 +21,7 @@ mod seat;
 mod store;
 mod widget;
 
-pub(crate) use kernel::command_held;
+pub(crate) use kernel::{command_held, local_offset};
 #[cfg(test)]
 pub(crate) use roster::list_for_test;
 pub use roster::{

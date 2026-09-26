@@ -276,20 +276,8 @@ impl DesktopWindow {
 
 /// Unix seconds at the start of the local day `wall` falls in.
 fn local_midnight(wall: i64) -> i64 {
-    let offset = local_offset(wall);
+    let offset = crate::runtime::local_offset(wall);
     (wall + offset).div_euclid(86_400) * 86_400 - offset
-}
-
-fn local_offset(wall: i64) -> i64 {
-    let time = wall as libc::time_t;
-    // SAFETY: `localtime_r` writes only the `tm` it is handed.
-    unsafe {
-        let mut tm: libc::tm = std::mem::zeroed();
-        match libc::localtime_r(&time, &mut tm).is_null() {
-            true => 0,
-            false => tm.tm_gmtoff as i64,
-        }
-    }
 }
 
 /// "now", "14m", "2h", "Yesterday", "3d".

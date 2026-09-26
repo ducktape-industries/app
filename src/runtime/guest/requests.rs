@@ -69,6 +69,9 @@ impl Guest {
         // Queued results precede becoming visible, so a view can distinguish
         // arrivals while hidden from data received after it returns to screen.
         self.sync_visibility();
+        if !self.offset_subscriptions.is_empty() {
+            self.sync_offset(kernel::offset_minutes());
+        }
         self.sync_route();
         if self.staged {
             // a replacement's first tree is already here; only its
@@ -104,6 +107,8 @@ impl Guest {
             }
             self.live_subscriptions.retain(|(live, _)| *live != id);
             self.visibility_subscriptions
+                .retain(|subscription| *subscription != id);
+            self.offset_subscriptions
                 .retain(|subscription| *subscription != id);
             self.route_subscriptions
                 .retain(|subscription| *subscription != id);
