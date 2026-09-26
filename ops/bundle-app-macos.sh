@@ -54,15 +54,15 @@ app="$stage/Ducktape.app"
 contents="$app/Contents"
 mkdir -p "$contents/MacOS" "$contents/Resources" "$stage/Ducktape.iconset"
 install -m 0755 "$release_bin/ducktape-app" "$contents/MacOS/ducktape-app"
-install -m 0644 "$repo/app/packaging/Info.plist" "$contents/Info.plist"
+install -m 0644 "$repo/packaging/Info.plist" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string $version" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $version" "$contents/Info.plist"
-swift "$repo/ops/macos-icon.swift" "$repo/app/assets/icon.svg" "$stage/Ducktape.iconset"
+swift "$repo/ops/macos-icon.swift" "$repo/assets/icon.svg" "$stage/Ducktape.iconset"
 iconutil -c icns "$stage/Ducktape.iconset" -o "$contents/Resources/Ducktape.icns"
 sign_locally() {
   local sign=(--force --sign "$identity")
   if [[ "$identity" != - ]]; then sign+=(--timestamp --options runtime); fi
-  local entitlements="$repo/app/packaging/entitlements.plist"
+  local entitlements="$repo/packaging/entitlements.plist"
   local bundle_id
   bundle_id=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$contents/Info.plist")
   codesign "${sign[@]}" --identifier "$bundle_id" --entitlements "$entitlements" "$contents/MacOS/ducktape-app"

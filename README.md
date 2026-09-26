@@ -23,13 +23,14 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
   `ducktape.view` custom section; the app reads it out, compiles it and
   seats it. The roster's order is the rail's order; a view's manifest names
   its tab. A program without the section is left off the rail.
-- **Relay.** A view asks through the kernel contract (`app/src/module_view/kernel.rs`):
-  `rpc.query`/`rpc.view` `{target, query}`, `op.submit` `{target, payload}`,
-  `rpc.live <program>`, `blob.get`, and the app's own doors (`host.*`,
-  `clock.ticks`, `fs.*`, `clipboard.*`, plus the raw devices —
-  `media.devices`, `audio.capture`/`play`/`write`/`stop`, `video.capture`,
-  `notify.show` — behind a per-program consent prompt and an indicator the
-  view cannot hide). The app forwards the bytes to the
+- **Relay.** A view asks through the kernel contract (`src/runtime/kernel.rs`),
+  every method a borsh type in `view_wire::methods`, named `<capability>.<op>`:
+  `module.query`/`op.submit` `Call{target, body}`, `module.changes <program>`,
+  `module.describe`, `chain.status`/`block`/`blocks`/`heads`, `invite.create`,
+  `blob.get`, `link.open`, `host.widget` (the one MessagePack method: a tree
+  command), and the app's own (`host.*`, `clock.ticks`, `clipboard.*`,
+  `notify.*`, `store.*`). A view reaches only the capabilities its manifest
+  declares. The app forwards the bytes to the
   program the view names and signs writes with the seated key; it never
   reads a payload.
 - **Sign in.** The key file under `$DUCKTAPE_USER_KEY`, else the network's
@@ -40,16 +41,17 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
 
 | Path | What |
 |---|---|
-| `app/src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
-| `app/src/backend/views.rs` | roster → blob → `ducktape.view` section |
-| `app/src/backend/session.rs` | the seated key, its frames, preferences |
-| `app/src/module_view.rs`, `module_view/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
-| `app/src/view_tree.rs`, `editor/` | the wire tree presenter and the one native text field (IME, caret, clipboard) |
-| `app/src/shell.rs`, `ui/` | the window, the two native screens, the state and reducer |
+| `src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
+| `src/backend/views.rs` | roster → blob → `ducktape.view` section |
+| `src/backend/session.rs` | the seated key, its frames, preferences |
+| `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
+| `src/render.rs`, `editor/` | the wire tree presenter and the one native text field (IME, caret, clipboard) |
+| `src/shell.rs`, `ui/` | the window, the two native screens, the state and reducer |
+| `src/shell/{layout,panes,windows}.rs` | one to three views side by side, pop-out into their own windows and back |
 
 ## Dependency line
 
-`ducktape-industries/modules` (`main`, `crates/sdk`): `abi`, `view-wire`, `ducklink`, `design`.
+`ducktape-industries/modules` (`crates/sdk`; pinned by rev to modules `dev` until the next `dev` → `main` promotion): `abi`, `view-wire`, `ducklink`, `design`.
 `ducktape` (`feat/capable-sandbox`): `ducktape-home`, `keystore`.
 
 Out until their upstreams settle: the self-update lane (`app-update`,
