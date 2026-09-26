@@ -199,7 +199,7 @@ pub(crate) async fn sign_in(
 /// — the page does not say which credential answered.
 fn consenting_key(account: &identity::Account, preimage: &[u8], proof: &[u8]) -> Option<Vec<u8>> {
     account
-        .keys()
+        .keys
         .iter()
         .filter(|held| held.scheme == abi::Scheme::Secp256r1)
         .find(|held| KeyScheme::Secp256r1.verify(&held.key, CONSENT_NAMESPACE, preimage, proof))
@@ -840,10 +840,14 @@ mod tests {
         let account = identity::Account {
             number: 12,
             name: "ada".into(),
-            control: identity::Control::Keys(vec![key(&testkit::passkey(6)), key(&sk)]),
             avatar: None,
             bio: None,
             updated_at: 0,
+            keys: vec![key(&testkit::passkey(6)), key(&sk)],
+            module: None,
+            manager: None,
+            status: identity::Status::Active,
+            category: None,
         };
         let proof = assertion.proof();
         let signer = consenting_key(&account, &preimage, &proof).unwrap();
