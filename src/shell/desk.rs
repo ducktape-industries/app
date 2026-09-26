@@ -40,21 +40,30 @@ impl DesktopWindow {
             (state.signer_key.is_empty(), &state.account).hash(&mut hasher);
             hasher.finish()
         };
-        if self.bar_made != made_of {
+        let remade = self.bar_made != made_of;
+        if remade {
             self.bar_made = made_of;
             self.bar_needs = 0.;
         }
         let width = f32::from(window.viewport_size().width);
+        // the strip's overflow is the last frame's layout: of the old words
+        // on the frame that remade the bar
         let over = f32::from(self.rail.max_offset().x);
         if let Some(drawn) = self.bar_drawn
+            && !remade
             && over > 0.
             && drawn + over > self.bar_needs
         {
             self.bar_needs = drawn + over;
-            window.refresh();
         }
         let narrow = width < self.bar_needs;
-        self.bar_drawn = (!narrow).then_some(width);
+        let drawn = (!narrow).then_some(width);
+        // a bar drawn whole at a new width or of new words is measured by
+        // the next frame, so ask for it: nothing else may draw one soon
+        if drawn.is_some() && (remade || drawn != self.bar_drawn) {
+            window.request_animation_frame();
+        }
+        self.bar_drawn = drawn;
         // the desk's size, and on an untouched console the program it opens
         let desk = self.desk(window);
         let layout = self.layout(cx);

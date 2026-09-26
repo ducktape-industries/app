@@ -661,6 +661,29 @@ fn host_offset_hands_the_readers_utc_offset_and_its_moves() {
         panic!("a moved offset is pushed")
     };
     assert_eq!(methods::decode::<i32>(&bytes).unwrap(), minutes + 60);
+    // a subscriber that arrives after a move the others have not heard
+    // brings them up to date with it
+    guest.answer(
+        wire::Request {
+            id: 24,
+            kind: "host.offset".into(),
+            payload: Vec::new(),
+        },
+        &None,
+    );
+    let heard: Vec<_> = guest
+        .pending
+        .drain(..)
+        .map(|event| match event {
+            wire::Event::Response {
+                id,
+                result: Ok(bytes),
+                done: false,
+            } => (id, methods::decode::<i32>(&bytes).unwrap()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(heard, [(23, minutes), (24, minutes)]);
 }
 
 /// Reproduces "Couldn't create this channel: Unexpected length of input":

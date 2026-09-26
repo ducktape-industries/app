@@ -166,9 +166,11 @@ pub(super) fn answer(
                 );
                 return true;
             }
+            // the subscribers already here hear a move first: they share
+            // the one last-sent offset
             let minutes = offset_minutes();
+            guest.sync_offset(minutes);
             guest.offset_subscriptions.push(id);
-            guest.offset_sent = Some(minutes);
             guest.pending.push(wire::Event::Response {
                 id,
                 result: Ok(methods::encode(&minutes)),
