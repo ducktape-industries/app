@@ -28,13 +28,13 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules roles-accounts @ 1ccdd2d8 (Profile carries Kind; wire epoch 1), crates/sdk (abi, view-wire, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "1ccdd2d8ba8b20b22ed14ad8edd56f58175aab50", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "1ccdd2d8ba8b20b22ed14ad8edd56f58175aab50", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "1ccdd2d8ba8b20b22ed14ad8edd56f58175aab50", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "1ccdd2d8ba8b20b22ed14ad8edd56f58175aab50", package = "design" }
+# --- sdk-line: modules dev @ b68c4681 (roles stack merged; Profile carries Kind; wire epoch 1), crates/sdk (abi, view-wire, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "b68c4681c689dd1edb508c99d87a16ee33f3b925", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "b68c4681c689dd1edb508c99d87a16ee33f3b925", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "b68c4681c689dd1edb508c99d87a16ee33f3b925", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "b68c4681c689dd1edb508c99d87a16ee33f3b925", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "1ccdd2d8ba8b20b22ed14ad8edd56f58175aab50", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "b68c4681c689dd1edb508c99d87a16ee33f3b925", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -68,7 +68,7 @@ design.workspace = true
 describe.workspace = true
 sha2.workspace = true
 ducktape-home.workspace = true
-ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", rev = "cfaab4287624b8bf55ccf777559a3231d3b46c05" }
+ducktape-rpc = { git = "https://github.com/ducktape-industries/ducktape", rev = "ffa7db0cb359265be0dfe390d950c7f929d383e4" }
 keystore.workspace = true
 # This device's key, kept by the OS (`backend/device_key.rs`): Keychain,
 # Credential Manager, Secret Service (over zbus, no libdbus to link).
@@ -77,9 +77,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "1ccdd2d8ba8b20b22ed14ad8edd56f58175aab50", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "b68c4681c689dd1edb508c99d87a16ee33f3b925", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "1ccdd2d8ba8b20b22ed14ad8edd56f58175aab50", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "b68c4681c689dd1edb508c99d87a16ee33f3b925", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
