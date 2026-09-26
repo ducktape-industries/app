@@ -23,7 +23,38 @@ impl DesktopWindow {
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
         }
-        let narrow = window.viewport_size().width < px(NARROW_WINDOW_WIDTH);
+        // the bar folds its words once, drawn whole, its tabs ran past their
+        // strip at this width: all of them fold together, none is cut.
+        // `bar_needs` only grows while the bar is made of the same words; new
+        // words (a network switched, a program listed or gone, a sign-in)
+        // measure again, or the bar would stay folded for words it no longer
+        // shows. Badges are left out: they tick while folded, and a
+        // re-measure draws the bar whole for a frame.
+        let made_of = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            state.network.hash(&mut hasher);
+            for row in &rail {
+                (row.module, &row.label, row.note, row.empty).hash(&mut hasher);
+            }
+            (state.signer_key.is_empty(), &state.account).hash(&mut hasher);
+            hasher.finish()
+        };
+        if self.bar_made != made_of {
+            self.bar_made = made_of;
+            self.bar_needs = 0.;
+        }
+        let width = f32::from(window.viewport_size().width);
+        let over = f32::from(self.rail.max_offset().x);
+        if let Some(drawn) = self.bar_drawn
+            && over > 0.
+            && drawn + over > self.bar_needs
+        {
+            self.bar_needs = drawn + over;
+            window.refresh();
+        }
+        let narrow = width < self.bar_needs;
+        self.bar_drawn = (!narrow).then_some(width);
         // the desk's size, and on an untouched console the program it opens
         let desk = self.desk(window);
         let layout = self.layout(cx);
