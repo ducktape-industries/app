@@ -341,6 +341,48 @@ fn command_k_toggles_spotlight_and_escape_closes_any_overlay(cx: &mut TestAppCon
     }
 }
 
+/// What had the keys before something opened over the desk has them again
+/// once it closes, however it closed: typing carries on where it was.
+#[gpui_kit::test]
+fn closing_an_overlay_gives_the_keys_back_to_what_had_them(cx: &mut TestAppContext) {
+    let (model, _, _, mut native) = console(cx);
+    let focused = |native: &mut VisualTestContext| native.update(|window, cx| window.focused(cx));
+    key(&mut native, "tab");
+    let before = focused(&mut native);
+    assert!(before.is_some());
+    key(&mut native, "secondary-k");
+    native.run_until_parked();
+    assert_ne!(
+        focused(&mut native),
+        before,
+        "Spotlight's field takes the keys"
+    );
+    key(&mut native, "escape");
+    native.run_until_parked();
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    assert_eq!(focused(&mut native), before, "Escape");
+    // a bar menu, closed by the model (a click outside, a pick)
+    model.update(&mut native, |model, _| {
+        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node))
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    model.update(&mut native, |model, cx| {
+        model.dispatch(
+            Message::CloseOverlay(crate::Overlay::Menu(crate::Popover::Node)),
+            cx,
+        )
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    assert_eq!(focused(&mut native), before, "a menu");
+}
+
 /// The window in front is the model's active program, however it got
 /// there, and a window's own change asks nothing back of the desk.
 #[gpui_kit::test]

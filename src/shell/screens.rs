@@ -118,7 +118,7 @@ fn digest(text: &str) -> u64 {
 pub(super) fn initials(name: &str) -> String {
     let letters: String = name
         .split_whitespace()
-        .filter_map(|word| word.chars().next())
+        .filter_map(|word| word.chars().find(|c| c.is_alphanumeric()))
         .take(2)
         .flat_map(char::to_uppercase)
         .collect();

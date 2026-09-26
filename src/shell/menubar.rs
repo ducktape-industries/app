@@ -38,43 +38,45 @@ impl DesktopWindow {
                 false => shown,
             };
             let hover = ink.ink;
-            sans(400, 13.)
-                .id(SharedString::from(format!("rail/{module}")))
-                .control(Role::Tab, SharedString::from(name))
-                .aria_selected(selected)
-                .focusable()
-                .tab_stop(true)
-                .h(px(BAR))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .px(px(10.))
-                .cursor_pointer()
-                .text_color(match selected || open.contains(&module) {
-                    true => ink.ink,
-                    false => ink.muted,
-                })
-                .hover(move |style| style.text_color(hover))
-                // a click opens it (into an empty focused window, or its
-                // own); shift-click shows it in the focused window instead
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    match event.modifiers().shift {
-                        true => this.pane_message(PaneMessage::Select(module), window, cx),
-                        false => this.open_view(module, window, cx),
-                    }
-                }))
-                .child(shown)
-                .when(row.note == Some("Failed"), |tab| {
-                    tab.child(div().size(px(5.)).rounded_full().bg(ink.danger))
-                })
-                .when(badge > 0, |tab| {
-                    tab.child(
-                        mono(400, 12.)
-                            .text_color(ink.muted)
-                            .child(badge.to_string()),
-                    )
-                })
+            crate::a11y::focus_shown(
+                sans(400, 13.)
+                    .id(SharedString::from(format!("rail/{module}")))
+                    .focusable()
+                    .tab_stop(true),
+            )
+            .control(Role::Tab, SharedString::from(name))
+            .aria_selected(selected)
+            .h(px(BAR))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(10.))
+            .cursor_pointer()
+            .text_color(match selected || open.contains(&module) {
+                true => ink.ink,
+                false => ink.muted,
+            })
+            .hover(move |style| style.text_color(hover))
+            // a click opens it (into an empty focused window, or its
+            // own); shift-click shows it in the focused window instead
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                match event.modifiers().shift {
+                    true => this.pane_message(PaneMessage::Select(module), window, cx),
+                    false => this.open_view(module, window, cx),
+                }
+            }))
+            .child(shown)
+            .when(row.note == Some("Failed"), |tab| {
+                tab.child(div().size(px(5.)).rounded_full().bg(ink.danger))
+            })
+            .when(badge > 0, |tab| {
+                tab.child(
+                    mono(400, 12.)
+                        .text_color(ink.muted)
+                        .child(badge.to_string()),
+                )
+            })
         });
         let item = |id: &'static str, name: SharedString, open: bool, message: fn() -> Message| {
             let model = self.model.clone();

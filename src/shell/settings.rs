@@ -10,7 +10,11 @@ impl DesktopWindow {
     /// The dialog: `760 × 680; border: 1.5px solid ink` (the board's 540,
     /// taller so every view's row fits), a 34px title strip with its close, on a scrim below the bar. A click on the scrim, or
     /// Escape, closes it.
-    pub(super) fn settings(&mut self, state: &screens::Facts) -> gpui_kit::AnyElement {
+    pub(super) fn settings(
+        &mut self,
+        state: &screens::Facts,
+        window: &Window,
+    ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         // the Settings board: nav `padding: 12px 8px; gap: 2px`, each
         // entry `padding: 8px 14px; font: 400 14px`; the page `24px 32px`
@@ -126,6 +130,8 @@ impl DesktopWindow {
                         gpui_kit::component::Icon::new(gpui_kit::assets::IconName::X).size(px(16.)),
                     ),
             ));
+        let (top, tall) =
+            super::desk::dialog_fit(f32::from(window.viewport_size().height), 680., 74.);
         self.overlay(
             "settings-window",
             Role::Dialog,
@@ -134,11 +140,11 @@ impl DesktopWindow {
             true,
             &ink,
             |card| {
-                card.mt(px(74.))
+                card.mt(px(top))
                     .w(px(760.))
                     .h(px(680.))
                     .max_w_full()
-                    .max_h_full()
+                    .max_h(px(tall))
                     .self_start()
                     .child(title)
                     .child(body)
@@ -282,13 +288,12 @@ impl DesktopWindow {
         div()
             .flex()
             .flex_col()
-            .child(sans(400, 22.).child("Notifications"))
+            .child(heading("Notifications", &ink))
             .child(
                 ink::note(
                     "On this device. Views ask; Ducktape decides what reaches the screen.",
                     ink.muted,
                 )
-                .pt(px(4.))
                 .pb(px(12.))
                 .border_b_1()
                 .border_color(ink.line),

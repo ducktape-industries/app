@@ -291,6 +291,9 @@ fn initials_take_the_first_letter_of_two_words() {
     assert_eq!(initials("ada"), "A");
     assert_eq!(initials("  "), "?");
     assert_eq!(initials("émile zola"), "ÉZ");
+    // a word's first letter or digit, not its punctuation
+    assert_eq!(initials("Dev #7"), "D7");
+    assert_eq!(initials("# ?"), "?");
 }
 
 /// The field state outlives the model's copy of a secret: after "Read

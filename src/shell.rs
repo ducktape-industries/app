@@ -540,6 +540,13 @@ pub(crate) struct DesktopWindow {
     /// ⌘K's field took focus when it opened; it is not taken again while
     /// Spotlight stays open.
     spotlight_focused: bool,
+    /// ⌘K's list: ↑↓ scroll the picked row into it.
+    spotlight_rows: gpui_kit::ScrollHandle,
+    /// What was open over the desk when it was last drawn.
+    covered: Option<crate::Overlay>,
+    /// What had the keys when something opened over the desk: they go back
+    /// to it when it closes, so typing carries on where it was.
+    refocus: Option<gpui_kit::FocusHandle>,
     /// Where the bar's menu buttons were last painted: each menu hangs
     /// under its own.
     bar_buttons: HashMap<crate::Overlay, gpui_kit::Bounds<gpui_kit::Pixels>>,

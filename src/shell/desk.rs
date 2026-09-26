@@ -95,7 +95,7 @@ impl DesktopWindow {
             None => None,
             Some(Overlay::Spotlight) => Some(self.spotlight(&state, window, cx)),
             Some(Overlay::Approve) => Some(self.approve(&state, window, cx)),
-            Some(Overlay::Settings) => Some(self.settings(&state)),
+            Some(Overlay::Settings) => Some(self.settings(&state, window)),
             Some(Overlay::Network) => Some(self.network_menu(&state, narrow, window)),
             Some(Overlay::Menu(Popover::Node)) => Some(self.node_menu(&state, window, cx)),
             Some(Overlay::Menu(Popover::Account)) => Some(self.account_menu(&state, window, cx)),
@@ -106,6 +106,16 @@ impl DesktopWindow {
         if state.overlay != Some(Overlay::Spotlight) {
             self.spotlight_focused = false;
         }
+        match (self.covered, state.overlay.filter(|_| console)) {
+            (None, Some(_)) => self.refocus = window.focused(cx),
+            (Some(_), None) => {
+                if let Some(handle) = self.refocus.take() {
+                    window.defer(cx, move |window, cx| handle.focus(window, cx));
+                }
+            }
+            _ => {}
+        }
+        self.covered = state.overlay.filter(|_| console);
         div()
             .id("console")
             .size_full()
@@ -187,6 +197,14 @@ impl DesktopWindow {
         };
         let overlay = Overlay::Menu(which);
         let at = self.under_button(overlay, Anchor::TopRight, window);
+        // a short window scrolls the menu rather than cutting it off
+        // (the card's 1.5px border above and below it)
+        let room = f32::from(window.viewport_size().height) - BAR - 8. - 3.;
+        let body = div()
+            .id(SharedString::from(format!("{id}-body")))
+            .max_h(px(room.max(0.)))
+            .overflow_y_scroll()
+            .child(body);
         self.overlay(id, Role::Dialog, name, overlay, false, &ink, |card| {
             at.child(card.w(px(width)).child(body)).into_any_element()
         })
@@ -266,5 +284,31 @@ impl DesktopWindow {
     ) -> impl Fn(&mut gpui_kit::App) + 'static {
         let model = self.model.clone();
         move |cx| model.update(cx, |model, cx| model.dispatch(message(), cx))
+    }
+}
+
+/// A dialog `tall` high in a window `high` high, hung `top` below the bar
+/// when the window has room for it, higher (not under 12px) when it hasn't:
+/// where its top goes, and the height it may take so its bottom stays 12px
+/// inside the window.
+pub(super) fn dialog_fit(high: f32, tall: f32, top: f32) -> (f32, f32) {
+    let room = high - BAR;
+    let top = (room - tall - 12.).clamp(12., top);
+    (top, (room - top - 12.).max(0.))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dialog_rises_then_shrinks_to_stay_inside_a_short_window() {
+        // room for it: where the design hangs it, whole
+        assert_eq!(dialog_fit(800., 680., 74.), (72., 680.));
+        assert_eq!(dialog_fit(1000., 680., 74.), (74., 878.));
+        // the smallest window: as high as it goes, and no taller than what is left
+        let (top, tall) = dialog_fit(480., 680., 74.);
+        assert_eq!(top, 12.);
+        assert_eq!(BAR + top + tall + 12., 480.);
     }
 }
