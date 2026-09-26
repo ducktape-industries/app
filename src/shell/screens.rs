@@ -503,7 +503,7 @@ impl DesktopWindow {
             figure::Figure::Node,
             caption.into(),
             None,
-            "[01 / 04] Network".into(),
+            "[01 / 03] Network".into(),
             "Connect to a network".into(),
             Some("Any node on it will do. The node serves the programs you use and keeps your account.".into()),
             std::iter::once(form.into_any_element()).chain(recent).collect(),
