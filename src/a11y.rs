@@ -26,10 +26,19 @@ pub fn keyboard<E: StatefulInteractiveElement>(element: E) -> E {
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
 }
 
-/// The mark a control reached by the keyboard wears: a grey wash that reads
-/// on the light theme and the dark one alike, and moves nothing.
+/// The mark a control reached by the keyboard wears: a grey ring inside its
+/// edge, which reads on the light theme and the dark one alike, over a
+/// filled button as over a bare word, and moves nothing.
 pub fn focus_shown<E: InteractiveElement>(element: E) -> E {
-    element.focus_visible(|style| style.bg(gpui_kit::hsla(0., 0., 0.5, 0.22)))
+    element.focus_visible(|style| {
+        style.shadow(vec![gpui_kit::BoxShadow {
+            color: gpui_kit::hsla(0., 0., 0.5, 1.),
+            offset: gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+            blur_radius: gpui_kit::px(0.),
+            spread_radius: gpui_kit::px(2.),
+            inset: true,
+        }])
+    })
 }
 
 /// The accessibility setters of any interactive element, kit widgets that
