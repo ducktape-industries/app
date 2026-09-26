@@ -156,6 +156,8 @@ pub enum BlockRef {
 }
 
 /// `wire::Tx`: one applied frame; `hash` is sha256 of the frame's bytes.
+/// `receipt` is its run, where the node kept the block's receipts (none
+/// below a state-sync anchor).
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Tx {
     pub hash: [u8; 32],
@@ -163,6 +165,7 @@ pub struct Tx {
     pub seq: u64,
     pub target: String,
     pub payload: Vec<u8>,
+    pub receipt: Option<Receipt>,
 }
 
 /// `wire::Finalized`: a block as the node's marshal archive keeps it.
