@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
-use identity::{Admission, CONSENT_NAMESPACE, Consent, Op, Query, Reply};
+use identity::{Admission, CONSENT_NAMESPACE, Consent, Control, Op, Query, Reply};
 use keyscheme::KeyScheme;
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
@@ -76,7 +76,10 @@ pub(crate) async fn create_account(
     )
     .await?
     {
-        Reply::Number(Some(number)) => number,
+        Reply::Number(Some(number)) => {
+            person(&get(client, network, number).await?)?;
+            number
+        }
         _ => create_seated(client, network, name).await?,
     };
     let passkey = created(
@@ -156,14 +159,8 @@ pub(crate) async fn sign_in(
 ) -> Result<(), String> {
     let hint = asserted(rand::random(), phone).await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
-    let account = match ask(client, network, Query::Get { number }).await? {
-        Reply::Account(Some(account)) => account,
-        _ => {
-            return Err(format!(
-                "This passkey names an account {network} does not have."
-            ));
-        }
-    };
+    let account = get(client, network, number).await?;
+    person(&account)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = Admission {
         network: network.as_bytes().to_vec(),
@@ -195,11 +192,38 @@ pub(crate) async fn sign_in(
     submit_seated(client, network, &add).await.map(drop)
 }
 
+/// The account `number` on `network`.
+async fn get(client: &RpcClient, network: &str, number: u64) -> Result<identity::Account, String> {
+    match ask(client, network, Query::Get { number }).await? {
+        Reply::Account(Some(account)) => Ok(account),
+        _ => Err(format!("This names an account {network} does not have.")),
+    }
+}
+
+/// A passkey flow is a person's: their own keys join their own account. An
+/// agent's keys are its manager's to add, and a module's account holds
+/// none, so a device key that holds either is told so instead of sending
+/// an `AddKey` identity would refuse.
+fn person(account: &identity::Account) -> Result<(), String> {
+    let name = &account.card.name;
+    match &account.control {
+        Control::Person { .. } => Ok(()),
+        Control::Managed { manager, .. } => Err(format!(
+            "This key belongs to {name} (account {}), an agent managed by account {manager}. \
+             Passkeys are for a person's own account: sign in with a person's key.",
+            account.number
+        )),
+        Control::Module { module } => Err(format!(
+            "This key belongs to the account of the module {module}, which takes no passkey."
+        )),
+    }
+}
+
 /// Which of `account`'s passkeys signed `proof` over the consent `preimage`
 /// — the page does not say which credential answered.
 fn consenting_key(account: &identity::Account, preimage: &[u8], proof: &[u8]) -> Option<Vec<u8>> {
     account
-        .keys
+        .keys()
         .iter()
         .filter(|held| held.scheme == abi::Scheme::Secp256r1)
         .find(|held| KeyScheme::Secp256r1.verify(&held.key, CONSENT_NAMESPACE, preimage, proof))
@@ -250,7 +274,7 @@ pub(crate) async fn account_of_key(
         _ => return Ok(None),
     };
     match ask(client, network, Query::Get { number }).await? {
-        Reply::Account(Some(account)) => Ok(Some((number, account.name))),
+        Reply::Account(Some(account)) => Ok(Some((number, account.card.name))),
         _ => Ok(None),
     }
 }
@@ -839,15 +863,15 @@ mod tests {
         };
         let account = identity::Account {
             number: 12,
-            name: "ada".into(),
-            avatar: None,
-            bio: None,
-            updated_at: 0,
-            keys: vec![key(&testkit::passkey(6)), key(&sk)],
-            module: None,
-            manager: None,
-            status: identity::Status::Active,
-            category: None,
+            card: identity::Card {
+                name: "ada".into(),
+                avatar: None,
+                bio: None,
+                updated_at: 0,
+            },
+            control: Control::Person {
+                keys: vec![key(&testkit::passkey(6)), key(&sk)],
+            },
         };
         let proof = assertion.proof();
         let signer = consenting_key(&account, &preimage, &proof).unwrap();
