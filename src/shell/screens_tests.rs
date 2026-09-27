@@ -1,6 +1,6 @@
 //! AX-tree coverage for the shell's own screens: a native input reports its
-//! current text as the AX value (a secret one masked by the door, never
-//! dropped), an error alert carries a name (`aria_label`), and every screen
+//! current text as the AX value (a private one masked by the door, a
+//! password's none), an error alert carries a name (`aria_label`), and every screen
 //! state passes the phase-1 audit ([`gate`]).
 use super::*;
 
@@ -515,4 +515,36 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     find(&nodes, "Switch", "Desktop banners");
     find(&nodes, "RadioGroup", "Burst limit");
     center().clear_read();
+}
+
+/// A press inside an overlay's card stays inside: the card offers no press
+/// of its own (AX-012), and the backdrop's click does not close it.
+#[gpui_kit::test]
+fn a_click_inside_an_overlay_card_leaves_it_open(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    // one under a scrim, one hanging from the bar
+    for (overlay, name) in [
+        (crate::Overlay::Settings, "Settings"),
+        (crate::Overlay::Menu(crate::Popover::Node), "Node status"),
+    ] {
+        let mut state = gate::desk();
+        state.overlay = Some(overlay);
+        let (view, mut native) = open(state, cx);
+        let nodes = native.update(|window, cx| {
+            draw(window, cx);
+            serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+        });
+        let card = find(&nodes, "Dialog", name);
+        let at = |n: usize| card["bounds"][n].as_f64().unwrap() as f32;
+        // just inside the card's corner: its padding, no control
+        native.simulate_click(
+            gpui_kit::point(px(at(0) + 8.), px(at(1) + 8.)),
+            gpui_kit::Modifiers::none(),
+        );
+        let open = native.update(|_, cx| view.read(cx).model.read(cx).state.overlay);
+        assert_eq!(open, Some(overlay), "a click inside {name} closed it");
+    }
 }

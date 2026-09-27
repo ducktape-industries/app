@@ -33,7 +33,7 @@ fn booted(stage: Stage, key: bool) -> Ducktape {
     state
 }
 
-fn desk() -> Ducktape {
+pub(super) fn desk() -> Ducktape {
     let mut state = booted(Stage::Desk, true);
     state.connected = true;
     state.network = "testkit".into();

@@ -196,6 +196,9 @@ impl DesktopWindow {
         let card = div()
             .id(id)
             .control(role, name)
+            // a press inside the card stays inside: occluded, the backdrop
+            // is not under the pointer and its click never fires. No
+            // `on_click` here: that would offer a press on the dialog.
             .occlude()
             .flex()
             .flex_col()
@@ -203,11 +206,7 @@ impl DesktopWindow {
             .text_color(ink.ink)
             .border(px(1.5))
             .border_color(ink.ink)
-            .shadow_lg()
-            // a press inside the card stays inside: the backdrop's click
-            // (`on_click` needs the down it never sees) does not close it.
-            // Not an `on_click` here: that would offer a press on the dialog.
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
+            .shadow_lg();
         match scrim {
             // modal to assistive technology as to the keyboard: what is
             // behind the scrim is not reachable
