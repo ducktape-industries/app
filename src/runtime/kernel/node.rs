@@ -30,8 +30,8 @@ fn transport_failed(refusal: &wire::Error) -> bool {
 }
 
 /// Only a refusal that proves no frame went out is retried (a connect
-/// failure, `backend::refused`; or any failure of the sequence read that
-/// comes before the frame, `submitted`). For a WRITE: a request the node
+/// failure, `backend::refused`; or a transport failure of the sequence read
+/// that comes before the frame, `submitted`). For a WRITE: a request the node
 /// may have applied is not signed and sent again — the sequence moved, so
 /// the node would apply it twice.
 fn unsent(refusal: &wire::Error) -> bool {
