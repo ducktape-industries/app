@@ -657,7 +657,7 @@ impl DesktopWindow {
 
 impl Render for DesktopWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_kit::InteractiveElement as _;
+        use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
         let content = match self.kind {
             WindowKind::View { .. } => self.console(window, cx),
             WindowKind::Console => {
@@ -676,7 +676,13 @@ impl Render for DesktopWindow {
         let mut root = gpui_kit::div();
         root.text_style().font_fallbacks = Some(fallback_chain());
         root.text_style().font_family = Some(theme::FAMILY_UI.into());
-        let root = root.id("desktop-root");
+        // the window's root takes the keys whenever nothing inside has them
+        // (a screen gave way, a pane moved): named, so assistive technology
+        // says where the keys are instead of reading the whole window out
+        let root = root
+            .id("desktop-root")
+            .role(gpui_kit::Role::Group)
+            .aria_label("Ducktape");
         self.on_keys(root, cx)
             .size_full()
             .bg(ink.bg)
