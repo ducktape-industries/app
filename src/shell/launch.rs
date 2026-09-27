@@ -1,7 +1,7 @@
 //! App start: the gpui application, the `Desktop` model and the console
 //! window, with every outside source of events pumped into
 //! `Desktop::dispatch`: open-URL requests, the tray, a window closing, the
-//! AX door, and the native `Command` channel. Fonts and the theme are
+//! AX door, and the native `NativeCommand` channel. Fonts and the theme are
 //! registered here too.
 
 use super::*;

@@ -2,7 +2,7 @@
 //! behind a password from before. See launcher.rs for key vs account.
 
 use super::ink::{self, *};
-use super::launcher::{buttons, closing, where_};
+use super::launcher::{buttons, closing, node_caption};
 use super::*;
 use facts::Facts;
 use figure::Figure;
@@ -127,7 +127,7 @@ impl DesktopWindow {
             "sign-in",
             false,
             Figure::Ring,
-            where_(state),
+            node_caption(state),
             Some(("disconnect", "Other networks", || Message::Disconnect)),
             label,
             headline,

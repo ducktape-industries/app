@@ -3,7 +3,7 @@
 //! three of them asked back (`phrase_check`).
 
 use super::ink::{self, *};
-use super::launcher::{buttons, where_};
+use super::launcher::{buttons, node_caption};
 use super::*;
 use facts::Facts;
 use figure::Figure;
@@ -79,8 +79,8 @@ impl DesktopWindow {
         self.launcher(
             "recover",
             false,
-            Figure::Sheets,
-            where_(state),
+            Figure::Card,
+            node_caption(state),
             Some(("recover-back", "← Back", || Message::RecoverCancel)),
             "[03 / 03] Account · recovery key".into(),
             format!("Your {} recovery key", state.network),
@@ -162,7 +162,7 @@ impl DesktopWindow {
         self.launcher(
             "recovery",
             true, // tight: the 24 words need the room
-            Figure::Sheets,
+            Figure::Card,
             "Twenty-four words, on paper.".into(),
             None,
             "Recovery key".into(),
@@ -267,7 +267,7 @@ impl DesktopWindow {
         self.launcher(
             "recovery-check",
             false,
-            Figure::Sheets,
+            Figure::Card,
             "Twenty-four words, on paper.".into(),
             None,
             "Recovery key · check".into(),

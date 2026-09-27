@@ -60,7 +60,7 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
+        let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
         // The canvas draws a title bar. macOS lends the window's own
         // (transparent, the traffic lights in it); elsewhere the system's
@@ -210,7 +210,7 @@ pub(super) fn closing(
 }
 
 /// The node reached, as the drawing's caption: "testkit · 127.0.0.1:8844".
-pub(super) fn where_(state: &Facts) -> String {
+pub(super) fn node_caption(state: &Facts) -> String {
     let host = crate::backend::host_of(&state.connected_rpc);
     format!("{} · {host}", state.network)
 }

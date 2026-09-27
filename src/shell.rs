@@ -9,7 +9,7 @@
 //! floating under it, with the open overlay (⌘K, a menu, Settings) on top.
 //!
 //! The reducer's tasks run without `&mut App`, so they cannot touch a
-//! window. They ask for a native effect through the `Command` channel
+//! window. They ask for a native effect through the `NativeCommand` channel
 //! below; `launch::run` pumps it into `Desktop::execute` on the window
 //! thread.
 
@@ -96,7 +96,7 @@ pub(crate) fn chord_label(key: &str) -> String {
 /// they send one of these over a channel; `launch::run` pumps it into
 /// `Desktop::execute` on the window thread. `send` waits until it ran;
 /// `post` does not, and works from any thread.
-pub(crate) enum Command {
+pub(crate) enum NativeCommand {
     Open {
         key: WindowKey,
         kind: WindowKind,
@@ -121,7 +121,7 @@ pub(crate) enum Command {
 
 /// A command on the channel, and the pump's word that it ran.
 pub(crate) struct PendingCommand {
-    pub command: Command,
+    pub command: NativeCommand,
     pub completed: oneshot::Sender<()>,
 }
 
@@ -138,13 +138,13 @@ pub(crate) fn commands() -> mpsc::UnboundedReceiver<PendingCommand> {
     assert!(current.is_none(), "one native shell per process");
     // runtime::notify and backend::passkey cannot depend on shell: they
     // call these hooks instead
-    crate::runtime::notify::on_open_link(open_link);
-    crate::backend::passkey::on_open_url(open_url_now);
+    crate::runtime::notify::on_open_link(post_open_link);
+    crate::backend::passkey::on_open_url(post_open_url);
     *current = Some(send);
     receive
 }
 
-async fn send(command: Command) {
+async fn send(command: NativeCommand) {
     let (completed, received) = oneshot::channel();
     let pending = PendingCommand { command, completed };
     let sent = sender()
@@ -172,7 +172,7 @@ pub(crate) fn open_at(
     let task = Task::stream(
         futures::stream::once(async move {
             let (reply, receive) = oneshot::channel();
-            send(Command::Open {
+            send(NativeCommand::Open {
                 key,
                 kind,
                 at,
@@ -186,7 +186,7 @@ pub(crate) fn open_at(
     (key, task)
 }
 
-fn effect<M: 'static>(command: Command) -> Task<M> {
+fn effect<M: 'static>(command: NativeCommand) -> Task<M> {
     Task::future(async move {
         send(command).await;
     })
@@ -194,44 +194,44 @@ fn effect<M: 'static>(command: Command) -> Task<M> {
 }
 
 pub(crate) fn raise<M: 'static>(key: WindowKey) -> Task<M> {
-    effect(Command::Raise(key))
+    effect(NativeCommand::Raise(key))
 }
 
 pub(crate) fn close<M: 'static>(key: WindowKey) -> Task<M> {
-    effect(Command::Close(key))
+    effect(NativeCommand::Close(key))
 }
 
 pub(crate) fn swap_console<M: 'static>() -> Task<M> {
-    effect(Command::SwapConsole)
+    effect(NativeCommand::SwapConsole)
 }
 
 pub(crate) fn sync_appearance<M: 'static>() -> Task<M> {
-    effect(Command::SyncAppearance)
+    effect(NativeCommand::SyncAppearance)
 }
 
 pub(crate) fn quit<M: 'static>() -> Task<M> {
-    effect(Command::Quit)
+    effect(NativeCommand::Quit)
 }
 
 /// A web page, in the system browser.
 pub(crate) fn open_url<M: 'static>(url: String) -> Task<M> {
-    effect(Command::OpenUrl(url))
+    effect(NativeCommand::OpenUrl(url))
 }
 
 /// A link pressed off the window thread (a banner's click), handed to the
 /// reducer as `Message::OpenLink`.
-fn open_link(url: String) {
-    post(Command::OpenLink(url));
+fn post_open_link(url: String) {
+    post(NativeCommand::OpenLink(url));
 }
 
 /// A web page for the system browser, asked for off the window thread
 /// (the passkey ceremony's page).
-fn open_url_now(url: String) {
-    post(Command::OpenUrl(url));
+fn post_open_url(url: String) {
+    post(NativeCommand::OpenUrl(url));
 }
 
 /// A command sent without waiting for it to be done.
-fn post(command: Command) {
+fn post(command: NativeCommand) {
     let (completed, _dropped) = oneshot::channel();
     let pending = PendingCommand { command, completed };
     let sent = sender()
@@ -507,28 +507,28 @@ impl Desktop {
         }
     }
 
-    fn execute(&mut self, command: Command, cx: &mut Context<Self>) {
+    fn execute(&mut self, command: NativeCommand, cx: &mut Context<Self>) {
         match command {
-            Command::Open {
+            NativeCommand::Open {
                 key,
                 kind,
                 at,
                 reply,
             } => self.open_window(key, kind, reply, at, cx),
-            Command::Raise(key) => self.raise_window(key, cx),
-            Command::Close(key) => {
+            NativeCommand::Raise(key) => self.raise_window(key, cx),
+            NativeCommand::Close(key) => {
                 if let Some(handle) = self.windows.get(&key) {
                     remove(*handle, cx);
                 }
             }
-            Command::SwapConsole => self.swap_console(cx),
-            Command::SyncAppearance => {
+            NativeCommand::SwapConsole => self.swap_console(cx),
+            NativeCommand::SyncAppearance => {
                 self.sync_appearance(cx);
                 cx.notify();
             }
-            Command::OpenLink(link) => self.dispatch(Message::OpenLink(link), cx),
-            Command::OpenUrl(url) => cx.open_url(&url),
-            Command::Quit => self.quit(cx),
+            NativeCommand::OpenLink(link) => self.dispatch(Message::OpenLink(link), cx),
+            NativeCommand::OpenUrl(url) => cx.open_url(&url),
+            NativeCommand::Quit => self.quit(cx),
         }
     }
 
@@ -585,7 +585,7 @@ pub(crate) struct DesktopWindow {
     /// ⌘K's list: ↑↓ scroll the picked row into it.
     spotlight_rows: gpui_kit::ScrollHandle,
     /// An empty window's field, made the first time one shows.
-    command: Option<command::Command>,
+    command: Option<command::CommandLine>,
     /// What was open over the desk when it was last drawn.
     covered: Option<crate::Overlay>,
     /// What had the keys when something opened over the desk: they go back
@@ -704,16 +704,16 @@ impl Render for DesktopWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
         let content = match self.kind {
-            WindowKind::View { .. } => self.console(window, cx),
+            WindowKind::View { .. } => self.desk_view(window, cx),
             WindowKind::Console => {
-                let state = self.model.read(cx).state.clone_facts();
+                let state = self.model.read(cx).state.facts();
                 match self.model.read(cx).state.stage {
                     Stage::Connect => self.connect(window, cx),
                     Stage::Phrase(_) => self.phrase(&state, window, cx),
                     Stage::Unlock(_) => self.unlock(&state, window, cx),
                     Stage::Recover(_) => self.recover(&state, window, cx),
                     Stage::Account(_) => self.account_step(&state, window, cx),
-                    Stage::Desk => self.console(window, cx),
+                    Stage::Desk => self.desk_view(window, cx),
                 }
             }
         };

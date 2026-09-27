@@ -50,7 +50,7 @@ pub(crate) struct Facts {
 }
 
 impl Ducktape {
-    pub(crate) fn clone_facts(&self) -> Facts {
+    pub(crate) fn facts(&self) -> Facts {
         Facts {
             dark: self.dark(),
             endpoint_error: self.endpoint_error.clone(),

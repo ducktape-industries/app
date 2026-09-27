@@ -3,7 +3,7 @@
 //! device (`link_waiting`). See launcher.rs for key vs account.
 
 use super::ink::{self, *};
-use super::launcher::{buttons, closing, where_};
+use super::launcher::{buttons, closing, node_caption};
 use super::*;
 use facts::Facts;
 use figure::Figure;
@@ -143,7 +143,7 @@ impl DesktopWindow {
             "account-step",
             false,
             Figure::Pair,
-            where_(state),
+            node_caption(state),
             None,
             "[03 / 03] Account".into(),
             "What should people call you?".into(),
@@ -262,7 +262,7 @@ impl DesktopWindow {
             "passkey-waiting",
             false,
             Figure::Pair,
-            where_(state),
+            node_caption(state),
             None,
             "[03 / 03] Account · passkey".into(),
             title.into(),
@@ -326,7 +326,7 @@ impl DesktopWindow {
             "link-waiting",
             false,
             Figure::Pair,
-            where_(state),
+            node_caption(state),
             // the step back reads as recovery's: the same way to the account
             Some(("link-back", "← Back", || Message::LinkCancel)),
             "[03 / 03] Account · another device".into(),

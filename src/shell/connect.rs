@@ -13,7 +13,7 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use super::ink::{self, *};
         use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
+        let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
         let field = self.input(
             "endpoint",

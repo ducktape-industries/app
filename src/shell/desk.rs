@@ -15,13 +15,13 @@ impl DesktopWindow {
     /// The desk, in the console and in a pop-out alike: the bar (console
     /// only), the panes, the open overlay, the footer. Reached with an
     /// unlocked key, or by choosing to read without one.
-    pub(super) fn console(
+    pub(super) fn desk_view(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
+        let state = self.model.read(cx).state.facts();
         let rail = crate::runtime::rail();
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
