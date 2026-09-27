@@ -100,8 +100,9 @@ impl Ducktape {
     /// console window is opened.
     /// Help on the desk: into the focused window if it is empty, else
     /// where it already is, else a window of its own. A new account starts
-    /// here.
-    pub(super) fn open_help(&mut self) {
+    /// here, greeted (`welcome`).
+    pub(super) fn open_help(&mut self, welcome: bool) {
+        self.welcome = welcome;
         if let Some(desk) = self.desk_layout() {
             desk.open(super::layout::HELP);
             desk.settle();

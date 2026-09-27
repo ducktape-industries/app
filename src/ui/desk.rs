@@ -23,7 +23,7 @@ impl Ducktape {
                 if matches!(self.overlay, Some(super::Overlay::Menu(_))) {
                     self.overlay = None;
                 }
-                self.open_help();
+                self.open_help(false);
                 Task::none()
             }
             Message::SelectView(module) => {

@@ -381,8 +381,10 @@ mod tests {
         assert_eq!(state.stage.step(), "Desk");
         assert_eq!(modules(&state), [crate::ui::layout::HELP]);
         assert_eq!(state.active, None, "help is no program");
+        assert!(state.welcome, "a new account is greeted");
         let _ = state.update(Message::OpenHelp);
         assert_eq!(modules(&state), [crate::ui::layout::HELP], "not twice");
+        assert!(!state.welcome, "asked for, help is just help");
 
         let mut later = signing_in();
         later.console_win = Some(crate::shell::WindowKey::unique());
