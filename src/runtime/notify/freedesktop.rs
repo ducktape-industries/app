@@ -156,7 +156,7 @@ pub(super) fn withdraw(tag: &str) {
 /// One `Notify` request: `(app_name, replaces_id, app_icon, summary,
 /// body, actions, hints, expire_timeout)` → the banner's id. A banner
 /// that opens something declares the default action, a click on it.
-pub(super) fn notify(
+fn notify(
     bus: &zbus::blocking::Connection,
     notice: &Notice,
     replaces: u32,

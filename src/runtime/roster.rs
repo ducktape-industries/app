@@ -144,15 +144,6 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
         connection.chain = chain.to_owned();
         connection.clone()
     };
-    let registry = registry().lock().expect("module views");
-    for mounted in registry.values() {
-        mounted
-            .lock()
-            .expect("module view lock")
-            .changes
-            .send_replace(());
-    }
-    drop(registry);
     Loads {
         _threads: vec![spawn_roster_read(snapshot)],
     }
@@ -222,7 +213,6 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                     let mut retired = retired.lock().expect("module view lock");
                     retired.generation += 1;
                     retired.slot = Slot::Empty;
-                    retired.changes.send_replace(());
                 }
                 if gone.1 == 0 {
                     registry.remove(&gone);

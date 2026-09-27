@@ -10,21 +10,11 @@ pub struct Loads {
 /// Shared by the tab's widget on the window thread and the loader thread,
 /// which swaps a finished load in place; the tab polls it while loading.
 pub(super) struct Mounted {
-    pub(super) changes: tokio::sync::watch::Sender<()>,
     /// The connection this seat was last asked of.
     pub(super) rev: u64,
     pub(super) slot: Slot,
     pub(super) props: Option<Vec<u8>>,
     pub(super) generation: u64,
-    /// The deployment the slot answers for — the view drawn, or the empty
-    /// slot of a deployment without one — so a block moves it only when the
-    /// active code moved. A load that failed never seated anything, so it
-    /// leaves this alone and is held off by `retry` instead.
-    pub(super) hash: Option<[u8; 32]>,
-    /// A load is on its way for `generation`, and the deployment it is
-    /// after when a block named one: a block that names it again waits
-    /// for it instead of starting over.
-    pub(super) in_flight: bool,
     /// The candidate a load last failed on, and when the next block may try
     /// it again. Cleared by any load that comes back, so only a repeated
     /// failure on the same candidate widens the gap.
@@ -64,13 +54,10 @@ impl Mounted {
     /// asked, under generation 0, which no load answers for.
     pub(super) fn seat() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self {
-            changes: tokio::sync::watch::channel(()).0,
             rev: 0,
             slot: Slot::Loading,
             props: None,
             generation: 0,
-            hash: None,
-            in_flight: false,
             retry: None,
             shown: None,
         }))
@@ -103,9 +90,7 @@ impl Mounted {
     /// Opens the next load generation, so an older load still on its way
     /// lands nowhere, and names it.
     pub(super) fn start(&mut self) -> u64 {
-        self.changes.send_replace(());
         self.generation += 1;
-        self.in_flight = true;
         self.generation
     }
 }
@@ -241,7 +226,6 @@ pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
         locked.slot = Slot::Loading;
-        locked.hash = None;
     }
     locked.retry = None;
     let generation = locked.start();
@@ -270,7 +254,6 @@ pub(super) fn spawn_load(
         if locked.generation != generation {
             return;
         }
-        locked.in_flight = false;
         // the connection lock is a leaf: read under the seat's lock, never
         // across it. A connect bumps the revision before it reaches this
         // seat, so the revision read here is the one the seat installs
@@ -281,9 +264,7 @@ pub(super) fn spawn_load(
         if from_the_node && node_since_left {
             return;
         }
-        let Mounted {
-            slot, hash, retry, ..
-        } = &mut *locked;
+        let Mounted { slot, retry, .. } = &mut *locked;
         // a load that came back at all clears the hold-off; only the error
         // arm below puts one back, widened against the one taken here
         let held_off = retry.take();
@@ -291,7 +272,6 @@ pub(super) fn spawn_load(
             Ok(Loaded::Fresh(mut guest)) => {
                 guest.installed_generation = Some(generation);
                 guest.report_display_truncation();
-                *hash = guest.hash;
                 *slot = Slot::Ready(guest);
             }
             Ok(Loaded::Unchanged) => {
@@ -299,8 +279,7 @@ pub(super) fn spawn_load(
                     guest.reconnect(current_rev);
                 }
             }
-            Ok(Loaded::Empty(removed)) => {
-                *hash = Some(removed);
+            Ok(Loaded::Empty(_)) => {
                 *slot = Slot::Empty;
             }
             // the same tab, the same surface handle, the same host-side
@@ -356,7 +335,6 @@ pub(super) fn spawn_load(
                 fresh.installed_generation = Some(generation);
                 fresh.report_display_truncation();
                 log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
-                *hash = fresh.hash;
                 *slot = Slot::Ready(fresh);
             }
             Err(Unloaded {
@@ -382,7 +360,6 @@ pub(super) fn spawn_load(
                 }
             }
         }
-        locked.changes.send_replace(());
     })
 }
 
@@ -400,7 +377,9 @@ pub(super) enum Loaded {
         alive: Arc<()>,
         ticks: u64,
     },
-    /// The deployment (this hash) ships no view.
+    /// The deployment ships no view. Nothing reads the hash any more; it
+    /// goes when `Guest::load` (guest/lifecycle.rs) stops handing it over.
+    #[allow(dead_code)]
     Empty([u8; 32]),
 }
 
@@ -432,21 +411,18 @@ pub(super) fn log_source(
     );
 }
 
-/// How long each stage of one module-owned load took: `status` and
-/// `fetch` are the node's answers, `compile` is cranelift, `init` the
-/// instance and its `on mount` or restore, `first_frame` the tree a
-/// replacement proves (a fresh view draws its first on the window thread),
-/// `check` the second look at the registry before the seat. `path` is
-/// `first` for a load over an empty slot, `swap` over a view drawn.
+/// How long each stage of one module-owned load took: `fetch` is the
+/// node's answer, `compile` is cranelift, `init` the instance and its `on
+/// mount` or restore, `first_frame` the tree a replacement proves (a fresh
+/// view draws its first on the window thread). `path` is `first` for a load
+/// over an empty slot, `swap` over a view drawn.
 #[derive(Default)]
 pub(super) struct LoadTiming {
     pub(super) path: &'static str,
-    pub(super) status: Duration,
     pub(super) fetch: Duration,
     pub(super) compile: Duration,
     pub(super) init: Duration,
     pub(super) first_frame: Option<Duration>,
-    pub(super) check: Duration,
 }
 
 impl LoadTiming {
@@ -465,12 +441,10 @@ impl LoadTiming {
             hash = %hash,
             path = self.path,
             outcome = state,
-            status_ms = ms(self.status),
             fetch_ms = ms(self.fetch),
             compile_ms = ms(self.compile),
             init_ms = ms(self.init),
             first_frame_ms = %first_frame,
-            check_ms = ms(self.check),
             total_ms = total,
             "view_load"
         );

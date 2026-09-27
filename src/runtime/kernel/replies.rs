@@ -28,9 +28,6 @@ fn queued_bytes(events: &[wire::Event]) -> usize {
 pub(in crate::runtime) struct Replies {
     events: Mutex<Vec<wire::Event>>,
     in_flight: AtomicUsize,
-    /// Told on every answer delivered: a test waits here for the node
-    /// calls in flight, never on a clock.
-    landed: std::sync::Condvar,
     changed: tokio::sync::watch::Sender<()>,
     /// Told on every redraw that takes the queue: a subscription parked on
     /// [`Replies::backlogged`] wakes here and reads its socket again.
@@ -45,7 +42,6 @@ impl Default for Replies {
         Self {
             events: Mutex::default(),
             in_flight: AtomicUsize::new(0),
-            landed: std::sync::Condvar::new(),
             changed: tokio::sync::watch::channel(()).0,
             drained: tokio::sync::watch::channel(()).0,
             fault: Mutex::default(),
@@ -163,12 +159,10 @@ impl Replies {
         if exceeds_budget {
             *self.fault.lock().expect("kernel reply fault") =
                 Some("view reply backlog limit exceeded; view stopped".into());
-            self.landed.notify_all();
             self.changed.send_replace(());
             return;
         }
         events.push(wire::Event::Response { id, result, done });
-        self.landed.notify_all();
         self.changed.send_replace(());
     }
 
@@ -176,7 +170,6 @@ impl Replies {
     fn settled(&self) {
         let _events = self.events.lock().expect("kernel replies");
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
-        self.landed.notify_all();
         self.changed.send_replace(());
     }
 }

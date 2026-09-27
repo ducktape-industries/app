@@ -84,7 +84,7 @@ fn spawn_call(guest: &mut Guest, id: u64, payload: &[u8], call: Call, retry: boo
 /// item goes through the same backlog park as a node socket's, so a source
 /// that outruns the redraw waits instead of growing the reply queue into a
 /// fault.
-pub(in crate::runtime) struct Items {
+struct Items {
     replies: std::sync::Arc<Replies>,
     drained: tokio::sync::watch::Receiver<()>,
     id: u64,
@@ -94,7 +94,7 @@ impl Items {
     /// One more item. `false` when the view is gone or its reply queue
     /// faulted, and the subscription should end — the caller returns, and
     /// everything it holds is dropped.
-    pub(in crate::runtime) async fn send(&mut self, result: Answer) -> bool {
+    async fn send(&mut self, result: Answer) -> bool {
         self.replies
             .subscription_item(&mut self.drained, self.id, result)
             .await
@@ -105,7 +105,7 @@ impl Items {
 /// the node for them). The body owns whatever it holds open, so dropping
 /// the task releases it: a cancel drops the [`NodeTask`], and so do a
 /// guest's teardown, swap and trap, which drop the whole `tasks` list.
-pub(in crate::runtime) fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body)
+fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
