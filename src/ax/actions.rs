@@ -1,3 +1,8 @@
+//! What the AX door does to a window: reveal a private node's text, send
+//! keys and drags through the window's own dispatch, list the shortcuts
+//! focus can reach, read a window's tree, and perform an AccessKit action
+//! on a node by id.
+
 use super::*;
 
 /// `POST /reveal`, served only with `DUCKTAPE_AX_DOOR_PRIVATE=1`: the text a
@@ -245,15 +250,9 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
             window.dispatch_a11y_action(request(Action::ScrollIntoView, None), cx)
         }
         "set_value" => {
-            // Focus first, exactly as `type` does below: a multi-line guest
-            // editor (`TextEditor::observed`, editor/text.rs) only forwards
-            // an edit to the guest's own document while its native field is
-            // focused — a guard against replaying its OWN programmatic
-            // `install()` syncs back at the guest as a fresh edit. A single-
-            // line `Node::Input` field has no such guard, so `set_value`
-            // reached its guest either way; a multi-line editor's Send (or
-            // any other guest state gated on the document) silently never
-            // saw the value SetValue just set, with no fault and no refusal.
+            // Focus first, as `type` does: `TextEditor::observed`
+            // (editor/text.rs) forwards an edit to the guest only while its
+            // field is focused (#241).
             window.dispatch_a11y_action(request(Action::Focus, None), cx);
             window.dispatch_a11y_action(
                 request(Action::SetValue, Some(ActionData::Value(value.into()))),
@@ -316,7 +315,7 @@ mod ax_editor_tests {
     }
 
     /// The real shape a chat composer's editor mounts under (see PR #238's
-    /// `chat_shaped_tree` in `runtime::widget_tests`): `chat-viewport >
+    /// `chat_shaped_tree` in `runtime/guest/requests.rs`): `chat-viewport >
     /// chat-root > chat-panes > chat-room > draft-general >
     /// draft-general/editor`. Every one of those named ancestors is owned by
     /// a different file, none of which the editor's own key threads through.
@@ -445,9 +444,9 @@ mod ax_editor_tests {
         );
     }
 
-    /// The same drive, through AX `set_value` instead of `type`: the AX
-    /// door's own `perform()` dispatches `set_value` WITHOUT an explicit
-    /// Focus first, unlike `type`.
+    /// The same drive, through AX `set_value`. `perform` focuses the node
+    /// before SetValue, as it does for `type` (#241); without that focus
+    /// `TextEditor::observed` drops the edit and the guest never sees it.
     #[gpui_kit::test]
     fn ax_set_value_on_a_nested_editor_reaches_the_guests_document(
         cx: &mut gpui_kit::TestAppContext,

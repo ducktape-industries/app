@@ -1,3 +1,9 @@
+//! What a guest asks of the mounted tree between frames: widget commands
+//! (`host.widget`: focus, cursor, scroll, editor action) resolved against
+//! the paths this tree mounts, the walk that names those paths, the
+//! user-activation mark an event may spend, and the entry a dialog gives
+//! the keyboard when it opens.
+
 use super::*;
 
 /// What a scroll widget command asks of a scrolling container's offset.
@@ -9,6 +15,7 @@ pub(super) enum ScrollRequest {
     End,
 }
 
+/// Visits every node with its authored path, depth first.
 pub(super) fn walk_authored_paths(
     node: &wire::Node,
     path: &mut AuthoredPath,
@@ -51,6 +58,9 @@ pub(crate) fn dialog_entry(
 }
 
 impl ViewTree {
+    /// `Some` when `event` came from a real gesture on this tree — a click,
+    /// press or select whose handler is the one the last gesture recorded —
+    /// spending the mark, so an activation is granted once.
     pub(crate) fn take_user_activation(&self, event: &wire::Event) -> Option<()> {
         let message = match event {
             wire::Event::Message(message)
@@ -127,16 +137,11 @@ impl ViewTree {
         }
     }
 
-    /// The full authored path a widget command's target names, when one is
-    /// mounted. A guest composes a target from context it already holds —
-    /// an editor's own key (`"draft-general/editor"`), a list's own key —
-    /// never the named ancestors above it, which live in other modules and
-    /// other files entirely (the pane, the room and the composer's own
-    /// wrapper each carry an id of their own between the tree's root and
-    /// it). `self.mounted`, `self.editors` and the other target-keyed maps
-    /// are indexed by the FULL walked ancestry (`walk_authored_paths`), so
-    /// a short target is the SUFFIX of the path it names, not the whole of
-    /// it — so a short target is matched as the suffix of every mounted path.
+    /// The full authored path of the node a widget command's target names.
+    /// A guest sends a suffix (the node's own id, maybe a parent or two),
+    /// never the ancestors other code owns, while every retained map is
+    /// keyed by the full walked ancestry: any path ending with the target
+    /// matches, and the first in depth-first order wins.
     pub(super) fn resolve_target(&self, target: &[wire::ElementIdWire]) -> Option<AuthoredPath> {
         if target.is_empty() {
             return None;
@@ -240,9 +245,8 @@ impl ViewTree {
             }
         }
         // A toolbar press names a tag, not an edit: it goes to the guest's
-        // binding as an interaction on that field's document, whichever
-        // editor draws it. Neither native editor may decide what a view's
-        // tag means.
+        // binding as an interaction on that field's document. The native
+        // editor never decides what a view's tag means.
         if let C::EditorAction { tag, .. } = command {
             let editor_mounted = self.editors.contains_key(target);
             let Some(store) = editor_mounted
@@ -258,6 +262,8 @@ impl ViewTree {
             editor.view.widget_command(command, window, cx);
             return Ok(wire::encode(&()));
         }
+        // a plain field answers only Focus; its cursor and selection
+        // commands are taken and dropped
         if let Some(field) = self.fields.get(target) {
             if matches!(command, C::Focus { .. }) {
                 field.state.update(cx, |field, cx| field.focus(window, cx));

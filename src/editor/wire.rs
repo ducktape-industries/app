@@ -1,5 +1,18 @@
-//! Native editor projections of guest-owned documents. A key waits for its
-//! decision, and an accepted edit waits for the guest's observed revision.
+//! Native editor projections of guest-owned documents. How one edit travels:
+//!
+//! 1. `collect` maps each mounted `Node::Editor`, by `AuthoredPath`, to a
+//!    `Field`; fields naming the same document share one `Document`.
+//! 2. The store asks the guest for text it lacks (`request_document`) and
+//!    the text arrives as an `Incoming` transfer.
+//! 3. Each native edit and each claimed key is queued as `Work` and
+//!    handled one at a time per document. A native edit is committed at
+//!    once and waits in `Phase::Acknowledgment` until the guest's next frame
+//!    shows the committed revision; a key waits in `Phase::Decision` for the
+//!    guest's Apply, Noop or DefaultEditorAction.
+//! 4. While it decides, the guest may ask for the host's copy: an
+//!    `Outgoing` mirror.
+//! 5. Any error sets `fault`, which stops the pump for good.
+//!
 //! Transfer assemblers and patch validation are the wire contract's own code.
 
 use crate::render::AuthoredPath;
@@ -160,8 +173,10 @@ impl EditorStore {
         self.lock().validate_budget(&fields)
     }
 
-    /// A replacement may reuse immutable document bytes only when its restored
-    /// reference names exactly the same projection. The old store is untouched.
+    /// Refuses a hot-swap unless the old store is idle, the new one holds
+    /// every document, and neither has faulted. A document whose reference
+    /// and text the restored store reproduced exactly shares the old
+    /// allocation. The old store is untouched.
     pub fn retain_restored_projections(&self, old: &Self, root: &wire::Node) -> Result<(), String> {
         self.validate(root)?;
         if old.pending() {
