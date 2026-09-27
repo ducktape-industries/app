@@ -34,7 +34,6 @@ use crate::{AppMessage as Message, Ducktape, Stage};
 mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
-mod account_screens;
 mod approve;
 mod command;
 mod connect;
@@ -43,7 +42,6 @@ mod facts;
 mod figure;
 mod help;
 mod ink;
-mod key_screen;
 mod keys;
 mod launch;
 mod launcher;
@@ -53,19 +51,21 @@ mod notifications;
 mod panes;
 #[cfg(test)]
 mod panes_tests;
-mod recovery_screens;
 mod screens;
 #[cfg(test)]
 mod screens_tests;
-mod settings;
-mod spin;
 mod spotlight;
 mod status_bar;
 mod text_field;
-mod theme;
 mod windows;
 
 pub(crate) use launch::run;
+mod account_screens;
+mod key_screen;
+mod recovery_screens;
+mod settings;
+mod spin;
+mod theme;
 
 #[cfg(not(target_os = "macos"))]
 use crate::fonts::EMOJI_FACE;
