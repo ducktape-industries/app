@@ -201,7 +201,11 @@ impl Guest {
                 ));
             }
             if preserve {
-                Some(old.snapshot().map_err(Failure::Trapped)?)
+                Some(
+                    old.snapshot()
+                        .map_err(Failure::Trapped)?
+                        .map_err(Failure::Refused)?,
+                )
             } else {
                 None
             }
@@ -264,11 +268,16 @@ impl Guest {
             && (self.staged || self.frame.requests.is_empty())
     }
 
-    pub(crate) fn snapshot(&mut self) -> Result<Vec<u8>, String> {
+    /// The guest's state, or its own word that it cannot hand it over now.
+    /// A trap ends the instance as one in `tick` does: the fault keeps it
+    /// from being entered again.
+    pub(crate) fn snapshot(&mut self) -> Result<Result<Vec<u8>, String>, String> {
         arm(&mut self.store);
-        self.exports
-            .snapshot(&mut self.store)
-            .map_err(|error| first_line(&error))?
+        self.exports.snapshot(&mut self.store).map_err(|error| {
+            let reason = panic_message(&mut self.store).unwrap_or_else(|| first_line(&error));
+            self.fault = Some(reason.clone());
+            reason
+        })
     }
 
     pub(crate) fn restore(&mut self, snapshot: &[u8], shown: &str) -> Result<Restored, String> {
@@ -276,7 +285,10 @@ impl Guest {
         let answered = self
             .exports
             .restore(&mut self.store, snapshot)
-            .map_err(|error| format!("{shown}: restore trapped: {}", first_line(&error)))?;
+            .map_err(|error| {
+                let trap = panic_message(&mut self.store).unwrap_or_else(|| first_line(&error));
+                format!("{shown}: restore trapped: {trap}")
+            })?;
         Ok(match answered {
             Ok(()) => Restored::Carried,
             Err(refusal) => Restored::Refused(refusal),

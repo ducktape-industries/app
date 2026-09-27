@@ -373,7 +373,7 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     old.tick();
     old.ticks += 1;
     assert_eq!(label(&old).0, "1");
-    let state = old.snapshot().expect("settled");
+    let state = old.snapshot().expect("no trap").expect("settled");
     assert!(state[0] >= 0x80, "the state is a named MessagePack map");
 
     let alive = old.alive.clone();
