@@ -1,0 +1,336 @@
+# Accessibility (AX): the plan to 100%, and how to prove it
+
+Status: plan, written against `dev` at d147bfab (modules pinned at a921572b, gpui-pre fork 79bdf74, qa at 3ba6c9f). Every code claim below was checked at that state. Code is referenced by file and symbol only; line numbers rot.
+
+The app is a blind host: it knows no program by name, and every screen inside its chrome is a wasm view whose tree arrives over view-wire. So "100% AX" has to cover two things at once — the native shell (launcher, sign-in, menu bar, overlays, panes, Help) and every view any program ships — and it has to be proved by a machine, not by a person with a screen reader once a quarter. The proof instrument already exists: the AX door (`src/ax.rs`) reads the same AccessKit tree GPUI hands the OS. The plan gives it an audit.
+
+Contents
+
+1. Definition of "100% AX": rule tables (phase 1, phase 2)
+2. Coverage numbers
+3. Current state, with evidence
+4. Gaps, ranked by user impact
+5. The plan, in phases with owners
+6. Open questions for the owner
+7. Phase-1 rules, machine-readable
+
+---
+
+## 1. Definition of "100% AX"
+
+### 1.1 What the audit sees
+
+The phase-1 rules are computable from exactly two inputs the door already produces:
+
+- **The snapshot.** `src/ax/tree.rs` `snapshot` returns `Vec<AxNode>` in pre-order paint order. Each `AxNode` has: `id` (door id, `<window>:<path>`), `role` (the `Debug` name of the AccessKit role, e.g. `CheckBox`, `TextInput`, `GenericContainer`), `name` (from `node.label()`, truncated at 120 chars unless `AX_WHOLE`, masked for `AX_PRIVATE`), `description` (optional), `value` (optional; `node.value()` first, else `numeric_value` as a string; masked for `PasswordInput` and `AX_PRIVATE`), `state` (subset of `focused`, `disabled`, `selected`, `checked`/`unchecked`/`mixed`, `expanded`/`collapsed`, `busy`), `actions` (subset of `press`, `focus`, `set_value`, `scroll_into_view`, `type`; always empty on a disabled node; `scroll_into_view` never appears today because nothing in fork, kit or app puts `Action::ScrollIntoView` on a node), `in` (scope: `<window>` or `<window>/<module>`), `bounds` (`[x0,y0,x1,y1]` in logical px, only when asked). Nodes that are hidden, zero-sized or off-viewport are dropped. When a modal is active (`topmost_modal`), only the modal's subtree is returned; the audit must report that boolean.
+- **The key bindings.** `src/ax/actions.rs` `shortcuts` (served as `GET /keys`) lists `(keys, action name)` pairs reachable from the focused element. It does not link a binding to a node, so a binding can never excuse a node in phase 1; the one thing it can prove is that a named key exists in a context.
+- **Key presses.** `src/ax/actions.rs` `press_keys` (`POST /key`) drives Tab walks. Walk rules are computed from a sequence of snapshots.
+
+Definitions used by the predicates:
+
+- **actionable**: `actions` is non-empty.
+- **named**: `name.trim()` is non-empty.
+- **text-input role**: one of `TextInput`, `MultilineTextInput`, `SearchInput`, `EmailInput`, `NumberInput`, `PasswordInput`, `PhoneNumberInput`, `UrlInput` (the set `src/ax/tree.rs` `is_text_input` uses).
+- **toggle role**: `CheckBox`, `Switch`, `RadioButton`, `MenuItemCheckBox`, `MenuItemRadio`.
+- **control role**: `Button`, `Link`, `Tab`, `CheckBox`, `Switch`, `RadioButton`, `MenuItem`, `MenuItemCheckBox`, `MenuItemRadio`, `ListBoxOption`.
+- **named-container role**: `Dialog`, `AlertDialog`, `Menu`, `MenuBar`, `TabList`, `RadioGroup`, `Tree`, `ListBox`, `Grid`, `Table`, `Toolbar`, `Log`, `Feed`, `Document`.
+- **screen state**: one entry of the screen matrix (section 5, phase 1): a shell Stage plus overlay, or a view screen a test or a qa mission reaches.
+- **walk**: from the state's first snapshot, press `tab` through `POST /key` up to `N + 1` times, where `N` is the number of nodes offering `focus` in the first snapshot; take a snapshot after each press.
+
+Severity: **error** blocks (a gate fails); **warn** is reported and counted but does not block. Scope: **shell** (native nodes, `in` has no `/`), **view** (`in` is `<window>/<module>`), **both**.
+
+### 1.2 Phase-1 rule table (computable today)
+
+Per-node rules apply to every node of every snapshot of the screen state.
+
+| id | predicate | severity | scope |
+|---|---|---|---|
+| AX-001 | An actionable node's `role` is neither `Unknown` nor `GenericContainer`. | error | both |
+| AX-002 | A node whose `actions` contain `press` or `focus` is named. | error | both |
+| AX-003 | A node with a text-input role is named. `description` does not count. | error | both |
+| AX-004 | A node with a text-input role other than `PasswordInput` has a `value` key (any string, `""` and the mask included). | error | both |
+| AX-005 | A node with a text-input role whose `description` is present has `name != description` (its name is not its placeholder). | warn | both |
+| AX-006 | A named node whose `actions` contain `press` or `focus` has a `name.trim()` that contains at least one Unicode alphanumeric character and is not equal, case-insensitively, to its `role` string. | error | both |
+| AX-007 | A node with `role == Image` is named. | error | both |
+| AX-008 | A node with a named-container role is named. | error | both |
+| AX-009 | A node with a toggle role has exactly one of `checked`, `unchecked`, `mixed` in `state`. | error | both |
+| AX-010 | A node with `role == ComboBox` has exactly one of `expanded`, `collapsed` in `state`. | error | both |
+| AX-011 | A node with a control role whose `actions` lack `press` has `disabled` in `state`. | error | both |
+| AX-012 | A node whose `actions` contain `press` also offers `focus`. | error | both |
+| AX-013 | A node with `role` `Status` or `Alert` is named. | error | both |
+| AX-014 | A node with `role` `Heading` or `Label` is named. | error | both |
+| AX-015 | No `id` ends in `~` followed by digits (two elements resolved to one path; `src/ax/tree.rs` `door_ids` appends the suffix). | error | both |
+| AX-016 | No two nodes with the same `in` and `press` in `actions` share both `role` and `name`. | warn | both |
+| AX-017 | A node whose `actions` contain `press` has `bounds` (snapshot taken with `bounds=1`) with width >= 24 and height >= 24 logical px. | warn | both |
+| AX-018 | The snapshot of a shell screen state other than the desk (no modal scope active) contains exactly one shell node (`in` has no `/`) with `role == Heading`. | error | shell |
+| AX-020 | After every `tab` press of the walk, exactly one node in the snapshot has `focused` in `state` (focus is on a node, not on the window root, and not on an element with no node). | error | both |
+| AX-021 | Every node that offered `focus` in the first snapshot has `focused` in `state` in at least one snapshot of the walk. | error | both |
+| AX-022 | Every `tab` press of the walk changes which `id` has `focused`. | warn | both |
+| AX-023 | While the audit reports a modal scope active, every snapshot of the walk has a node with `focused` in `state` (focus never leaves the modal subtree the snapshot is scoped to). | error | both |
+| AX-024 | While a shell node (`in` has no `/`) with `role == Dialog` is in the snapshot, `GET /keys` lists a binding whose `keys` is exactly `escape`. | error | shell |
+| AX-025 | While a node with `role == Dialog` is in the snapshot, some node has `focused` in `state`. | error | both |
+
+Notes an implementer needs:
+
+- AX-014 is vacuous for view text until the door names a `Label` the way the OS adapters do (section 3.3). Land that door change in the same PR as the rule, or the rule passes while Orca and NVDA hear nothing.
+- AX-011 is the converse of what the door does: `snapshot` strips every action from a disabled node, so `disabled ⇒ no press` always holds; the rule catches `no press ∧ not disabled`.
+- AX-012 is deliberately strict: a composite whose rows are picked with arrow keys and marked only visually fails it today, which is correct — nothing keyboard-visible exists for those rows yet. The shell's two (Spotlight `spotlight/<n>` and the empty window's `empty/<module>` rows in `src/shell/spotlight.rs` and `src/shell/command.rs`) are `MenuItem`s with `on_click` and no `focusable`, and nothing in the shell sets `aria_active_descendant`; the view lists that step with arrows (members, forge tree) set none either. AX-107 (phase 2) is the rule that would excuse them once the host exports `active_descendant`.
+- AX-018 is shell-only because a view's "screen" is whatever a test or mission reached; per-view heading policy is the module's, and the SDK gate (phase 2) is where it belongs.
+- AX-022 is warn because the guest editor keeps Tab for indentation on purpose (`src/editor/text.rs`); WCAG allows a trap the user is told how to leave. The open question (section 6) is whether the shell wants that.
+- AX-024 is shell-only because a view dialog's close key is the view's own binding; the shell binds `escape` → `CloseOverlay` in `src/shell/keys.rs` under the overlay context.
+- The viewport filter means an off-screen node is unaudited. A screen state whose controls scroll has to be audited at each scroll position it declares, or those nodes are uncounted rather than passing.
+
+### 1.3 Phase-2 rule table (needs data the door does not carry today)
+
+"Needs" says where the data comes from: **door** = export an AccessKit property the host already sets or can set (app-only); **wire** = a new view-wire field (modules, flag day); **SDK** = a view-guest builder change; **fork** = a gpui-pre setter.
+
+| id | predicate | severity | scope | needs |
+|---|---|---|---|---|
+| AX-101 | A node with `role` `Tab`, `TreeItem` or `ListBoxOption` has exactly one of `selected`, `unselected` in `state`. | error | both | door: emit `unselected` when `is_selected() == Some(false)` |
+| AX-102 | A `Status` node has `live == polite`, an `Alert` node `live == assertive`, and both have a `value` key (macOS speaks the value, AT-SPI and UIA the name). | error | both | door: export `live`; wire: `Aria.live: Option<accesskit::Live>` (the SDK cannot set `TextNode.live` today); host: set `live` through the node patch and put Text content in `value` |
+| AX-103 | A `Dialog` drawn on a scrim (the shell's Spotlight, Settings, Approve; a view's `modal_overlay`) has `modal == true`. | error | both | door: export `modal`; shell: `a11y::modal` on the scrim branch of `src/shell/desk.rs` `overlay` |
+| AX-104 | While a `Dialog` is present, the `focused` node is a descendant of that `Dialog`. | error | both | door: export `parent` (door id) or `depth` |
+| AX-105 | `MenuItem`, `MenuItemCheckBox`, `MenuItemRadio` have a `Menu` or `MenuBar` ancestor; `Tab` a `TabList`; `RadioButton` a `RadioGroup`; `ListBoxOption` a `ListBox`; `TreeItem` a `Tree`; `Row`/`Cell` a `Table` or `Grid`. | error | both | door: `parent` |
+| AX-106 | A `Heading` has `level` in 1..=6. | error | both | door: export `level` (the shell has no heading yet; the wire `Aria.level` exists) |
+| AX-107 | A focused `Tree`, `ListBox`, `Menu`, `Grid` or `EditableComboBox` reports an `active_descendant` that is one of its descendants, and each `down`/`up` press of a walk changes it. | error | both | door: export `active_descendant`; host: map `Aria.active_descendant` in every mapper copy (only the Container copy does today) |
+| AX-108 | A text field drawn with an error reports `invalid` and has a `description` or `error_message` relation that carries the error text. | error | both | wire: `Aria.invalid: Option<accesskit::Invalid>`, `Aria.error_message: Option<ElementIdWire>`; door: export `invalid`; shell: set it on the connect/unlock error fields |
+| AX-109 | A field the form will refuse empty reports `required`. | warn | both | wire: `Aria.required: bool`; door: export |
+| AX-110 | A control whose label says work is in flight ("Creating…", "Renaming…", "Loading") has `busy` in `state`. | error | both | wire: `Aria.busy: bool`; door already exports `busy`; shell: set it |
+| AX-111 | A text field's placeholder is exported as `placeholder`, and the field's `name` is not equal to it. | warn | both | door: export `placeholder`; host: map wire `Input.placeholder` to `aria_placeholder` (only `Aria.placeholder` reaches gpui today) |
+| AX-112 | A row of a virtualized list has `position_in_set` and `size_of_set`. | error | view | door: export both; host: derive them per rendered row in `src/render/uniform.rs` `uniform_list` and `src/render/variable_list.rs` |
+| AX-113 | A `Button` whose press opens a `Menu` or `Dialog` reports `has_popup`. | warn | both | wire: `Aria.has_popup: Option<accesskit::HasPopup>`; door: export; shell: menu-bar buttons |
+| AX-114 | A control the Help lists with a chord reports that chord as `keyboard_shortcut`. | warn | both | door: export `keyboard_shortcut` (wire `Aria.keyshortcuts` exists; the shell sets none) |
+| AX-115 | A field with a visible caption that is not its label is `labelled_by` it; a field with a hint is `described_by` it. | warn | both | wire: `Aria.labelled_by`, `described_by`, `controls: Vec<ElementIdWire>`; fork: a relation setter resolved at end of frame (the host can compute NodeIds today only by copying an unexported hash and lagging a frame) |
+| AX-116 | Every action a node advertises to the OS is offered by the door (`Increment`, `Decrement`, `Expand`, `Collapse`, `ShowContextMenu`, `ScrollIntoView`), and every offered action has a handler. | error | both | wire: `Aria.actions: Vec<(accesskit::Action, u32)>`, `Event::A11yAction { handler, data }`; SDK: `on_a11y_action`; door: widen the `actions` vocabulary and drop the dead `scroll_into_view` offer |
+| AX-117 | Every clickable range of a `RichText` is a `Link` node with `press`, named by the range's text. | error | view | host: synthetic `Link` children in `src/render/text.rs` `rich_text` (spike; `Window::on_a11y_action` and `A11ySubtreeBuilder::synthetic_node_id` exist in the fork) |
+| AX-118 | A resize handle is a `Splitter` that is named, offers `focus`, and moves on `left`/`right` (or `up`/`down`). | error | view | wire: `ResizeHandle` gains `interactivity`, or SDK `design::divider` wraps it in a roled, focusable div with `on_key_down` |
+| AX-119 | No node with `press` is a descendant of a `Button`, `Link`, `Tab`, `MenuItem` or toggle-role node. | error | both | door: `parent` |
+| AX-120 | After a `Dialog` closes (escape or its close button), the node that was `focused` before it opened is `focused` again. | error | both | walk rule; shell already does this (`DesktopWindow::refocus` in `src/shell/desk.rs`); view dialogs need it in `src/render/commands.rs` (held by ducktape-a3) |
+| AX-121 | Text pairs in `Ink::of` (`src/shell/ink.rs`) reach 4.5:1; control boundaries, state marks and the focus ring 3:1. | error | shell | not tree data: a unit test over the palette |
+| AX-122 | With the OS reduce-motion preference on, or the app's motion switch off, no figure asks for a frame. | error | shell | not tree data: a `TestAppContext` test over `src/shell/spin.rs` `Spin` and `src/shell/screens.rs` `pulse` |
+
+---
+
+## 2. Coverage numbers
+
+Three numbers per screen state, all from one `GET /audit` answer:
+
+- **Actionable coverage** `A = (actionable nodes with zero error-severity violations) / (actionable nodes)`. This is the headline: what a keyboard or screen-reader user can operate.
+- **Rule coverage** `C = 1 − Σ_r |fail_r| / Σ_r |applicable_r|` over every rule `r`, error and warn, where `applicable_r` is the set of nodes (or walk steps) the rule's antecedent selects. This is the engineering number: it moves when a rule is fixed, even on nodes that are not actionable (headings, status nodes).
+- **Violations**: the list, one per `(rule, id)`.
+
+Per view: the union over the view's screen states, keyed by `id` under `<window>/<module>`. Per screen (shell): the same over the shell's nodes.
+
+**100% means:** over every declared screen state, zero error-severity violations (`A = 1` and every error rule has `fail = 0`), and `screens audited / screens declared = 1`. Warns are reported with their count and do not block. A screen state nothing visits is not "passing"; it is uncounted, and the declared list is what keeps it visible. Off-viewport nodes are uncounted too (section 1.2 notes), so a scrolling screen declares its scroll positions.
+
+The number is a floor on what the OS receives, not a proof of delivery: the door reads the tree before the adapter does (section 3.4). Delivery is proved by the phase-3 screen-reader smoke.
+
+---
+
+## 3. Current state, with evidence
+
+### 3.1 The native shell
+
+Helpers (`src/a11y.rs`):
+
+- `Control::control(role, name)` = `role` + `aria_label`.
+- `keyboard` = `focusable` + `tab_stop(true)` + `focus_shown` + a mouse-down `prevent_default` so a pointer press does not steal focus. Every shell button goes through it (`src/shell/ink.rs` `DesktopWindow::button`, `DesktopWindow::link`; `src/shell/panes.rs`, `settings.rs`, `notifications.rs`, `menus.rs`, `menubar.rs`, `screens.rs`, `sign_in.rs`, `desk.rs`). One tab stop is built outside it: the program tab in `src/shell/menubar.rs` (`focusable().tab_stop(true)` on a `sans` div with `.control(Role::Tab, …)`), so a mouse press moves focus to it.
+- `focus_shown` = a 2 px inset grey ring on `focus_visible`.
+- `modal` sets `set_modal` through `a11y_synthetic_children`. Only the view presenter calls it (`src/render/surfaces.rs`, on a named open `Overlay`). No shell overlay does.
+- `disabled` sets `set_disabled` through the same single `a11y_synthetic_children` slot and says GPUI has no setter; the fork has `aria_disabled` (`src/elements/div.rs`), and the presenter already uses it (`src/render/layout.rs` `container`, `uniform.rs` `uniform_list`, `pictures.rs` `primitive_interactivity`). `modal`, `disabled`, `whole` and `private` each overwrite that one slot; no element gets two of them today, so this is latent, not live.
+- `text_field(id, focus, set_value, field)` wraps a kit input in a div that tracks the input's focus handle and answers `SetValue`.
+- `AX_PRIVATE` (the door masks; AT reads) and `AX_WHOLE` (the door does not truncate).
+
+What the shell exposes and what it does not:
+
+- **Static text is not in the tree.** `src/shell/ink.rs` `h1`, `lead`, `note`, `tag`, `label` return divs with a bare `.child(text)`; GPUI gives a bare string no node. `gpui_kit::Text::new(id, text)` — the form that yields a `Label` with its words as `value` — is used nowhere under `src/shell`. Invisible to AT today: every launcher headline and lead (`src/shell/launcher.rs` `launcher`), Help (`src/shell/help.rs` `help_view`, a `Document` > `Group` with plain paragraphs), the Settings About page and section headings, the Node-status rows and the account header (`src/shell/menus.rs`), the Approve instruction (`src/shell/approve.rs`).
+- **No `Role::Heading` anywhere in the shell** (grep over `src/shell`; the only `Role::Heading` is the presenter's Text arm).
+- **Status and Alert nodes carry no `live`.** `Role::Status` at `src/shell/screens.rs` (reconnecting footer, toast, connect status), `src/shell/notifications.rs` (empty state), `src/shell/sign_in.rs` (passkey waiting, link instructions); `Role::Alert` in `src/shell/ink.rs` `DesktopWindow::alert` and `src/runtime/widget.rs` (the view stand-in's failure). `set_live` appears nowhere in `src/`. Two of the Status nodes are unnamed: `passkey-waiting-status` and `link-waiting-status` in `src/shell/sign_in.rs` set the role on a `tag`/`note` div with no `aria_label`; the second one is a security instruction.
+- **Scrim overlays trap Tab but are not modal to AT.** `src/shell/desk.rs` `overlay` wraps the scrim branch in the kit's `focus_trap` and nothing else; `DesktopWindow::console` moves focus into Spotlight, Approve and Settings (`modal.focus` then `focus_next`), remembers `refocus` and restores it on close. The menus (Node, Account, Network, Notifications) neither trap nor take focus.
+- **`secret` fields hide visible text from AT.** `src/shell/screens.rs` `input(…, secret, …)` drops `aria_value` for a `secret` field. It is passed `true` on the unmasked recovery key, the phrase-check words and (redundantly, the role already masks it) the password field in `src/shell/sign_in.rs`. That contradicts the `AX_PRIVATE` contract (`src/a11y.rs`): AT reads, the door masks. `a11y::private` is the right tool.
+- **Text fields have no focus ring.** `input` turns the kit's `appearance(false)`; `field_box` does not restyle on focus; the caret is the only cue.
+- **Motion.** `src/shell/spin.rs` `Spin::new(figure, moving, …)`, `t`, `tick`, `alive` read only the app's `moving` flag (`src/ui/desk.rs` `Message::SetMotion` → `backend::save_motion`; default on in `src/backend/session.rs` `load_motion`). `cx.reduce_motion()` is read nowhere in `src/`. The kit (gpui-base, reached from `gpui_kit::init` in `src/shell/launch.rs`) reads the OS preference into `App::set_reduce_motion` at init (macOS and Windows once; Linux via the XDG portal when present), so `with_animation` users such as `src/shell/screens.rs` `pulse` already go still under the OS preference. `Spin` does not. The motion switch lives only in Settings, which renders only on the desk; the launcher figure (`src/shell/launcher.rs` `launcher`, drawn when the window is at least `FIGURE_W + COLUMN_MIN` wide) and the empty-desk figure (`src/shell/panes.rs`) tumble forever before the desk.
+- **Tab is swallowed in the empty window.** `src/shell/keys.rs` binds `tab` → `SwitchMode` under `command::CONTEXT`; the action is a no-op while `command::CHAT_READY` is false, and Help still advertises it.
+- **Window title** is fixed at open (`src/shell/windows.rs`); `Window::set_window_title` exists in the fork and is called nowhere.
+
+### 3.2 What views can express (view-wire at a921572b)
+
+- `Interactivity` (`crates/sdk/view-wire/src/style.rs`) carries `role: Option<gpui::Role>` (all AccessKit roles), `aria: Aria`, `focusable`, `tab_stop`, `tab_index`, `tab_group`, `key_context`, `focus_handle`, `tooltip`, and the mouse/key handler routes. It sits on `Container`, `UniformList`, `Image`, `Svg`. `List` and `ResizeHandle` (`node.rs`) have none.
+- `Aria` (`aria.rs`): `author_id`, `label`, `description`, `keyshortcuts`, `active_descendant: bool`, `value`, `placeholder`, `selected`, `expanded`, `disabled`, numeric value/step/min/max, `level`, `position_in_set`, `size_of_set`, row/column index and count, `toggled: Option<gpui::Toggled>`, `orientation`. Nothing for live, busy, required, invalid, read-only, has-popup, current, relations or actions. `Aria::sanitize` truncates strings to 1024 bytes and clamps numbers; `frame_sanitize::sanitize_interactivity` does not touch `role` (a guest `GenericContainer` reaches gpui's debug assert) nor `active_descendant` (set on a focused node it hits gpui's debug panic in `src/window/a11y.rs` `set_active_descendant`).
+- `TextNode { heading: Option<u8>, live: Option<Live> }` (`styled_nodes.rs`, `node.rs`): the SDK's text lowering (`crates/sdk/view-guest/src/element.rs`) always sends `heading: None, live: None`, so no SDK view can set either. Headings go through `div().role(Role::Heading).aria_level(n)` (`design::heading`).
+- The SDK builder (`crates/sdk/view-guest/src/interactivity.rs`) mirrors gpui's setter names: `role`, `focusable`, `tab_stop`, `on_click`, `on_key_down`, `tooltip`, and every `aria_*` in `Aria`, including `aria_toggled` and `aria_active_descendant`. It has no `on_a11y_action`.
+- Design helpers encode the wrong state: `design::switch` sets `aria_selected(on)` on a `Switch`; `design::segment` sets `aria_selected` on a `RadioButton`; `design::button(..).selected(true)` sets `aria_selected` on a `Button`. The host's mapping and the door read toggles from `toggled` (`checked`/`unchecked`), so these read as unchecked. `design::segmented` is an unnamed `RadioGroup`. `design::divider` returns a bare `resize_handle` with no aria. `design.rs` is 770 lines, past the ~600 cap; new helpers need a split first.
+- The shared rule `view_wire::accessibility_faults` (`accessibility.rs`) checks: `Container` with `on_click` has a role and a name (label or descendant text); `Input` has a label; `Editor`/`Slider`/`ComboBox`/`PickList` have a label; `Button` and `MouseArea` are named; an `Overlay` is named; duplicate sibling keys. It ignores `UniformList`, `Image`, `Svg` with interactivity, focusable or key-handling containers without a role, glyph-only names, orphan aria, per-role state, nesting, `RichText` ranges and `ResizeHandle`. The host never calls it (grep over the app: no `accessibility_faults`). Views call it through `testing::assert_accessible` on a handful of screens (about twenty call sites); `TestAppContext::dispatch` (`testing/context.rs`) does not audit each frame. The doc comment in `view-guest/src/testing.rs` cites `ops/build-views.sh`, which does not exist.
+- Session ducktape-a3's branch `chore/view-sdk-clean` (a local branch in the modules checkout, twelve commits past a921572b at the time of writing) is view-wire hygiene: it touches `view-wire/src/{accessibility,interactivity,node,lib,codec,manifest,methods,surface,window,style,frame_sanitize,...}.rs` and, in view-guest, only `src/tests.rs`. Its one change to `aria.rs` swaps the 1024-byte truncation for a shared `truncate_to`; the `Aria` field set and `Event` are unchanged, and the 17 dead `Node` variants and `Surface` are still present on it (the purge is announced, not landed). Phase-2 proposals below are phrased against `Aria` and `Event`.
+
+### 3.3 What the host derives or drops
+
+- `src/render/accessibility.rs` `accessible(node)` is the one wire-to-AX mapping; `announce(element, accessible)` applies it. Text → `Label` (or `Heading` + level) with the content as `aria_label`; `Input` → `TextInput`/`PasswordInput` with value unless secure; `Editor` → `MultilineTextInput`, placeholder as description when unlabelled; a named open `Overlay` → `Dialog` (made modal in `surfaces.rs`); `Image`/`Svg` → `Image` when labelled or roled. After a3 deletes the dead variants, the arms for `Button`, `Toggle`, `Radio`, `Slider`, `Progress`, `ComboBox`, `PickList`, `MouseArea`, `Qr`, `ImageViewer` go with them; everything interactive then travels as `Interactivity` on a `Container`.
+- **`live` is mapped and dropped**: `announce` destructures `live: _` with a comment saying the fork has no live setter. The fork has no `aria_live` on `Div`, but `a11y_synthetic_children` → `parent_node().set_live(..)` is the same path `a11y::modal` uses, and it runs only for an element with an id and a role.
+- **Text content goes into `label`, never `value`.** `src/render/text.rs` `text` draws `Text::new_inaccessible` inside an id'd div that `announce` names with `aria_label`. AccessKit's adapters read a `Label`'s name from `value` (accesskit_consumer `label_comes_from_value` is true for `Role::Label`; the AT-SPI and UIA adapters follow it). gpui's own `Text::new(id, text)` sets `value`. So every view text node is nameless on Linux and Windows; macOS exposes it as static text with a title and no value (whether VoiceOver reads that title is unverified). **The door reads `node.label()` in `snapshot`, so it shows a name the OS does not.** This is the single largest defect and the reason AX-014 is vacuous until the door is fixed.
+- **Three drifted copies of the aria mapper**: `src/render/layout.rs` `container`, `src/render/uniform.rs` `uniform_list`, `src/render/pictures.rs` `primitive_interactivity`. Only `container` falls back to `descendant_text` for a roled element without `aria_label`, and only `container` maps `aria_active_descendant` (moot today: no view at a921572b calls `aria_active_descendant`). All three map `aria_disabled` directly.
+- **The Image default role is dead at runtime**: `vector` (`src/render/pictures.rs`) wraps an `Svg` in `announce(.., accessible(node))`, but `picture` builds an `Image` through `primitive_interactivity` alone, so an SDK image with a label and no explicit role produces no node (the `accessible()` Image arm is only exercised by the unit test). The fix belongs inside `picture` in `pictures.rs`.
+- **Input placeholder** reaches only the kit's visual placeholder; the kit input is made `Presentational`.
+- **Rich-text links**: `rich_text` builds one `InteractiveText` (`Label` with the whole text as value) under a constant inner id `"rich-text"`; clickable ranges get no `Link` node.
+- **Virtualized rows** never get `position_in_set`/`size_of_set`, though `uniform_list` knows the index and count.
+- **Ids for id-less nodes** come from one per-frame counter, `ViewTree::render_index`, reset in `render` and consumed in `layout.rs`, `text.rs` and `pictures.rs` `primitive_interactivity`; inserting one node renumbers every later id-less node, which AT hears as remove-plus-add.
+- **Dialog close does not return focus** in views (`src/render/commands.rs`, held).
+- **Caret and selection** are not exposed for any field: no `TextRun` nodes are built, and `set_text_selection` has no caller in fork, kit or app (the fork shows it only as example code in `src/_accessibility.rs`, through the synthetic-children path).
+- **The view stand-in** (`src/runtime/widget.rs`, held): loading has no role; failure is a named `Alert`, not live; it uses `Text::new` so its words are in the tree.
+
+### 3.4 Platform delivery (through the fork)
+
+- An element gets a node only with both an id and a role (`src/element.rs`); the root is `Role::Window` named by the title. Focus on an element without a node falls back to the root and is logged at info level (`src/window/a11y.rs`).
+- Trees are built and sent only while accessibility is active. The door's `current` calls `activate_a11y` and draws on every read; that flips the same `AtomicBool` the adapters' activation callbacks set, so the app cannot tell a door walk from a screen reader, and every door-driven walk renders guest views uncached (`src/runtime/widget.rs` checks `is_a11y_active`).
+- macOS: `accesskit_macos::SubclassingAdapter` in the fork's vendored `gpui-pre-macos`; no deactivation API exists in accesskit_macos. Linux: `accesskit_unix` in vendored `gpui-pre-linux`, X11 and Wayland; activates when the session bus's `org.a11y.Status.IsEnabled` is true; X11 root bounds (`a11y_update_window_bounds`) are implemented and never called. Windows: unpatched crates.io `gpui-pre-windows`; no packaging, no CI.
+- Nothing exercises any adapter automatically: app CI (`.github/workflows/ci.yml`) is Linux `cargo test`; every qa rig sets `DBUS_SESSION_BUS_ADDRESS` to a `no-bus` path (`qa/walk.py`, `qa/src/rig.rs`), so AT-SPI never activates; qa installs release archives, where a duplicate node id is dropped silently instead of the debug panic the app's tests would hit.
+- Reaches no AT on any platform today: live regions, caret and text ranges, rich-text links, `ScrollIntoView` (no node in fork, kit or app carries the action; the door's offer and `POST /act` arm for it are dead code).
+- The fork's public AX surface the audit can use: `Window::activate_a11y`, `is_a11y_active`, `a11y_tree`, `a11y_element_id`, `dispatch_a11y_action`, `on_a11y_action`, `focus_next`, `debug_a11y_tree_json`, `last_a11y_tree_update` (test-support), `HeadlessAppContext` (test-support); `App::reduce_motion`/`set_reduce_motion`; `Div`: `role`, `aria_*` for every `Aria` field, `aria_disabled`, `aria_active_descendant`, `a11y_synthetic_children`, `on_a11y_action`, `tab_stop`, `focusable`, `track_focus`. No `aria_live`, `aria_busy`, `aria_invalid`, `aria_required`, `aria_has_popup`, relation setters.
+
+### 3.5 The door
+
+`src/ax/http.rs` `route`: `GET /tree?window&view&compact&bounds`, `GET /actions`, `POST /act`, `POST /wait`, `POST /key`, `GET /keys`, `POST /drag`, `POST /reveal` (private only). Loopback, bearer token, one request at a time, `X-Ax-Revision`. `AxNode` is as section 1.1 describes. Not exported: heading level, placeholder, keyboard shortcut, orientation, min/max/step, set position and size, `modal`, `live`, `active_descendant`, class name, parent. The door filters where the adapters do not: off-viewport and zero-size nodes are dropped (a node with no bounds is kept); only the topmost modal's subtree is returned; `GenericContainer` nodes are kept; a hidden node is dropped even when it holds focus. What each OS adapter does with the same nodes is not verified here. No audit, no focus-order dump, no contrast data. The dev-dependency `accesskit_consumer` in `Cargo.toml` is an orphan of the deleted gate.
+
+### 3.6 What the existing tests assert
+
+App (`src/shell/screens_tests.rs`, via `crate::ax::snapshot` after `activate_a11y` and two frames):
+
+- `connect_screen_exposes_the_endpoint_and_names_its_error`: the `TextInput` "Node address" carries its value, also after `SetValue`; the `Alert` is named.
+- `sign_in_screens_keep_secret_fields_out_of_the_ax_value`: the password and recovery-key values are absent from the tree (this test enshrines the `secret` defect; it must flip to "present, masked" when `secret` goes).
+- `the_key_step_asks_nothing_about_accounts_and_the_account_step_does`: named Buttons and a `TextInput` exist.
+- `recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable`: two ids offer `focus`.
+- `a_screen_change_that_unmounts_the_focused_control_refocuses_the_window`: Tab after a stage swap still focuses something.
+- `the_network_switcher_names_the_network_and_its_menu_marks_the_current_one`, `the_notification_centre_lists_rows_under_the_bell`: roles and names of Menu/MenuItemRadio/Dialog/Status/Switch/RadioGroup.
+- `the_launcher_size_agrees_with_the_screen_drawn`: the Stage matrix (Connect, Unlock, Unlock awaiting, Phrase, Phrase quiz, Recover, Account, Account link-waiting, Desk) × 8 key/lock bits draws the right screen. Nothing AX, but it is the natural matrix.
+
+`src/shell/panes_tests.rs` (held): `pane_strip_ax_actions_split_close_and_move_instances` (Buttons exist, Press works, Split reports `disabled` at the pane cap), `tab_stays_in_a_modal_dialog` (Settings traps Tab), key routing and refocus tests, `an_empty_window_opens_what_its_field_finds` (relies on `down tab enter`, i.e. on the swallowed Tab). `src/render/tests/accessibility.rs` (held): the `accessible()` mapping in isolation, including a `live` mapping test that passes while `announce` drops it. `src/ax/tree.rs` `modal_tests`: `topmost_modal` scoping. `src/shell/spin.rs` tests: with motion off, no frames.
+
+The deleted whole-tree gate (`git show f54ac106^:app/src/tests/ax_contract.rs`): activated the tree, walked `focus_next` once round counting node-less stops, then checked duplicate id, interactive-without-role, text-input-without-label, image-only button, interactive-without-name, unreported toggle/selected/expanded state, unpressable-not-disabled, pressable-not-focusable, unnamed dialog, focusable-not-reached. No allowlist. Its `ax_contract_announcements_are_live_regions` checked only that the toast, error and status words sat under a `Status`/`Alert` node; it never read the `live` property. Every fork API it used still exists; only the app's `frame_probe::headless_context` helper went.
+
+### 3.7 What qa walks
+
+- 60 acceptance scenarios, `smoke.json`, six missions (`board-move`, `board-organise`, `channel-message`, `page-edit`, `page-todo`, `text-file`); only `channel-message` targets a founded program.
+- The one AX oracle is `unnamed-control` (`qa/src/oracles.rs` `unnamed_control`, `qa/walk.py` `oracle_unnamed_control`): first node whose role is in `ACTIONABLE`, has actions, and has empty `name` **and** empty `description`. `ACTIONABLE` says `Checkbox`; the door emits `CheckBox`, so checkboxes are never checked. `Switch`, `RadioButton`, `ComboBox`, `TreeItem`, `PasswordInput`, `SearchInput` are absent. Disabled controls are skipped (no actions). The Rust farm runs it only from `mission.rs` (`oracles::run_all`); `walk.py` runs it in its `inspect` pass alongside the other oracles.
+- `--keyboard` mode has a model pick each key from `/keys` and the tree; useful, not deterministic, not a gate.
+- The Rust farm records `(view, id, action)` coverage; `walk.py` records none.
+
+---
+
+## 4. Gaps, ranked by user impact
+
+1. **View text is nameless on Linux and Windows** (Label/value, 3.3). Every paragraph, every message, every row caption in every view. The door hides it.
+2. **Shell static text is not in the tree** (3.1): launcher headlines, Help, About, Node status, the Approve and link-waiting security instructions.
+3. **Nothing is ever announced**: no `live` anywhere (shell Status/Alert, toasts, connect status, view stand-in, permission bar, copy confirmations, new notifications). The toast also clears after about 3.9 s (`src/ui/desk.rs` `Message::ToastTick`, 13 ticks of 300 ms).
+4. **Pointer-only or keyboard-invisible operations**: Spotlight and empty-window rows have no selected/active state; pane Fill, move, resize and show-in-focused-window are pointer-only; six view resize handles are pointer-only; view arrow-key selections (members list, forge tree) expose nothing; Tab is swallowed in the empty window; rich-text links are unreachable.
+5. **Scrim dialogs are not modal to AT**; menus take no focus and trap nothing.
+6. **Secret fields hide visible text from AT**; phrase-check words cannot be reviewed by a screen-reader user.
+7. **Wrong state on view toggles** (`design::switch`, `segment`, `button.selected` use `aria_selected`): every settings switch reads as unchecked.
+8. **No headings anywhere in the shell**; no window title per screen; no landmark on the launcher column.
+9. **Motion**: the figures ignore the OS preference and the switch cannot be reached before the desk.
+10. **Focus cues**: text fields have no ring; the active option is marked by a 1.09:1 background and a "↵".
+11. **States missing**: busy, has-popup, invalid, keyboard shortcuts; the tab badge, notification time/source, Spotlight meta are left out of names; pane buttons read the same in every pane; the menu bar's account button (`rail-account`, `src/shell/menubar.rs`) shows "Create account" and is named "Account: no account yet — create one" (the sign-in screen's own "Create account" button is named by its label).
+12. **Contrast**: the `strong` field border is 1.56:1 (light) / 1.66:1 (dark) against the page; text pairs and the focus ring pass. Changing it alters the look (owner call).
+13. **Not gated**: no whole-tree rule check anywhere; the qa oracle is broken by a casing bug; no adapter is ever activated in automation; no macOS or Windows run exists.
+14. **Fork-level**: no caret/selection, no OS contrast or text-size preference, X11 root bounds never pushed, cache bypass lives in the app instead of the fork.
+
+---
+
+## 5. The plan
+
+Owner names: **app** = this repo (chief assigns; the readable-tree worker for docs, a code worker for the rest). **modules** = the SDK owner, coordinated with session ducktape-a3 on `chore/view-sdk-clean`. **qa** = the qa repo. **fork** = gpui-pre asks, owner's call. Held files (`src/render.rs`, `src/runtime/widget.rs`, `src/shell/panes.rs`, `src/render/{inputs,commands,interactivity}.rs`, `src/ax/actions.rs`, `src/editor/wire.rs`, tests under them) are routed around below; items that need them wait for ducktape-70 or ducktape-a3 to land.
+
+### Phase 1 — app only
+
+Goal: `GET /audit` implements the phase-1 table 1:1; every native screen state passes it in CI; the shell gaps it finds are fixed in the same PRs as the rules (no allowlist, the deleted gate's stance).
+
+1. **`src/ax/audit.rs`** (new; `mod audit;` in `src/ax.rs`, which is not held): `audit(name, window, cx, walk: bool) -> Report`. Reads `snapshot(name, window, true)`, computes `modal` with `topmost_modal`, applies AX-001…AX-018, then if `walk`: remembers `window.focused(cx)`, presses `tab` through `press_keys` `N + 1` times snapshotting each, applies AX-020…AX-025 (AX-024 through `shortcuts`), and restores focus. `Report { rules: Vec<RuleId>, nodes, actionable, modal, violations: Vec<{rule, id, role, name, detail}>, applicable: BTreeMap<RuleId, usize>, coverage: {actionable: f64, rule: f64} }`. Route `GET /audit?window&view&walk=1` in `http.rs` `route`; add `audit` to the CLI `USAGE`. Keep `tree.rs` at its size; the rule set is its own file.
+2. **Door name derivation.** In `snapshot`, name a node the adapter's way: for `Role::Label`, `value` first, then `label`. Without this AX-014 is vacuous. (`accesskit_consumer` is already a dev-dependency; the rule `label_comes_from_value` is small enough to restate for `Label` alone rather than pull the crate into the binary.)
+3. **Text carries `value`.** `announce` sets `aria_value(content)` for the Text arm (the presenter's `accessible()` Text arm gains `value: named(content)`). This is what gpui's own `Text::new` does. Prerequisite for live regions on every platform.
+4. **The screen matrix in tests.** `src/shell/screens_tests.rs` is 616 lines: split first (`screens_tests/ax.rs` for the gate, or move the launcher-size matrix out). Then one test per screen state: every Stage of `the_launcher_size_agrees_with_the_screen_drawn` plus the passkey-waiting, error, other-chain and failed-unlock variants; every `Overlay` (Spotlight, Settings × 4 pages, Approve × 2 steps, Network, Menu(Node, Account, Notifications)); desk states that do not need `panes_tests.rs` (empty desk, toast, reconnecting). Each asserts `audit(.., walk: true).violations` has no error. Desk states behind pane tests wait for ducktape-70.
+5. **Fixes the gate forces, in order of the violations it raises today:**
+   - Name the two unnamed `Status` nodes in `src/shell/sign_in.rs`; make `DesktopWindow::alert` and every `Status` carry both name and value (section 3.1). AX-013.
+   - `ink::h1` becomes a `Heading` via `Text::new` with an explicit id (the `text!` macro derives its id from the call site, so text mapped over an array collides; `help_view` does exactly that); `lead`, `note`, `tag`, `label` take an id and become accessible `Text::new`. AX-014, AX-018. Then Help, About, Node status, the account header, the Approve and link instructions are in the tree.
+   - Replace `secret` with `a11y::private` on the recovery key and phrase-check fields, and flip `sign_in_screens_keep_secret_fields_out_of_the_ax_value` to assert the value is present and masked. AX-004.
+   - Drop the `tab` → `SwitchMode` binding and the dead Mode toggle while `CHAT_READY` is false; remove the "tab switch" hint and the Help sentence. AX-022 (the `panes_tests.rs` line that types `down tab enter` is held; flag it to ducktape-70).
+   - Move `a11y::disabled` onto `aria_disabled` and delete the workaround comment (that frees the synthetic-children slot); then one composing builder in `src/a11y.rs` that collects `modal`, `live`, `class_name` (and later `busy`, `has_popup`, `invalid`) and installs a single `a11y_synthetic_children` closure. `a11y::live(element, Live, words)` sets label, value and live through it. `announce` maps `live` through it instead of dropping it.
+   - `a11y::modal` on the scrim branch of `overlay` in `src/shell/desk.rs`. AX-023 then has a shell case to check.
+   - Every overlay takes focus on open (extend the `matches!` in `DesktopWindow::console` to the menus). AX-025 becomes meaningful.
+   - A focus style (not `focus_visible`) on the `a11y::text_field` wrapper so fields show a ring.
+   - Names: the badge in the program tab's name, notification time and source as description, per-pane unique button names (`PaneAction::parts` in `src/shell/panes.rs` is held; wait), the menu bar's `rail-account` button named by its visible label.
+6. **Reduced motion for the figures.** `Spin` computes `moving = app switch && !cx.reduce_motion()` at `Spin::new` and on each `tick` (`src/shell/spin.rs` is not held; the two call sites `spin::drawing` in `launcher.rs` and `panes.rs` pass the switch as today). Do **not** write `set_reduce_motion(!motion)` — gpui-base treats the flag as app-owned once written and stops applying the OS reading. Either OR the two, or make the switch tri-state (System/On/Off) with System calling `gpui_base::apply_system_reduce_motion`. Add a `TestAppContext` test: with the OS flag set, `a_still_figure_asks_for_no_frames` holds regardless of the switch (AX-122). Put a Motion item where the launcher can reach it (tray on macOS, `src/tray.rs`; the app menu in `src/shell/keys.rs`).
+7. **One aria mapper.** Move the field-by-field mapping out of `layout.rs` `container`, `uniform.rs` `uniform_list` and `pictures.rs` `primitive_interactivity` into one function in `src/render/accessibility.rs` (433 lines; room; no new file under `src/render/`), keeping `container`'s two extras — the `descendant_text` name fallback and `aria_active_descendant` — for all three, and skipping `active_descendant` on a focusable node (gpui's debug panic). Route `picture` through `accessible()` inside `pictures.rs`, as `vector` already is, so a labelled image without a role is an `Image`.
+8. **Door hygiene.** Drop the dead `scroll_into_view` offer from `snapshot` and `USAGE` (its handler is in held `actions.rs`; leave the match arm until a3 lands). Delete the orphan `accesskit_consumer` dev-dependency unless item 2 uses it.
+
+Exit: `cargo test` fails on any error-severity violation on any declared shell screen state; `ducktape-app ax audit --walk` returns the same report on a running app.
+
+### Phase 2 — modules (view-wire, view-guest), with ducktape-a3
+
+All proposals; a3 owns the branch. A flag day is fine under the no-backcompat rule: bump `WIRE_EPOCH` (`view-wire/src/lib.rs`), regenerate goldens.
+
+1. **`Aria` gains** (all `skip_serializing_if`, so unused fields cost no bytes): `live: Option<accesskit::Live>`, `busy: bool`, `required: bool`, `read_only: bool`, `invalid: Option<accesskit::Invalid>`, `has_popup: Option<accesskit::HasPopup>`, `current: Option<accesskit::AriaCurrent>`, `labelled_by`, `described_by`, `controls: Vec<ElementIdWire>`, `error_message: Option<ElementIdWire>`, `actions: Vec<(accesskit::Action, u32)>`, `custom_actions: Vec<(i32, String)>`. `Event` gains `A11yAction { handler, data }`. `List` and `ResizeHandle` gain `interactivity`. Delete `TextNode.heading`/`live` and `wire::Live` (unreachable from the SDK; the a3 variant purge is the moment).
+2. **Sanitizer** (`frame_sanitize/interactivity.rs`): strip `GenericContainer` and window-level roles, clamp `level` to 1..=6, drop `active_descendant` when `focusable`, cap relation and action lists.
+3. **Widen `accessibility_faults`** into `audit(root) -> Report { applicable, faults }` with kinds for: no role on an actionable node (any node with `Interactivity`, not only `Container`), glyph-only name, orphan aria (aria without role), required state per role (toggle → `toggled`; Tab/TreeItem/ListBoxOption → `selected`; ComboBox → `expanded`; Heading → level), nested interactive, keyboard reach (focusable + tab stop, or active-descendant target of a focused composite), `RichText` ranges, `ResizeHandle`, list containers, `has_text` trimming. It stays the only rule function: SDK gate, host and CI all call it.
+4. **Audit every test frame**: `TestAppContext::dispatch` calls `wire::audit` on each frame and panics on a fault, so every screen any view test reaches is gated. Delete the stale `ops/build-views.sh` sentence.
+5. **Make an unnamed interactive element unrepresentable in view-guest**: `Input::new(id, label)`, `EditorElement::new(…, label)`, `modal_overlay(id, label, …)`, `segmented(id, label, …)`, `icon_button(id, glyph, name, …)` for glyph controls. Fix `switch`, `segment` and `button.selected` to `aria_toggled`. `divider` returns a roled (`Splitter`), named, focusable element with `on_key_down` for arrows calling the drag closure. Mirror the new setters by gpui's names (`aria_live`, `aria_busy`, `aria_required`, `aria_invalid`, `aria_read_only`, `aria_has_popup`, `aria_current`, `aria_labelled_by`, `aria_described_by`, `aria_controls`, `on_a11y_action`); the SDK promise is gpui's public names, so the fork gains them first (item 8). Split `design.rs` along its controls/text seam before adding.
+6. **Host side of phase 2** (app): map the new `Aria` fields through the single node patch; export `live`, `modal`, `level`, `placeholder`, `keyboard_shortcut`, `active_descendant`, `position_in_set`/`size_of_set`, `invalid`, `unselected`, `parent` on `AxNode`; add AX-101…AX-119 to `audit.rs`; derive set position and size per rendered row; per-parent sibling index instead of the global `render_index`; synthetic `Link` children for `RichText` ranges (spike); return focus to the opener when a view dialog closes (in `commands.rs` after a3 lands); the view stand-in gains a role while loading and `live` on failure (after ducktape-70).
+7. **Fix the real views** the widened rule flags. Confirmed at a921572b: chat `ui/side.rs` "Remove" div (id and `on_click`, no role, not focusable); `members-list` (`members-view/src/ui.rs`: `focusable` with `aria_label` and `on_key_down`, no role); the chat menu frame (`chat-view/src/ui/menu.rs`: id and `focusable`, no role); members and forge arrow selection without `active_descendant`; the emoji picker's categories (`chat-view/src/ui/menu/picker.rs`) without a `TabList`; the forge `components.rs` chosen row that sets `aria_selected(true)` without a role (its other rows are `MenuItem`/`TreeItem`); `aria_disabled(true)` on elements that keep `on_click` (`forge-view/src/ui/change.rs`, `explorer-view/src/ui/blocks.rs`). Expected once the rule runs: glyph-only names and nested interactives in chat message cards and forge file rows.
+8. **Fork asks** (owner decides): `aria_live`, `aria_busy`, `aria_required`, `aria_invalid`, `aria_read_only`, `aria_has_popup`, `aria_current` on `Div`; a relation setter resolved at end of frame; `ScrollIntoView` handling for scroll containers; `TextRun` children plus `set_text_selection` for inputs; bypass the view cache while accessibility is active in the fork so the app's `is_a11y_active` branch goes; call `a11y_update_window_bounds` on X11 move/resize; read the OS contrast and text-size preferences.
+
+### Phase 3 — qa
+
+1. **Fix the oracle now**: `Checkbox` → `CheckBox`; add `Switch`, `RadioButton`, `ComboBox`, `TreeItem`, `PasswordInput`, `SearchInput`, `MenuItemRadio`, `MenuItemCheckBox`; a description is not a name; report every hit, not the first. Retire it once `/audit` exists.
+2. **Step kinds** `audit` (fail on any error violation; record coverage) and `focus_order` (the walk), plus a model-free `press`. Run `audit` after every mission action.
+3. **Mission `a11y-census`**: open every view tab on the localnet (settings, node, members, chat, forge, explorer), visit each view's declared screens, `GET /audit?view=<module>&walk=1`, fail on any error; write per-view `A`, `C` and screens-visited into `result.json`. Schedule it from `kit`.
+4. **Rigs**: stop forcing `DBUS_SESSION_BUS_ADDRESS=no-bus` for one rig kind; install a debug archive for the census so duplicate-id panics gate.
+5. **Linux Orca smoke** (dev box has `at-spi-bus-launcher`, `dbus-run-session`, gi `Atspi`; Orca and `pyatspi` are not installed): launch through `kit app` under `dbus-run-session`, start `/usr/libexec/at-spi-bus-launcher --launch-immediately`, set `org.a11y.Status IsEnabled=true`; dump the AT-SPI tree with `gi.repository.Atspi` and diff role, name, states and extents against `GET /tree?bounds=1` over the same screen states; expect X11 extents to be off until root bounds are pushed. A manual Orca pass needs a desktop machine.
+6. **macOS VoiceOver smoke** (the real mac: `frostornge@mac-byeongsu`), per release: launch with `kit app` (bundles and signs); VO on; walk Connect and Unlock with VO-Right and check the secure field; rotor Headings and Form Controls; send a chat message and confirm an announcement (none today); open a dialog and try to leave; caret reading in the composer (none today); Accessibility Inspector's Audit. Record the checklist result next to the census output.
+
+### What proves 100%
+
+Continuously: the app CI gate over the shell matrix (phase 1), the modules CI gate over every test frame (phase 2), and the qa census over every view on the localnet (phase 3), each failing on any error-severity violation. Per release: the two screen-reader smokes, which prove that what the door counts is what the OS speaks.
+
+---
+
+## 6. Open questions for the owner
+
+1. **Border colour.** The `strong` field border is 1.56:1/1.66:1 against the page (AX-121 needs 3:1). Fixing it changes the look; the standing preference is "keep current look". Approve a darker border, or waive the boundary rule for fields?
+2. **Editor Tab.** The guest editor keeps Tab for indentation; AX-022 is `warn` for that reason. Do you want Escape-then-Tab as the documented exit (and said so in Help), or Tab always leaves and indentation moves to a chord?
+3. **Motion switch shape.** Tri-state System/On/Off (honours the OS preference, reachable from the tray and app menu), or a plain OR of "OS says reduce" and "switch off"?
+4. **Spotlight and the empty window** as a combobox: focused `EditableComboBox` wrapping a `ListBox` with `aria_active_descendant` on rows. It changes how those two are built. Go, or wait for the VoiceOver smoke to show whether the current shape reads at all?
+5. **Node button name.** "Node: in sync, block N" changes every block; macOS raises a title-changed event each time. Keep the height out of the name?
+6. **Fork asks (phase 2 item 8).** Which of live/busy/invalid/has-popup setters, relations, `ScrollIntoView`, text runs, cache bypass, X11 bounds, OS contrast/text-size do you want raised against gpui-pre now, and which stay app-side via the synthetic-children patch?
+7. **Pane keyboard operations** (Fill, move, resize, show-in-focused-window): which chords? These land in `src/shell/panes.rs` after ducktape-70.
+8. **Debug archives for qa**: the census wants a debug build so duplicate-id panics gate. Acceptable rig cost?
+
+---
+
+## 7. Phase-1 rules, machine-readable
+
+```json
+[
+  {"id":"AX-001","predicate":"An actionable node's `role` is neither `Unknown` nor `GenericContainer`.","severity":"error","scope":"both"},
+  {"id":"AX-002","predicate":"A node whose `actions` contain `press` or `focus` is named.","severity":"error","scope":"both"},
+  {"id":"AX-003","predicate":"A node with a text-input role is named. `description` does not count.","severity":"error","scope":"both"},
+  {"id":"AX-004","predicate":"A node with a text-input role other than `PasswordInput` has a `value` key (any string, `\"\"` and the mask included).","severity":"error","scope":"both"},
+  {"id":"AX-005","predicate":"A node with a text-input role whose `description` is present has `name != description` (its name is not its placeholder).","severity":"warn","scope":"both"},
+  {"id":"AX-006","predicate":"A named node whose `actions` contain `press` or `focus` has a `name.trim()` that contains at least one Unicode alphanumeric character and is not equal, case-insensitively, to its `role` string.","severity":"error","scope":"both"},
+  {"id":"AX-007","predicate":"A node with `role == Image` is named.","severity":"error","scope":"both"},
+  {"id":"AX-008","predicate":"A node with a named-container role is named.","severity":"error","scope":"both"},
+  {"id":"AX-009","predicate":"A node with a toggle role has exactly one of `checked`, `unchecked`, `mixed` in `state`.","severity":"error","scope":"both"},
+  {"id":"AX-010","predicate":"A node with `role == ComboBox` has exactly one of `expanded`, `collapsed` in `state`.","severity":"error","scope":"both"},
+  {"id":"AX-011","predicate":"A node with a control role whose `actions` lack `press` has `disabled` in `state`.","severity":"error","scope":"both"},
+  {"id":"AX-012","predicate":"A node whose `actions` contain `press` also offers `focus`.","severity":"error","scope":"both"},
+  {"id":"AX-013","predicate":"A node with `role` `Status` or `Alert` is named.","severity":"error","scope":"both"},
+  {"id":"AX-014","predicate":"A node with `role` `Heading` or `Label` is named.","severity":"error","scope":"both"},
+  {"id":"AX-015","predicate":"No `id` ends in `~` followed by digits (two elements resolved to one path; `src/ax/tree.rs` `door_ids` appends the suffix).","severity":"error","scope":"both"},
+  {"id":"AX-016","predicate":"No two nodes with the same `in` and `press` in `actions` share both `role` and `name`.","severity":"warn","scope":"both"},
+  {"id":"AX-017","predicate":"A node whose `actions` contain `press` has `bounds` (snapshot taken with `bounds=1`) with width >= 24 and height >= 24 logical px.","severity":"warn","scope":"both"},
+  {"id":"AX-018","predicate":"The snapshot of a shell screen state other than the desk (no modal scope active) contains exactly one shell node (`in` has no `/`) with `role == Heading`.","severity":"error","scope":"shell"},
+  {"id":"AX-020","predicate":"After every `tab` press of the walk, exactly one node in the snapshot has `focused` in `state` (focus is on a node, not on the window root, and not on an element with no node).","severity":"error","scope":"both"},
+  {"id":"AX-021","predicate":"Every node that offered `focus` in the first snapshot has `focused` in `state` in at least one snapshot of the walk.","severity":"error","scope":"both"},
+  {"id":"AX-022","predicate":"Every `tab` press of the walk changes which `id` has `focused`.","severity":"warn","scope":"both"},
+  {"id":"AX-023","predicate":"While the audit reports a modal scope active, every snapshot of the walk has a node with `focused` in `state` (focus never leaves the modal subtree the snapshot is scoped to).","severity":"error","scope":"both"},
+  {"id":"AX-024","predicate":"While a shell node (`in` has no `/`) with `role == Dialog` is in the snapshot, `GET /keys` lists a binding whose `keys` is exactly `escape`.","severity":"error","scope":"shell"},
+  {"id":"AX-025","predicate":"While a node with `role == Dialog` is in the snapshot, some node has `focused` in `state`.","severity":"error","scope":"both"}
+]
+```
