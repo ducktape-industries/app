@@ -1,8 +1,10 @@
 use super::*;
 
 /// Ticks a replacement gets to publish its tree and finish its document
-/// transfers: documents are fetched one at a time, each a request tick, a
-/// tick per chunk, the acknowledgement and one to spare; one more settles.
+/// transfers. The host fetches documents one at a time, and a view answers
+/// the request with `Begin`, then one chunk a tick, then `Complete`, and
+/// hears the acknowledgement on one more tick; the last tick is the quiet
+/// one that shows the transfer done.
 const FIRST_FRAME_TICK_LIMIT: usize = wire::editor_document::MAX_EDITOR_DOCUMENTS
     * (wire::editor_document::MAX_EDITOR_CHUNKS + 3)
     + 1;
