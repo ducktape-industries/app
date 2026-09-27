@@ -562,7 +562,7 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// The reading of one window: `snap` once, and with `walk`, `tab` through the
 /// window's own key dispatch N + 1 times (N: nodes offering focus in the
 /// first snapshot, counted before `keep` filters), `snap` after each. Focus
-/// goes back where it was.
+/// goes back where it was — nowhere included.
 pub(crate) fn observe(
     window: &mut Window,
     cx: &mut App,
@@ -588,8 +588,9 @@ pub(crate) fn observe(
             let _ = press_keys(window, cx, "tab", "");
             take(window, cx, &mut reading);
         }
-        if let Some(handle) = before {
-            handle.focus(window, cx);
+        match before {
+            Some(handle) => handle.focus(window, cx),
+            None => window.blur(cx),
         }
     }
     reading

@@ -7,12 +7,12 @@ use super::launcher::LauncherScreen;
 use super::launcher::{buttons, closing, node_caption};
 use super::text_field::TextField;
 use super::*;
+use facts::Facts;
+use figure::Figure;
 
 /// What the device that waits for approval is told: a security instruction,
 /// so a `Status` a screen reader hears.
 const LINK_WAITING: &str = "On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Approve there only if it shows the same four-and-four. The code lasts five minutes.";
-use facts::Facts;
-use figure::Figure;
 
 impl DesktopWindow {
     /// CreateAccount: name the account this key signs for, or add this
