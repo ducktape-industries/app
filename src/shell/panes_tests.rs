@@ -533,3 +533,47 @@ fn help_opens_in_a_window_the_app_draws(cx: &mut TestAppContext) {
         assert!(!ids.contains(&format!("console:pane/{index}/popout").as_str()));
     });
 }
+
+/// Help in a window narrower than its page keeps the page's width and
+/// scrolls to the rest, rather than squeezing it.
+#[gpui_kit::test]
+fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
+    let (model, key, _, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+        window.dispatch_action(Box::new(keys::OpenHelp), cx);
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    let narrow = layout::Frame {
+        x: 20.,
+        y: 20.,
+        w: 320.,
+        h: 400.,
+    };
+    model.update(&mut native, |model, cx| {
+        let index = model.state.layouts[&key]
+            .panes
+            .iter()
+            .position(|pane| pane.module == layout::HELP)
+            .unwrap();
+        model.dispatch(Message::Pane(key, PaneMessage::Frame(index, narrow)), cx);
+    });
+    let width = |nodes: &serde_json::Value, id: &str| {
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == format!("console:{id}"))
+            .and_then(|node| node["bounds"][2].as_i64())
+            .unwrap_or_else(|| panic!("no {id}: {nodes}"))
+    };
+    native.update(|window, cx| {
+        draw(window, cx);
+        let nodes = serde_json::to_value(crate::ax::snapshot("console", window, true)).unwrap();
+        let (shown, page) = (width(&nodes, "help"), width(&nodes, "help/page"));
+        // the page runs past the window: there is something to scroll to
+        assert!(page > shown, "squeezed: page {page}, window {shown}");
+    });
+}

@@ -52,12 +52,18 @@ impl DesktopWindow {
             .role(Role::Document)
             .aria_label("Help")
             .size_full()
-            .overflow_y_scroll()
-            .flex()
-            .justify_center()
+            // both ways: a narrow window scrolls to what it cuts off
+            .overflow_scroll()
             .child(
                 div()
+                    // auto margins centre it, and never push it past the
+                    // left edge where no scroll could reach it
+                    .id("help/page")
+                    .role(Role::Group)
+                    .aria_label("Help")
+                    .mx_auto()
                     .w_full()
+                    .min_w(px(360.))
                     .max_w(px(560.))
                     .px(px(32.))
                     .py(px(32.))

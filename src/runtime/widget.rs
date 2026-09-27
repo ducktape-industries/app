@@ -523,6 +523,9 @@ impl NativeModuleView {
     }
 }
 
+/// The narrowest a view is laid out: a window narrower scrolls it sideways.
+const MIN_WIDTH: f32 = 480.;
+
 impl gpui_kit::Render for NativeModuleView {
     fn render(
         &mut self,
@@ -530,7 +533,8 @@ impl gpui_kit::Render for NativeModuleView {
         cx: &mut gpui_kit::Context<Self>,
     ) -> impl gpui_kit::IntoElement {
         use gpui_kit::{
-            InteractiveElement as _, IntoElement as _, ParentElement as _, Styled as _,
+            InteractiveElement as _, IntoElement as _, ParentElement as _,
+            StatefulInteractiveElement as _, Styled as _,
         };
         self.bind_observers(window, cx);
         self.drawn = true;
@@ -557,14 +561,23 @@ impl gpui_kit::Render for NativeModuleView {
                         format!("view{}", cx.entity().entity_id().as_u64()),
                     );
                     // A view owns its own inset: a split pane runs to the edges.
+                    // Narrower than `MIN_WIDTH`, it scrolls sideways rather
+                    // than being squeezed and cut at the window's edge.
                     gpui_kit::div()
                         .id(self.ax_mark())
                         .key_context(context)
                         .size_full()
-                        // Observe wraps the guest: its hitbox sits under the
-                        // guest's controls, a sibling after them would block
-                        // their clicks.
-                        .child(input::Observe::new(guest, self, cx))
+                        .overflow_hidden()
+                        .overflow_x_scroll()
+                        .child(
+                            gpui_kit::div()
+                                .size_full()
+                                .min_w(gpui_kit::px(MIN_WIDTH))
+                                // Observe wraps the guest: its hitbox sits
+                                // under the guest's controls, a sibling after
+                                // them would block their clicks.
+                                .child(input::Observe::new(guest, self, cx)),
+                        )
                         .into_any_element()
                 }
                 None => gpui_kit::div().size_full().into_any_element(),
