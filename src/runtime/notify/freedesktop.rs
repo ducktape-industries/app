@@ -1,6 +1,7 @@
-//! Everywhere else the notifier is the freedesktop notifications service,
-//! which every desktop off macOS answers through its own daemon. Pure Rust,
-//! and no new dependency — zbus is already in this binary's graph.
+//! Banners on every desktop off macOS: the freedesktop notifications
+//! service (`org.freedesktop.Notifications` on the session D-Bus), which
+//! each desktop answers through its own daemon. Pure Rust, and no new
+//! dependency — zbus is already in this binary's graph.
 
 use super::Notice;
 use std::collections::HashMap;

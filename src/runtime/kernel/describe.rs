@@ -2,7 +2,9 @@
 //! program's CURRENT code blob (the roster the app already holds) carries a
 //! wasm module in its `ducktape.describe` section; it is compiled once per
 //! code id and called in a fresh, import-free, fuel- and memory-bounded
-//! instance (`describe::host`), its answers kept per (code id, op hash).
+//! instance (the `describe` crate's `host`, written `::describe::host` here
+//! since this module shadows the crate's name), its answers kept per (code
+//! id, op hash).
 //! The section is anyone's bytes: every failure is `None`, and the view
 //! shows the op's bytes instead.
 use std::collections::HashMap;

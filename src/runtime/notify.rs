@@ -163,8 +163,9 @@ pub(crate) fn not_now(module: &str) {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Entry {
     pub(crate) id: u64,
-    /// The view's program, and its name when it posted.
+    /// The program whose view posted (its roster name).
     pub(crate) module: String,
+    /// That view's own name when it posted.
     pub(crate) view: String,
     pub(crate) title: String,
     pub(crate) body: String,
@@ -186,7 +187,8 @@ struct Bucket {
 /// policy remembers between notices.
 #[derive(Default)]
 pub(crate) struct Center {
-    /// The chain the log is for; none, and nothing is written to disk.
+    /// The chain id (`<network>#<salt>`) the log is for; none, and nothing
+    /// is written to disk.
     network: String,
     entries: Vec<Entry>,
     next: u64,
@@ -613,6 +615,10 @@ fn clicked(entry: u64) {
     }
 }
 
+// Each platform module exposes `post(&Notice, row: Option<u64>) -> raised`
+// and `withdraw(tag)`. Both block on OS calls and run only through
+// `in_order`, on the blocking pool; a click on a banner calls back
+// `clicked(row)`.
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
@@ -876,7 +882,9 @@ mod tests {
         assert_eq!(Settings::of(&serde_json::json!({ BURST_PREF: 7 })).burst, 6);
     }
 
-    /// post are refused, and a post with no words is not a notice.
+    /// A post round-trips as borsh and trailing bytes are refused; a post
+    /// with no words, or a link that is not `duck://`, is refused; long text
+    /// is cut on a char boundary, and a cut link is dropped.
     #[test]
     fn a_post_is_words_a_tag_and_a_duck_link() {
         let full = Notification {

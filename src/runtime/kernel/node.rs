@@ -1,3 +1,9 @@
+//! The node-backed methods and how a view request becomes a task: a
+//! handler is `fn(Node, Vec<u8>) -> Answered`, run on [`handle`] with an
+//! in-flight slot from [`Replies::admit`], its answer put in [`Replies`];
+//! transport failures are retried for [`NODE_RETRY_BUDGET`]. A subscription
+//! (`module.changes`, `chain.heads`) is one long task writing items. Every
+//! task is a [`NodeTask`] in `guest.tasks`, aborted when dropped.
 use super::*;
 use crate::backend::noded;
 
@@ -74,10 +80,10 @@ fn spawn_call(guest: &mut Guest, id: u64, payload: &[u8], call: Call, retry: boo
     guest.tasks.push((id, NodeTask { task }));
 }
 
-/// One SUBSCRIPTION's writing end, handed to a host-fed stream the way the
-/// node's own socket loop writes: every item goes through the same backlog
-/// park, so a device that outruns the redraw holds its own frames instead of
-/// growing the reply queue into a fault.
+/// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
+/// item goes through the same backlog park as a node socket's, so a source
+/// that outruns the redraw waits instead of growing the reply queue into a
+/// fault.
 pub(in crate::runtime) struct Items {
     replies: std::sync::Arc<Replies>,
     drained: tokio::sync::watch::Receiver<()>,
@@ -85,8 +91,9 @@ pub(in crate::runtime) struct Items {
 }
 
 impl Items {
-    /// One more item. `false` when the view is gone and the subscription
-    /// should end — the caller returns, and everything it holds is dropped.
+    /// One more item. `false` when the view is gone or its reply queue
+    /// faulted, and the subscription should end — the caller returns, and
+    /// everything it holds is dropped.
     pub(in crate::runtime) async fn send(&mut self, result: Answer) -> bool {
         self.replies
             .subscription_item(&mut self.drained, self.id, result)
@@ -94,10 +101,10 @@ impl Items {
     }
 }
 
-/// A subscription the HOST feeds — a device rather than a node socket. The
-/// body owns whatever the stream holds open, so dropping the task releases
-/// it: a cancel drops the [`NodeTask`], and so do a guest's teardown, swap
-/// and trap, which drop the whole `tasks` list.
+/// A subscription whose items come from a host loop (`chain.heads` polls
+/// the node for them). The body owns whatever it holds open, so dropping
+/// the task releases it: a cancel drops the [`NodeTask`], and so do a
+/// guest's teardown, swap and trap, which drop the whole `tasks` list.
 pub(in crate::runtime) fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
@@ -123,6 +130,10 @@ where
     guest.tasks.push((id, NodeTask { task }));
 }
 
+/// Runs `future` on the kernel runtime and delivers its result as the one
+/// reply to request `id`; counted in flight, aborted with the guest. For a
+/// host method that waits on something other than the node (`notify.post`
+/// waits on its banner).
 pub(in crate::runtime) fn spawn_device(
     guest: &mut Guest,
     id: u64,
@@ -143,6 +154,9 @@ pub(in crate::runtime) fn spawn_device(
     guest.tasks.push((id, NodeTask { task }));
 }
 
+/// The node to ask, or `None` with the request REFUSED: `stale_connection`
+/// for a view from before the last (re)connect, `not_connected` without a
+/// node.
 fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
     let connection = super::super::connection().lock().expect("views rpc");
     if connection.rev != guest.connection_rev {
@@ -305,6 +319,8 @@ async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<method
     Ok((heads, status.block_time_ms))
 }
 
+/// A running request or subscription; dropping it aborts the task, which is
+/// how a cancel, a swap or a teardown stops a socket waiting on the node.
 pub(in crate::runtime) struct NodeTask {
     task: tokio::task::JoinHandle<()>,
 }
@@ -428,6 +444,8 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
             }
             wire::Error::new(error.reason(), error.message())
         };
+        // `/v1/invite` is JSON and not in `backend::noded`; ducktape-rpc is
+        // used for it alone
         let client = ducktape_rpc::Client::new(node.client.endpoint()).map_err(refusal)?;
         let minted = client.mint_invite(ttl).await.map_err(refusal)?;
         let notes = minted

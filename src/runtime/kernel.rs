@@ -6,48 +6,58 @@
 //! Every method, its request and its reply are the types in `wire::methods`,
 //! borsh on both sides; the host decodes a request by that type and nothing
 //! else, so there is no per-method parsing here to drift from a view.
+//! `methods::ALL` is the one list, and `tests::the_routed_kinds_are_exactly_the_methods`
+//! holds the arms in this directory to it. Where each kind is answered:
 //!
-//! - `module.query` `Call{target, body}` — one query on the connected node:
-//!   `body` is the payload of a signed frame to `target`, and the bytes the
-//!   program `Respond`ed come back as they are.
-//! - `op.submit` `Call{target, body}` — one op, signed with the SEATED key
-//!   at the signer's next sequence and submitted; answered with the
-//!   receipt's output, or the program's refusal.
-//! - `chain.status` — node status as `NodeStatus`.
-//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
-//!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
-//!   height or id (`/v1/block`).
-//! - `invite.create` `CreateInvite{ttl_days}` — mint once; `Invite{invite, notes}`.
-//!   Node refusals retain their tokens.
-//! - `module.changes` `<program>` — a subscription that gets one item per block
-//!   that wrote to `program` (`/v1/changes/<program>`), so the view re-reads
-//!   what moved.
-//! - `chain.heads` — a subscription that gets one `Head` per finalized block,
-//!   oldest first: the host reads the node's status at half its block
-//!   time and fills each advance from the block archive.
-//! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
-//! - `module.describe` `(program, op)` — the op as the program's own
-//!   describe module reads it, or `None` (`describe`).
-//! - `host.session` — subscribes to the session props (`Session`: the seated
-//!   account, theme, chain and read-only endpoint).
+//! Here, in [`answer`], from app state, on the window thread:
+//! - `host.visible` — a subscription to whether the view's window shows it.
+//! - `host.offset` — a subscription to the reader's UTC offset in minutes,
+//!   from the OS's local time, re-sent when it moves (a DST change).
 //! - `host.route` — a subscription that gets the route a `duck://` link
 //!   asked of this view (`explorer/tx/<hash>` → `tx/<hash>`), once,
 //!   DECODED: the link's `%XX` escapes read back (`chat/forge%3Aweb%3A3`
 //!   → `forge:web:3`), checked by `valid_route`.
-//! - `host.offset` — subscribes to the reader's UTC offset in minutes,
-//!   from the OS's local time, re-sent when it moves (a DST change).
-//! - `host.visible`, `host.badge`, `link.open`, `host.id`,
-//!   `clock.ticks`, `host.log`, `host.widget` — the app's own methods:
-//!   visibility, the tab badge, the one way out (a `duck://` link, or an
-//!   `https://` one for the system browser), a minted id, a clock, the log,
-//!   a widget command.
-//! - `clipboard.*` — the clipboard, in `clipboard`.
-//! - `notify.post` — a notice the host logs and decides a banner for, in
-//!   `notify`.
+//! - `host.badge` — the tab's unread count; `host.id` — a minted id under a
+//!   short prefix; `link.open` — the one way out: a `duck://` link, or an
+//!   `https://` one for the system browser; `clock.ticks` — a periodic
+//!   empty item, at most one per redraw ([`ticked`]).
 //!
-//! A query and a submit go to the node off the window thread, on the
-//! kernel's own runtime, and their answers wait in [`Replies`] for the
-//! view's next redraw; reply notifications wake the native presenter.
+//! On the node, as a task on [`handle`] (`node`), each answer waiting in
+//! [`Replies`] for the view's next redraw; transport failures retried for
+//! up to a minute unless said otherwise:
+//! - `module.query` `Call{target, body}` — one query on the connected node:
+//!   `body` is the payload of a signed frame to `target`, and the bytes the
+//!   program `Respond`ed come back as they are.
+//! - `op.submit` `Call{target, body}` — one op, signed with the key
+//!   unlocked in this session at the signer's next sequence and submitted;
+//!   answered with the receipt's output, or the program's refusal.
+//! - `chain.status` — node status as `NodeStatus`.
+//! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
+//!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
+//!   height or id (`/v1/block`).
+//! - `blob.get` `<id>` — a blob by `sha256:<hex>` or `sha1:<hex>` id, unframed.
+//! - `module.describe` `(program, op)` — the op as the program's own
+//!   describe module reads it, or `None` (`describe`).
+//! - `invite.create` `CreateInvite{ttl_days}` — minted ONCE, never retried;
+//!   `Invite{invite, notes}`. Node refusals retain their tokens.
+//! - `module.changes` `<program>` — a subscription that gets one item per
+//!   block that wrote to `program` (`/v1/changes/<program>`), so the view
+//!   re-reads what moved.
+//! - `chain.heads` — a subscription that gets one `Head` per finalized block,
+//!   oldest first: the host reads the node's status at half its block
+//!   time and fills each advance from the block archive.
+//!
+//! In a sibling module [`answer`] asks first:
+//! - `clipboard.read`, `clipboard.write` — `clipboard`, run on the window
+//!   thread after the tick.
+//! - `notify.post`, `notify.seen` — `notify`, the notification centre.
+//! - `store.get`, `store.set` — `store`, the view's file on this device.
+//!
+//! Not the kernel's — `Guest::answer` (`guest/requests.rs`) takes them once
+//! [`answer`] says `false`, since they read the guest's own state:
+//! - `host.widget` — a widget command; `host.session` — a subscription to
+//!   the session basics (`Session`: the account, theme, chain and read-only
+//!   endpoint); `host.log` — a line into app.log.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -61,8 +71,15 @@ use wire::methods::{self, Capability};
 const MAX_ID_PREFIX: usize = 32;
 /// The most a `blob.get` may pull into a view.
 const MAX_BLOB_BYTES: usize = 16 << 20;
+/// Node tasks and subscriptions running at once for one view
+/// ([`Replies::admit`]); past it a request is refused `in_flight_limit`.
 const MAX_IN_FLIGHT: usize = 256;
+/// Subscriptions of one kind a view may hold, counted per kind and only
+/// for `clock.ticks` and `module.changes`; the `host.*` subscriptions are
+/// each one list a view has no reason to grow.
 const MAX_SUBSCRIPTIONS: usize = 256;
+/// Answers waiting in [`Replies`] between two redraws, by count and by
+/// bytes; exceeding either stops the view for good.
 const MAX_REPLY_EVENTS: usize = 1024;
 const MAX_REPLY_BYTES: usize = 32 << 20;
 /// The share of the reply budget SUBSCRIPTIONS may fill before they stop
@@ -102,8 +119,11 @@ use node::{
 };
 pub(super) use replies::Replies;
 
-/// The kernel's own runtime, on its own thread: the window thread never
-/// blocks on the node, and the app's executor is not this module's to use.
+/// The one current-thread tokio runtime every async I/O in the app runs
+/// on — node HTTP and websockets here, the shell's task stream, the loader
+/// threads' fetches (`runtime::handle` hands it out) — on its own thread, so
+/// the window thread never blocks on the node. CPU or OS-blocking work goes
+/// to `spawn_blocking`.
 pub(super) fn handle() -> tokio::runtime::Handle {
     static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
     HANDLE

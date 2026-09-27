@@ -1,3 +1,7 @@
+//! The per-view answer queue between the kernel's tasks and the redraw:
+//! written off-thread, drained into the guest's pending events at its next
+//! redraw, bounded by count and bytes. Overflow latches a fault that stops
+//! the view.
 use super::*;
 
 /// What one answer holds against the reply budget.
@@ -31,6 +35,8 @@ pub(in crate::runtime) struct Replies {
     /// Told on every redraw that takes the queue: a subscription parked on
     /// [`Replies::backlogged`] wakes here and reads its socket again.
     drained: tokio::sync::watch::Sender<()>,
+    /// Set once the queue overflows: the view is stopped on its next drain
+    /// and admits nothing more.
     fault: Mutex<Option<String>>,
 }
 
@@ -48,8 +54,9 @@ impl Default for Replies {
 }
 
 impl Replies {
-    /// Coalesced notifications wake each native presenter independently. The
-    /// answer remains in the queue, including when no window is presenting it.
+    /// Fires on every answer, coalesced; each `NativeModuleView` widget
+    /// (`widget.rs`) awaits its own receiver and asks for a redraw. The
+    /// answer stays in the queue while no window presents the view.
     pub(in crate::runtime) fn changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changed.subscribe()
     }
@@ -72,9 +79,10 @@ impl Replies {
         self.drained.subscribe()
     }
 
-    /// Whether ONE subscription's share of the queue is spoken for, in
-    /// either budget — a frame past this waits for a redraw rather than
-    /// growing the queue toward the fault in [`Replies::item`].
+    /// Whether the queue is at least half full, in either budget. While it
+    /// is, every subscription parks in [`Replies::subscription_item`] rather
+    /// than growing the queue toward the fault in [`Replies::item`]; a
+    /// one-shot answer still goes in, up to the full budget.
     fn backlogged(&self) -> bool {
         let events = self.events.lock().expect("kernel replies");
         events.len() >= MAX_STREAM_BACKLOG_EVENTS
@@ -83,10 +91,10 @@ impl Replies {
 
     /// One item from a SUBSCRIPTION, which is the only producer that can
     /// outrun the redraw: it answers for as long as the view holds it,
-    /// against a queue only a redraw empties. It PARKS here while its share
-    /// is spoken for, so its own source — a node socket, a companion
-    /// session — holds the backlog instead of the queue growing into the
-    /// fault. `false` when the view is gone and the subscription should end.
+    /// against a queue only a redraw empties. It PARKS here while the queue
+    /// is half full, so its own source — a node socket, a poll loop — holds
+    /// the backlog instead of the queue growing into the fault. `false` when
+    /// the view is gone or the queue faulted: the subscription should end.
     pub(super) async fn subscription_item(
         &self,
         drained: &mut tokio::sync::watch::Receiver<()>,
@@ -173,8 +181,8 @@ impl Replies {
     }
 }
 
-/// The in-flight count one subscription took, given back when its task
-/// ends — INCLUDING THE ABORT a cancel or a replaced view fires, which is
+/// One in-flight slot, held by a running request or subscription and given
+/// back when its task ends — INCLUDING THE ABORT a cancel or a replaced view fires, which is
 /// the only way a socket waiting on the node stops waiting. Without this
 /// the count would outlive the socket and the widget would poll forever.
 pub(super) struct InFlight(std::sync::Arc<Replies>);

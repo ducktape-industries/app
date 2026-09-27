@@ -5,12 +5,10 @@ pub struct Loads {
     pub(super) _threads: Vec<std::thread::JoinHandle<()>>,
 }
 
-/// The node's deployments moved (a new block): every module-owned view
-/// whose module's active code is not the one it was drawn from is loaded
-/// again, under a new generation, and swapped in place when it is ready.
-/// One check in flight at a time; a block that lands during one is
-/// covered by the next. The loads it starts swap in place, so nobody waits
-/// on them but a test; the block stream drops them.
+/// One seat: the load state, props and retry hold-off of one view instance
+/// of one module (instance 0 is the preloaded seat no tab has claimed yet).
+/// Shared by the tab's widget on the window thread and the loader thread,
+/// which swaps a finished load in place; the tab polls it while loading.
 pub(super) struct Mounted {
     pub(super) changes: tokio::sync::watch::Sender<()>,
     /// The connection this seat was last asked of.
@@ -27,10 +25,6 @@ pub(super) struct Mounted {
     /// after when a block named one: a block that names it again waits
     /// for it instead of starting over.
     pub(super) in_flight: bool,
-    /// The proposed frame this device tastes in place of the active one:
-    /// the seat's wanted hash is `tasting.or(active)`. Cleared, with a
-    /// notice, when the hash leaves the taste set — withdrawn, or
-    /// activated into the very hash the seat already draws.
     /// The candidate a load last failed on, and when the next block may try
     /// it again. Cleared by any load that comes back, so only a repeated
     /// failure on the same candidate widens the gap.
@@ -106,8 +100,8 @@ impl Mounted {
             .is_some_and(|retry| retry.hash == active && Instant::now() < retry.next)
     }
 
-    /// Opens the next generation for a load after `wanted` (None: whatever
-    /// the node holds active), and names it.
+    /// Opens the next load generation, so an older load still on its way
+    /// lands nowhere, and names it.
     pub(super) fn start(&mut self) -> u64 {
         self.changes.send_replace(());
         self.generation += 1;
@@ -418,8 +412,8 @@ pub(super) struct Unloaded {
     pub(super) failure: Failure,
 }
 
-/// One `view_source` line per outcome, with the same fields every time —
-/// the canary greps them.
+/// One `view_source` line per outcome, with the same fields every time:
+/// stable keys for anyone reading loads out of app.log.
 pub(super) fn log_source(
     module: &str,
     hash: Option<&[u8; 32]>,

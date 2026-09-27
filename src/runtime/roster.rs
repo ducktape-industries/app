@@ -1,11 +1,12 @@
+//! The node in hand and what it runs: the global [`Connection`], the roster
+//! (the node's program list and each one's code), the rail rows the shell
+//! draws from it, the loads a connect or a new block starts, and the reading
+//! of a `duck://` link against the views this connection lists.
 use super::*;
 
-// ---------- mounting ----------
-
-// ---------- the roster ----------
-
-/// The session facts every view is handed as its props: the seated key as `signer`
-/// (hex) and the `account` it holds, `None` until one is resolved.
+/// The session facts every view is handed as its props: the signing key
+/// unlocked in this session as `signer` (hex) and the `account` it holds,
+/// `None` until one is resolved.
 pub fn props(
     dark: bool,
     connected: bool,
@@ -158,7 +159,9 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
 }
 
 /// The node moved (a block landed): the roster is read again, and a
-/// program whose code changed is loaded again. Cheap when nothing moved.
+/// program whose code changed is loaded again, under a new generation, and
+/// swapped in place when ready. One check in flight at a time; a block
+/// that lands during one is covered by the next. Cheap when nothing moved.
 pub fn deployments_checked() -> Loads {
     static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     use std::sync::atomic::Ordering;
