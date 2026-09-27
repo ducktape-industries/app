@@ -88,7 +88,7 @@ pub(super) fn openable() -> Vec<crate::runtime::RailRow> {
 
 impl DesktopWindow {
     /// Something done to this window's panes: the model moves them, and
-    /// the keys come back to the window.
+    /// the keys go to the focused one (`pane_stage`).
     pub(super) fn pane_message(
         &mut self,
         message: PaneMessage,
@@ -111,7 +111,7 @@ impl DesktopWindow {
         self.model.update(cx, |model, cx| {
             model.dispatch(Message::Pane(key, message), cx)
         });
-        self.focus.focus(window, cx);
+        self.panes_moved = true;
         cx.notify();
     }
 
@@ -303,7 +303,11 @@ impl DesktopWindow {
         use gpui_kit::*;
         let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
         let layout = self.layout(cx);
+        let moved = std::mem::take(&mut self.panes_moved);
         if layout.panes.is_empty() {
+            if moved {
+                self.focus.focus(window, cx);
+            }
             let moving = self.model.read(cx).state.motion;
             return div()
                 .size_full()
@@ -348,9 +352,34 @@ impl DesktopWindow {
             );
         }
         let multi = layout.panes.len() > 1;
+        self.pane_keys
+            .retain(|instance, _| layout.panes.iter().any(|pane| pane.instance == *instance));
         for index in layout.stacking() {
             let pane = &layout.panes[index];
             let focused = index == layout.focused;
+            let (own, last) = self
+                .pane_keys
+                .entry(pane.instance)
+                .or_insert_with(|| (cx.focus_handle(), None));
+            if own.contains_focused(window, cx) {
+                *last = window.focused(cx);
+            }
+            let (own, last) = (own.clone(), last.clone());
+            if focused && moved {
+                // what had the keys in it, if it is still there; else its
+                // first control; else the window itself
+                let own = own.clone();
+                window.defer(cx, move |window, cx| match last {
+                    Some(last) if own.contains(&last, window) => last.focus(window, cx),
+                    _ => {
+                        own.focus(window, cx);
+                        window.focus_next(cx);
+                        if !own.contains_focused(window, cx) {
+                            own.focus(window, cx);
+                        }
+                    }
+                });
+            }
             let empty = pane.is_empty();
             let mounted = self
                 .model
@@ -375,6 +404,15 @@ impl DesktopWindow {
                 }
             };
             let pane = &layout.panes[index];
+            let view = div()
+                .id(SharedString::from(format!("pane/{index}/view")))
+                .role(gpui_kit::Role::Group)
+                .aria_label(label(pane.module))
+                .track_focus(&own)
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(view);
             let controls = div()
                 .flex()
                 .items_center()
@@ -455,7 +493,7 @@ impl DesktopWindow {
                     .size_full()
                     .child(title)
                     .children(asking)
-                    .child(div().flex_1().min_h_0().w_full().child(view))
+                    .child(view)
                     .into_any_element(),
                 // on the desk: a title bar to hold it by, and edges to size
                 // it by that reach past its border, so the grips sit in a
@@ -479,7 +517,7 @@ impl DesktopWindow {
                         .when(!focused, |pane| pane.shadow_sm())
                         .child(title)
                         .children(asking)
-                        .child(div().flex_1().min_h_0().w_full().child(view));
+                        .child(view);
                     div()
                         .absolute()
                         .left(px(frame.x - grab))

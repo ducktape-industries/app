@@ -547,6 +547,15 @@ pub(crate) struct DesktopWindow {
     /// What had the keys when something opened over the desk: they go back
     /// to it when it closes, so typing carries on where it was.
     refocus: Option<gpui_kit::FocusHandle>,
+    /// A dialog on a scrim (Spotlight, Settings, Approve): the keys go into
+    /// it when it opens, and Tab and Shift+Tab stay in it.
+    modal: gpui_kit::FocusHandle,
+    /// Each window's own focus (its view's box), by instance, and what in it
+    /// last had the keys: a window that comes to the front gets them back.
+    pane_keys: HashMap<u64, (gpui_kit::FocusHandle, Option<gpui_kit::FocusHandle>)>,
+    /// Its panes moved: the frame that draws them hands the keys to the
+    /// focused one.
+    panes_moved: bool,
     /// Where the bar's menu buttons were last painted: each menu hangs
     /// under its own.
     bar_buttons: HashMap<crate::Overlay, gpui_kit::Bounds<gpui_kit::Pixels>>,

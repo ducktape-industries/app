@@ -107,7 +107,24 @@ impl DesktopWindow {
             self.spotlight_focused = false;
         }
         match (self.covered, state.overlay.filter(|_| console)) {
-            (None, Some(_)) => self.refocus = window.focused(cx),
+            (None, Some(open)) => {
+                let before = window.focused(cx);
+                self.refocus = before.clone();
+                // a dialog on a scrim takes the keys, unless its own field
+                // already did, and keeps Tab (`overlay`)
+                if matches!(
+                    open,
+                    Overlay::Spotlight | Overlay::Approve | Overlay::Settings
+                ) {
+                    let modal = self.modal.clone();
+                    window.defer(cx, move |window, cx| {
+                        if window.focused(cx) == before {
+                            modal.focus(window, cx);
+                            window.focus_next(cx);
+                        }
+                    });
+                }
+            }
             (Some(_), None) => {
                 if let Some(handle) = self.refocus.take() {
                     window.defer(cx, move |window, cx| handle.focus(window, cx));
@@ -133,7 +150,8 @@ impl DesktopWindow {
     /// closes it on a click, dimmed when `scrim`, and on it the card the
     /// canvas dresses its menus and dialogs in, `border: 1.5px solid ink`
     /// and a soft shadow. `dress` places and fills the card. Escape is
-    /// `global_key`'s.
+    /// `global_key`'s. Dimmed, it is modal: Tab and Shift+Tab go round its
+    /// controls, never out to the bar.
     #[allow(clippy::too_many_arguments, reason = "one frame, five overlays")]
     pub(super) fn overlay(
         &self,
@@ -145,6 +163,7 @@ impl DesktopWindow {
         ink: &super::ink::Ink,
         dress: impl FnOnce(gpui_kit::Stateful<gpui_kit::Div>) -> gpui_kit::AnyElement,
     ) -> gpui_kit::AnyElement {
+        use gpui_kit::component::FocusTrapElement as _;
         use gpui_kit::*;
         let model = self.model.clone();
         let backdrop = div()
@@ -175,7 +194,13 @@ impl DesktopWindow {
             .border_color(ink.ink)
             .shadow_lg()
             .on_click(|_, _, cx| cx.stop_propagation());
-        backdrop.child(dress(card)).into_any_element()
+        let backdrop = backdrop.child(dress(card));
+        match scrim {
+            true => backdrop
+                .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
+                .into_any_element(),
+            false => backdrop.into_any_element(),
+        }
     }
 
     /// A menu hanging below the bar (the canvas's menus: `top: 40px`), its
