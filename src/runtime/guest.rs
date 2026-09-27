@@ -106,8 +106,7 @@ pub(super) fn hex_short(hash: &[u8; 32]) -> String {
     hash[..6].iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// A tick may cancel twice what it may request: a view that drops every
-/// subscription it opened last tick still has room to open new ones.
+/// A tick may cancel up to twice what it may request.
 pub(super) const MAX_CANCELS_PER_TICK: usize = 2 * MAX_REQUESTS_PER_TICK;
 
 pub(super) const COMPILED_VIEW_LIMIT: usize = 16;
