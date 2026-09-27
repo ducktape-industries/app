@@ -148,7 +148,8 @@ pub struct ViewTree {
     /// The overlays showing a dialog, and where focus enters each.
     dialogs: HashMap<AuthoredPath, FocusHandle>,
 
-    // Measured geometry of identified containers and editor mounts (`measure`).
+    // Measured geometry by path: what `measure` records for identified
+    // containers, editor mounts and canvases, and the sensor canvas for sensors.
     bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
 
     // Decoded pictures by content hash; a frame resends bytes only for a
