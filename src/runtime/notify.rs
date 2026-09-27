@@ -55,6 +55,8 @@ fn shortened(mut post: Notification) -> Result<Notification, &'static str> {
     if !post.link.is_empty() && !post.link.starts_with("duck://") {
         return Err("a notice's link is a duck:// link");
     }
+    // a cut link goes nowhere: the cut says so, not the length after it
+    let link_cut = post.link.len() > MAX_TEXT;
     for text in [
         &mut post.title,
         &mut post.body,
@@ -69,8 +71,7 @@ fn shortened(mut post: Notification) -> Result<Notification, &'static str> {
             text.truncate(cut);
         }
     }
-    // a cut link goes nowhere
-    if post.link.len() == MAX_TEXT {
+    if link_cut {
         post.link.clear();
     }
     Ok(post)

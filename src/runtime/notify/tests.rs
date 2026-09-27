@@ -290,6 +290,36 @@ fn a_post_is_words_a_tag_and_a_duck_link() {
     assert!(long.link.is_empty(), "a cut link goes nowhere");
 }
 
+/// The cut is what clears a link, not its length after: a link of exactly
+/// MAX_TEXT bytes was not cut and stays; a multibyte link cut short of
+/// MAX_TEXT on a character boundary was, and goes.
+#[test]
+fn a_link_is_cleared_when_cut_not_when_long() {
+    let with_link = |link: String| {
+        shortened(Notification {
+            title: "t".into(),
+            link,
+            ..Notification::default()
+        })
+        .unwrap()
+        .link
+    };
+    let exact = format!("duck://{}", "x".repeat(MAX_TEXT - "duck://".len()));
+    assert_eq!(exact.len(), MAX_TEXT);
+    assert_eq!(
+        with_link(exact.clone()),
+        exact,
+        "uncut, so it still goes somewhere"
+    );
+    // 7 + 3 * 169 = 514 bytes; the boundary cut lands at 511
+    let cut = format!("duck://{}", "가".repeat(169));
+    assert!(cut.len() > MAX_TEXT);
+    assert!(
+        with_link(cut).is_empty(),
+        "cut short of MAX_TEXT, still cut"
+    );
+}
+
 /// A view's banners leave in the order they came, however long each
 /// takes: the first one holds until every other is queued behind it.
 #[test]
