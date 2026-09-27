@@ -349,4 +349,4 @@ use native::*;
 
 #[path = "text.rs"]
 mod text;
-pub use text::{GUEST_EDITOR_CONTEXT, TextEditor};
+pub use text::TextEditor;

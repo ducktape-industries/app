@@ -89,6 +89,7 @@ impl DesktopWindow {
             inputs: HashMap::new(),
             spotlight_focused: false,
             spotlight_rows: Default::default(),
+            command: None,
             covered: None,
             refocus: None,
             modal: cx.focus_handle(),

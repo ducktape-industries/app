@@ -87,8 +87,6 @@ impl Pane {
 pub(crate) struct Layout {
     pub(crate) panes: Vec<Pane>,
     pub(crate) focused: usize,
-    /// The row picked in an empty window's list.
-    pub(crate) pick: usize,
     top: u64,
     /// The desk's size as the shell last measured it; `None` until drawn.
     pub(crate) desk: Option<(f32, f32)>,
@@ -123,11 +121,6 @@ pub(crate) enum PaneMessage {
     /// ⌘` / ⌘⇧` / ctrl-tab.
     Cycle {
         forward: bool,
-    },
-    /// ↑↓ in an empty window's list of `rows`.
-    Pick {
-        down: bool,
-        rows: usize,
     },
     /// A title bar's double press.
     Fill(usize),
@@ -256,7 +249,6 @@ impl Layout {
     /// `below`): it keeps the first half, a new empty window takes the
     /// other. With no window, an empty one fills the desk.
     pub(crate) fn halve(&mut self, below: bool, desk: (f32, f32)) -> bool {
-        self.pick = 0;
         let Some(whole) = self.panes.get(self.focused).map(|pane| pane.frame) else {
             return self.split(EMPTY);
         };

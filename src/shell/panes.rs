@@ -156,115 +156,7 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) {
         self.pane_message(PaneMessage::Open(module), window, cx);
-    }
-
-    /// An empty window's body (design "A"): what it can open, one row a
-    /// program, and the keys that open them. Only the focused one shows its
-    /// pick: the keys that move and open it reach no other.
-    fn empty_view(&self, body: f32, focused: bool, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
-        use super::ink::*;
-        use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
-        let ink = Ink::of(state.dark);
-        let rows = openable();
-        let pick = self.layout(cx).pick.min(rows.len().saturating_sub(1));
-        let spacing = empty_spacing(rows.len(), body);
-        let (row_pad, outer_pad) = (spacing.row, spacing.outer);
-        let list = rows.iter().enumerate().map(|(nth, row)| {
-            let module = row.module;
-            let picked = focused && nth == pick;
-            let name = super::menubar::tab_label(row);
-            let badge = state.badges.get(module).copied().unwrap_or(0);
-            let note = match badge {
-                0 => String::new(),
-                count => format!("{count} unread"),
-            };
-            sans(400, 13.)
-                .id(SharedString::from(format!("empty/{module}")))
-                .control(Role::MenuItem, SharedString::from(name.clone()))
-                .flex()
-                .items_baseline()
-                .gap(px(12.))
-                .px(px(12.))
-                .py(px(row_pad))
-                .cursor_pointer()
-                .when(picked, |row| row.bg(ink.surface))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_view(module, window, cx);
-                }))
-                .child(
-                    mono(400, 12.)
-                        .w(px(12.))
-                        .text_color(ink.strong)
-                        .child(match nth < 9 {
-                            true => (nth + 1).to_string(),
-                            false => String::new(),
-                        }),
-                )
-                .child(sans(400, 15.).text_color(ink.ink).child(name))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .truncate()
-                        .text_color(ink.muted)
-                        .child(note),
-                )
-                .child(
-                    mono(400, 12.)
-                        .text_color(ink.muted)
-                        .child(if picked { "↵" } else { "" }),
-                )
-        });
-        // each hint whole, wrapping to the next line on a narrow window
-        let hints = [
-            format!("1–{} open", rows.len().clamp(1, 9)),
-            format!("{} search everything", chord_label("K")),
-            format!("{} close", chord_label("W")),
-        ]
-        .map(|hint| div().whitespace_nowrap().child(hint));
-        div()
-            .id("empty-window")
-            .role(Role::Menu)
-            .aria_label("Open in this window")
-            // the body's own height, not a share of a parent still waiting on
-            // it: the rows scroll and shrink inside it, the footer stays put
-            .w_full()
-            .h(px(body.max(0.)))
-            .flex()
-            .flex_col()
-            .px(px(16.))
-            .py(px(outer_pad))
-            .child(
-                sans(400, 13.)
-                    .text_color(ink.muted)
-                    .px(px(12.))
-                    .pb(px(8.))
-                    .child("Open in this window"),
-            )
-            .child(
-                div()
-                    .id("empty-window/rows")
-                    .map(|rows| match spacing.shown {
-                        Some(shown) => rows.h(px(shown)).flex_none(),
-                        None => rows.flex_1().min_h_0(),
-                    })
-                    .overflow_y_scroll()
-                    .children(list),
-            )
-            .child(
-                mono(400, 12.)
-                    .flex_shrink_0()
-                    .px(px(12.))
-                    .pt(px(12.))
-                    .flex()
-                    .flex_wrap()
-                    .gap_x(px(24.))
-                    .gap_y(px(4.))
-                    .text_color(ink.muted)
-                    .children(hints),
-            )
-            .into_any_element()
+        self.clear_command(window, cx);
     }
 
     fn pane_button(
@@ -448,11 +340,11 @@ impl DesktopWindow {
                     view.into_any_element()
                 }
                 None => {
-                    let pane = &layout.panes[index];
-                    let tall = pane
-                        .frame
-                        .map_or(f32::from(window.viewport_size().height), |frame| frame.h);
-                    self.empty_view(tall - TITLE, focused, cx)
+                    // the bare window box has the keys: the field takes them
+                    if focused && own.is_focused(window) {
+                        self.focus_command(window, cx);
+                    }
+                    self.command_view(focused, window, cx)
                 }
             };
             let pane = &layout.panes[index];
@@ -813,42 +705,6 @@ impl PaneAction {
             Self::Close => ("close", "Close pane", IconName::X),
         }
     }
-}
-
-/// The empty window's spacing for `rows` rows in a body `body` tall: row
-/// and outer padding, the design's 10 and 28 while every row fits and
-/// tighter as the window gets short; and when even the tightest leaves some
-/// rows out, the height of the whole rows that fit, so the list scrolls by
-/// whole rows and none is cut above the footer.
-pub(super) fn empty_spacing(rows: usize, body: f32) -> EmptySpacing {
-    // the label over the rows, and a footer wrapped to two lines
-    const FIXED: f32 = 28. + 12. + 2. * 18.;
-    const LINE: f32 = 24.;
-    let room = |outer: f32| body - 2. * outer - FIXED;
-    let fits = |(row, outer): (f32, f32)| rows as f32 * (LINE + 2. * row) <= room(outer);
-    let spacings = [(10., 28.), (6., 16.), (3., 10.)];
-    if let Some((row, outer)) = spacings.into_iter().find(|spacing| fits(*spacing)) {
-        return EmptySpacing {
-            row,
-            outer,
-            shown: None,
-        };
-    }
-    let (row, outer) = spacings[2];
-    let shown = (room(outer) / (LINE + 2. * row)).floor().max(1.);
-    EmptySpacing {
-        row,
-        outer,
-        shown: Some(shown * (LINE + 2. * row)),
-    }
-}
-
-#[derive(Debug, PartialEq)]
-pub(super) struct EmptySpacing {
-    pub(super) row: f32,
-    pub(super) outer: f32,
-    /// the rows' box when not all of them fit: whole rows only
-    pub(super) shown: Option<f32>,
 }
 
 /// A title bar's height.

@@ -77,15 +77,6 @@ impl Ducktape {
             }
             PaneMessage::Halve { below } => drop(layout.halve(below, desk)),
             PaneMessage::Cycle { forward } => drop(layout.cycle(forward)),
-            PaneMessage::Pick { down, rows } => {
-                let last = rows.saturating_sub(1);
-                let pick = layout.pick.min(last);
-                layout.pick = match down {
-                    true => (pick + 1).min(last),
-                    false => pick.saturating_sub(1),
-                };
-                shows = false;
-            }
             PaneMessage::Fill(index) => {
                 layout.toggle_fill(index, desk);
                 shows = false;
@@ -202,28 +193,6 @@ mod tests {
         pane(&mut state, console, PaneMessage::Close(2));
         pane(&mut state, console, PaneMessage::Close(1));
         assert_eq!(state.layouts[&console].panes[0].frame, whole, "#295");
-        // an empty window's list: ↓ past the end stays on the last row
-        pane(&mut state, console, PaneMessage::Halve { below: false });
-        for _ in 0..5 {
-            pane(
-                &mut state,
-                console,
-                PaneMessage::Pick {
-                    down: true,
-                    rows: 3,
-                },
-            );
-        }
-        assert_eq!(state.layouts[&console].pick, 2);
-        pane(
-            &mut state,
-            console,
-            PaneMessage::Pick {
-                down: false,
-                rows: 3,
-            },
-        );
-        assert_eq!(state.layouts[&console].pick, 1);
     }
 
     #[test]
