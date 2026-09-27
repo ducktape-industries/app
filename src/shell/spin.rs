@@ -1,7 +1,8 @@
-//! A figure, held: it tumbles on its own; a drag turns it by hand and a
-//! release lets it fly on, slowing, until it eases back into its own
-//! tumble. Each tick draws a frame live, painted as one layer of glyphs.
-//! With motion off (the Settings switch) it only turns by hand.
+//! A figure (`figure.rs`: a small 3D shape in characters), held: it tumbles
+//! on its own at `figure::FPS`; a drag turns it by hand and a release lets
+//! it fly on, slowing, until it eases back into its own tumble. Each tick
+//! draws a frame live, painted as one layer of glyphs. With motion off (the
+//! Settings switch) it only turns by hand.
 
 use std::time::Instant;
 
@@ -303,7 +304,8 @@ fn listen(spin: Entity<Spin>, bounds: Bounds<Pixels>, window: &mut Window) {
 }
 
 /// The figure, kept across frames under `id` without tying its redraws to
-/// the view it sits in: it redraws alone, at the display's rate.
+/// the view it sits in: it redraws alone, `figure::FPS` times a second
+/// while it moves.
 pub(super) fn drawing(
     id: impl Into<ElementId>,
     figure: Figure,

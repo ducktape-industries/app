@@ -4,11 +4,14 @@
 //!
 //! What decides where a key goes is the key context of the focused element
 //! and its parents: a window's root says what it is (`Ducktape`, `console`),
-//! whether the desk's keys reach it (`desk`: on the desk, nothing open over
-//! it), and whether something is open over it (`overlay`). A guest editor
-//! (`GuestEditor`) sits deeper, so its own keys come first. An empty
-//! window's ↑↓ and Enter are its field's (`command.rs` takes them); Tab
-//! there is `SwitchMode`, under the field's own context.
+//! whether it is past the launcher (`on_desk`: ⌘K works here even with
+//! something open), whether the desk's keys reach it (`desk`: on the desk,
+//! nothing open over it), and whether something is open over it
+//! (`overlay`). A guest editor (`GuestEditor`) sits deeper, so its own keys
+//! come first. An empty window's ↑↓ and Enter are its field's (`command.rs`
+//! takes them); Tab there is `SwitchMode`, under the empty window's own
+//! context (`command::CONTEXT`). A desk window is a pane; an OS window is a
+//! `DesktopWindow`.
 
 use super::*;
 use gpui_kit::{Action, KeyBinding, KeyContext, Menu, MenuItem};
@@ -46,7 +49,7 @@ gpui_kit::actions!(
 #[action(namespace = desk, no_json)]
 pub(crate) struct FocusPane(pub(crate) usize);
 
-/// The desk's context, on every window's root.
+/// The app's context, on every window's root.
 pub(super) const CONTEXT: &str = "Ducktape";
 
 /// Every key the app answers, with the context it answers in.

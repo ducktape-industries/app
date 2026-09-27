@@ -36,7 +36,7 @@ pub(super) enum Figure {
     /// A ring: a key.
     Ring,
     /// A written card: the recovery phrase on paper.
-    Sheets,
+    Card,
     /// A sphere and its small moon: you, and the network you joined.
     Pair,
 }
@@ -63,7 +63,7 @@ impl Figure {
         DOTS[self as usize].get_or_init(|| match self {
             Figure::Roll => roll(),
             Figure::Ring => torus(0.78, 0.28),
-            Figure::Sheets => card(),
+            Figure::Card => card(),
             Figure::Pair => {
                 let mut dots = sphere([0., 0., 0.], 0.7, false);
                 dots.extend(sphere([0., 0., 0.], 0.16, true));
@@ -315,7 +315,7 @@ fn card() -> Vec<Dot> {
 mod tests {
     use super::*;
 
-    const ALL: [Figure; 4] = [Figure::Roll, Figure::Ring, Figure::Sheets, Figure::Pair];
+    const ALL: [Figure; 4] = [Figure::Roll, Figure::Ring, Figure::Card, Figure::Pair];
 
     fn inked(cells: &[u8]) -> usize {
         cells.iter().filter(|&&step| step > 0).count()

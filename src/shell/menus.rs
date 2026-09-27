@@ -1,10 +1,11 @@
-//! The bar's menus: the node's status, the account, and the networks this
-//! device has reached. The network menu is the old app's "Switch network"
-//! block (before #216), without its detour through the Connect screen and a
-//! second password prompt for the network already in hand.
+//! The bar's drop-down menus: the node's status (height, epoch, hashes),
+//! the account (copy the number, add a device, a recovery key, Lock), and
+//! the networks this device has reached, switched to without a trip through
+//! Connect. Plus the number, hash and date formatters they read by.
 
 use super::*;
-use screens::{Facts, pulse};
+use facts::Facts;
+use status_bar::pulse;
 
 /// The program whose view is Account (the account, its keys, agents and
 /// invites), which the account menu opens.
@@ -270,10 +271,7 @@ impl DesktopWindow {
                 name,
                 Message::SwitchNetwork(entry.url.clone()),
             )
-            .aria_toggled(match current {
-                true => gpui_kit::accesskit::Toggled::True,
-                false => gpui_kit::accesskit::Toggled::False,
-            })
+            .aria_toggled(current.into())
             .flex()
             .items_baseline()
             .gap(px(12.))
