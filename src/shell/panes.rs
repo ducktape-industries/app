@@ -254,15 +254,14 @@ impl DesktopWindow {
                 });
                 view.into_any_element()
             }
+            // Help draws no field: its box keeps the keys
+            None if pane.module == layout::HELP => self.help_view(cx),
             None => {
                 // the bare window box has the keys: the field takes them
                 if focused && own.is_focused(window) {
                     self.focus_command(window, cx);
                 }
-                match pane.module == layout::HELP {
-                    true => self.help_view(cx),
-                    false => self.command_view(focused, window, cx),
-                }
+                self.command_view(focused, window, cx)
             }
         }
     }

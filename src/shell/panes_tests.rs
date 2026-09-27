@@ -580,13 +580,7 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
 
 /// A Help window brought to the front keeps the keys in its own box: it
 /// draws no finder field, so nothing off-screen may take them.
-///
-/// Red today: `pane_body` calls `focus_command` for any focused pane the
-/// app draws itself, Help included, so the keys go to a finder field Help
-/// never draws and GPUI drops them on the window's root. Moving that call
-/// into the non-Help arm turns this green.
 #[gpui_kit::test]
-#[ignore = "the Help window hands its keys to a finder field it does not draw"]
 fn a_help_window_in_front_keeps_the_keys_in_its_box(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = console(cx);
     native.update(|window, cx| {
