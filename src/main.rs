@@ -29,7 +29,9 @@ fn main() {
             std::process::exit(ax::cli(&args));
         }
         Some("--help" | "-h") => {
-            println!("usage: ducktape-app [--version]");
+            println!("usage: ducktape-app [--version | --help | ax <command...>]");
+            #[cfg(debug_assertions)]
+            println!("       ducktape-app --render-tree  (debug build: the render-tree fixture)");
             return;
         }
         _ => {}
