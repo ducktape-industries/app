@@ -1,5 +1,19 @@
 use super::*;
 
+/// Ticks a replacement gets to publish its tree and finish its document
+/// transfers: documents are fetched one at a time, each a request tick, a
+/// tick per chunk, the acknowledgement and one to spare; one more settles.
+const FIRST_FRAME_TICK_LIMIT: usize = wire::editor_document::MAX_EDITOR_DOCUMENTS
+    * (wire::editor_document::MAX_EDITOR_CHUNKS + 3)
+    + 1;
+/// Tables are allocated eagerly at their declared minimum, before any fuel
+/// or memory limit is consulted; a view is one core instance and one memory.
+const MAX_TABLES: usize = 4;
+const MAX_TABLE_ELEMENTS: usize = 1 << 20;
+/// How much of a panic message the host keeps: this many bytes read from
+/// the guest, the first line, at most this many chars.
+const MAX_PANIC_BYTES: u32 = 1024;
+
 impl Guest {
     /// Reusing identical code still retires work started on the old connection.
     pub(crate) fn reconnect(&mut self, revision: u64) {
@@ -305,10 +319,7 @@ impl Guest {
     pub(crate) fn first_frame(&mut self, shown: &str) -> Result<(), String> {
         let mut requests = Vec::new();
         let mut cancels = Vec::new();
-        let limit = wire::editor_document::MAX_EDITOR_DOCUMENTS
-            * (wire::editor_document::MAX_EDITOR_CHUNKS + 3)
-            + 1;
-        for _ in 0..limit {
+        for _ in 0..FIRST_FRAME_TICK_LIMIT {
             self.tick();
             if let Some(fault) = &self.fault {
                 return Err(format!("{shown}: {fault}"));
@@ -320,7 +331,7 @@ impl Guest {
             }
             requests.append(&mut self.frame.requests);
             cancels.append(&mut self.frame.cancels);
-            if requests.len() > MAX_REQUESTS_PER_TICK || cancels.len() > 2 * MAX_REQUESTS_PER_TICK {
+            if requests.len() > MAX_REQUESTS_PER_TICK || cancels.len() > MAX_CANCELS_PER_TICK {
                 return Err(format!(
                     "{shown}: replacement requests exceed the first-frame budget"
                 ));
@@ -382,15 +393,12 @@ impl Guest {
         shown: &str,
     ) -> Result<Self, String> {
         let engine = engine();
-        // Tables are allocated eagerly at their declared minimum, before any
-        // fuel or memory limit is consulted; a view is one core instance
-        // and one memory.
         let limits = StoreLimitsBuilder::new()
             .memory_size(MEMORY_LIMIT)
             .memories(1)
             .instances(1)
-            .tables(4)
-            .table_elements(1 << 20)
+            .tables(MAX_TABLES)
+            .table_elements(MAX_TABLE_ELEMENTS)
             .trap_on_grow_failure(true)
             .build();
         let mut store = Store::new(
@@ -414,14 +422,15 @@ impl Guest {
                         .and_then(|export| export.into_memory())
                         .and_then(|memory| {
                             let start = ptr as usize;
-                            let bytes = memory
-                                .data(&caller)
-                                .get(start..start.saturating_add(len.min(1024) as usize))?;
+                            let bytes = memory.data(&caller).get(
+                                start..start.saturating_add(len.min(MAX_PANIC_BYTES) as usize),
+                            )?;
                             Some(String::from_utf8_lossy(bytes).into_owned())
                         })
                         .unwrap_or_default();
                     let line = message.lines().next().unwrap_or_default();
-                    caller.data_mut().panic = Some(line.chars().take(1024).collect());
+                    caller.data_mut().panic =
+                        Some(line.chars().take(MAX_PANIC_BYTES as usize).collect());
                 },
             )
             .map_err(|error| error.to_string())?;

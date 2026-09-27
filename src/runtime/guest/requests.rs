@@ -1,5 +1,12 @@
 use super::*;
 
+/// The `methods::Call` envelope around an op: its target name and two
+/// lengths, allowed on top of MAX_OP_BYTES.
+const OP_ENVELOPE_BYTES: usize = 256;
+/// Widget commands waiting for a frame that mounts their target; the same
+/// bound as one tick's requests, since that is where they come from.
+const MAX_PENDING_WIDGET_COMMANDS: usize = MAX_REQUESTS_PER_TICK;
+
 /// Whether `target` is a SUFFIX of some mounted node's authored path (the
 /// ancestry `crate::render::enter_scope` walks). A view names a command's
 /// target by the key it holds where it dispatches — the editor's own, the
@@ -122,10 +129,9 @@ impl Guest {
     /// props the app holds, `host.log` — and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
-        // `op.submit` and `module.describe` carry an op of up to MAX_OP_BYTES
-        // inside a `methods::Call` envelope: the target name and two lengths
+        // `op.submit` and `module.describe` carry an op inside a `methods::Call`
         let payload_limit = match kind.as_str() {
-            "op.submit" | "module.describe" => MAX_OP_BYTES + 256,
+            "op.submit" | "module.describe" => MAX_OP_BYTES + OP_ENVELOPE_BYTES,
             _ => MAX_PAYLOAD_BYTES,
         };
         if payload.len() > payload_limit {
@@ -238,7 +244,7 @@ impl Guest {
                 return Err("widget request has trailing bytes".into());
             }
             command.validate()?;
-            let queue_full = self.widget_commands.len() >= MAX_REQUESTS_PER_TICK;
+            let queue_full = self.widget_commands.len() >= MAX_PENDING_WIDGET_COMMANDS;
             if queue_full {
                 return Err("too many pending widget requests".into());
             }
