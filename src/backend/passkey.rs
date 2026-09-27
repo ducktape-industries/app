@@ -23,13 +23,13 @@
 //! ([`relay`](super::relay)). Once the person picks the phone, touches stop
 //! opening this device's browser and the app polls the slot.
 
-use identity::{Admission, CONSENT_NAMESPACE, Consent, Op, Query, Reply};
+use identity::{CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use keyscheme::KeyScheme;
 use sha2::{Digest as _, Sha256};
 
 use super::auth_page::{Assertion, Phone, Request, asserted, created};
 use super::identity::{
-    account_by_number, ask, create_seated, expires_at, generation, person, submit, submit_seated,
+    account_by_number, admission, ask, create_seated, person, submit, submit_seated,
 };
 use super::noded::{Body, FRAME_NAMESPACE, Frame};
 use super::{RpcClient, next_seq, seated_key, seated_sign};
@@ -69,14 +69,14 @@ pub(crate) async fn create_account(
         phone,
     )
     .await?;
-    let admission = Admission {
-        network: network.as_bytes().to_vec(),
-        scheme: abi::Scheme::Secp256r1,
-        key: passkey.clone(),
-        generation: generation(client, network, &passkey).await?,
-        account: number,
-        expires_at: expires_at(),
-    };
+    let admission = admission(
+        client,
+        network,
+        abi::Scheme::Secp256r1,
+        passkey.clone(),
+        number,
+    )
+    .await?;
     let (device, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
         .map_err(|refusal| refusal.message)?;
@@ -115,14 +115,14 @@ pub(crate) async fn sign_in(
     let account = account_by_number(client, network, number).await?;
     person(&account)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
-    let admission = Admission {
-        network: network.as_bytes().to_vec(),
-        scheme: abi::Scheme::Ed25519,
-        key: device.clone(),
-        generation: generation(client, network, &device).await?,
-        account: number,
-        expires_at: expires_at(),
-    };
+    let admission = admission(
+        client,
+        network,
+        abi::Scheme::Ed25519,
+        device.clone(),
+        number,
+    )
+    .await?;
     let preimage = admission.preimage();
     let consent = asserted(
         keyscheme::webauthn_challenge(CONSENT_NAMESPACE, &preimage),
@@ -218,6 +218,7 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+    use identity::Admission;
     use identity::Control;
     use keyscheme::testkit;
 

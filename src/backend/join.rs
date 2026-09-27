@@ -18,13 +18,11 @@
 
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::{Signer as _, ed25519};
-use identity::{Admission, CONSENT_NAMESPACE, Consent, Op, Query, Reply};
+use identity::{CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use sha2::{Digest as _, Sha256};
 
 use super::auth_page::auth_page;
-use super::identity::{
-    account_by_number, ask, expires_at, generation, person, submit, submit_seated,
-};
+use super::identity::{account_by_number, admission, ask, person, submit, submit_seated};
 use super::noded::Frame;
 use super::relay::{POLL, post, slot, take};
 use super::{RpcClient, hex_decode, hex_encode, next_seq, seated_key, seated_sign};
@@ -171,14 +169,14 @@ pub(crate) async fn approve(
         ));
     }
     let code = normalized(code).ok_or("That code is malformed.")?;
-    let admission = Admission {
-        network: network.as_bytes().to_vec(),
-        scheme: abi::Scheme::Ed25519,
-        key: request.key.clone(),
-        generation: generation(client, network, &request.key).await?,
+    let admission = admission(
+        client,
+        network,
+        abi::Scheme::Ed25519,
+        request.key.clone(),
         account,
-        expires_at: expires_at(),
-    };
+    )
+    .await?;
     let (key, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
         .map_err(|refusal| refusal.message)?;
@@ -232,14 +230,14 @@ pub(crate) async fn add_recovery_key(
         .await?
         .ok_or("This device's key holds no account yet.")?;
     person(&account_by_number(client, network, account).await?)?;
-    let admission = Admission {
-        network: network.as_bytes().to_vec(),
-        scheme: abi::Scheme::Ed25519,
-        key: public.clone(),
-        generation: generation(client, network, &public).await?,
+    let admission = admission(
+        client,
+        network,
+        abi::Scheme::Ed25519,
+        public.clone(),
         account,
-        expires_at: expires_at(),
-    };
+    )
+    .await?;
     let (key, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
         .map_err(|refusal| refusal.message)?;
@@ -279,14 +277,14 @@ pub(crate) async fn join_with_recovery_key(
         .ok_or_else(|| format!("That recovery key isn't on an account on {network}."))?;
     person(&account_by_number(client, network, account).await?)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
-    let admission = Admission {
-        network: network.as_bytes().to_vec(),
-        scheme: abi::Scheme::Ed25519,
-        key: device.clone(),
-        generation: generation(client, network, &device).await?,
+    let admission = admission(
+        client,
+        network,
+        abi::Scheme::Ed25519,
+        device.clone(),
         account,
-        expires_at: expires_at(),
-    };
+    )
+    .await?;
     let proof = recovery.sign(CONSENT_NAMESPACE, &admission.preimage());
     let add = Op::AddKey {
         scheme: abi::Scheme::Ed25519,

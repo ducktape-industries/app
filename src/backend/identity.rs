@@ -3,7 +3,7 @@
 //! submit an op signed by the seated key. `passkey` and `join` build on
 //! it; the rail's foot and the sign-in screen call it directly.
 
-use identity::{Control, Op, Query, Reply};
+use identity::{Admission, Control, Op, Query, Reply};
 
 use super::noded::Layer;
 use super::{RpcClient, query_frame, seated_frame, seated_key};
@@ -121,6 +121,26 @@ pub(super) async fn generation(
         Reply::Generation(generation) => Ok(generation),
         _ => Err("identity answered something other than a generation".into()),
     }
+}
+
+/// An admission of `key` (of `scheme`) onto `account`, at the generation
+/// identity holds for that key, good for [`CONSENT_TTL_MS`]: the preimage a
+/// key already on the account signs to consent.
+pub(super) async fn admission(
+    client: &RpcClient,
+    network: &str,
+    scheme: abi::Scheme,
+    key: Vec<u8>,
+    account: u64,
+) -> Result<Admission, String> {
+    Ok(Admission {
+        network: network.as_bytes().to_vec(),
+        scheme,
+        generation: generation(client, network, &key).await?,
+        key,
+        account,
+        expires_at: expires_at(),
+    })
 }
 
 /// A consent's deadline, against block time (unix ms). The node's status
