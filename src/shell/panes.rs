@@ -361,7 +361,6 @@ impl DesktopWindow {
                     }
                 }
             };
-            let pane = &layout.panes[index];
             let view = div()
                 .id(SharedString::from(format!("pane/{index}/view")))
                 .role(gpui_kit::Role::Group)
