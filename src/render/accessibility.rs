@@ -9,13 +9,6 @@ pub(crate) struct Accessible {
     pub description: Option<String>,
     /// Text a field holds. Never a secure field's.
     pub value: Option<String>,
-    pub numeric: Option<f64>,
-    pub min: Option<f64>,
-    pub max: Option<f64>,
-    pub step: Option<f64>,
-    pub toggled: Option<bool>,
-    pub expanded: Option<bool>,
-    pub selected: Option<bool>,
     /// A heading's level, 1 to 6.
     pub level: Option<usize>,
     /// How a change to text that is not focused is announced.
@@ -149,7 +142,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
 
 /// Puts `accessible` on an element the presenter built. A kit widget draws
 /// its own role, name and value over these; the states it does not report
-/// itself (disabled, expanded, a description) are the ones this adds.
+/// itself (disabled, a description, a level) are the ones this adds.
 pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
     use crate::a11y as ui;
     let Accessible {
@@ -157,13 +150,6 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         name,
         description,
         value,
-        numeric,
-        min,
-        max,
-        step,
-        toggled,
-        expanded,
-        selected,
         level,
         // ponytail: the gpui-pre fork has no live-region setter; `live` is
         // mapped and dropped here until it gains one
@@ -182,30 +168,6 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         }
         if let Some(value) = value {
             node = node.aria_value(value);
-        }
-        if let Some(numeric) = numeric {
-            node = node.aria_numeric_value(numeric);
-        }
-        if let Some(min) = min {
-            node = node.aria_min_numeric_value(min);
-        }
-        if let Some(max) = max {
-            node = node.aria_max_numeric_value(max);
-        }
-        if let Some(step) = step {
-            node = node.aria_numeric_value_step(step);
-        }
-        if let Some(toggled) = toggled {
-            node = node.aria_toggled(match toggled {
-                true => gpui_kit::Toggled::True,
-                false => gpui_kit::Toggled::False,
-            });
-        }
-        if let Some(expanded) = expanded {
-            node = node.aria_expanded(expanded);
-        }
-        if let Some(selected) = selected {
-            node = node.aria_selected(selected);
         }
         if let Some(level) = level {
             node = node.aria_level(level);
