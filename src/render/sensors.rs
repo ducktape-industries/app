@@ -1,20 +1,28 @@
+//! The pointer-shaped nodes: ResizeHandle (a divider with a `grip` and a
+//! drag), Sensor (reports its child's size when shown or resized, a message
+//! when it leaves the viewport) and MouseArea (raw pointer events as guest
+//! messages).
 use super::*;
 use crate::render::native_id;
 
+/// A Sensor's retained state, per authored path.
 pub(super) struct SensorState {
+    /// The guest's continuity value; a change forgets the last size.
     pub(super) reset: Option<wire::SurfaceValue>,
+    /// The last size reported; `None` while hidden or not yet shown.
     pub(super) size: Option<Size<Pixels>>,
     pub(super) on_hide: Option<u32>,
     pub(super) on_show: Option<u32>,
     pub(super) on_resize: Option<u32>,
+    /// A delayed report waiting out `delay`, and the size it will report.
     pub(super) pending: Option<(Size<Pixels>, Task<()>)>,
 }
 
-/// The strip a resize handle is taken hold of by: its own box and
-/// [`crate::render::GRAB`] past it on both sides of the axis it sizes, the
-/// reach desk window borders have, so a near miss on a 1px divider still
-/// grips. It sits over its neighbours and keeps what is under it from
-/// hearing the press.
+/// The invisible hit area of a ResizeHandle: its own box widened by
+/// [`crate::render::GRAB`] px on both sides of the axis it resizes (both axes
+/// for other cursors), the same reach desk window borders have, so a press
+/// just beside a 1px divider still starts a resize. Absolutely positioned
+/// over the neighbouring panes and occluding them.
 pub(super) fn grip(cursor: CursorStyle) -> gpui_kit::Stateful<Div> {
     let (x, y) = grip_reach(cursor);
     div()
@@ -119,9 +127,9 @@ impl ViewTree {
         .absolute()
         .inset_0();
         let cursor = native_cursor(*cursor);
-        // on the way down: the grip reaches over the panes on either side,
-        // and the press is the divider's, never a click or a text drag in
-        // the pane painted over it
+        // capture phase: the grip overlaps the neighbouring panes, so claim
+        // the left press here, before a pane underneath turns it into a click
+        // or a text selection
         let grip = grip(cursor).capture_any_mouse_down(cx.listener(
             move |this, event: &MouseDownEvent, _, cx| {
                 if event.button != MouseButton::Left {

@@ -1,3 +1,8 @@
+//! What a wire node is to assistive technology. `accessible` maps a node to
+//! an `Accessible` (role, name, value, states); `announce` writes one onto
+//! the element a renderer built. `ViewTree::presentation` also lives here
+//! for now, though it is not accessibility: it is the native state carried
+//! across a guest generation (see its doc).
 use super::*;
 
 /// What one wire node is to assistive technology: the role it plays, the
@@ -52,11 +57,15 @@ pub(crate) fn descendant_text(node: &wire::Node) -> Option<String> {
     named(&words.join(" "))
 }
 
-/// The ONE mapping from a wire node to what assistive technology hears. The
-/// presenter builds every variant with it, so a view never names its own
-/// controls' roles: it says `label`, and the role follows from the variant.
-/// The node's accessibility id is its wire key under the module's view, the
-/// element id each variant is already built with.
+/// The mapping from a wire node to what assistive technology hears, for the
+/// nodes the presenter announces itself: a view never names those controls'
+/// roles, it says `label` and the role follows from the variant. Not every
+/// variant passes through here. Container, UniformList, Image and Svg carry
+/// the guest's own `Interactivity.aria` setters instead (their renderers
+/// never call this; the Image/Svg arm below is reached by tests only), the
+/// kit Slider draws its own node, and RichText has none. The node's
+/// accessibility id is its wire key under the module's view, the element id
+/// each variant is already built with.
 pub(crate) fn accessible(node: &wire::Node) -> Accessible {
     use gpui_kit::Role;
     use wire::Node;
@@ -282,7 +291,6 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
 /// its own role, name and value over these; the states it does not report
 /// itself (disabled, expanded, a description) are the ones this adds.
 pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
-    use crate::a11y as ui;
     let Accessible {
         role,
         name,
@@ -301,7 +309,7 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         live: _,
         disabled,
     } = accessible;
-    let element = ui::aria(element, |mut node| {
+    let element = crate::a11y::aria(element, |mut node| {
         if let Some(role) = role {
             node = node.role(role);
         }
@@ -343,12 +351,16 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         }
         node
     });
-    ui::disabled(element, disabled)
+    crate::a11y::disabled(element, disabled)
 }
 
 impl ViewTree {
-    /// Copied presentation only: no native entity, callback, handler id, or IME
-    /// preedit crosses a guest generation. Document selection remains guest-owned.
+    /// The native state worth keeping when the view's guest is re-instantiated
+    /// (a new generation): each field's text, selection and focus, the focused
+    /// container or editor, scroll offsets, and the decoded image and SVG
+    /// caches. Plain data only: no native entity, callback, handler id or IME
+    /// preedit crosses a generation, since the new guest's handler ids mean
+    /// different things. Document selection remains guest-owned.
     pub(crate) fn presentation(&self, window: &Window, cx: &App) -> NativePresentation {
         let inputs = self
             .fields
@@ -424,6 +436,9 @@ impl ViewTree {
         }
     }
 
+    /// A fresh tree that starts from the old one's `presentation`: the caches
+    /// are taken now, the rest is claimed by each node's first render and
+    /// dropped after it (`Render for ViewTree`).
     pub(crate) fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
         self.images = std::mem::take(&mut presentation.images);
         self.vectors = std::mem::take(&mut presentation.vectors);

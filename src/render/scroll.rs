@@ -1,6 +1,13 @@
+//! The Scroll node: a retained `ScrollHandle` per authored path, anchoring
+//! (Start/End/Keep) and follow applied each prepaint, `ScrollOffset` events.
+//! `ScrollRequest` is the normalized form of the guest's scroll widget
+//! commands (commands.rs). The virtual-row half of this file is unreachable
+//! (see `virtual_rows`).
 use super::*;
 use crate::render::native_id;
 
+/// A scroll widget command, normalized: which edge (`anchor`) an offset is
+/// measured from is the scroller's own.
 #[derive(Clone, Copy)]
 pub(super) enum ScrollRequest {
     Relative(f32, f32),
@@ -25,9 +32,10 @@ pub(super) struct VirtualScroll {
     pub(super) measured_width: Option<Pixels>,
 }
 
-/// A virtual column and its surrounding vertical chrome share one native
-/// viewport. Keep the wire wrappers on each item, splitting only their outer
-/// padding, so prefix controls never become part of the message-key sequence.
+/// Always `None`. The only base case (a keyed column with `virtual_row`) went
+/// with 1d4be742; what is left recurses through single-child containers and
+/// finds nothing, so `virtual_scroll`, `VirtualScroll` and `ViewTree::lists`
+/// never run or hold anything. Deleting them needs a line in render.rs.
 pub(super) fn virtual_rows(node: &wire::Node) -> Option<Vec<VirtualRow>> {
     use wire::Node;
     match node {

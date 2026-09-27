@@ -1,3 +1,7 @@
+//! Container, Responsive, When and Anchored nodes, and the layout helpers the
+//! other renderers share: `measure` records an element's bounds under its
+//! authored path, `over_padding` floats a bar or a measure over a scroller
+//! without counting as its content, `vertical_bar` is a scroller's bar.
 use super::*;
 use crate::render::native_id;
 
@@ -315,6 +319,9 @@ impl ViewTree {
         .into_any_element()
     }
 
+    /// A zero-paint absolute canvas that records its bounds into
+    /// `bounds[path]` and notifies when they change. Only a node that owns
+    /// `path` may measure there (see `container`).
     pub(super) fn measure(
         &self,
         path: &[wire::ElementIdWire],

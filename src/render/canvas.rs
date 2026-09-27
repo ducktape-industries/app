@@ -1,5 +1,13 @@
+//! The Canvas node's two painters. When every command is a primitive gpui
+//! draws itself (`native_canvas_commands`), `paint_canvas_commands` paints
+//! quads and paths; otherwise `canvas_svg` writes the commands out as an SVG
+//! for gpui's rasterizer. `ViewTree::drawing` (pictures.rs) picks between
+//! them.
 use super::*;
 
+/// Whether every command paints natively: a solid (undashed) Draw of a
+/// rectangle with one radius, a circle, or a line that is not square-capped.
+/// Anything else (a Path, a dash, a Push/Pop) needs the SVG fallback.
 pub(super) fn native_canvas_commands(commands: &[wire::CanvasCommand]) -> bool {
     commands.iter().all(|command| {
         let wire::CanvasCommand::Draw { shape, stroke, .. } = command else {
@@ -106,6 +114,9 @@ pub(super) fn svg_color(color: Hsla) -> String {
     )
 }
 
+/// The commands as an SVG document of `width` by `height`. Push opens a
+/// transformed group (and a clip group, always paired so Pop closes both);
+/// unclosed groups are closed at the end.
 pub(super) fn canvas_svg(commands: &[wire::CanvasCommand], width: f32, height: f32) -> Vec<u8> {
     use std::fmt::Write;
     let mut svg =

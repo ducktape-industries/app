@@ -2,7 +2,9 @@
 //! `anchored` fits the window, but a view paints inside its pane's mask: a
 //! menu opened near a pane's edge fitted the window and was cut off by the
 //! pane. This one flips to the other side of its anchor point when that
-//! side fits, then shifts and clamps into the mask it is painted in.
+//! side fits, then shifts and clamps into the mask it is painted in. The
+//! wire's fit modes all get this one behaviour; a mode contributes only its
+//! margin (`ViewTree::anchored`, layout.rs).
 use super::*;
 use gpui_kit::{Anchor, Axis, Edges};
 

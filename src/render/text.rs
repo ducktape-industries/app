@@ -1,3 +1,7 @@
+//! Text and RichText nodes. A RichText paragraph is wrapped in
+//! `RichParagraph`, which registers it with gpui-base's cross-paragraph text
+//! selection so a drag selects in reading order and copy yields the source
+//! text; `DRAG_CLIP` keeps a drag inside the clip it began in.
 use super::*;
 use crate::render::native_id;
 

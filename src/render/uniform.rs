@@ -1,3 +1,7 @@
+//! The UniformList node: a gpui `uniform_list` over a host-owned viewport.
+//! The guest sends only the rows the host asked for (`UniformListRange`),
+//! keyed by index; a row not yet sent draws as a placeholder of
+//! `PLACEHOLDER_HEIGHT`.
 use super::*;
 use crate::render::native_id;
 use gpui_kit::UniformListDecoration;
@@ -5,12 +9,17 @@ use std::ops::Range;
 
 const PLACEHOLDER_HEIGHT: f32 = 24.;
 
+/// A UniformList's retained state, per wire `path`.
 pub(super) struct UniformListHostState {
+    /// The guest's list generation: a new route means row nodes and handler
+    /// ids from older frames are invalid, so the rows are dropped.
     pub(super) route: u32,
     pub(super) count: usize,
     pub(super) rows: HashMap<usize, wire::Node>,
     pub(super) scroll: gpui_kit::UniformListScrollHandle,
+    /// The last range asked of the guest; asked again only when it changes.
     pub(super) requested: Option<Range<usize>>,
+    /// The last (top index, scrollable, scrolled to end) reported.
     observed: Option<(usize, bool, Option<bool>)>,
 }
 
@@ -27,6 +36,10 @@ impl UniformListHostState {
     }
 }
 
+/// Not a visual decoration: `compute` is the one per-layout hook gpui's
+/// uniform_list gives with the visible range, so it reports the range and
+/// the scroll state to the guest (`UniformListRange`, `UniformListState`)
+/// and draws nothing.
 struct RangeObserver {
     tree: gpui_kit::WeakEntity<ViewTree>,
     path: Vec<wire::ElementIdWire>,
@@ -66,8 +79,9 @@ impl UniformListDecoration for RangeObserver {
                     end: range.end as u32,
                 });
             }
-            // GPUI's convenience query is test-support-only. Its public native
-            // state exposes the same pending target and settled logical offset.
+            // gpui's `logical_scroll_top_index` is test-support-only. Its
+            // public native state exposes the same pending target and settled
+            // logical offset.
             let native = self.scroll.0.borrow();
             let top_index = native
                 .deferred_scroll_to_item

@@ -1,3 +1,6 @@
+//! Overlay (a base plus an optional modal layer: dialog, popover, backdrop,
+//! focus trap), Float and Tooltip nodes. Not the wire `Node::Surface`, which
+//! render.rs draws as a placeholder.
 use super::*;
 use crate::render::native_id;
 

@@ -1,3 +1,14 @@
+//! A per-window budget for rasterised guest SVGs. `guarded_svg_paint` wraps
+//! an svg element; at prepaint each (source, raster size) key is admitted
+//! once and charged to the window's ledger, and a key past the caps is not
+//! painted (a red quad shows in its place). The ledger is for the window's
+//! lifetime: nothing is released until the window closes, so the budget is
+//! how many distinct rasters a window may ever ask for, not how many it
+//! shows at once. The charge is the worst case: gpui rasterises at the box
+//! width and takes the height from the SVG's own aspect ratio, up to its
+//! 8192px cap (svg_renderer.rs), and the guest controls that ratio.
+//! `svg_data_allowed` refuses gzip-compressed SVG before it reaches the
+//! parser.
 use super::*;
 use gpui_kit::{Global, WindowId};
 use std::{
@@ -9,6 +20,8 @@ const MAX_SVG_RASTER_BYTES: u64 = 64 << 20;
 const MAX_WINDOW_SVG_RASTER_BYTES: u64 = 256 << 20;
 const MAX_WINDOW_SVG_RASTERS: usize = 4_096;
 const SVG_BYTES_PER_PIXEL: u64 = 5; // tiny-skia RGBA plus GPUI's alpha mask.
+/// gpui's `SMOOTH_SVG_SCALE_FACTOR`: it rasterises SVGs at twice the device
+/// scale.
 const SMOOTH_SVG_SCALE: f64 = 2.0;
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -49,6 +62,8 @@ struct SvgAdmissionLedgers {
 
 impl Global for SvgAdmissionLedgers {}
 
+/// Whether the bytes may reach the SVG parser: gzip (svgz, by its magic) is
+/// refused, so a guest cannot hand the parser a small file that inflates.
 pub(super) fn svg_data_allowed(bytes: &[u8]) -> bool {
     !bytes.starts_with(&[0x1f, 0x8b])
 }

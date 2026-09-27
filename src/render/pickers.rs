@@ -1,3 +1,6 @@
+//! PickList and ComboBox nodes: one kit `Select` per authored path, kept in
+//! `pickers`. A choice goes back as `Event::Select`, a ComboBox's search text
+//! as `Event::Input`.
 use super::*;
 use crate::render::native_id;
 
@@ -49,8 +52,11 @@ pub(super) struct Picker {
     pub(super) state: Entity<SelectState<PickerChoices>>,
     pub(super) options: Vec<String>,
     pub(super) selected: Option<u32>,
+    /// The on_select handler id.
     pub(super) handler: u32,
+    /// A ComboBox's search handler id; a PickList has none.
     pub(super) input: Option<u32>,
+    /// A ComboBox's (state_key, reset); a change drops the native select.
     pub(super) reset: Option<(String, u64)>,
     pub(super) _subscription: Subscription,
 }

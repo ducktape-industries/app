@@ -1,3 +1,7 @@
+//! Image, Svg, Canvas, ImageViewer and Qr nodes, and the per-view caches
+//! behind them: `images` (decoded rasters) and `vectors` (SVG bytes), both
+//! keyed by the guest's content hash so a later frame can name a picture
+//! without resending it. `qr` is also drawn by the shell (sign-in).
 use super::picture_resources::{cache_fits, decode_image};
 use super::*;
 use crate::render::native_id;
@@ -5,6 +9,7 @@ use crate::render::native_id;
 mod svg_canvas;
 use svg_canvas::SvgCanvas;
 
+/// An ImageViewer's pan and zoom, kept per authored path.
 #[derive(Clone, Default)]
 pub(super) struct ViewerState {
     pub(super) scale: f32,
@@ -165,6 +170,10 @@ impl ViewTree {
         root.child(SvgCanvas { commands }).into_any_element()
     }
 
+    /// The loading or the fallback child of an Image. `children` holds them
+    /// in that order, each present only when its flag says so (the guest SDK
+    /// pushes loading first, then fallback), so which index is which depends
+    /// on both flags.
     fn image_state(
         loading: bool,
         fallback: bool,
@@ -226,8 +235,9 @@ impl ViewTree {
             return;
         }
         let used = self.vectors.values().map(|bytes| bytes.len()).sum();
-        // Keep accepted hashes stable: eviction would break hash-only frames.
-        // Further resources use the existing refusal/fallback path at capacity.
+        // Never evict: a guest sends an SVG's bytes once and names it by hash
+        // afterwards, so an evicted entry could never come back. When full, a
+        // new SVG is not cached and draws as "SVG data unavailable" (`vector`).
         if !cache_fits(self.vectors.len(), used, bytes.len()) {
             return;
         }
@@ -396,7 +406,8 @@ impl ViewTree {
                 } else if let Some(child) =
                     Self::image_state(*loading, *fallback, state_children, false)
                 {
-                    // State recipes remain ordinary guest nodes and therefore stay inside the slot clip.
+                    // the loading placeholder is an ordinary guest node, laid
+                    // out and clipped inside this image's box
                     element = element.child(self.node(child, window, cx));
                 }
             }
