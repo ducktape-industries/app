@@ -8,7 +8,10 @@ use super::*;
 use crate::backend::noded;
 
 pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
-type Call = fn(Node, Vec<u8>) -> Answered;
+/// One node-backed method: the node to ask and the request's payload in,
+/// the answer out. Not a [`methods::Call`], which is `module.query`'s and
+/// `op.submit`'s envelope.
+type NodeMethod = fn(Node, Vec<u8>) -> Answered;
 
 /// The node a view's request goes to, and the network its frames name.
 #[derive(Clone)]
@@ -20,14 +23,24 @@ pub(super) struct Node {
 /// How long a view's node request keeps asking a node that does not answer.
 const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
-async fn until_answered(budget: std::time::Duration, mut call: impl FnMut() -> Answered) -> Answer {
+/// A refusal the transport produced is retried; one that is the node's
+/// own word ends the retry loop.
+fn transport_failed(refusal: &wire::Error) -> bool {
+    matches!(refusal.code.as_str(), "rpc_client" | "node_failed")
+}
+
+async fn until_answered(budget: std::time::Duration, mut ask: impl FnMut() -> Answered) -> Answer {
     let deadline = tokio::time::Instant::now() + budget;
     let mut attempt = 0;
     loop {
-        let detail = unanswered(match call().await {
+        let refusal = match ask().await {
             Ok(bytes) => return Ok(bytes),
             Err(refusal) => refusal,
-        })?;
+        };
+        if !transport_failed(&refusal) {
+            return Err(refusal);
+        }
+        let detail = refusal.message;
         attempt += 1;
         let delay = backend::retry_delay(attempt);
         if tokio::time::Instant::now() + delay > deadline {
@@ -47,15 +60,20 @@ async fn until_answered(budget: std::time::Duration, mut call: impl FnMut() -> A
     }
 }
 
-pub(super) fn spawn(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
-    spawn_call(guest, id, payload, call, true);
+/// Runs `method` on the connected node as a task, RETRYING transport
+/// failures for [`NODE_RETRY_BUDGET`]; a retry asks again from scratch
+/// (`op.submit` re-signs at a fresh sequence).
+pub(super) fn spawn_retrying(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
+    spawn_method(guest, id, payload, method, true);
 }
 
-pub(super) fn spawn_once(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
-    spawn_call(guest, id, payload, call, false);
+/// Runs `method` on the connected node as a task, asking exactly once: a
+/// transport failure is the answer (`invite.create` must not mint twice).
+pub(super) fn spawn_no_retry(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
+    spawn_method(guest, id, payload, method, false);
 }
 
-fn spawn_call(guest: &mut Guest, id: u64, payload: &[u8], call: Call, retry: bool) {
+fn spawn_method(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod, retry: bool) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
@@ -68,9 +86,9 @@ fn spawn_call(guest: &mut Guest, id: u64, payload: &[u8], call: Call, retry: boo
     let task = handle().spawn(async move {
         let _counted = counted;
         let result = if retry {
-            until_answered(NODE_RETRY_BUDGET, || call(node.clone(), ask.clone())).await
+            until_answered(NODE_RETRY_BUDGET, || method(node.clone(), ask.clone())).await
         } else {
-            call(node, ask).await
+            method(node, ask).await
         };
         replies.item(id, result, true);
     });
@@ -134,7 +152,7 @@ where
 /// reply to request `id`; counted in flight, aborted with the guest. For a
 /// host method that waits on something other than the node (`notify.post`
 /// waits on its banner).
-pub(in crate::runtime) fn spawn_device(
+pub(in crate::runtime) fn spawn_reply(
     guest: &mut Guest,
     id: u64,
     future: impl std::future::Future<Output = Answer> + Send + 'static,
@@ -182,7 +200,7 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
 }
 
 /// `module.changes <program>`: one item per block that wrote to the program.
-pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
+pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     let program = methods::decode::<String>(payload)
         .unwrap_or_default()
         .trim()

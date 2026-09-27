@@ -28,7 +28,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
-use super::kernel::spawn_device;
+use super::kernel::spawn_reply;
 use super::wire::methods::{self, Capability, Delivery, Notification};
 use super::{Guest, Intent};
 
@@ -86,7 +86,7 @@ pub(super) fn answer(
     let post = match (capability, operation) {
         (Capability::Notify, "post") => methods::decode::<Notification>(payload),
         (Capability::Notify, "seen") => {
-            read(guest, id, payload);
+            seen(guest, id, payload);
             return true;
         }
         _ => return false,
@@ -124,7 +124,7 @@ pub(super) fn answer(
         });
         told
     });
-    spawn_device(guest, id, async move {
+    spawn_reply(guest, id, async move {
         let raised = match raised {
             None => false,
             Some(told) => told.await.unwrap_or(false),
@@ -140,7 +140,7 @@ pub(super) fn answer(
 
 /// `notify.seen`: the view's rows under the tag read, and its standing
 /// banner under it down, queued behind the banners it already raised.
-fn read(guest: &mut Guest, id: u64, payload: &[u8]) {
+fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
     let tag = match methods::decode::<String>(payload) {
         Ok(tag) => tag,
         Err(error) => {

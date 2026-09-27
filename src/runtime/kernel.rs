@@ -96,15 +96,6 @@ fn malformed(error: impl std::fmt::Display) -> wire::Error {
     wire::Error::new("malformed_request", error.to_string())
 }
 
-/// A refusal that is the node's word ends the retry loop; one the transport
-/// produced is retried.
-fn unanswered(refusal: wire::Error) -> Result<String, wire::Error> {
-    match refusal.code.as_str() {
-        "rpc_client" | "node_failed" => Ok(refusal.message),
-        _ => Err(refusal),
-    }
-}
-
 /// One answer to a guest: the bytes it asked for, or the refusal that names
 /// why not. Every method in this file hands back exactly this.
 pub(super) type Answer = Result<Vec<u8>, wire::Error>;
@@ -113,9 +104,10 @@ mod describe;
 mod node;
 mod replies;
 
-pub(super) use node::{NodeTask, spawn_device};
+pub(super) use node::{NodeTask, spawn_reply};
 use node::{
-    blob_get, block, blocks, heads, invite, live, query, spawn, spawn_once, status, submit,
+    blob_get, block, blocks, changes, heads, invite, query, spawn_no_retry, spawn_retrying, status,
+    submit,
 };
 pub(super) use replies::Replies;
 
@@ -209,15 +201,15 @@ pub(super) fn answer(
             guest.route_subscriptions.push(id);
             guest.sync_route();
         }
-        (Capability::Module, "query") => spawn(guest, id, payload, query),
-        (Capability::Chain, "status") => spawn(guest, id, payload, status),
-        (Capability::Chain, "blocks") => spawn(guest, id, payload, blocks),
-        (Capability::Chain, "block") => spawn(guest, id, payload, block),
-        (Capability::Invite, "create") => spawn_once(guest, id, payload, invite),
-        (Capability::Op, "submit") => spawn(guest, id, payload, submit),
-        (Capability::Blob, "get") => spawn(guest, id, payload, blob_get),
-        (Capability::Module, "describe") => spawn(guest, id, payload, describe::describe),
-        (Capability::Module, "changes") => live(guest, id, payload),
+        (Capability::Module, "query") => spawn_retrying(guest, id, payload, query),
+        (Capability::Chain, "status") => spawn_retrying(guest, id, payload, status),
+        (Capability::Chain, "blocks") => spawn_retrying(guest, id, payload, blocks),
+        (Capability::Chain, "block") => spawn_retrying(guest, id, payload, block),
+        (Capability::Invite, "create") => spawn_no_retry(guest, id, payload, invite),
+        (Capability::Op, "submit") => spawn_retrying(guest, id, payload, submit),
+        (Capability::Blob, "get") => spawn_retrying(guest, id, payload, blob_get),
+        (Capability::Module, "describe") => spawn_retrying(guest, id, payload, describe::describe),
+        (Capability::Module, "changes") => changes(guest, id, payload),
         (Capability::Chain, "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
         // system browser; any other scheme is refused here, at the method

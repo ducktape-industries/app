@@ -110,7 +110,7 @@ mod tests {
 
     /// `program` listed at code `[seed; 32]`, whose describe module is `wat`
     /// (already compiled, so nothing is fetched).
-    fn seat(program: &str, seed: u8, bare: bool, wat: Option<&str>) {
+    fn list_program(program: &str, seed: u8, bare: bool, wat: Option<&str>) {
         let code = abi::BlobId::Sha256([seed; 32]);
         super::super::super::roster::listed().lock().unwrap().push(
             crate::backend::views::Program {
@@ -142,7 +142,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_op_reads_as_its_program_describes_it() {
-        seat("describe-good", 0xd1, false, Some(HI));
+        list_program("describe-good", 0xd1, false, Some(HI));
         let first = described(&node(), "describe-good", vec![1, 2]).await;
         assert_eq!(first.unwrap().unwrap().title, "hi");
         // kept per (code, op): the module is not entered again
@@ -157,9 +157,9 @@ mod tests {
 
     #[tokio::test]
     async fn no_section_a_hostile_one_or_no_program_describes_nothing() {
-        seat("describe-loops", 0xd2, false, Some(LOOPS));
-        seat("describe-none", 0xd3, false, None);
-        seat("describe-view", 0xd4, true, Some(HI));
+        list_program("describe-loops", 0xd2, false, Some(LOOPS));
+        list_program("describe-none", 0xd3, false, None);
+        list_program("describe-view", 0xd4, true, Some(HI));
         for program in [
             "describe-loops",
             "describe-none",
