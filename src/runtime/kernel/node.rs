@@ -462,8 +462,23 @@ fn block_of(block: noded::Finalized) -> methods::Block {
                 seq: tx.seq,
                 target: tx.target,
                 payload: tx.payload,
+                receipt: tx.receipt.map(receipt_of),
             })
             .collect(),
+    }
+}
+
+fn receipt_of(receipt: noded::Receipt) -> methods::Receipt {
+    methods::Receipt {
+        program: receipt.program,
+        outcome: match receipt.outcome {
+            abi::Outcome::Applied { output } => methods::Outcome::Applied { output },
+            abi::Outcome::Rejected(refusal) => {
+                methods::Outcome::Rejected(wire::Error::new(refusal.reason, refusal.sentence))
+            }
+        },
+        events: receipt.events,
+        nested: receipt.nested.into_iter().map(receipt_of).collect(),
     }
 }
 

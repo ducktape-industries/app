@@ -129,6 +129,8 @@ pub struct Receipt {
     pub program: ProgramId,
     pub outcome: abi::Outcome,
     pub events: Vec<Vec<u8>>,
+    /// The runs this one's messages caused, in order.
+    pub nested: Vec<Receipt>,
 }
 
 /// One block's writes to one program, as `/v1/changes/<program>` streams them.
@@ -154,6 +156,8 @@ pub enum BlockRef {
 }
 
 /// `wire::Tx`: one applied frame; `hash` is sha256 of the frame's bytes.
+/// `receipt` is its run, where the node kept the block's receipts (none
+/// below a state-sync anchor).
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Tx {
     pub hash: [u8; 32],
@@ -161,6 +165,7 @@ pub struct Tx {
     pub seq: u64,
     pub target: String,
     pub payload: Vec<u8>,
+    pub receipt: Option<Receipt>,
 }
 
 /// `wire::Finalized`: a block as the node's marshal archive keeps it.
@@ -350,6 +355,22 @@ mod tests {
             &frame.body.preimage(),
             &frame.proof
         ));
+    }
+
+    /// The bytes `host::Receipt` encodes a submission with one nested run
+    /// to: program "a", Applied [7], no events, nested [program "b",
+    /// Applied [], no events, nested []].
+    #[test]
+    fn receipt_decodes_the_hosts_nested_runs() {
+        let bytes = [
+            1, 0, 0, 0, b'a', 0, 1, 0, 0, 0, 7, 0, 0, 0, 0, 1, 0, 0, 0, //
+            1, 0, 0, 0, b'b', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+        ];
+        let receipt: Receipt = abi::decode(&bytes).unwrap();
+        assert_eq!(receipt.program, "a");
+        assert_eq!(receipt.outcome, abi::Outcome::Applied { output: vec![7] });
+        assert_eq!(receipt.nested.len(), 1);
+        assert_eq!(receipt.nested[0].program, "b");
     }
 
     #[test]

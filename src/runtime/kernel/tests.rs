@@ -353,6 +353,83 @@ async fn system_status_preserves_borsh_and_refusals() {
 }
 
 #[tokio::test]
+async fn a_block_s_receipts_carry_refusals_as_errors() {
+    let tx = |seq, receipt| backend::noded::Tx {
+        hash: [seq as u8; 32],
+        signer: vec![5; 32],
+        seq,
+        target: "chat".into(),
+        payload: vec![7],
+        receipt: Some(receipt),
+    };
+    let rejected = backend::noded::Receipt {
+        program: "chat".into(),
+        outcome: abi::Outcome::Rejected(abi::Refusal::new("not_member", "not in this room")),
+        events: Vec::new(),
+        nested: vec![backend::noded::Receipt {
+            program: "identity".into(),
+            outcome: abi::Outcome::Applied { output: vec![1] },
+            events: vec![vec![2]],
+            nested: Vec::new(),
+        }],
+    };
+    let applied = backend::noded::Receipt {
+        program: "chat".into(),
+        outcome: abi::Outcome::Applied { output: vec![3] },
+        events: vec![vec![4]],
+        nested: Vec::new(),
+    };
+    let finalized = backend::noded::Finalized {
+        height: 9,
+        id: [1; 32],
+        parent: [2; 32],
+        time: 1_000,
+        epoch: 0,
+        proposer: None,
+        txs: vec![tx(1, rejected), tx(2, applied)],
+    };
+    let (node, server) = node_server(
+        "200 OK",
+        abi::encode(&Some(finalized)),
+        "POST /v1/block HTTP/1.1",
+        None,
+    );
+    let answer = block(node, methods::encode(&methods::BlockRef::Height(9)))
+        .await
+        .unwrap();
+    server.join().unwrap();
+    let block = methods::decode::<Option<methods::Block>>(&answer)
+        .unwrap()
+        .unwrap();
+    let receipts: Vec<_> = block.txs.into_iter().map(|tx| tx.receipt).collect();
+    assert_eq!(
+        receipts,
+        vec![
+            Some(methods::Receipt {
+                program: "chat".into(),
+                outcome: methods::Outcome::Rejected(wire::Error::new(
+                    "not_member",
+                    "not in this room"
+                )),
+                events: Vec::new(),
+                nested: vec![methods::Receipt {
+                    program: "identity".into(),
+                    outcome: methods::Outcome::Applied { output: vec![1] },
+                    events: vec![vec![2]],
+                    nested: Vec::new(),
+                }],
+            }),
+            Some(methods::Receipt {
+                program: "chat".into(),
+                outcome: methods::Outcome::Applied { output: vec![3] },
+                events: vec![vec![4]],
+                nested: Vec::new(),
+            }),
+        ]
+    );
+}
+
+#[tokio::test]
 async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     let finalized = backend::noded::Finalized {
         height: 9,
@@ -367,6 +444,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
             seq: 6,
             target: "chat".into(),
             payload: vec![7],
+            receipt: None,
         }],
     };
     let (node, server) = node_server(
@@ -396,6 +474,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
                 seq: 6,
                 target: "chat".into(),
                 payload: vec![7],
+                receipt: None,
             }],
         }]
     );
