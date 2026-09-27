@@ -211,27 +211,20 @@ impl Guest {
             }
         };
         match snapshot {
-            Some(snapshot) => {
-                if snapshot.len() > wire::MAX_SNAPSHOT_BYTES {
-                    return Err(Failure::Refused(
-                        "the view's state is past the snapshot byte budget".into(),
-                    ));
+            Some(snapshot) => match fresh.restore(&snapshot, shown).map_err(Failure::Trapped)? {
+                Restored::Carried => {}
+                Restored::Refused(refusal) => {
+                    tracing::warn!(
+                        target: "ducktape::app",
+                        module = fresh.module,
+                        hash = %crate::backend::hex_encode(fresh.hash.as_ref().map_or(&[][..], |hash| hash)),
+                        reason = "snapshot_refused",
+                        refusal = %refusal,
+                        "view_state_dropped"
+                    );
+                    fresh.init(shown).map_err(Failure::Trapped)?;
                 }
-                match fresh.restore(&snapshot, shown).map_err(Failure::Trapped)? {
-                    Restored::Carried => {}
-                    Restored::Refused(refusal) => {
-                        tracing::warn!(
-                            target: "ducktape::app",
-                            module = fresh.module,
-                            hash = %crate::backend::hex_encode(fresh.hash.as_ref().map_or(&[][..], |hash| hash)),
-                            reason = "snapshot_refused",
-                            refusal = %refusal,
-                            "view_state_dropped"
-                        );
-                        fresh.init(shown).map_err(Failure::Trapped)?;
-                    }
-                }
-            }
+            },
             None => fresh.init(shown).map_err(Failure::Trapped)?,
         }
         let framed = Instant::now();

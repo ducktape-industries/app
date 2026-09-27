@@ -79,14 +79,25 @@ impl Exports {
     ) -> wasmtime::Result<Vec<u8>> {
         let (ptr, len) = self.give(store, events)?;
         let packed = self.tick.call(&mut *store, (ptr, len))?;
+        if wire::abi::unpack(packed).1 as usize > MAX_FRAME_BYTES {
+            return Err(wasmtime::Error::msg("frame too large"));
+        }
         self.answer(store, packed)
     }
 
+    /// The view's state, held to `MAX_SNAPSHOT_BYTES` on the length the
+    /// guest names, before the host copies a byte of it.
     pub(super) fn snapshot(
         &self,
         store: &mut Store<HostState>,
     ) -> wasmtime::Result<Result<Vec<u8>, String>> {
         let packed = self.snapshot.call(&mut *store, ())?;
+        // the answer's first byte is its result tag
+        if wire::abi::unpack(packed).1 as usize > wire::MAX_SNAPSHOT_BYTES + 1 {
+            return Ok(Err(
+                "the view's state is past the snapshot byte budget".into()
+            ));
+        }
         self.result(store, packed)
     }
 
@@ -396,14 +407,11 @@ pub(super) fn merge(
     Ok((true, report))
 }
 
-/// What the host is willing to take from one tick's bytes: nothing in here
-/// is trusted — the length, the counts, the tree.
+/// What the host is willing to take from one tick's bytes, already held to
+/// `MAX_FRAME_BYTES`: nothing in here is trusted — the counts, the tree.
 pub(super) fn shape(
     bytes: &[u8],
 ) -> Result<(wire::Frame, display_diagnostics::FrameReports), String> {
-    if bytes.len() > MAX_FRAME_BYTES {
-        return Err("frame too large".to_string());
-    }
     let mut frame: wire::Frame = wire::decode(bytes)?;
     let requests_exceed_budget = frame.requests.len() > MAX_REQUESTS_PER_TICK;
     let cancels_exceed_budget = frame.cancels.len() > 2 * MAX_REQUESTS_PER_TICK;
