@@ -189,14 +189,6 @@ impl ViewTree {
             Node::Image { .. } => self.picture(node, window, cx),
             Node::Svg { .. } => self.vector(node, window, cx),
             Node::Canvas { .. } => self.drawing(node, cx),
-            // the host registers no surface: the slot says so where it would be
-            Node::Surface {
-                id, name, style, ..
-            } => div()
-                .id(native_id(id))
-                .refine_style(style)
-                .child(format!("Unavailable host surface: {name}"))
-                .into_any_element(),
             Node::Overlay { .. } => self.overlay(node, window, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::Editor { .. } => self.editor(node, window, cx),
