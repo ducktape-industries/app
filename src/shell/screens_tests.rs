@@ -496,12 +496,17 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
 
     view.update(&mut native, |view, cx| {
         view.model.update(cx, |model, cx| {
-            model.dispatch(Message::NotifyMarkAllRead, cx);
-            model.dispatch(Message::NotifySettings, cx);
+            model.dispatch(Message::NotifyMarkAllRead, cx)
         })
     });
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications");
+    // Settings is modal: the snapshot is its subtree, the bell is behind it
+    view.update(&mut native, |view, cx| {
+        view.model
+            .update(cx, |model, cx| model.dispatch(Message::NotifySettings, cx))
+    });
+    let nodes = native.update(draw);
     find(&nodes, "Switch", "Desktop banners");
     find(&nodes, "RadioGroup", "Burst limit");
     center().clear_read();

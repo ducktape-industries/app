@@ -208,12 +208,14 @@ impl DesktopWindow {
             // (`on_click` needs the down it never sees) does not close it.
             // Not an `on_click` here: that would offer a press on the dialog.
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
-        let backdrop = backdrop.child(dress(card));
         match scrim {
+            // modal to assistive technology as to the keyboard: what is
+            // behind the scrim is not reachable
             true => backdrop
+                .child(dress(crate::a11y::modal(card)))
                 .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
                 .into_any_element(),
-            false => backdrop.into_any_element(),
+            false => backdrop.child(dress(card)).into_any_element(),
         }
     }
 
