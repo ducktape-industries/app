@@ -302,14 +302,13 @@ pub(crate) fn endpoint_origin(url: &str) -> Option<String> {
     origin.then(|| url.as_str().trim_end_matches('/').to_string())
 }
 
-/// A node URL this device connected to, and the network name it reported —
-/// empty for an entry saved before the app kept names.
+/// A node URL this device connected to, and the network name it reported.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct RecentEndpoint {
     pub(crate) url: String,
     pub(crate) network: String,
-    /// The network's founding time (0 for an entry from before the app
-    /// kept it), which tells two chains with one name apart.
+    /// The network's founding time, which tells two chains with one name
+    /// apart.
     pub(crate) founded: u64,
     /// This node's chain is not the one this device first met under its
     /// name ([`Keyring::other_chain`]).
@@ -327,29 +326,24 @@ impl RecentEndpoint {
         host_of(&self.url)
     }
 
-    /// The network's name, or the host for an entry that never learned it.
+    /// The network's name.
     pub(crate) fn name(&self) -> String {
-        match self.network.is_empty() {
-            true => self.host().to_owned(),
-            false => self.network.clone(),
-        }
+        self.network.clone()
     }
 
     /// How a list names this node: its network and host, and — when two
     /// chains share the name — which one is the other chain. Two rows
     /// never read the same: the list holds one row per URL.
     pub(crate) fn label(&self) -> String {
-        match (self.network.is_empty(), self.other_chain) {
-            (true, _) => self.host().to_owned(),
-            (false, false) => format!("{} · {}", self.network, self.host()),
-            (false, true) => format!("{} · {} · different network", self.network, self.host()),
+        match self.other_chain {
+            false => format!("{} · {}", self.network, self.host()),
+            true => format!("{} · {} · different network", self.network, self.host()),
         }
     }
 }
 
-/// Node URLs this device connected to, most recent first. Reads either
-/// shape a prefs file may hold: a bare string (what this list held before
-/// it kept names) or `{"url", "network"}`.
+/// Node URLs this device connected to, most recent first. An entry that
+/// does not read as `{"url", "network", ..}` is dropped; the rest stand.
 pub(crate) fn recent_endpoints() -> Vec<RecentEndpoint> {
     read_prefs()["endpoints"]
         .as_array()
@@ -358,15 +352,9 @@ pub(crate) fn recent_endpoints() -> Vec<RecentEndpoint> {
 }
 
 fn endpoint_of_json(value: &serde_json::Value) -> Option<RecentEndpoint> {
-    if let Some(url) = value.as_str() {
-        return Some(RecentEndpoint {
-            url: url.to_owned(),
-            ..RecentEndpoint::default()
-        });
-    }
     Some(RecentEndpoint {
         url: value.get("url")?.as_str()?.to_owned(),
-        network: value["network"].as_str().unwrap_or_default().to_owned(),
+        network: value.get("network")?.as_str()?.to_owned(),
         founded: value["founded"].as_u64().unwrap_or_default(),
         other_chain: value["other_chain"].as_bool().unwrap_or_default(),
     })
@@ -442,29 +430,31 @@ mod tests {
         }
     }
 
+    /// A prefs file from before this shape — bare strings, entries without
+    /// a network, junk — loses those entries and nothing else.
     #[test]
-    fn recent_endpoints_read_both_the_old_bare_list_and_the_named_shape() {
-        let old = serde_json::json!(["http://a", "http://b"]);
-        let parsed: Vec<_> = old
+    fn an_unreadable_recent_entry_is_dropped_and_the_rest_kept() {
+        let list = serde_json::json!([
+            "http://a",
+            {"url": "http://b"},
+            7,
+            {"network": "testkit"},
+            {"url": "http://c", "network": "testkit"},
+        ]);
+        let parsed: Vec<_> = list
             .as_array()
             .unwrap()
             .iter()
             .filter_map(endpoint_of_json)
             .collect();
         assert_eq!(
-            parsed.iter().map(|e| e.url.as_str()).collect::<Vec<_>>(),
-            ["http://a", "http://b"]
+            parsed,
+            [RecentEndpoint {
+                url: "http://c".into(),
+                network: "testkit".into(),
+                ..RecentEndpoint::default()
+            }]
         );
-        assert!(parsed.iter().all(|e| e.network.is_empty()));
-
-        let named = serde_json::json!([{"url": "http://a", "network": "testkit"}]);
-        let parsed: Vec<_> = named
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(endpoint_of_json)
-            .collect();
-        assert_eq!(parsed[0].network, "testkit");
     }
 
     #[test]
@@ -533,11 +523,6 @@ mod tests {
             row("http://127.0.0.1:34329", true).label(),
             "testkit · 127.0.0.1:34329 · different network"
         );
-        let bare = RecentEndpoint {
-            url: "https://node.example".into(),
-            ..RecentEndpoint::default()
-        };
-        assert_eq!(bare.label(), "node.example");
         let saved = serde_json::json!({"url": "http://c", "network": "testkit", "founded": 9, "other_chain": true});
         assert_eq!(endpoint_of_json(&saved).unwrap(), {
             let mut c = row("http://c", true);
