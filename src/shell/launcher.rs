@@ -14,6 +14,7 @@
 use super::ink::{self, *};
 use super::*;
 use figure::Figure;
+use screens::Facts;
 
 /// The launcher window's size; it does not change.
 pub(super) const LAUNCHER_SIZE: (f32, f32) = (960., 640.);
@@ -177,4 +178,39 @@ impl DesktopWindow {
             .child(control)
             .children(below)
     }
+}
+
+/// The canvas's button row: `display: flex; gap: 12px; margin-top: 4px`.
+pub(super) fn buttons(children: impl IntoIterator<Item = gpui_kit::AnyElement>) -> gpui_kit::Div {
+    use gpui_kit::*;
+    div()
+        .flex()
+        .flex_wrap()
+        .gap(px(12.))
+        .mt(px(4.))
+        .children(children)
+}
+
+/// The canvas's closing links: `gap: 10px; padding-top: 20px;
+/// border-top: 1px solid line`.
+pub(super) fn closing(
+    children: impl IntoIterator<Item = gpui_kit::AnyElement>,
+    ink: &Ink,
+) -> gpui_kit::Div {
+    use gpui_kit::*;
+    div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(10.))
+        .pt(px(20.))
+        .border_t_1()
+        .border_color(ink.line)
+        .children(children)
+}
+
+/// The node reached, as the drawing's caption: "testkit · 127.0.0.1:8844".
+pub(super) fn where_(state: &Facts) -> String {
+    let host = crate::backend::host_of(&state.connected_rpc);
+    format!("{} · {host}", state.network)
 }
