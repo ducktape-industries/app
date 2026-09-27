@@ -168,9 +168,8 @@ impl DesktopWindow {
         self.launcher(
             LauncherScreen {
                 id: "recovery",
-                tight: true,
-                figure: // tight: the 24 words need the room
-            Figure::Card,
+                tight: true, // the 24 words need the room
+                figure: Figure::Card,
                 caption: "Twenty-four words, on paper.".into(),
                 back: None,
                 label: "Recovery key".into(),

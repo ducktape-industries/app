@@ -336,8 +336,8 @@ impl DesktopWindow {
                 tight: false,
                 figure: Figure::Pair,
                 caption: node_caption(state),
-                back: // the step back reads as recovery's: the same way to the account
-            Some(("link-back", "← Back", || Message::LinkCancel)),
+                // the step back reads as recovery's: the same way to the account
+                back: Some(("link-back", "← Back", || Message::LinkCancel)),
                 label: "[03 / 03] Account · another device".into(),
                 headline: "Approve this device".into(),
                 lead: None,
