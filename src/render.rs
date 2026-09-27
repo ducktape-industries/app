@@ -50,14 +50,10 @@ mod tests;
 
 pub(crate) use accessibility::{Accessible, announce};
 use accessibility::{accessible, descendant_text};
-#[cfg(test)]
-use canvas::{append_arc, append_arc_to};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
 use editor_mount::EditorMount;
 use inputs::Field;
-#[cfg(test)]
-use picture_resources::decode_image;
 pub(crate) use pictures::qr;
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
@@ -152,7 +148,7 @@ pub struct ViewTree {
     /// The overlays showing a dialog, and where focus enters each.
     dialogs: HashMap<AuthoredPath, FocusHandle>,
 
-    // Measured geometry of identified containers (`measure`).
+    // Measured geometry of identified containers and editor mounts (`measure`).
     bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
 
     // Decoded pictures by content hash; a frame resends bytes only for a
