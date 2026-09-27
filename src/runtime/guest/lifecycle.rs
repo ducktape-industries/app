@@ -15,16 +15,17 @@ impl Guest {
         self.connection_rev = revision;
     }
 
-    /// A view comes from its registry entry's active deployment on the
-    /// connected node — nothing else, so with no node there is nothing to
-    /// load yet, and no file is ever opened for it unless the developer's
-    /// override ([`override_views_from`]) supplies one. With a view of the module already
-    /// drawn, the deployment's view is prepared as its replacement:
-    /// instantiated without `init`, restored from the drawn view's snapshot,
-    /// and its first tree verified — and the active code is read again
-    /// right before it is handed over, so a deployment that moved meanwhile
-    /// is not installed. Every outcome for a module-owned view is one
-    /// `view_source` log line with stable fields.
+    /// A view comes from the roster's code for `module` on the connected
+    /// node — nothing else, so with no node there is nothing to load yet,
+    /// and no file is ever opened for it unless the developer's override
+    /// ([`override_views_from`]) supplies one. Over an empty seat the view
+    /// is `init`ed. With a view of the module already drawn, the same code
+    /// is `Unchanged`, and different code is prepared as its replacement
+    /// (`replacement`): instantiated without `init`, restored from the drawn
+    /// view's snapshot, its first tree verified, and handed to the seat to
+    /// swap in. Overridden, Missing, Ready and Failed each log one
+    /// `view_source` line here (the seat logs `Swapped`); every load that
+    /// fetched a candidate logs one `view_load` timing line.
     pub(crate) fn load(
         module: &'static str,
         asked_of: &Connection,
@@ -238,8 +239,9 @@ impl Guest {
         self.hash = Some(hash);
     }
 
-    /// Candidate attempts do not retire a seated view or its input routes.
-    /// Direct test fixtures have no loader-assigned generation and use zero.
+    /// The load generation that seated this instance — zero for one built
+    /// directly by a test — so a candidate still loading retires nothing
+    /// of the seated view.
     pub(crate) fn seated_generation(&self) -> u64 {
         self.installed_generation.unwrap_or_default()
     }
@@ -288,7 +290,7 @@ impl Guest {
         })
     }
 
-    /// `on mount` runs in here.
+    /// The view's `init` export: a fresh start, with no snapshot to restore.
     pub(crate) fn init(&mut self, shown: &str) -> Result<(), String> {
         arm(&mut self.store);
         if let Err(error) = self.exports.init(&mut self.store) {
@@ -362,7 +364,7 @@ impl Guest {
     /// The view's bytes checked and compiled — the cranelift stage of
     /// a load, measured on its own.
     pub(crate) fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Module>, Failure> {
-        // its preferred size is for placing a new window; the tab embeds
+        // the manifest's preferred size is not read: a view fills its tab
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
