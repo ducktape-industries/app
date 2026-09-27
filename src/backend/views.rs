@@ -87,7 +87,7 @@ async fn ask(
     let answer = client
         .query(Layer::Preconfirmed, frame)
         .await
-        .map_err(unreachable)?;
+        .map_err(fetch_error)?;
     abi::decode(&answer).map_err(|refusal| Fetch::Refused(refusal.sentence))
 }
 
@@ -118,7 +118,7 @@ pub async fn program_bytes(client: &RpcClient, code: &BlobId) -> Result<Vec<u8>,
     let framed = client
         .blob(*code)
         .await
-        .map_err(unreachable)?
+        .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
     let body = super::noded::unframe(&framed)
         .ok_or_else(|| Fetch::Refused("the blob carries no git header".into()))?
@@ -175,7 +175,7 @@ pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-fn unreachable(error: super::noded::Error) -> Fetch {
+fn fetch_error(error: super::noded::Error) -> Fetch {
     match error {
         super::noded::Error::Refused(refusal) | super::noded::Error::Decode(refusal) => {
             Fetch::Refused(refusal.sentence)

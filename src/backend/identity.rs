@@ -42,7 +42,7 @@ pub(super) async fn create_seated(
 }
 
 /// The account `number` on `network`.
-pub(super) async fn get(
+pub(super) async fn account_by_number(
     client: &RpcClient,
     network: &str,
     number: u64,

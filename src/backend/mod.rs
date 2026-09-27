@@ -93,7 +93,7 @@ pub(crate) fn connect_error(origin: &str, message: String) -> String {
 
 /// One id, unique on this device, for a record a view mints.
 pub(crate) fn fresh_id(prefix: &str) -> String {
-    format!("{prefix}-{:x}-{}", epoch_nanos(), next_sequence())
+    format!("{prefix}-{:x}-{}", epoch_nanos(), fresh_counter())
 }
 
 fn epoch_nanos() -> u128 {
@@ -103,10 +103,11 @@ fn epoch_nanos() -> u128 {
         .unwrap_or_default()
 }
 
-/// Strictly increasing within this process, near the clock's microseconds;
-/// only [`fresh_id`] mixes it in. Not a frame sequence — that is
-/// `session::next_seq`, which the node dictates.
-pub(crate) fn next_sequence() -> u64 {
+/// Only ever climbs within this process (1, then the clock's microseconds
+/// or the last value plus one, whichever is later); only [`fresh_id`] mixes
+/// it in. Not a frame sequence — that is `session::next_seq`, which the
+/// node dictates.
+pub(crate) fn fresh_counter() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);
     let now = (epoch_nanos() / 1_000) as u64;
@@ -167,8 +168,8 @@ mod tests {
 
     #[test]
     fn sequences_climb_and_hex_round_trips() {
-        let first = next_sequence();
-        let second = next_sequence();
+        let first = fresh_counter();
+        let second = fresh_counter();
         assert!(second > first);
         assert_eq!(
             hex_decode(&hex_encode(&[0, 255, 16])).unwrap(),

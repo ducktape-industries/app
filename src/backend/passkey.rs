@@ -29,7 +29,7 @@ use sha2::{Digest as _, Sha256};
 
 use super::auth_page::{Assertion, Phone, Request, asserted, created};
 use super::identity::{
-    ask, create_seated, expires_at, generation, get, person, submit, submit_seated,
+    account_by_number, ask, create_seated, expires_at, generation, person, submit, submit_seated,
 };
 use super::noded::{Body, FRAME_NAMESPACE, Frame};
 use super::{RpcClient, next_seq, seated_key, seated_sign};
@@ -56,7 +56,7 @@ pub(crate) async fn create_account(
     .await?
     {
         Reply::Number(Some(number)) => {
-            person(&get(client, network, number).await?)?;
+            person(&account_by_number(client, network, number).await?)?;
             number
         }
         _ => create_seated(client, network, name).await?,
@@ -112,7 +112,7 @@ pub(crate) async fn sign_in(
 ) -> Result<(), String> {
     let hint = asserted(rand::random(), phone).await?;
     let number = account_of_handle(network, hint.user_handle.as_deref())?;
-    let account = get(client, network, number).await?;
+    let account = account_by_number(client, network, number).await?;
     person(&account)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = Admission {
@@ -183,12 +183,12 @@ pub(super) fn passkey_frame(body: Body, assertion: &Assertion) -> Option<Frame> 
 /// account number, u64 LE.
 fn user_handle(network: &str, number: u64) -> [u8; 40] {
     let mut handle = [0; 40];
-    handle[..32].copy_from_slice(&chain_hash(network));
+    handle[..32].copy_from_slice(&network_tag(network));
     handle[32..].copy_from_slice(&number.to_le_bytes());
     handle
 }
 
-fn chain_hash(network: &str) -> [u8; 32] {
+fn network_tag(network: &str) -> [u8; 32] {
     let mut hash = Sha256::new();
     hash.update(b"ducktape:passkey-account:v1\0");
     hash.update(network.as_bytes());
@@ -202,7 +202,7 @@ fn account_of_handle(network: &str, handle: Option<&[u8]>) -> Result<u64, String
     let handle = handle
         .and_then(|bytes| <&[u8; 40]>::try_from(bytes).ok())
         .ok_or("That passkey wasn't made by Ducktape. Choose a Ducktape passkey.")?;
-    if handle[..32] != chain_hash(network) {
+    if handle[..32] != network_tag(network) {
         return Err(format!(
             "That passkey belongs to another network. Choose one for {network}."
         ));

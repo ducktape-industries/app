@@ -22,14 +22,16 @@ use identity::{Admission, CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use sha2::{Digest as _, Sha256};
 
 use super::auth_page::auth_page;
-use super::identity::{ask, expires_at, generation, get, person, submit, submit_seated};
+use super::identity::{
+    account_by_number, ask, expires_at, generation, person, submit, submit_seated,
+};
 use super::noded::Frame;
 use super::relay::{POLL, post, slot, take};
 use super::{RpcClient, hex_decode, hex_encode, next_seq, seated_key, seated_sign};
 
 /// How long a new device waits for the other to approve: the relay's own
 /// hold.
-const WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+const APPROVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Crockford's base32: no I, L, O, U to misread.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -91,7 +93,7 @@ pub(crate) async fn join_from_device(
     let request = serde_json::json!({ "v": 1, "network": network, "key": hex_encode(&device) });
     post(&slot(&page, &code, "request")?, request.to_string()).await?;
     let answer = slot(&page, &code, "consent")?;
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + APPROVAL_WAIT;
     let json = loop {
         if let Some(json) = take(&answer).await? {
             break json;
@@ -229,7 +231,7 @@ pub(crate) async fn add_recovery_key(
     let account = account_of(client, network, device)
         .await?
         .ok_or("This device's key holds no account yet.")?;
-    person(&get(client, network, account).await?)?;
+    person(&account_by_number(client, network, account).await?)?;
     let admission = Admission {
         network: network.as_bytes().to_vec(),
         scheme: abi::Scheme::Ed25519,
@@ -275,7 +277,7 @@ pub(crate) async fn join_with_recovery_key(
     let account = account_of(client, network, recovery.public_key().as_ref().to_vec())
         .await?
         .ok_or_else(|| format!("That recovery key isn't on an account on {network}."))?;
-    person(&get(client, network, account).await?)?;
+    person(&account_by_number(client, network, account).await?)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let admission = Admission {
         network: network.as_bytes().to_vec(),
