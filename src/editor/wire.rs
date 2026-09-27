@@ -164,12 +164,7 @@ impl EditorStore {
 
     /// Validate the complete candidate before changing the accepted projections.
     pub fn validate(&self, root: &wire::Node) -> Result<(), String> {
-        let mut fields = HashMap::new();
-        collect(root, &mut fields)?;
-        wire::editor_document::validate_editor_document_refs(
-            fields.values().map(|field| &field.reference),
-        )
-        .map_err(|error| format!("invalid editor references: {error:?}"))?;
+        let fields = collect_checked(root)?;
         self.lock().validate_budget(&fields)
     }
 
@@ -202,10 +197,7 @@ impl EditorStore {
     }
 
     pub fn replace(&self, root: &wire::Node) -> Result<(), String> {
-        let mut fields = HashMap::new();
-        collect(root, &mut fields)?;
-        wire::editor_document::validate_editor_document_refs(fields.values().map(|f| &f.reference))
-            .map_err(|error| format!("invalid editor references: {error:?}"))?;
+        let fields = collect_checked(root)?;
         let mut store = self.lock();
         store.validate_budget(&fields)?;
         store.replace(fields);
@@ -308,6 +300,16 @@ impl EditorStore {
     }
 }
 
+/// The root's editor fields, their document references checked against
+/// each other; the byte budget is the store's to check, under its lock.
+fn collect_checked(root: &wire::Node) -> Result<HashMap<AuthoredPath, Field>, String> {
+    let mut fields = HashMap::new();
+    collect(root, &mut fields)?;
+    wire::editor_document::validate_editor_document_refs(fields.values().map(|f| &f.reference))
+        .map_err(|error| format!("invalid editor references: {error:?}"))?;
+    Ok(fields)
+}
+
 fn collect(node: &wire::Node, fields: &mut HashMap<AuthoredPath, Field>) -> Result<(), String> {
     fn walk(
         node: &wire::Node,
@@ -355,6 +357,41 @@ mod native;
 mod protocol;
 mod store;
 use native::*;
+
+/// Seeds `text` into `store` by answering the document request the store
+/// emits for a document it has no text for, with the Begin/Chunk/Complete
+/// transfer a guest sends. An empty text sends no Chunk: a zero-byte
+/// assembler is complete at Begin, and even an empty Chunk is out of order.
+#[cfg(test)]
+pub(crate) fn seed_editor_text(store: &EditorStore, text: &str) {
+    use wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
+    let asked = store.drain().into_iter().find_map(|event| match event {
+        wire::Event::EditorDocument {
+            message: Message::Request { id, target },
+            ..
+        } => Some((id, target)),
+        _ => None,
+    });
+    let (id, target) = asked.expect("the store asks for a document it has no text for");
+    let mut editor_documents = vec![Message::Transfer(EditorTransfer::Begin {
+        id: id.clone(),
+        target,
+    })];
+    if !text.is_empty() {
+        editor_documents.push(Message::Transfer(EditorTransfer::Chunk {
+            id: id.clone(),
+            index: 0,
+            bytes: text.as_bytes().to_vec(),
+        }));
+    }
+    editor_documents.push(Message::Transfer(EditorTransfer::Complete { id }));
+    store
+        .frame(&wire::Frame {
+            editor_documents,
+            ..Default::default()
+        })
+        .expect("the answer to the store's own request");
+}
 
 #[path = "text.rs"]
 mod text;

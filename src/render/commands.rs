@@ -105,6 +105,7 @@ impl ViewTree {
     ) -> Result<Vec<u8>, String> {
         use wire::WidgetCommand as C;
         command.validate()?;
+        // every command answers unit; the helpers say what went wrong
         match command {
             C::FocusHandle { handle } => {
                 let focus = self
@@ -113,17 +114,16 @@ impl ViewTree {
                     .ok_or_else(|| "focus handle is not mounted".to_string())?
                     .clone();
                 focus.focus(window, cx);
-                Ok(wire::encode(&()))
             }
-            C::FocusPrevious => self.focus_relative(false, window, cx),
-            C::FocusNext => self.focus_relative(true, window, cx),
+            C::FocusPrevious => self.focus_relative(false, window, cx)?,
+            C::FocusNext => self.focus_relative(true, window, cx)?,
             C::EditorAction { ref target, .. }
             | C::Focus { ref target }
             | C::CursorFront { ref target }
             | C::CursorEnd { ref target }
             | C::Cursor { ref target, .. }
             | C::SelectAll { ref target }
-            | C::Select { ref target, .. } => self.input_command(target, &command, window, cx),
+            | C::Select { ref target, .. } => self.input_command(target, &command, window, cx)?,
             C::Snap { target, x, y } => {
                 self.scroll_command(&target, ScrollRequest::Relative(x, y), cx)
             }
@@ -135,6 +135,7 @@ impl ViewTree {
                 self.scroll_command(&target, ScrollRequest::By(x, y), cx)
             }
         }
+        Ok(wire::encode(&()))
     }
 
     /// The full authored path of the node a widget command's target names.
@@ -181,7 +182,7 @@ impl ViewTree {
         forward: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<(), String> {
         let mut targets = Vec::new();
         walk_authored_paths(&self.root, &mut Vec::new(), &mut |_, path| {
             let available = self.mounted.contains(path)
@@ -191,7 +192,7 @@ impl ViewTree {
             }
         });
         if targets.is_empty() {
-            return Ok(wire::encode(&()));
+            return Ok(());
         }
         let current = targets
             .iter()
@@ -219,10 +220,10 @@ impl ViewTree {
         command: &wire::WidgetCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<(), String> {
         use wire::WidgetCommand as C;
         let Some(target) = self.resolve_target(target) else {
-            return Ok(wire::encode(&()));
+            return Ok(());
         };
         let target = target.as_slice();
         if matches!(command, C::Focus { .. }) {
@@ -241,7 +242,7 @@ impl ViewTree {
                     .or_insert_with(|| (kind, cx.focus_handle()));
                 handle.focus(window, cx);
                 cx.notify();
-                return Ok(wire::encode(&()));
+                return Ok(());
             }
         }
         // A toolbar press names a tag, not an edit: it goes to the guest's
@@ -256,11 +257,11 @@ impl ViewTree {
                 return Err("editor action target is not a mounted editor".into());
             };
             store.act(target, tag.clone());
-            return Ok(wire::encode(&()));
+            return Ok(());
         }
         if let Some(editor) = self.editors.get(target) {
             editor.view.widget_command(command, window, cx);
-            return Ok(wire::encode(&()));
+            return Ok(());
         }
         // a plain field answers only Focus; its cursor and selection
         // commands are taken and dropped
@@ -268,9 +269,9 @@ impl ViewTree {
             if matches!(command, C::Focus { .. }) {
                 field.state.update(cx, |field, cx| field.focus(window, cx));
             }
-            return Ok(wire::encode(&()));
+            return Ok(());
         }
-        Ok(wire::encode(&()))
+        Ok(())
     }
 
     pub(super) fn scroll_command(
@@ -278,13 +279,13 @@ impl ViewTree {
         target: &[wire::ElementIdWire],
         request: ScrollRequest,
         cx: &mut Context<Self>,
-    ) -> Result<Vec<u8>, String> {
+    ) {
         let Some(target) = self.resolve_target(target) else {
-            return Ok(wire::encode(&()));
+            return;
         };
         let target = target.as_slice();
         let Some(handle) = self.scrolls.get(target) else {
-            return Ok(wire::encode(&()));
+            return;
         };
         // an offset is measured from the start: gpui scrolls into the negative
         let maximum = handle.max_offset();
@@ -301,7 +302,6 @@ impl ViewTree {
             next.y.clamp(-maximum.y, px(0.0)),
         ));
         cx.notify();
-        Ok(wire::encode(&()))
     }
 
     pub fn replace(&mut self, mut root: wire::Node, cx: &mut Context<Self>) {
