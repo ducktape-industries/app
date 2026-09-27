@@ -2,6 +2,7 @@
 //! behind a password from before. See launcher.rs for key vs account.
 
 use super::ink::{self, *};
+use super::launcher::LauncherScreen;
 use super::launcher::{buttons, closing, node_caption};
 use super::text_field::TextField;
 use super::*;
@@ -127,15 +128,17 @@ impl DesktopWindow {
             &ink,
         );
         self.launcher(
-            "sign-in",
-            false,
-            Figure::Ring,
-            node_caption(state),
-            Some(("disconnect", "Other networks", || Message::Disconnect)),
-            label,
-            headline,
-            lead.map(str::to_owned),
-            vec![form.into_any_element(), links.into_any_element()],
+            LauncherScreen {
+                id: "sign-in",
+                tight: false,
+                figure: Figure::Ring,
+                caption: node_caption(state),
+                back: Some(("disconnect", "Other networks", || Message::Disconnect)),
+                label,
+                headline,
+                lead: lead.map(str::to_owned),
+                body: vec![form.into_any_element(), links.into_any_element()],
+            },
             window,
             cx,
         )

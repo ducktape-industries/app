@@ -3,6 +3,7 @@
 //! device (`link_waiting`). See launcher.rs for key vs account.
 
 use super::ink::{self, *};
+use super::launcher::LauncherScreen;
 use super::launcher::{buttons, closing, node_caption};
 use super::text_field::TextField;
 use super::*;
@@ -143,18 +144,20 @@ impl DesktopWindow {
         .role(Role::Group)
         .aria_label("Already have an account");
         self.launcher(
-            "account-step",
-            false,
-            Figure::Pair,
-            node_caption(state),
-            None,
-            "[03 / 03] Account".into(),
-            "What should people call you?".into(),
-            Some(format!(
+            LauncherScreen {
+                id: "account-step",
+                tight: false,
+                figure: Figure::Pair,
+                caption: node_caption(state),
+                back: None,
+                label: "[03 / 03] Account".into(),
+                headline: "What should people call you?".into(),
+                lead: Some(format!(
                 "Your account is the name beside everything you write on {}. This device's key signs for it.",
                 state.network
             )),
-            vec![form.into_any_element(), join.into_any_element()],
+                body: vec![form.into_any_element(), join.into_any_element()],
+            },
             window,
             cx,
         )
@@ -262,15 +265,17 @@ impl DesktopWindow {
             &ink,
         );
         self.launcher(
-            "passkey-waiting",
-            false,
-            Figure::Pair,
-            node_caption(state),
-            None,
-            "[03 / 03] Account · passkey".into(),
-            title.into(),
-            Some(hint.into()),
-            row.into_iter().chain([links.into_any_element()]).collect(),
+            LauncherScreen {
+                id: "passkey-waiting",
+                tight: false,
+                figure: Figure::Pair,
+                caption: node_caption(state),
+                back: None,
+                label: "[03 / 03] Account · passkey".into(),
+                headline: title.into(),
+                lead: Some(hint.into()),
+                body: row.into_iter().chain([links.into_any_element()]).collect(),
+            },
             window,
             cx,
         )
@@ -326,16 +331,18 @@ impl DesktopWindow {
                 .into_any_element(),
         ];
         self.launcher(
-            "link-waiting",
-            false,
-            Figure::Pair,
-            node_caption(state),
-            // the step back reads as recovery's: the same way to the account
+            LauncherScreen {
+                id: "link-waiting",
+                tight: false,
+                figure: Figure::Pair,
+                caption: node_caption(state),
+                back: // the step back reads as recovery's: the same way to the account
             Some(("link-back", "← Back", || Message::LinkCancel)),
-            "[03 / 03] Account · another device".into(),
-            "Approve this device".into(),
-            None,
-            body,
+                label: "[03 / 03] Account · another device".into(),
+                headline: "Approve this device".into(),
+                lead: None,
+                body,
+            },
             window,
             cx,
         )

@@ -33,32 +33,51 @@ const _: () = assert!(LAUNCHER_SIZE.0 >= FIGURE_W + COLUMN_MIN);
 /// A quiet link above a screen: its element id, its words, what it does.
 pub(super) type Back = (&'static str, &'static str, fn() -> Message);
 
+/// What a launcher screen puts in the frame (`DesktopWindow::launcher`).
+pub(super) struct LauncherScreen {
+    /// The reading column's element id: the screen's name to the AX tree.
+    pub(super) id: &'static str,
+    /// A tighter column (`padding-top: 24px; gap: 16px`) for a long body
+    /// (the phrase's 24 words).
+    pub(super) tight: bool,
+    /// The drawing on the left.
+    pub(super) figure: Figure,
+    /// The mono line under the drawing.
+    pub(super) caption: String,
+    /// The small link above the column, if the screen has a way back.
+    pub(super) back: Option<Back>,
+    /// The step tag over the headline: `[02 / 03] Key`.
+    pub(super) label: String,
+    /// The `<h1>`.
+    pub(super) headline: String,
+    /// The paragraph under it.
+    pub(super) lead: Option<String>,
+    /// The screen's own controls, after the lead.
+    pub(super) body: Vec<gpui_kit::AnyElement>,
+}
+
 impl DesktopWindow {
-    /// One launcher screen, the canvas's frame: on the left a 380px panel,
+    /// One launcher screen in the canvas's frame: on the left a 380px panel,
     /// `padding: 20px; gap: 12px`, the drawing on `surface` and its mono
-    /// `caption`; on the right the reading column, `padding: 32px 40px 0;
-    /// gap: 22px` — a small back link, then `[step]`, the `<h1>` and the
-    /// lead (`gap: 18px`), then the screen's own `body`. A `tight` column
-    /// (`padding-top: 24px; gap: 16px`) gives a long body the room (the
-    /// phrase's 24 words).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one frame, every screen fills it"
-    )]
+    /// caption; on the right the reading column, `padding: 32px 40px 0;
+    /// gap: 22px`.
     pub(super) fn launcher(
         &self,
-        id: &'static str,
-        tight: bool,
-        figure: Figure,
-        caption: String,
-        back: Option<Back>,
-        label: String,
-        headline: String,
-        lead: Option<String>,
-        body: Vec<gpui_kit::AnyElement>,
+        screen: LauncherScreen,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        let LauncherScreen {
+            id,
+            tight,
+            figure,
+            caption,
+            back,
+            label,
+            headline,
+            lead,
+            body,
+        } = screen;
         use gpui_kit::*;
         let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);

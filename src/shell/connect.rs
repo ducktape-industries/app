@@ -1,6 +1,7 @@
 //! The Connect screen, first in the launcher: a node address, the nodes
 //! reached before, and why the last try did not land.
 
+use super::launcher::LauncherScreen;
 use super::text_field::TextField;
 use super::*;
 
@@ -169,15 +170,17 @@ impl DesktopWindow {
             false => "A node, drawn in characters.",
         };
         self.launcher(
-            "connect",
-            false,
-            figure::Figure::Roll,
-            caption.into(),
-            None,
-            "[01 / 03] Network".into(),
-            "Connect to a network".into(),
-            Some("Any node on it will do. The node serves the programs you use and keeps your account.".into()),
-            std::iter::once(form.into_any_element()).chain(recent).collect(),
+            LauncherScreen {
+                id: "connect",
+                tight: false,
+                figure: figure::Figure::Roll,
+                caption: caption.into(),
+                back: None,
+                label: "[01 / 03] Network".into(),
+                headline: "Connect to a network".into(),
+                lead: Some("Any node on it will do. The node serves the programs you use and keeps your account.".into()),
+                body: std::iter::once(form.into_any_element()).chain(recent).collect(),
+            },
             window,
             cx,
         )

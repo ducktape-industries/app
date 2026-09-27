@@ -3,6 +3,7 @@
 //! three of them asked back (`phrase_check`).
 
 use super::ink::{self, *};
+use super::launcher::LauncherScreen;
 use super::launcher::{buttons, node_caption};
 use super::text_field::TextField;
 use super::*;
@@ -80,15 +81,17 @@ impl DesktopWindow {
                 &ink,
             )]));
         self.launcher(
-            "recover",
-            false,
-            Figure::Card,
-            node_caption(state),
-            Some(("recover-back", "← Back", || Message::RecoverCancel)),
-            "[03 / 03] Account · recovery key".into(),
-            format!("Your {} recovery key", state.network),
-            Some("The 24 words you wrote down for this account. They add this device; nothing else changes.".into()),
-            vec![form.into_any_element()],
+            LauncherScreen {
+                id: "recover",
+                tight: false,
+                figure: Figure::Card,
+                caption: node_caption(state),
+                back: Some(("recover-back", "← Back", || Message::RecoverCancel)),
+                label: "[03 / 03] Account · recovery key".into(),
+                headline: format!("Your {} recovery key", state.network),
+                lead: Some("The 24 words you wrote down for this account. They add this device; nothing else changes.".into()),
+                body: vec![form.into_any_element()],
+            },
             window,
             cx,
         )
@@ -163,18 +166,21 @@ impl DesktopWindow {
                 &ink,
             ));
         self.launcher(
-            "recovery",
-            true, // tight: the 24 words need the room
+            LauncherScreen {
+                id: "recovery",
+                tight: true,
+                figure: // tight: the 24 words need the room
             Figure::Card,
-            "Twenty-four words, on paper.".into(),
-            None,
-            "Recovery key".into(),
-            "Write these down".into(),
-            Some(format!(
+                caption: "Twenty-four words, on paper.".into(),
+                back: None,
+                label: "Recovery key".into(),
+                headline: "Write these down".into(),
+                lead: Some(format!(
                 "In order, on paper. With them a new device joins your {} account when no other is at hand — and so can anyone holding them.",
                 state.network
             )),
-            vec![sheet.into_any_element(), done.into_any_element()],
+                body: vec![sheet.into_any_element(), done.into_any_element()],
+            },
             window,
             cx,
         )
@@ -270,15 +276,17 @@ impl DesktopWindow {
             );
         let prompt = format!("Type words {a}, {b} and {c} from your paper.");
         self.launcher(
-            "recovery-check",
-            false,
-            Figure::Card,
-            "Twenty-four words, on paper.".into(),
-            None,
-            "Recovery key · check".into(),
-            "Now, three of them".into(),
-            Some(prompt),
-            vec![form.into_any_element()],
+            LauncherScreen {
+                id: "recovery-check",
+                tight: false,
+                figure: Figure::Card,
+                caption: "Twenty-four words, on paper.".into(),
+                back: None,
+                label: "Recovery key · check".into(),
+                headline: "Now, three of them".into(),
+                lead: Some(prompt),
+                body: vec![form.into_any_element()],
+            },
             window,
             cx,
         )
