@@ -109,6 +109,7 @@ impl Exports {
         Ok(self.result(store, packed)?.map(|_| ()))
     }
 }
+
 pub(super) fn panic_message(store: &mut Store<HostState>) -> Option<String> {
     let text = store.data_mut().panic.take()?;
     (!text.is_empty()).then_some(text)
