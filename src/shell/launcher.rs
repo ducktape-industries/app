@@ -18,6 +18,17 @@ use figure::Figure;
 /// The launcher window's size; it does not change.
 pub(super) const LAUNCHER_SIZE: (f32, f32) = (960., 640.);
 
+/// The narrowest the reading column goes beside the drawing: its 40px sides
+/// around a 360px field, the address and its button on one line. Narrower,
+/// the drawing steps aside and the column takes the window.
+const COLUMN_MIN: f32 = 440.;
+
+/// The drawing's panel, `width: 380px`.
+const FIGURE_W: f32 = 380.;
+
+// the launcher's own window keeps its drawing
+const _: () = assert!(LAUNCHER_SIZE.0 >= FIGURE_W + COLUMN_MIN);
+
 /// A quiet link above a screen: its element id, its words, what it does.
 pub(super) type Back = (&'static str, &'static str, fn() -> Message);
 
@@ -75,7 +86,7 @@ impl DesktopWindow {
         });
         let picture = div()
             .id("launcher-figure")
-            .w(px(380.))
+            .w(px(FIGURE_W))
             .flex_shrink_0()
             .p(px(20.))
             .flex()
@@ -139,7 +150,10 @@ impl DesktopWindow {
                     .flex_1()
                     .min_h_0()
                     .flex()
-                    .child(picture)
+                    .when(
+                        f32::from(window.viewport_size().width) >= FIGURE_W + COLUMN_MIN,
+                        |row| row.child(picture),
+                    )
                     .child(reading),
             )
             .children(self.footer(cx))

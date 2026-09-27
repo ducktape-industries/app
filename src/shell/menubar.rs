@@ -33,10 +33,21 @@ impl DesktopWindow {
                 Some(note) => format!("{shown} · {note}"),
                 None => shown.clone(),
             };
-            let shown = match narrow {
-                true => shown.chars().next().map(String::from).unwrap_or_default(),
-                false => shown,
+            // folded: the program's icon, its initial when it has none,
+            // and its whole name on hover
+            let shown: AnyElement = match (narrow, tab_icon(module)) {
+                (false, _) => shown.into_any_element(),
+                (true, Some(icon)) => gpui_kit::component::Icon::new(icon)
+                    .size(px(16.))
+                    .into_any_element(),
+                (true, None) => shown
+                    .chars()
+                    .next()
+                    .map(String::from)
+                    .unwrap_or_default()
+                    .into_any_element(),
             };
+            let tip = narrow.then(|| SharedString::from(name.clone()));
             let hover = ink.ink;
             crate::a11y::focus_shown(
                 sans(400, 13.)
@@ -67,6 +78,11 @@ impl DesktopWindow {
                 }
             }))
             .child(shown)
+            .when_some(tip, |tab, tip| {
+                tab.tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
+                })
+            })
             .when(row.note == Some("Failed"), |tab| {
                 tab.child(div().size(px(5.)).rounded_full().bg(ink.danger))
             })
@@ -314,11 +330,44 @@ impl DesktopWindow {
     }
 }
 
+/// A program's icon on a folded bar, by its id (Members is `identity`,
+/// Settings `module-registry`, Nodes `valset`); `None` folds to its initial.
+fn tab_icon(module: &str) -> Option<gpui_kit::assets::IconName> {
+    use gpui_kit::assets::IconName;
+    Some(match module {
+        "chat" => IconName::MessagesSquare,
+        "forge" => IconName::Hammer,
+        "identity" => IconName::Users,
+        "module-registry" => IconName::SlidersHorizontal,
+        "valset" => IconName::Server,
+        "explorer" => IconName::Compass,
+        _ => return None,
+    })
+}
+
 /// A program's name on the bar. Before the manifest lands (or if it never
 /// does) the label is the program's own id, prettified.
 pub(super) fn tab_label(row: &crate::runtime::RailRow) -> String {
     match row.note {
         Some(_) => screens::prettify(&row.label),
         None => row.label.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_folded_tab_is_its_programs_icon_or_its_initial() {
+        for module in [
+            "chat",
+            "forge",
+            "identity",
+            "module-registry",
+            "valset",
+            "explorer",
+        ] {
+            assert!(super::tab_icon(module).is_some(), "{module}");
+        }
+        assert!(super::tab_icon("ledger").is_none());
     }
 }
