@@ -1,9 +1,12 @@
-//! Everything that crosses the process boundary: the node daemon's client
-//! ([`noded`]), the one signing key held in memory and the prefs file
-//! ([`session`]), this device's per-network key in the OS store
-//! ([`device_key`]), accounts and how a device gets onto one ([`passkey`],
-//! [`join`]), a view's wasm out of its program's blob ([`views`]), and the
-//! app's own directories ([`app_dirs`]).
+//! Everything that crosses the process boundary. The node daemon's client
+//! ([`noded`]); the one signing key held in memory and the frames it signs
+//! ([`session`]); this device's per-network key in the OS store
+//! ([`device_key`]) and the key directory it falls back to ([`key_dir`]);
+//! the identity program's client ([`identity`]) and the two ways onto an
+//! account, a passkey ([`passkey`], through [`auth_page`], [`relay`] and
+//! [`loopback`]) or another key ([`join`]); a view's wasm out of its
+//! program's blob ([`views`]); prefs.json ([`prefs`]) and the recent-nodes
+//! list ([`endpoints`]); the app's own directories ([`app_dirs`]).
 //!
 //! No user program is named here. Two system programs are: `identity`
 //! (accounts and their keys) and `module-registry` (the roster).

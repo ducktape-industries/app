@@ -1,7 +1,7 @@
 //! Where the app keeps what is ITS OWN — its preferences, its log, its
 //! caches — as distinct from a network's files, which live in that network's
 //! workspace under the ducktape home. The one thing of the app's under the
-//! home is a network's key directory, `remotes/<name>` (`session::bind_keyring`),
+//! home is a network's key directory, `remotes/<name>` (`key_dir::bind_keyring`),
 //! so two networks on one machine share no key, and the app's state outlives
 //! any one of them.
 //!
