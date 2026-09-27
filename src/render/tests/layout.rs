@@ -400,3 +400,74 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
         }
     )));
 }
+
+/// A guest tree that did not change is not drawn again: the seat's cache
+/// holds from one frame to the next. An id-less box measured on its named
+/// ancestor's path, and a paragraph's selection refreshed the window each
+/// time a cached frame swept it, so every guest on the desk was drawn in
+/// full on every frame. The named box keeps its own bounds.
+#[gpui_kit::test]
+fn an_unchanged_guest_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let bare = |children: Vec<wire::Node>| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: div().p_2().style().clone(),
+            interactivity: Default::default(),
+            children,
+        })
+    };
+    let paragraph = wire::Node::RichText {
+        id: Some(named_id("line")),
+        style: div().h(px(20.)).style().clone(),
+        text: "a line".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: Vec::new(),
+        on_click: None,
+        on_hover: None,
+        tooltip: None,
+    };
+    let root = container_with_style(
+        "card",
+        div().w(px(200.)).h(px(100.)).style().clone(),
+        [bare(vec![bare(vec![paragraph])])],
+    );
+    struct Seat(Entity<ViewTree>);
+    impl Render for Seat {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(gpui_kit::base::TextSelectionLayer)
+                .child(
+                    self.0
+                        .clone()
+                        .cached(gpui_kit::StyleRefinement::default().size_full()),
+                )
+        }
+    }
+    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+        Seat(cx.new(|_| ViewTree::new(root)))
+    });
+    let seat = window.root(cx).unwrap();
+    let tree = seat.read_with(cx, |seat, _| seat.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let frame = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            // the desk draws its seats again: `render_frame` would refresh
+            seat.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear(cx);
+        });
+        native.run_until_parked();
+    };
+    for _ in 0..3 {
+        frame(&mut native);
+    }
+    let settled = tree.read_with(&native, |tree, _| tree.renders);
+    for _ in 0..5 {
+        frame(&mut native);
+    }
+    assert_eq!(tree.read_with(&native, |tree, _| tree.renders), settled);
+    let card = tree.read_with(&native, |tree, _| tree.measured_bounds(&[named_id("card")]));
+    assert_eq!(card.map(|card| card.size), Some(size(px(200.), px(100.))));
+}

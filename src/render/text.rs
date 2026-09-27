@@ -34,6 +34,32 @@ pub(super) fn joins_drag(drag: Option<Bounds<Pixels>>, clip: Bounds<Pixels>) -> 
     drag.is_none_or(|drag| drag == clip)
 }
 
+/// Redraws `window` when the selection `handle` shows really changes.
+/// gpui-base's sweep clears every participant a frame did not register — a
+/// cached view's paragraphs register none, a stand-in handle is new each
+/// render — and its clear says `SelectionChanged(None)` even when nothing
+/// was selected. Refreshing on that re-rendered every cached view, every
+/// frame: a desk of heavy views drew all of them in full on each switch.
+fn refresh_on_change(
+    handle: &gpui_kit::base::TextSelectionHandle,
+    window: &Window,
+    cx: &mut App,
+) -> Subscription {
+    let window = window.window_handle();
+    let mut shown = None;
+    handle.subscribe(
+        move |event, cx| {
+            if let gpui_kit::base::TextSelectionEvent::SelectionChanged(snapshot) = event
+                && *snapshot != shown
+            {
+                shown = *snapshot;
+                _ = window.update(cx, |_, window, _| window.refresh());
+            }
+        },
+        cx,
+    )
+}
+
 pub(super) struct RichSelection {
     pub(super) handle: gpui_kit::base::TextSelectionHandle,
     pub(super) _refresh: Subscription,
@@ -110,7 +136,7 @@ impl Element for RichParagraph {
             let state = match state {
                 Some(state) => state.unwrap_or_else(|| {
                     let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
-                    let refresh = handle.refresh_window_on_change(window, cx);
+                    let refresh = refresh_on_change(&handle, window, cx);
                     RichSelection {
                         handle,
                         _refresh: refresh,
@@ -373,7 +399,7 @@ impl ViewTree {
         let mut content = div().relative().child(selection).child(interactive);
         *content.style() = style.clone();
         let handle = gpui_kit::base::TextSelectionHandle::new(text.clone(), cx);
-        let refresh = handle.refresh_window_on_change(window, cx);
+        let refresh = refresh_on_change(&handle, window, cx);
         RichParagraph {
             id: native_id,
             content: content.into_any_element(),
