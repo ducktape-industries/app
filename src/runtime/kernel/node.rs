@@ -29,8 +29,9 @@ fn transport_failed(refusal: &wire::Error) -> bool {
     matches!(refusal.code.as_str(), "rpc_client" | "node_failed")
 }
 
-/// Only a refusal that proves nothing reached the node is retried
-/// (`backend::refused`: a connect failure). For a WRITE: a request the node
+/// Only a refusal that proves no frame went out is retried (a connect
+/// failure, `backend::refused`; or any failure of the sequence read that
+/// comes before the frame, `submitted`). For a WRITE: a request the node
 /// may have applied is not signed and sent again — the sequence moved, so
 /// the node would apply it twice.
 fn unsent(refusal: &wire::Error) -> bool {
@@ -419,7 +420,14 @@ pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
 
 /// The receipt's output on success, the program's refusal otherwise.
 async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
-    let frame = backend::seated_frame(&node.client, &node.network, &target, payload).await?;
+    // the sequence read comes before any frame: nothing signed, nothing
+    // sent, so its lost answer is asked again as a read's is
+    let frame = backend::seated_frame(&node.client, &node.network, &target, payload)
+        .await
+        .map_err(|refusal| match transport_failed(&refusal) {
+            true => wire::Error::new("rpc_client", refusal.message),
+            false => refusal,
+        })?;
     let receipt = node.client.submit(frame).await.map_err(refused)?;
     match receipt.outcome {
         abi::Outcome::Applied { output } => Ok(output),

@@ -56,10 +56,13 @@ fn too_many_changes_subscriptions_is_the_subscription_limit() {
     );
 }
 
-/// A node that applies every op it is handed, but whose answer to the first
-/// submit is lost on the way back (a 502 from the proxy in front of it).
-/// Answers `/v1/get` with the signer's next sequence, counts the submits.
-fn applying_node_with_a_lost_answer() -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+/// A node that applies every op it is handed, but whose first answer on
+/// route `lost` goes missing on the way back (a 502 from the proxy in front
+/// of it). Answers `/v1/get` with the signer's next sequence, counts the
+/// submits.
+fn applying_node_with_a_lost_answer(
+    lost: &'static str,
+) -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
     use std::io::{BufRead as _, Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let node = Node {
@@ -70,6 +73,7 @@ fn applying_node_with_a_lost_answer() -> (Node, std::sync::Arc<std::sync::atomic
     let counted = submits.clone();
     std::thread::spawn(move || {
         let mut seq = 0u64;
+        let mut lose = true;
         for mut stream in listener.incoming().flatten() {
             let mut reader = std::io::BufReader::new(&mut stream);
             let mut line = String::new();
@@ -90,27 +94,25 @@ fn applying_node_with_a_lost_answer() -> (Node, std::sync::Arc<std::sync::atomic
             }
             let mut body = vec![0; length];
             reader.read_exact(&mut body).unwrap();
-            let (status, body) = match route.as_str() {
-                noded::route::GET => ("200 OK", abi::encode(&Some(abi::encode(&seq)))),
+            let answer = match route.as_str() {
+                noded::route::GET => abi::encode(&Some(abi::encode(&seq))),
                 noded::route::SUBMIT => {
                     let frame: noded::Frame = abi::decode(&body).unwrap();
                     assert_eq!(frame.body.seq, seq, "signed at the sequence the node named");
                     seq += 1;
-                    let applied = counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0;
-                    match applied {
-                        true => ("502 Bad Gateway", b"upstream went away".to_vec()),
-                        false => (
-                            "200 OK",
-                            abi::encode(&noded::Receipt {
-                                program: "registry".into(),
-                                outcome: abi::Outcome::Applied { output: Vec::new() },
-                                events: Vec::new(),
-                                nested: Vec::new(),
-                            }),
-                        ),
-                    }
+                    counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    abi::encode(&noded::Receipt {
+                        program: "registry".into(),
+                        outcome: abi::Outcome::Applied { output: Vec::new() },
+                        events: Vec::new(),
+                        nested: Vec::new(),
+                    })
                 }
                 other => panic!("{other}"),
+            };
+            let (status, body) = match route == lost && std::mem::take(&mut lose) {
+                true => ("502 Bad Gateway", b"upstream went away".to_vec()),
+                false => ("200 OK", answer),
             };
             write!(
                 stream,
@@ -131,13 +133,9 @@ fn applying_node_with_a_lost_answer() -> (Node, std::sync::Arc<std::sync::atomic
 async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     use commonware_cryptography::Signer as _;
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
-    let (node, submits) = applying_node_with_a_lost_answer();
-    let ask = methods::encode(&methods::Call {
-        target: "registry".into(),
-        body: vec![1, 2, 3],
-    });
+    let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
     let answer = until_answered(NODE_RETRY_BUDGET, unsent, || {
-        submit(node.clone(), ask.clone())
+        submit(node.clone(), call_registry())
     })
     .await;
     assert_eq!(
@@ -150,4 +148,30 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
         1,
         "one submit: the op was not applied twice"
     );
+}
+
+fn call_registry() -> Vec<u8> {
+    methods::encode(&methods::Call {
+        target: "registry".into(),
+        body: vec![1, 2, 3],
+    })
+}
+
+/// The sequence read comes before any frame is signed: its lost answer is
+/// asked again, and the one submit that follows goes through.
+#[tokio::test]
+async fn a_submit_whose_sequence_read_was_lost_is_asked_again() {
+    use commonware_cryptography::Signer as _;
+    backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
+    let (node, submits) = applying_node_with_a_lost_answer(noded::route::GET);
+    let answer = until_answered(NODE_RETRY_BUDGET, unsent, || {
+        submit(node.clone(), call_registry())
+    })
+    .await;
+    assert_eq!(
+        answer,
+        Ok(Vec::new()),
+        "nothing was sent: the read is retried"
+    );
+    assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
