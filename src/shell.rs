@@ -3,6 +3,7 @@
 //! runs, and one seat that draws the open program's view.
 
 use crate::a11y::Control as _;
+use crate::ui::task::Task;
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
@@ -14,7 +15,6 @@ use gpui_kit::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
-use view_wire::Task;
 
 use crate::ui::layout::{self, PaneMessage};
 use crate::{AppMessage as Message, Ducktape, Stage};

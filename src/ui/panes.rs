@@ -5,7 +5,7 @@
 use super::layout::{Layout, PaneMessage};
 use super::{AppMessage as Message, Ducktape};
 use crate::shell::{WindowKey, WindowKind};
-use view_wire::Task;
+use crate::ui::task::Task;
 
 impl Ducktape {
     /// One window's panes, moved.

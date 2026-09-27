@@ -3,7 +3,7 @@
 use super::update::STATUS_EVERY;
 use super::{AppMessage as Message, Ducktape, Overlay, Stage, Unlock};
 use crate::backend;
-use view_wire::Task;
+use crate::ui::task::Task;
 
 impl Ducktape {
     /// The node: typed, reached, polled, switched, left.

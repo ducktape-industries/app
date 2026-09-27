@@ -5,8 +5,8 @@ use super::{
     Account, AppMessage as Message, Ducktape, Overlay, Phrase, Recover, Secret, Stage, Unlock,
 };
 use crate::backend;
+use crate::ui::task::Task;
 use futures::StreamExt as _;
-use view_wire::Task;
 
 impl Ducktape {
     /// The key, phrase, account and device-approval steps.
