@@ -288,10 +288,7 @@ pub(crate) fn local_offset(wall: i64) -> i64 {
 
 /// The reader's UTC offset in minutes now, as `host.offset` hands it.
 pub(super) fn offset_minutes() -> i32 {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |since| since.as_secs() as i64);
-    (local_offset(now) / 60) as i32
+    (local_offset(super::notify::wall()) / 60) as i32
 }
 
 pub(super) struct Clock {
