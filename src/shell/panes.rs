@@ -238,56 +238,9 @@ impl DesktopWindow {
         let layout = self.layout(cx);
         let moved = std::mem::take(&mut self.panes_moved);
         if layout.panes.is_empty() {
-            if moved {
-                self.focus.focus(window, cx);
-            }
-            let moving = self.model.read(cx).state.motion;
-            return div()
-                .size_full()
-                .flex()
-                .flex_col()
-                .items_center()
-                .justify_center()
-                .gap(px(20.))
-                .child(super::spin::drawing(
-                    "empty-desk-figure",
-                    super::figure::Figure::Roll,
-                    moving,
-                    ink.figure,
-                    window,
-                    cx,
-                ))
-                .child(match empty_panes_message(&crate::runtime::rail()) {
-                    Some(message) => super::ink::mono(400, 12.)
-                        .text_color(ink.muted)
-                        .child(message)
-                        .into_any_element(),
-                    None => div()
-                        .flex()
-                        .gap(px(12.))
-                        .child(desk_button(
-                            "empty-desk/new",
-                            "N",
-                            "New window",
-                            &ink,
-                            || Box::new(super::keys::NewWindow),
-                        ))
-                        .child(desk_button(
-                            "empty-desk/search",
-                            "K",
-                            "Search",
-                            &ink,
-                            || Box::new(super::keys::ToggleSpotlight),
-                        ))
-                        .child(desk_button("empty-desk/help", "/", "Help", &ink, || {
-                            Box::new(super::keys::OpenHelp)
-                        }))
-                        .into_any_element(),
-                })
-                .into_any_element();
+            return self.empty_desk(moved, &ink, window, cx);
         }
         let props = self.model.read(cx).state.view_props();
-        let console = self.kind == crate::shell::WindowKind::Console;
         let this = cx.entity();
         let mut stage = div().id("panes").relative().size_full().child(
             canvas(
@@ -306,61 +259,13 @@ impl DesktopWindow {
                     .size_full(),
             );
         }
-        let multi = layout.panes.len() > 1;
         self.pane_keys
             .retain(|instance, _| layout.panes.iter().any(|pane| pane.instance == *instance));
         for index in layout.stacking() {
             let pane = &layout.panes[index];
             let focused = index == layout.focused;
-            let (own, last) = self
-                .pane_keys
-                .entry(pane.instance)
-                .or_insert_with(|| (cx.focus_handle(), None));
-            if own.contains_focused(window, cx) {
-                *last = window.focused(cx);
-            }
-            let (own, last) = (own.clone(), last.clone());
-            if focused && moved {
-                // what had the keys in it, if it is still there; else its
-                // first control; else the window itself
-                let own = own.clone();
-                window.defer(cx, move |window, cx| match last {
-                    Some(last) if own.contains(&last, window) => last.focus(window, cx),
-                    _ => {
-                        own.focus(window, cx);
-                        window.focus_next(cx);
-                        if !own.contains_focused(window, cx) {
-                            own.focus(window, cx);
-                        }
-                    }
-                });
-            }
-            let view_in = pane.is_view();
-            let mounted = self
-                .model
-                .read(cx)
-                .mounted
-                .get(&pane.instance)
-                .map(|mounted| mounted.view.clone());
-            let view = match mounted {
-                Some(view) => {
-                    view.update(cx, |view, cx| {
-                        view.set_focused(focused, cx);
-                        view.set_props(props.clone(), cx);
-                    });
-                    view.into_any_element()
-                }
-                None => {
-                    // the bare window box has the keys: the field takes them
-                    if focused && own.is_focused(window) {
-                        self.focus_command(window, cx);
-                    }
-                    match pane.module == layout::HELP {
-                        true => self.help_view(cx),
-                        false => self.command_view(focused, window, cx),
-                    }
-                }
-            };
+            let own = self.pane_focus(pane.instance, focused && moved, window, cx);
+            let view = self.pane_body(pane, focused, &own, &props, window, cx);
             let view = div()
                 .id(SharedString::from(format!("pane/{index}/view")))
                 .role(gpui_kit::Role::Group)
@@ -370,125 +275,288 @@ impl DesktopWindow {
                 .min_h_0()
                 .w_full()
                 .child(view);
-            let controls = div()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .when(console, |strip| {
-                    strip.child(self.pane_button(
-                        index,
-                        PaneAction::Split,
-                        layout.panes.len() < layout::MAX_PANES,
-                        cx,
-                    ))
-                })
-                // an empty or Help window has no program view to carry out
-                .when(console && view_in, |strip| {
-                    strip.child(self.pane_button(index, PaneAction::PopOut, true, cx))
-                })
-                .when(!console, |strip| {
-                    strip.child(self.pane_button(index, PaneAction::PopIn, true, cx))
-                })
-                .child(self.pane_button(index, PaneAction::Close, true, cx));
-            let body = div()
-                .id(SharedString::from(format!("pane/{index}")))
-                .flex()
-                .flex_col()
-                .bg(ink.bg)
-                .overflow_hidden()
-                .role(gpui_kit::Role::Group);
             // Every window has a title bar, so a view owns all of its
             // rectangle: nothing floats over its corners.
-            let on_desk = console && pane.frame.is_some();
-            // A window of its own on macOS draws no title bar of the
-            // system's: this bar is its handle, and the traffic lights sit
-            // over its left end. Elsewhere the system's bar names it.
-            let lights = theme::traffic_lights(window).filter(|_| !on_desk);
-            let handle = lights.is_some();
-            let title = div()
-                .id(SharedString::from(format!("pane/{index}/strip")))
-                .h(px(TITLE))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .pl(px(lights.unwrap_or(12.)))
-                .pr(px(2.))
-                .border_b_1()
-                .border_color(ink.line)
-                .bg(match focused {
-                    true => ink.surface,
-                    false => ink.bg,
-                })
-                .on_mouse_down(
-                    MouseButton::Left,
-                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                        match (on_desk, event.click_count) {
-                            (true, 2) => this.pane_message(PaneMessage::Fill(index), window, cx),
-                            (true, _) => this.hold(index, [false; 4], event.position, cx),
-                            (false, 2) if handle => window.titlebar_double_click(),
-                            (false, _) if handle => window.start_window_move(),
-                            (false, _) => {}
-                        }
-                    }),
-                )
-                .when(on_desk || handle, |title| {
-                    title.child(
-                        super::ink::mono(500, 12.)
-                            .flex_shrink_0()
-                            .text_color(ink.ink)
-                            .child(label(pane.module)),
-                    )
-                })
-                // pushes the controls to the bar's right end
-                .child(div().flex_1().min_w_0())
-                .child(controls);
-            let asking = (view_in && crate::runtime::notify::center().asking(pane.module))
+            let title = self.pane_title_bar(index, &layout, &ink, window, cx);
+            let asking = (pane.is_view() && crate::runtime::notify::center().asking(pane.module))
                 .then(|| self.permission_bar(pane.module, cx));
-            let seated = match pane.frame.filter(|_| on_desk) {
-                None => body
-                    .size_full()
-                    .child(title)
-                    .children(asking)
-                    .child(view)
-                    .into_any_element(),
-                // on the desk: a title bar to hold it by, and edges to size
-                // it by that reach past its border, so the grips sit in a
-                // frame `GRAB` wider than the window (the body clips)
-                Some(frame) => {
-                    let grab = layout::GRAB;
-                    let inner = body
-                        // what's behind a window doesn't hear presses on it
-                        .occlude()
-                        .absolute()
-                        .left(px(grab))
-                        .top(px(grab))
-                        .w(px(frame.w))
-                        .h(px(frame.h))
-                        .border_1()
-                        .border_color(match focused && multi {
-                            true => ink.ink,
-                            false => ink.strong,
-                        })
-                        .when(focused, |pane| pane.shadow_lg())
-                        .when(!focused, |pane| pane.shadow_sm())
-                        .child(title)
-                        .children(asking)
-                        .child(view);
-                    div()
-                        .absolute()
-                        .left(px(frame.x - grab))
-                        .top(px(frame.y - grab))
-                        .w(px(frame.w + 2. * grab))
-                        .h(px(frame.h + 2. * grab))
-                        .child(inner)
-                        .children(self.grips(index, cx))
-                        .into_any_element()
-                }
-            };
-            stage = stage.child(seated);
+            let contents = [Some(title), asking, Some(view.into_any_element())]
+                .into_iter()
+                .flatten()
+                .collect();
+            stage = stage.child(self.place_pane(index, &layout, contents, &ink, cx));
         }
         stage.into_any_element()
+    }
+
+    /// The desk with no window on it: a figure, and either the reason the
+    /// network has nothing to open or the ways to open something. The
+    /// window itself takes the keys once the last pane leaves.
+    fn empty_desk(
+        &mut self,
+        moved: bool,
+        ink: &super::ink::Ink,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::*;
+        if moved {
+            self.focus.focus(window, cx);
+        }
+        let moving = self.model.read(cx).state.motion;
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(px(20.))
+            .child(super::spin::drawing(
+                "empty-desk-figure",
+                super::figure::Figure::Roll,
+                moving,
+                ink.figure,
+                window,
+                cx,
+            ))
+            .child(match empty_panes_message(&crate::runtime::rail()) {
+                Some(message) => super::ink::mono(400, 12.)
+                    .text_color(ink.muted)
+                    .child(message)
+                    .into_any_element(),
+                None => div()
+                    .flex()
+                    .gap(px(12.))
+                    .child(desk_button(
+                        "empty-desk/new",
+                        "N",
+                        "New window",
+                        ink,
+                        || Box::new(super::keys::NewWindow),
+                    ))
+                    .child(desk_button("empty-desk/search", "K", "Search", ink, || {
+                        Box::new(super::keys::ToggleSpotlight)
+                    }))
+                    .child(desk_button("empty-desk/help", "/", "Help", ink, || {
+                        Box::new(super::keys::OpenHelp)
+                    }))
+                    .into_any_element(),
+            })
+            .into_any_element()
+    }
+
+    /// The focus handle of the pane with `instance`, remembering what had
+    /// the keys inside it. `restore` (the pane just came to the front) puts
+    /// the keys back: what had them in it, if it is still there; else its
+    /// first control; else the window itself.
+    fn pane_focus(
+        &mut self,
+        instance: u64,
+        restore: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::FocusHandle {
+        let (own, last) = self
+            .pane_keys
+            .entry(instance)
+            .or_insert_with(|| (cx.focus_handle(), None));
+        if own.contains_focused(window, cx) {
+            *last = window.focused(cx);
+        }
+        let (own, last) = (own.clone(), last.clone());
+        if restore {
+            let own = own.clone();
+            window.defer(cx, move |window, cx| match last {
+                Some(last) if own.contains(&last, window) => last.focus(window, cx),
+                _ => {
+                    own.focus(window, cx);
+                    window.focus_next(cx);
+                    if !own.contains_focused(window, cx) {
+                        own.focus(window, cx);
+                    }
+                }
+            });
+        }
+        own
+    }
+
+    /// What a pane shows: its program view, told whether it is in front and
+    /// given the session's props, or else the app's own Help or the finder.
+    fn pane_body(
+        &mut self,
+        pane: &layout::Pane,
+        focused: bool,
+        own: &gpui_kit::FocusHandle,
+        props: &[u8],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::*;
+        let mounted = self
+            .model
+            .read(cx)
+            .mounted
+            .get(&pane.instance)
+            .map(|mounted| mounted.view.clone());
+        match mounted {
+            Some(view) => {
+                view.update(cx, |view, cx| {
+                    view.set_focused(focused, cx);
+                    view.set_props(props.to_vec(), cx);
+                });
+                view.into_any_element()
+            }
+            None => {
+                // the bare window box has the keys: the field takes them
+                if focused && own.is_focused(window) {
+                    self.focus_command(window, cx);
+                }
+                match pane.module == layout::HELP {
+                    true => self.help_view(cx),
+                    false => self.command_view(focused, window, cx),
+                }
+            }
+        }
+    }
+
+    /// A pane's title bar: the handle it is held by on the desk, its name,
+    /// and its buttons at the right end.
+    fn pane_title_bar(
+        &self,
+        index: usize,
+        layout: &layout::Layout,
+        ink: &super::ink::Ink,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::*;
+        let pane = &layout.panes[index];
+        let focused = index == layout.focused;
+        let console = self.kind == crate::shell::WindowKind::Console;
+        let on_desk = console && pane.frame.is_some();
+        let controls = div()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .when(console, |strip| {
+                strip.child(self.pane_button(
+                    index,
+                    PaneAction::Split,
+                    layout.panes.len() < layout::MAX_PANES,
+                    cx,
+                ))
+            })
+            // an empty or Help window has no program view to carry out
+            .when(console && pane.is_view(), |strip| {
+                strip.child(self.pane_button(index, PaneAction::PopOut, true, cx))
+            })
+            .when(!console, |strip| {
+                strip.child(self.pane_button(index, PaneAction::PopIn, true, cx))
+            })
+            .child(self.pane_button(index, PaneAction::Close, true, cx));
+        // A window of its own on macOS draws no title bar of the
+        // system's: this bar is its handle, and the traffic lights sit
+        // over its left end. Elsewhere the system's bar names it.
+        let lights = theme::traffic_lights(window).filter(|_| !on_desk);
+        let handle = lights.is_some();
+        div()
+            .id(SharedString::from(format!("pane/{index}/strip")))
+            .h(px(TITLE))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pl(px(lights.unwrap_or(12.)))
+            .pr(px(2.))
+            .border_b_1()
+            .border_color(ink.line)
+            .bg(match focused {
+                true => ink.surface,
+                false => ink.bg,
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    match (on_desk, event.click_count) {
+                        (true, 2) => this.pane_message(PaneMessage::Fill(index), window, cx),
+                        (true, _) => this.hold(index, [false; 4], event.position, cx),
+                        (false, 2) if handle => window.titlebar_double_click(),
+                        (false, _) if handle => window.start_window_move(),
+                        (false, _) => {}
+                    }
+                }),
+            )
+            .when(on_desk || handle, |title| {
+                title.child(
+                    super::ink::mono(500, 12.)
+                        .flex_shrink_0()
+                        .text_color(ink.ink)
+                        .child(label(pane.module)),
+                )
+            })
+            // pushes the controls to the bar's right end
+            .child(div().flex_1().min_w_0())
+            .child(controls)
+            .into_any_element()
+    }
+
+    /// A pane's box around `contents` (title bar, permission bar, body),
+    /// seated: filling the window it is alone in, or at its frame on the
+    /// desk with grips around it.
+    fn place_pane(
+        &self,
+        index: usize,
+        layout: &layout::Layout,
+        contents: Vec<gpui_kit::AnyElement>,
+        ink: &super::ink::Ink,
+        cx: &mut Context<Self>,
+    ) -> gpui_kit::AnyElement {
+        use gpui_kit::*;
+        let pane = &layout.panes[index];
+        let focused = index == layout.focused;
+        let multi = layout.panes.len() > 1;
+        let on_desk = self.kind == crate::shell::WindowKind::Console && pane.frame.is_some();
+        let body = div()
+            .id(SharedString::from(format!("pane/{index}")))
+            .flex()
+            .flex_col()
+            .bg(ink.bg)
+            .overflow_hidden()
+            .role(gpui_kit::Role::Group);
+        match pane.frame.filter(|_| on_desk) {
+            None => body.size_full().children(contents).into_any_element(),
+            // on the desk: a title bar to hold it by, and edges to size
+            // it by that reach past its border, so the grips sit in a
+            // frame `GRAB` wider than the window (the body clips)
+            Some(frame) => {
+                let grab = layout::GRAB;
+                let inner = body
+                    // what's behind a window doesn't hear presses on it
+                    .occlude()
+                    .absolute()
+                    .left(px(grab))
+                    .top(px(grab))
+                    .w(px(frame.w))
+                    .h(px(frame.h))
+                    .border_1()
+                    .border_color(match focused && multi {
+                        true => ink.ink,
+                        false => ink.strong,
+                    })
+                    .when(focused, |pane| pane.shadow_lg())
+                    .when(!focused, |pane| pane.shadow_sm())
+                    .children(contents);
+                div()
+                    .absolute()
+                    .left(px(frame.x - grab))
+                    .top(px(frame.y - grab))
+                    .w(px(frame.w + 2. * grab))
+                    .h(px(frame.h + 2. * grab))
+                    .child(inner)
+                    .children(self.grips(index, cx))
+                    .into_any_element()
+            }
+        }
     }
 
     /// The NotifPermission board: a view posted before the person said
