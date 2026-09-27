@@ -1,6 +1,10 @@
-use super::*;
+//! App start: the gpui application, the `Desktop` model and the console
+//! window, with every outside source of events pumped into
+//! `Desktop::dispatch`: open-URL requests, the tray, a window closing, the
+//! AX door, and the native `Command` channel. Fonts and the theme are
+//! registered here too.
 
-// ---------- launch ----------
+use super::*;
 
 pub(crate) fn run() {
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
@@ -104,6 +108,7 @@ pub(crate) fn run() {
             }
         })
         .detach();
+        // the only strong handle to the model: it lives until the app quits
         let mut desktop = Some(desktop);
         cx.on_app_quit(move |_| {
             drop(desktop.take());
@@ -113,6 +118,7 @@ pub(crate) fn run() {
     });
 }
 
+/// The bundled fonts into gpui's text system, then the product theme.
 pub(super) fn initialize_rendering(cx: &mut gpui_kit::App) {
     let fonts: Vec<std::borrow::Cow<'static, [u8]>> = BUNDLED_FACES
         .iter()

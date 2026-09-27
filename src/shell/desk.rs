@@ -1,7 +1,9 @@
-//! The desk: a menu bar across the top, the open programs' windows under
-//! it. The bar holds, left to right: the network (its menu switches), the
-//! network's programs as tabs, then Search (⌘K), the node's breath (its
-//! status on a click), who is signed in (their menu), and Settings.
+//! The desk frame of a window: the menu bar (console only), the pane area,
+//! whatever is open over it, and the footer. Here the bar is measured for
+//! folding, the desk's size is reported to the model, and the keys go back
+//! where they were when an overlay closes. Also the pieces every overlay is
+//! built from: `overlay` (backdrop and card), `hanging` (a menu under its
+//! bar button), `menu_row`, `dialog_fit`.
 
 use super::*;
 use crate::{Overlay, Popover};
@@ -10,8 +12,9 @@ use crate::{Overlay, Popover};
 pub(super) const BAR: f32 = 36.;
 
 impl DesktopWindow {
-    /// Inside a node. Reached with an unlocked key, or by choosing to read
-    /// without one.
+    /// The desk, in the console and in a pop-out alike: the bar (console
+    /// only), the panes, the open overlay, the footer. Reached with an
+    /// unlocked key, or by choosing to read without one.
     pub(super) fn console(
         &mut self,
         window: &mut Window,
@@ -23,13 +26,18 @@ impl DesktopWindow {
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
         }
-        // the bar folds its words once, drawn whole, its tabs ran past their
-        // strip at this width: all of them fold together, none is cut.
-        // `bar_needs` only grows while the bar is made of the same words; new
-        // words (a network switched, a program listed or gone, a sign-in)
-        // measure again, or the bar would stay folded for words it no longer
-        // shows. Badges are left out: they tick while folded, and a
-        // re-measure draws the bar whole for a frame.
+        // Folding. The tabs show their full labels until they overflow their
+        // strip; then every tab folds to its icon or initial, so none is cut.
+        // `bar_needs` is the narrowest window the full labels are known to
+        // need: the width the bar was last drawn unfolded at, plus how far
+        // the strip overflowed there (`self.rail.max_offset()`). Layout
+        // reports that overflow one frame late, so a bar drawn unfolded at a
+        // new width asks for one more frame to be measured in. `bar_needs`
+        // only grows while the bar shows the same words. New words (the
+        // network, the tab list, the sign-in state: `bar_made` hashes them)
+        // reset it to measure again, and the overflow the old words left is
+        // skipped on that frame. Badge counts stay out of the hash: they
+        // tick while folded, and a re-measure draws the bar whole for a frame.
         let made_of = {
             use std::hash::{Hash as _, Hasher as _};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -46,8 +54,7 @@ impl DesktopWindow {
             self.bar_needs = 0.;
         }
         let width = f32::from(window.viewport_size().width);
-        // the strip's overflow is the last frame's layout: of the old words
-        // on the frame that remade the bar
+        // last frame's overflow: the old words', on the frame that remade the bar
         let over = f32::from(self.rail.max_offset().x);
         if let Some(drawn) = self.bar_drawn
             && !remade
@@ -58,14 +65,14 @@ impl DesktopWindow {
         }
         let narrow = width < self.bar_needs;
         let drawn = (!narrow).then_some(width);
-        // a bar drawn whole at a new width or of new words is measured by
-        // the next frame, so ask for it: nothing else may draw one soon
+        // drawn whole at a new width or of new words: the next frame measures
+        // it, so ask for one (nothing else may draw one soon)
         if drawn.is_some() && (remade || drawn != self.bar_drawn) {
             window.request_animation_frame();
         }
         self.bar_drawn = drawn;
-        // the desk's size, and on an untouched console the program a link
-        // already opened; otherwise it starts empty
+        // report the desk's size; on the console's first draw also `seed`, a
+        // program a link opened before the desk existed (else it starts empty)
         let desk = self.desk(window);
         let layout = self.layout(cx);
         let seed = (self.kind == crate::shell::WindowKind::Console && !layout.initialized)
@@ -77,8 +84,8 @@ impl DesktopWindow {
                 model.dispatch(Message::DeskShown { window, desk, seed }, cx)
             });
         }
-        // the policy's "in front": this window, if it is, and the view
-        // focused in it
+        // tell the notification centre which window is in front and which
+        // view is focused in it: that view's banners stay away (unless asked for)
         let layout = self.layout(cx);
         let focused = layout
             .panes
@@ -146,9 +153,10 @@ impl DesktopWindow {
     /// and one menu gives way to the next in one click): a backdrop that
     /// closes it on a click, dimmed when `scrim`, and on it the card the
     /// canvas dresses its menus and dialogs in, `border: 1.5px solid ink`
-    /// and a soft shadow. `dress` places and fills the card. Escape is
-    /// `global_key`'s. Dimmed, it is modal: Tab and Shift+Tab go round its
-    /// controls, never out to the bar.
+    /// and a soft shadow. `dress` places and fills the card. Escape closes
+    /// it through `keys::CloseOverlay` (bound under the `overlay` context).
+    /// Dimmed, it is modal: Tab and Shift+Tab go round its controls, never
+    /// out to the bar.
     #[allow(clippy::too_many_arguments, reason = "one frame, five overlays")]
     pub(super) fn overlay(
         &self,

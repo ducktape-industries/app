@@ -1,6 +1,17 @@
-//! The native chrome, and nothing a network decides: a window, a screen to
-//! reach a node and unlock a key, a menu bar of whatever programs that node
-//! runs, and one seat that draws the open program's view.
+//! The native shell: every OS window the app opens, and everything drawn
+//! in one that is not a program's view. Nothing a network decides is here.
+//!
+//! `Desktop` is the one model entity: it owns the app state (`Ducktape`),
+//! runs the reducer for every message, keeps the tray in step and holds
+//! one live program view per pane. Each OS window is a `DesktopWindow`,
+//! a gpui view that draws the launcher (connect, key, account, recovery
+//! screens) until sign-in, then the desk: the menu bar and the panes
+//! floating under it, with the open overlay (⌘K, a menu, Settings) on top.
+//!
+//! The reducer's tasks run without `&mut App`, so they cannot touch a
+//! window. They ask for a native effect through the `Command` channel
+//! below; `launch::run` pumps it into `Desktop::execute` on the window
+//! thread.
 
 use crate::a11y::Control as _;
 use futures::{
@@ -57,9 +68,12 @@ use theme::configure_native_theme;
 
 pub(crate) use crate::runtime::WindowKey;
 
+/// What an OS window is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowKind {
+    /// The main window: the launcher, then the desk with its menu bar.
     Console,
+    /// A pop-out: one pane that left the desk, in a window of its own.
     View { module: &'static str },
 }
 
@@ -72,6 +86,10 @@ pub(crate) fn chord_label(key: &str) -> String {
     }
 }
 
+/// A native effect the reducer asks for. Its tasks have no `&mut App`, so
+/// they send one of these over a channel; `launch::run` pumps it into
+/// `Desktop::execute` on the window thread. `send` waits until it ran;
+/// `post` does not, and works from any thread.
 pub(crate) enum Command {
     Open {
         key: WindowKey,
@@ -95,6 +113,7 @@ pub(crate) enum Command {
     Quit,
 }
 
+/// A command on the channel, and the pump's word that it ran.
 pub(crate) struct PendingCommand {
     pub command: Command,
     pub completed: oneshot::Sender<()>,
@@ -105,11 +124,14 @@ fn sender() -> &'static Mutex<Option<mpsc::UnboundedSender<PendingCommand>>> {
     SENDER.get_or_init(Mutex::default)
 }
 
+/// Installs the channel's sender for this process and hands back its
+/// receiver for the pump.
 pub(crate) fn commands() -> mpsc::UnboundedReceiver<PendingCommand> {
     let (send, receive) = mpsc::unbounded();
     let mut current = sender().lock().expect("native shell commands");
     assert!(current.is_none(), "one native shell per process");
-    // the layers below hand these up without naming the shell
+    // runtime::notify and backend::passkey cannot depend on shell: they
+    // call these hooks instead
     crate::runtime::notify::on_open_link(open_link);
     crate::backend::passkey::on_open_url(open_url_now);
     *current = Some(send);
@@ -259,11 +281,18 @@ async fn left_full_size(
 
 // ---------- the desktop actor ----------
 
+/// The one model entity. It owns the app state, runs the reducer
+/// (`dispatch`), and keeps what outlives a draw: the tray, every OS
+/// window's handle and view, the subscription streams, and each pane's
+/// live program view. Not a window: `DesktopWindow` is.
 struct Desktop {
     state: Ducktape,
     tray: crate::tray::Tray,
     windows: BTreeMap<WindowKey, gpui_kit::AnyWindowHandle>,
+    /// Each OS window's `DesktopWindow` (not a program's view).
     views: BTreeMap<WindowKey, gpui_kit::WeakEntity<DesktopWindow>>,
+    /// The model's subscriptions (`Ducktape::subscriptions`), by recipe
+    /// key: each a task feeding its stream's messages into `dispatch`.
     streams: HashMap<u64, gpui_kit::Task<()>>,
     /// Every pane's view, by its instance: a pane keeps its view whichever
     /// window the model puts it in.
@@ -533,11 +562,16 @@ fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
 
 // ---------- the window ----------
 
+/// The gpui view of one OS window. It draws the launcher or the desk from
+/// the model's state (`Render` below), turns clicks and keys into
+/// messages for `Desktop::dispatch`, and keeps what is the window's own:
+/// its native text fields, drag, focus and bar measurements.
 pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
     drag: Option<panes::Drag>,
+    /// The native text fields drawn in this window, by their element id.
     inputs: HashMap<&'static str, NativeInput>,
     /// ⌘K's field took focus when it opened; it is not taken again while
     /// Spotlight stays open.
@@ -578,6 +612,8 @@ pub(crate) struct DesktopWindow {
     _focus_lost: gpui_kit::Subscription,
 }
 
+/// One native text field's state, kept for as long as its window lives
+/// (see `DesktopWindow::input`).
 struct NativeInput {
     state: Entity<gpui_kit::component::input::InputState>,
     /// A digest of the model text the field last agreed with — what it
