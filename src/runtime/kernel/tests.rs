@@ -21,15 +21,15 @@ fn guest() -> Guest {
     )
     .unwrap();
     let mut guest = Guest::instantiate("request-test", &code, "request test").unwrap();
-    guest.capabilities = methods::CAPABILITIES.iter().map(|c| (*c).into()).collect();
+    guest.capabilities = Capability::ALL.to_vec();
     guest
 }
 
 /// The reason `kind` is refused for, asked by a guest declaring `declared`;
 /// `None` if it is not refused at once.
-fn refused_with(declared: &[&str], kind: &str) -> Option<String> {
+fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {
     let mut guest = guest();
-    guest.capabilities = declared.iter().map(|c| (*c).into()).collect();
+    guest.capabilities = declared.to_vec();
     let payload = methods::encode(&methods::Call {
         target: "registry".into(),
         body: Vec::new(),
@@ -58,10 +58,9 @@ fn refused_with(declared: &[&str], kind: &str) -> Option<String> {
 #[test]
 fn a_method_is_reached_only_through_its_declared_capability() {
     for kind in methods::ALL {
-        let family = kind.split_once('.').unwrap().0;
-        let others: Vec<&str> = methods::CAPABILITIES
-            .iter()
-            .copied()
+        let family = Capability::of_kind(kind).unwrap().0;
+        let others: Vec<Capability> = Capability::ALL
+            .into_iter()
             .filter(|c| *c != family)
             .collect();
         assert_eq!(
@@ -162,7 +161,13 @@ fn every_method_is_answered() {
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
     let mut guest = guest();
-    assert!(answer(&mut guest, "module", "query", 7, b"not borsh"));
+    assert!(answer(
+        &mut guest,
+        Capability::Module,
+        "query",
+        7,
+        b"not borsh"
+    ));
     assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
         id: 7, result: Err(refusal), done: true
     }) if refusal.code == "not_connected"));
@@ -642,7 +647,10 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
 
 #[test]
 fn system_kinds_route_to_the_node_handler() {
-    for (capability, operation) in [("chain", "status"), ("invite", "create")] {
+    for (capability, operation) in [
+        (Capability::Chain, "status"),
+        (Capability::Invite, "create"),
+    ] {
         let mut guest = guest();
         assert!(answer(&mut guest, capability, operation, 19, b"invalid"));
         assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
@@ -827,11 +835,14 @@ fn the_routed_kinds_are_exactly_the_methods() {
     );
 }
 
-/// `("host", "badge")` on a line → `host.badge`.
+/// `(Capability::Host, "badge")` on a line → `host.badge`.
 fn routed_kind(line: &str) -> Option<String> {
-    let (_, rest) = line.split_once("(\"")?;
-    let (capability, rest) = rest.split_once("\", \"")?;
+    let (_, rest) = line.split_once("(Capability::")?;
+    let (variant, rest) = rest.split_once(", \"")?;
     let (operation, _) = rest.split_once("\")")?;
+    let capability = Capability::ALL
+        .into_iter()
+        .find(|c| format!("{c:?}") == variant)?;
     let word = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
-    (word(capability) && word(operation)).then(|| format!("{capability}.{operation}"))
+    word(operation).then(|| format!("{}.{operation}", capability.as_str()))
 }

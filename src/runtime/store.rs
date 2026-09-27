@@ -11,20 +11,20 @@ use std::path::{Path, PathBuf};
 
 use super::Guest;
 use super::kernel::Answer;
-use super::wire::{self, methods};
+use super::wire::{self, methods, methods::Capability};
 
 type Kept = BTreeMap<String, Vec<u8>>;
 
 pub(super) fn answer(
     guest: &mut Guest,
-    capability: &str,
+    capability: Capability,
     operation: &str,
     id: u64,
     payload: &[u8],
 ) -> bool {
     let answer = match (capability, operation) {
-        ("store", "get") => file(guest).and_then(|path| get(&path, payload)),
-        ("store", "set") => file(guest).and_then(|path| set(&path, payload)),
+        (Capability::Store, "get") => file(guest).and_then(|path| get(&path, payload)),
+        (Capability::Store, "set") => file(guest).and_then(|path| set(&path, payload)),
         _ => return false,
     };
     guest.reply(id, answer);

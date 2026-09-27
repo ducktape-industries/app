@@ -122,9 +122,9 @@ pub(super) struct Guest {
     pub(crate) name: String,
     /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
-    pub(crate) capabilities: Vec<String>,
+    pub(crate) capabilities: Vec<Capability>,
     /// The undeclared capabilities already logged, so each is logged once.
-    pub(crate) undeclared_logged: Vec<String>,
+    pub(crate) undeclared_logged: Vec<Capability>,
     pub(crate) store: Store<HostState>,
     pub(crate) exports: Exports,
     /// The guest's events for its next tick.

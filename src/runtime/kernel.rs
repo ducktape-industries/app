@@ -54,7 +54,7 @@ use std::sync::{Mutex, OnceLock};
 
 use super::{Guest, Intent, wire};
 use crate::backend::{self, RpcClient, refused};
-use wire::methods;
+use wire::methods::{self, Capability};
 
 /// The longest `host.id` prefix: a word naming the kind of record, not a
 /// payload of its own.
@@ -129,7 +129,7 @@ pub(super) fn handle() -> tokio::runtime::Handle {
 /// Routes one kernel request; `false` when the kind is not the kernel's.
 pub(super) fn answer(
     guest: &mut Guest,
-    capability: &str,
+    capability: Capability,
     operation: &str,
     id: u64,
     payload: &[u8],
@@ -141,7 +141,7 @@ pub(super) fn answer(
         return true;
     }
     match (capability, operation) {
-        ("host", "visible") => {
+        (Capability::Host, "visible") => {
             if !payload.is_empty() {
                 guest.refuse(
                     id,
@@ -157,7 +157,7 @@ pub(super) fn answer(
                 done: false,
             });
         }
-        ("host", "offset") => {
+        (Capability::Host, "offset") => {
             if !payload.is_empty() {
                 guest.refuse(
                     id,
@@ -177,7 +177,7 @@ pub(super) fn answer(
                 done: false,
             });
         }
-        ("host", "route") => {
+        (Capability::Host, "route") => {
             if !payload.is_empty() {
                 guest.refuse(
                     id,
@@ -189,19 +189,19 @@ pub(super) fn answer(
             guest.route_subscriptions.push(id);
             guest.sync_route();
         }
-        ("module", "query") => spawn(guest, id, payload, query),
-        ("chain", "status") => spawn(guest, id, payload, status),
-        ("chain", "blocks") => spawn(guest, id, payload, blocks),
-        ("chain", "block") => spawn(guest, id, payload, block),
-        ("invite", "create") => spawn_once(guest, id, payload, invite),
-        ("op", "submit") => spawn(guest, id, payload, submit),
-        ("blob", "get") => spawn(guest, id, payload, blob_get),
-        ("module", "describe") => spawn(guest, id, payload, describe::describe),
-        ("module", "changes") => live(guest, id, payload),
-        ("chain", "heads") => heads(guest, id, payload),
+        (Capability::Module, "query") => spawn(guest, id, payload, query),
+        (Capability::Chain, "status") => spawn(guest, id, payload, status),
+        (Capability::Chain, "blocks") => spawn(guest, id, payload, blocks),
+        (Capability::Chain, "block") => spawn(guest, id, payload, block),
+        (Capability::Invite, "create") => spawn_once(guest, id, payload, invite),
+        (Capability::Op, "submit") => spawn(guest, id, payload, submit),
+        (Capability::Blob, "get") => spawn(guest, id, payload, blob_get),
+        (Capability::Module, "describe") => spawn(guest, id, payload, describe::describe),
+        (Capability::Module, "changes") => live(guest, id, payload),
+        (Capability::Chain, "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
         // system browser; any other scheme is refused here, at the method
-        ("link", "open") => match methods::decode::<String>(payload) {
+        (Capability::Link, "open") => match methods::decode::<String>(payload) {
             Ok(link) if openable(&link) => {
                 guest.intents.push(Intent::OpenLink(link));
                 guest.reply(id, Ok(Vec::new()));
@@ -213,14 +213,14 @@ pub(super) fn answer(
             ),
             Err(error) => guest.refuse(id, "malformed_request", error),
         },
-        ("host", "badge") => match methods::decode::<i64>(payload).ok() {
+        (Capability::Host, "badge") => match methods::decode::<i64>(payload).ok() {
             Some(count) => {
                 guest.intents.push(Intent::Badge(count));
                 guest.reply(id, Ok(Vec::new()));
             }
             None => guest.refuse(id, "malformed_request", "`host.badge` carries no count"),
         },
-        ("clock", "ticks") => {
+        (Capability::Clock, "ticks") => {
             let period = tick_period(payload);
             if guest.clocks.len() >= MAX_SUBSCRIPTIONS {
                 guest.refuse(id, "subscription_limit", "too many clock subscriptions");
@@ -235,7 +235,7 @@ pub(super) fn answer(
                 None => guest.refuse(id, "malformed_request", "`clock.ticks` names no period"),
             }
         }
-        ("host", "id") => {
+        (Capability::Host, "id") => {
             let prefix = methods::decode::<String>(payload).unwrap_or_default();
             let prefix = prefix.trim();
             let named = !prefix.is_empty()

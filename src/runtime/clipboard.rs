@@ -1,5 +1,5 @@
 //! The clipboard, read and written on the window thread for one guest.
-use super::wire::methods;
+use super::wire::methods::{self, Capability};
 use super::{Guest, NativeModuleView};
 use gpui_kit::{ClipboardEntry, Context};
 
@@ -20,14 +20,14 @@ impl Clipboard {
 
 pub(super) fn answer(
     guest: &mut Guest,
-    capability: &str,
+    capability: Capability,
     operation: &str,
     id: u64,
     payload: &[u8],
 ) -> bool {
     match (capability, operation) {
-        ("clipboard", "read") => queue(guest, id, Request::Read),
-        ("clipboard", "write") => match methods::decode::<String>(payload) {
+        (Capability::Clipboard, "read") => queue(guest, id, Request::Read),
+        (Capability::Clipboard, "write") => match methods::decode::<String>(payload) {
             Ok(text) => queue(guest, id, Request::Write(text)),
             Err(error) => guest.refuse(id, "malformed_request", error),
         },
