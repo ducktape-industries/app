@@ -265,34 +265,14 @@ impl Guest {
     /// native editor work to drain, since a caret or a selection is placed in
     /// the document as it stands. A Focus does not wait: a field the view
     /// just opened has to hold the keys typed into it before its document
-    /// arrives. A rich editor's Focus still waits — it puts the caret in a
-    /// block of its document, and has none until the document is here.
+    /// arrives.
     pub(crate) fn runnable_widget_commands(&self) -> usize {
         if !self.inputs.pending() {
             return self.widget_commands.len();
         }
-        fn rich(
-            node: &wire::Node,
-            path: &mut Vec<wire::ElementIdWire>,
-            target: &[wire::ElementIdWire],
-        ) -> bool {
-            let entered = crate::render::enter_scope(node, path);
-            let found = matches!(node, wire::Node::Editor { options, .. } if path == target && options.rich.is_some())
-                || node
-                    .children()
-                    .iter()
-                    .any(|child| rich(child, path, target));
-            if entered {
-                path.pop();
-            }
-            found
-        }
         self.widget_commands
             .iter()
-            .take_while(|(_, command)| {
-                matches!(command, wire::WidgetCommand::Focus { target }
-                    if !self.frame.root.as_ref().is_some_and(|root| rich(root, &mut Vec::new(), target)))
-            })
+            .take_while(|(_, command)| matches!(command, wire::WidgetCommand::Focus { .. }))
             .count()
     }
 
