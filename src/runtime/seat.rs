@@ -15,34 +15,35 @@ pub(super) struct Mounted {
     pub(super) slot: Slot,
     pub(super) props: Option<Vec<u8>>,
     pub(super) generation: u64,
-    /// The candidate a load last failed on, and when the next block may try
-    /// it again. Cleared by any load that comes back, so only a repeated
-    /// failure on the same candidate widens the gap.
+    /// The code a load last failed on, and when the next block may try it
+    /// again. Cleared by any load that comes back, so only a repeated
+    /// failure on the same code widens the gap.
     pub(super) retry: Option<Retry>,
     /// When a tab last drew this seat: a load for a seat on screen does not
     /// queue for the link.
     pub(super) shown: Option<Instant>,
 }
 
-/// A failed load's hold-off: the candidate it failed on, when the next
-/// attempt at that same candidate is due, and the gap that produced it.
+/// A failed load's hold-off: the code (the roster's blob id, as
+/// `code_digest` spells it) the load was asked for when it failed, when the
+/// next attempt at that same code is due, and the gap that produced it.
 pub(super) struct Retry {
-    pub(super) hash: Option<[u8; 32]>,
+    pub(super) code: Option<[u8; 32]>,
     pub(super) next: Instant,
     pub(super) gap: Duration,
 }
 
 impl Retry {
-    /// The hold-off after a load for `hash` failed: the gap doubles up to
-    /// `RETRY_MAX` while the same candidate keeps failing, and starts over
-    /// at `RETRY_FIRST` for a different one.
-    pub(super) fn after(previous: Option<&Retry>, hash: Option<[u8; 32]>) -> Retry {
+    /// The hold-off after a load for `code` failed: the gap doubles up to
+    /// `RETRY_MAX` while the same code keeps failing, and starts over at
+    /// `RETRY_FIRST` for a different one.
+    pub(super) fn after(previous: Option<&Retry>, code: Option<[u8; 32]>) -> Retry {
         let gap = match previous {
-            Some(previous) if previous.hash == hash => (previous.gap * 2).min(RETRY_MAX),
+            Some(previous) if previous.code == code => (previous.gap * 2).min(RETRY_MAX),
             _ => RETRY_FIRST,
         };
         Retry {
-            hash,
+            code,
             next: Instant::now() + gap,
             gap,
         }
@@ -78,11 +79,13 @@ impl Mounted {
     ///
     /// | hold-off from a failed load | load when                              |
     /// |-----------------------------|----------------------------------------|
-    /// | none, or its gap is up      | the code moved, or this node not asked |
+    /// | none                        | the code moved, or this node not asked |
     /// | still running               | it is not for this very `code`         |
+    /// | its gap is up               | always: the re-attempt it promised     |
     ///
-    /// The hold-off names the bytes the load failed on (`Unloaded.hash`),
-    /// `code` the blob a block names.
+    /// The hold-off and `code` both name the blob the roster lists
+    /// (`Retry.code`, [`code_digest`]), so a failed view is left alone until
+    /// its gap is up and then asked for again, RETRY_FIRST's way.
     pub(super) fn reload_due(
         &self,
         same_code: bool,
@@ -90,9 +93,39 @@ impl Mounted {
         code: [u8; 32],
         now: Instant,
     ) -> bool {
-        match self.retry.as_ref().filter(|retry| now < retry.next) {
+        match &self.retry {
             None => !(same_code && asked_of_this_node),
-            Some(held_off) => held_off.hash != Some(code),
+            Some(held_off) if now < held_off.next => held_off.code != Some(code),
+            Some(_) => true,
+        }
+    }
+
+    /// A load for `asked_for` came back with no view: the next block leaves
+    /// that code alone until the gap is up, widened against `held_off` when
+    /// it is the same code failing again. A failure before any candidate (a
+    /// status or transport error, `hash` none) holds nothing off, and any
+    /// other code is unaffected. A view that is there stays: the failure is
+    /// the replacement's, not its own.
+    pub(super) fn load_failed(
+        &mut self,
+        module: &str,
+        held_off: Option<Retry>,
+        asked_for: Option<[u8; 32]>,
+        Unloaded {
+            hash: failed_on,
+            failure,
+        }: Unloaded,
+    ) {
+        tracing::warn!(
+            target: "ducktape::app",
+            module,
+            reason = "module_view_unloadable",
+            error = %failure,
+            "module view not loaded"
+        );
+        self.retry = Some(Retry::after(held_off.as_ref(), failed_on.and(asked_for)));
+        if !matches!(self.slot, Slot::Ready(_)) {
+            self.slot = Slot::Failed(failure);
         }
     }
 
@@ -258,6 +291,10 @@ pub(super) fn spawn_load(
 ) -> std::thread::JoinHandle<()> {
     let loading = mounted.clone();
     std::thread::spawn(move || {
+        // the blob this load is asked for, as the roster reads compare it:
+        // a failure is held off under this, not under the view section's
+        // own hash, which never equals a blob id
+        let asked_for = listed_code(module).map(|(code, _)| code_digest(&code));
         let loaded = Guest::load(module, &asked_of, generation, &loading);
         let mut locked = loading.lock().expect("module view lock");
         if locked.generation != generation {
@@ -273,31 +310,35 @@ pub(super) fn spawn_load(
         if from_the_node && node_since_left {
             return;
         }
-        let Mounted { slot, retry, .. } = &mut *locked;
-        // a load that came back at all clears the hold-off; only the error
-        // arm below puts one back, widened against the one taken here
-        let held_off = retry.take();
+        // a load that came back at all clears the hold-off; only a failure
+        // puts one back, widened against the one taken here
+        let held_off = locked.retry.take();
+        let loaded = match loaded {
+            Ok(loaded) => loaded,
+            Err(unloaded) => return locked.load_failed(module, held_off, asked_for, unloaded),
+        };
+        let Mounted { slot, .. } = &mut *locked;
         match loaded {
-            Ok(Loaded::Fresh(mut guest)) => {
+            Loaded::Fresh(mut guest) => {
                 guest.installed_generation = Some(generation);
                 guest.report_display_truncation();
                 *slot = Slot::Ready(guest);
             }
-            Ok(Loaded::Unchanged) => {
+            Loaded::Unchanged => {
                 if let Slot::Ready(guest) = slot {
                     guest.reconnect(current_rev);
                 }
             }
-            Ok(Loaded::Empty(_)) => {
+            Loaded::Empty(_) => {
                 *slot = Slot::Empty;
             }
             // the same tab, the same surface handle, the same host-side
             // input text and pictures: only the instance behind them moves
-            Ok(Loaded::Swap {
+            Loaded::Swap {
                 mut fresh,
                 alive,
                 ticks,
-            }) => {
+            } => {
                 let Slot::Ready(old) = slot else {
                     log_source(
                         module,
@@ -346,28 +387,6 @@ pub(super) fn spawn_load(
                 log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
                 *slot = Slot::Ready(fresh);
             }
-            Err(Unloaded {
-                hash: failed_on,
-                failure,
-            }) => {
-                tracing::warn!(
-                    target: "ducktape::app",
-                    module,
-                    reason = "module_view_unloadable",
-                    error = %failure,
-                    "module view not loaded"
-                );
-                // the next block leaves the candidate this failed on alone
-                // until the gap is up; a failure before any candidate (a
-                // status or transport error) holds nothing off, and any
-                // other deployment is unaffected
-                *retry = Some(Retry::after(held_off.as_ref(), failed_on));
-                // a view that is there stays, with its hash: the failure is
-                // the replacement's, not its own
-                if !matches!(slot, Slot::Ready(_)) {
-                    *slot = Slot::Failed(failure);
-                }
-            }
         }
     })
 }
@@ -392,9 +411,9 @@ pub(super) enum Loaded {
     Empty([u8; 32]),
 }
 
-/// A load that came back with no view, and the candidate it failed on —
-/// none when it never got as far as one — so the block check's hold-off
-/// keys on the bytes that failed, never on what the load was asked after.
+/// A load that came back with no view, and the view bytes it failed on —
+/// none when it never got as far as any, which is what tells the block
+/// check whether there is a code to hold off at all.
 pub(super) struct Unloaded {
     pub(super) hash: Option<[u8; 32]>,
     pub(super) failure: Failure,
@@ -479,44 +498,4 @@ pub(super) fn view_override(module: &str) -> Option<PathBuf> {
 }
 
 #[cfg(test)]
-mod reload_tests {
-    use super::*;
-
-    /// The table on [`Mounted::reload_due`], row by row.
-    #[test]
-    fn a_roster_read_reloads_by_code_node_and_hold_off() {
-        let now = Instant::now();
-        let code = [1; 32];
-        let held = |hash, next| Retry {
-            hash,
-            next,
-            gap: RETRY_FIRST,
-        };
-        let running = now + RETRY_FIRST;
-        let up = now - RETRY_FIRST;
-        // (retry, same_code, asked_of_this_node) -> load
-        let table = [
-            (None, false, false, true),
-            (None, true, false, true),
-            (None, false, true, true),
-            (None, true, true, false),
-            (Some(held(Some(code), up)), true, true, false),
-            (Some(held(Some(code), up)), false, true, true),
-            (Some(held(Some(code), running)), false, false, false),
-            (Some(held(Some(code), running)), true, true, false),
-            (Some(held(Some([2; 32]), running)), true, true, true),
-            (Some(held(None, running)), true, true, true),
-        ];
-        for (nth, (retry, same_code, asked_of_this_node, load)) in table.into_iter().enumerate() {
-            let seat = Mounted::seat();
-            seat.lock().unwrap().retry = retry;
-            assert_eq!(
-                seat.lock()
-                    .unwrap()
-                    .reload_due(same_code, asked_of_this_node, code, now),
-                load,
-                "row {nth}"
-            );
-        }
-    }
-}
+mod tests;
