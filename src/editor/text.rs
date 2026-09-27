@@ -8,7 +8,7 @@
 //! fields can only imitate them one key at a time, and every key it has not
 //! learned is an edit the writer cannot make.
 
-use super::{EditorStore, Projection, key_state, offset, position};
+use super::{EditorStore, Projection, offset, position};
 use gpui_base::StyledExt as _;
 use gpui_kit::base::input::{Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
@@ -298,7 +298,7 @@ impl TextEditor {
         if self.composing(window, cx) {
             return;
         }
-        let key = key_state(keystroke);
+        let key = wire::keyboard::KeyState::from(keystroke);
         let claimed = self
             .projection
             .as_ref()

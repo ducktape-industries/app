@@ -374,7 +374,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
                 button: wire::click::MouseButton::Left,
                 click_count: 3,
                 first_mouse: true,
-                modifiers: wire::keyboard::Modifiers { shift: true, .. },
+                modifiers: gpui_kit::Modifiers { shift: true, .. },
                 ..
             }
         }
