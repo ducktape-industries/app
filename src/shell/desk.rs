@@ -174,8 +174,14 @@ impl DesktopWindow {
             .right_0()
             .bottom_0()
             .occlude()
+            // a dialog keeps its margin from the window's sides, as
+            // `dialog_fit` keeps it from the bottom
             .when(scrim, |backdrop| {
-                backdrop.bg(ink.bg.opacity(0.6)).flex().justify_center()
+                backdrop
+                    .bg(ink.bg.opacity(0.6))
+                    .flex()
+                    .justify_center()
+                    .px(px(DIALOG_EDGE))
             })
             .on_click(move |_, _, cx| {
                 model.update(cx, |model, cx| {
@@ -312,14 +318,17 @@ impl DesktopWindow {
     }
 }
 
+/// The least a dialog keeps from the window's edges, at any size.
+const DIALOG_EDGE: f32 = 12.;
+
 /// A dialog `tall` high in a window `high` high, hung `top` below the bar
 /// when the window has room for it, higher (not under 12px) when it hasn't:
 /// where its top goes, and the height it may take so its bottom stays 12px
 /// inside the window.
 pub(super) fn dialog_fit(high: f32, tall: f32, top: f32) -> (f32, f32) {
     let room = high - BAR;
-    let top = (room - tall - 12.).clamp(12., top);
-    (top, (room - top - 12.).max(0.))
+    let top = (room - tall - DIALOG_EDGE).clamp(DIALOG_EDGE, top);
+    (top, (room - top - DIALOG_EDGE).max(0.))
 }
 
 #[cfg(test)]
