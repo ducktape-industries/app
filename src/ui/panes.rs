@@ -96,8 +96,6 @@ impl Ducktape {
         task
     }
 
-    /// The console's desk, made if it has none yet; `None` before the
-    /// console window is opened.
     /// Help on the desk: into the focused window if it is empty, else
     /// where it already is, else a window of its own. A new account starts
     /// here, greeted (`welcome`).
@@ -109,6 +107,9 @@ impl Ducktape {
         }
     }
 
+    /// The console's desk, made if it has none yet; `None` before the
+    /// console window is opened. Marks it initialized: a desk something was
+    /// put on no longer opens the active program on its own.
     pub(super) fn desk_layout(&mut self) -> Option<&mut Layout> {
         let layout = self.layouts.entry(self.console_win?).or_default();
         layout.initialized = true;

@@ -522,8 +522,8 @@ impl Ducktape {
 
     /// A passkey creates an account (`create`) or admits this device's key
     /// into the account it holds. Both are about the ACCOUNT: the device
-    /// key is already set up and seated (unlocked, or minted with its
-    /// phrase) before either is offered, and it signs the writes.
+    /// key is already seated before either is offered (opened, or minted
+    /// on first contact; it has no phrase), and it signs the writes.
     fn passkey(&mut self, create: bool) -> Task<Message> {
         let Stage::Account(step) = &mut self.stage else {
             return Task::none();
@@ -580,7 +580,7 @@ fn account_error(network: &str, error: String) -> String {
 }
 
 /// Three distinct word positions (0-based, ascending) out of `words` to ask
-/// back — the old app's "Words 5, 12 and 20" check.
+/// back: the person types them to show the phrase was written down.
 pub(super) fn quiz_positions(words: usize) -> [usize; 3] {
     let mut picked = rand::seq::index::sample(&mut rand::thread_rng(), words.max(3), 3).into_vec();
     picked.sort_unstable();

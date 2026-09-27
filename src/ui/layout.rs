@@ -58,7 +58,10 @@ pub(crate) const HELP: &str = "ducktape:help";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pane {
+    /// The program shown, or [`EMPTY`] / [`HELP`]: `is_view` tells them apart.
     pub(crate) module: &'static str,
+    /// Unique per pane, for life: the shell keys the mounted view by it, so
+    /// a pane moved between native windows keeps its view.
     pub(crate) instance: u64,
     /// None until the desk it lands on is measured.
     pub(crate) frame: Option<Frame>,
@@ -106,7 +109,8 @@ pub(crate) struct Layout {
 /// the desk's keys, a drag.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PaneMessage {
-    /// `module` in the focused pane (shift-click on the bar).
+    /// Shift-click on the bar: the window `module` is already in comes to
+    /// the front, else it takes the focused window's place.
     Select(&'static str),
     /// A bar click, or a pick in an empty window: see [`Layout::open`].
     Open(&'static str),
@@ -423,7 +427,10 @@ impl Layout {
         }
     }
 
-    /// Returns the displaced view so its entity can be released by the caller.
+    /// `pane` onto this desk, instance and all, so its view survives the
+    /// move; placed when it lands. A full desk puts it in the focused
+    /// window's place instead and hands the displaced pane back — its view
+    /// goes when the shell next mounts, being in no layout.
     pub(crate) fn popin(&mut self, mut pane: Pane) -> Option<Pane> {
         pane.frame = None;
         pane.restore = None;
@@ -441,8 +448,8 @@ impl Layout {
     }
 
     /// Gives every window a frame on a desk of `desk` size: the first one
-    /// opens centred, a later one cascades from the window it opened beside;
-    /// every frame is kept where it can be grabbed.
+    /// opens centred, a later one cascades from the topmost window that has
+    /// a frame; every frame is kept where it can be grabbed.
     pub(crate) fn place(&mut self, desk: (f32, f32)) {
         for index in 0..self.panes.len() {
             if self.panes[index].frame.is_some() {

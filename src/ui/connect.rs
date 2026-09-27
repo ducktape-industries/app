@@ -93,7 +93,8 @@ impl Ducktape {
                 self.recent_endpoints = backend::recent_endpoints();
                 self.connected_rpc = origin;
                 self.network = status.network.clone();
-                // the chain id links name: the network and its genesis salt
+                // the chain id `duck://` links name: the network and its
+                // genesis salt; the name alone when the genesis yields none
                 self.chain = ducklink::ChainId::of(&status.network, &status.genesis)
                     .map_or_else(|| status.network.clone(), |chain| chain.to_string());
                 crate::runtime::notify::center().set_network(&self.chain);

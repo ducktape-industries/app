@@ -282,7 +282,8 @@ mod tests {
         assert!(asked[0] < asked[1] && asked[1] < asked[2] && asked[2] < 24);
     }
 
-    /// On the key step, the node reached.
+    /// A fresh boot moved straight to the key step. Not connected: for a
+    /// node reached, `on_testkit()`.
     fn signing_in() -> Ducktape {
         let (mut state, _) = Ducktape::boot();
         state.stage = Stage::Unlock(Default::default());
