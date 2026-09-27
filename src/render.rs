@@ -46,7 +46,8 @@ mod variable_list;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use accessibility::{Accessible, accessible, announce, descendant_text};
+pub(crate) use accessibility::{Accessible, announce};
+use accessibility::{accessible, descendant_text};
 #[cfg(test)]
 use canvas::{append_arc, append_arc_to};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
