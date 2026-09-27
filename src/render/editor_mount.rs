@@ -157,7 +157,8 @@ impl ViewTree {
 /// a size is counted at a smaller face than it is drawn with.
 const FALLBACK_FIELD_TEXT_PX: f32 = 14.;
 
-/// gpui's default line height as a multiple of the text size: `phi()`.
+/// gpui's default line height as a multiple of the text size (`phi()`,
+/// 1.618034, to the three places the literal always had).
 const FIELD_LINE_HEIGHT: f32 = 1.618;
 
 /// How many lines a field that grows with its words shows before it scrolls:
