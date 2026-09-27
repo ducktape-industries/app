@@ -139,10 +139,10 @@ pub(crate) fn commands() -> mpsc::UnboundedReceiver<PendingCommand> {
     let (send, receive) = mpsc::unbounded();
     let mut current = sender().lock().expect("native shell commands");
     assert!(current.is_none(), "one native shell per process");
-    // runtime::notify and backend::passkey cannot depend on shell: they
+    // runtime::notify and backend::auth_page cannot depend on shell: they
     // call these hooks instead
     crate::runtime::notify::on_open_link(post_open_link);
-    crate::backend::passkey::on_open_url(post_open_url);
+    crate::backend::auth_page::on_open_url(post_open_url);
     *current = Some(send);
     receive
 }
