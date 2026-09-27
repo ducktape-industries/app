@@ -1,69 +1,10 @@
-//! The desk's panes. `Desktop::mount` gives every view pane the model
-//! holds a program view and keeps it across OS windows; `pane_stage` draws
-//! each pane with its title bar, buttons and grips, or the empty desk when
-//! there is none; the permission bar asks about a view's notices; the
-//! pointer drags, sizes and raises panes. Where panes sit, stack and which
-//! has the keys is `ui::layout`'s: this file only draws it and sends
-//! `PaneMessage`s.
+//! The desk's panes, drawn: `pane_stage` gives each its title bar and
+//! buttons, seats it on the desk, hands the keys to the one in front and
+//! asks about a view's notices (the permission bar). Where panes sit, stack
+//! and which has the keys is `ui::layout`'s: this file only draws it and
+//! sends `PaneMessage`s. Their program views are `mount.rs`'s, the
+//! pointer's hold on them `pane_drag.rs`'s, a desk with none `empty_desk.rs`'s.
 use super::*;
-
-/// The program view shown in the pane with this layout `instance`
-/// (`layout::Pane.instance`; the view counts its own, unrelated
-/// `NativeModuleView.instance`).
-pub(super) struct MountedPane {
-    pub(super) module: &'static str,
-    pub(super) view: Entity<crate::runtime::NativeModuleView>,
-    /// The view's intents, to the model as `Message::ViewEvent`; dropping
-    /// it unsubscribes.
-    _route: gpui_kit::Subscription,
-}
-
-impl Desktop {
-    /// A view for every pane the model has, and none for a pane it no
-    /// longer has (told it is hidden first).
-    pub(super) fn mount(&mut self, cx: &mut Context<Self>) {
-        let wanted: BTreeMap<u64, &'static str> = self
-            .state
-            .layouts
-            .values()
-            .flat_map(|layout| &layout.panes)
-            .filter(|pane| pane.is_view())
-            .map(|pane| (pane.instance, pane.module))
-            .collect();
-        let gone: Vec<u64> = self
-            .mounted
-            .keys()
-            .filter(|instance| !wanted.contains_key(instance))
-            .copied()
-            .collect();
-        for (instance, module) in wanted {
-            if self.mounted.contains_key(&instance) {
-                continue;
-            }
-            let view = cx.new(|_| crate::runtime::NativeModuleView::new(module));
-            let route = cx.subscribe(&view, move |model, _, event, cx| {
-                model.dispatch(Message::ViewEvent(module, event.clone()), cx)
-            });
-            self.mounted.insert(
-                instance,
-                MountedPane {
-                    module,
-                    view,
-                    _route: route,
-                },
-            );
-        }
-        for instance in gone {
-            let Some(pane) = self.mounted.remove(&instance) else {
-                continue;
-            };
-            let intents = pane.view.update(cx, |view, _| view.hide());
-            for intent in intents {
-                self.dispatch(Message::ViewEvent(pane.module, intent), cx);
-            }
-        }
-    }
-}
 
 pub(super) fn label(module: &str) -> String {
     if module == layout::EMPTY {

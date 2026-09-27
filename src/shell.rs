@@ -35,6 +35,7 @@ mod launch;
 mod launcher;
 mod menubar;
 mod menus;
+mod mount;
 mod notifications;
 mod pane_drag;
 mod panes;
@@ -269,7 +270,7 @@ struct Desktop {
     streams: HashMap<u64, gpui_kit::Task<()>>,
     /// Every pane's view, by its instance: a pane keeps its view whichever
     /// window the model puts it in.
-    mounted: BTreeMap<u64, panes::MountedPane>,
+    mounted: BTreeMap<u64, mount::MountedPane>,
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
     desk_bounds: Option<gpui_kit::WindowBounds>,
