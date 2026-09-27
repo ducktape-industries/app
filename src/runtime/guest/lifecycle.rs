@@ -306,7 +306,6 @@ impl Guest {
             + 1;
         for _ in 0..limit {
             self.tick();
-            #[cfg(test)]
             if let Some(fault) = &self.fault {
                 return Err(format!("{shown}: {fault}"));
             }
