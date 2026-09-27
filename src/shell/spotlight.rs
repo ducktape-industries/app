@@ -26,7 +26,7 @@ impl DesktopWindow {
                 on_change: Message::SpotlightTyped,
                 on_enter: || Message::SpotlightSubmit,
                 label: Some("Search".into()),
-                secret: false,
+                private: false,
                 size: 20.,
             },
             window,
@@ -46,7 +46,7 @@ impl DesktopWindow {
         let pick = state.spotlight_pick.min(count.saturating_sub(1));
         let mut list = div()
             .id("spotlight-rows")
-            .role(Role::Menu)
+            .control(Role::Menu, "Results")
             .max_h(px(380.))
             .min_h_0()
             .overflow_y_scroll()

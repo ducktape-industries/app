@@ -10,6 +10,10 @@ use super::*;
 use facts::Facts;
 use figure::Figure;
 
+/// What the device that waits for approval is told: a security instruction,
+/// so a `Status` a screen reader hears.
+const LINK_WAITING: &str = "On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Approve there only if it shows the same four-and-four. The code lasts five minutes.";
+
 impl DesktopWindow {
     /// CreateAccount: name the account this key signs for, or add this
     /// device to one that exists.
@@ -39,7 +43,7 @@ impl DesktopWindow {
                 on_change: Message::AccountNameTyped,
                 on_enter: || Message::CreateAccountSubmit,
                 label: Some("Account name".into()),
-                secret: false,
+                private: false,
                 size: 22.,
             },
             window,
@@ -229,7 +233,8 @@ impl DesktopWindow {
                         .child(
                             tag("Waiting", &ink)
                                 .id("passkey-waiting-status")
-                                .role(Role::Status),
+                                .role(Role::Status)
+                                .aria_label("Waiting"),
                         )
                         .child(sans(500, 16.).child("Your passkey, twice"))
                         .child(ink::note(
@@ -315,19 +320,19 @@ impl DesktopWindow {
                 .child(big("link-code", "Code", state.link_code.clone()))
                 .child(big("link-fingerprint", "This device", fingerprint))
                 .into_any_element(),
-            ink::note(
-                "On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Approve there only if it shows the same four-and-four. The code lasts five minutes.",
-                ink.muted,
-            )
-            .id("link-waiting-status")
-            .role(Role::Status)
-            .into_any_element(),
+            ink::note(LINK_WAITING, ink.muted)
+                .id("link-waiting-status")
+                .role(Role::Status)
+                .aria_label(LINK_WAITING)
+                .into_any_element(),
             div()
                 .flex()
                 .flex_col()
                 .gap(px(16.))
-                .children((!state.unlock_error.is_empty())
-                    .then(|| self.alert("link-error", state.unlock_error.clone(), &ink)))
+                .children(
+                    (!state.unlock_error.is_empty())
+                        .then(|| self.alert("link-error", state.unlock_error.clone(), &ink)),
+                )
                 .into_any_element(),
         ];
         self.launcher(

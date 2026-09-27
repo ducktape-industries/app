@@ -1,8 +1,11 @@
 //! AX-tree coverage for the shell's own screens: a native input reports its
-//! current text as the AX value unless it is `secret`, and an error alert
-//! carries a name (`aria_label`), the way `src/ax/tree.rs`'s compact filter
-//! requires.
+//! current text as the AX value (a private one masked by the door, a
+//! password's none), an error alert carries a name (`aria_label`), and every screen
+//! state passes the phase-1 audit ([`gate`]).
 use super::*;
+
+mod gate;
+mod launcher;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};
@@ -127,13 +130,15 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     native.update(|window, cx| type_into("password/field", "hunter2", window, cx));
     let nodes = native.update(draw);
     let password = find(&nodes, "PasswordInput", "Password");
+    // masked on the screen, so no value at all: the door's mask is not the
+    // platform's
     assert!(
         password.get("value").is_none(),
         "password value leaked into the AX tree: {password}"
     );
 
     // The recovery-phrase input is not visually masked (it is not a
-    // PasswordInput), but its typed text must stay out of the tree too.
+    // PasswordInput), but its typed text must leave the process masked too.
     let model = native.update(|_, cx| view.read(cx).model.clone());
     model.update(cx, |model, _| {
         model.state.signer_key = "ab".into();
@@ -149,8 +154,8 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     });
     let nodes = native.update(draw);
     let phrase = find(&nodes, "TextInput", "Recovery key");
-    assert!(
-        phrase.get("value").is_none(),
+    assert_eq!(
+        phrase["value"], "•••",
         "recovery phrase leaked into the AX tree: {phrase}"
     );
 }
@@ -189,6 +194,7 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     native.update(|window, cx| type_into("create-account-name/field", "duck", window, cx));
     let nodes = native.update(draw);
     assert_eq!(find(&nodes, "TextInput", "Account name")["value"], "duck");
+    gate::passes(&mut native, "account-step-typed", true);
     find(&nodes, "Button", "Create account");
     find(&nodes, "Button", "Add this device from another device");
     find(&nodes, "Button", "a passkey");
@@ -491,126 +497,54 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     find(&nodes, "MenuItem", "Unread. Lin: @grace look");
     find(&nodes, "Button", "Mark all read");
     assert!(!nodes.to_string().contains("all caught up"));
+    gate::passes(&mut native, "notifications-menu-unread", false);
 
     view.update(&mut native, |view, cx| {
         view.model.update(cx, |model, cx| {
-            model.dispatch(Message::NotifyMarkAllRead, cx);
-            model.dispatch(Message::NotifySettings, cx);
+            model.dispatch(Message::NotifyMarkAllRead, cx)
         })
     });
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications");
+    // Settings is modal: the snapshot is its subtree, the bell is behind it
+    view.update(&mut native, |view, cx| {
+        view.model
+            .update(cx, |model, cx| model.dispatch(Message::NotifySettings, cx))
+    });
+    let nodes = native.update(draw);
     find(&nodes, "Switch", "Desktop banners");
     find(&nodes, "RadioGroup", "Burst limit");
     center().clear_read();
 }
 
-/// The screen drawn: the id just inside the launcher's frame, or the
-/// desk's menu bar.
-fn drawn_ids(window: &mut Window, cx: &mut gpui_kit::App) -> std::collections::BTreeSet<String> {
-    draw(window, cx);
-    let nodes: Vec<_> = window
-        .a11y_tree()
-        .unwrap()
-        .nodes
-        .iter()
-        .map(|(node, _)| *node)
-        .collect();
-    nodes
-        .into_iter()
-        .filter_map(|node| window.a11y_element_id(node))
-        .filter_map(|path| {
-            let names: Vec<String> = path
-                .iter()
-                .filter_map(|element| match element {
-                    ElementId::Name(name) => Some(name.to_string()),
-                    _ => None,
-                })
-                .collect();
-            match names.iter().position(|name| name == "launcher") {
-                Some(at) => names.get(at + 1).cloned(),
-                None => names.into_iter().find(|name| name == "menubar"),
-            }
-        })
-        .collect()
-}
-
-/// For every stage and the sub-steps it draws, the console window draws
-/// that stage's screen, and it is launcher-sized exactly when that screen
-/// is not the desk.
+/// A press inside an overlay's card stays inside: the card offers no press
+/// of its own (AX-012), and the backdrop's click does not close it.
 #[gpui_kit::test]
-fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
-    use crate::ui::{Account, Phrase, Unlock};
+fn a_click_inside_an_overlay_card_leaves_it_open(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    type Build = fn() -> Stage;
-    let stages: Vec<(Build, &str)> = vec![
-        (|| Stage::Connect, "connect"),
-        (|| Stage::Unlock(Unlock::default()), "sign-in"),
-        (
-            || {
-                Stage::Unlock(Unlock {
-                    awaiting: true,
-                    ..Default::default()
-                })
-            },
-            "sign-in",
-        ),
-        (
-            || {
-                Stage::Phrase(Phrase {
-                    words: String::from("canoe pond forest").into(),
-                    ..Default::default()
-                })
-            },
-            "recovery",
-        ),
-        (
-            || {
-                Stage::Phrase(Phrase {
-                    words: String::from("canoe pond forest").into(),
-                    quiz: Some([0, 1, 2]),
-                    ..Default::default()
-                })
-            },
-            "recovery-check",
-        ),
-        (|| Stage::Recover(Default::default()), "recover"),
-        (|| Stage::Account(Account::default()), "account-step"),
-        (
-            || {
-                Stage::Account(Account {
-                    link_code: "ABCD-EFGH".into(),
-                    ..Default::default()
-                })
-            },
-            "link-waiting",
-        ),
-        (|| Stage::Desk, "menubar"),
-    ];
-    let screens: std::collections::BTreeSet<&str> = stages.iter().map(|(_, id)| *id).collect();
-    for (stage, id) in &stages {
-        // the key seated or not, locked or not, an old password key or not:
-        // none of it picks the screen
-        for bits in 0..8u8 {
-            let (mut state, _) = Ducktape::boot();
-            state.stage = stage();
-            if bits & 1 != 0 {
-                state.signer_key = "ab".into();
-            }
-            state.sign_in.locked = bits & 2 != 0;
-            state.key_exists = bits & 4 != 0;
-            let launcher = state.in_launcher();
-            let (_view, mut native) = open(state, cx);
-            let ids = native.update(drawn_ids);
-            let drawn: Vec<_> = screens
-                .iter()
-                .filter(|screen| ids.contains(**screen))
-                .collect();
-            assert_eq!(drawn, vec![id], "{id} with bits {bits:03b}");
-            assert_eq!(launcher, *id != "menubar", "{id} with bits {bits:03b}");
-        }
+    // one under a scrim, one hanging from the bar
+    for (overlay, name) in [
+        (crate::Overlay::Settings, "Settings"),
+        (crate::Overlay::Menu(crate::Popover::Node), "Node status"),
+    ] {
+        let mut state = gate::desk();
+        state.overlay = Some(overlay);
+        let (view, mut native) = open(state, cx);
+        let nodes = native.update(|window, cx| {
+            draw(window, cx);
+            serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+        });
+        let card = find(&nodes, "Dialog", name);
+        let at = |n: usize| card["bounds"][n].as_f64().unwrap() as f32;
+        // just inside the card's corner: its padding, no control
+        native.simulate_click(
+            gpui_kit::point(px(at(0) + 8.), px(at(1) + 8.)),
+            gpui_kit::Modifiers::none(),
+        );
+        let open = native.update(|_, cx| view.read(cx).model.read(cx).state.overlay);
+        assert_eq!(open, Some(overlay), "a click inside {name} closed it");
     }
 }
