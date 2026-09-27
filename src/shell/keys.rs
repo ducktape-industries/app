@@ -18,6 +18,8 @@ gpui_kit::actions!(
     [
         /// ⌘Q.
         Quit,
+        /// ⌘N: an empty window on the desk.
+        NewWindow,
         /// ⌘W: the focused desk window, else this window.
         CloseWindow,
         /// ⌘D: the focused window halved, left | right.
@@ -60,6 +62,7 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
     const EMPTY: Option<&str> = Some("Ducktape && desk && empty");
     let mut bindings = vec![
         KeyBinding::new("secondary-q", Quit, None),
+        KeyBinding::new("secondary-n", NewWindow, DESK),
         KeyBinding::new("secondary-w", CloseWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-d", Halve, DESK),
         KeyBinding::new("secondary-shift-d", HalveBelow, DESK),
@@ -104,6 +107,7 @@ pub(crate) fn menus(cx: &mut gpui_kit::App) {
         Menu::new("Ducktape").items([MenuItem::action("Quit Ducktape", Quit)]),
         Menu::new("View").items([MenuItem::action("Search", ToggleSpotlight)]),
         Menu::new("Window").items([
+            MenuItem::action("New Window", NewWindow),
             MenuItem::action("Close", CloseWindow),
             MenuItem::separator(),
             MenuItem::action("Split", Halve),
@@ -160,6 +164,9 @@ impl DesktopWindow {
                     None => this.close_by_key(window, cx),
                 },
             ))
+            .on_action(cx.listener(|this, _: &NewWindow, window, cx| {
+                this.pane_message(PaneMessage::Split(layout::EMPTY), window, cx)
+            }))
             .on_action(cx.listener(|this, _: &Halve, window, cx| {
                 this.pane_message(PaneMessage::Halve { below: false }, window, cx)
             }))
@@ -264,6 +271,10 @@ mod tests {
         assert_eq!(
             resolve("secondary-w", &["Ducktape console on_desk overlay"], cx).as_deref(),
             Some("desk::CloseWindow")
+        );
+        assert_eq!(
+            resolve("secondary-n", &[desk], cx).as_deref(),
+            Some("desk::NewWindow")
         );
         assert_eq!(resolve("3", &[desk], cx), None, "a pane with a view types");
         assert_eq!(resolve("3", &[empty], cx).as_deref(), Some("desk::OpenNth"));

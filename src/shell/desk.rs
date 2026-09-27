@@ -64,15 +64,12 @@ impl DesktopWindow {
             window.request_animation_frame();
         }
         self.bar_drawn = drawn;
-        // the desk's size, and on an untouched console the program it opens
+        // the desk's size, and on an untouched console the program a link
+        // already opened; otherwise it starts empty
         let desk = self.desk(window);
         let layout = self.layout(cx);
         let seed = (self.kind == crate::shell::WindowKind::Console && !layout.initialized)
-            .then(|| {
-                state
-                    .active
-                    .or_else(|| rail.iter().find(|row| !row.empty).map(|row| row.module))
-            })
+            .then_some(state.active)
             .flatten();
         if layout.desk != Some(desk) || seed.is_some() {
             let window = self.key;
