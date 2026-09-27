@@ -194,6 +194,7 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     native.update(|window, cx| type_into("create-account-name/field", "duck", window, cx));
     let nodes = native.update(draw);
     assert_eq!(find(&nodes, "TextInput", "Account name")["value"], "duck");
+    gate::passes(&mut native, "account-step-typed", true);
     find(&nodes, "Button", "Create account");
     find(&nodes, "Button", "Add this device from another device");
     find(&nodes, "Button", "a passkey");
@@ -496,6 +497,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     find(&nodes, "MenuItem", "Unread. Lin: @grace look");
     find(&nodes, "Button", "Mark all read");
     assert!(!nodes.to_string().contains("all caught up"));
+    gate::passes(&mut native, "notifications-menu-unread", false);
 
     view.update(&mut native, |view, cx| {
         view.model.update(cx, |model, cx| {
