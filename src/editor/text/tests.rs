@@ -34,7 +34,6 @@ fn store_with(
             placeholder: placeholder.to_owned(),
             options: wire::EditorOptions {
                 binding: Some(Box::new(wire::EditorBinding {
-                    authored: true,
                     on_request: 2,
                     on_event: 3,
                     claims,
