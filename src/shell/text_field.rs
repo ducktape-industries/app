@@ -32,9 +32,9 @@ pub(super) struct TextField {
     pub(super) label: Option<gpui_kit::SharedString>,
     /// Drawn as dots, with the password role.
     pub(super) masked: bool,
-    /// Kept out of the AX tree's value without being masked (the recovery
-    /// phrase).
-    pub(super) secret: bool,
+    /// Sensitive without being masked (the recovery phrase): its value is
+    /// read aloud, and the test door masks it (`a11y::AX_PRIVATE`).
+    pub(super) private: bool,
     /// The text size, in the canvas's px (`ink::fit` scales it).
     pub(super) size: f32,
     /// The model's copy of the text, which the field mirrors.
@@ -66,10 +66,12 @@ impl DesktopWindow {
     /// Its accessible name is
     /// `label`, or `placeholder` when a field's hint text already reads as
     /// one (a value-shaped placeholder like an example URL does not). Its
-    /// accessible value is the field's current text — unless `secret`,
-    /// which keeps that text out of the AX tree the way a masked field's
-    /// `PasswordInput` role already does, for a field (the recovery
-    /// phrase) that is sensitive without being visually masked.
+    /// accessible value is the field's current text — unless `masked`: a
+    /// `PasswordInput` shows no text, so it gives none (the door's mask is
+    /// not the platform's; a value set here reaches every AX client).
+    /// `private` marks a field (the recovery phrase) that is sensitive
+    /// without being visually masked [`crate::a11y::AX_PRIVATE`]: assistive
+    /// technology reads the text on the screen; the test door masks it.
     pub(super) fn input(
         &mut self,
         field: TextField,
@@ -81,7 +83,7 @@ impl DesktopWindow {
             placeholder,
             label,
             masked,
-            secret,
+            private,
             size,
             value,
             on_change,
@@ -159,9 +161,13 @@ impl DesktopWindow {
             input.role(gpui_kit::component::RoleOverride::Presentational),
         )
         .aria_label(label.unwrap_or_else(|| placeholder.into()));
-        let field = match secret {
+        let field = match masked {
             true => field,
             false => field.aria_value(state.read(cx).value().to_string()),
+        };
+        let field = match private {
+            true => crate::a11y::private(field),
+            false => field,
         };
         match masked {
             true => field.role(gpui_kit::Role::PasswordInput),

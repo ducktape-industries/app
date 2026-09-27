@@ -26,7 +26,7 @@ impl DesktopWindow {
                 on_change: Message::SpotlightTyped,
                 on_enter: || Message::SpotlightSubmit,
                 label: Some("Search".into()),
-                secret: false,
+                private: false,
                 size: 20.,
             },
             window,

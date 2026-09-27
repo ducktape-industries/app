@@ -26,7 +26,7 @@ impl DesktopWindow {
                 on_change: Message::EndpointTyped,
                 on_enter: || Message::ConnectSubmit,
                 label: Some("Node address".into()),
-                secret: false,
+                private: false,
                 size: 15.,
             },
             window,

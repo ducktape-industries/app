@@ -43,7 +43,7 @@ impl DesktopWindow {
                 on_change: Message::AccountNameTyped,
                 on_enter: || Message::CreateAccountSubmit,
                 label: Some("Account name".into()),
-                secret: false,
+                private: false,
                 size: 22.,
             },
             window,

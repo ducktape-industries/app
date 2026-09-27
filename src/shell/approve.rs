@@ -31,7 +31,7 @@ impl DesktopWindow {
                         on_change: Message::ApproveCodeTyped,
                         on_enter: || Message::ApproveFind,
                         label: Some("Code".into()),
-                        secret: false,
+                        private: false,
                         size: 15.,
                     },
                     window,

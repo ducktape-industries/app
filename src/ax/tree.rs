@@ -109,7 +109,8 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         let role = node.role();
         let private = node.class_name() == Some(crate::a11y::AX_PRIVATE);
         let secret = private || role == Role::PasswordInput;
-        let name = match (private, node.label()) {
+        // a private text field's name is its label; its value is the secret
+        let name = match (private && !is_text_input(role), node.label()) {
             (true, Some(_)) => MASK.to_owned(),
             (_, label) if node.class_name() == Some(crate::a11y::AX_WHOLE) => {
                 label.unwrap_or_default().to_owned()

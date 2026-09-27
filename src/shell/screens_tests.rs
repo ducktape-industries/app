@@ -1,8 +1,8 @@
 //! AX-tree coverage for the shell's own screens: a native input reports its
-//! current text as the AX value unless it is `secret`, and an error alert
-//! carries a name (`aria_label`), the way `src/ax/tree.rs`'s compact filter
-//! requires.
+//! current text as the AX value (a secret one masked by the door, never
+//! dropped), and an error alert carries a name (`aria_label`).
 use super::*;
+
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};
@@ -127,13 +127,15 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     native.update(|window, cx| type_into("password/field", "hunter2", window, cx));
     let nodes = native.update(draw);
     let password = find(&nodes, "PasswordInput", "Password");
+    // masked on the screen, so no value at all: the door's mask is not the
+    // platform's
     assert!(
         password.get("value").is_none(),
         "password value leaked into the AX tree: {password}"
     );
 
     // The recovery-phrase input is not visually masked (it is not a
-    // PasswordInput), but its typed text must stay out of the tree too.
+    // PasswordInput), but its typed text must leave the process masked too.
     let model = native.update(|_, cx| view.read(cx).model.clone());
     model.update(cx, |model, _| {
         model.state.signer_key = "ab".into();
@@ -149,8 +151,8 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     });
     let nodes = native.update(draw);
     let phrase = find(&nodes, "TextInput", "Recovery key");
-    assert!(
-        phrase.get("value").is_none(),
+    assert_eq!(
+        phrase["value"], "•••",
         "recovery phrase leaked into the AX tree: {phrase}"
     );
 }
