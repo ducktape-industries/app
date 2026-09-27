@@ -101,7 +101,7 @@ fn rich_tooltip_route(request: u32) -> wire::Node {
         clickable_ranges: Vec::new(),
         on_click: None,
         on_hover: None,
-        tooltip: Some(wire::RichTextTooltip {
+        tooltip: Some(wire::TooltipResponse {
             request,
             character_index: None,
             content: None,
