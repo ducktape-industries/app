@@ -577,3 +577,50 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
         assert!(page > shown, "squeezed: page {page}, window {shown}");
     });
 }
+
+/// A Help window brought to the front keeps the keys in its own box: it
+/// draws no finder field, so nothing off-screen may take them.
+///
+/// Red today: `pane_stage` calls `focus_command` for any focused pane the
+/// app draws itself, Help included, so the keys go to a finder field Help
+/// never draws and GPUI drops them on the window's root. Moving that call
+/// into the non-Help arm turns this green.
+#[gpui_kit::test]
+#[ignore = "the Help window hands its keys to a finder field it does not draw"]
+fn a_help_window_in_front_keeps_the_keys_in_its_box(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+        window.dispatch_action(Box::new(keys::OpenHelp), cx);
+    });
+    let index = native.update(|window, cx| {
+        draw(window, cx);
+        let layout = view.read(cx).layout(cx);
+        layout
+            .panes
+            .iter()
+            .position(|pane| pane.module == layout::HELP)
+            .expect("help opened")
+    });
+    // brought to the front by a desk key, as the other windows are
+    key(&mut native, "secondary-1");
+    key(&mut native, &format!("secondary-{}", index + 1));
+    // one draw restores the focus, the next sees where it landed
+    for _ in 0..3 {
+        native.update(|window, cx| {
+            draw(window, cx);
+        });
+        native.run_until_parked();
+    }
+    native.update(|window, cx| {
+        let view = view.read(cx);
+        let layout = view.layout(cx);
+        assert_eq!(layout.focused, index, "Help is in front");
+        let own = &view.pane_keys[&layout.panes[index].instance].0;
+        assert!(
+            own.contains_focused(window, cx),
+            "the keys left the Help window: focused = {:?}",
+            window.focused(cx)
+        );
+    });
+}
