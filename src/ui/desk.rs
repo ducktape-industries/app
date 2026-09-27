@@ -25,7 +25,6 @@ impl Ducktape {
                     self.overlay = None;
                 }
                 self.active = Some(module);
-                self.badges.remove(module);
                 if let Some(desk) = self.desk_layout() {
                     desk.select(module);
                     desk.settle();
