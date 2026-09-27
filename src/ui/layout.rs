@@ -13,6 +13,8 @@ pub(crate) const MIN_HEIGHT: f32 = 220.;
 const KEEP: f32 = 96.;
 /// A new window opens this far down and right of the one before it.
 const CASCADE: f32 = 28.;
+/// A new window's share of the desk, wide and high.
+const NEW_SHARE: (f32, f32) = (0.6, 0.7);
 /// The inset of a window that fills the desk.
 pub(crate) const INSET: f32 = 12.;
 pub(crate) use crate::render::GRAB;
@@ -393,8 +395,8 @@ impl Layout {
                 .max_by_key(|pane| pane.z)
                 .and_then(|pane| pane.frame);
             // whole pixels: a halved and rejoined frame must add back up
-            let w = (desk.0 * 0.6).round().max(MIN_WIDTH);
-            let h = (desk.1 * 0.7).round().max(MIN_HEIGHT);
+            let w = (desk.0 * NEW_SHARE.0).round().max(MIN_WIDTH);
+            let h = (desk.1 * NEW_SHARE.1).round().max(MIN_HEIGHT);
             let frame = match beneath {
                 None => Frame {
                     x: ((desk.0 - w) / 2.).round(),

@@ -2,6 +2,9 @@
 
 use super::{Frame, Layout};
 
+/// Edges within half a pixel count as one: halves are floored apart.
+const SLACK: f32 = 0.5;
+
 impl Layout {
     /// The windows beside a closed one grow back over its frame: the one
     /// that shared a whole edge with it (its other half, once halved), or
@@ -13,7 +16,7 @@ impl Layout {
             true => (frame.x, frame.x + frame.w, frame.y, frame.y + frame.h),
             false => (frame.y, frame.y + frame.h, frame.x, frame.x + frame.w),
         };
-        let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+        let near = |a: f32, b: f32| (a - b).abs() < SLACK;
         let frames: &Vec<Option<Frame>> = &self.panes.iter().map(|pane| pane.frame).collect();
         // same span, touching or overlapping (a half clamped to the
         // smallest window overlaps its sibling): the one on top
@@ -43,7 +46,7 @@ impl Layout {
                             frames[index].is_some_and(|frame| {
                                 let (a0, a1, b0, b1) = along(frame, row);
                                 let flush = if after { near(a0, g1) } else { near(a1, g0) };
-                                flush && b0 > s0 - 0.5 && b1 < s1 + 0.5
+                                flush && b0 > s0 - SLACK && b1 < s1 + SLACK
                             })
                         })
                         .collect();

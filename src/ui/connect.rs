@@ -5,6 +5,9 @@ use super::{AppMessage as Message, Ducktape, Overlay, Stage, Unlock};
 use crate::backend;
 use view_wire::Task;
 
+/// How long a node has to answer the first status before it is not reached.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 impl Ducktape {
     /// The node: typed, reached, polled, switched, left.
     pub(super) fn on_connect(&mut self, message: Message) -> Task<Message> {
@@ -35,9 +38,7 @@ impl Ducktape {
                 let generation = self.connect_generation;
                 let (task, handle) = Task::future(async move {
                     let client = backend::RpcClient::new(origin.clone());
-                    let status =
-                        tokio::time::timeout(std::time::Duration::from_secs(10), client.status())
-                            .await;
+                    let status = tokio::time::timeout(CONNECT_TIMEOUT, client.status()).await;
                     match status {
                         Ok(Ok(status)) => Message::Connected {
                             generation,
