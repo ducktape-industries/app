@@ -304,10 +304,7 @@ impl DesktopWindow {
             sans(500, 13.)
                 .id(id)
                 .control(Role::Button, SharedString::from(name))
-                .aria_toggled(match on {
-                    true => gpui_kit::accesskit::Toggled::True,
-                    false => gpui_kit::accesskit::Toggled::False,
-                })
+                .aria_toggled(on.into())
                 .h_full()
                 .px(px(10.))
                 .flex()

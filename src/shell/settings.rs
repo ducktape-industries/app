@@ -345,10 +345,7 @@ impl DesktopWindow {
             div()
                 .id(id)
                 .control(Role::Switch, name)
-                .aria_toggled(match on {
-                    true => gpui_kit::accesskit::Toggled::True,
-                    false => gpui_kit::accesskit::Toggled::False,
-                })
+                .aria_toggled(on.into())
                 .w(px(36.))
                 .h(px(20.))
                 .p(px(3.))
@@ -402,10 +399,7 @@ impl DesktopWindow {
                             sans(if on { 500 } else { 400 }, 13.)
                                 .id(SharedString::from(format!("{id}/{label}")))
                                 .control(Role::RadioButton, label.clone())
-                                .aria_toggled(match on {
-                                    true => gpui_kit::accesskit::Toggled::True,
-                                    false => gpui_kit::accesskit::Toggled::False,
-                                })
+                                .aria_toggled(on.into())
                                 .h(px(ink::tall(26.)))
                                 .px(px(10.))
                                 .flex()

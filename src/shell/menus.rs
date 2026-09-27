@@ -271,10 +271,7 @@ impl DesktopWindow {
                 name,
                 Message::SwitchNetwork(entry.url.clone()),
             )
-            .aria_toggled(match current {
-                true => gpui_kit::accesskit::Toggled::True,
-                false => gpui_kit::accesskit::Toggled::False,
-            })
+            .aria_toggled(current.into())
             .flex()
             .items_baseline()
             .gap(px(12.))
