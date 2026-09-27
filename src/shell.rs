@@ -563,6 +563,7 @@ pub(crate) struct DesktopWindow {
     /// Its panes moved: the frame that draws them hands the keys to the
     /// focused one.
     panes_moved: bool,
+    front: Option<u64>,
     /// Where the bar's menu buttons were last painted: each menu hangs
     /// under its own.
     bar_buttons: HashMap<crate::Overlay, gpui_kit::Bounds<gpui_kit::Pixels>>,
