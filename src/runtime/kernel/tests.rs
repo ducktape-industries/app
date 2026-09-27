@@ -660,7 +660,7 @@ fn system_kinds_route_to_the_node_handler() {
 }
 
 #[test]
-fn host_props_is_program_independent_and_tracks_updates() {
+fn host_session_is_program_independent_and_tracks_updates() {
     let mut guest = guest();
     let props = Some(super::super::props(
         true,
@@ -773,13 +773,9 @@ fn host_offset_hands_the_readers_utc_offset_and_its_moves() {
     assert_eq!(heard, [(23, minutes), (24, minutes)]);
 }
 
-/// Reproduces "Couldn't create this channel: Unexpected length of input":
-/// `create_channel` mints its id with `host.ask::<Id>("channel".into())`
-/// before it ever submits an op, and `Id` (`method!(Id, "host.id", String,
-/// String)`) answers borsh like every other method — so the reply the view
-/// decodes with `Id::decode_reply` (`methods::decode::<String>`) must be one
-/// it, not raw UTF-8 with no length prefix, which the guest happily builds
-/// and only the view's decode fails on later.
+/// `host.id` replies a borsh `String` like every other method
+/// (`HostId::decode_reply` is `methods::decode::<String>`): raw UTF-8 with
+/// no length prefix builds fine here and fails only in the view's decode.
 #[test]
 fn host_id_answers_a_borsh_string_a_view_can_decode() {
     let mut guest = guest();

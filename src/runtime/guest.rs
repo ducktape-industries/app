@@ -121,6 +121,14 @@ pub(super) enum Restored {
     Refused(String),
 }
 
+/// One instantiated view: its wasm store and exports, the last frame it
+/// sent, and everything the host keeps on its behalf between ticks — the
+/// events owed to it, the live text of its inputs, its pictures, and the
+/// subscriptions it opened. Every subscription list here (`props`,
+/// `visibility`, `offset`, `route`, `live`, `tasks`, `clocks`) has one
+/// lifecycle: opened by a request, retired by its cancel in `redraw`, and
+/// gone with the instance. A replacement prepared by `load` is a second
+/// `Guest` seated over this one (`alive`, `staged`).
 pub(super) struct Guest {
     /// Node requests belong to the network selected when this instance starts.
     pub(crate) connection_rev: u64,
@@ -171,8 +179,8 @@ pub(super) struct Guest {
     pub(crate) intents: Vec<Intent>,
     /// The kernel's answers to this guest's node calls, on their way in.
     pub(crate) replies: Arc<kernel::Replies>,
-    /// The guest's `module.changes` subscriptions, each with the plane it named:
-    /// told on every block that moves that plane.
+    /// The guest's `module.changes` subscriptions and the program each one
+    /// watches: told on every block that wrote to that program.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
     /// Pending host requests and subscriptions, each owned by this guest
     /// the kernel opened for it: retired with the cancel, and with the guest.
@@ -185,11 +193,8 @@ pub(super) struct Guest {
     pub(crate) clocks: Vec<kernel::Clock>,
     /// The trap that ended the view, if one did. A faulted guest never ticks again.
     pub(crate) fault: Option<String>,
-    /// The assets the deployment shipped beside this view, for the host
-    /// surfaces that paint them by canonical relative path; swapped with the
-    /// instance as one unit. Empty for a view the developer's override supplies.
-    /// The deployment this instance came from; none for a file the
-    /// developer's override supplies.
+    /// sha256 of the view bytes this instance was built from; none for a
+    /// file the developer's override supplies.
     pub(crate) hash: Option<[u8; 32]>,
     /// This instance's identity: a replacement prepared against it is
     /// installed only over it.
@@ -199,8 +204,8 @@ pub(super) struct Guest {
     pub(crate) staged: bool,
 }
 
-/// The asset at `path` in a deployment's map: the canonical relative path,
-/// exactly — no normalisation, no file, no network.
+/// The first six bytes of a hash as hex: how a view is named in logs and
+/// errors.
 pub(super) fn hex_short(hash: &[u8; 32]) -> String {
     hash[..6].iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -309,7 +314,8 @@ pub(super) fn arm(store: &mut Store<HostState>) {
 
 /// Brings the tree the host holds into `frame`: an `unchanged` frame takes
 /// it as is, a frame without a tree patches it, a frame with one replaces
-/// it. `Ok(true)` is a tree the widget has to rebuild for.
+/// it. The flag is a tree the widget has to rebuild for; the report is what
+/// sanitizing the result cut.
 pub(super) fn merge(
     held: &mut Option<wire::Node>,
     frame: &mut wire::Frame,
