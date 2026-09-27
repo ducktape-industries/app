@@ -4,6 +4,7 @@
 
 use super::ink::{self, *};
 use super::launcher::{buttons, node_caption};
+use super::text_field::TextField;
 use super::*;
 use facts::Facts;
 use figure::Figure;
@@ -28,18 +29,20 @@ impl DesktopWindow {
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
         let phrase = self.input(
-            "restore-phrase",
-            "24 words, separated by spaces",
-            false,
-            |state| match &state.stage {
-                crate::Stage::Recover(step) => step.phrase.as_str(),
-                _ => "",
+            TextField {
+                key: "restore-phrase",
+                placeholder: "24 words, separated by spaces",
+                masked: false,
+                value: |state| match &state.stage {
+                    crate::Stage::Recover(step) => step.phrase.as_str(),
+                    _ => "",
+                },
+                on_change: Message::RestorePhraseTyped,
+                on_enter: || Message::RecoverSubmit,
+                label: Some("Recovery key".into()),
+                secret: true,
+                size: 15.,
             },
-            Message::RestorePhraseTyped,
-            || Message::RecoverSubmit,
-            Some("Recovery key".into()),
-            true,
-            15.,
             window,
             cx,
         );
@@ -209,17 +212,19 @@ impl DesktopWindow {
         let rows: Vec<_> = fields
             .into_iter()
             .zip(asked)
-            .map(|((key, value, typed), nth)| {
+            .map(|((key, value, on_change), nth)| {
                 let field = self.input(
-                    key,
-                    "",
-                    false,
-                    value,
-                    typed,
-                    || Message::PhraseCheckSubmit,
-                    Some(format!("Word {}", nth + 1).into()),
-                    true,
-                    15.,
+                    TextField {
+                        key,
+                        placeholder: "",
+                        masked: false,
+                        value,
+                        on_change,
+                        on_enter: || Message::PhraseCheckSubmit,
+                        label: Some(format!("Word {}", nth + 1).into()),
+                        secret: true,
+                        size: 15.,
+                    },
                     window,
                     cx,
                 );

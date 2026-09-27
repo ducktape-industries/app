@@ -1,5 +1,6 @@
 //! "Add a device…": approving another device onto the account.
 
+use super::text_field::TextField;
 use super::*;
 use facts::Facts;
 
@@ -22,15 +23,17 @@ impl DesktopWindow {
         let (said, fields) = match &state.approve_fingerprint {
             None => {
                 let code = self.input(
-                    "approve-code",
-                    "XXXX-XXXX",
-                    false,
-                    |state| &state.sign_in.approve_code,
-                    Message::ApproveCodeTyped,
-                    || Message::ApproveFind,
-                    Some("Code".into()),
-                    false,
-                    15.,
+                    TextField {
+                        key: "approve-code",
+                        placeholder: "XXXX-XXXX",
+                        masked: false,
+                        value: |state| &state.sign_in.approve_code,
+                        on_change: Message::ApproveCodeTyped,
+                        on_enter: || Message::ApproveFind,
+                        label: Some("Code".into()),
+                        secret: false,
+                        size: 15.,
+                    },
                     window,
                     cx,
                 );

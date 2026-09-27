@@ -3,6 +3,7 @@
 
 use super::ink::{self, *};
 use super::launcher::{buttons, closing, node_caption};
+use super::text_field::TextField;
 use super::*;
 use facts::Facts;
 use figure::Figure;
@@ -59,18 +60,20 @@ impl DesktopWindow {
         });
         let password = state.key_exists.then(|| {
             let field = self.input(
-                "password",
-                "",
-                true,
-                |state| match &state.stage {
-                    crate::Stage::Unlock(step) => step.password.as_str(),
-                    _ => "",
+                TextField {
+                    key: "password",
+                    placeholder: "",
+                    masked: true,
+                    value: |state| match &state.stage {
+                        crate::Stage::Unlock(step) => step.password.as_str(),
+                        _ => "",
+                    },
+                    on_change: Message::PasswordTyped,
+                    on_enter: || Message::UnlockSubmit,
+                    label: Some("Password".into()),
+                    secret: true,
+                    size: 15.,
                 },
-                Message::PasswordTyped,
-                || Message::UnlockSubmit,
-                Some("Password".into()),
-                true,
-                15.,
                 window,
                 cx,
             );

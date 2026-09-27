@@ -4,6 +4,7 @@
 
 use super::ink::{self, *};
 use super::launcher::{buttons, closing, node_caption};
+use super::text_field::TextField;
 use super::*;
 use facts::Facts;
 use figure::Figure;
@@ -26,18 +27,20 @@ impl DesktopWindow {
         }
         let ink = Ink::of(state.dark);
         let name = self.input(
-            "create-account-name",
-            "",
-            false,
-            |state| match &state.stage {
-                crate::Stage::Account(step) => &step.name,
-                _ => "",
+            TextField {
+                key: "create-account-name",
+                placeholder: "",
+                masked: false,
+                value: |state| match &state.stage {
+                    crate::Stage::Account(step) => &step.name,
+                    _ => "",
+                },
+                on_change: Message::AccountNameTyped,
+                on_enter: || Message::CreateAccountSubmit,
+                label: Some("Account name".into()),
+                secret: false,
+                size: 22.,
             },
-            Message::AccountNameTyped,
-            || Message::CreateAccountSubmit,
-            Some("Account name".into()),
-            false,
-            22.,
             window,
             cx,
         );

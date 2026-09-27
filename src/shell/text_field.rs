@@ -23,6 +23,28 @@ fn digest(text: &str) -> u64 {
     hasher.finish()
 }
 
+/// What a screen asks of its text field (`DesktopWindow::input`).
+pub(super) struct TextField {
+    /// Its element id, and what its state is kept under in the window.
+    pub(super) key: &'static str,
+    pub(super) placeholder: &'static str,
+    /// Its accessible name; the placeholder when `None`.
+    pub(super) label: Option<gpui_kit::SharedString>,
+    /// Drawn as dots, with the password role.
+    pub(super) masked: bool,
+    /// Kept out of the AX tree's value without being masked (the recovery
+    /// phrase).
+    pub(super) secret: bool,
+    /// The text size, in the canvas's px (`ink::fit` scales it).
+    pub(super) size: f32,
+    /// The model's copy of the text, which the field mirrors.
+    pub(super) value: fn(&Ducktape) -> &str,
+    /// What every change dispatches, with the text.
+    pub(super) on_change: fn(String) -> Message,
+    /// What Enter dispatches.
+    pub(super) on_enter: fn() -> Message,
+}
+
 impl DesktopWindow {
     /// A native text field; Enter dispatches `on_enter`, every change
     /// dispatches `on_change` with the text.
@@ -48,21 +70,23 @@ impl DesktopWindow {
     /// which keeps that text out of the AX tree the way a masked field's
     /// `PasswordInput` role already does, for a field (the recovery
     /// phrase) that is sensitive without being visually masked.
-    #[allow(clippy::too_many_arguments, reason = "one call site per field")]
     pub(super) fn input(
         &mut self,
-        key: &'static str,
-        placeholder: &'static str,
-        masked: bool,
-        value: fn(&Ducktape) -> &str,
-        on_change: fn(String) -> Message,
-        on_enter: fn() -> Message,
-        label: Option<gpui_kit::SharedString>,
-        secret: bool,
-        size: f32,
+        field: TextField,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        let TextField {
+            key,
+            placeholder,
+            label,
+            masked,
+            secret,
+            size,
+            value,
+            on_change,
+            on_enter,
+        } = field;
         use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
         if !self.inputs.contains_key(key) {
             let state = cx.new(|cx| {

@@ -1,6 +1,7 @@
 //! The Connect screen, first in the launcher: a node address, the nodes
 //! reached before, and why the last try did not land.
 
+use super::text_field::TextField;
 use super::*;
 
 impl DesktopWindow {
@@ -16,15 +17,17 @@ impl DesktopWindow {
         let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
         let field = self.input(
-            "endpoint",
-            "127.0.0.1:8844",
-            false,
-            |state| &state.endpoint,
-            Message::EndpointTyped,
-            || Message::ConnectSubmit,
-            Some("Node address".into()),
-            false,
-            15.,
+            TextField {
+                key: "endpoint",
+                placeholder: "127.0.0.1:8844",
+                masked: false,
+                value: |state| &state.endpoint,
+                on_change: Message::EndpointTyped,
+                on_enter: || Message::ConnectSubmit,
+                label: Some("Node address".into()),
+                secret: false,
+                size: 15.,
+            },
             window,
             cx,
         );
