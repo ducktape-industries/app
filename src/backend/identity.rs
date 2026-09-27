@@ -233,6 +233,32 @@ mod tests {
         assert!(account_of_key(&client, "testkit", vec![1]).await.is_err());
     }
 
+    /// The one builder the five consent flows sign through hands back the
+    /// literal each of them used to write out: the network's bytes, the key
+    /// at the generation identity answers, the account, a TTL from now.
+    #[tokio::test]
+    async fn an_admission_is_the_literal_every_flow_signed() {
+        // a query's 200 carries the reply's bytes as one borsh Vec<u8>
+        let reply = abi::encode(&abi::encode(&Reply::Generation(3)));
+        let client = fake_node("200 OK", reply).await;
+        let before = expires_at();
+        let built = admission(&client, "testkit", abi::Scheme::Secp256r1, vec![7; 32], 12)
+            .await
+            .unwrap();
+        assert!((before..=expires_at()).contains(&built.expires_at));
+        assert_eq!(
+            built,
+            Admission {
+                network: b"testkit".to_vec(),
+                scheme: abi::Scheme::Secp256r1,
+                key: vec![7; 32],
+                generation: 3,
+                account: 12,
+                expires_at: built.expires_at,
+            }
+        );
+    }
+
     #[test]
     fn an_identity_refusal_reads_by_its_token() {
         let taken = abi::Refusal::new(abi::reason::ALREADY_EXISTS, "reworded upstream");
