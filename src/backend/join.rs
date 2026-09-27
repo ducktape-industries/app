@@ -32,7 +32,7 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 
 /// How long a new device waits for the other to approve: the relay's own
 /// hold.
-pub(crate) const WAIT: std::time::Duration = std::time::Duration::from_secs(300);
+const WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 const POLL: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Crockford's base32: no I, L, O, U to misread.

@@ -25,9 +25,9 @@ struct Signer {
 /// seat, the slot a program's view is mounted in.
 static SIGNER: tokio::sync::Mutex<Option<Signer>> = tokio::sync::Mutex::const_new(None);
 
-pub(crate) const LOCKED: &str = "this device's key is locked; unlock it first";
+const LOCKED: &str = "this device's key is locked; unlock it first";
 
-pub(crate) fn locked_seat() -> Error {
+fn locked_seat() -> Error {
     Error::new("session_locked", LOCKED)
 }
 
@@ -199,9 +199,6 @@ fn bind_in(remotes: &std::path::Path, network: &str, founded: u64) -> Result<Key
 /// The key file a sign-in opens: `DUCKTAPE_USER_KEY`, else the keyring's
 /// active wallet.
 pub(crate) fn session_key_path(keyring: &str) -> Result<PathBuf, String> {
-    if let Some(path) = keystore::wallet::env_user_key() {
-        return Ok(path);
-    }
     keystore::wallet::active_user_key(&keystore_root(keyring)?)
 }
 

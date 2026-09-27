@@ -33,7 +33,7 @@ pub(crate) const EMOJI_FACE: &[u8] = include_bytes!("../assets/fonts/NotoColorEm
 
 /// Tried after the Hangul face, in order: emoji (macOS, then Noto), the
 /// macOS CJK faces, then the Linux ones, then symbols.
-pub(crate) const FALLBACK_FAMILIES: &[&str] = &[
+const FALLBACK_FAMILIES: &[&str] = &[
     "Apple Color Emoji",
     "Noto Color Emoji",
     "Apple SD Gothic Neo",
@@ -56,7 +56,7 @@ pub(crate) fn mono_fallback_chain() -> gpui_kit::FontFallbacks {
     CHAIN.clone()
 }
 
-pub(crate) fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
+fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
     gpui_kit::FontFallbacks::from_fonts(
         std::iter::once(hangul.to_string())
             .chain(FALLBACK_FAMILIES.iter().map(|name| name.to_string()))
