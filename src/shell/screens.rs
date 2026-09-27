@@ -500,7 +500,7 @@ impl DesktopWindow {
         self.launcher(
             "connect",
             false,
-            figure::Figure::Node,
+            figure::Figure::Roll,
             caption.into(),
             None,
             "[01 / 03] Network".into(),
