@@ -4,12 +4,12 @@
 use super::*;
 
 impl DesktopWindow {
-    /// Takes hold of window `index` at `at`: `sides` (left, top, right,
-    /// bottom) follow the pointer; none, and the whole window does.
+    /// Takes hold of window `index` at `at`: `sides` follow the pointer;
+    /// none, and the whole window does.
     pub(super) fn hold(
         &mut self,
         index: usize,
-        sides: [bool; 4],
+        sides: Sides,
         at: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &gpui_kit::App,
     ) {
@@ -35,52 +35,80 @@ impl DesktopWindow {
         const IN: f32 = 4.;
         const EDGE: f32 = layout::GRAB + IN;
         const CORNER: f32 = layout::GRAB + 10.;
-        let grips: [(&str, [bool; 4], CursorStyle); 8] = [
+        const NONE: Sides = Sides::NONE;
+        let grips: [(&str, Sides, CursorStyle); 8] = [
             (
                 "left",
-                [true, false, false, false],
+                Sides { left: true, ..NONE },
                 CursorStyle::ResizeLeftRight,
             ),
             (
                 "right",
-                [false, false, true, false],
+                Sides {
+                    right: true,
+                    ..NONE
+                },
                 CursorStyle::ResizeLeftRight,
             ),
             (
                 "top",
-                [false, true, false, false],
+                Sides { top: true, ..NONE },
                 CursorStyle::ResizeUpDown,
             ),
             (
                 "bottom",
-                [false, false, false, true],
+                Sides {
+                    bottom: true,
+                    ..NONE
+                },
                 CursorStyle::ResizeUpDown,
             ),
             (
                 "top-left",
-                [true, true, false, false],
+                Sides {
+                    left: true,
+                    top: true,
+                    ..NONE
+                },
                 CursorStyle::ResizeUpLeftDownRight,
             ),
             (
                 "bottom-right",
-                [false, false, true, true],
+                Sides {
+                    right: true,
+                    bottom: true,
+                    ..NONE
+                },
                 CursorStyle::ResizeUpLeftDownRight,
             ),
             (
                 "top-right",
-                [false, true, true, false],
+                Sides {
+                    top: true,
+                    right: true,
+                    ..NONE
+                },
                 CursorStyle::ResizeUpRightDownLeft,
             ),
             (
                 "bottom-left",
-                [true, false, false, true],
+                Sides {
+                    left: true,
+                    bottom: true,
+                    ..NONE
+                },
                 CursorStyle::ResizeUpRightDownLeft,
             ),
         ];
         grips
             .into_iter()
             .map(|(name, sides, cursor)| {
-                let [left, top, right, bottom] = sides;
+                let Sides {
+                    left,
+                    top,
+                    right,
+                    bottom,
+                } = sides;
                 let corner = (left || right) && (top || bottom);
                 let grip = div()
                     .id(SharedString::from(format!("pane/{index}/grip/{name}")))
@@ -117,11 +145,30 @@ impl DesktopWindow {
     }
 }
 
+/// The sides of a window a hold carries along with the pointer.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Sides {
+    left: bool,
+    top: bool,
+    right: bool,
+    bottom: bool,
+}
+
+impl Sides {
+    /// No side held: the whole window follows.
+    pub(super) const NONE: Sides = Sides {
+        left: false,
+        top: false,
+        right: false,
+        bottom: false,
+    };
+}
+
 /// A window held by the pointer.
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Drag {
     index: usize,
-    sides: [bool; 4],
+    sides: Sides,
     from: (f32, f32),
     start: layout::Frame,
 }
@@ -132,9 +179,14 @@ impl Drag {
     fn frame(&self, to: (f32, f32)) -> layout::Frame {
         let (dx, dy) = (to.0 - self.from.0, to.1 - self.from.1);
         let start = self.start;
-        let [left, top, right, bottom] = self.sides;
+        let Sides {
+            left,
+            top,
+            right,
+            bottom,
+        } = self.sides;
         let mut frame = start;
-        if self.sides == [false; 4] {
+        if self.sides == Sides::NONE {
             frame.x += dx;
             frame.y += dy;
         }
@@ -232,7 +284,7 @@ pub(super) fn follow(this: gpui_kit::Entity<DesktopWindow>, window: &mut Window)
 
 #[cfg(test)]
 mod drag_tests {
-    use super::{Drag, layout::*};
+    use super::{Drag, Sides, layout::*};
 
     #[test]
     fn a_title_bar_moves_and_an_edge_sizes_from_its_own_side() {
@@ -248,7 +300,7 @@ mod drag_tests {
             from: (0., 0.),
             start,
         };
-        let moved = drag([false; 4]).frame((30., -20.));
+        let moved = drag(Sides::NONE).frame((30., -20.));
         assert_eq!(
             moved,
             Frame {
@@ -257,7 +309,12 @@ mod drag_tests {
                 ..start
             }
         );
-        let corner = drag([false, false, true, true]).frame((40., 50.));
+        let corner = drag(Sides {
+            right: true,
+            bottom: true,
+            ..Sides::NONE
+        })
+        .frame((40., 50.));
         assert_eq!(
             corner,
             Frame {
@@ -267,9 +324,17 @@ mod drag_tests {
             }
         );
         // the left edge past the smallest window: the right edge stays put
-        let left = drag([true, false, false, false]).frame((1000., 0.));
+        let left = drag(Sides {
+            left: true,
+            ..Sides::NONE
+        })
+        .frame((1000., 0.));
         assert_eq!((left.w, left.x + left.w), (MIN_WIDTH, 600.));
-        let top = drag([false, true, false, false]).frame((0., -60.));
+        let top = drag(Sides {
+            top: true,
+            ..Sides::NONE
+        })
+        .frame((0., -60.));
         assert_eq!((top.y, top.h), (40., 460.));
     }
 }

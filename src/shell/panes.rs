@@ -327,7 +327,7 @@ impl DesktopWindow {
                 cx.listener(move |this, event: &MouseDownEvent, window, cx| {
                     match (on_desk, event.click_count) {
                         (true, 2) => this.pane_message(PaneMessage::Fill(index), window, cx),
-                        (true, _) => this.hold(index, [false; 4], event.position, cx),
+                        (true, _) => this.hold(index, pane_drag::Sides::NONE, event.position, cx),
                         (false, 2) if handle => window.titlebar_double_click(),
                         (false, _) if handle => window.start_window_move(),
                         (false, _) => {}
