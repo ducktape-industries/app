@@ -185,12 +185,15 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
 fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = console(cx);
     native.update(|window, cx| press("pane/0/split", window, cx));
-    native.update(|window, cx| {
+    let first = native.update(|window, cx| {
         draw(window, cx);
-        assert_eq!(view.read(cx).layout(cx).focused, 1);
+        let layout = view.read(cx).layout(cx);
+        assert_eq!(layout.focused, 1);
+        layout.panes[0].frame.unwrap()
     });
-    // the first window fills the desk; the second covers its top-left
-    let behind = gpui_kit::point(px(1200.), px(700.));
+    // the second cascades down and right of the first: the first's
+    // top-left corner stays uncovered
+    let behind = gpui_kit::point(px(first.x + 14.), px(desk::BAR + first.y + 14.));
     // over a menu's backdrop the press closes the menu, and raises nothing
     model.update(&mut native, |model, _| {
         model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Account))
@@ -212,7 +215,7 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
         assert_eq!(layout.stacking(), vec![1, 0]);
     });
     // a double press where both title bars lie fills the front window alone
-    let title = gpui_kit::point(px(600.), px(desk::BAR + 42.));
+    let title = gpui_kit::point(px(first.x + 100.), px(desk::BAR + first.y + 30.));
     native.simulate_click(title, gpui_kit::Modifiers::none());
     native.simulate_event(gpui_kit::MouseDownEvent {
         button: gpui_kit::MouseButton::Left,
