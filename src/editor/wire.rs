@@ -3,14 +3,14 @@
 //! 1. `collect` maps each mounted `Node::Editor`, by `AuthoredPath`, to a
 //!    `Field`; fields naming the same document share one `Document`.
 //! 2. The store asks the guest for text it lacks (`request_document`) and
-//!    the text arrives as an `Incoming` transfer.
-//! 3. Each native edit and each claimed key is queued as `Work` and
+//!    the text arrives as an `IncomingTransfer`.
+//! 3. Each native edit and each claimed key is queued as a `QueuedInput` and
 //!    handled one at a time per document. A native edit is committed at
 //!    once and waits in `Phase::Acknowledgment` until the guest's next frame
 //!    shows the committed revision; a key waits in `Phase::Decision` for the
 //!    guest's Apply, Noop or DefaultEditorAction.
 //! 4. While it decides, the guest may ask for the host's copy: an
-//!    `Outgoing` mirror.
+//!    `OutgoingMirror`.
 //! 5. Any error sets `fault`, which stops the pump for good.
 //!
 //! Transfer assemblers and patch validation are the wire contract's own code.
@@ -19,8 +19,7 @@ use crate::render::AuthoredPath;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
-use view_wire as wire;
-use wire::editor_document::{
+use view_wire::editor_document::{
     EditorDocumentMessage as DocumentMessage, EditorDocumentRef, EditorTransferId,
     EditorTransferReceiver, EditorTransferSender, MAX_EDITOR_LIVE_BYTES,
     MAX_EDITOR_PROJECTION_BYTES, editor_changed_span,
@@ -35,9 +34,9 @@ struct Store {
     epoch: Instant,
     fields: HashMap<AuthoredPath, Field>,
     documents: HashMap<String, Document>,
-    incoming: Option<Incoming>,
-    outgoing: Option<Outgoing>,
-    events: Vec<wire::Event>,
+    incoming: Option<IncomingTransfer>,
+    outgoing: Option<OutgoingMirror>,
+    events: Vec<view_wire::Event>,
     fault: Option<String>,
 }
 
@@ -45,7 +44,7 @@ struct Store {
 struct Field {
     reference: EditorDocumentRef,
     handler: u32,
-    options: wire::EditorOptions,
+    options: view_wire::EditorOptions,
     placeholder: String,
     editable: bool,
 }
@@ -53,7 +52,7 @@ struct Field {
 struct Document {
     reference: EditorDocumentRef,
     text: Option<Arc<str>>,
-    queue: VecDeque<Work>,
+    queue: VecDeque<QueuedInput>,
     queued_bytes: usize,
     phase: Phase,
 }
@@ -64,7 +63,7 @@ struct Document {
 enum Phase {
     Ready,
     Decision {
-        request: wire::EditorRequest,
+        request: view_wire::EditorRequest,
         since: Instant,
     },
     Acknowledgment {
@@ -73,16 +72,17 @@ enum Phase {
     Fault,
 }
 
-struct Work {
+struct QueuedInput {
     key: AuthoredPath,
     sequence: u64,
-    at: u64,
-    input: Input,
+    /// Milliseconds since the store was made; the guest gets it as `input_time_ms`.
+    input_time_ms: u64,
+    input: InputKind,
 }
 
-enum Input {
+enum InputKind {
     Native(NativeEdit),
-    Request(wire::EditorRequestInput),
+    Request(view_wire::EditorRequestInput),
 }
 
 /// Offsets relative to the previous caret let typing queued behind a structural
@@ -93,7 +93,7 @@ struct NativeEdit {
     replacement: String,
     caret: isize,
     anchor: Option<isize>,
-    kind: wire::EditorEditKind,
+    kind: view_wire::EditorEditKind,
 }
 
 impl NativeEdit {
@@ -116,14 +116,14 @@ impl NativeEdit {
     }
 }
 
-struct Incoming {
+struct IncomingTransfer {
     id: EditorTransferId,
     target: EditorDocumentRef,
     handler: u32,
     receiver: EditorTransferReceiver,
 }
 
-struct Outgoing {
+struct OutgoingMirror {
     handler: u32,
     sender: EditorTransferSender,
 }
@@ -134,7 +134,7 @@ pub(crate) struct Projection {
     // `pub(crate)`: a regression test outside this module reads the text an
     // AX-driven edit committed, to check that it reached the guest's store.
     pub(crate) text: Option<Arc<str>>,
-    options: wire::EditorOptions,
+    options: view_wire::EditorOptions,
     placeholder: String,
     editable: bool,
     pending: bool,
@@ -163,7 +163,7 @@ impl EditorStore {
     }
 
     /// Validate the complete candidate before changing the accepted projections.
-    pub fn validate(&self, root: &wire::Node) -> Result<(), String> {
+    pub fn validate(&self, root: &view_wire::Node) -> Result<(), String> {
         let fields = collect_checked(root)?;
         self.lock().validate_budget(&fields)
     }
@@ -172,7 +172,11 @@ impl EditorStore {
     /// every document, and neither has faulted. A document whose reference
     /// and text the restored store reproduced exactly shares the old
     /// allocation. The old store is untouched.
-    pub fn retain_restored_projections(&self, old: &Self, root: &wire::Node) -> Result<(), String> {
+    pub fn retain_restored_projections(
+        &self,
+        old: &Self,
+        root: &view_wire::Node,
+    ) -> Result<(), String> {
         self.validate(root)?;
         if old.pending() {
             return Err("the previous editor has pending work".into());
@@ -196,7 +200,7 @@ impl EditorStore {
         restored.check()
     }
 
-    pub fn replace(&self, root: &wire::Node) -> Result<(), String> {
+    pub fn replace(&self, root: &view_wire::Node) -> Result<(), String> {
         let fields = collect_checked(root)?;
         let mut store = self.lock();
         store.validate_budget(&fields)?;
@@ -205,7 +209,7 @@ impl EditorStore {
     }
 
     /// Called after adopting the complete root, including unchanged-tree frames.
-    pub fn frame(&self, frame: &wire::Frame) -> Result<(), String> {
+    pub fn frame(&self, frame: &view_wire::Frame) -> Result<(), String> {
         let mut store = self.lock();
         if !frame.busy {
             store.acknowledge();
@@ -220,7 +224,7 @@ impl EditorStore {
         store.check()
     }
 
-    pub fn drain(&self) -> Vec<wire::Event> {
+    pub fn drain(&self) -> Vec<view_wire::Event> {
         let mut store = self.lock();
         store.pump();
         std::mem::take(&mut store.events)
@@ -248,7 +252,7 @@ impl EditorStore {
     /// under (walked from `native_root`'s wrapped tree) is the one this
     /// resolves — the exact contract that broke when the wrapper carried
     /// an id of its own.
-    pub(crate) fn projection(&self, key: &[wire::ElementIdWire]) -> Option<Projection> {
+    pub(crate) fn projection(&self, key: &[view_wire::ElementIdWire]) -> Option<Projection> {
         let store = self.lock();
         let field = store.fields.get(key)?;
         let document = store.documents.get(&field.reference.document)?;
@@ -266,34 +270,34 @@ impl EditorStore {
     /// A toolbar press on an editor. It is not an edit: only the guest knows
     /// what its tag means, so it reaches the field's binding as an
     /// interaction and the decision comes back the way a key's does.
-    pub(crate) fn act(&self, key: &[wire::ElementIdWire], tag: String) {
+    pub(crate) fn act(&self, key: &[view_wire::ElementIdWire], tag: String) {
         self.request(
             key,
-            wire::EditorRequestInput::Interaction {
-                action: wire::editor_presentation::EditorInteraction::Action { tag },
+            view_wire::EditorRequestInput::Interaction {
+                action: view_wire::editor_presentation::EditorInteraction::Action { tag },
             },
         );
     }
 
-    fn request(&self, key: &[wire::ElementIdWire], input: wire::EditorRequestInput) {
+    fn request(&self, key: &[view_wire::ElementIdWire], input: view_wire::EditorRequestInput) {
         let mut store = self.lock();
-        store.enqueue(key, Input::Request(input));
+        store.enqueue(key, InputKind::Request(input));
         store.pump();
     }
 
     fn native(
         &self,
-        key: &[wire::ElementIdWire],
+        key: &[view_wire::ElementIdWire],
         before: &str,
-        previous: wire::EditorCursor,
+        previous: view_wire::EditorCursor,
         after: &str,
-        next: wire::EditorCursor,
-        kind: wire::EditorEditKind,
+        next: view_wire::EditorCursor,
+        kind: view_wire::EditorEditKind,
     ) {
         let result = native_edit(before, previous, after, next, kind);
         let mut store = self.lock();
         match result {
-            Ok(edit) => store.enqueue(key, Input::Native(edit)),
+            Ok(edit) => store.enqueue(key, InputKind::Native(edit)),
             Err(error) => store.fault = Some(error),
         }
         store.pump();
@@ -302,22 +306,27 @@ impl EditorStore {
 
 /// The root's editor fields, their document references checked against
 /// each other; the byte budget is the store's to check, under its lock.
-fn collect_checked(root: &wire::Node) -> Result<HashMap<AuthoredPath, Field>, String> {
+fn collect_checked(root: &view_wire::Node) -> Result<HashMap<AuthoredPath, Field>, String> {
     let mut fields = HashMap::new();
     collect(root, &mut fields)?;
-    wire::editor_document::validate_editor_document_refs(fields.values().map(|f| &f.reference))
-        .map_err(|error| format!("invalid editor references: {error:?}"))?;
+    view_wire::editor_document::validate_editor_document_refs(
+        fields.values().map(|f| &f.reference),
+    )
+    .map_err(|error| format!("invalid editor references: {error:?}"))?;
     Ok(fields)
 }
 
-fn collect(node: &wire::Node, fields: &mut HashMap<AuthoredPath, Field>) -> Result<(), String> {
+fn collect(
+    node: &view_wire::Node,
+    fields: &mut HashMap<AuthoredPath, Field>,
+) -> Result<(), String> {
     fn walk(
-        node: &wire::Node,
+        node: &view_wire::Node,
         path: &mut AuthoredPath,
         fields: &mut HashMap<AuthoredPath, Field>,
     ) -> Result<(), String> {
         let entered = crate::render::enter_scope(node, path);
-        if let wire::Node::Editor {
+        if let view_wire::Node::Editor {
             document,
             on_document,
             options,
@@ -364,9 +373,9 @@ use native::*;
 /// assembler is complete at Begin, and even an empty Chunk is out of order.
 #[cfg(test)]
 pub(crate) fn seed_editor_text(store: &EditorStore, text: &str) {
-    use wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
+    use view_wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
     let asked = store.drain().into_iter().find_map(|event| match event {
-        wire::Event::EditorDocument {
+        view_wire::Event::EditorDocument {
             message: Message::Request { id, target },
             ..
         } => Some((id, target)),
@@ -386,7 +395,7 @@ pub(crate) fn seed_editor_text(store: &EditorStore, text: &str) {
     }
     editor_documents.push(Message::Transfer(EditorTransfer::Complete { id }));
     store
-        .frame(&wire::Frame {
+        .frame(&view_wire::Frame {
             editor_documents,
             ..Default::default()
         })
