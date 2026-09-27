@@ -64,6 +64,7 @@ pub(crate) enum Spot {
     Lock,
     Appearance(Appearance),
     OtherNetwork,
+    Help,
 }
 
 /// One Spotlight row, under its group's heading.
@@ -345,6 +346,8 @@ pub(crate) enum AppMessage {
     SwitchNetwork(String),
     /// Show a program on the desk (Spotlight, a menu).
     SelectView(&'static str),
+    /// The app's help, in a window on the desk.
+    OpenHelp,
     /// Something done to a window's panes.
     Pane(WindowKey, super::layout::PaneMessage),
     /// A window drew its desk this size; `seed` is the program an

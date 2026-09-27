@@ -413,6 +413,7 @@ impl Ducktape {
                 }
                 if matches!(self.stage, Stage::Account(_)) {
                     self.stage = Stage::Desk;
+                    self.open_help();
                 }
                 self.resolve_account()
             }
@@ -459,6 +460,7 @@ impl Ducktape {
                         self.account = Some(Some(account));
                         if matches!(self.stage, Stage::Account(_)) {
                             self.stage = Stage::Desk;
+                            self.open_help();
                         }
                     }
                     Err(error) => self.sign_in.unlock_error = account_error(&self.network, error),

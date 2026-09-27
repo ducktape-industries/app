@@ -27,6 +27,7 @@ mod approve;
 mod command;
 mod desk;
 mod figure;
+mod help;
 mod ink;
 mod keys;
 mod launch;

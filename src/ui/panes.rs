@@ -50,7 +50,7 @@ impl Ducktape {
                 }
             }
             PaneMessage::PopOut { index, at } => {
-                if layout.panes.get(index).is_some_and(|pane| !pane.is_empty())
+                if layout.panes.get(index).is_some_and(|pane| pane.is_view())
                     && let Some(pane) = layout.close(index)
                 {
                     let kind = WindowKind::View {
@@ -98,6 +98,16 @@ impl Ducktape {
 
     /// The console's desk, made if it has none yet; `None` before the
     /// console window is opened.
+    /// Help on the desk: into the focused window if it is empty, else
+    /// where it already is, else a window of its own. A new account starts
+    /// here.
+    pub(super) fn open_help(&mut self) {
+        if let Some(desk) = self.desk_layout() {
+            desk.open(super::layout::HELP);
+            desk.settle();
+        }
+    }
+
     pub(super) fn desk_layout(&mut self) -> Option<&mut Layout> {
         let layout = self.layouts.entry(self.console_win?).or_default();
         layout.initialized = true;
