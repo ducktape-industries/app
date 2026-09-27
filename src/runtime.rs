@@ -13,11 +13,11 @@
 //! view gets.
 //!
 //! This file is also the submodules' PRELUDE: `guest`, `roster`, `seat`,
-//! `widget`, `input`, `kernel` and `display_diagnostics` open with `use
-//! super::*;`, so every private `use` below (`Guest`, `Connection`,
-//! `Mounted`, `Slot`, `Instant`, `wire`, the wasmtime types...) and every
-//! constant is theirs too. A name a child uses without importing it comes
-//! from here.
+//! `widget`, `input` and `display_diagnostics` open with `use super::*;`,
+//! so every private `use` below (`Guest`, `Connection`, `Mounted`, `Slot`,
+//! `Instant`, `wire`, the wasmtime types...) and every constant is theirs
+//! too. A name a child uses without importing it comes from here. `kernel`,
+//! `clipboard`, `notify` and `store` import what they need by name.
 
 mod clipboard;
 mod guest;
