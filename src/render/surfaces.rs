@@ -1,3 +1,5 @@
+//! The Overlay node: a base plus an optional modal layer (dialog, popover,
+//! backdrop, focus trap).
 use super::*;
 use crate::render::native_id;
 

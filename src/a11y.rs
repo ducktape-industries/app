@@ -1,6 +1,9 @@
-//! Accessibility helpers for the native screens and the tree presenter: a
-//! role never arrives without a name, a keyboard-reachable control, and the
-//! states GPUI has no setter for.
+//! Accessibility helpers for the native screens and the tree presenter: role
+//! with name (`Control`), keyboard reach (`keyboard`, `focus_shown`), states
+//! set on the element's own node after a kit widget has built it (`aria`,
+//! `disabled`, `modal`), one AT node for a kit text input (`text_field`),
+//! and the class names the AX test door masks (`private`) or leaves
+//! untruncated (`whole`).
 
 use gpui_kit::{
     AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement, Interactivity,
@@ -67,8 +70,9 @@ impl InteractiveElement for Aria<'_> {
 
 impl StatefulInteractiveElement for Aria<'_> {}
 
-/// Reports `disabled` to assistive technology. GPUI has no setter for it:
-/// an element's own node is only reachable while its subtree is built.
+/// Reports `disabled` to assistive technology. Set on the element's own node
+/// after the widget has built it, so a kit widget's own state cannot clear
+/// it; on a plain div `aria_disabled` does the same.
 pub fn disabled<E: InteractiveElement>(element: E, disabled: bool) -> E {
     if !disabled {
         return element;

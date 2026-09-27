@@ -22,8 +22,10 @@ use std::sync::Arc;
 use unicode_segmentation::UnicodeSegmentation;
 use view_wire as wire;
 
-/// The key context a guest editor sits in, which the app's own key bindings
-/// read off the context stack (`shell::keys`).
+/// Names the editor in the key-context stack. No app binding uses it
+/// (`shell::keys::bind`): a chord the guest claimed is taken by the
+/// keystroke interceptor in `new`, which stops propagation before any app
+/// binding (secondary-k, say) runs.
 pub const GUEST_EDITOR_CONTEXT: &str = "GuestEditor";
 
 /// The tallest a field grows before it scrolls inside itself. The document
@@ -31,15 +33,20 @@ pub const GUEST_EDITOR_CONTEXT: &str = "GuestEditor";
 /// the element stops being how anyone reads it.
 const MAX_ROWS: usize = 4096;
 
+/// One guest document shown in a native multi-line `Textarea`.
 pub struct TextEditor {
     key: crate::render::AuthoredPath,
     store: EditorStore,
     input: Entity<TextareaState>,
+    /// the field's own text, which runs ahead of the guest's until it answers
     preview: Arc<str>,
+    /// the field's own caret, as `preview` is its text
     cursor: wire::EditorCursor,
+    /// the document generation last put into the field
     reset: Option<u64>,
+    /// the last snapshot read from the store
     projection: Option<Projection>,
-    painted: Option<wire::EditorOptions>,
+    /// whether the field fills its box's height instead of growing to `cap`
     fills: bool,
     /// the most rows a field that does not fill grows to before it scrolls:
     /// what the node's own `max_h` holds
@@ -85,7 +92,6 @@ impl TextEditor {
             cursor: Default::default(),
             reset: None,
             projection: None,
-            painted: None,
             fills: true,
             cap: None,
             accessible: Default::default(),
@@ -210,7 +216,6 @@ impl TextEditor {
             input.set_soft_wrap(true, window, cx);
             input.set_editor_paddings(Edges::all(px(0.)));
         });
-        self.painted = Some(projection.options.clone());
         self.projection = Some(projection);
     }
 
@@ -404,8 +409,9 @@ impl Render for TextEditor {
             value: Some(self.input.read(cx).value().to_string()),
             ..self.accessible.clone()
         };
-        // The app's bindings read this context off a keystroke: Ctrl+K is a
-        // link here, not the search palette.
+        // Only a name in the context stack: the guest's claim on a chord
+        // (Ctrl+K as a link, not the search palette) is decided by the
+        // keystroke interceptor in `new`, not by a binding on this context.
         div()
             .key_context(GUEST_EDITOR_CONTEXT)
             .relative()
