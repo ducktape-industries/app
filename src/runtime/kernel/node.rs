@@ -79,12 +79,7 @@ fn spawn_method(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod, 
         return;
     };
     let replies = guest.replies.clone();
-    let Some(counted) = replies.admit() else {
-        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
-        return;
-    };
-    let task = handle().spawn(async move {
-        let _counted = counted;
+    start(guest, id, async move {
         let result = if retry {
             until_answered(NODE_RETRY_BUDGET, || method(node.clone(), ask.clone())).await
         } else {
@@ -92,10 +87,30 @@ fn spawn_method(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod, 
         };
         replies.item(id, result, true);
     });
+}
+
+/// Every task starts here: an in-flight slot from [`Replies::admit`] — or
+/// the request refused `in_flight_limit`, and `false` — then `task` on
+/// [`handle`] holding the slot, its [`NodeTask`] kept in `guest.tasks`
+/// (finished ones pruned) so it is aborted with the guest.
+fn start(
+    guest: &mut Guest,
+    id: u64,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) -> bool {
+    let Some(counted) = guest.replies.admit() else {
+        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
+        return false;
+    };
+    let task = handle().spawn(async move {
+        let _counted = counted;
+        task.await;
+    });
     guest
         .tasks
         .retain(|(_, pending)| !pending.task.is_finished());
     guest.tasks.push((id, NodeTask { task }));
+    true
 }
 
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
@@ -129,23 +144,12 @@ where
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let replies = guest.replies.clone();
-    let Some(counted) = replies.admit() else {
-        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
-        return;
-    };
     let items = Items {
         drained: replies.drains(),
         replies,
         id,
     };
-    let task = handle().spawn(async move {
-        let _counted = counted;
-        body(items).await;
-    });
-    guest
-        .tasks
-        .retain(|(_, pending)| !pending.task.is_finished());
-    guest.tasks.push((id, NodeTask { task }));
+    start(guest, id, body(items));
 }
 
 /// Runs `future` on the kernel runtime and delivers its result as the one
@@ -158,18 +162,9 @@ pub(in crate::runtime) fn spawn_reply(
     future: impl std::future::Future<Output = Answer> + Send + 'static,
 ) {
     let replies = guest.replies.clone();
-    let Some(counted) = replies.admit() else {
-        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
-        return;
-    };
-    let task = handle().spawn(async move {
-        let _counted = counted;
+    start(guest, id, async move {
         replies.item(id, future.await, true);
     });
-    guest
-        .tasks
-        .retain(|(_, pending)| !pending.task.is_finished());
-    guest.tasks.push((id, NodeTask { task }));
 }
 
 /// The node to ask, or `None` with the request REFUSED: `stale_connection`
@@ -217,14 +212,9 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         return;
     };
     let replies = guest.replies.clone();
-    let Some(counted) = replies.admit() else {
-        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
-        return;
-    };
-    guest.live_subscriptions.push((id, program.clone()));
-    let task = handle().spawn(async move {
+    let subscribed = (id, program.clone());
+    let started = start(guest, id, async move {
         use futures::StreamExt as _;
-        let _counted = counted;
         let mut drained = replies.drains();
         loop {
             let mut changes = match node.client.changes(&program).await {
@@ -255,7 +245,9 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
             tokio::time::sleep(backend::retry_delay(1)).await;
         }
     });
-    guest.tasks.push((id, NodeTask { task }));
+    if started {
+        guest.live_subscriptions.push(subscribed);
+    }
 }
 
 /// The most blocks one `/v1/blocks` page answers (the node's cap).
