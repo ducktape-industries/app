@@ -12,7 +12,7 @@ impl DesktopWindow {
     /// Escape, closes it.
     pub(super) fn settings(
         &mut self,
-        state: &screens::Facts,
+        state: &facts::Facts,
         window: &Window,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
@@ -153,7 +153,7 @@ impl DesktopWindow {
         )
     }
 
-    fn appearance_page(&self, state: &screens::Facts) -> gpui_kit::AnyElement {
+    fn appearance_page(&self, state: &facts::Facts) -> gpui_kit::AnyElement {
         use crate::Appearance;
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
@@ -201,7 +201,7 @@ impl DesktopWindow {
 
     /// The NotifSettings board: the device's say over banners, then each
     /// view's.
-    fn notifications_page(&self, state: &screens::Facts) -> gpui_kit::AnyElement {
+    fn notifications_page(&self, state: &facts::Facts) -> gpui_kit::AnyElement {
         use crate::runtime::notify::{self, Permission};
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
@@ -426,7 +426,7 @@ impl DesktopWindow {
             )
     }
 
-    fn networks_page(&self, state: &screens::Facts) -> gpui_kit::AnyElement {
+    fn networks_page(&self, state: &facts::Facts) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
         let (muted, danger) = (ink.muted, ink.danger);

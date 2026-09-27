@@ -4,8 +4,8 @@
 use super::ink::{self, *};
 use super::launcher::{buttons, closing, where_};
 use super::*;
+use facts::Facts;
 use figure::Figure;
-use screens::Facts;
 
 impl DesktopWindow {
     /// SignIn: this device's key, opening, locked, failed, or (from before

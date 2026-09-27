@@ -5,8 +5,8 @@
 use super::ink::{self, *};
 use super::launcher::{buttons, closing, where_};
 use super::*;
+use facts::Facts;
 use figure::Figure;
-use screens::Facts;
 
 impl DesktopWindow {
     /// CreateAccount: name the account this key signs for, or add this

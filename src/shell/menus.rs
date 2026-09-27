@@ -4,7 +4,8 @@
 //! Connect. Plus the number, hash and date formatters they read by.
 
 use super::*;
-use screens::{Facts, pulse};
+use facts::Facts;
+use status_bar::pulse;
 
 /// The program whose view is Account (the account, its keys, agents and
 /// invites), which the account menu opens.

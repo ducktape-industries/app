@@ -5,8 +5,8 @@
 use super::ink::{self, *};
 use super::launcher::{buttons, where_};
 use super::*;
+use facts::Facts;
 use figure::Figure;
-use screens::Facts;
 
 /// The phrase check's `nth` typed word.
 fn answer(state: &Ducktape, nth: usize) -> &str {

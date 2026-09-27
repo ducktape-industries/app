@@ -37,7 +37,9 @@ pub(crate) use fixtures::render_tree_fixture;
 mod account_screens;
 mod approve;
 mod command;
+mod connect;
 mod desk;
+mod facts;
 mod figure;
 mod help;
 mod ink;
@@ -58,6 +60,8 @@ mod screens_tests;
 mod settings;
 mod spin;
 mod spotlight;
+mod status_bar;
+mod text_field;
 mod theme;
 mod windows;
 
@@ -574,7 +578,7 @@ pub(crate) struct DesktopWindow {
     kind: WindowKind,
     drag: Option<panes::Drag>,
     /// The native text fields drawn in this window, by their element id.
-    inputs: HashMap<&'static str, NativeInput>,
+    inputs: HashMap<&'static str, text_field::NativeInput>,
     /// ⌘K's field took focus when it opened; it is not taken again while
     /// Spotlight stays open.
     spotlight_focused: bool,
@@ -612,16 +616,6 @@ pub(crate) struct DesktopWindow {
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
     _focus_lost: gpui_kit::Subscription,
-}
-
-/// One native text field's state, kept for as long as its window lives
-/// (see `DesktopWindow::input`).
-struct NativeInput {
-    state: Entity<gpui_kit::component::input::InputState>,
-    /// A digest of the model text the field last agreed with — what it
-    /// sent on its last change, or what the model last pushed into it.
-    mirrored: std::rc::Rc<std::cell::Cell<u64>>,
-    _subscription: gpui_kit::Subscription,
 }
 
 impl DesktopWindow {

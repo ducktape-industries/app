@@ -13,8 +13,8 @@
 
 use super::ink::{self, *};
 use super::*;
+use facts::Facts;
 use figure::Figure;
-use screens::Facts;
 
 /// The launcher window's size; it does not change.
 pub(super) const LAUNCHER_SIZE: (f32, f32) = (960., 640.);

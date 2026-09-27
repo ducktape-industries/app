@@ -1,7 +1,7 @@
 //! "Add a device…": approving another device onto the account.
 
 use super::*;
-use screens::Facts;
+use facts::Facts;
 
 impl DesktopWindow {
     /// "Add a device…": the code a new device shows, then its fingerprint

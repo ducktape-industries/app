@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::Spot;
-use screens::Facts;
+use facts::Facts;
 
 impl DesktopWindow {
     /// ⌘K: one field, and what it finds among the programs, the networks

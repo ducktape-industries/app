@@ -4,7 +4,8 @@
 use super::*;
 use crate::{Overlay, Popover};
 use desk::BAR;
-use screens::{Facts, pulse};
+use facts::Facts;
+use status_bar::pulse;
 
 impl DesktopWindow {
     /// The menu bar (the Menubar board): `height: 36px; padding: 0 8px;
