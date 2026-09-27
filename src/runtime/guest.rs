@@ -20,7 +20,7 @@ pub(super) enum Restored {
 /// One instantiated view: its wasm store and exports, the last frame it
 /// sent, and everything the host keeps on its behalf between ticks — the
 /// events owed to it, the live text of its inputs, its pictures, and the
-/// subscriptions it opened. Every subscription list here (`props`,
+/// subscriptions it opened. Every subscription here (`props`,
 /// `visibility`, `offset`, `route`, `live`, `tasks`, `clocks`) has one
 /// lifecycle: opened by a request, retired by its cancel in `redraw`, and
 /// gone with the instance. A replacement prepared by `load` is a second
@@ -336,6 +336,7 @@ pub(super) fn shape(
     frame.upstream_sanitization = upstream;
     Ok((frame, display_diagnostics::FrameReports { local, upstream }))
 }
+
 /// The manifest epoch a view must speak, or the plain refusal sentence for
 /// every unsupported epoch.
 pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {

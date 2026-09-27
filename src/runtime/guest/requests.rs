@@ -3,8 +3,8 @@ use super::*;
 /// The `methods::Call` envelope around an op: its target name and two
 /// lengths, allowed on top of MAX_OP_BYTES.
 const OP_ENVELOPE_BYTES: usize = 256;
-/// Widget commands waiting for a frame that mounts their target; the same
-/// bound as one tick's requests, since that is where they come from.
+/// Widget commands waiting for a frame that mounts their target: at most
+/// one tick's worth of requests.
 const MAX_PENDING_WIDGET_COMMANDS: usize = MAX_REQUESTS_PER_TICK;
 
 /// Whether `target` is a SUFFIX of some mounted node's authored path (the
