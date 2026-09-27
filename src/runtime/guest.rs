@@ -316,6 +316,32 @@ pub(super) fn arm(store: &mut Store<HostState>) {
     let _ = store.set_fuel(FUEL_PER_TICK);
 }
 
+/// The tooltip in a node that route `request` builds, if it has one. A
+/// plain tooltip caches the content alone; a rich text's caches the
+/// character index it was built for too.
+enum TooltipRoute<'a> {
+    Plain(&'a mut wire::Tooltip),
+    Rich(&'a mut wire::TooltipResponse),
+}
+
+fn tooltip_route(node: &mut wire::Node, request: u32) -> Option<TooltipRoute<'_>> {
+    match node {
+        wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
+        | wire::Node::UniformList { interactivity, .. }
+        | wire::Node::Image { interactivity, .. }
+        | wire::Node::Svg { interactivity, .. } => interactivity
+            .tooltip
+            .as_mut()
+            .filter(|tooltip| tooltip.request == request)
+            .map(TooltipRoute::Plain),
+        wire::Node::RichText {
+            tooltip: Some(tooltip),
+            ..
+        } if tooltip.request == request => Some(TooltipRoute::Rich(tooltip)),
+        _ => None,
+    }
+}
+
 /// Brings the tree the host holds into `frame`: an `unchanged` frame takes
 /// it as is, a frame without a tree patches it, a frame with one replaces
 /// it. The flag is a tree the widget has to rebuild for; the report is what
@@ -334,28 +360,16 @@ pub(super) fn merge(
             }
             let mut matches = 0usize;
             let mut index_matches = true;
-            root.for_each_mut(&mut |node| match node {
-                wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
-                | wire::Node::UniformList { interactivity, .. }
-                | wire::Node::Image { interactivity, .. }
-                | wire::Node::Svg { interactivity, .. } => {
-                    if interactivity
-                        .tooltip
-                        .as_ref()
-                        .is_some_and(|tooltip| tooltip.request == response.request)
-                    {
-                        matches += 1;
-                        index_matches &= response.character_index.is_none();
-                    }
+            root.for_each_mut(&mut |node| match tooltip_route(node, response.request) {
+                Some(TooltipRoute::Plain(_)) => {
+                    matches += 1;
+                    index_matches &= response.character_index.is_none();
                 }
-                wire::Node::RichText {
-                    tooltip: Some(tooltip),
-                    ..
-                } if tooltip.request == response.request => {
+                Some(TooltipRoute::Rich(_)) => {
                     matches += 1;
                     index_matches &= response.character_index.is_some();
                 }
-                _ => {}
+                None => {}
             });
             if matches > 1 {
                 return Err("duplicate tooltip request route");
@@ -371,28 +385,16 @@ pub(super) fn merge(
                 if response.is_none() {
                     return;
                 }
-                match node {
-                    wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
-                    | wire::Node::UniformList { interactivity, .. }
-                    | wire::Node::Image { interactivity, .. }
-                    | wire::Node::Svg { interactivity, .. }
-                        if interactivity
-                            .tooltip
-                            .as_ref()
-                            .is_some_and(|tooltip| tooltip.request == request) =>
-                    {
-                        interactivity.tooltip.as_mut().unwrap().content =
-                            response.take().unwrap().content;
+                match tooltip_route(node, request) {
+                    Some(TooltipRoute::Plain(tooltip)) => {
+                        tooltip.content = response.take().unwrap().content;
                     }
-                    wire::Node::RichText {
-                        tooltip: Some(tooltip),
-                        ..
-                    } if tooltip.request == request => {
+                    Some(TooltipRoute::Rich(tooltip)) => {
                         let value = response.take().unwrap();
                         tooltip.character_index = value.character_index;
                         tooltip.content = value.content;
                     }
-                    _ => {}
+                    None => {}
                 }
             });
             if response.is_none() {
