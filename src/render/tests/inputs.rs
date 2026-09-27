@@ -17,7 +17,7 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
         };
         *id = wire::ElementIdWire::Name("field".into());
         value.clear();
-        *on_input = handler;
+        *on_input = Some(handler);
         *on_submit = Some(handler + 10);
         node
     };

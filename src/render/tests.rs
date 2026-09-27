@@ -129,7 +129,7 @@ fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
         id: wire::ElementIdWire::Name("i".into()),
         placeholder: "Type here".into(),
         value: "hunter2".into(),
-        on_input: 1,
+        on_input: Some(1),
         on_submit: None,
         secure,
         style: Default::default(),

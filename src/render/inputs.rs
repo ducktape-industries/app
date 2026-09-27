@@ -89,7 +89,7 @@ impl EditorView {
 
 pub(super) struct Field {
     pub(super) state: Entity<InputState>,
-    pub(super) on_input: u32,
+    pub(super) on_input: Option<u32>,
     pub(super) on_submit: Option<u32>,
     pub(super) value: String,
     pub(super) guest_value: String,
@@ -152,10 +152,9 @@ impl ViewTree {
                             return;
                         }
                         field.value = text.clone();
-                        cx.emit(wire::Event::Input {
-                            handler: field.on_input,
-                            text,
-                        });
+                        if let Some(handler) = field.on_input {
+                            cx.emit(wire::Event::Input { handler, text });
+                        }
                     }
                     InputEvent::PressEnter { .. } => {
                         if let Some(message) = field.on_submit {
