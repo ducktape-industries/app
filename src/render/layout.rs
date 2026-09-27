@@ -2,6 +2,7 @@
 //! other renderers share: `measure` records an element's bounds under its
 //! authored path, `over_padding` floats a bar or a measure over a scroller
 //! without counting as its content, `vertical_bar` is a scroller's bar.
+use super::accessibility::Drift;
 use super::*;
 use crate::render::native_id;
 
@@ -49,95 +50,15 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_active(group.group.clone(), move |_| style);
         }
-        if let Some(role) = interactivity.role {
-            element = element.role(role);
-        }
-        if interactivity.focusable {
-            element = element.focusable();
-        }
-        if let Some(value) = &interactivity.aria.author_id {
-            element = element.accessibility_id(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.label {
-            element = element.aria_label(value.clone());
-        } else if interactivity.role.is_some()
-            && let Some(text) = descendant_text(node)
-        {
-            // A role with no explicit label: a view styling its own button
-            // out of a container still gets a name, taken from the text it
-            // drew inside — not left silent with its label one level down.
-            element = element.aria_label(text);
-        }
-        if let Some(value) = &interactivity.aria.description {
-            element = element.aria_description(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.keyshortcuts {
-            element = element.aria_keyshortcuts(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.value {
-            element = element.aria_value(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.placeholder {
-            element = element.aria_placeholder(value.clone());
-        }
-        if let Some(value) = interactivity.aria.selected {
-            element = element.aria_selected(value);
-        }
-        if let Some(value) = interactivity.aria.expanded {
-            element = element.aria_expanded(value);
-        }
-        if let Some(value) = interactivity.aria.disabled {
-            element = element.aria_disabled(value);
-        }
-        if let Some(value) = interactivity.aria.numeric_value {
-            element = element.aria_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.numeric_value_step {
-            element = element.aria_numeric_value_step(value);
-        }
-        if let Some(value) = interactivity.aria.min_numeric_value {
-            element = element.aria_min_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.max_numeric_value {
-            element = element.aria_max_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.level {
-            element = element.aria_level(value);
-        }
-        if let Some(value) = interactivity.aria.position_in_set {
-            element = element.aria_position_in_set(value);
-        }
-        if let Some(value) = interactivity.aria.size_of_set {
-            element = element.aria_size_of_set(value);
-        }
-        if let Some(value) = interactivity.aria.row_index {
-            element = element.aria_row_index(value);
-        }
-        if let Some(value) = interactivity.aria.column_index {
-            element = element.aria_column_index(value);
-        }
-        if let Some(value) = interactivity.aria.row_count {
-            element = element.aria_row_count(value);
-        }
-        if let Some(value) = interactivity.aria.column_count {
-            element = element.aria_column_count(value);
-        }
-        if let Some(value) = interactivity.aria.toggled {
-            element = element.aria_toggled(value);
-        }
-        if let Some(value) = interactivity.aria.orientation {
-            element = element.aria_orientation(value);
-        }
-        if interactivity.aria.active_descendant {
-            element = element.aria_active_descendant();
-        }
-        let focus_handle = interactivity.focus_handle.as_ref().map(|id| {
-            self.guest_focus_targets
-                .entry(*id)
-                .or_insert_with(|| cx.focus_handle())
-                .clone()
-        });
-        element = super::interactivity::apply(element, interactivity, focus_handle, cx);
+        element = self.guest_aria(
+            element,
+            interactivity,
+            Drift {
+                name_from: Some(node),
+                active_descendant: true,
+            },
+            cx,
+        );
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {

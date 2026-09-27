@@ -1,6 +1,8 @@
 //! What a wire node is to assistive technology. `accessible` maps a node to
 //! an `Accessible` (role, name, value, states); `announce` writes one onto
-//! the element a renderer built. `ViewTree::presentation` also lives here
+//! the element a renderer built; `guest_aria` writes the guest's own
+//! `Interactivity.aria` for the nodes that carry it (Container, Image, Svg,
+//! UniformList). `ViewTree::presentation` also lives here
 //! for now, though it is not accessibility: it is the native state carried
 //! across a guest generation (see its doc).
 use super::*;
@@ -61,8 +63,9 @@ pub(crate) fn descendant_text(node: &wire::Node) -> Option<String> {
 /// nodes the presenter announces itself: a view never names those controls'
 /// roles, it says `label` and the role follows from the variant. Not every
 /// variant passes through here. Container, UniformList, Image and Svg carry
-/// the guest's own `Interactivity.aria` setters instead (their renderers
-/// never call this; the Image/Svg arm below is reached by tests only), the
+/// the guest's own `Interactivity.aria` through `guest_aria` instead (their
+/// renderers never call this; the Image/Svg arm below is reached by tests
+/// only), the
 /// kit Slider draws its own node, and RichText has none. The node's
 /// accessibility id is its wire key under the module's view, the element id
 /// each variant is already built with.
@@ -354,6 +357,128 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
     crate::a11y::disabled(element, disabled)
 }
 
+/// Where the renderers that carry the guest's own `Interactivity.aria`
+/// differ. The setter chain was copied into Container, Image/Svg and
+/// UniformList and the copies drifted; `guest_aria` keeps each call site's
+/// behaviour through these until the owner picks one for all.
+pub(super) struct Drift<'a> {
+    /// A roled element with no `aria.label` is named by this node's
+    /// descendant text. Container only; Image, Svg and UniformList stay
+    /// unnamed.
+    pub(super) name_from: Option<&'a wire::Node>,
+    /// `aria.active_descendant` reaches the element. Container only; the
+    /// other copies dropped it.
+    pub(super) active_descendant: bool,
+}
+
+impl ViewTree {
+    /// The guest's `Interactivity` as assistive technology receives it, on
+    /// the element a renderer built: role, focusable, the author id, every
+    /// `aria.*` setter, then the guest focus handle (made once per id, kept
+    /// in `guest_focus_targets`) and the rest of the interactivity through
+    /// `interactivity::apply`. `on_click` stays with the caller. Each setter
+    /// is a field write gpui reads once at prepaint, so where the caller
+    /// puts this among its own setters does not matter.
+    pub(super) fn guest_aria<E: gpui_kit::StatefulInteractiveElement>(
+        &mut self,
+        mut element: E,
+        interactivity: &wire::Interactivity,
+        drift: Drift<'_>,
+        cx: &mut Context<Self>,
+    ) -> E {
+        let aria = &interactivity.aria;
+        if let Some(role) = interactivity.role {
+            element = element.role(role);
+        }
+        if interactivity.focusable {
+            element = element.focusable();
+        }
+        if let Some(value) = &aria.author_id {
+            element = element.accessibility_id(value.clone());
+        }
+        if let Some(value) = &aria.label {
+            element = element.aria_label(value.clone());
+        } else if interactivity.role.is_some()
+            && let Some(text) = drift.name_from.and_then(super::descendant_text)
+        {
+            // A role with no explicit label: a view styling its own button
+            // out of a container still gets a name, taken from the text it
+            // drew inside — not left silent with its label one level down.
+            element = element.aria_label(text);
+        }
+        if let Some(value) = &aria.description {
+            element = element.aria_description(value.clone());
+        }
+        if let Some(value) = &aria.keyshortcuts {
+            element = element.aria_keyshortcuts(value.clone());
+        }
+        if let Some(value) = &aria.value {
+            element = element.aria_value(value.clone());
+        }
+        if let Some(value) = &aria.placeholder {
+            element = element.aria_placeholder(value.clone());
+        }
+        if let Some(value) = aria.selected {
+            element = element.aria_selected(value);
+        }
+        if let Some(value) = aria.expanded {
+            element = element.aria_expanded(value);
+        }
+        if let Some(value) = aria.disabled {
+            element = element.aria_disabled(value);
+        }
+        if let Some(value) = aria.numeric_value {
+            element = element.aria_numeric_value(value);
+        }
+        if let Some(value) = aria.numeric_value_step {
+            element = element.aria_numeric_value_step(value);
+        }
+        if let Some(value) = aria.min_numeric_value {
+            element = element.aria_min_numeric_value(value);
+        }
+        if let Some(value) = aria.max_numeric_value {
+            element = element.aria_max_numeric_value(value);
+        }
+        if let Some(value) = aria.level {
+            element = element.aria_level(value);
+        }
+        if let Some(value) = aria.position_in_set {
+            element = element.aria_position_in_set(value);
+        }
+        if let Some(value) = aria.size_of_set {
+            element = element.aria_size_of_set(value);
+        }
+        if let Some(value) = aria.row_index {
+            element = element.aria_row_index(value);
+        }
+        if let Some(value) = aria.column_index {
+            element = element.aria_column_index(value);
+        }
+        if let Some(value) = aria.row_count {
+            element = element.aria_row_count(value);
+        }
+        if let Some(value) = aria.column_count {
+            element = element.aria_column_count(value);
+        }
+        if let Some(value) = aria.toggled {
+            element = element.aria_toggled(value);
+        }
+        if let Some(value) = aria.orientation {
+            element = element.aria_orientation(value);
+        }
+        if drift.active_descendant && aria.active_descendant {
+            element = element.aria_active_descendant();
+        }
+        let focus_handle = interactivity.focus_handle.map(|id| {
+            self.guest_focus_targets
+                .entry(id)
+                .or_insert_with(|| cx.focus_handle())
+                .clone()
+        });
+        super::interactivity::apply(element, interactivity, focus_handle, cx)
+    }
+}
+
 impl ViewTree {
     /// The native state worth keeping when the view's guest is re-instantiated
     /// (a new generation): each field's text, selection and focus, the focused
@@ -446,3 +571,6 @@ impl ViewTree {
         self
     }
 }
+
+#[cfg(test)]
+mod guest_aria_tests;
