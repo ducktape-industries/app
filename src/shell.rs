@@ -26,6 +26,7 @@ pub(crate) use fixtures::render_tree_fixture;
 mod approve;
 mod command;
 mod desk;
+mod empty_desk;
 mod figure;
 mod help;
 mod ink;
