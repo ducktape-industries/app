@@ -1,5 +1,9 @@
 use super::*;
 
+/// How long a key may wait for the guest's decision before the store
+/// faults: a guest that never answers must not hold a field's input forever.
+const DECISION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Store {
     pub(super) fn request_document(&mut self) {
         let transfer_active = self.incoming.is_some() || self.outgoing.is_some();
@@ -53,7 +57,7 @@ impl Store {
             return;
         };
         if let Phase::Decision { since, .. } = &document.phase {
-            if since.elapsed().as_secs() >= 5 {
+            if since.elapsed() >= DECISION_TIMEOUT {
                 document.phase = Phase::Fault;
                 self.fault = Some("editor key decision timed out; input retained".into());
             }

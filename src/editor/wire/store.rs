@@ -1,5 +1,10 @@
 use super::*;
 
+/// Inputs one document queues before the store faults: the queue drains
+/// one item per guest frame, so a bound keeps a stalled guest from eating
+/// memory (bytes are bounded separately by `MAX_EDITOR_INPUT_BYTES`).
+const MAX_QUEUED_INPUTS: usize = 128;
+
 impl Store {
     pub(super) fn check(&self) -> Result<(), String> {
         self.fault.clone().map_or(Ok(()), Err)
@@ -172,7 +177,7 @@ impl Store {
             Input::Native(edit) => edit.replacement.len(),
             Input::Request(request) => wire::encode(request).len(),
         };
-        let overflow = document.queue.len() >= 128
+        let overflow = document.queue.len() >= MAX_QUEUED_INPUTS
             || document.queued_bytes.saturating_add(bytes)
                 > wire::editor_transaction::MAX_EDITOR_INPUT_BYTES;
         if overflow {
