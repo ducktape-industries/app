@@ -23,7 +23,47 @@ impl DesktopWindow {
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
         }
-        let narrow = window.viewport_size().width < px(NARROW_WINDOW_WIDTH);
+        // the bar folds its words once, drawn whole, its tabs ran past their
+        // strip at this width: all of them fold together, none is cut.
+        // `bar_needs` only grows while the bar is made of the same words; new
+        // words (a network switched, a program listed or gone, a sign-in)
+        // measure again, or the bar would stay folded for words it no longer
+        // shows. Badges are left out: they tick while folded, and a
+        // re-measure draws the bar whole for a frame.
+        let made_of = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            state.network.hash(&mut hasher);
+            for row in &rail {
+                (row.module, &row.label, row.note, row.empty).hash(&mut hasher);
+            }
+            (state.signer_key.is_empty(), &state.account).hash(&mut hasher);
+            hasher.finish()
+        };
+        let remade = self.bar_made != made_of;
+        if remade {
+            self.bar_made = made_of;
+            self.bar_needs = 0.;
+        }
+        let width = f32::from(window.viewport_size().width);
+        // the strip's overflow is the last frame's layout: of the old words
+        // on the frame that remade the bar
+        let over = f32::from(self.rail.max_offset().x);
+        if let Some(drawn) = self.bar_drawn
+            && !remade
+            && over > 0.
+            && drawn + over > self.bar_needs
+        {
+            self.bar_needs = drawn + over;
+        }
+        let narrow = width < self.bar_needs;
+        let drawn = (!narrow).then_some(width);
+        // a bar drawn whole at a new width or of new words is measured by
+        // the next frame, so ask for it: nothing else may draw one soon
+        if drawn.is_some() && (remade || drawn != self.bar_drawn) {
+            window.request_animation_frame();
+        }
+        self.bar_drawn = drawn;
         // the desk's size, and on an untouched console the program it opens
         let desk = self.desk(window);
         let layout = self.layout(cx);
@@ -55,7 +95,7 @@ impl DesktopWindow {
             None => None,
             Some(Overlay::Spotlight) => Some(self.spotlight(&state, window, cx)),
             Some(Overlay::Approve) => Some(self.approve(&state, window, cx)),
-            Some(Overlay::Settings) => Some(self.settings(&state)),
+            Some(Overlay::Settings) => Some(self.settings(&state, window)),
             Some(Overlay::Network) => Some(self.network_menu(&state, narrow, window)),
             Some(Overlay::Menu(Popover::Node)) => Some(self.node_menu(&state, window, cx)),
             Some(Overlay::Menu(Popover::Account)) => Some(self.account_menu(&state, window, cx)),
@@ -66,6 +106,33 @@ impl DesktopWindow {
         if state.overlay != Some(Overlay::Spotlight) {
             self.spotlight_focused = false;
         }
+        match (self.covered, state.overlay.filter(|_| console)) {
+            (None, Some(open)) => {
+                let before = window.focused(cx);
+                self.refocus = before.clone();
+                // a dialog on a scrim takes the keys, unless its own field
+                // already did, and keeps Tab (`overlay`)
+                if matches!(
+                    open,
+                    Overlay::Spotlight | Overlay::Approve | Overlay::Settings
+                ) {
+                    let modal = self.modal.clone();
+                    window.defer(cx, move |window, cx| {
+                        if window.focused(cx) == before {
+                            modal.focus(window, cx);
+                            window.focus_next(cx);
+                        }
+                    });
+                }
+            }
+            (Some(_), None) => {
+                if let Some(handle) = self.refocus.take() {
+                    window.defer(cx, move |window, cx| handle.focus(window, cx));
+                }
+            }
+            _ => {}
+        }
+        self.covered = state.overlay.filter(|_| console);
         div()
             .id("console")
             .size_full()
@@ -83,7 +150,8 @@ impl DesktopWindow {
     /// closes it on a click, dimmed when `scrim`, and on it the card the
     /// canvas dresses its menus and dialogs in, `border: 1.5px solid ink`
     /// and a soft shadow. `dress` places and fills the card. Escape is
-    /// `global_key`'s.
+    /// `global_key`'s. Dimmed, it is modal: Tab and Shift+Tab go round its
+    /// controls, never out to the bar.
     #[allow(clippy::too_many_arguments, reason = "one frame, five overlays")]
     pub(super) fn overlay(
         &self,
@@ -95,6 +163,7 @@ impl DesktopWindow {
         ink: &super::ink::Ink,
         dress: impl FnOnce(gpui_kit::Stateful<gpui_kit::Div>) -> gpui_kit::AnyElement,
     ) -> gpui_kit::AnyElement {
+        use gpui_kit::component::FocusTrapElement as _;
         use gpui_kit::*;
         let model = self.model.clone();
         let backdrop = div()
@@ -105,8 +174,14 @@ impl DesktopWindow {
             .right_0()
             .bottom_0()
             .occlude()
+            // a dialog keeps its margin from the window's sides, as
+            // `dialog_fit` keeps it from the bottom
             .when(scrim, |backdrop| {
-                backdrop.bg(ink.bg.opacity(0.6)).flex().justify_center()
+                backdrop
+                    .bg(ink.bg.opacity(0.6))
+                    .flex()
+                    .justify_center()
+                    .px(px(DIALOG_EDGE))
             })
             .on_click(move |_, _, cx| {
                 model.update(cx, |model, cx| {
@@ -125,7 +200,13 @@ impl DesktopWindow {
             .border_color(ink.ink)
             .shadow_lg()
             .on_click(|_, _, cx| cx.stop_propagation());
-        backdrop.child(dress(card)).into_any_element()
+        let backdrop = backdrop.child(dress(card));
+        match scrim {
+            true => backdrop
+                .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
+                .into_any_element(),
+            false => backdrop.into_any_element(),
+        }
     }
 
     /// A menu hanging below the bar (the canvas's menus: `top: 40px`), its
@@ -147,6 +228,14 @@ impl DesktopWindow {
         };
         let overlay = Overlay::Menu(which);
         let at = self.under_button(overlay, Anchor::TopRight, window);
+        // a short window scrolls the menu rather than cutting it off
+        // (the card's 1.5px border above and below it)
+        let room = f32::from(window.viewport_size().height) - BAR - 8. - 3.;
+        let body = div()
+            .id(SharedString::from(format!("{id}-body")))
+            .max_h(px(room.max(0.)))
+            .overflow_y_scroll()
+            .child(body);
         self.overlay(id, Role::Dialog, name, overlay, false, &ink, |card| {
             at.child(card.w(px(width)).child(body)).into_any_element()
         })
@@ -226,5 +315,34 @@ impl DesktopWindow {
     ) -> impl Fn(&mut gpui_kit::App) + 'static {
         let model = self.model.clone();
         move |cx| model.update(cx, |model, cx| model.dispatch(message(), cx))
+    }
+}
+
+/// The least a dialog keeps from the window's edges, at any size.
+const DIALOG_EDGE: f32 = 12.;
+
+/// A dialog `tall` high in a window `high` high, hung `top` below the bar
+/// when the window has room for it, higher (not under 12px) when it hasn't:
+/// where its top goes, and the height it may take so its bottom stays 12px
+/// inside the window.
+pub(super) fn dialog_fit(high: f32, tall: f32, top: f32) -> (f32, f32) {
+    let room = high - BAR;
+    let top = (room - tall - DIALOG_EDGE).clamp(DIALOG_EDGE, top);
+    (top, (room - top - DIALOG_EDGE).max(0.))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dialog_rises_then_shrinks_to_stay_inside_a_short_window() {
+        // room for it: where the design hangs it, whole
+        assert_eq!(dialog_fit(800., 680., 74.), (72., 680.));
+        assert_eq!(dialog_fit(1000., 680., 74.), (74., 878.));
+        // the smallest window: as high as it goes, and no taller than what is left
+        let (top, tall) = dialog_fit(480., 680., 74.);
+        assert_eq!(top, 12.);
+        assert_eq!(BAR + top + tall + 12., 480.);
     }
 }

@@ -260,10 +260,16 @@ impl Layout {
         let Some(whole) = self.panes.get(self.focused).map(|pane| pane.frame) else {
             return self.split(EMPTY);
         };
-        if !self.split(EMPTY) {
+        let whole = whole.unwrap_or_else(|| Frame::fill(desk));
+        // halves under the smallest window would be pushed apart, one past
+        // the other and off the desk
+        let fits = match below {
+            false => whole.w / 2. >= MIN_WIDTH,
+            true => whole.h / 2. >= MIN_HEIGHT,
+        };
+        if !fits || !self.split(EMPTY) {
             return false;
         }
-        let whole = whole.unwrap_or_else(|| Frame::fill(desk));
         let (mut first, mut second) = (whole, whole);
         match below {
             false => {
@@ -708,6 +714,13 @@ mod tests {
         );
         assert_eq!((top.h + bottom.h, bottom.y), (right.h, right.y + top.h));
         assert_eq!((top.x, bottom.x, bottom.w), (right.x, right.x, right.w));
+        // a half narrower (or lower) than the smallest window isn't made
+        assert!(layout.halve(false, DESK));
+        let count = layout.panes.len();
+        let narrow = layout.panes[layout.focused].frame.unwrap();
+        assert!(narrow.w / 2. < MIN_WIDTH, "{narrow:?}");
+        assert!(!layout.halve(false, DESK), "too narrow to halve");
+        assert_eq!(layout.panes.len(), count);
         while layout.split("files") {}
         assert!(!layout.halve(false, DESK), "no room for another");
     }

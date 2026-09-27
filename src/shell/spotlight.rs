@@ -45,8 +45,14 @@ impl DesktopWindow {
             .id("spotlight-rows")
             .role(Role::Menu)
             .max_h(px(380.))
+            .min_h_0()
             .overflow_y_scroll()
+            .track_scroll(&self.spotlight_rows)
             .py(px(6.));
+        // each row's place among the list's children (its group's label and
+        // the hairline before it count too), for ↑↓ to scroll it into view
+        let mut children = 0;
+        let mut at = Vec::with_capacity(count);
         let mut group = "";
         for (nth, row) in rows.into_iter().enumerate() {
             if row.group != group {
@@ -54,7 +60,9 @@ impl DesktopWindow {
                 // groups `padding: 6px 0`, a hairline between them
                 if nth > 0 {
                     list = list.child(div().mt(px(6.)).mb(px(6.)).h(px(1.)).bg(ink.line));
+                    children += 1;
                 }
+                children += 1;
                 list = list.child(
                     mono(400, 12.)
                         .text_color(ink.muted)
@@ -71,6 +79,9 @@ impl DesktopWindow {
                 (Spot::Switch(_), true) => "switch",
                 (_, true) => "↵",
             };
+            // the first row brings its group's label back into view with it
+            at.push(if nth == 0 { 0 } else { children });
+            children += 1;
             list = list.child(
                 sans(400, 13.)
                     .id(SharedString::from(format!("spotlight/{nth}")))
@@ -112,6 +123,10 @@ impl DesktopWindow {
             );
         }
         let keys = self.model.clone();
+        let scroll = self.spotlight_rows.clone();
+        // the field, the longest list and the key hints
+        let (top, tall) =
+            super::desk::dialog_fit(f32::from(window.viewport_size().height), 490., 84.);
         self.overlay(
             "spotlight",
             Role::Dialog,
@@ -120,7 +135,8 @@ impl DesktopWindow {
             true,
             &ink,
             |card| {
-                card.mt(px(84.))
+                card.mt(px(top))
+                    .max_h(px(tall))
                     .w(px(600.))
                     .max_w_full()
                     .h_auto()
@@ -137,12 +153,20 @@ impl DesktopWindow {
                             },
                             _ => return,
                         };
+                        let to = match event.keystroke.key.as_str() {
+                            "up" => pick.saturating_sub(1),
+                            _ => (pick + 1).min(count.saturating_sub(1)),
+                        };
+                        if let Some(child) = at.get(to) {
+                            scroll.scroll_to_item(*child);
+                        }
                         cx.stop_propagation();
                         keys.update(cx, |model, cx| model.dispatch(message, cx));
                     })
                     .child(
                         div()
                             .h(px(56.))
+                            .flex_shrink_0()
                             .px(px(16.))
                             .flex()
                             .items_center()
@@ -155,6 +179,7 @@ impl DesktopWindow {
                     .child(list)
                     .child(
                         mono(400, 12.)
+                            .flex_shrink_0()
                             .flex()
                             .gap(px(20.))
                             .px(px(16.))

@@ -438,6 +438,8 @@ impl Guest {
             visible: false,
             visibility_change: None,
             visibility_subscriptions: Vec::new(),
+            offset_subscriptions: Vec::new(),
+            offset_sent: None,
             route_subscriptions: Vec::new(),
             intents: Vec::new(),
             replies: Arc::default(),
@@ -488,6 +490,22 @@ impl Guest {
             self.pending.push(wire::Event::Response {
                 id,
                 result: Ok(wire::methods::encode(&route)),
+                done: false,
+            });
+        }
+    }
+
+    /// Hands every `host.offset` subscriber the reader's offset, if it
+    /// moved since they last heard it.
+    pub(crate) fn sync_offset(&mut self, minutes: i32) {
+        if self.offset_sent == Some(minutes) {
+            return;
+        }
+        self.offset_sent = Some(minutes);
+        for id in &self.offset_subscriptions {
+            self.pending.push(wire::Event::Response {
+                id: *id,
+                result: Ok(wire::methods::encode(&minutes)),
                 done: false,
             });
         }

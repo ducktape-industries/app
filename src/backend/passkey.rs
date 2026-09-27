@@ -193,28 +193,34 @@ pub(crate) async fn sign_in(
 }
 
 /// The account `number` on `network`.
-async fn get(client: &RpcClient, network: &str, number: u64) -> Result<identity::Account, String> {
+pub(super) async fn get(
+    client: &RpcClient,
+    network: &str,
+    number: u64,
+) -> Result<identity::Account, String> {
     match ask(client, network, Query::Get { number }).await? {
         Reply::Account(Some(account)) => Ok(account),
         _ => Err(format!("This names an account {network} does not have.")),
     }
 }
 
-/// A passkey flow is a person's: their own keys join their own account. An
-/// agent's keys are its manager's to add, and a module's account holds
-/// none, so a device key that holds either is told so instead of sending
-/// an `AddKey` identity would refuse.
-fn person(account: &identity::Account) -> Result<(), String> {
+/// A passkey or recovery-key flow is a person's: their own keys join their
+/// own account. An agent's keys are its manager's to add, and a module's
+/// account holds none, so a key that holds either is told so instead of
+/// sending an `AddKey` identity would refuse.
+pub(super) fn person(account: &identity::Account) -> Result<(), String> {
     let name = &account.card.name;
     match &account.control {
         Control::Person { .. } => Ok(()),
         Control::Managed { manager, .. } => Err(format!(
             "This key belongs to {name} (account {}), an agent managed by account {manager}. \
-             Passkeys are for a person's own account: sign in with a person's key.",
+             Passkeys and recovery keys are for a person's own account: sign in with a \
+             person's key.",
             account.number
         )),
         Control::Module { module } => Err(format!(
-            "This key belongs to the account of the module {module}, which takes no passkey."
+            "This key belongs to the account of the module {module}, which takes no passkey or \
+             recovery key."
         )),
     }
 }
@@ -263,13 +269,25 @@ pub(super) async fn ask(client: &RpcClient, network: &str, query: Query) -> Resu
 }
 
 /// The account `key` belongs to on `network` — its number and name — or
-/// `None` while the key holds no account there. The rail's foot reads it.
+/// `None` while the key acts as no account there: it holds none, or identity
+/// refuses it (a suspended account). Only a node that did not answer is an
+/// `Err`. The rail's foot reads it.
 pub(crate) async fn account_of_key(
     client: &RpcClient,
     network: &str,
     key: Vec<u8>,
 ) -> Result<Option<(u64, String)>, String> {
-    let number = match ask(client, network, Query::OfKey { key }).await? {
+    let frame = query_frame(
+        network,
+        identity::MODULE,
+        abi::encode(&Query::OfKey { key }),
+    )
+    .await;
+    let reply = match client.query(Layer::Preconfirmed, frame).await {
+        Err(super::noded::Error::Refused(_)) => return Ok(None),
+        reply => reply.map_err(|error| node_error(error.to_string()))?,
+    };
+    let number = match abi::decode(&reply).map_err(|refusal| refusal.sentence)? {
         Reply::Number(Some(number)) => number,
         _ => return Ok(None),
     };
@@ -968,6 +986,36 @@ mod tests {
             .unwrap();
         assert_eq!(answer.status(), 200);
         assert_eq!(waiting.await.unwrap(), Ok(Outcome::Created(key)));
+    }
+
+    /// A node answering every request with `status` and `body`.
+    async fn fake_node(status: &'static str, body: Vec<u8>) -> RpcClient {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let _ = read_request(&mut stream).await;
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = stream.write_all(head.as_bytes()).await;
+                let _ = stream.write_all(&body).await;
+            }
+        });
+        RpcClient::new(url)
+    }
+
+    /// A suspended account's key is refused by identity: that is an answer
+    /// (no account), where a node that failed is not one.
+    #[tokio::test]
+    async fn a_refused_key_holds_no_account_and_a_failed_node_is_no_answer() {
+        let refused = abi::Refusal::new(abi::reason::UNAUTHORIZED, "account 7 is suspended");
+        let client = fake_node("400 Bad Request", abi::encode(&refused)).await;
+        assert_eq!(account_of_key(&client, "testkit", vec![1]).await, Ok(None));
+        let client = fake_node("503 Service Unavailable", b"down".to_vec()).await;
+        assert!(account_of_key(&client, "testkit", vec![1]).await.is_err());
     }
 
     /// A fake auth host: each GET of `/r/<id>` takes the next of `answers`

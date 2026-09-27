@@ -164,10 +164,27 @@ impl ViewTree {
             if let Some((_, handle)) = self.focus_targets.get(&path) {
                 element = element.track_focus(handle);
             }
-            element = element.child(self.measure(&path, cx));
+            element = match style.overflow.y == Some(gpui_kit::Overflow::Scroll) {
+                true => element.child(over_padding(&style.padding, self.measure(&path, cx))),
+                false => element.child(self.measure(&path, cx)),
+            };
         }
         for child in children {
             element = element.child(self.node(child, window, cx));
+        }
+        // a view's scroller shows its vertical bar: the bar is absolute, over
+        // the scroller's bounds, and the handle keeps the offset across frames.
+        // The handle is kept at the scroller's own id: an id-less one would
+        // share its parent's path, and so its handle, with any sibling there.
+        if style.overflow.y == Some(gpui_kit::Overflow::Scroll) && id.is_some() {
+            let handle = self
+                .scrolls
+                .entry(self.authored_path.clone())
+                .or_default()
+                .clone();
+            element = element
+                .track_scroll(&handle)
+                .child(over_padding(&style.padding, vertical_bar(&handle)));
         }
         #[cfg(test)]
         let element = {
@@ -316,4 +333,43 @@ impl ViewTree {
         .absolute()
         .inset_0()
     }
+}
+
+/// An absolute overlay on a scroller (its bar, its measure): gpui sizes a
+/// scroller's content from its children's bounds plus its padding, so a
+/// child spanning the scroller makes a fitting one scroll by its padding,
+/// or a long one past its end. The overlay's frame is the content box (the
+/// padding as insets), and the overlay inside it reaches back out over the
+/// padding (the padding as negative insets): it spans the scroller and
+/// counts as no content.
+pub(super) fn over_padding(
+    padding: &gpui_kit::EdgesRefinement<gpui_kit::DefiniteLength>,
+    overlay: impl IntoElement,
+) -> impl IntoElement {
+    use gpui_kit::{AbsoluteLength, DefiniteLength, Length, Position, Rems};
+    let pad = |edge: &Option<DefiniteLength>, sign: f32| -> Option<Length> {
+        Some(Length::Definite(match edge.unwrap_or(px(0.).into()) {
+            DefiniteLength::Absolute(AbsoluteLength::Pixels(p)) => px(f32::from(p) * sign).into(),
+            DefiniteLength::Absolute(AbsoluteLength::Rems(r)) => Rems(r.0 * sign).into(),
+            DefiniteLength::Fraction(f) => DefiniteLength::Fraction(f * sign),
+        }))
+    };
+    let frame = |sign: f32| {
+        let mut frame = div();
+        let style = frame.style();
+        style.position = Some(Position::Absolute);
+        style.inset.top = pad(&padding.top, sign);
+        style.inset.right = pad(&padding.right, sign);
+        style.inset.bottom = pad(&padding.bottom, sign);
+        style.inset.left = pad(&padding.left, sign);
+        frame
+    };
+    frame(1.).child(frame(-1.).child(overlay))
+}
+
+/// A scroller's vertical bar, always shown while it scrolls.
+pub(super) fn vertical_bar(handle: &ScrollHandle) -> impl IntoElement {
+    gpui_kit::component::scroll::Scrollbar::vertical(handle)
+        .id("scrollbar")
+        .mode(gpui_kit::component::scroll::ScrollbarMode::Always)
 }

@@ -626,6 +626,66 @@ fn host_props_is_program_independent_and_tracks_updates() {
     assert_eq!(decoded.account, Some(7));
 }
 
+#[test]
+fn host_offset_hands_the_readers_utc_offset_and_its_moves() {
+    let mut guest = guest();
+    guest.answer(
+        wire::Request {
+            id: 23,
+            kind: "host.offset".into(),
+            payload: Vec::new(),
+        },
+        &None,
+    );
+    let Some(wire::Event::Response {
+        id: 23,
+        result: Ok(bytes),
+        done: false,
+    }) = guest.pending.pop()
+    else {
+        panic!("the offset subscription stays live")
+    };
+    let minutes: i32 = methods::decode(&bytes).unwrap();
+    assert_eq!(minutes, super::offset_minutes());
+    assert!((-14 * 60..=14 * 60).contains(&minutes));
+    // the same offset is not sent twice; a moved one (DST) is
+    guest.sync_offset(minutes);
+    assert!(guest.pending.is_empty());
+    guest.sync_offset(minutes + 60);
+    let Some(wire::Event::Response {
+        id: 23,
+        result: Ok(bytes),
+        done: false,
+    }) = guest.pending.pop()
+    else {
+        panic!("a moved offset is pushed")
+    };
+    assert_eq!(methods::decode::<i32>(&bytes).unwrap(), minutes + 60);
+    // a subscriber that arrives after a move the others have not heard
+    // brings them up to date with it
+    guest.answer(
+        wire::Request {
+            id: 24,
+            kind: "host.offset".into(),
+            payload: Vec::new(),
+        },
+        &None,
+    );
+    let heard: Vec<_> = guest
+        .pending
+        .drain(..)
+        .map(|event| match event {
+            wire::Event::Response {
+                id,
+                result: Ok(bytes),
+                done: false,
+            } => (id, methods::decode::<i32>(&bytes).unwrap()),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(heard, [(23, minutes), (24, minutes)]);
+}
+
 /// Reproduces "Couldn't create this channel: Unexpected length of input":
 /// `create_channel` mints its id with `host.ask::<Id>("channel".into())`
 /// before it ever submits an op, and `Id` (`method!(Id, "host.id", String,

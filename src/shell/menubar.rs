@@ -33,48 +33,66 @@ impl DesktopWindow {
                 Some(note) => format!("{shown} · {note}"),
                 None => shown.clone(),
             };
-            let shown = match narrow {
-                true => shown.chars().next().map(String::from).unwrap_or_default(),
-                false => shown,
+            // folded: the program's icon, its initial when it has none,
+            // and its whole name on hover
+            let shown: AnyElement = match (narrow, tab_icon(module)) {
+                (false, _) => shown.into_any_element(),
+                (true, Some(icon)) => gpui_kit::component::Icon::new(icon)
+                    .size(px(16.))
+                    .into_any_element(),
+                (true, None) => shown
+                    .chars()
+                    .next()
+                    .map(String::from)
+                    .unwrap_or_default()
+                    .into_any_element(),
             };
+            let tip = narrow.then(|| SharedString::from(name.clone()));
             let hover = ink.ink;
-            sans(400, 13.)
-                .id(SharedString::from(format!("rail/{module}")))
-                .control(Role::Tab, SharedString::from(name))
-                .aria_selected(selected)
-                .focusable()
-                .tab_stop(true)
-                .h(px(BAR))
-                .flex_shrink_0()
-                .flex()
-                .items_center()
-                .gap(px(8.))
-                .px(px(10.))
-                .cursor_pointer()
-                .text_color(match selected || open.contains(&module) {
-                    true => ink.ink,
-                    false => ink.muted,
+            crate::a11y::focus_shown(
+                sans(400, 13.)
+                    .id(SharedString::from(format!("rail/{module}")))
+                    .focusable()
+                    .tab_stop(true),
+            )
+            .control(Role::Tab, SharedString::from(name))
+            .aria_selected(selected)
+            .h(px(BAR))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .px(px(10.))
+            .cursor_pointer()
+            .text_color(match selected || open.contains(&module) {
+                true => ink.ink,
+                false => ink.muted,
+            })
+            .hover(move |style| style.text_color(hover))
+            // a click opens it (into an empty focused window, or its
+            // own); shift-click shows it in the focused window instead
+            .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
+                match event.modifiers().shift {
+                    true => this.pane_message(PaneMessage::Select(module), window, cx),
+                    false => this.open_view(module, window, cx),
+                }
+            }))
+            .child(shown)
+            .when_some(tip, |tab, tip| {
+                tab.tooltip(move |window, cx| {
+                    gpui_kit::component::tooltip::Tooltip::new(tip.clone()).build(window, cx)
                 })
-                .hover(move |style| style.text_color(hover))
-                // a click opens it (into an empty focused window, or its
-                // own); shift-click shows it in the focused window instead
-                .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                    match event.modifiers().shift {
-                        true => this.pane_message(PaneMessage::Select(module), window, cx),
-                        false => this.open_view(module, window, cx),
-                    }
-                }))
-                .child(shown)
-                .when(row.note == Some("Failed"), |tab| {
-                    tab.child(div().size(px(5.)).rounded_full().bg(ink.danger))
-                })
-                .when(badge > 0, |tab| {
-                    tab.child(
-                        mono(400, 12.)
-                            .text_color(ink.muted)
-                            .child(badge.to_string()),
-                    )
-                })
+            })
+            .when(row.note == Some("Failed"), |tab| {
+                tab.child(div().size(px(5.)).rounded_full().bg(ink.danger))
+            })
+            .when(badge > 0, |tab| {
+                tab.child(
+                    mono(400, 12.)
+                        .text_color(ink.muted)
+                        .child(badge.to_string()),
+                )
+            })
         });
         let item = |id: &'static str, name: SharedString, open: bool, message: fn() -> Message| {
             let model = self.model.clone();
@@ -266,7 +284,9 @@ impl DesktopWindow {
                     .role(Role::TabList)
                     .min_w_0()
                     .flex()
-                    .overflow_hidden()
+                    // folded and still too many: they scroll
+                    .overflow_x_scroll()
+                    .track_scroll(&self.rail)
                     .children(tabs)
                     .when(rail.is_empty(), |list| {
                         list.child(
@@ -310,11 +330,44 @@ impl DesktopWindow {
     }
 }
 
+/// A program's icon on a folded bar, by its id (Members is `identity`,
+/// Settings `module-registry`, Nodes `valset`); `None` folds to its initial.
+fn tab_icon(module: &str) -> Option<gpui_kit::assets::IconName> {
+    use gpui_kit::assets::IconName;
+    Some(match module {
+        "chat" => IconName::MessagesSquare,
+        "forge" => IconName::Hammer,
+        "identity" => IconName::Users,
+        "module-registry" => IconName::SlidersHorizontal,
+        "valset" => IconName::Server,
+        "explorer" => IconName::Compass,
+        _ => return None,
+    })
+}
+
 /// A program's name on the bar. Before the manifest lands (or if it never
 /// does) the label is the program's own id, prettified.
 pub(super) fn tab_label(row: &crate::runtime::RailRow) -> String {
     match row.note {
         Some(_) => screens::prettify(&row.label),
         None => row.label.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_folded_tab_is_its_programs_icon_or_its_initial() {
+        for module in [
+            "chat",
+            "forge",
+            "identity",
+            "module-registry",
+            "valset",
+            "explorer",
+        ] {
+            assert!(super::tab_icon(module).is_some(), "{module}");
+        }
+        assert!(super::tab_icon("ledger").is_none());
     }
 }

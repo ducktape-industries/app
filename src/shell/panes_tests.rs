@@ -341,6 +341,48 @@ fn command_k_toggles_spotlight_and_escape_closes_any_overlay(cx: &mut TestAppCon
     }
 }
 
+/// What had the keys before something opened over the desk has them again
+/// once it closes, however it closed: typing carries on where it was.
+#[gpui_kit::test]
+fn closing_an_overlay_gives_the_keys_back_to_what_had_them(cx: &mut TestAppContext) {
+    let (model, _, _, mut native) = console(cx);
+    let focused = |native: &mut VisualTestContext| native.update(|window, cx| window.focused(cx));
+    key(&mut native, "tab");
+    let before = focused(&mut native);
+    assert!(before.is_some());
+    key(&mut native, "secondary-k");
+    native.run_until_parked();
+    assert_ne!(
+        focused(&mut native),
+        before,
+        "Spotlight's field takes the keys"
+    );
+    key(&mut native, "escape");
+    native.run_until_parked();
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    assert_eq!(focused(&mut native), before, "Escape");
+    // a bar menu, closed by the model (a click outside, a pick)
+    model.update(&mut native, |model, _| {
+        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node))
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    model.update(&mut native, |model, cx| {
+        model.dispatch(
+            Message::CloseOverlay(crate::Overlay::Menu(crate::Popover::Node)),
+            cx,
+        )
+    });
+    native.run_until_parked();
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    assert_eq!(focused(&mut native), before, "a menu");
+}
+
 /// The window in front is the model's active program, however it got
 /// there, and a window's own change asks nothing back of the desk.
 #[gpui_kit::test]
@@ -392,4 +434,60 @@ fn a_short_empty_window_tightens_its_rows() {
     assert_eq!(empty_spacing(6, 290.), spacing(3., 10.));
     // 185 tall: 185 - 20 - 76 = 89 of room, two whole 30px rows
     assert_eq!(empty_spacing(6, 185.).shown, Some(60.));
+}
+
+/// A window that comes to the front (⌘D, ⌘W, ⌘1…9, ⌃Tab) has the keys:
+/// what had them in it before, else its first control, else the window
+/// itself — never the root, where typing goes nowhere.
+#[gpui_kit::test]
+fn a_window_brought_to_the_front_has_the_keys(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = console(cx);
+    let focused = |native: &mut VisualTestContext| native.update(|window, cx| window.focused(cx));
+    let in_front = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            let view = view.read(cx);
+            let layout = view.layout(cx);
+            let instance = layout.panes[layout.focused].instance;
+            view.pane_keys[&instance].0.contains_focused(window, cx)
+        })
+    };
+    key(&mut native, "secondary-d");
+    assert!(in_front(&mut native), "⌘D: the new window");
+    key(&mut native, "secondary-1");
+    assert!(in_front(&mut native), "⌘1");
+    let first = focused(&mut native);
+    key(&mut native, "ctrl-tab");
+    assert!(in_front(&mut native), "⌃Tab");
+    assert_ne!(focused(&mut native), first);
+    key(&mut native, "secondary-w");
+    assert_eq!(panes(&mut native, &view), (1, 0));
+    assert_eq!(focused(&mut native), first, "⌘W: back to what had them");
+}
+
+/// A dialog on a scrim is modal: Tab and Shift+Tab go round its controls
+/// and never reach the bar behind it.
+#[gpui_kit::test]
+fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = console(cx);
+    model.update(&mut native, |model, _| {
+        model.state.overlay = Some(crate::Overlay::Settings)
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    let mut seen = Vec::new();
+    for stroke in ["tab"; 12].into_iter().chain(["shift-tab"; 12]) {
+        key(&mut native, stroke);
+        native.update(|window, cx| {
+            assert!(
+                view.read(cx).modal.contains_focused(window, cx),
+                "{stroke} left Settings"
+            );
+            let now = window.focused(cx);
+            if !seen.contains(&now) {
+                seen.push(now);
+            }
+        });
+    }
+    assert!(seen.len() > 2, "Tab went round Settings' controls");
 }

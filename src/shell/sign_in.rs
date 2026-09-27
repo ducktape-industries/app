@@ -77,12 +77,12 @@ impl DesktopWindow {
                 None,
             ),
             (false, false, true) => (
-                "[02 / 04] Key".to_string(),
+                "[02 / 03] Key".to_string(),
                 "The key didn't open".to_string(),
                 Some("The system holds this device's key and didn't hand it over."),
             ),
             (false, false, false) => (
-                "[02 / 04] Key".to_string(),
+                "[02 / 03] Key".to_string(),
                 "Opening this device's key…".to_string(),
                 Some(
                     "It signs what you write, and the system keeps it: no password, nothing to write down.",
@@ -289,7 +289,7 @@ impl DesktopWindow {
             Figure::Pair,
             Self::where_(state),
             None,
-            "[04 / 04] Account · passkey".into(),
+            "[03 / 03] Account · passkey".into(),
             title.into(),
             Some(hint.into()),
             row.into_iter().chain([links.into_any_element()]).collect(),
@@ -431,7 +431,7 @@ impl DesktopWindow {
             Figure::Pair,
             Self::where_(state),
             None,
-            "[04 / 04] Account".into(),
+            "[03 / 03] Account".into(),
             "What should people call you?".into(),
             Some(format!(
                 "Your account is the name beside everything you write on {}. This device's key signs for it.",
@@ -490,14 +490,6 @@ impl DesktopWindow {
                 .gap(px(16.))
                 .children((!state.unlock_error.is_empty())
                     .then(|| self.alert("link-error", state.unlock_error.clone(), &ink)))
-                .child(buttons([self.button(
-                    "link-cancel",
-                    "Cancel",
-                    Kind::Secondary,
-                    || Message::LinkCancel,
-                    false,
-                    &ink,
-                )]))
                 .into_any_element(),
         ];
         self.launcher(
@@ -505,8 +497,9 @@ impl DesktopWindow {
             false,
             Figure::Pair,
             Self::where_(state),
-            None,
-            "[04 / 04] Account · another device".into(),
+            // the step back reads as recovery's: the same way to the account
+            Some(("link-back", "← Back", || Message::LinkCancel)),
+            "[03 / 03] Account · another device".into(),
             "Approve this device".into(),
             None,
             body,
@@ -580,7 +573,7 @@ impl DesktopWindow {
             Figure::Sheets,
             Self::where_(state),
             Some(("recover-back", "← Back", || Message::RecoverCancel)),
-            "[04 / 04] Account · recovery key".into(),
+            "[03 / 03] Account · recovery key".into(),
             format!("Your {} recovery key", state.network),
             Some("The 24 words you wrote down for this account. They add this device; nothing else changes.".into()),
             vec![form.into_any_element()],

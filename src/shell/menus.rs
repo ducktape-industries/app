@@ -216,7 +216,8 @@ impl DesktopWindow {
                     .child(self.menu_row(
                         "disconnect",
                         "Switch node…",
-                        self.dispatching(|| Message::Disconnect),
+                        // as the node menu's: the networks this device reached
+                        self.dispatching(|| Message::ToggleNetworkMenu),
                         cx,
                     )),
             );
