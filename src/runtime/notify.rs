@@ -31,7 +31,7 @@ use std::time::Instant;
 
 use super::WindowKey;
 use super::kernel::spawn_device;
-use super::wire::methods::{self, Delivery, Notification};
+use super::wire::methods::{self, Capability, Delivery, Notification};
 use super::{Guest, Intent};
 use crate::backend::{read_prefs, write_prefs};
 
@@ -480,14 +480,14 @@ fn shortened(mut post: Notification) -> Result<Notification, &'static str> {
 
 pub(super) fn answer(
     guest: &mut Guest,
-    capability: &str,
+    capability: Capability,
     operation: &str,
     id: u64,
     payload: &[u8],
 ) -> bool {
     let post = match (capability, operation) {
-        ("notify", "post") => methods::decode::<Notification>(payload),
-        ("notify", "seen") => {
+        (Capability::Notify, "post") => methods::decode::<Notification>(payload),
+        (Capability::Notify, "seen") => {
             read(guest, id, payload);
             return true;
         }

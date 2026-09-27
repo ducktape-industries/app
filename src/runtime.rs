@@ -60,6 +60,7 @@ use wasmtime::{
     Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store,
     StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
+use wire::methods::Capability;
 
 /// One desktop window, as the shell and the notification policy (which
 /// window is in front) name it.
@@ -159,7 +160,7 @@ mod pictures;
 /// The name a view's manifest gives it and the capabilities it declares;
 /// empty for one whose manifest cannot be read (`compile` refuses those
 /// before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<String>) {
+fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>) {
     view_wire::manifest::read_manifest(bytes)
         .map(|manifest| (manifest.name, manifest.capabilities))
         .unwrap_or_default()

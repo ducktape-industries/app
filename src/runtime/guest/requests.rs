@@ -143,34 +143,27 @@ impl Guest {
             );
             return;
         }
-        let (capability, operation) = kind.split_once('.').unwrap_or((kind.as_str(), ""));
+        let Some((capability, operation)) = Capability::of_kind(&kind) else {
+            self.refuse(id, "unknown_request", format!("unknown request `{kind}`"));
+            return;
+        };
         // A view is untrusted code: it reaches only the methods its manifest
         // declares. Consent (media, notifications) is asked on top of this.
-        let undeclared = wire::methods::is_capability(capability)
-            && !self
-                .capabilities
-                .iter()
-                .any(|declared| declared == capability);
-        if undeclared {
-            if !self
-                .undeclared_logged
-                .iter()
-                .any(|logged| logged == capability)
-            {
-                self.undeclared_logged.push(capability.to_owned());
+        if !self.capabilities.contains(&capability) {
+            let name = capability.as_str();
+            if !self.undeclared_logged.contains(&capability) {
+                self.undeclared_logged.push(capability);
                 tracing::warn!(
                     target: "ducktape::app",
                     module = self.module,
-                    capability,
+                    capability = name,
                     "view asked for a capability its manifest does not declare"
                 );
             }
             self.refuse(
                 id,
                 "undeclared_capability",
-                format!(
-                    "`{kind}` needs the `{capability}` capability, which this view does not declare"
-                ),
+                format!("`{kind}` needs the `{name}` capability, which this view does not declare"),
             );
             return;
         }
@@ -179,13 +172,13 @@ impl Guest {
             return;
         }
         match (capability, operation) {
-            ("host", "widget") => self.widget_request(id, &payload),
-            ("host", "session") => {
+            (Capability::Host, "widget") => self.widget_request(id, &payload),
+            (Capability::Host, "session") => {
                 self.props_subscription = Some(id);
                 self.props_sent = None;
                 self.sync_props(props);
             }
-            ("host", "log") => match wire::methods::decode::<String>(&payload) {
+            (Capability::Host, "log") => match wire::methods::decode::<String>(&payload) {
                 Ok(line) => {
                     tracing::debug!(
                         target: "ducktape::app",
