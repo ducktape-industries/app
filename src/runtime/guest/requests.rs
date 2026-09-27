@@ -217,7 +217,6 @@ impl Guest {
             | C::Snap { target, .. }
             | C::SnapEnd { target }
             | C::ScrollTo { target, .. }
-            | C::ScrollToKey { target, .. }
             | C::ScrollBy { target, .. } => Some(target),
         }
     }
@@ -456,8 +455,7 @@ mod tests {
     /// those named ancestors is owned by a different file (`lib.rs`,
     /// `room.rs`, the composer's own wrapper), none of which `compose.rs`
     /// knows about or threads through — it targets the editor by its own
-    /// key alone, exactly like `actions.rs`'s `Focus` and `room.rs`'s
-    /// `ScrollToKey`.
+    /// key alone, exactly like `actions.rs`'s `Focus`.
     fn chat_shaped_tree() -> wire::Node {
         container(
             "chat-viewport",

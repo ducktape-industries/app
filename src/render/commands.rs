@@ -124,9 +124,6 @@ impl ViewTree {
             C::ScrollBy { target, x, y } => {
                 self.scroll_command(&target, ScrollRequest::By(x, y), cx)
             }
-            // no native list keys its rows for a scroll command: a view
-            // scrolls a uniform list by index through its own handle
-            C::ScrollToKey { .. } => Ok(wire::encode(&())),
         }
     }
 
