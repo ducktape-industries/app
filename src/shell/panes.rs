@@ -246,7 +246,7 @@ impl DesktopWindow {
                 .gap(px(20.))
                 .child(super::spin::drawing(
                     "empty-desk-figure",
-                    super::figure::Figure::Node,
+                    super::figure::Figure::Roll,
                     moving,
                     ink.figure,
                     window,
