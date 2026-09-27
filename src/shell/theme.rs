@@ -22,6 +22,10 @@ pub(super) fn configure_native_theme(cx: &mut gpui_kit::App) {
     let theme = Theme::global_mut(cx);
     theme.light_theme = light;
     theme.dark_theme = dark;
+    // Every bar in the app shows, as a view's scroller shows its own
+    // (`render::layout`): a capped composer with no bar reads as a message cut
+    // short. `Theme::change` projects this onto the base theme on every switch.
+    theme.scrollbar_mode = gpui_base::ScrollbarMode::Always;
     let mode = theme.mode;
     Theme::change(mode, None, cx);
 }
@@ -53,3 +57,21 @@ pub(super) fn traffic_lights(window: &gpui_kit::Window) -> Option<f32> {
 }
 
 pub(crate) use crate::fonts::{FAMILY_MONO, FAMILY_UI};
+
+/// The bars stay shown through a light/dark switch: the mode lives on the kit
+/// theme, which every `Theme::change` projects onto the base theme again.
+#[cfg(test)]
+#[gpui_kit::test]
+fn every_bar_stays_shown_through_a_theme_switch(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::component::{Theme, ThemeMode};
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        configure_native_theme(cx);
+        let shown = |cx: &gpui_kit::App| gpui_base::Theme::global(cx).scrollbar.mode();
+        assert_eq!(shown(cx), gpui_base::ScrollbarMode::Always);
+        Theme::change(ThemeMode::Dark, None, cx);
+        assert_eq!(shown(cx), gpui_base::ScrollbarMode::Always);
+        Theme::sync_system_appearance(None, cx);
+        assert_eq!(shown(cx), gpui_base::ScrollbarMode::Always);
+    });
+}
