@@ -209,7 +209,6 @@ impl Guest {
             C::FocusPrevious | C::FocusNext | C::FocusHandle { .. } => None,
             C::EditorAction { target, .. }
             | C::Focus { target }
-            | C::Focused { target }
             | C::CursorFront { target }
             | C::CursorEnd { target }
             | C::Cursor { target, .. }

@@ -96,7 +96,6 @@ impl ViewTree {
         use wire::WidgetCommand as C;
         command.validate()?;
         match command {
-            C::Focused { target } => Ok(wire::encode(&self.target_focused(&target, window, cx))),
             C::FocusHandle { handle } => {
                 let focus = self
                     .guest_focus_targets
