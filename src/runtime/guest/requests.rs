@@ -304,6 +304,15 @@ impl Guest {
         });
     }
 
+    /// One item on the subscription `id`: the stream stays open.
+    pub(crate) fn stream_item(&mut self, id: u64, item: Vec<u8>) {
+        self.pending.push(wire::Event::Response {
+            id,
+            result: Ok(item),
+            done: false,
+        });
+    }
+
     pub(crate) fn report_display_truncation(&mut self) {
         let Some(generation) = self.installed_generation else {
             return;

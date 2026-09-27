@@ -43,6 +43,12 @@ fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {
         guest.answer(request, &None);
     }
     assert!(guest.undeclared_logged.len() <= 1, "{kind} logged twice");
+    refusal_code(&mut guest)
+}
+
+/// The code the guest's last pending event refuses with; `None` if that
+/// event is not a refusal.
+fn refusal_code(guest: &mut Guest) -> Option<String> {
     match guest.pending.pop() {
         Some(wire::Event::Response {
             result: Err(refusal),
@@ -140,15 +146,8 @@ fn every_method_is_answered() {
             },
             &None,
         );
-        let refused = match guest.pending.pop() {
-            Some(wire::Event::Response {
-                result: Err(refusal),
-                ..
-            }) => Some(refusal.code),
-            _ => None,
-        };
         assert_ne!(
-            refused.as_deref(),
+            refusal_code(&mut guest).as_deref(),
             Some("unknown_request"),
             "{kind} has no handler"
         );
@@ -173,17 +172,25 @@ fn node_methods_answer_for_the_missing_node_first() {
     }) if refusal.code == "not_connected"));
 }
 
-#[tokio::test]
-async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals() {
+/// A node on a local socket that answers `responses` in order, one
+/// connection each, checking every request line against `expected_path`;
+/// joined, it hands back the request bodies it read.
+fn node_server(
+    expected_path: &'static str,
+    responses: Vec<(&str, Vec<u8>)>,
+) -> (node::Node, std::thread::JoinHandle<Vec<Vec<u8>>>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let node = node::Node {
         client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
         network: "test-network".into(),
     };
-    let payload = vec![0, 255, 128, 3];
-    let expected = payload.clone();
+    let responses: Vec<(String, Vec<u8>)> = responses
+        .into_iter()
+        .map(|(status, body)| (status.to_owned(), body))
+        .collect();
     let server = std::thread::spawn(move || {
-        for rejected in [false, true] {
+        let mut bodies = Vec::new();
+        for (status, body) in responses {
             let (mut stream, _) = listener.accept().unwrap();
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(10)))
@@ -191,8 +198,8 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             let mut reader = std::io::BufReader::new(&mut stream);
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
-            assert_eq!(line, "POST /v1/query HTTP/1.1\r\n");
-            let mut length = None;
+            assert_eq!(line.trim(), expected_path);
+            let mut length = 0;
             loop {
                 line.clear();
                 reader.read_line(&mut line).unwrap();
@@ -202,26 +209,12 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
                 if let Some((name, value)) = line.split_once(':')
                     && name.eq_ignore_ascii_case("content-length")
                 {
-                    length = Some(value.trim().parse::<usize>().unwrap());
+                    length = value.trim().parse::<usize>().unwrap();
                 }
             }
-            let mut body = vec![0; length.unwrap()];
-            reader.read_exact(&mut body).unwrap();
-            let query: backend::noded::Query = abi::decode(&body).unwrap();
-            assert_eq!(query.layer, backend::Layer::Preconfirmed);
-            let frame: backend::noded::Frame = abi::decode(&query.frame).unwrap();
-            assert_eq!(frame.body.target, "registry");
-            assert_eq!(frame.body.network, b"test-network");
-            assert_eq!(frame.body.payload, expected);
-            assert_eq!(frame.proof.len(), 64);
-            let (status, body) = if rejected {
-                (
-                    "400 Bad Request",
-                    abi::encode(&abi::Refusal::new("query_denied", "no read")),
-                )
-            } else {
-                ("200 OK", abi::encode(&vec![255u8, 0, 129]))
-            };
+            let mut received = vec![0; length];
+            reader.read_exact(&mut received).unwrap();
+            bodies.push(received);
             write!(
                 stream,
                 "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -230,7 +223,24 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             .unwrap();
             stream.write_all(&body).unwrap();
         }
+        bodies
     });
+    (node, server)
+}
+
+#[tokio::test]
+async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals() {
+    let payload = vec![0, 255, 128, 3];
+    let (node, server) = node_server(
+        "POST /v1/query HTTP/1.1",
+        vec![
+            ("200 OK", abi::encode(&vec![255u8, 0, 129])),
+            (
+                "400 Bad Request",
+                abi::encode(&abi::Refusal::new("query_denied", "no read")),
+            ),
+        ],
+    );
     let ask = call("registry", &payload);
     assert_eq!(
         query(node.clone(), ask.clone()).await.unwrap(),
@@ -239,7 +249,17 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
     let refused = query(node.clone(), ask).await.unwrap_err();
     assert_eq!(refused.code, "query_denied");
     assert_eq!(refused.message, "no read");
-    server.join().unwrap();
+    let bodies = server.join().unwrap();
+    assert_eq!(bodies.len(), 2);
+    for body in bodies {
+        let query: backend::noded::Query = abi::decode(&body).unwrap();
+        assert_eq!(query.layer, backend::Layer::Preconfirmed);
+        let frame: backend::noded::Frame = abi::decode(&query.frame).unwrap();
+        assert_eq!(frame.body.target, "registry");
+        assert_eq!(frame.body.network, b"test-network");
+        assert_eq!(frame.body.payload, payload);
+        assert_eq!(frame.proof.len(), 64);
+    }
 
     for ask in [
         b"registry".to_vec(),
@@ -252,59 +272,6 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
             "malformed_request"
         );
     }
-}
-
-fn node_server(
-    status: &str,
-    body: Vec<u8>,
-    expected_path: &'static str,
-    expected_ttl: Option<u64>,
-) -> (node::Node, std::thread::JoinHandle<()>) {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let node = node::Node {
-        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
-        network: "test-network".into(),
-    };
-    let status = status.to_owned();
-    let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-            .unwrap();
-        let mut reader = std::io::BufReader::new(&mut stream);
-        let mut line = String::new();
-        reader.read_line(&mut line).unwrap();
-        assert_eq!(line.trim(), expected_path);
-        let mut length = 0;
-        loop {
-            line.clear();
-            reader.read_line(&mut line).unwrap();
-            if line == "\r\n" {
-                break;
-            }
-            if let Some((name, value)) = line.split_once(':')
-                && name.eq_ignore_ascii_case("content-length")
-            {
-                length = value.trim().parse::<usize>().unwrap();
-            }
-        }
-        if let Some(ttl) = expected_ttl {
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body).unwrap();
-            assert_eq!(
-                serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-                serde_json::json!({"ttl_days": ttl})
-            );
-        }
-        write!(
-            stream,
-            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-            body.len()
-        )
-        .unwrap();
-        stream.write_all(&body).unwrap();
-    });
-    (node, server)
 }
 
 #[tokio::test]
@@ -323,10 +290,8 @@ async fn system_status_preserves_borsh_and_refusals() {
         genesis: [5; 32],
     };
     let (node, server) = node_server(
-        "200 OK",
-        abi::encode(&expected),
         "GET /v1/status HTTP/1.1",
-        None,
+        vec![("200 OK", abi::encode(&expected))],
     );
     let answer = status(node.clone(), Vec::new()).await.unwrap();
     let decoded: methods::NodeStatus = methods::decode(&answer).unwrap();
@@ -345,10 +310,11 @@ async fn system_status_preserves_borsh_and_refusals() {
         "malformed_request"
     );
     let (node, server) = node_server(
-        "400 Bad Request",
-        abi::encode(&abi::Refusal::new("status_denied", "private node")),
         "GET /v1/status HTTP/1.1",
-        None,
+        vec![(
+            "400 Bad Request",
+            abi::encode(&abi::Refusal::new("status_denied", "private node")),
+        )],
     );
     assert_eq!(
         status(node, Vec::new()).await.unwrap_err().code,
@@ -394,10 +360,8 @@ async fn a_block_s_receipts_carry_refusals_as_errors() {
         txs: vec![tx(1, rejected), tx(2, applied)],
     };
     let (node, server) = node_server(
-        "200 OK",
-        abi::encode(&Some(finalized)),
         "POST /v1/block HTTP/1.1",
-        None,
+        vec![("200 OK", abi::encode(&Some(finalized)))],
     );
     let answer = block(node, methods::encode(&methods::BlockRef::Height(9)))
         .await
@@ -453,10 +417,8 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
         }],
     };
     let (node, server) = node_server(
-        "200 OK",
-        abi::encode(&vec![finalized.clone()]),
         "POST /v1/blocks HTTP/1.1",
-        None,
+        vec![("200 OK", abi::encode(&vec![finalized.clone()]))],
     );
     let page = methods::encode(&methods::BlockPage {
         before: Some(10),
@@ -486,10 +448,8 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     server.join().unwrap();
 
     let (node, server) = node_server(
-        "200 OK",
-        abi::encode(&None::<backend::noded::Finalized>),
         "POST /v1/block HTTP/1.1",
-        None,
+        vec![("200 OK", abi::encode(&None::<backend::noded::Finalized>))],
     );
     let answer = block(
         node.clone(),
@@ -517,20 +477,16 @@ async fn blob_get_answers_the_blob_or_none() {
     framed.extend_from_slice(b"blob body bytes");
     let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
     let (node, server) = node_server(
-        "200 OK",
-        abi::encode(&Some(framed)),
         "POST /v1/blob/get HTTP/1.1",
-        None,
+        vec![("200 OK", abi::encode(&Some(framed)))],
     );
     let answer = blob_get(node, ask.clone()).await.unwrap();
     let decoded: Option<Vec<u8>> = methods::decode(&answer).unwrap();
     assert_eq!(decoded.as_deref(), Some(&b"blob body bytes"[..]));
     server.join().unwrap();
     let (node, server) = node_server(
-        "200 OK",
-        abi::encode(&None::<Vec<u8>>),
         "POST /v1/blob/get HTTP/1.1",
-        None,
+        vec![("200 OK", abi::encode(&None::<Vec<u8>>))],
     );
     let answer = blob_get(node, ask).await.unwrap();
     assert_eq!(methods::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
@@ -551,14 +507,7 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
             },
             &None,
         );
-        let refused = match guest.pending.pop() {
-            Some(wire::Event::Response {
-                result: Err(refusal),
-                ..
-            }) => Some(refusal.code),
-            _ => None,
-        };
-        (refused, guest.intents.len())
+        (refusal_code(&mut guest), guest.intents.len())
     };
     for link in ["duck://chat/general", "https://example.com/a"] {
         assert_eq!(open(link), (None, 1), "{link}");
@@ -577,12 +526,23 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
 
 #[tokio::test]
 async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
+    // the node was asked for `ttl` days
+    let asked_ttl = |bodies: Vec<Vec<u8>>, ttl: u64| {
+        let [body] = bodies.as_slice() else {
+            panic!("one request");
+        };
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(body).unwrap(),
+            serde_json::json!({"ttl_days": ttl})
+        );
+    };
     let (node, server) = node_server(
-        "200 OK",
-        br#"{"invite":"paste-me","notes":[{"reason":"local_only","sentence":"Use on this box"}]}"#
-            .to_vec(),
         "POST /v1/invite HTTP/1.1",
-        Some(7),
+        vec![(
+            "200 OK",
+            br#"{"invite":"paste-me","notes":[{"reason":"local_only","sentence":"Use on this box"}]}"#
+                .to_vec(),
+        )],
     );
     let mint = |ttl_days| methods::encode(&methods::CreateInvite { ttl_days });
     let answer = invite(node.clone(), mint(7)).await.unwrap();
@@ -597,7 +557,7 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
             }]
         }
     );
-    server.join().unwrap();
+    asked_ttl(server.join().unwrap(), 7);
     for ask in [Vec::new(), mint(0), b"7".to_vec()] {
         assert_eq!(
             invite(node.clone(), ask).await.unwrap_err().code,
@@ -615,34 +575,30 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
         // doesn't do invites", not the raw transport error.
         ("404 Not Found", Vec::new(), "invite_unsupported"),
     ] {
-        let (node, server) = node_server(http, body, "POST /v1/invite HTTP/1.1", Some(1));
+        let (node, server) = node_server("POST /v1/invite HTTP/1.1", vec![(http, body)]);
         let refusal = invite(node, mint(1)).await.unwrap_err();
         assert_eq!(refusal.code, reason);
-        server.join().unwrap();
+        asked_ttl(server.join().unwrap(), 1);
     }
     let (node, server) = node_server(
-        "404 Not Found",
-        Vec::new(),
         "POST /v1/invite HTTP/1.1",
-        Some(1),
+        vec![("404 Not Found", Vec::new())],
     );
     assert_eq!(
         invite(node, mint(1)).await.unwrap_err().message,
         "This node doesn't mint invites."
     );
-    server.join().unwrap();
+    asked_ttl(server.join().unwrap(), 1);
     // an unrelated non-JSON non-2xx (a proxy's 502, say) must not be folded
     // into the same message: only http_error + 404 gets the friendlier text.
     let (node, server) = node_server(
-        "502 Bad Gateway",
-        Vec::new(),
         "POST /v1/invite HTTP/1.1",
-        Some(1),
+        vec![("502 Bad Gateway", Vec::new())],
     );
     let refusal = invite(node, mint(1)).await.unwrap_err();
     assert_eq!(refusal.code, "http_error");
     assert!(refusal.message.starts_with("502"));
-    server.join().unwrap();
+    asked_ttl(server.join().unwrap(), 1);
 }
 
 #[test]

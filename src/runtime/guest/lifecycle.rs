@@ -498,11 +498,7 @@ impl Guest {
         }
         self.props_sent = props.clone();
         let props = props.clone().unwrap_or_default();
-        self.pending.push(wire::Event::Response {
-            id,
-            result: Ok(props),
-            done: false,
-        });
+        self.stream_item(id, props);
     }
 
     pub(crate) fn set_visible(&mut self, visible: bool) {
@@ -520,11 +516,7 @@ impl Guest {
             return;
         };
         if let Some(route) = crate::runtime::take_route(self.module) {
-            self.pending.push(wire::Event::Response {
-                id,
-                result: Ok(wire::methods::encode(&route)),
-                done: false,
-            });
+            self.stream_item(id, wire::methods::encode(&route));
         }
     }
 
@@ -535,12 +527,8 @@ impl Guest {
             return;
         }
         self.offset_sent = Some(minutes);
-        for id in &self.offset_subscriptions {
-            self.pending.push(wire::Event::Response {
-                id: *id,
-                result: Ok(wire::methods::encode(&minutes)),
-                done: false,
-            });
+        for id in self.offset_subscriptions.clone() {
+            self.stream_item(id, wire::methods::encode(&minutes));
         }
     }
 
@@ -548,12 +536,8 @@ impl Guest {
         let Some(visible) = self.visibility_change.take() else {
             return;
         };
-        for id in &self.visibility_subscriptions {
-            self.pending.push(wire::Event::Response {
-                id: *id,
-                result: Ok(wire::methods::encode(&visible)),
-                done: false,
-            });
+        for id in self.visibility_subscriptions.clone() {
+            self.stream_item(id, wire::methods::encode(&visible));
         }
     }
 }
