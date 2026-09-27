@@ -310,9 +310,17 @@ impl ViewTree {
     }
 }
 
+/// The text size `field_rows` assumes when the node's style sets none.
+/// Note: gpui's own default is 16px (`rems(1.)`), so a field styled without
+/// a size is counted at a smaller face than it is drawn with.
+const FALLBACK_FIELD_TEXT_PX: f32 = 14.;
+
+/// gpui's default line height as a multiple of the text size: `phi()`.
+const FIELD_LINE_HEIGHT: f32 = 1.618;
+
 /// How many lines a field that grows with its words shows before it scrolls:
 /// what its node's `max_h` holds, less its vertical padding, at the field's
-/// line height (gpui's default, the golden ratio of the text size).
+/// line height.
 fn field_rows(style: &gpui_kit::StyleRefinement) -> Option<usize> {
     use gpui_kit::{AbsoluteLength, DefiniteLength, Length};
     let pixels = |length: Option<DefiniteLength>| match length {
@@ -325,8 +333,8 @@ fn field_rows(style: &gpui_kit::StyleRefinement) -> Option<usize> {
     let pad = pixels(style.padding.top) + pixels(style.padding.bottom);
     let size = match style.text.font_size {
         Some(AbsoluteLength::Pixels(size)) => f32::from(size),
-        _ => 14.,
+        _ => FALLBACK_FIELD_TEXT_PX,
     };
-    let rows = (pixels(Some(max)) - pad) / (size * 1.618);
+    let rows = (pixels(Some(max)) - pad) / (size * FIELD_LINE_HEIGHT);
     Some((rows.floor() as usize).max(1))
 }
