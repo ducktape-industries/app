@@ -16,10 +16,10 @@ pub(super) struct HostState {
 pub(super) struct Exports {
     memory: Memory,
     alloc: TypedFunc<u32, u32>,
-    init: TypedFunc<u32, ()>,
+    init: TypedFunc<(), ()>,
     tick: TypedFunc<(u32, u32), u64>,
     snapshot: TypedFunc<(), u64>,
-    restore: TypedFunc<(u32, u32, u32), u64>,
+    restore: TypedFunc<(u32, u32), u64>,
 }
 
 impl Exports {
@@ -68,8 +68,8 @@ impl Exports {
             .ok_or_else(|| wasmtime::Error::msg("the view's answer is not a result"))
     }
 
-    pub(super) fn init(&self, store: &mut Store<HostState>, macos: bool) -> wasmtime::Result<()> {
-        self.init.call(store, u32::from(macos))
+    pub(super) fn init(&self, store: &mut Store<HostState>) -> wasmtime::Result<()> {
+        self.init.call(store, ())
     }
 
     pub(super) fn tick(
@@ -94,12 +94,9 @@ impl Exports {
         &self,
         store: &mut Store<HostState>,
         state: &[u8],
-        macos: bool,
     ) -> wasmtime::Result<Result<(), String>> {
         let (ptr, len) = self.give(store, state)?;
-        let packed = self
-            .restore
-            .call(&mut *store, (ptr, len, u32::from(macos)))?;
+        let packed = self.restore.call(&mut *store, (ptr, len))?;
         Ok(self.result(store, packed)?.map(|_| ()))
     }
 }

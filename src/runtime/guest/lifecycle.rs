@@ -275,7 +275,7 @@ impl Guest {
         arm(&mut self.store);
         let answered = self
             .exports
-            .restore(&mut self.store, snapshot, cfg!(target_os = "macos"))
+            .restore(&mut self.store, snapshot)
             .map_err(|error| format!("{shown}: restore trapped: {}", first_line(&error)))?;
         Ok(match answered {
             Ok(()) => Restored::Carried,
@@ -283,13 +283,10 @@ impl Guest {
         })
     }
 
-    /// `on mount` runs in here, told which platform it keys for.
+    /// `on mount` runs in here.
     pub(crate) fn init(&mut self, shown: &str) -> Result<(), String> {
         arm(&mut self.store);
-        if let Err(error) = self
-            .exports
-            .init(&mut self.store, cfg!(target_os = "macos"))
-        {
+        if let Err(error) = self.exports.init(&mut self.store) {
             let trap = format!("{shown}: init trapped: {}", first_line(&error));
             return Err(panic_message(&mut self.store).unwrap_or(trap));
         }
