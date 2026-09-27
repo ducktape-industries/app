@@ -145,7 +145,11 @@ impl ViewTree {
                 },
             ));
         }
-        if !self.authored_path.is_empty() {
+        // Only a container with an id of its own owns its path. An id-less one
+        // sits on its nearest named ancestor's path: measuring there, it and
+        // the ancestor overwrite each other's bounds and notify every frame,
+        // so the cached tree re-renders whole, every frame, for good.
+        if node.identity().is_some() {
             let path = self.authored_path.clone();
             let kind = std::mem::discriminant(node);
             let restore = self
