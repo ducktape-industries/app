@@ -111,9 +111,9 @@ impl Store {
             else {
                 continue;
             };
-            self.events.push(wire::Event::EditorTransaction {
+            self.events.push(view_wire::Event::EditorTransaction {
                 handler: binding.on_event,
-                event: wire::EditorTransactionEvent::Cancelled {
+                event: view_wire::EditorTransactionEvent::Cancelled {
                     id: transaction_id(self.instance, &document.reference, work.sequence),
                     state: document.reference.clone(),
                 },
@@ -122,7 +122,7 @@ impl Store {
         document.queued_bytes = 0;
     }
 
-    pub(super) fn enqueue(&mut self, key: &[wire::ElementIdWire], input: Input) {
+    pub(super) fn enqueue(&mut self, key: &[view_wire::ElementIdWire], input: InputKind) {
         if self.fault.is_some() {
             return;
         }
@@ -131,14 +131,14 @@ impl Store {
         };
         let interaction = matches!(
             &input,
-            Input::Request(wire::EditorRequestInput::Interaction { .. })
+            InputKind::Request(view_wire::EditorRequestInput::Interaction { .. })
         );
         let allowed = field.editable || interaction;
         if !allowed {
             return;
         }
         let sequence = self.next();
-        let at = self.epoch.elapsed().as_millis() as u64;
+        let input_time_ms = self.epoch.elapsed().as_millis() as u64;
         let Some(document) = self.documents.get_mut(&field.reference.document) else {
             return;
         };
@@ -148,7 +148,7 @@ impl Store {
         // interaction that comes before the document is dropped.
         let relative = matches!(
             &input,
-            Input::Native(_) | Input::Request(wire::EditorRequestInput::Key { .. })
+            InputKind::Native(_) | InputKind::Request(view_wire::EditorRequestInput::Key { .. })
         );
         if document.text.is_none() && !relative {
             return;
@@ -162,41 +162,41 @@ impl Store {
         let sent = !matches!(document.phase, Phase::Ready);
         let behind_the_one_in_flight = document.queue.len() > usize::from(sent);
         if behind_the_one_in_flight
-            && let Input::Native(edit) = &input
+            && let InputKind::Native(edit) = &input
             && edit.only_the_caret_moved()
             && let Some(standing) = document.queue.back_mut()
             && standing.key == key
-            && let Input::Native(held) = &mut standing.input
+            && let InputKind::Native(held) = &mut standing.input
             && held.only_the_caret_moved()
         {
             held.then(edit);
-            standing.at = at;
+            standing.input_time_ms = input_time_ms;
             return;
         }
         let bytes = match &input {
-            Input::Native(edit) => edit.replacement.len(),
-            Input::Request(request) => wire::encode(request).len(),
+            InputKind::Native(edit) => edit.replacement.len(),
+            InputKind::Request(request) => view_wire::encode(request).len(),
         };
         let overflow = document.queue.len() >= MAX_QUEUED_INPUTS
             || document.queued_bytes.saturating_add(bytes)
-                > wire::editor_transaction::MAX_EDITOR_INPUT_BYTES;
+                > view_wire::editor_transaction::MAX_EDITOR_INPUT_BYTES;
         if overflow {
             self.fault = Some("editor input queue is full; document retained".into());
-            self.events.push(wire::Event::EditorTransaction {
+            self.events.push(view_wire::Event::EditorTransaction {
                 handler: field.options.binding.as_ref().map_or(0, |b| b.on_event),
-                event: wire::EditorTransactionEvent::Fault {
+                event: view_wire::EditorTransactionEvent::Fault {
                     id: transaction_id(self.instance, &document.reference, sequence),
                     state: document.reference.clone(),
-                    reason: wire::EditorFault::Overflow,
+                    reason: view_wire::EditorFault::Overflow,
                 },
             });
             return;
         }
         document.queued_bytes += bytes;
-        document.queue.push_back(Work {
+        document.queue.push_back(QueuedInput {
             key: key.to_vec(),
             sequence,
-            at,
+            input_time_ms,
             input,
         });
     }
