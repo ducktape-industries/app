@@ -272,7 +272,8 @@ pub struct Ducktape {
     /// pulses. Off, a figure turns only by hand and the dot holds still.
     pub(crate) motion: bool,
     /// The last connect attempt's failure, drawn under the address field;
-    /// cleared by the next keystroke or try.
+    /// cleared by the next keystroke or try. shell/windows.rs also parks a
+    /// pop-out that would not open here, so it is only seen on that screen.
     pub(crate) error: String,
     /// The seated key's public half, hex; empty while locked.
     pub(crate) signer_key: String,
