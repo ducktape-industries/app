@@ -1,3 +1,6 @@
+//! The pane model, moved by hand: selection, splitting, focus, pop-in,
+//! placement, clamping, halving, reclaiming, rescaling, cycling.
+
 use super::*;
 
 const DESK: (f32, f32) = (1400., 860.);

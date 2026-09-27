@@ -301,7 +301,8 @@ pub struct Ducktape {
     /// The main native window, once opened; the launcher and the desk both
     /// live in it.
     pub(crate) console_win: Option<WindowKey>,
-    /// The native window with focus, if one of ours has it.
+    /// The native window with focus, if one of ours has it. Nothing reads
+    /// it yet.
     pub(crate) focused_win: Option<WindowKey>,
     /// ⌘ (ctrl off macOS) is down, kept on every modifier change. Nothing
     /// reads it yet.
