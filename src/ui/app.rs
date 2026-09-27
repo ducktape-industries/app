@@ -167,10 +167,10 @@ pub(crate) struct Account {
     /// "From another device": the code this device shows while it waits
     /// for one on the account to approve it.
     pub(crate) link_code: String,
-    pub(crate) link_task: Option<view_wire::task::Handle>,
+    pub(crate) link_task: Option<crate::ui::task::Handle>,
     /// A passkey ceremony in flight (the browser has it); dropping the
     /// handle cancels it.
-    pub(crate) passkey_task: Option<view_wire::task::Handle>,
+    pub(crate) passkey_task: Option<crate::ui::task::Handle>,
     /// Set once the person picks "Use a phone instead"; the ceremony reads it.
     pub(crate) passkey_phone: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The QR URL of the touch in flight (its callback is the relay slot).
@@ -276,7 +276,7 @@ pub struct Ducktape {
     pub(crate) focused_win: Option<WindowKey>,
     pub(crate) cmd_held: bool,
     pub(crate) connect_generation: u64,
-    pub(crate) connect_task: Option<view_wire::task::Handle>,
+    pub(crate) connect_task: Option<crate::ui::task::Handle>,
     pub(crate) wall_now: i64,
 }
 
@@ -440,7 +440,7 @@ pub(crate) enum AppMessage {
 impl Ducktape {
     /// The state at launch, and the first thing to do: reach the node last
     /// used, if there was one.
-    pub(crate) fn boot() -> (Self, view_wire::Task<AppMessage>) {
+    pub(crate) fn boot() -> (Self, crate::ui::task::Task<AppMessage>) {
         let recent = backend::recent_endpoints();
         let endpoint = recent
             .first()
@@ -492,8 +492,8 @@ impl Ducktape {
             .ok()
             .or_else(|| (!state.recent_endpoints.is_empty()).then(|| endpoint.clone()))
         {
-            Some(endpoint) => view_wire::Task::done(AppMessage::ConnectTo(endpoint)),
-            None => view_wire::Task::none(),
+            Some(endpoint) => crate::ui::task::Task::done(AppMessage::ConnectTo(endpoint)),
+            None => crate::ui::task::Task::none(),
         };
         (state, first)
     }
