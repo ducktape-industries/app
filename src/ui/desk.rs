@@ -19,6 +19,13 @@ impl Ducktape {
                 backend::save_motion(on);
                 Task::none()
             }
+            Message::OpenHelp => {
+                if matches!(self.overlay, Some(super::Overlay::Menu(_))) {
+                    self.overlay = None;
+                }
+                self.open_help();
+                Task::none()
+            }
             Message::SelectView(module) => {
                 // a menu that opened the view (the account menu's Account) is done
                 if matches!(self.overlay, Some(super::Overlay::Menu(_))) {

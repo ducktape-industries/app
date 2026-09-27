@@ -98,6 +98,7 @@ impl Ducktape {
             m @ (M::SetAppearance(_)
             | M::SetMotion(_)
             | M::SelectView(_)
+            | M::OpenHelp
             | M::ViewEvent(..)
             | M::OpenLink(_)
             | M::ShowToast(_)
@@ -359,6 +360,43 @@ mod tests {
         let key = state.signer_key.clone();
         let node = state.connected_rpc.clone();
         let _ = state.update(Message::AccountResolved { node, key, account });
+    }
+
+    /// A new account lands on the desk with Help open in it; one that
+    /// skips the step, or a key that already has an account, does not.
+    #[test]
+    fn a_new_account_opens_on_help() {
+        let modules = |state: &Ducktape| -> Vec<&'static str> {
+            let console = state.console_win.unwrap();
+            state.layouts.get(&console).map_or(Vec::new(), |layout| {
+                layout.panes.iter().map(|pane| pane.module).collect()
+            })
+        };
+        let mut state = signing_in();
+        state.console_win = Some(crate::shell::WindowKey::unique());
+        let _ = state.update(Message::Unlocked("ab".into()));
+        resolved(&mut state, None);
+        assert_eq!(state.stage.step(), "Account");
+        let _ = state.update(Message::AccountCreated(Ok((7, "ada".into()))));
+        assert_eq!(state.stage.step(), "Desk");
+        assert_eq!(modules(&state), [crate::ui::layout::HELP]);
+        assert_eq!(state.active, None, "help is no program");
+        let _ = state.update(Message::OpenHelp);
+        assert_eq!(modules(&state), [crate::ui::layout::HELP], "not twice");
+
+        let mut later = signing_in();
+        later.console_win = Some(crate::shell::WindowKey::unique());
+        let _ = later.update(Message::Unlocked("ab".into()));
+        resolved(&mut later, None);
+        let _ = later.update(Message::CreateAccountLater);
+        assert!(modules(&later).is_empty());
+
+        let mut known = signing_in();
+        known.console_win = Some(crate::shell::WindowKey::unique());
+        let _ = known.update(Message::Unlocked("ab".into()));
+        resolved(&mut known, Some((7, "ada".into())));
+        assert_eq!(known.stage.step(), "Desk");
+        assert!(modules(&known).is_empty());
     }
 
     #[test]

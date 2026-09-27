@@ -53,6 +53,8 @@ impl Frame {
 
 /// The module of a window with nothing in it yet: it lists what it can open.
 pub(crate) const EMPTY: &str = "";
+/// The app's own help, drawn by the shell: no program behind it.
+pub(crate) const HELP: &str = "ducktape:help";
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Pane {
@@ -80,6 +82,11 @@ impl Pane {
 
     pub(crate) fn is_empty(&self) -> bool {
         self.module == EMPTY
+    }
+
+    /// A program's view is in it: not empty, not the app's help.
+    pub(crate) fn is_view(&self) -> bool {
+        !matches!(self.module, EMPTY | HELP)
     }
 }
 
@@ -134,11 +141,11 @@ impl Layout {
         self.desk.unwrap_or_default()
     }
 
-    /// The focused pane's program, unless it is empty.
+    /// The focused pane's program, unless it has none.
     pub(crate) fn shown(&self) -> Option<&'static str> {
         self.panes
             .get(self.focused)
-            .filter(|pane| !pane.is_empty())
+            .filter(|pane| pane.is_view())
             .map(|pane| pane.module)
     }
 

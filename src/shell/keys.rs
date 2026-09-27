@@ -32,6 +32,8 @@ gpui_kit::actions!(
         CycleBack,
         /// ⌘K.
         ToggleSpotlight,
+        /// ⌘/: the app's help, in a window on the desk.
+        OpenHelp,
         /// Tab in an empty window's field: what it searches (Module | Chat).
         SwitchMode,
         /// Escape: whatever is open over the desk.
@@ -53,6 +55,7 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
     let mut bindings = vec![
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-n", NewWindow, DESK),
+        KeyBinding::new("secondary-/", OpenHelp, DESK),
         KeyBinding::new("secondary-w", CloseWindow, Some(CONTEXT)),
         KeyBinding::new("secondary-d", Halve, DESK),
         KeyBinding::new("secondary-shift-d", HalveBelow, DESK),
@@ -94,6 +97,7 @@ pub(crate) fn menus(cx: &mut gpui_kit::App) {
             MenuItem::action("Next Window", CycleForward),
             MenuItem::action("Previous Window", CycleBack),
         ]),
+        Menu::new("Help").items([MenuItem::action("Ducktape Help", OpenHelp)]),
     ]);
 }
 
@@ -163,6 +167,10 @@ impl DesktopWindow {
                 };
                 this.model
                     .update(cx, |model, cx| model.dispatch(message, cx));
+            }))
+            .on_action(cx.listener(|this, _: &OpenHelp, _, cx| {
+                this.model
+                    .update(cx, |model, cx| model.dispatch(Message::OpenHelp, cx));
             }))
             .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| {
                 if let Some(overlay) = this.model.read(cx).state.overlay {

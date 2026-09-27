@@ -17,7 +17,7 @@ impl Desktop {
             .layouts
             .values()
             .flat_map(|layout| &layout.panes)
-            .filter(|pane| !pane.is_empty())
+            .filter(|pane| pane.is_view())
             .map(|pane| (pane.instance, pane.module))
             .collect();
         let gone: Vec<u64> = self
@@ -58,6 +58,9 @@ impl Desktop {
 pub(super) fn label(module: &str) -> String {
     if module == layout::EMPTY {
         return "Empty".to_owned();
+    }
+    if module == layout::HELP {
+        return "Help".to_owned();
     }
     crate::runtime::rail()
         .into_iter()
@@ -271,6 +274,9 @@ impl DesktopWindow {
                             &ink,
                             || Box::new(super::keys::ToggleSpotlight),
                         ))
+                        .child(desk_button("empty-desk/help", "/", "Help", &ink, || {
+                            Box::new(super::keys::OpenHelp)
+                        }))
                         .into_any_element(),
                 })
                 .into_any_element();
@@ -324,7 +330,7 @@ impl DesktopWindow {
                     }
                 });
             }
-            let empty = pane.is_empty();
+            let view_in = pane.is_view();
             let mounted = self
                 .model
                 .read(cx)
@@ -344,7 +350,10 @@ impl DesktopWindow {
                     if focused && own.is_focused(window) {
                         self.focus_command(window, cx);
                     }
-                    self.command_view(focused, window, cx)
+                    match pane.module == layout::HELP {
+                        true => self.help_view(cx),
+                        false => self.command_view(focused, window, cx),
+                    }
                 }
             };
             let pane = &layout.panes[index];
@@ -370,7 +379,7 @@ impl DesktopWindow {
                     ))
                 })
                 // an empty window has no view to carry out
-                .when(console && !empty, |strip| {
+                .when(console && view_in, |strip| {
                     strip.child(self.pane_button(index, PaneAction::PopOut, true, cx))
                 })
                 .when(!console, |strip| {
@@ -430,7 +439,7 @@ impl DesktopWindow {
                 // pushes the controls to the bar's right end
                 .child(div().flex_1().min_w_0())
                 .child(controls);
-            let asking = (!empty && crate::runtime::notify::center().asking(pane.module))
+            let asking = (view_in && crate::runtime::notify::center().asking(pane.module))
                 .then(|| self.permission_bar(pane.module, cx));
             let seated = match pane.frame.filter(|_| on_desk) {
                 None => body

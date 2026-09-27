@@ -52,6 +52,7 @@ impl Ducktape {
                     Spot::Lock => Message::Lock,
                     Spot::Appearance(mode) => Message::SetAppearance(mode),
                     Spot::OtherNetwork => Message::Disconnect,
+                    Spot::Help => Message::OpenHelp,
                 };
                 self.update(message)
             }
@@ -139,6 +140,12 @@ impl Ducktape {
                     )
                 }),
         );
+        rows.push(row(
+            "Actions",
+            "Help".into(),
+            "keys and the desk".into(),
+            Spot::Help,
+        ));
         rows.push(row(
             "Actions",
             "Ducktape settings".into(),

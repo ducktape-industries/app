@@ -503,3 +503,33 @@ fn an_empty_window_opens_what_its_field_finds(cx: &mut TestAppContext) {
         assert_eq!(layout.panes[1].module, "cmdtest-beta");
     });
 }
+
+/// ⌘/ opens Help in a window of its own: the app draws it, with no program
+/// mounted behind it and no pop-out, since nothing there could leave.
+#[gpui_kit::test]
+fn help_opens_in_a_window_the_app_draws(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+        window.dispatch_action(Box::new(keys::OpenHelp), cx);
+    });
+    let nodes = native.update(draw);
+    native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let index = layout
+            .panes
+            .iter()
+            .position(|pane| pane.module == layout::HELP)
+            .expect("help opened");
+        let instance = layout.panes[index].instance;
+        assert!(!model.read(cx).mounted.contains_key(&instance));
+        let ids: Vec<&str> = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["id"].as_str())
+            .collect();
+        assert!(ids.contains(&"console:help"), "{ids:?}");
+        assert!(!ids.contains(&format!("console:pane/{index}/popout").as_str()));
+    });
+}
