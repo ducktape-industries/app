@@ -247,6 +247,8 @@ pub struct Ducktape {
     /// What ⌘K holds: the typed text, the picked row.
     pub(crate) spotlight_query: String,
     pub(crate) spotlight_pick: usize,
+    /// Help was opened for a new account: it greets rather than titles.
+    pub(crate) welcome: bool,
     /// The Settings page shown, kept while Settings is closed.
     pub(crate) settings_page: SettingsPage,
     /// The drawings in characters turn; off keeps them on their first frame.
@@ -467,6 +469,7 @@ impl Ducktape {
             overlay: None,
             spotlight_query: String::new(),
             spotlight_pick: 0,
+            welcome: false,
             settings_page: SettingsPage::Appearance,
             motion: backend::load_motion(),
             error: String::new(),
