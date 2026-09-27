@@ -100,7 +100,6 @@ impl Ducktape {
             // the window in front is the active program, however it got there
             if shows && let Some(module) = layout.shown() {
                 self.active = Some(module);
-                self.badges.remove(module);
             }
         }
         task

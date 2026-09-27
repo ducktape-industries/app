@@ -190,6 +190,14 @@ mod tests {
     }
 
     #[test]
+    fn opening_a_view_keeps_its_badge_until_the_view_clears_it() {
+        let (mut state, _) = Ducktape::boot();
+        let _ = state.update(Message::ViewEvent("chat", Intent::Badge(3)));
+        let _ = state.update(Message::SelectView("chat"));
+        assert_eq!(state.badges.get("chat"), Some(&3));
+    }
+
+    #[test]
     fn a_view_event_sets_its_badge_and_opens_its_link() {
         let (mut state, _) = Ducktape::boot();
         let _ = state.update(Message::ViewEvent("chat", Intent::Badge(3)));
