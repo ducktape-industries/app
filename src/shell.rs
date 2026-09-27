@@ -35,6 +35,7 @@ mod launcher;
 mod menubar;
 mod menus;
 mod notifications;
+mod pane_drag;
 mod panes;
 #[cfg(test)]
 mod panes_tests;
@@ -537,7 +538,7 @@ pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
-    drag: Option<panes::Drag>,
+    drag: Option<pane_drag::Drag>,
     inputs: HashMap<&'static str, NativeInput>,
     /// ⌘K's field took focus when it opened; it is not taken again while
     /// Spotlight stays open.
