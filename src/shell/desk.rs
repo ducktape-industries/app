@@ -204,7 +204,10 @@ impl DesktopWindow {
             .border(px(1.5))
             .border_color(ink.ink)
             .shadow_lg()
-            .on_click(|_, _, cx| cx.stop_propagation());
+            // a press inside the card stays inside: the backdrop's click
+            // (`on_click` needs the down it never sees) does not close it.
+            // Not an `on_click` here: that would offer a press on the dialog.
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation());
         let backdrop = backdrop.child(dress(card));
         match scrim {
             true => backdrop
