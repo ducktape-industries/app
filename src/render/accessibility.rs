@@ -29,8 +29,8 @@ fn named(text: &str) -> Option<String> {
 }
 
 /// Every text a node's descendants carry, depth first, joined by spaces: a
-/// button or a clickable drawn with text children but no explicit label is
-/// named by them (`#` + `general` is "# general", not "#"), so nothing in the
+/// clickable drawn with text children but no explicit label is named by
+/// them (`#` + `general` is "# general", not "#"), so nothing in the
 /// tree is announced with an empty or truncated name.
 pub(crate) fn descendant_text(node: &wire::Node) -> Option<String> {
     fn gather<'a>(node: &'a wire::Node, words: &mut Vec<&'a str>) {
@@ -60,21 +60,6 @@ pub(crate) fn descendant_text(node: &wire::Node) -> Option<String> {
 pub(crate) fn accessible(node: &wire::Node) -> Accessible {
     use gpui_kit::Role;
     use wire::Node;
-    let numeric = |value: f32, min: f32, max: f32| Accessible {
-        numeric: Some(value.into()),
-        min: Some(min.into()),
-        max: Some(max.into()),
-        ..Default::default()
-    };
-    let role_of = |role: &wire::Role| match role {
-        wire::Role::Button => Role::Button,
-        wire::Role::Link => Role::Link,
-        wire::Role::Tab => Role::Tab,
-        wire::Role::MenuItem => Role::MenuItem,
-        wire::Role::Row => Role::Row,
-        wire::Role::Checkbox => Role::CheckBox,
-        wire::Role::Switch => Role::Switch,
-    };
     let labelled = |role: Role, label: &Option<String>| Accessible {
         role: Some(role),
         name: label.as_deref().and_then(named),
@@ -95,72 +80,6 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             level: heading.map(usize::from),
             live: *live,
             ..Default::default()
-        },
-        Node::Button {
-            content,
-            label,
-            role,
-            checked,
-            expanded,
-            selected,
-            description,
-            on_press,
-            ..
-        } => Accessible {
-            role: Some(role.as_ref().map_or(Role::Button, role_of)),
-            selected: *selected,
-            name: label.as_deref().and_then(named).or_else(|| match content {
-                wire::ButtonContent::Label(text) => named(text),
-                wire::ButtonContent::Child(_) => descendant_text(node),
-            }),
-            description: description.as_deref().and_then(named),
-            toggled: *checked,
-            expanded: *expanded,
-            disabled: on_press.is_none(),
-            ..Default::default()
-        },
-        Node::Toggle {
-            kind,
-            label,
-            checked,
-            on_toggle,
-            ..
-        } => Accessible {
-            role: Some(match kind {
-                wire::ToggleKind::Checkbox => Role::CheckBox,
-                wire::ToggleKind::Switch => Role::Switch,
-            }),
-            name: named(label),
-            toggled: Some(*checked),
-            disabled: on_toggle.is_none(),
-            ..Default::default()
-        },
-        Node::Radio {
-            label, selected, ..
-        } => Accessible {
-            role: Some(Role::RadioButton),
-            name: named(label),
-            toggled: Some(*selected),
-            ..Default::default()
-        },
-        Node::Slider {
-            label,
-            value,
-            min,
-            max,
-            step,
-            ..
-        } => Accessible {
-            role: Some(Role::Slider),
-            name: label.as_deref().and_then(named),
-            step: Some((*step).into()),
-            ..numeric(*value, *min, *max)
-        },
-        Node::Progress {
-            value, min, max, ..
-        } => Accessible {
-            role: Some(Role::ProgressIndicator),
-            ..numeric(*value, *min, *max)
         },
         Node::Input {
             options,
@@ -193,52 +112,10 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
                 ..field
             }
         }
-        Node::ComboBox {
-            options,
-            selected,
-            label,
-            ..
-        }
-        | Node::PickList {
-            options,
-            selected,
-            label,
-            ..
-        } => Accessible {
-            value: selected.and_then(|index| options.get(index as usize).cloned()),
-            ..labelled(Role::ComboBox, label)
-        },
-        // an area is announced only as what its view says it is
-        Node::MouseArea {
-            role: Some(role),
-            label,
-            expanded,
-            selected,
-            checked,
-            on_press,
-            on_release,
-            ..
-        } => Accessible {
-            toggled: *checked,
-            expanded: *expanded,
-            selected: *selected,
-            disabled: on_press.is_none() && on_release.is_none(),
-            name: label
-                .as_deref()
-                .and_then(named)
-                .or_else(|| descendant_text(node)),
-            ..labelled(role_of(role), label)
-        },
         // only an open named overlay is a dialog; a closed or unnamed one is layout
         Node::Overlay {
             label, children, ..
         } if named_overlay(label, children) => labelled(Role::Dialog, label),
-        // the wire gives a code no label: it is read as what it is
-        Node::Qr { .. } => Accessible {
-            role: Some(Role::Image),
-            name: Some("QR code".into()),
-            ..Default::default()
-        },
         // an unlabelled picture is decoration: it stays out of the tree
         Node::Image {
             label,
@@ -266,14 +143,6 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
                 }
             }
         }
-        Node::ImageViewer { label, .. } => match label.as_deref().and_then(named) {
-            Some(name) => Accessible {
-                role: Some(Role::Image),
-                name: Some(name),
-                ..Default::default()
-            },
-            None => Accessible::default(),
-        },
         _ => Accessible::default(),
     }
 }
@@ -373,35 +242,7 @@ impl ViewTree {
             })
             .collect();
         let mut editors = HashMap::new();
-        let mut scrolls = HashMap::new();
         super::commands::walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
-            if let wire::Node::Scroll {
-                direction,
-                anchor_x,
-                anchor_y,
-                ..
-            } = node
-            {
-                let offset = self
-                    .lists
-                    .get(path)
-                    .map(|list| list.state.scroll_px_offset_for_scrollbar())
-                    .or_else(|| self.scrolls.get(path).map(ScrollHandle::offset));
-                if let Some(offset) = offset {
-                    scrolls.insert(
-                        path.clone(),
-                        ScrollPresentation {
-                            direction: *direction,
-                            anchors: (*anchor_x, *anchor_y),
-                            offset,
-                            rows: self
-                                .lists
-                                .get(path)
-                                .map(|list| list.rows.iter().map(|row| row.key.clone()).collect()),
-                        },
-                    );
-                }
-            }
             if let wire::Node::Editor { document, .. } = node {
                 let focused = self
                     .editors
@@ -420,7 +261,6 @@ impl ViewTree {
             }),
             inputs,
             editors,
-            scrolls,
         }
     }
 

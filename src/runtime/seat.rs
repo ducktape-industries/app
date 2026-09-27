@@ -352,9 +352,7 @@ pub(super) fn spawn_load(
                             source: wire::SvgSource::Data { bytes, .. },
                             ..
                         } => *bytes = None,
-                        wire::Node::Image { data, .. } | wire::Node::ImageViewer { data, .. } => {
-                            *data = None
-                        }
+                        wire::Node::Image { data, .. } => *data = None,
                         _ => {}
                     });
                 }

@@ -69,7 +69,15 @@ fn sized(
     })
 }
 
-fn rule(key: &str, axis: wire::Axis) -> wire::Node {
+/// Which way a test's flex container or rule runs.
+#[derive(Clone, Copy)]
+enum Axis {
+    Column,
+    Row,
+}
+
+/// A one-pixel line across `axis`: a sized, filled container with nothing in it.
+fn rule(key: &str, axis: Axis) -> wire::Node {
     let mut element = div().bg(gpui_kit::Rgba {
         r: 0.4,
         g: 0.4,
@@ -77,14 +85,10 @@ fn rule(key: &str, axis: wire::Axis) -> wire::Node {
         a: 1.0,
     });
     element = match axis {
-        wire::Axis::Row => element.h(px(1.)),
-        wire::Axis::Column => element.w(px(1.)),
+        Axis::Row => element.h(px(1.)),
+        Axis::Column => element.w(px(1.)),
     };
-    wire::Node::Rule {
-        id: named_id(key),
-        axis,
-        style: element.style().clone(),
-    }
+    container_with_style(key, element.style().clone(), [])
 }
 
 fn text(key: &str, content: impl Into<String>) -> wire::Node {
@@ -99,13 +103,13 @@ fn text(key: &str, content: impl Into<String>) -> wire::Node {
 
 fn axis_container(
     key: &str,
-    axis: wire::Axis,
+    axis: Axis,
     children: impl IntoIterator<Item = wire::Node>,
 ) -> wire::Node {
     let mut element = div().flex().w_full().min_w_0().gap(px(8.));
     element = match axis {
-        wire::Axis::Column => element.flex_col(),
-        wire::Axis::Row => element.flex_row(),
+        Axis::Column => element.flex_col(),
+        Axis::Row => element.flex_row(),
     };
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(named_id(key)),
@@ -113,21 +117,6 @@ fn axis_container(
         interactivity: Default::default(),
         children: children.into_iter().collect(),
     })
-}
-
-fn button(content: wire::ButtonContent, label: Option<&str>, on_press: Option<u32>) -> wire::Node {
-    wire::Node::Button {
-        id: named_id("b"),
-        role: None,
-        selected: None,
-        content,
-        label: label.map(str::to_owned),
-        checked: None,
-        expanded: None,
-        description: None,
-        on_press,
-        style: Default::default(),
-    }
 }
 
 fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
@@ -147,7 +136,7 @@ fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
     }
 }
 
-fn picture(label: Option<&str>) -> [wire::Node; 3] {
+fn picture(label: Option<&str>) -> [wire::Node; 2] {
     let label = label.map(str::to_owned);
     [
         wire::Node::Image {
@@ -164,15 +153,6 @@ fn picture(label: Option<&str>) -> [wire::Node; 3] {
             state_children: vec![],
             style: Default::default(),
             interactivity: Default::default(),
-        },
-        wire::Node::ImageViewer {
-            id: named_id("viewer"),
-            hash: 1,
-            data: None,
-            label: label.clone(),
-            fit: None,
-            options: Default::default(),
-            style: gpui_kit::StyleRefinement::default(),
         },
         wire::Node::Svg {
             id: Some(wire::ElementIdWire::Name("svg".into())),

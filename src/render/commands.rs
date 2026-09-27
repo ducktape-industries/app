@@ -1,5 +1,14 @@
 use super::*;
 
+/// What a scroll widget command asks of a scrolling container's offset.
+#[derive(Clone, Copy)]
+pub(super) enum ScrollRequest {
+    Relative(f32, f32),
+    Absolute(f32, f32),
+    By(f32, f32),
+    End,
+}
+
 pub(super) fn walk_authored_paths(
     node: &wire::Node,
     path: &mut AuthoredPath,
@@ -116,9 +125,9 @@ impl ViewTree {
             C::ScrollBy { target, x, y } => {
                 self.scroll_command(&target, ScrollRequest::By(x, y), cx)
             }
-            C::ScrollToKey { target, key } => {
-                self.scroll_command(&target, ScrollRequest::Key(key), cx)
-            }
+            // no native list keys its rows for a scroll command: a view
+            // scrolls a uniform list by index through its own handle
+            C::ScrollToKey { .. } => Ok(wire::encode(&())),
         }
     }
 
@@ -131,8 +140,7 @@ impl ViewTree {
     /// it). `self.mounted`, `self.editors` and the other target-keyed maps
     /// are indexed by the FULL walked ancestry (`walk_authored_paths`), so
     /// a short target is the SUFFIX of the path it names, not the whole of
-    /// it — the same idiom `scroll_command` already uses to find a list row
-    /// by its own trailing `"@row:"` key, extended to every target here.
+    /// it — so a short target is matched as the suffix of every mounted path.
     pub(super) fn resolve_target(&self, target: &[wire::ElementIdWire]) -> Option<AuthoredPath> {
         if target.is_empty() {
             return None;
@@ -162,13 +170,6 @@ impl ViewTree {
         if let Some(field) = self.fields.get(target) {
             return field.state.read(cx).focus_handle(cx).is_focused(window);
         }
-        if let Some(picker) = self.pickers.get(target) {
-            return picker
-                .state
-                .read(cx)
-                .focus_handle(cx)
-                .contains_focused(window, cx);
-        }
         self.editors
             .get(target)
             .is_some_and(|editor| editor.view.is_focused(window, cx))
@@ -183,9 +184,7 @@ impl ViewTree {
         let mut targets = Vec::new();
         walk_authored_paths(&self.root, &mut Vec::new(), &mut |_, path| {
             let available = self.mounted.contains(path)
-                && (self.pickers.contains_key(path)
-                    || self.focus_targets.contains_key(path)
-                    || self.editors.contains_key(path));
+                && (self.focus_targets.contains_key(path) || self.editors.contains_key(path));
             if available {
                 targets.push(path.clone());
             }
@@ -269,14 +268,6 @@ impl ViewTree {
             }
             return Ok(wire::encode(&()));
         }
-        if let Some(picker) = self.pickers.get(target) {
-            if matches!(command, C::Focus { .. }) {
-                picker
-                    .state
-                    .update(cx, |picker, cx| picker.focus(window, cx));
-            }
-            return Ok(wire::encode(&()));
-        }
         Ok(wire::encode(&()))
     }
 
@@ -290,81 +281,18 @@ impl ViewTree {
             return Ok(wire::encode(&()));
         };
         let target = target.as_slice();
-        if let Some(list) = self.lists.get(target) {
-            let maximum = list.state.max_offset_for_scrollbar().y;
-            let offset = list.state.scroll_px_offset_for_scrollbar().y;
-            let from_anchor = |value: f32| match list.anchor {
-                wire::ScrollAnchor::End => px(value) - maximum,
-                _ => -px(value),
-            };
-            match request {
-                ScrollRequest::Key(key) => {
-                    let suffix = format!("/@row:{key}");
-                    if let Some(index) = list.rows.iter().position(|row| row.key.ends_with(&suffix))
-                    {
-                        list.state.scroll_to_reveal_item(index);
-                    }
-                }
-                ScrollRequest::End => list.state.scroll_to_end(),
-                ScrollRequest::Relative(_, y) => list
-                    .state
-                    .set_offset_from_scrollbar(point(px(0.), from_anchor(y * f32::from(maximum)))),
-                ScrollRequest::Absolute(_, y) => list
-                    .state
-                    .set_offset_from_scrollbar(point(px(0.), from_anchor(y))),
-                ScrollRequest::By(_, y) => {
-                    let sign = if list.anchor == wire::ScrollAnchor::End {
-                        1.
-                    } else {
-                        -1.
-                    };
-                    list.state
-                        .set_offset_from_scrollbar(point(px(0.), offset + px(sign * y)));
-                }
-            }
-            cx.notify();
-            return Ok(wire::encode(&()));
-        }
         let Some(handle) = self.scrolls.get(target) else {
             return Ok(wire::encode(&()));
         };
+        // an offset is measured from the start: gpui scrolls into the negative
         let maximum = handle.max_offset();
-        let mut anchors = (wire::ScrollAnchor::Start, wire::ScrollAnchor::Start);
-        walk_authored_paths(&self.root, &mut Vec::new(), &mut |node, path| {
-            let wire::Node::Scroll {
-                anchor_x, anchor_y, ..
-            } = node
-            else {
-                return;
-            };
-            if path != target {
-                return;
-            }
-            anchors = (*anchor_x, *anchor_y);
-        });
-        let from_anchor = |distance: f32, maximum: Pixels, anchor: wire::ScrollAnchor| match anchor
-        {
-            wire::ScrollAnchor::End => px(distance) - maximum,
-            wire::ScrollAnchor::Start | wire::ScrollAnchor::Keep => -px(distance),
-        };
         let next = match request {
-            ScrollRequest::Relative(x, y) => point(
-                from_anchor(x * f32::from(maximum.x), maximum.x, anchors.0),
-                from_anchor(y * f32::from(maximum.y), maximum.y, anchors.1),
-            ),
-            ScrollRequest::Absolute(x, y) => point(
-                from_anchor(x, maximum.x, anchors.0),
-                from_anchor(y, maximum.y, anchors.1),
-            ),
-            ScrollRequest::By(x, y) => {
-                let direction = |delta: f32, anchor: wire::ScrollAnchor| match anchor {
-                    wire::ScrollAnchor::End => px(delta),
-                    _ => -px(delta),
-                };
-                handle.offset() + point(direction(x, anchors.0), direction(y, anchors.1))
+            ScrollRequest::Relative(x, y) => {
+                point(-px(x * f32::from(maximum.x)), -px(y * f32::from(maximum.y)))
             }
+            ScrollRequest::Absolute(x, y) => point(-px(x), -px(y)),
+            ScrollRequest::By(x, y) => handle.offset() - point(px(x), px(y)),
             ScrollRequest::End => -maximum,
-            ScrollRequest::Key(_) => return Ok(wire::encode(&())),
         };
         handle.set_offset(point(
             next.x.clamp(-maximum.x, px(0.0)),
@@ -381,17 +309,15 @@ impl ViewTree {
         let mut scrolls = std::collections::HashSet::new();
         let mut uniform_lists = std::collections::HashSet::new();
         let mut variable_lists = std::collections::HashSet::new();
-        let mut pickers = std::collections::HashSet::new();
         let mut drags = std::collections::HashSet::new();
         let mut dialogs = std::collections::HashSet::new();
-        let mut containers = std::collections::HashSet::new();
-        let mut retained = std::collections::HashSet::new();
+        let mut editors = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
         let mut mounted = std::collections::HashSet::new();
         walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
             mounted.insert(path.clone());
-            // a scrolling container with an id keeps its handle, as a Scroll
-            // node does; an id-less one has no path of its own to keep it at
+            // a scrolling container with an id keeps its handle; an id-less
+            // one has no path of its own to keep it at
             if let wire::Node::Container(view_wire::ContainerNode {
                 id: Some(_), style, ..
             }) = node
@@ -432,12 +358,6 @@ impl ViewTree {
                 wire::Node::Input { .. } => {
                     inputs.insert(path.clone());
                 }
-                wire::Node::Scroll { .. } => {
-                    scrolls.insert(path.clone());
-                }
-                wire::Node::PickList { .. } | wire::Node::ComboBox { .. } => {
-                    pickers.insert(path.clone());
-                }
                 wire::Node::ResizeHandle { .. } => {
                     drags.insert(path.clone());
                 }
@@ -446,48 +366,17 @@ impl ViewTree {
                 } if named_overlay(label, children) => {
                     dialogs.insert(path.clone());
                 }
-                wire::Node::Responsive { .. } => {
-                    containers.insert(path.clone());
-                }
-                wire::Node::Sensor {
-                    reset,
-                    on_show,
-                    on_resize,
-                    on_hide,
-                    ..
-                } => {
+                wire::Node::Sensor { .. } => {
                     sensors.insert(path.clone());
-                    if let Some(sensor) = self.sensors.get_mut(path) {
-                        if sensor.reset != *reset {
-                            sensor.reset = reset.clone();
-                            sensor.size = None;
-                            sensor.pending = None;
-                        }
-                        // Delayed measurements resolve these current-frame
-                        // routes even before the next native draw runs.
-                        sensor.on_show = *on_show;
-                        sensor.on_resize = *on_resize;
-                        sensor.on_hide = *on_hide;
-                    }
                 }
-                wire::Node::Slider { .. }
-                | wire::Node::Surface { .. }
-                | wire::Node::Editor { .. }
-                | wire::Node::ImageViewer { .. } => {
-                    retained.insert(path.clone());
+                wire::Node::Editor { .. } => {
+                    editors.insert(path.clone());
                 }
                 _ => {}
             }
         });
         root.for_each_mut(&mut |node| match node {
             wire::Node::Image {
-                hash,
-                data: Some(data),
-                ..
-            } => {
-                self.remember_image(*hash, data);
-            }
-            wire::Node::ImageViewer {
                 hash,
                 data: Some(data),
                 ..
@@ -513,7 +402,6 @@ impl ViewTree {
             .retain(|id, _| guest_focus_ids.contains(id));
         self.fields.retain(|key, _| inputs.contains(key));
         self.scrolls.retain(|key, _| scrolls.contains(key));
-        self.lists.retain(|key, _| scrolls.contains(key));
         self.uniform_lists.retain(|id, list| {
             list.rows.clear();
             uniform_lists.contains(id)
@@ -522,17 +410,9 @@ impl ViewTree {
             list.rows.clear();
             variable_lists.contains(id)
         });
-        self.scroll_positions.retain(|key, _| scrolls.contains(key));
-        self.pickers.retain(|key, _| pickers.contains(key));
         self.drags.retain(|key, _| drags.contains(key));
         self.dialogs.retain(|key, _| dialogs.contains(key));
-        self.containers.retain(|key, _| containers.contains(key));
-        self.ranges.retain(|key, _| retained.contains(key));
-        self.editors.retain(|key, _| retained.contains(key));
-        self.viewers.retain(|key, _| retained.contains(key));
-        // on_hide observes viewport exit while mounted, not destruction.
-        // Removed nodes own old-frame IDs; emitting one now could activate
-        // an unrelated route in the replacement frame's handler table.
+        self.editors.retain(|key, _| editors.contains(key));
         self.sensors.retain(|key, _| sensors.contains(key));
         self.root = root;
         cx.notify();
