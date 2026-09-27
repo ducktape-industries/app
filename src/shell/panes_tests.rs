@@ -422,23 +422,6 @@ fn the_focused_window_is_the_active_program(cx: &mut TestAppContext) {
     assert_eq!(active(&mut native), Some("pane-ax-test"));
 }
 
-/// The empty window keeps the design's spacing while its rows fit, tightens
-/// as the window gets short, and past that shows whole rows only.
-#[test]
-fn a_short_empty_window_tightens_its_rows() {
-    use super::panes::{EmptySpacing, empty_spacing};
-    let spacing = |row, outer| EmptySpacing {
-        row,
-        outer,
-        shown: None,
-    };
-    assert_eq!(empty_spacing(6, 600.), spacing(10., 28.));
-    assert_eq!(empty_spacing(6, 360.), spacing(6., 16.));
-    assert_eq!(empty_spacing(6, 290.), spacing(3., 10.));
-    // 185 tall: 185 - 20 - 76 = 89 of room, two whole 30px rows
-    assert_eq!(empty_spacing(6, 185.).shown, Some(60.));
-}
-
 /// A window that comes to the front (⌘D, ⌘W, ⌘1…9, ⌃Tab) has the keys:
 /// what had them in it before, else its first control, else the window
 /// itself — never the root, where typing goes nowhere.
@@ -493,4 +476,30 @@ fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
         });
     }
     assert!(seen.len() > 2, "Tab went round Settings' controls");
+}
+
+/// An empty window's field has the keys as soon as the window opens: what
+/// is typed narrows the programs, ↓ picks the next, Enter opens it there.
+#[gpui_kit::test]
+fn an_empty_window_opens_what_its_field_finds(cx: &mut TestAppContext) {
+    crate::runtime::list_for_test("cmdtest-alpha");
+    crate::runtime::list_for_test("cmdtest-beta");
+    let (_, _, view, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+        window.dispatch_action(Box::new(keys::NewWindow), cx);
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    native.simulate_input("cmdtest");
+    native.simulate_keystrokes("down tab enter");
+    native.update(|window, cx| {
+        draw(window, cx);
+        let layout = view.read(cx).layout(cx);
+        assert_eq!(layout.panes[1].module, "cmdtest-beta");
+    });
 }

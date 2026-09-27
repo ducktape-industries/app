@@ -5,13 +5,13 @@
 //! What decides where a key goes is the key context of the focused element
 //! and its parents: a window's root says what it is (`Ducktape`, `console`),
 //! whether the desk's keys reach it (`desk`: on the desk, nothing open over
-//! it), whether something is open over it (`overlay`), and whether the
-//! focused pane is empty (`empty`). A guest editor (`GuestEditor`) sits
-//! deeper, so its own keys come first: it takes its claims before any
-//! binding runs, and the empty window's plain keys are unbound inside it.
+//! it), and whether something is open over it (`overlay`). A guest editor
+//! (`GuestEditor`) sits deeper, so its own keys come first. An empty
+//! window's ↑↓ and Enter are its field's (`command.rs` takes them); Tab
+//! there is `SwitchMode`, under the field's own context.
 
 use super::*;
-use gpui_kit::{Action, KeyBinding, KeyContext, Menu, MenuItem, NoAction};
+use gpui_kit::{Action, KeyBinding, KeyContext, Menu, MenuItem};
 
 gpui_kit::actions!(
     desk,
@@ -32,14 +32,10 @@ gpui_kit::actions!(
         CycleBack,
         /// ⌘K.
         ToggleSpotlight,
+        /// Tab in an empty window's field: what it searches (Module | Chat).
+        SwitchMode,
         /// Escape: whatever is open over the desk.
         CloseOverlay,
-        /// ↑ in an empty window's list.
-        PickUp,
-        /// ↓ in an empty window's list.
-        PickDown,
-        /// Enter in an empty window's list.
-        OpenPicked,
     ]
 );
 
@@ -48,18 +44,12 @@ gpui_kit::actions!(
 #[action(namespace = desk, no_json)]
 pub(crate) struct FocusPane(pub(crate) usize);
 
-/// 1…9 in an empty window: its Nth row.
-#[derive(Clone, Debug, PartialEq, Action)]
-#[action(namespace = desk, no_json)]
-pub(crate) struct OpenNth(pub(crate) usize);
-
 /// The desk's context, on every window's root.
 pub(super) const CONTEXT: &str = "Ducktape";
 
 /// Every key the app answers, with the context it answers in.
 pub(crate) fn bind(cx: &mut gpui_kit::App) {
     const DESK: Option<&str> = Some("Ducktape && desk");
-    const EMPTY: Option<&str> = Some("Ducktape && desk && empty");
     let mut bindings = vec![
         KeyBinding::new("secondary-q", Quit, None),
         KeyBinding::new("secondary-n", NewWindow, DESK),
@@ -74,9 +64,7 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-shift-tab", CycleBack, DESK),
         KeyBinding::new("secondary-k", ToggleSpotlight, Some("Ducktape && on_desk")),
         KeyBinding::new("escape", CloseOverlay, Some("Ducktape && overlay")),
-        KeyBinding::new("up", PickUp, EMPTY),
-        KeyBinding::new("down", PickDown, EMPTY),
-        KeyBinding::new("enter", OpenPicked, EMPTY),
+        KeyBinding::new("tab", SwitchMode, Some(super::command::CONTEXT)),
     ];
     for nth in 1..=9 {
         bindings.push(KeyBinding::new(
@@ -84,16 +72,6 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
             FocusPane(nth - 1),
             DESK,
         ));
-        bindings.push(KeyBinding::new(&format!("{nth}"), OpenNth(nth - 1), EMPTY));
-    }
-    // a guest editor types these; they are the empty window's only outside it
-    let editor = Some(crate::editor::wire::GUEST_EDITOR_CONTEXT);
-    for key in ["up", "down", "enter"]
-        .into_iter()
-        .map(str::to_owned)
-        .chain((1..=9).map(|nth| nth.to_string()))
-    {
-        bindings.push(KeyBinding::new(&key, NoAction, editor));
     }
     cx.bind_keys(bindings);
 }
@@ -138,14 +116,6 @@ impl DesktopWindow {
         }
         if on_desk && !overlay {
             context.add("desk");
-            let layout = self.layout(cx);
-            if layout
-                .panes
-                .get(layout.focused)
-                .is_some_and(layout::Pane::is_empty)
-            {
-                context.add("empty");
-            }
         }
         context
     }
@@ -201,26 +171,6 @@ impl DesktopWindow {
                     });
                 }
             }))
-            .on_action(cx.listener(|this, _: &PickUp, window, cx| {
-                let rows = panes::openable().len();
-                this.pane_message(PaneMessage::Pick { down: false, rows }, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &PickDown, window, cx| {
-                let rows = panes::openable().len();
-                this.pane_message(PaneMessage::Pick { down: true, rows }, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &OpenPicked, window, cx| {
-                let rows = panes::openable();
-                let pick = this.layout(cx).pick.min(rows.len().saturating_sub(1));
-                if let Some(row) = rows.get(pick) {
-                    this.open_view(row.module, window, cx);
-                }
-            }))
-            .on_action(cx.listener(|this, OpenNth(nth): &OpenNth, window, cx| {
-                if let Some(row) = panes::openable().get(*nth) {
-                    this.open_view(row.module, window, cx);
-                }
-            }))
     }
 }
 
@@ -253,7 +203,6 @@ mod tests {
     fn the_desks_keys_answer_only_where_their_context_says(cx: &mut gpui_kit::TestAppContext) {
         cx.update(bind);
         let desk = "Ducktape console on_desk desk";
-        let empty = "Ducktape console on_desk desk empty";
         assert_eq!(
             resolve("secondary-d", &[desk], cx).as_deref(),
             Some("desk::Halve")
@@ -277,17 +226,6 @@ mod tests {
             Some("desk::NewWindow")
         );
         assert_eq!(resolve("3", &[desk], cx), None, "a pane with a view types");
-        assert_eq!(resolve("3", &[empty], cx).as_deref(), Some("desk::OpenNth"));
-        // a guest editor inside takes its own keys first
-        let in_editor = [empty, crate::editor::wire::GUEST_EDITOR_CONTEXT];
-        for stroke in ["3", "enter", "down"] {
-            assert!(
-                resolve(stroke, &in_editor, cx).is_none_or(|action| action != "desk::OpenNth"
-                    && action != "desk::OpenPicked"
-                    && action != "desk::PickDown"),
-                "{stroke} left the editor"
-            );
-        }
         assert_eq!(
             resolve("escape", &["Ducktape console on_desk overlay"], cx).as_deref(),
             Some("desk::CloseOverlay")

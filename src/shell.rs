@@ -24,6 +24,7 @@ mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
 mod approve;
+mod command;
 mod desk;
 mod figure;
 mod ink;
@@ -542,6 +543,8 @@ pub(crate) struct DesktopWindow {
     spotlight_focused: bool,
     /// ⌘K's list: ↑↓ scroll the picked row into it.
     spotlight_rows: gpui_kit::ScrollHandle,
+    /// An empty window's field, made the first time one shows.
+    command: Option<command::Command>,
     /// What was open over the desk when it was last drawn.
     covered: Option<crate::Overlay>,
     /// What had the keys when something opened over the desk: they go back
