@@ -126,8 +126,9 @@ impl DesktopWindow {
     }
 
     /// An empty window's body (design "A"): what it can open, one row a
-    /// program, and the keys that open them.
-    fn empty_view(&self, body: f32, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
+    /// program, and the keys that open them. Only the focused one shows its
+    /// pick: the keys that move and open it reach no other.
+    fn empty_view(&self, body: f32, focused: bool, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         use super::ink::*;
         use gpui_kit::*;
         let state = self.model.read(cx).state.clone_facts();
@@ -138,7 +139,7 @@ impl DesktopWindow {
         let (row_pad, outer_pad) = (spacing.row, spacing.outer);
         let list = rows.iter().enumerate().map(|(nth, row)| {
             let module = row.module;
-            let picked = nth == pick;
+            let picked = focused && nth == pick;
             let name = super::menubar::tab_label(row);
             let badge = state.badges.get(module).copied().unwrap_or(0);
             let note = match badge {
@@ -370,7 +371,7 @@ impl DesktopWindow {
                     let tall = pane
                         .frame
                         .map_or(f32::from(window.viewport_size().height), |frame| frame.h);
-                    self.empty_view(tall - TITLE, cx)
+                    self.empty_view(tall - TITLE, focused, cx)
                 }
             };
             let pane = &layout.panes[index];
