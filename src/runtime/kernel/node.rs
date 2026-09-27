@@ -24,12 +24,24 @@ pub(super) struct Node {
 const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// A refusal the transport produced is retried; one that is the node's
-/// own word ends the retry loop.
+/// own word ends the retry loop. For a READ: asking again costs nothing.
 fn transport_failed(refusal: &wire::Error) -> bool {
     matches!(refusal.code.as_str(), "rpc_client" | "node_failed")
 }
 
-async fn until_answered(budget: std::time::Duration, mut ask: impl FnMut() -> Answered) -> Answer {
+/// Only a refusal that proves nothing reached the node is retried
+/// (`backend::refused`: a connect failure). For a WRITE: a request the node
+/// may have applied is not signed and sent again — the sequence moved, so
+/// the node would apply it twice.
+fn unsent(refusal: &wire::Error) -> bool {
+    refusal.code == "rpc_client"
+}
+
+async fn until_answered(
+    budget: std::time::Duration,
+    retry_on: fn(&wire::Error) -> bool,
+    mut ask: impl FnMut() -> Answered,
+) -> Answer {
     let deadline = tokio::time::Instant::now() + budget;
     let mut attempt = 0;
     loop {
@@ -37,7 +49,7 @@ async fn until_answered(budget: std::time::Duration, mut ask: impl FnMut() -> An
             Ok(bytes) => return Ok(bytes),
             Err(refusal) => refusal,
         };
-        if !transport_failed(&refusal) {
+        if !retry_on(&refusal) {
             return Err(refusal);
         }
         let detail = refusal.message;
@@ -61,29 +73,52 @@ async fn until_answered(budget: std::time::Duration, mut ask: impl FnMut() -> An
 }
 
 /// Runs `method` on the connected node as a task, RETRYING transport
-/// failures for [`NODE_RETRY_BUDGET`]; a retry asks again from scratch
-/// (`op.submit` re-signs at a fresh sequence).
+/// failures for [`NODE_RETRY_BUDGET`]: for reads, which ask again from
+/// scratch at no cost.
 pub(super) fn spawn_retrying(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
-    spawn_method(guest, id, payload, method, true);
+    spawn_method(guest, id, payload, method, Some(transport_failed));
+}
+
+/// Runs `method` on the connected node as a task, retrying for
+/// [`NODE_RETRY_BUDGET`] only while nothing reached the node: for
+/// `op.submit`, which re-signs at a fresh sequence and so must not follow
+/// an answer that went missing with a second submission.
+pub(super) fn spawn_retrying_unsent(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+) {
+    spawn_method(guest, id, payload, method, Some(unsent));
 }
 
 /// Runs `method` on the connected node as a task, asking exactly once: a
 /// transport failure is the answer (`invite.create` must not mint twice).
 pub(super) fn spawn_no_retry(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
-    spawn_method(guest, id, payload, method, false);
+    spawn_method(guest, id, payload, method, None);
 }
 
-fn spawn_method(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod, retry: bool) {
+fn spawn_method(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    retry_on: Option<fn(&wire::Error) -> bool>,
+) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
     };
     let replies = guest.replies.clone();
     start(guest, id, async move {
-        let result = if retry {
-            until_answered(NODE_RETRY_BUDGET, || method(node.clone(), ask.clone())).await
-        } else {
-            method(node, ask).await
+        let result = match retry_on {
+            Some(retry_on) => {
+                until_answered(NODE_RETRY_BUDGET, retry_on, || {
+                    method(node.clone(), ask.clone())
+                })
+                .await
+            }
+            None => method(node, ask).await,
         };
         replies.item(id, result, true);
     });

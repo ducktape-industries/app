@@ -30,7 +30,9 @@
 //!   program `Respond`ed come back as they are.
 //! - `op.submit` `Call{target, body}` — one op, signed with the key
 //!   unlocked in this session at the signer's next sequence and submitted;
-//!   answered with the receipt's output, or the program's refusal.
+//!   answered with the receipt's output, or the program's refusal. Retried
+//!   only while nothing reached the node: a lost answer is reported
+//!   (`node_failed`), never followed by a second submission.
 //! - `chain.status` — node status as `NodeStatus`.
 //! - `chain.blocks` `BlockPage` — finalized blocks, newest first, from the
 //!   node's block archive (`/v1/blocks`); `chain.block` `BlockRef` — one by
@@ -106,8 +108,8 @@ mod replies;
 
 pub(super) use node::{NodeTask, spawn_reply};
 use node::{
-    blob_get, block, blocks, changes, heads, invite, query, spawn_no_retry, spawn_retrying, status,
-    submit,
+    blob_get, block, blocks, changes, heads, invite, query, spawn_no_retry, spawn_retrying,
+    spawn_retrying_unsent, status, submit,
 };
 pub(super) use replies::Replies;
 
@@ -206,7 +208,7 @@ pub(super) fn answer(
         (Capability::Chain, "blocks") => spawn_retrying(guest, id, payload, blocks),
         (Capability::Chain, "block") => spawn_retrying(guest, id, payload, block),
         (Capability::Invite, "create") => spawn_no_retry(guest, id, payload, invite),
-        (Capability::Op, "submit") => spawn_retrying(guest, id, payload, submit),
+        (Capability::Op, "submit") => spawn_retrying_unsent(guest, id, payload, submit),
         (Capability::Blob, "get") => spawn_retrying(guest, id, payload, blob_get),
         (Capability::Module, "describe") => spawn_retrying(guest, id, payload, describe::describe),
         (Capability::Module, "changes") => changes(guest, id, payload),
