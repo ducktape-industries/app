@@ -1,8 +1,10 @@
 //! AX-tree coverage for the shell's own screens: a native input reports its
 //! current text as the AX value (a secret one masked by the door, never
-//! dropped), and an error alert carries a name (`aria_label`).
+//! dropped), an error alert carries a name (`aria_label`), and every screen
+//! state passes the phase-1 audit ([`gate`]).
 use super::*;
 
+mod gate;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};
