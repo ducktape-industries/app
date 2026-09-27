@@ -192,7 +192,7 @@ impl ViewTree {
         let show = *on_show;
         let resize = *on_resize;
         let anticipate = px(anticipate.unwrap_or_default());
-        let delay = std::time::Duration::from_secs_f32(delay.unwrap_or_default().max(0.0) / 1000.0);
+        let delay = sensor_delay(*delay);
         let weak = cx.entity().downgrade();
         let measure = canvas(
             move |bounds, window, cx| {
@@ -449,5 +449,39 @@ impl ViewTree {
             .child(self.node(content, window, cx))
             .child(self.measure(&path, cx))
             .into_any_element()
+    }
+}
+
+/// Longest debounce a sensor may ask for: past an hour it is not a delay but
+/// a date. The timer adds it to an Instant, so it must stay finite.
+const MAX_SENSOR_DELAY: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// A sensor's debounce: guest milliseconds, as a Duration. The wire clamps
+/// the value only to finite and >= 0, so f32::MAX arrives here: `from_secs_f32`
+/// panics on it, and a guest must not take the host down. Too big saturates
+/// at the cap; NaN and negatives, should they slip past the wire, mean none.
+fn sensor_delay(ms: Option<f32>) -> std::time::Duration {
+    std::time::Duration::try_from_secs_f32(ms.unwrap_or_default().max(0.0) / 1000.0)
+        .unwrap_or(MAX_SENSOR_DELAY)
+        .min(MAX_SENSOR_DELAY)
+}
+
+#[cfg(test)]
+mod delay_tests {
+    use super::{MAX_SENSOR_DELAY, sensor_delay};
+    use std::time::Duration;
+
+    /// The wire clamps `delay` only to finite and >= 0, so f32::MAX arrives
+    /// here; it must not take the host down.
+    #[test]
+    fn a_guest_delay_never_panics_the_host() {
+        for ms in [f32::MAX, f32::INFINITY, 1e12] {
+            assert_eq!(sensor_delay(Some(ms)), MAX_SENSOR_DELAY, "{ms}");
+        }
+        for ms in [f32::NAN, -1.0, 0.0] {
+            assert_eq!(sensor_delay(Some(ms)), Duration::ZERO, "{ms}");
+        }
+        assert_eq!(sensor_delay(None), Duration::ZERO);
+        assert_eq!(sensor_delay(Some(250.0)), Duration::from_millis(250));
     }
 }
