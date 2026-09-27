@@ -29,6 +29,7 @@ mod anchored;
 mod canvas;
 mod commands;
 mod deferred;
+mod frame;
 mod inputs;
 mod interactivity;
 mod layout;
