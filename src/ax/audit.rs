@@ -476,12 +476,10 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             tally.check("AX-025", dialog, some, || {
                 "a dialog shows and nothing is focused".to_owned()
             });
-            if shell(dialog) {
-                if let Some(escape) = reading.escape.get(n) {
-                    tally.check("AX-024", dialog, *escape, || {
-                        "a shell dialog shows and escape is not bound".to_owned()
-                    });
-                }
+            if let Some(escape) = reading.escape.get(n).filter(|_| shell(dialog)) {
+                tally.check("AX-024", dialog, *escape, || {
+                    "a shell dialog shows and escape is not bound".to_owned()
+                });
             }
         }
     }
