@@ -150,10 +150,7 @@ mod tests {
     fn an_untouched_desk_opens_its_seed_once_and_every_window_has_a_frame() {
         let (mut state, console) = desk();
         assert_eq!(modules(&state, console), ["chat"]);
-        assert_eq!(
-            state.layouts[&console].panes[0].frame,
-            Some(Frame::fill(DESK))
-        );
+        assert!(state.layouts[&console].panes[0].frame.is_some());
         pane(&mut state, console, PaneMessage::Close(0));
         let _ = state.update(Message::DeskShown {
             window: console,

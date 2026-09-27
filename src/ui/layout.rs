@@ -442,7 +442,7 @@ impl Layout {
     }
 
     /// Gives every window a frame on a desk of `desk` size: the first one
-    /// fills it, a later one cascades from the window it opened beside;
+    /// opens centred, a later one cascades from the window it opened beside;
     /// every frame is kept where it can be grabbed.
     pub(crate) fn place(&mut self, desk: (f32, f32)) {
         for index in 0..self.panes.len() {
@@ -455,11 +455,17 @@ impl Layout {
                 .filter(|pane| pane.frame.is_some())
                 .max_by_key(|pane| pane.z)
                 .and_then(|pane| pane.frame);
+            // whole pixels: a halved and rejoined frame must add back up
+            let w = (desk.0 * 0.6).round().max(MIN_WIDTH);
+            let h = (desk.1 * 0.7).round().max(MIN_HEIGHT);
             let frame = match beneath {
-                None => Frame::fill(desk),
+                None => Frame {
+                    x: ((desk.0 - w) / 2.).round(),
+                    y: ((desk.1 - h) / 2.).round(),
+                    w,
+                    h,
+                },
                 Some(under) => {
-                    let w = (desk.0 * 0.6).max(MIN_WIDTH);
-                    let h = (desk.1 * 0.7).max(MIN_HEIGHT);
                     let mut x = under.x + CASCADE;
                     let mut y = under.y + CASCADE;
                     // past the desk's far corner, start again at its top-left
@@ -626,12 +632,14 @@ mod tests {
     }
 
     #[test]
-    fn the_first_window_fills_the_desk_and_later_ones_cascade_inside_it() {
+    fn the_first_window_opens_centred_and_later_ones_cascade_inside_it() {
         let mut layout = Layout::default();
         layout.split("chat");
         layout.place(DESK);
         let first = layout.panes[0].frame.unwrap();
-        assert_eq!(first, Frame::fill(DESK));
+        assert_eq!(first.x * 2. + first.w, DESK.0);
+        assert_eq!(first.y * 2. + first.h, DESK.1);
+        assert!(first.w < DESK.0 && first.h < DESK.1);
         layout.split("files");
         layout.place(DESK);
         let second = layout.panes[1].frame.unwrap();
@@ -690,6 +698,7 @@ mod tests {
         let mut layout = Layout::default();
         assert!(layout.halve(false, DESK), "no window: an empty one");
         layout.place(DESK);
+        layout.toggle_fill(0, DESK);
         assert!(layout.panes[0].is_empty());
         assert_eq!(layout.panes[0].frame, Some(Frame::fill(DESK)));
         layout.load("chat");
@@ -811,6 +820,7 @@ mod tests {
         layout.split("chat");
         layout.measure(DESK);
         layout.place(DESK);
+        layout.toggle_fill(0, DESK);
         layout.halve(false, DESK);
         let small = Frame {
             x: 100.,
