@@ -72,7 +72,7 @@ impl DesktopWindow {
             .child(
                 div()
                     .id("settings-nav")
-                    .role(Role::TabList)
+                    .control(Role::TabList, "Settings pages")
                     .w(px(180.))
                     .h_full()
                     .flex_shrink_0()
