@@ -332,7 +332,7 @@ impl DesktopWindow {
         );
         let below = match state.unlock_error.is_empty() {
             true => ink::note(
-                "The account number is given when it's created. Change the name later in Settings.",
+                "The account number is given when it's created. Change the name later in Account.",
                 ink.muted,
             )
             .into_any_element(),

@@ -1018,6 +1018,10 @@ mod tests {
         let _ = state.update(Message::TogglePopover(Popover::Account));
         let _ = state.update(Message::CloseOverlay(Overlay::Menu(Popover::Node)));
         assert!(state.overlay.is_none());
+        // picking a view from a menu closes the menu
+        let _ = state.update(Message::TogglePopover(Popover::Account));
+        let _ = state.update(Message::SelectView("module-registry"));
+        assert!(state.overlay.is_none());
         // one overlay's close leaves another open
         let _ = state.update(Message::OpenSettings);
         let _ = state.update(Message::CloseOverlay(Overlay::Network));
