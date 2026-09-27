@@ -36,7 +36,8 @@ impl Ducktape {
         layout.initialized = true;
         let desk = layout.desk();
         let mut task = Task::none();
-        let mut shows = true;
+        // filling or dragging a window does not change the active program
+        let mut sets_active = true;
         match message {
             PaneMessage::Select(module) => drop(layout.select(module)),
             PaneMessage::Open(module) => drop(layout.open(module)),
@@ -79,17 +80,17 @@ impl Ducktape {
             PaneMessage::Cycle { forward } => drop(layout.cycle(forward)),
             PaneMessage::Fill(index) => {
                 layout.toggle_fill(index, desk);
-                shows = false;
+                sets_active = false;
             }
             PaneMessage::Frame(index, frame) => {
                 layout.set_frame(index, frame, desk);
-                shows = false;
+                sets_active = false;
             }
         }
         if let Some(layout) = self.layouts.get_mut(&key) {
             layout.settle();
             // the window in front is the active program, however it got there
-            if shows && let Some(module) = layout.shown() {
+            if sets_active && let Some(module) = layout.shown() {
                 self.active = Some(module);
             }
         }
