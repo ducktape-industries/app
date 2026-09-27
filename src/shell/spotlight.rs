@@ -165,7 +165,7 @@ impl DesktopWindow {
                     })
                     .child(
                         div()
-                            .h(px(56.))
+                            .h(px(super::ink::tall(56.)))
                             .flex_shrink_0()
                             .px(px(16.))
                             .flex()
