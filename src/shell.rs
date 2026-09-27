@@ -111,7 +111,7 @@ pub(crate) fn commands() -> mpsc::UnboundedReceiver<PendingCommand> {
     assert!(current.is_none(), "one native shell per process");
     // the layers below hand these up without naming the shell
     crate::runtime::notify::on_open_link(open_link);
-    crate::backend::passkey::on_open_url(open_url_now);
+    crate::backend::auth_page::on_open_url(open_url_now);
     *current = Some(send);
     receive
 }

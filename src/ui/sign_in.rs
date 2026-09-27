@@ -449,7 +449,7 @@ impl Ducktape {
                 self.sign_in.unlock_error.clear();
                 Task::future(async move {
                     Message::AccountCreated(
-                        backend::passkey::create_plain_account(&client, &network, &name).await,
+                        backend::identity::create_plain_account(&client, &network, &name).await,
                     )
                 })
             }
@@ -547,7 +547,7 @@ impl Ducktape {
         self.sign_in.unlock_error.clear();
         step.passkey_phone = Default::default();
         step.passkey_qr.clear();
-        let (phone, urls) = backend::passkey::Phone::new(step.passkey_phone.clone());
+        let (phone, urls) = backend::auth_page::Phone::new(step.passkey_phone.clone());
         let flow = async move {
             let joined = match create {
                 true => backend::passkey::create_account(&client, &network, &name, &phone).await,

@@ -21,19 +21,15 @@ use commonware_cryptography::{Signer as _, ed25519};
 use identity::{Admission, CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use sha2::{Digest as _, Sha256};
 
+use super::auth_page::auth_page;
+use super::identity::{ask, expires_at, generation, get, person, submit, submit_seated};
 use super::noded::Frame;
-use super::passkey::{
-    ask, auth_page, expires_at, generation, get, person, submit, submit_seated, url_encode,
-};
+use super::relay::{POLL, post, slot, take};
 use super::{RpcClient, hex_decode, hex_encode, next_seq, seated_key, seated_sign};
-
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 
 /// How long a new device waits for the other to approve: the relay's own
 /// hold.
 const WAIT: std::time::Duration = std::time::Duration::from_secs(300);
-const POLL: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// Crockford's base32: no I, L, O, U to misread.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -71,59 +67,6 @@ pub(crate) fn fingerprint(key: &[u8]) -> String {
         .map(|byte| format!("{byte:02X}"))
         .collect();
     format!("{} {}", &hex[..4], &hex[4..])
-}
-
-/// The relay slot for one side of a code: `request` (new → old) or
-/// `consent` (old → new).
-fn slot(page: &str, code: &str, side: &str) -> Result<String, String> {
-    let mut url = reqwest::Url::parse(page)
-        .map_err(|error| format!("The auth host address is unusable: {error}"))?;
-    let mut hash = Sha256::new();
-    hash.update(b"ducktape:link:v1\0");
-    hash.update(side.as_bytes());
-    hash.update(b"\0");
-    hash.update(code.as_bytes());
-    url.set_path(&format!("/r/{}", B64.encode(hash.finalize())));
-    url.set_query(None);
-    url.set_fragment(None);
-    Ok(url.into())
-}
-
-async fn post(url: &str, json: String) -> Result<(), String> {
-    let reply = reqwest::Client::new()
-        .post(url)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(format!("result={}", url_encode(&json)))
-        .send()
-        .await
-        .map_err(|_| {
-            "Can't reach the auth host. Check the connection and try again.".to_string()
-        })?;
-    match reply.status().is_success() {
-        true => Ok(()),
-        false => Err(format!(
-            "The auth host refused the message ({}).",
-            reply.status()
-        )),
-    }
-}
-
-/// One GET of a slot: its message, or `None` while nothing has arrived.
-async fn take(url: &str) -> Result<Option<String>, String> {
-    let reply = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .map_err(|_| "Can't reach the auth host.".to_string())?;
-    match reply.status() {
-        reqwest::StatusCode::OK => reply
-            .text()
-            .await
-            .map(Some)
-            .map_err(|_| "Lost the message on the way.".to_string()),
-        reqwest::StatusCode::NO_CONTENT => Ok(None),
-        status => Err(format!("The auth host refused ({status}).")),
-    }
 }
 
 /// A new device asking to join: which network, and its key.
@@ -378,18 +321,6 @@ mod tests {
         );
         assert_eq!(normalized("KQ4M-9XP"), None);
         assert_eq!(normalized("KQ4M-9XPU"), None, "U is not in the alphabet");
-    }
-
-    #[test]
-    fn the_two_sides_of_a_code_are_different_slots() {
-        let page = "https://auth.ducktape.industries/";
-        let request = slot(page, "KQ4M9XPT", "request").unwrap();
-        let consent = slot(page, "KQ4M9XPT", "consent").unwrap();
-        assert_ne!(request, consent);
-        // the relay takes 43-character ids only
-        let id = request.rsplit('/').next().unwrap();
-        assert_eq!(id.len(), 43);
-        assert!(request.starts_with("https://auth.ducktape.industries/r/"));
     }
 
     #[test]

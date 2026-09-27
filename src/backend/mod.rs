@@ -9,10 +9,14 @@
 //! (accounts and their keys) and `module-registry` (the roster).
 
 mod app_dirs;
+pub(crate) mod auth_page;
 pub(crate) mod device_key;
+pub(crate) mod identity;
 pub(crate) mod join;
+mod loopback;
 pub(crate) mod noded;
 pub(crate) mod passkey;
+mod relay;
 mod session;
 pub(crate) mod views;
 
