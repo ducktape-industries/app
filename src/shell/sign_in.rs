@@ -490,14 +490,6 @@ impl DesktopWindow {
                 .gap(px(16.))
                 .children((!state.unlock_error.is_empty())
                     .then(|| self.alert("link-error", state.unlock_error.clone(), &ink)))
-                .child(buttons([self.button(
-                    "link-cancel",
-                    "Cancel",
-                    Kind::Secondary,
-                    || Message::LinkCancel,
-                    false,
-                    &ink,
-                )]))
                 .into_any_element(),
         ];
         self.launcher(
@@ -505,7 +497,8 @@ impl DesktopWindow {
             false,
             Figure::Pair,
             Self::where_(state),
-            None,
+            // the step back reads as recovery's: the same way to the account
+            Some(("link-back", "← Back", || Message::LinkCancel)),
             "[03 / 03] Account · another device".into(),
             "Approve this device".into(),
             None,
