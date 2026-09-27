@@ -42,14 +42,20 @@ pub(super) enum Figure {
 }
 
 /// A point on a figure's surface, its outward normal, how light its
-/// surface is (`0..=1`), and whether it is the moon (which orbits).
+/// surface is (`0..=1`), how glossy (its highlight's weight), and whether
+/// it is the moon (which orbits).
 #[derive(Clone, Copy)]
 struct Dot {
     at: [f32; 3],
     normal: [f32; 3],
     tone: f32,
+    gloss: f32,
     moon: bool,
 }
+
+/// How it turns on its own, radians a second about x, y and z: speeds
+/// that never line up, so it never shows the same turn twice.
+pub(super) const TUMBLE: [f32; 3] = [0.61, 0.93, 0.29];
 
 impl Figure {
     fn dots(self) -> &'static [Dot] {
@@ -66,11 +72,9 @@ impl Figure {
         })
     }
 
-    /// The frame at `t` seconds: each cell's ramp step, row by row, 0
-    /// where nothing is. It turns about three axes at speeds that never
-    /// line up, so it never plays the same turn twice.
-    pub(super) fn frame(self, t: f32) -> Vec<u8> {
-        let turn = rotation(0.61 * t + 0.4, 0.93 * t + 0.7, 0.29 * t + 0.25);
+    /// The figure held at `turn`, `t` seconds into its own motion (the
+    /// moon's orbit): each cell's ramp step, row by row, 0 where nothing is.
+    pub(super) fn frame(self, turn: Rotation, t: f32) -> Vec<u8> {
         // the moon's orbit: round the sphere, its plane tipped
         let orbit = TAU * t / 5.;
         let moon = rotation(0.5, 0., 0.).apply([0.95 * orbit.cos(), 0., 0.95 * orbit.sin()]);
@@ -106,7 +110,7 @@ impl Figure {
             let diffuse = dot3(normal, light).max(0.);
             let shine = dot3(normal, half).max(0.).powi(24);
             let rim = (1. + normal[2]).clamp(0., 1.).powi(3);
-            let lum = ((0.18 + 0.68 * diffuse + 0.35 * shine + 0.22 * rim) * dot.tone)
+            let lum = ((0.18 + 0.68 * diffuse + dot.gloss * shine + 0.22 * rim) * dot.tone)
                 .clamp(0., 1.)
                 .powf(1.15);
             cells[cell] = ((lum * (RAMP.len() - 1) as f32).round() as u8).clamp(1, 11);
@@ -116,10 +120,15 @@ impl Figure {
 }
 
 /// A turn about x, then y, then z, as a matrix.
-#[derive(Clone, Copy)]
-struct Rotation([[f32; 3]; 3]);
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct Rotation([[f32; 3]; 3]);
 
-fn rotation(ax: f32, ay: f32, az: f32) -> Rotation {
+/// How a figure is first held: a little turned, so it reads as solid.
+pub(super) fn start() -> Rotation {
+    rotation(0.4, 0.7, 0.25)
+}
+
+pub(super) fn rotation(ax: f32, ay: f32, az: f32) -> Rotation {
     let (cx, sx) = (ax.cos(), ax.sin());
     let (cy, sy) = (ay.cos(), ay.sin());
     let (cz, sz) = (az.cos(), az.sin());
@@ -132,6 +141,20 @@ fn rotation(ax: f32, ay: f32, az: f32) -> Rotation {
 impl Rotation {
     fn apply(self, v: [f32; 3]) -> [f32; 3] {
         self.0.map(|row| dot3(row, v))
+    }
+
+    /// This turn, then `step` on top of it, as the eye sees the axes;
+    /// squared up again, so a long run of small steps never shears it.
+    pub(super) fn then(self, step: Rotation) -> Rotation {
+        let [x, y, _] = mul(step.0, self.0);
+        let x = unit(x);
+        let y = unit(add(y, x.map(|v| -v * dot3(x, y))));
+        let z = [
+            x[1] * y[2] - x[2] * y[1],
+            x[2] * y[0] - x[0] * y[2],
+            x[0] * y[1] - x[1] * y[0],
+        ];
+        Rotation([x, y, z])
     }
 }
 
@@ -167,6 +190,7 @@ fn dot(at: [f32; 3], normal: [f32; 3], tone: f32) -> Dot {
         at,
         normal,
         tone,
+        gloss: 0.35,
         moon: false,
     }
 }
@@ -193,6 +217,7 @@ fn sphere(centre: [f32; 3], r: f32, moon: bool) -> Vec<Dot> {
                 at: add(centre, normal.map(|v| v * r)),
                 normal,
                 tone: 1.,
+                gloss: 0.35,
                 moon,
             });
         }
@@ -200,39 +225,66 @@ fn sphere(centre: [f32; 3], r: f32, moon: bool) -> Vec<Dot> {
     dots
 }
 
-/// A roll of tape: a thick short tube, its wound layers showing as bands
-/// on its faces, a card core inside, and the loose end off its side.
+/// A roll of duct tape: a thick short tube of glossy tape with rounded
+/// edges, its wound layers showing as bands on its faces, a card core
+/// inside, and the loose end peeling off its side.
 fn roll() -> Vec<Dot> {
-    let (outer, inner, half) = (0.72, 0.42, 0.24);
+    let (outer, inner, core, half, bevel) = (0.72, 0.42, 0.36, 0.24, 0.05);
+    let tape = |at, normal, tone| Dot {
+        gloss: 0.6,
+        ..dot(at, normal, tone)
+    };
+    let card = |at, normal| Dot {
+        gloss: 0.05,
+        ..dot(at, normal, 0.5)
+    };
     let mut dots = Vec::new();
     for u in across(0., TAU, count(TAU * outer)) {
         let (c, s) = (u.cos(), u.sin());
-        for y in across(-half, half, count(2. * half)) {
-            dots.push(dot([outer * c, y, outer * s], [c, 0., s], 1.));
-            // the core, facing in: card, darker than the tape
-            dots.push(dot([inner * c, y, inner * s], [-c, 0., -s], 0.55));
+        for y in across(-half + bevel, half - bevel, count(2. * (half - bevel))) {
+            dots.push(tape([outer * c, y, outer * s], [c, 0., s], 1.));
         }
-        for r in across(inner, outer, count(outer - inner) * 2) {
+        // the rounded edges: a quarter round where the wall meets a face
+        for a in across(0., TAU / 4., 6) {
+            for side in [1., -1.] {
+                let normal = [a.cos() * c, side * a.sin(), a.cos() * s];
+                let r = outer - bevel + bevel * a.cos();
+                let y = side * (half - bevel + bevel * a.sin());
+                dots.push(tape([r * c, y, r * s], normal, 1.));
+            }
+        }
+        for r in across(inner, outer - bevel, count(outer - bevel - inner) * 2) {
             let band = match (r * 6.).fract() < 0.5 {
-                true => 0.8,
+                true => 0.82,
                 false => 1.,
             };
-            dots.push(dot([r * c, half, r * s], [0., 1., 0.], band));
-            dots.push(dot([r * c, -half, r * s], [0., -1., 0.], band));
+            dots.push(tape([r * c, half, r * s], [0., 1., 0.], band));
+            dots.push(tape([r * c, -half, r * s], [0., -1., 0.], band));
+        }
+        // the card core: its rim flush with the tape, its wall facing in
+        for r in across(core, inner, count(inner - core) * 2) {
+            dots.push(card([r * c, half, r * s], [0., 1., 0.]));
+            dots.push(card([r * c, -half, r * s], [0., -1., 0.]));
+        }
+        for y in across(-half, half, count(2. * half)) {
+            dots.push(card([core * c, y, core * s], [-c, 0., -s]));
         }
     }
-    // the loose end: a strip leaving the outer face along its tangent
-    for x in across(0., 0.5, count(0.5)) {
-        for y in across(-half, half, count(2. * half)) {
-            dots.push(dot([x, y, outer], [0., 0., 1.], 1.));
+    // the loose end: a strip leaving the outer face along its tangent,
+    // curling away from the roll as it peels
+    let curl = 0.35;
+    for x in across(0., 0.55, count(0.6)) {
+        let normal = unit([-2. * curl * x, 0., 1.]);
+        for y in across(-half + bevel, half - bevel, count(2. * half)) {
+            dots.push(tape([x, y, outer + curl * x * x], normal, 1.));
         }
     }
     dots
 }
 
-/// A card with lines of writing across both faces.
+/// A card with thickness, lines of writing across both faces.
 fn card() -> Vec<Dot> {
-    let (w, h) = (0.62, 0.84);
+    let (w, h, thick) = (0.62, 0.84, 0.03);
     let mut dots = Vec::new();
     for x in across(-w, w, count(2. * w)) {
         for y in across(-h, h, count(2. * h)) {
@@ -240,7 +292,20 @@ fn card() -> Vec<Dot> {
                 true => 0.55,
                 false => 1.,
             };
-            dots.push(dot([x, y, 0.], [0., 0., -1.], tone));
+            dots.push(dot([x, y, -thick], [0., 0., -1.], tone));
+            dots.push(dot([x, y, thick], [0., 0., 1.], tone));
+        }
+        for side in [1., -1.] {
+            for z in across(-thick, thick, 3) {
+                dots.push(dot([x, side * h, z], [0., side, 0.], 0.8));
+            }
+        }
+    }
+    for y in across(-h, h, count(2. * h)) {
+        for side in [1., -1.] {
+            for z in across(-thick, thick, 3) {
+                dots.push(dot([side * w, y, z], [side, 0., 0.], 0.8));
+            }
         }
     }
     dots
@@ -262,9 +327,9 @@ mod tests {
     #[ignore]
     fn show_frames() {
         for figure in ALL {
-            let start = std::time::Instant::now();
-            let cells = figure.frame(2.);
-            println!("== {figure:?} {:?}", start.elapsed());
+            let clock = std::time::Instant::now();
+            let cells = figure.frame(start(), 2.);
+            println!("== {figure:?} {:?}", clock.elapsed());
             for row in cells.chunks(COLS) {
                 let line: String = row.iter().map(|&step| RAMP[step as usize]).collect();
                 println!("{}", line.trim_end());
@@ -277,9 +342,10 @@ mod tests {
     #[test]
     fn every_figure_tumbles_inside_its_box() {
         for figure in ALL {
-            let mut last = figure.frame(0.);
+            let turn = |t: f32| start().then(rotation(TUMBLE[0] * t, TUMBLE[1] * t, TUMBLE[2] * t));
+            let mut last = figure.frame(turn(0.), 0.);
             for n in 1..90 {
-                let cells = figure.frame(n as f32 / 3.);
+                let cells = figure.frame(turn(n as f32 / 3.), n as f32 / 3.);
                 assert_eq!(cells.len(), COLS * ROWS);
                 assert!(cells.iter().all(|&step| (step as usize) < RAMP.len()));
                 assert!(
@@ -303,7 +369,7 @@ mod tests {
     /// inked.
     #[test]
     fn the_ring_is_solid_where_it_is_seen() {
-        let cells = Figure::Ring.frame(1.);
+        let cells = Figure::Ring.frame(start(), 1.);
         for row in cells.chunks(COLS) {
             let inked: Vec<usize> = (0..COLS).filter(|&col| row[col] > 0).collect();
             if let (Some(&first), Some(&last)) = (inked.first(), inked.last()) {
@@ -316,16 +382,32 @@ mod tests {
         }
     }
 
+    /// A long run of small turns stays a turn: no shear, no shrink.
+    #[test]
+    fn many_small_turns_stay_a_rotation() {
+        let mut turn = start();
+        for _ in 0..100_000 {
+            turn = turn.then(rotation(0.021, 0.031, 0.009));
+        }
+        let rows = turn.0;
+        for i in 0..3 {
+            for j in 0..3 {
+                let want = if i == j { 1. } else { 0. };
+                assert!((dot3(rows[i], rows[j]) - want).abs() < 1e-4, "{rows:?}");
+            }
+        }
+    }
+
     /// A frame costs well under the frame it fills, even unoptimised.
     #[test]
     fn a_frame_is_cheap() {
         for figure in ALL {
-            figure.frame(0.);
-            let start = std::time::Instant::now();
+            figure.frame(start(), 0.);
+            let clock = std::time::Instant::now();
             for n in 0..10 {
-                figure.frame(n as f32);
+                figure.frame(start(), n as f32);
             }
-            let each = start.elapsed() / 10;
+            let each = clock.elapsed() / 10;
             assert!(
                 each < std::time::Duration::from_millis(15),
                 "{figure:?} took {each:?}"
