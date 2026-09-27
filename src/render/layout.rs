@@ -1,4 +1,4 @@
-//! Container, Responsive, When and Anchored nodes, and the layout helpers the
+//! Container, Responsive and When nodes, and the layout helpers the
 //! other renderers share: `measure` records an element's bounds under its
 //! authored path, `over_padding` floats a bar or a measure over a scroller
 //! without counting as its content, `vertical_bar` is a scroller's bar.
@@ -260,63 +260,6 @@ impl ViewTree {
             }
         }
         element.into_any_element()
-    }
-
-    pub(super) fn anchored(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Anchored {
-            anchor,
-            fit,
-            position,
-            position_mode,
-            offset,
-            children,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let anchor = match anchor {
-            wire::Anchor::TopLeft => gpui_kit::Anchor::TopLeft,
-            wire::Anchor::TopRight => gpui_kit::Anchor::TopRight,
-            wire::Anchor::BottomLeft => gpui_kit::Anchor::BottomLeft,
-            wire::Anchor::BottomRight => gpui_kit::Anchor::BottomRight,
-            wire::Anchor::TopCenter => gpui_kit::Anchor::TopCenter,
-            wire::Anchor::BottomCenter => gpui_kit::Anchor::BottomCenter,
-            wire::Anchor::LeftCenter => gpui_kit::Anchor::LeftCenter,
-            wire::Anchor::RightCenter => gpui_kit::Anchor::RightCenter,
-        };
-        // every fit mode keeps the popup inside the slot: a guest cannot
-        // see its pane's edges, so the host fits to them for it
-        let margin = match fit {
-            wire::AnchoredFitMode::SnapToWindowWithMargin([top, right, bottom, left]) => {
-                gpui_kit::Edges {
-                    top: px(*top),
-                    right: px(*right),
-                    bottom: px(*bottom),
-                    left: px(*left),
-                }
-            }
-            wire::AnchoredFitMode::SnapToWindow | wire::AnchoredFitMode::SwitchAnchor => {
-                Default::default()
-            }
-        };
-        super::anchored::Fitted {
-            children: children
-                .iter()
-                .map(|child| self.node(child, window, cx))
-                .collect(),
-            anchor,
-            position: position.map(|[x, y]| point(px(x), px(y))),
-            local: *position_mode == wire::AnchoredPositionMode::Local,
-            offset: offset.map_or_else(Point::default, |[x, y]| point(px(x), px(y))),
-            margin,
-        }
-        .into_any_element()
     }
 
     /// A zero-paint absolute canvas that records its bounds into

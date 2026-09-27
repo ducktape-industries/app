@@ -4,9 +4,66 @@
 //! pane. This one flips to the other side of its anchor point when that
 //! side fits, then shifts and clamps into the mask it is painted in. The
 //! wire's fit modes all get this one behaviour; a mode contributes only its
-//! margin (`ViewTree::anchored`, layout.rs).
+//! margin (`ViewTree::anchored`).
 use super::*;
 use gpui_kit::{Anchor, Axis, Edges};
+
+impl ViewTree {
+    pub(super) fn anchored(
+        &mut self,
+        node: &wire::Node,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let wire::Node::Anchored {
+            anchor,
+            fit,
+            position,
+            position_mode,
+            offset,
+            children,
+            ..
+        } = node
+        else {
+            unreachable!()
+        };
+        let anchor = match anchor {
+            wire::Anchor::TopLeft => Anchor::TopLeft,
+            wire::Anchor::TopRight => Anchor::TopRight,
+            wire::Anchor::BottomLeft => Anchor::BottomLeft,
+            wire::Anchor::BottomRight => Anchor::BottomRight,
+            wire::Anchor::TopCenter => Anchor::TopCenter,
+            wire::Anchor::BottomCenter => Anchor::BottomCenter,
+            wire::Anchor::LeftCenter => Anchor::LeftCenter,
+            wire::Anchor::RightCenter => Anchor::RightCenter,
+        };
+        // every fit mode keeps the popup inside the slot: a guest cannot
+        // see its pane's edges, so the host fits to them for it
+        let margin = match fit {
+            wire::AnchoredFitMode::SnapToWindowWithMargin([top, right, bottom, left]) => Edges {
+                top: px(*top),
+                right: px(*right),
+                bottom: px(*bottom),
+                left: px(*left),
+            },
+            wire::AnchoredFitMode::SnapToWindow | wire::AnchoredFitMode::SwitchAnchor => {
+                Default::default()
+            }
+        };
+        Fitted {
+            children: children
+                .iter()
+                .map(|child| self.node(child, window, cx))
+                .collect(),
+            anchor,
+            position: position.map(|[x, y]| point(px(x), px(y))),
+            local: *position_mode == wire::AnchoredPositionMode::Local,
+            offset: offset.map_or_else(Point::default, |[x, y]| point(px(x), px(y))),
+            margin,
+        }
+        .into_any_element()
+    }
+}
 
 pub(super) struct Fitted {
     pub(super) children: Vec<AnyElement>,

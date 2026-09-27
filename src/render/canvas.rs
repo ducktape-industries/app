@@ -103,7 +103,7 @@ pub(super) fn paint_canvas_commands(
     }
 }
 
-pub(super) fn svg_color(color: Hsla) -> String {
+fn svg_color(color: Hsla) -> String {
     let color = color.to_rgb();
     let (r, g, b, a) = (color.r, color.g, color.b, color.a);
     format!(
@@ -207,7 +207,7 @@ pub(super) fn canvas_svg(commands: &[wire::CanvasCommand], width: f32, height: f
     svg.into_bytes()
 }
 
-pub(super) fn canvas_path(shape: &wire::CanvasShape) -> String {
+fn canvas_path(shape: &wire::CanvasShape) -> String {
     let segments = match shape {
         wire::CanvasShape::Rectangle {
             position,
@@ -336,6 +336,11 @@ pub(super) fn canvas_path(shape: &wire::CanvasShape) -> String {
     path
 }
 
+/// The most `A` segments one arc is cut into: one per half turn is what
+/// the SVG arc command needs to stay unambiguous, and a guest cannot ask
+/// for a path longer than this by sweeping many turns.
+const MAX_ARC_SEGMENTS: f32 = 128.;
+
 pub(super) fn append_arc(
     path: &mut String,
     center: [f32; 2],
@@ -358,7 +363,7 @@ pub(super) fn append_arc(
     let _ = write!(path, "M{} {} ", a[0], a[1]);
     let steps = ((end - start).abs() / std::f32::consts::PI)
         .ceil()
-        .clamp(1.0, 128.0) as usize;
+        .clamp(1.0, MAX_ARC_SEGMENTS) as usize;
     for index in 1..=steps {
         let b = point(start + (end - start) * index as f32 / steps as f32);
         let _ = write!(
