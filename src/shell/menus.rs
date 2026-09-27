@@ -6,9 +6,9 @@
 use super::*;
 use screens::{Facts, pulse};
 
-/// The program whose view holds the account's settings, which the account
-/// menu opens.
-const ACCOUNT_SETTINGS: &str = "module-registry";
+/// The program whose view is Account (the account, its keys, agents and
+/// invites), which the account menu opens.
+const ACCOUNT_VIEW: &str = "module-registry";
 
 impl DesktopWindow {
     /// What the breath means (the NodeStatus board): in sync or not, and
@@ -155,15 +155,13 @@ impl DesktopWindow {
             Some(number) => format!("account {number} · {}", state.network),
             None => state.network.clone(),
         };
-        let mut rows = div().flex().flex_col();
-        if number.is_some() {
-            rows = rows.child(self.menu_row(
-                "account-settings",
-                "Account settings…",
-                self.dispatching(|| Message::SelectView(crate::runtime::intern(ACCOUNT_SETTINGS))),
-                cx,
-            ));
-        }
+        // Account shows a key with no account too: its key, and Create account
+        let mut rows = div().flex().flex_col().child(self.menu_row(
+            "account-view",
+            "Account",
+            self.dispatching(|| Message::SelectView(crate::runtime::intern(ACCOUNT_VIEW))),
+            cx,
+        ));
         if let Some(number) = number {
             rows = rows.child(self.menu_row(
                 "copy-account",

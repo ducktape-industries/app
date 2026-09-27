@@ -20,6 +20,10 @@ impl Ducktape {
                 Task::none()
             }
             Message::SelectView(module) => {
+                // a menu that opened the view (the account menu's Account) is done
+                if matches!(self.overlay, Some(super::Overlay::Menu(_))) {
+                    self.overlay = None;
+                }
                 self.active = Some(module);
                 self.badges.remove(module);
                 if let Some(desk) = self.desk_layout() {

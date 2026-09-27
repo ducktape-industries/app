@@ -331,14 +331,14 @@ impl DesktopWindow {
 }
 
 /// A program's icon on a folded bar, by its id (Members is `identity`,
-/// Settings `module-registry`, Nodes `valset`); `None` folds to its initial.
+/// Account `module-registry`, Nodes `valset`); `None` folds to its initial.
 fn tab_icon(module: &str) -> Option<gpui_kit::assets::IconName> {
     use gpui_kit::assets::IconName;
     Some(match module {
         "chat" => IconName::MessagesSquare,
         "forge" => IconName::Hammer,
         "identity" => IconName::Users,
-        "module-registry" => IconName::SlidersHorizontal,
+        "module-registry" => IconName::CircleUser,
         "valset" => IconName::Server,
         "explorer" => IconName::Compass,
         _ => return None,
