@@ -11,19 +11,32 @@
 mod app_dirs;
 pub(crate) mod auth_page;
 pub(crate) mod device_key;
+mod endpoints;
 pub(crate) mod identity;
 pub(crate) mod join;
+mod key_dir;
 mod loopback;
 pub(crate) mod noded;
 pub(crate) mod passkey;
+mod prefs;
 mod relay;
 mod session;
 pub(crate) mod views;
 
 pub use app_dirs::app_log_path;
 pub(crate) use app_dirs::{cache_dir, config_dir, state_dir};
+pub(crate) use endpoints::{
+    DEFAULT_ENDPOINT, ENDPOINT_REFUSAL, RecentEndpoint, endpoint_origin, forget_endpoint, host_of,
+    note_endpoint, recent_endpoints,
+};
+pub(crate) use key_dir::{Keyring, bind_keyring, key_exists, keystore_root, session_key_path};
 pub(crate) use noded::{Client as RpcClient, Layer, Status as NodeStatus};
-pub(crate) use session::*;
+pub(crate) use prefs::{
+    load_appearance, load_motion, read_prefs, save_appearance, save_motion, write_prefs,
+};
+pub(crate) use session::{
+    lock_signer, next_seq, query_frame, seat_key, seated_frame, seated_key, seated_sign,
+};
 
 use std::time::Duration;
 
