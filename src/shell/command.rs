@@ -12,7 +12,7 @@ const CHAT_READY: bool = false;
 
 /// What an empty window's field searches.
 #[derive(Clone, Copy, Default, PartialEq)]
-pub(super) enum Mode {
+enum Mode {
     #[default]
     Module,
     Chat,

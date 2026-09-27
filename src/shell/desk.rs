@@ -270,8 +270,7 @@ impl DesktopWindow {
             .snap_to_window_with_margin(px(8.))
     }
 
-    /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`, a mono
-    /// hint at its right end.
+    /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`.
     pub(super) fn menu_row(
         &self,
         id: &'static str,
@@ -279,18 +278,7 @@ impl DesktopWindow {
         run: impl Fn(&mut gpui_kit::App) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        self.menu_row_hint(id, label, "", run, cx)
-    }
-
-    pub(super) fn menu_row_hint(
-        &self,
-        id: &'static str,
-        label: &'static str,
-        hint: &'static str,
-        run: impl Fn(&mut gpui_kit::App) + 'static,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        use super::ink::{Ink, mono, sans};
+        use super::ink::{Ink, sans};
         use gpui_kit::*;
         let ink = Ink::of(self.model.read(cx).state.dark());
         let surface = ink.surface;
@@ -309,8 +297,7 @@ impl DesktopWindow {
                     cx.stop_propagation();
                     run(cx)
                 })
-                .child(label)
-                .child(mono(400, 12.).text_color(ink.muted).child(hint)),
+                .child(label),
         )
     }
 

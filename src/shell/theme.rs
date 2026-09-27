@@ -38,7 +38,7 @@ pub(super) fn configure_native_theme(cx: &mut gpui_kit::App) {
 
 /// The product theme config with the app's font families and the editor
 /// background set from `palette`, over the kit's default highlight style.
-pub(super) fn with_syntax_colors(
+fn with_syntax_colors(
     product: &std::rc::Rc<gpui_kit::component::ThemeConfig>,
     defaults: &std::rc::Rc<gpui_kit::component::ThemeConfig>,
     palette: &design::Palette,
@@ -52,7 +52,7 @@ pub(super) fn with_syntax_colors(
     std::rc::Rc::new(theme)
 }
 
-pub(super) fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
+fn hsla_of(color: design::Color) -> gpui_kit::Hsla {
     let [r, g, b, a] = color;
     gpui_kit::Rgba { r, g, b, a }.into()
 }
