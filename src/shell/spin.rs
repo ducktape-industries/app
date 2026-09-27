@@ -1,8 +1,6 @@
-//! A figure, playing: its baked loop a frame at a time, painted as one
-//! layer of glyphs. With motion off (the Settings switch) it holds its
-//! first frame.
-
-use std::time::Instant;
+//! A figure, tumbling: a frame drawn live every tick, painted as one layer
+//! of glyphs. With motion off (the Settings switch) it holds its first
+//! frame.
 
 use gpui_kit::*;
 
@@ -12,9 +10,8 @@ pub(super) struct Spin {
     pub(super) figure: Figure,
     pub(super) moving: bool,
     pub(super) ink: Hsla,
-    born: Instant,
-    /// The frame on screen.
-    frame: usize,
+    /// Frames drawn since it began: its clock, so it never repeats.
+    ticks: u64,
     /// The ramp, shaped on the first render.
     glyphs: Option<Glyphs>,
     /// Waiting for the next frame.
@@ -27,23 +24,20 @@ impl Spin {
             figure,
             moving,
             ink,
-            born: Instant::now(),
-            frame: 0,
+            ticks: 0,
             glyphs: None,
             ticking: false,
         }
     }
 
-    /// The frame the loop has reached.
-    fn due(&self) -> usize {
-        match self.moving {
-            true => self.born.elapsed().as_millis() as usize * figure::FPS as usize / 1000,
-            false => 0,
-        }
+    /// Where its motion is, in seconds.
+    fn t(&self) -> f32 {
+        self.ticks as f32 / figure::FPS as f32
     }
 
     /// Waits for the next frame and asks for it to be drawn. Its render
-    /// waits for the one after, so a hidden window, never drawn, stops.
+    /// waits for the one after, so a hidden window, never drawn, stops;
+    /// shown again, it picks up where it was.
     fn run(&mut self, cx: &mut Context<Self>) {
         if self.ticking || !self.moving {
             return;
@@ -55,7 +49,7 @@ impl Spin {
                 .await;
             let _ = spin.update(cx, |spin, cx| {
                 spin.ticking = false;
-                spin.frame = spin.due();
+                spin.ticks += 1;
                 cx.notify();
             });
         })
@@ -109,11 +103,12 @@ impl Glyphs {
 
 /// Where each inked cell's glyph goes, from the drawing's top left, and
 /// its ramp step.
-fn stamps(cells: impl Iterator<Item = u8>) -> Vec<(Point<Pixels>, usize)> {
+fn stamps(cells: &[u8]) -> Vec<(Point<Pixels>, usize)> {
     cells
+        .iter()
         .enumerate()
-        .filter(|(_, step)| *step > 0)
-        .map(|(cell, step)| {
+        .filter(|(_, step)| **step > 0)
+        .map(|(cell, &step)| {
             let (col, row) = (cell % figure::COLS, cell / figure::COLS);
             (
                 point(
@@ -130,7 +125,11 @@ impl Render for Spin {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.run(cx);
         let glyphs = *self.glyphs.get_or_insert_with(|| Glyphs::shape(window));
-        let stamps = stamps(self.figure.frame(self.frame));
+        let t = match self.moving {
+            true => self.t(),
+            false => 0.,
+        };
+        let stamps = stamps(&self.figure.frame(t));
         let ink = self.ink;
         div()
             .w(px(figure::COLS as f32 * figure::ADVANCE))
@@ -177,7 +176,6 @@ pub(super) fn drawing(
             spin.figure = figure;
             spin.moving = moving;
             spin.ink = ink;
-            spin.frame = spin.due();
             cx.notify();
         }
     });
@@ -194,8 +192,41 @@ pub(super) fn drawing(
 
 #[cfg(test)]
 mod tests {
-    use super::{figure, stamps};
-    use gpui_kit::{point, px};
+    use super::{Figure, Spin, figure, stamps};
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{Hsla, point, px, size};
+
+    /// `moving` figure in a window, drawn `frames` times a tick apart:
+    /// how many ticks it counted.
+    fn play(moving: bool, frames: u64, cx: &mut gpui_kit::TestAppContext) -> u64 {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(400.), px(400.)), move |_, _| {
+            Spin::new(Figure::Roll, moving, Hsla::default())
+        });
+        let spin = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        for _ in 0..frames {
+            native
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(1000 / figure::FPS));
+            native.run_until_parked();
+            native.update(|window, cx| window.render_frame(cx));
+        }
+        native.update(|_, cx| spin.read(cx).ticks)
+    }
+
+    /// It plays on for good: every tick is a frame, long past any loop.
+    #[gpui_kit::test]
+    fn a_moving_figure_never_stops(cx: &mut gpui_kit::TestAppContext) {
+        assert_eq!(play(true, 600, cx), 600);
+    }
+
+    /// With motion off it holds still and asks for no frames.
+    #[gpui_kit::test]
+    fn a_still_figure_asks_for_no_frames(cx: &mut gpui_kit::TestAppContext) {
+        assert_eq!(play(false, 30, cx), 0);
+    }
 
     #[test]
     fn stamps_put_each_inked_cell_at_its_column_and_row() {
@@ -204,7 +235,7 @@ mod tests {
         cells[figure::COLS + 2] = 11;
         cells[figure::COLS * figure::ROWS - 1] = 5;
         assert_eq!(
-            stamps(cells.into_iter()),
+            stamps(&cells),
             [
                 (point(px(0.), px(0.)), 1),
                 (point(px(2. * figure::ADVANCE), px(figure::SIZE)), 11),
