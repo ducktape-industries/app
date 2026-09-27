@@ -108,7 +108,8 @@ pub(super) fn stage_words(slot: &Slot) -> String {
 }
 
 impl NativeModuleView {
-    /// The id around the view's tree: the TESTMETHODKEEP reads the module off it.
+    /// The id around the view's tree: the AX test door (`ax::tree`) reads
+    /// the module off it.
     pub(super) fn ax_mark(&self) -> gpui_kit::ElementId {
         gpui_kit::ElementId::Name(format!("{}{}", crate::ax::VIEW_MARK, self.module).into())
     }
@@ -459,9 +460,9 @@ impl NativeModuleView {
             true => ("view-loading", "view-loading-stage"),
             false => ("view-unavailable", "view-unavailable-reason"),
         };
-        // a failure is announced like any other alert (screens.rs's
-        // connect-error, sign_in.rs's unlock-error): a name, not just a
-        // role, or the method's compact filter drops it
+        // a failure is announced like any other alert (the connect
+        // screen's connect-error, the key screen's unlock-error): a name,
+        // not just a role, or the AX door's compact filter drops it
         let alert_label = match &title {
             Some(title) => format!("{title}: {words}"),
             None => words.clone(),

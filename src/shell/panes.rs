@@ -1,10 +1,20 @@
-//! View entities belong to panes, including when a pane changes OS windows.
+//! The desk's panes. `Desktop::mount` gives every view pane the model
+//! holds a program view and keeps it across OS windows; `pane_stage` draws
+//! each pane with its title bar, buttons and grips, or the empty desk when
+//! there is none; the permission bar asks about a view's notices; the
+//! pointer drags, sizes and raises panes. Where panes sit, stack and which
+//! has the keys is `ui::layout`'s: this file only draws it and sends
+//! `PaneMessage`s.
 use super::*;
 
+/// The program view shown in the pane with this layout `instance`
+/// (`layout::Pane.instance`; the view counts its own, unrelated
+/// `NativeModuleView.instance`).
 pub(super) struct MountedPane {
     pub(super) module: &'static str,
     pub(super) view: Entity<crate::runtime::NativeModuleView>,
-    /// Its events, to the model.
+    /// The view's intents, to the model as `Message::ViewEvent`; dropping
+    /// it unsubscribes.
     _route: gpui_kit::Subscription,
 }
 
@@ -69,11 +79,6 @@ pub(super) fn label(module: &str) -> String {
         .unwrap_or_else(|| module.to_owned())
 }
 
-/// What an empty pane strip says: the rail lists what the network runs, so
-/// an empty pane list beside a non-empty rail means every pane here was
-/// closed or popped out, not that the network has nothing to show — that
-/// reused the "no program" sentence and read as if Chat/Forge/Settings had
-/// vanished from the rail right beside it.
 /// What an empty desk says when it has nothing to offer: `None` when there
 /// is something to open, and the desk shows its buttons instead.
 fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> Option<&'static str> {
@@ -378,7 +383,7 @@ impl DesktopWindow {
                         cx,
                     ))
                 })
-                // an empty window has no view to carry out
+                // an empty or Help window has no program view to carry out
                 .when(console && view_in, |strip| {
                     strip.child(self.pane_button(index, PaneAction::PopOut, true, cx))
                 })
@@ -758,10 +763,11 @@ impl Drag {
     }
 }
 
-/// A press anywhere on a window brings it to the front, unless something
-/// is open over the desk. Window-wide and
-/// before anything under the pointer sees it: a program's view may block
-/// the pointer from the window it sits in.
+/// A press anywhere in this OS window raises the pane under the pointer,
+/// unless something is open over the desk. Registered on the whole OS
+/// window in the capture phase, before anything under the pointer sees it:
+/// a program's view may swallow the pointer, and must not keep its pane
+/// from rising.
 fn raise(
     this: gpui_kit::Entity<DesktopWindow>,
     desk: gpui_kit::Bounds<gpui_kit::Pixels>,
