@@ -407,3 +407,123 @@ fn a_view_built_against_newer_methods_is_refused_at_load() {
     let refused = methods_revision(now + 1).unwrap_err();
     assert!(refused.contains(&format!("{}", now + 1)), "{refused}");
 }
+
+/// Pages a view's memory holds for the swap tests: a full snapshot budget
+/// plus its tag byte, with room to spare for the events and the frame.
+const SWAP_PAGES: usize = wire::MAX_SNAPSHOT_BYTES / 65536 + 1;
+
+/// A view in WAT whose `snapshot`, `restore` and `tick` are the bodies
+/// given, each leaving the packed `i64` it answers with. Memory byte 0 is
+/// a result's Ok tag and byte 1 a refusal's; `init` marks byte 2 so a test
+/// sees whether it ran; `tick`'s frame sits at the top of memory, clear of
+/// the buffer `alloc` hands out at 64.
+fn wat_view(snapshot: &str, restore: &str, tick: Option<&[u8]>) -> Guest {
+    let top = SWAP_PAGES * 65536;
+    let tick_body = match tick {
+        Some(frame) => format!(
+            "i64.const {}",
+            wire::abi::pack((top - frame.len()) as u32, frame.len() as u32)
+        ),
+        None => "unreachable".to_string(),
+    };
+    let module = wasmtime::Module::new(
+        engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") {SWAP_PAGES})
+            (data (i32.const 1) "\01")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init") (i32.store8 (i32.const 2) (i32.const 1)))
+            (func (export "tick") (param i32 i32) (result i64) {tick_body})
+            (func (export "snapshot") (result i64) {snapshot})
+            (func (export "restore") (param i32 i32) (result i64) {restore}))"#
+        ),
+    )
+    .unwrap();
+    let mut guest = Guest::instantiate("wat", &module, "wat").unwrap();
+    if let Some(frame) = tick {
+        guest
+            .exports
+            .memory
+            .write(&mut guest.store, top - frame.len(), frame)
+            .unwrap();
+    }
+    guest
+}
+
+/// `fresh` prepared as the replacement of `old`, seated as a drawn view.
+fn swap(mut old: Guest, fresh: Guest) -> (Result<Guest, Failure>, Arc<Mutex<Mounted>>) {
+    old.ticks = 1;
+    let alive = old.alive.clone();
+    let mounted = Mounted::seat();
+    mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
+    let mut ticks = 0;
+    let mut timing = LoadTiming::default();
+    let swapped = Guest::replacement(fresh, &alive, &mut ticks, &mounted, "wat", &mut timing);
+    (swapped, mounted)
+}
+
+fn init_ran(guest: &Guest) -> bool {
+    guest.exports.memory.data(&guest.store)[2] == 1
+}
+
+/// Every arm of `Guest::replacement` a real view cannot be made to take on
+/// demand: the state past its budget, the guest refusing the state and
+/// starting clean, the first frame trapping, and the drawn view's own
+/// snapshot trapping.
+#[test]
+fn a_replacement_takes_the_state_it_is_handed_or_says_why_not() {
+    let frame = wire::encode(&wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    });
+    let ok = |len: usize| format!("i64.const {}", wire::abi::pack(0, len as u32));
+    let refused = format!("i64.const {}", wire::abi::pack(1, 1));
+
+    // one byte past the budget (the tag not counted) is refused before a
+    // byte of it is copied; the budget itself carries over whole
+    let (swapped, _) = swap(
+        wat_view(&ok(wire::MAX_SNAPSHOT_BYTES + 2), &ok(1), Some(&frame)),
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+    );
+    assert!(matches!(
+        swapped.err(),
+        Some(Failure::Refused(why)) if why.contains("snapshot byte budget")
+    ));
+    let (swapped, _) = swap(
+        wat_view(&ok(wire::MAX_SNAPSHOT_BYTES + 1), &ok(1), Some(&frame)),
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+    );
+    let fresh = swapped.expect("a full budget carries over");
+    assert!(fresh.staged && !init_ran(&fresh), "restored, not inited");
+
+    // the guest refuses the state as not its own: it inits instead
+    let (swapped, _) = swap(
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+        wat_view(&ok(1), &refused, Some(&frame)),
+    );
+    let fresh = swapped.expect("a refused state starts clean");
+    assert!(
+        fresh.staged && init_ran(&fresh),
+        "inited in the state's place"
+    );
+
+    // the first frame traps: no replacement
+    let (swapped, _) = swap(
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+        wat_view(&ok(1), &ok(1), None),
+    );
+    assert!(matches!(swapped.err(), Some(Failure::Trapped(_))));
+
+    // the drawn view's snapshot traps: the load fails, and the view it
+    // leaves seated is faulted rather than entered again
+    let (swapped, mounted) = swap(
+        wat_view("unreachable", &ok(1), Some(&frame)),
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+    );
+    assert!(matches!(swapped.err(), Some(Failure::Trapped(_))));
+    assert!(matches!(
+        &mounted.lock().unwrap().slot,
+        Slot::Ready(old) if old.fault.is_some()
+    ));
+}
