@@ -39,7 +39,7 @@ impl Guest {
     /// view's snapshot, its first tree verified, and handed to the seat to
     /// swap in. Overridden, Missing, Ready and Failed each log one
     /// `view_source` line here (the seat logs `Swapped`); every load that
-    /// fetched a candidate logs one `view_load` timing line.
+    /// got past the roster logs one `view_load` timing line.
     pub(crate) fn load(
         module: &'static str,
         asked_of: &Connection,
