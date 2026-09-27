@@ -187,3 +187,11 @@ fn notify(
     )?;
     reply.body().deserialize::<u32>()
 }
+
+#[cfg(test)]
+/// A notice's own markup characters reach the freedesktop body escaped,
+/// so a server that renders markup shows them as the view typed them.
+#[test]
+fn the_freedesktop_body_escapes_the_notices_markup() {
+    assert_eq!(markup_escaped("a <b> & c"), "a &lt;b&gt; &amp; c");
+}
