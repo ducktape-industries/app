@@ -29,6 +29,7 @@ mod anchored;
 mod canvas;
 mod commands;
 mod deferred;
+mod editor_mount;
 mod frame;
 mod inputs;
 mod interactivity;
@@ -53,7 +54,8 @@ use accessibility::{accessible, descendant_text};
 use canvas::{append_arc, append_arc_to};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
-use inputs::{EditorMount, Field};
+use editor_mount::EditorMount;
+use inputs::Field;
 #[cfg(test)]
 use picture_resources::decode_image;
 pub(crate) use pictures::qr;
