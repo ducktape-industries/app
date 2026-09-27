@@ -141,29 +141,38 @@ impl ViewTree {
                 state
             });
             let input_identity = identity.clone();
-            let subscription = cx.subscribe_in(&state, window, move |this, input, event, _, cx| {
-                let Some(field) = this.fields.get_mut(&input_identity) else {
-                    return;
-                };
-                match event {
-                    InputEvent::Change => {
-                        let text = input.read(cx).value().to_string();
-                        if text == field.value {
-                            return;
+            let subscription =
+                cx.subscribe_in(&state, window, move |this, input, event, window, cx| {
+                    let Some(field) = this.fields.get_mut(&input_identity) else {
+                        return;
+                    };
+                    match event {
+                        InputEvent::Change => {
+                            let mut text = input.read(cx).value().to_string();
+                            let typed = text.len();
+                            wire::truncate_string(&mut text);
+                            if text.len() < typed {
+                                // the guest's bound is the field's: it shows what it sent
+                                input.update(cx, |state, cx| {
+                                    state.set_value(text.clone(), window, cx)
+                                });
+                            }
+                            if text == field.value {
+                                return;
+                            }
+                            field.value = text.clone();
+                            if let Some(handler) = field.on_input {
+                                cx.emit(wire::Event::Input { handler, text });
+                            }
                         }
-                        field.value = text.clone();
-                        if let Some(handler) = field.on_input {
-                            cx.emit(wire::Event::Input { handler, text });
+                        InputEvent::PressEnter { .. } => {
+                            if let Some(message) = field.on_submit {
+                                cx.emit(wire::Event::Message(message));
+                            }
                         }
+                        InputEvent::Focus | InputEvent::Blur => {}
                     }
-                    InputEvent::PressEnter { .. } => {
-                        if let Some(message) = field.on_submit {
-                            cx.emit(wire::Event::Message(message));
-                        }
-                    }
-                    InputEvent::Focus | InputEvent::Blur => {}
-                }
-            });
+                });
             self.fields.insert(
                 identity.clone(),
                 Field {
