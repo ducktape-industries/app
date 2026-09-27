@@ -214,9 +214,21 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
         assert_eq!(layout.focused, 0);
         assert_eq!(layout.stacking(), vec![1, 0]);
     });
+    settle(&mut native);
+    assert!(
+        in_front(&mut native, &view),
+        "the raised window has the keys"
+    );
+    let keys = native.update(|window, cx| window.focused(cx));
     // a double press where both title bars lie fills the front window alone
     let title = gpui_kit::point(px(first.x + 100.), px(desk::BAR + first.y + 30.));
     native.simulate_click(title, gpui_kit::Modifiers::none());
+    settle(&mut native);
+    assert_eq!(
+        native.update(|window, cx| window.focused(cx)),
+        keys,
+        "a press on the front window's title bar moved the keys"
+    );
     native.simulate_event(gpui_kit::MouseDownEvent {
         button: gpui_kit::MouseButton::Left,
         position: title,
@@ -233,6 +245,12 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
             "the one behind heard nothing"
         );
     });
+    settle(&mut native);
+    assert_eq!(
+        native.update(|window, cx| window.focused(cx)),
+        keys,
+        "filling the front window moved the keys"
+    );
 }
 
 fn key(native: &mut VisualTestContext, stroke: &str) {
@@ -429,25 +447,115 @@ fn the_focused_window_is_the_active_program(cx: &mut TestAppContext) {
 fn a_window_brought_to_the_front_has_the_keys(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = console(cx);
     let focused = |native: &mut VisualTestContext| native.update(|window, cx| window.focused(cx));
-    let in_front = |native: &mut VisualTestContext| {
-        native.update(|window, cx| {
-            let view = view.read(cx);
-            let layout = view.layout(cx);
-            let instance = layout.panes[layout.focused].instance;
-            view.pane_keys[&instance].0.contains_focused(window, cx)
-        })
-    };
     key(&mut native, "secondary-d");
-    assert!(in_front(&mut native), "⌘D: the new window");
+    assert!(in_front(&mut native, &view), "⌘D: the new window");
     key(&mut native, "secondary-1");
-    assert!(in_front(&mut native), "⌘1");
+    assert!(in_front(&mut native, &view), "⌘1");
     let first = focused(&mut native);
     key(&mut native, "ctrl-tab");
-    assert!(in_front(&mut native), "⌃Tab");
+    assert!(in_front(&mut native, &view), "⌃Tab");
     assert_ne!(focused(&mut native), first);
     key(&mut native, "secondary-w");
     assert_eq!(panes(&mut native, &view), (1, 0));
     assert_eq!(focused(&mut native), first, "⌘W: back to what had them");
+}
+
+/// The window in front has the keys, somewhere in its own box.
+fn in_front(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> bool {
+    native.update(|window, cx| {
+        let view = view.read(cx);
+        let layout = view.layout(cx);
+        let instance = layout.panes[layout.focused].instance;
+        view.pane_keys[&instance].0.contains_focused(window, cx)
+    })
+}
+
+/// Draws until the deferred focus moves have landed.
+fn settle(native: &mut VisualTestContext) {
+    for _ in 0..3 {
+        native.update(|window, cx| {
+            draw(window, cx);
+        });
+        native.run_until_parked();
+    }
+}
+
+/// A window the model brings to the front, not the desk's keys, has the
+/// keys too: Help from ⌘/, the Help menu or the empty desk's button.
+#[gpui_kit::test]
+fn help_the_model_opens_has_the_keys(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = console(cx);
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::OpenHelp, cx)
+    });
+    settle(&mut native);
+    assert_eq!(panes(&mut native, &view), (2, 1));
+    assert!(
+        in_front(&mut native, &view),
+        "the keys stayed out of Help: focused = {:?}",
+        native.update(|window, cx| window.focused(cx))
+    );
+}
+
+/// A dialog over the desk keeps the keys from a window the model opens
+/// behind it (Help from the app's menu while Settings is open); that
+/// window has them once the dialog closes.
+#[gpui_kit::test]
+fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = console(cx);
+    settle(&mut native);
+    model.update(&mut native, |model, _| {
+        model.state.overlay = Some(crate::Overlay::Settings)
+    });
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::OpenHelp, cx)
+    });
+    settle(&mut native);
+    assert_eq!(panes(&mut native, &view), (2, 1));
+    native.update(|window, cx| {
+        assert!(
+            view.read(cx).modal.contains_focused(window, cx),
+            "Help took the keys from Settings"
+        )
+    });
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::CloseOverlay(crate::Overlay::Settings), cx)
+    });
+    settle(&mut native);
+    assert!(in_front(&mut native, &view), "Settings closed");
+}
+
+/// A program Spotlight or a menu picks comes to the front with the keys,
+/// not the window it was picked over.
+#[gpui_kit::test]
+fn a_view_the_model_selects_has_the_keys(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+        view.update(cx, |view, cx| {
+            view.pane_message(PaneMessage::Split("pane-ax-other"), window, cx)
+        })
+    });
+    settle(&mut native);
+    assert!(in_front(&mut native, &view), "the split has the keys");
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::SelectView("pane-ax-test"), cx)
+    });
+    settle(&mut native);
+    assert_eq!(panes(&mut native, &view), (2, 0));
+    assert!(in_front(&mut native, &view), "SelectView");
+    // picked in Spotlight: it closes, and the keys go to the pick, not
+    // back to what had them when it opened
+    key(&mut native, "secondary-k");
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Spot(crate::Spot::Open("pane-ax-other")), cx)
+    });
+    settle(&mut native);
+    assert_eq!(panes(&mut native, &view), (2, 1));
+    assert!(in_front(&mut native, &view), "Spotlight");
 }
 
 /// A dialog on a scrim is modal: Tab and Shift+Tab go round its controls
@@ -580,13 +688,7 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
 
 /// A Help window brought to the front keeps the keys in its own box: it
 /// draws no finder field, so nothing off-screen may take them.
-///
-/// Red today: `pane_body` calls `focus_command` for any focused pane the
-/// app draws itself, Help included, so the keys go to a finder field Help
-/// never draws and GPUI drops them on the window's root. Moving that call
-/// into the non-Help arm turns this green.
 #[gpui_kit::test]
-#[ignore = "the Help window hands its keys to a finder field it does not draw"]
 fn a_help_window_in_front_keeps_the_keys_in_its_box(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = console(cx);
     native.update(|window, cx| {
