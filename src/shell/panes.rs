@@ -71,11 +71,44 @@ pub(super) fn label(module: &str) -> String {
 /// closed or popped out, not that the network has nothing to show — that
 /// reused the "no program" sentence and read as if Chat/Forge/Settings had
 /// vanished from the rail right beside it.
-fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> String {
-    match rail.iter().any(|row| !row.empty) {
-        true => format!("Press {} to open something.", chord_label("K")),
-        false => "This network runs no program with a view.".into(),
-    }
+/// What an empty desk says when it has nothing to offer: `None` when there
+/// is something to open, and the desk shows its buttons instead.
+fn empty_panes_message(rail: &[crate::runtime::RailRow]) -> Option<&'static str> {
+    (!rail.iter().any(|row| !row.empty)).then_some("This network runs no program with a view.")
+}
+
+/// An empty desk's way out: the chord and what it does, and a press does
+/// what the chord would.
+fn desk_button(
+    id: &'static str,
+    key: &str,
+    name: &'static str,
+    ink: &super::ink::Ink,
+    action: fn() -> Box<dyn gpui_kit::Action>,
+) -> gpui_kit::AnyElement {
+    use super::ink::*;
+    use gpui_kit::*;
+    let hover = ink.surface;
+    let button = sans(500, 14.)
+        .id(id)
+        .control(Role::Button, SharedString::from(name))
+        .h(px(tall(34.)))
+        .px(px(12.))
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .border_1()
+        .border_color(ink.line)
+        .text_color(ink.ink)
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover))
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            window.dispatch_action(action(), cx);
+        })
+        .child(mono(400, 12.).text_color(ink.muted).child(chord_label(key)))
+        .child(name);
+    crate::a11y::keyboard(button).into_any_element()
 }
 
 /// What an empty window lists: the rail's programs, as the menu bar shows them.
@@ -324,11 +357,30 @@ impl DesktopWindow {
                     window,
                     cx,
                 ))
-                .child(
-                    super::ink::mono(400, 12.)
+                .child(match empty_panes_message(&crate::runtime::rail()) {
+                    Some(message) => super::ink::mono(400, 12.)
                         .text_color(ink.muted)
-                        .child(empty_panes_message(&crate::runtime::rail())),
-                )
+                        .child(message)
+                        .into_any_element(),
+                    None => div()
+                        .flex()
+                        .gap(px(12.))
+                        .child(desk_button(
+                            "empty-desk/new",
+                            "N",
+                            "New window",
+                            &ink,
+                            || Box::new(super::keys::NewWindow),
+                        ))
+                        .child(desk_button(
+                            "empty-desk/search",
+                            "K",
+                            "Search",
+                            &ink,
+                            || Box::new(super::keys::ToggleSpotlight),
+                        ))
+                        .into_any_element(),
+                })
                 .into_any_element();
         }
         let props = self.model.read(cx).state.view_props();
@@ -976,13 +1028,13 @@ mod empty_panes_message_tests {
     fn names_the_network_only_when_the_rail_itself_is_empty() {
         assert_eq!(
             empty_panes_message(&[]),
-            "This network runs no program with a view."
+            Some("This network runs no program with a view.")
         );
         assert_eq!(
             empty_panes_message(&[row(true)]),
-            "This network runs no program with a view.",
+            Some("This network runs no program with a view."),
             "a rail of empty-slot rows still has nothing to open"
         );
-        assert!(empty_panes_message(&[row(true), row(false)]).starts_with("Press "));
+        assert_eq!(empty_panes_message(&[row(true), row(false)]), None);
     }
 }
