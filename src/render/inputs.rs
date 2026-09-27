@@ -1,19 +1,26 @@
+//! The two nodes a guest types into: `Node::Input`, a one-line field the
+//! kit's `InputState` holds, and `Node::Editor`, a mount of the native
+//! `TextEditor` over a guest-owned document.
+
 use super::*;
 use crate::render::native_id;
 
+/// A mounted `Node::Editor`, kept for as long as its path stays mounted.
 pub(super) struct EditorMount {
     pub(super) view: EditorView,
     pub(super) _subscription: Subscription,
 }
 
-/// An editor's `()` is "the store has events": forward them as this tree's.
+/// `TextEditor` emits `()` when the `EditorStore` has queued guest events:
+/// take them and emit them as this tree's own.
 pub(super) fn drain_editor(store: &crate::editor::wire::EditorStore, cx: &mut Context<ViewTree>) {
     for event in store.drain() {
         cx.emit(event);
     }
 }
 
-/// Native editor primitives selected by the guest's explicit projection.
+/// The native editor drawing a mounted `Node::Editor`. One kind is left
+/// since the block editor went (549f8427); the enum is its seam.
 pub(super) enum EditorView {
     Text(Entity<crate::editor::wire::TextEditor>),
 }
@@ -36,8 +43,7 @@ impl EditorView {
     }
 
     /// The node's mapping, onto the field the editor draws: the node this
-    /// mount announces is a wrapper, not the text. A rich editor's blocks are
-    /// its own nodes, named by their kind; the label names its page.
+    /// mount announces is a wrapper, not the text.
     pub(super) fn announce(&self, accessible: Accessible, cx: &mut App) {
         match self {
             Self::Text(view) => view.update(cx, |editor, cx| editor.set_accessible(accessible, cx)),
@@ -87,6 +93,8 @@ impl EditorView {
     }
 }
 
+/// A mounted `Node::Input`: the kit state and the last values the guest
+/// gave, so a frame that repeats them leaves what the user typed alone.
 pub(super) struct Field {
     pub(super) state: Entity<InputState>,
     pub(super) on_input: Option<u32>,

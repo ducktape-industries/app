@@ -139,9 +139,8 @@ impl Store {
         };
         // Typing into a field whose document has not arrived is kept: a
         // native edit and a key are relative to the caret, so the pump
-        // replays them onto the document once it is here. A rich edit is a
-        // snapshot of the whole document, and one taken before it arrived
-        // would write over it.
+        // replays them onto the document once it is here. A toolbar
+        // interaction that comes before the document is dropped.
         let relative = matches!(
             &input,
             Input::Native(_) | Input::Request(wire::EditorRequestInput::Key { .. })

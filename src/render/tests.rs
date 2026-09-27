@@ -172,8 +172,9 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
     ]
 }
 
-/// Put a document's text into a store the honest way: the store asks for
-/// every document it has no text for, so answer the request it just made.
+/// Seeds `text` into `store` by answering the document request the store
+/// emits for a document it has no text for, with the Begin/Chunk/Complete
+/// transfer a guest sends.
 fn seed_editor_text(store: &crate::editor::wire::EditorStore, text: &str) {
     use wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
     let asked = store.drain().into_iter().find_map(|event| match event {
