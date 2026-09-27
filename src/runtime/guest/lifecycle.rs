@@ -125,64 +125,14 @@ impl Guest {
                 fresh.capabilities = capabilities.clone();
                 fresh.deployed(hash);
                 match &mut against {
-                    // A once-valid view carries its state over. Only an
-                    // explicitly admitted never-valid recovery may initialize.
                     Some((alive, ticks)) => {
-                        let snapshot = {
-                            let mut locked = mounted.lock().expect("module view lock");
-                            let Slot::Ready(old) = &mut locked.slot else {
-                                return Err(Failure::Refused(
-                                    "the view left while its replacement was prepared".into(),
-                                ));
-                            };
-                            if !Arc::ptr_eq(alive, &old.alive) {
-                                return Err(Failure::Refused(
-                                    "the view changed while its replacement was prepared".into(),
-                                ));
-                            }
-                            *ticks = old.ticks;
-                            let preserve = *ticks > 0;
-                            if preserve && !old.settled() {
-                                return Err(Failure::Refused(
-                                    "the view has pending work; its replacement waits".into(),
-                                ));
-                            }
-                            if preserve {
-                                Some(old.snapshot().map_err(Failure::Trapped)?)
-                            } else {
-                                None
-                            }
-                        };
-                        match snapshot {
-                            Some(snapshot) => {
-                                wire::Snapshot::decode(&snapshot).map_err(Failure::Refused)?;
-                                match fresh.restore(&snapshot, &shown).map_err(Failure::Trapped)? {
-                                    Restored::Carried => {}
-                                    Restored::Refused(refusal) => {
-                                        tracing::warn!(
-                                            target: "ducktape::app",
-                                            module,
-                                            hash = %crate::backend::hex_encode(&hash),
-                                            reason = "snapshot_refused",
-                                            refusal = %refusal,
-                                            "view_state_dropped"
-                                        );
-                                        fresh.init(&shown).map_err(Failure::Trapped)?;
-                                    }
-                                }
-                            }
-                            None => fresh.init(&shown).map_err(Failure::Trapped)?,
-                        }
-                        let framed = Instant::now();
-                        let frame = fresh.first_frame(&shown);
-                        timing.first_frame = Some(framed.elapsed());
-                        frame.map_err(Failure::Trapped)?;
+                        Self::replacement(fresh, alive, ticks, mounted, &shown, &mut timing)
                     }
                     None => {
                         fresh.init(&shown).map_err(Failure::Trapped)?;
+                        Ok(fresh)
                     }
                 }
-                Ok(fresh)
             })();
             timing.init = seated
                 .elapsed()
@@ -214,6 +164,77 @@ impl Guest {
             hash: Some(hash),
             failure,
         })
+    }
+
+    /// A once-valid view carries its state over to `fresh`, prepared as its
+    /// replacement: its snapshot, taken under the seat's lock against the
+    /// very instance the load saw and held to `MAX_SNAPSHOT_BYTES`, is
+    /// restored — or, when the guest refuses it as not its own, `init` runs
+    /// in its place — and the first tree is verified. `ticks` becomes the
+    /// count the snapshot was taken at; a view that never ticked has no
+    /// state to carry and only `init`s.
+    pub(super) fn replacement(
+        mut fresh: Self,
+        alive: &Arc<()>,
+        ticks: &mut u64,
+        mounted: &Arc<Mutex<Mounted>>,
+        shown: &str,
+        timing: &mut LoadTiming,
+    ) -> Result<Self, Failure> {
+        let snapshot = {
+            let mut locked = mounted.lock().expect("module view lock");
+            let Slot::Ready(old) = &mut locked.slot else {
+                return Err(Failure::Refused(
+                    "the view left while its replacement was prepared".into(),
+                ));
+            };
+            if !Arc::ptr_eq(alive, &old.alive) {
+                return Err(Failure::Refused(
+                    "the view changed while its replacement was prepared".into(),
+                ));
+            }
+            *ticks = old.ticks;
+            let preserve = *ticks > 0;
+            if preserve && !old.settled() {
+                return Err(Failure::Refused(
+                    "the view has pending work; its replacement waits".into(),
+                ));
+            }
+            if preserve {
+                Some(old.snapshot().map_err(Failure::Trapped)?)
+            } else {
+                None
+            }
+        };
+        match snapshot {
+            Some(snapshot) => {
+                if snapshot.len() > wire::MAX_SNAPSHOT_BYTES {
+                    return Err(Failure::Refused(
+                        "the view's state is past the snapshot byte budget".into(),
+                    ));
+                }
+                match fresh.restore(&snapshot, shown).map_err(Failure::Trapped)? {
+                    Restored::Carried => {}
+                    Restored::Refused(refusal) => {
+                        tracing::warn!(
+                            target: "ducktape::app",
+                            module = fresh.module,
+                            hash = %crate::backend::hex_encode(fresh.hash.as_ref().map_or(&[][..], |hash| hash)),
+                            reason = "snapshot_refused",
+                            refusal = %refusal,
+                            "view_state_dropped"
+                        );
+                        fresh.init(shown).map_err(Failure::Trapped)?;
+                    }
+                }
+            }
+            None => fresh.init(shown).map_err(Failure::Trapped)?,
+        }
+        let framed = Instant::now();
+        let frame = fresh.first_frame(shown);
+        timing.first_frame = Some(framed.elapsed());
+        frame.map_err(Failure::Trapped)?;
+        Ok(fresh)
     }
 
     pub(crate) fn deployed(&mut self, hash: [u8; 32]) {

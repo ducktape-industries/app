@@ -345,47 +345,58 @@ fn tooltip_response_is_sanitized_against_the_combined_held_tree_budget() {
     assert!(frame.root.unwrap().count() <= wire::MAX_NODES);
 }
 
-/// Every export of a real view, through guest memory. The bytes are
-/// view-guest's `exported_view` example built for wasm32 by modules'
-/// `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
+/// Every export of a real view, through guest memory and the swap a
+/// deployment takes: the drawn view ticked, its state carried into a fresh
+/// instance of the same code, and that instance's first tree drawn from
+/// it. The bytes are view-guest's `exported_view` example built for wasm32
+/// by modules' `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
 #[test]
 #[ignore = "needs DUCKTAPE_VIEW_PROBE=<exported_view.wasm>"]
-fn a_core_module_view_inits_ticks_snapshots_and_restores() {
+fn a_ticked_view_survives_a_swap_with_its_state() {
     let path = std::env::var("DUCKTAPE_VIEW_PROBE").expect("DUCKTAPE_VIEW_PROBE");
     let bytes = std::fs::read(path).expect("probe bytes");
-    let mut guest = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
-    assert_eq!(guest.name, "Exported");
-    guest.tick();
-    assert_eq!(guest.fault, None);
-    let (text, press) = label(&guest);
+    let mut old = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
+    assert_eq!(old.name, "Exported");
+    old.tick();
+    old.ticks += 1;
+    assert_eq!(old.fault, None);
+    let (text, press) = label(&old);
     assert_eq!(text, "0");
 
-    guest.pending.push(wire::Event::Click {
+    old.pending.push(wire::Event::Click {
         handler: press,
         event: wire::click::Click::Keyboard {
             button: wire::click::KeyboardButton::Enter,
             bounds: Default::default(),
         },
     });
-    guest.tick();
-    assert_eq!(label(&guest).0, "1");
+    old.tick();
+    old.ticks += 1;
+    assert_eq!(label(&old).0, "1");
+    let state = old.snapshot().expect("settled");
+    assert!(state[0] >= 0x80, "the state is a named MessagePack map");
 
-    let state = guest.snapshot().expect("settled");
+    let alive = old.alive.clone();
+    let mounted = Mounted::seat();
+    mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
     let code = Guest::compile(&bytes, "probe")
         .map_err(|f| f.to_string())
         .expect("compiles");
+    let fresh = Guest::instantiate("probe", &code, "probe").expect("instantiates");
+    let mut ticks = 0;
+    let mut timing = LoadTiming::default();
+    let fresh = Guest::replacement(fresh, &alive, &mut ticks, &mounted, "probe", &mut timing)
+        .expect("the replacement carries the state");
+    assert_eq!(ticks, 2, "the count the snapshot was taken at");
+    assert!(fresh.staged && fresh.fault.is_none());
+    assert_eq!(label(&fresh).0, "1", "drawn from the state it was handed");
+
+    // a state that is not the view's own is the guest's refusal, not a trap
     let mut next = Guest::instantiate("probe", &code, "probe").expect("instantiates");
     assert!(matches!(
-        next.restore(&state, "probe"),
-        Ok(Restored::Carried)
-    ));
-    assert!(matches!(
-        next.restore(b"not json", "probe"),
+        next.restore(b"not a snapshot", "probe"),
         Ok(Restored::Refused(_))
     ));
-    next.tick();
-    assert_eq!(next.fault, None);
-    assert_eq!(label(&next).0, "1");
 }
 
 #[test]
