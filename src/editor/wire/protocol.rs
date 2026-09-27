@@ -1,5 +1,9 @@
 use super::*;
 
+/// How long a key may wait for the guest's decision before the store
+/// faults: a guest that never answers must not hold a field's input forever.
+const DECISION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 impl Store {
     pub(super) fn request_document(&mut self) {
         let transfer_active = self.incoming.is_some() || self.outgoing.is_some();
@@ -33,14 +37,14 @@ impl Store {
                 return;
             }
         };
-        self.events.push(wire::Event::EditorDocument {
+        self.events.push(view_wire::Event::EditorDocument {
             handler: field.handler,
             message: DocumentMessage::Request {
                 id: id.clone(),
                 target: target.clone(),
             },
         });
-        self.incoming = Some(Incoming {
+        self.incoming = Some(IncomingTransfer {
             id,
             target,
             handler: field.handler,
@@ -53,7 +57,7 @@ impl Store {
             return;
         };
         if let Phase::Decision { since, .. } = &document.phase {
-            if since.elapsed().as_secs() >= 5 {
+            if since.elapsed() >= DECISION_TIMEOUT {
                 document.phase = Phase::Fault;
                 self.fault = Some("editor key decision timed out; input retained".into());
             }
@@ -74,14 +78,14 @@ impl Store {
             return;
         };
         match &front.input {
-            Input::Request(input) => {
-                let request = wire::EditorRequest {
+            InputKind::Request(input) => {
+                let request = view_wire::EditorRequest {
                     id: transaction_id(self.instance, &document.reference, front.sequence),
                     state: document.reference.clone(),
                     input: input.clone(),
-                    input_time_ms: front.at,
+                    input_time_ms: front.input_time_ms,
                 };
-                self.events.push(wire::Event::EditorRequest {
+                self.events.push(view_wire::Event::EditorRequest {
                     handler: binding.on_request,
                     request: request.clone(),
                 });
@@ -90,7 +94,7 @@ impl Store {
                     since: Instant::now(),
                 };
             }
-            Input::Native(edit) => {
+            InputKind::Native(edit) => {
                 let Some(text) = document.text.as_ref() else {
                     return;
                 };
@@ -100,7 +104,7 @@ impl Store {
                         name,
                         patches,
                         cursor,
-                        wire::EditorHistoryEffect::Native,
+                        view_wire::EditorHistoryEffect::Native,
                         None,
                     ),
                     Err(error) => self.fault = Some(error),
@@ -112,10 +116,10 @@ impl Store {
     pub(super) fn commit(
         &mut self,
         name: &str,
-        patches: Vec<wire::EditorPatch>,
-        cursor: wire::EditorCursor,
-        history: wire::EditorHistoryEffect,
-        origin: Option<wire::EditorRequestInput>,
+        patches: Vec<view_wire::EditorPatch>,
+        cursor: view_wire::EditorCursor,
+        history: view_wire::EditorHistoryEffect,
+        origin: Option<view_wire::EditorRequestInput>,
     ) {
         let Some(document) = self.documents.get(name) else {
             return;
@@ -123,7 +127,7 @@ impl Store {
         let Some(text) = document.text.as_ref() else {
             return;
         };
-        let next = match wire::patched_editor_text(text, &patches, cursor) {
+        let next = match view_wire::patched_editor_text(text, &patches, cursor) {
             Ok(text) => text,
             Err(error) => {
                 self.fault = Some(format!("invalid editor decision: {error:?}"));
@@ -188,16 +192,16 @@ impl Store {
             after.text_revision = after.text_revision.saturating_add(1);
         }
         let kind = match &front.input {
-            Input::Native(edit) => edit.kind,
-            Input::Request(_) => match history {
-                wire::EditorHistoryEffect::Undo => wire::EditorEditKind::Undo,
-                wire::EditorHistoryEffect::Redo => wire::EditorEditKind::Redo,
-                _ => wire::EditorEditKind::GuestPatch,
+            InputKind::Native(edit) => edit.kind,
+            InputKind::Request(_) => match history {
+                view_wire::EditorHistoryEffect::Undo => view_wire::EditorEditKind::Undo,
+                view_wire::EditorHistoryEffect::Redo => view_wire::EditorEditKind::Redo,
+                _ => view_wire::EditorEditKind::GuestPatch,
             },
         };
-        self.events.push(wire::Event::EditorTransaction {
+        self.events.push(view_wire::Event::EditorTransaction {
             handler: binding.on_event,
-            event: wire::EditorTransactionEvent::Commit {
+            event: view_wire::EditorTransactionEvent::Commit {
                 id: transaction_id(self.instance, &before, front.sequence),
                 origin,
                 before,
@@ -205,7 +209,7 @@ impl Store {
                 patches,
                 kind,
                 history,
-                input_time_ms: front.at,
+                input_time_ms: front.input_time_ms,
             },
         });
         document.text = Some(Arc::from(next));
@@ -230,8 +234,8 @@ impl Store {
             }
             if let Some(work) = document.queue.pop_front() {
                 let bytes = match work.input {
-                    Input::Native(edit) => edit.replacement.len(),
-                    Input::Request(request) => wire::encode(&request).len(),
+                    InputKind::Native(edit) => edit.replacement.len(),
+                    InputKind::Request(request) => view_wire::encode(&request).len(),
                 };
                 document.queued_bytes = document.queued_bytes.saturating_sub(bytes);
             }
@@ -239,7 +243,7 @@ impl Store {
         }
     }
 
-    pub(super) fn decide(&mut self, response: &wire::EditorResponse) {
+    pub(super) fn decide(&mut self, response: &view_wire::EditorResponse) {
         let name = &response.id.document;
         let Some(document) = self.documents.get(name) else {
             return;
@@ -252,7 +256,7 @@ impl Store {
         }
         let request = request.clone();
         match &response.decision {
-            wire::EditorDecision::Apply {
+            view_wire::EditorDecision::Apply {
                 patches,
                 cursor,
                 history,
@@ -263,18 +267,18 @@ impl Store {
                 *history,
                 Some(request.input),
             ),
-            wire::EditorDecision::Noop => self.noop(name, request),
-            wire::EditorDecision::DefaultEditorAction => self.default_action(name, request),
+            view_wire::EditorDecision::Noop => self.noop(name, request),
+            view_wire::EditorDecision::DefaultEditorAction => self.default_action(name, request),
         }
     }
 
-    pub(super) fn noop(&mut self, name: &str, request: wire::EditorRequest) {
-        let wire::EditorRequestInput::Interaction { action } = &request.input else {
+    pub(super) fn noop(&mut self, name: &str, request: view_wire::EditorRequest) {
+        let view_wire::EditorRequestInput::Interaction { action } = &request.input else {
             self.commit(
                 name,
                 vec![],
                 request.state.cursor,
-                wire::EditorHistoryEffect::Native,
+                view_wire::EditorHistoryEffect::Native,
                 Some(request.input),
             );
             return;
@@ -292,9 +296,9 @@ impl Store {
         else {
             return;
         };
-        self.events.push(wire::Event::EditorTransaction {
+        self.events.push(view_wire::Event::EditorTransaction {
             handler: binding.on_event,
-            event: wire::EditorTransactionEvent::Interaction {
+            event: view_wire::EditorTransactionEvent::Interaction {
                 id: request.id,
                 state: request.state,
                 action: action.clone(),
@@ -306,14 +310,14 @@ impl Store {
         };
     }
 
-    pub(super) fn default_action(&mut self, name: &str, request: wire::EditorRequest) {
+    pub(super) fn default_action(&mut self, name: &str, request: view_wire::EditorRequest) {
         let Some(document) = self.documents.get(name) else {
             return;
         };
         let Some(text) = document.text.as_ref() else {
             return;
         };
-        let wire::EditorRequestInput::Key { key, .. } = &request.input else {
+        let view_wire::EditorRequestInput::Key { key, .. } = &request.input else {
             self.fault = Some("editor interaction cannot request a native key action".into());
             return;
         };
@@ -322,7 +326,7 @@ impl Store {
             name,
             patches,
             cursor,
-            wire::EditorHistoryEffect::Native,
+            view_wire::EditorHistoryEffect::Native,
             Some(request.input),
         );
     }
@@ -362,7 +366,7 @@ impl Store {
         };
         match EditorTransferSender::new(id.clone(), target.clone()) {
             Ok(sender) => {
-                self.outgoing = Some(Outgoing {
+                self.outgoing = Some(OutgoingMirror {
                     handler: field.handler,
                     sender,
                 })
@@ -383,7 +387,7 @@ impl Store {
             return;
         };
         match outgoing.sender.next_frame(&document.reference, text) {
-            Ok(Some(transfer)) => self.events.push(wire::Event::EditorDocument {
+            Ok(Some(transfer)) => self.events.push(view_wire::Event::EditorDocument {
                 handler: outgoing.handler,
                 message: DocumentMessage::Transfer(transfer),
             }),
@@ -392,7 +396,7 @@ impl Store {
         }
     }
 
-    pub(super) fn transferred(&mut self, transfer: &wire::editor_document::EditorTransfer) {
+    pub(super) fn transferred(&mut self, transfer: &view_wire::editor_document::EditorTransfer) {
         let Some(incoming) = &mut self.incoming else {
             return;
         };
@@ -407,7 +411,7 @@ impl Store {
                 };
                 document.text = Some(Arc::from(text));
                 document.reference = incoming.target;
-                self.events.push(wire::Event::EditorDocument {
+                self.events.push(view_wire::Event::EditorDocument {
                     handler: incoming.handler,
                     message: DocumentMessage::Acknowledged { id: incoming.id },
                 });
@@ -430,7 +434,7 @@ impl Store {
     pub(super) fn transfer_failed(
         &mut self,
         id: &EditorTransferId,
-        reason: wire::editor_document::EditorTransferError,
+        reason: view_wire::editor_document::EditorTransferError,
     ) {
         let current = self
             .incoming

@@ -1,3 +1,9 @@
+//! What a guest asks of the mounted tree between frames: widget commands
+//! (`host.widget`: focus, cursor, scroll, editor action) resolved against
+//! the paths this tree mounts, the walk that names those paths, the
+//! user-activation mark an event may spend, and the entry a dialog gives
+//! the keyboard when it opens.
+
 use super::*;
 
 /// What a scroll widget command asks of a scrolling container's offset.
@@ -9,6 +15,7 @@ pub(super) enum ScrollRequest {
     End,
 }
 
+/// Visits every node with its authored path, depth first.
 pub(super) fn walk_authored_paths(
     node: &wire::Node,
     path: &mut AuthoredPath,
@@ -51,6 +58,9 @@ pub(crate) fn dialog_entry(
 }
 
 impl ViewTree {
+    /// `Some` when `event` came from a real gesture on this tree — a click,
+    /// press or select whose handler is the one the last gesture recorded —
+    /// spending the mark, so an activation is granted once.
     pub(crate) fn take_user_activation(&self, event: &wire::Event) -> Option<()> {
         let message = match event {
             wire::Event::Message(message)
@@ -72,21 +82,6 @@ impl ViewTree {
         self.user_activation.take().map(|_| ())
     }
 
-    #[cfg(test)]
-    pub(crate) fn measured_bounds(&self, path: &[wire::ElementIdWire]) -> Option<Bounds<Pixels>> {
-        self.bounds.get(path).copied()
-    }
-
-    pub fn set_editor_store(
-        &mut self,
-        store: crate::editor::wire::EditorStore,
-        cx: &mut Context<Self>,
-    ) {
-        self.editors.clear();
-        self.editor_store = Some(store);
-        cx.notify();
-    }
-
     pub fn execute_widget_command(
         &mut self,
         mut command: wire::WidgetCommand,
@@ -95,6 +90,7 @@ impl ViewTree {
     ) -> Result<Vec<u8>, String> {
         use wire::WidgetCommand as C;
         command.validate()?;
+        // every command answers unit; the helpers say what went wrong
         match command {
             C::FocusHandle { handle } => {
                 let focus = self
@@ -103,17 +99,16 @@ impl ViewTree {
                     .ok_or_else(|| "focus handle is not mounted".to_string())?
                     .clone();
                 focus.focus(window, cx);
-                Ok(wire::encode(&()))
             }
-            C::FocusPrevious => self.focus_relative(false, window, cx),
-            C::FocusNext => self.focus_relative(true, window, cx),
+            C::FocusPrevious => self.focus_relative(false, window, cx)?,
+            C::FocusNext => self.focus_relative(true, window, cx)?,
             C::EditorAction { ref target, .. }
             | C::Focus { ref target }
             | C::CursorFront { ref target }
             | C::CursorEnd { ref target }
             | C::Cursor { ref target, .. }
             | C::SelectAll { ref target }
-            | C::Select { ref target, .. } => self.input_command(target, &command, window, cx),
+            | C::Select { ref target, .. } => self.input_command(target, &command, window, cx)?,
             C::Snap { target, x, y } => {
                 self.scroll_command(&target, ScrollRequest::Relative(x, y), cx)
             }
@@ -125,18 +120,14 @@ impl ViewTree {
                 self.scroll_command(&target, ScrollRequest::By(x, y), cx)
             }
         }
+        Ok(wire::encode(&()))
     }
 
-    /// The full authored path a widget command's target names, when one is
-    /// mounted. A guest composes a target from context it already holds —
-    /// an editor's own key (`"draft-general/editor"`), a list's own key —
-    /// never the named ancestors above it, which live in other modules and
-    /// other files entirely (the pane, the room and the composer's own
-    /// wrapper each carry an id of their own between the tree's root and
-    /// it). `self.mounted`, `self.editors` and the other target-keyed maps
-    /// are indexed by the FULL walked ancestry (`walk_authored_paths`), so
-    /// a short target is the SUFFIX of the path it names, not the whole of
-    /// it — so a short target is matched as the suffix of every mounted path.
+    /// The full authored path of the node a widget command's target names.
+    /// A guest sends a suffix (the node's own id, maybe a parent or two),
+    /// never the ancestors other code owns, while every retained map is
+    /// keyed by the full walked ancestry: any path ending with the target
+    /// matches, and the first in depth-first order wins.
     pub(super) fn resolve_target(&self, target: &[wire::ElementIdWire]) -> Option<AuthoredPath> {
         if target.is_empty() {
             return None;
@@ -176,7 +167,7 @@ impl ViewTree {
         forward: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<(), String> {
         let mut targets = Vec::new();
         walk_authored_paths(&self.root, &mut Vec::new(), &mut |_, path| {
             let available = self.mounted.contains(path)
@@ -186,7 +177,7 @@ impl ViewTree {
             }
         });
         if targets.is_empty() {
-            return Ok(wire::encode(&()));
+            return Ok(());
         }
         let current = targets
             .iter()
@@ -214,10 +205,10 @@ impl ViewTree {
         command: &wire::WidgetCommand,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<(), String> {
         use wire::WidgetCommand as C;
         let Some(target) = self.resolve_target(target) else {
-            return Ok(wire::encode(&()));
+            return Ok(());
         };
         let target = target.as_slice();
         if matches!(command, C::Focus { .. }) {
@@ -236,13 +227,12 @@ impl ViewTree {
                     .or_insert_with(|| (kind, cx.focus_handle()));
                 handle.focus(window, cx);
                 cx.notify();
-                return Ok(wire::encode(&()));
+                return Ok(());
             }
         }
         // A toolbar press names a tag, not an edit: it goes to the guest's
-        // binding as an interaction on that field's document, whichever
-        // editor draws it. Neither native editor may decide what a view's
-        // tag means.
+        // binding as an interaction on that field's document. The native
+        // editor never decides what a view's tag means.
         if let C::EditorAction { tag, .. } = command {
             let editor_mounted = self.editors.contains_key(target);
             let Some(store) = editor_mounted
@@ -252,19 +242,21 @@ impl ViewTree {
                 return Err("editor action target is not a mounted editor".into());
             };
             store.act(target, tag.clone());
-            return Ok(wire::encode(&()));
+            return Ok(());
         }
         if let Some(editor) = self.editors.get(target) {
             editor.view.widget_command(command, window, cx);
-            return Ok(wire::encode(&()));
+            return Ok(());
         }
+        // a plain field answers only Focus; its cursor and selection
+        // commands are taken and dropped
         if let Some(field) = self.fields.get(target) {
             if matches!(command, C::Focus { .. }) {
                 field.state.update(cx, |field, cx| field.focus(window, cx));
             }
-            return Ok(wire::encode(&()));
+            return Ok(());
         }
-        Ok(wire::encode(&()))
+        Ok(())
     }
 
     pub(super) fn scroll_command(
@@ -272,13 +264,13 @@ impl ViewTree {
         target: &[wire::ElementIdWire],
         request: ScrollRequest,
         cx: &mut Context<Self>,
-    ) -> Result<Vec<u8>, String> {
+    ) {
         let Some(target) = self.resolve_target(target) else {
-            return Ok(wire::encode(&()));
+            return;
         };
         let target = target.as_slice();
         let Some(handle) = self.scrolls.get(target) else {
-            return Ok(wire::encode(&()));
+            return;
         };
         // an offset is measured from the start: gpui scrolls into the negative
         let maximum = handle.max_offset();
@@ -294,123 +286,6 @@ impl ViewTree {
             next.x.clamp(-maximum.x, px(0.0)),
             next.y.clamp(-maximum.y, px(0.0)),
         ));
-        cx.notify();
-        Ok(wire::encode(&()))
-    }
-
-    pub fn replace(&mut self, mut root: wire::Node, cx: &mut Context<Self>) {
-        let mut focusable = HashMap::new();
-        let mut guest_focus_ids = std::collections::HashSet::new();
-        let mut inputs = std::collections::HashSet::new();
-        let mut scrolls = std::collections::HashSet::new();
-        let mut uniform_lists = std::collections::HashSet::new();
-        let mut variable_lists = std::collections::HashSet::new();
-        let mut drags = std::collections::HashSet::new();
-        let mut dialogs = std::collections::HashSet::new();
-        let mut editors = std::collections::HashSet::new();
-        let mut sensors = std::collections::HashSet::new();
-        let mut mounted = std::collections::HashSet::new();
-        walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
-            mounted.insert(path.clone());
-            // a scrolling container with an id keeps its handle; an id-less
-            // one has no path of its own to keep it at
-            if let wire::Node::Container(view_wire::ContainerNode {
-                id: Some(_), style, ..
-            }) = node
-                && style.overflow.y == Some(gpui_kit::Overflow::Scroll)
-            {
-                scrolls.insert(path.clone());
-            }
-            if matches!(
-                node,
-                wire::Node::Container(view_wire::ContainerNode { id: Some(_), .. })
-            ) {
-                focusable.insert(path.clone(), std::mem::discriminant(node));
-            }
-            match node {
-                wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
-                | wire::Node::Image { interactivity, .. }
-                | wire::Node::Svg { interactivity, .. } => {
-                    if let Some(id) = interactivity.focus_handle {
-                        guest_focus_ids.insert(id);
-                    }
-                }
-                wire::Node::UniformList {
-                    path,
-                    interactivity,
-                    ..
-                } => {
-                    if let Some(id) = interactivity.focus_handle {
-                        guest_focus_ids.insert(id);
-                    }
-                    uniform_lists.insert(path.clone());
-                }
-                wire::Node::List { path, state, .. } => {
-                    variable_lists.insert(VariableListKey {
-                        path: path.clone(),
-                        state: *state,
-                    });
-                }
-                wire::Node::Input { .. } => {
-                    inputs.insert(path.clone());
-                }
-                wire::Node::ResizeHandle { .. } => {
-                    drags.insert(path.clone());
-                }
-                wire::Node::Overlay {
-                    label, children, ..
-                } if named_overlay(label, children) => {
-                    dialogs.insert(path.clone());
-                }
-                wire::Node::Sensor { .. } => {
-                    sensors.insert(path.clone());
-                }
-                wire::Node::Editor { .. } => {
-                    editors.insert(path.clone());
-                }
-                _ => {}
-            }
-        });
-        root.for_each_mut(&mut |node| match node {
-            wire::Node::Image {
-                hash,
-                data: Some(data),
-                ..
-            } => {
-                self.remember_image(*hash, data);
-            }
-            wire::Node::Svg {
-                source:
-                    wire::SvgSource::Data {
-                        hash,
-                        bytes: Some(bytes),
-                    },
-                ..
-            } => {
-                self.remember_vector(*hash, bytes);
-            }
-            _ => {}
-        });
-        self.bounds.retain(|key, _| mounted.contains(key));
-        self.focus_targets
-            .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
-        self.guest_focus_targets
-            .retain(|id, _| guest_focus_ids.contains(id));
-        self.fields.retain(|key, _| inputs.contains(key));
-        self.scrolls.retain(|key, _| scrolls.contains(key));
-        self.uniform_lists.retain(|id, list| {
-            list.rows.clear();
-            uniform_lists.contains(id)
-        });
-        self.variable_lists.retain(|id, list| {
-            list.rows.clear();
-            variable_lists.contains(id)
-        });
-        self.drags.retain(|key, _| drags.contains(key));
-        self.dialogs.retain(|key, _| dialogs.contains(key));
-        self.editors.retain(|key, _| editors.contains(key));
-        self.sensors.retain(|key, _| sensors.contains(key));
-        self.root = root;
         cx.notify();
     }
 }
