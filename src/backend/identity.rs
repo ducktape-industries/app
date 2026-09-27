@@ -11,6 +11,9 @@ use super::{RpcClient, query_frame, seated_frame, seated_key};
 /// How long a consent stays good, in the node's milliseconds.
 const CONSENT_TTL_MS: u64 = 15 * 60 * 1000;
 
+/// The label a device's key joins an account under, as Account lists it.
+pub(super) const DEVICE_KEY_LABEL: &str = "Desktop";
+
 /// A self-serve account on `network` whose one key is this device's
 /// (seated) key: identity's `Create`, no passkey. Its number and name, as
 /// the rail shows them. A key that already holds an account (a retry after

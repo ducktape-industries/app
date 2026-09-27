@@ -22,7 +22,9 @@ use identity::{CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use sha2::{Digest as _, Sha256};
 
 use super::auth_page::auth_page;
-use super::identity::{account_by_number, admission, ask, person, submit, submit_seated};
+use super::identity::{
+    DEVICE_KEY_LABEL, account_by_number, admission, ask, person, submit, submit_seated,
+};
 use super::noded::Frame;
 use super::relay::{POLL, post, slot, take};
 use super::{RpcClient, hex_decode, hex_encode, next_seq, seated_key, seated_sign};
@@ -104,7 +106,7 @@ pub(crate) async fn join_from_device(
     let consent = parse_consent(&json)?;
     let add = Op::AddKey {
         scheme: abi::Scheme::Ed25519,
-        label: Some("Desktop".into()),
+        label: Some(DEVICE_KEY_LABEL.into()),
         consent,
     };
     submit_seated(client, network, &add).await.map(drop)
@@ -288,7 +290,7 @@ pub(crate) async fn join_with_recovery_key(
     let proof = recovery.sign(CONSENT_NAMESPACE, &admission.preimage());
     let add = Op::AddKey {
         scheme: abi::Scheme::Ed25519,
-        label: Some("Desktop".into()),
+        label: Some(DEVICE_KEY_LABEL.into()),
         consent: Consent {
             key: recovery.public_key().as_ref().to_vec(),
             account,

@@ -29,7 +29,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::auth_page::{Assertion, Phone, Request, asserted, created};
 use super::identity::{
-    account_by_number, admission, ask, create_seated, person, submit, submit_seated,
+    DEVICE_KEY_LABEL, account_by_number, admission, ask, create_seated, person, submit,
+    submit_seated,
 };
 use super::noded::{Body, FRAME_NAMESPACE, Frame};
 use super::{RpcClient, next_seq, seated_key, seated_sign};
@@ -134,7 +135,7 @@ pub(crate) async fn sign_in(
         .ok_or("That passkey isn't on this account. Use the same passkey both times.")?;
     let add = Op::AddKey {
         scheme: abi::Scheme::Ed25519,
-        label: Some("Desktop".into()),
+        label: Some(DEVICE_KEY_LABEL.into()),
         consent: Consent {
             key,
             account: number,
