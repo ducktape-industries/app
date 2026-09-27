@@ -1,8 +1,9 @@
 //! Where the app keeps what is ITS OWN — its preferences, its log, its
 //! caches — as distinct from a network's files, which live in that network's
-//! workspace under the ducktape home. Nothing of the app's is stored under the
-//! home: the home holds workspaces and nothing else, so two networks on one
-//! machine share no file, and the app's state outlives any one of them.
+//! workspace under the ducktape home. The one thing of the app's under the
+//! home is a network's key directory, `remotes/<name>` (`session::bind_keyring`),
+//! so two networks on one machine share no key, and the app's state outlives
+//! any one of them.
 //!
 //! The platform's own conventions, no library: XDG on Linux
 //! (`$XDG_CONFIG_HOME`, `$XDG_STATE_HOME`, `$XDG_CACHE_HOME`, else
@@ -31,7 +32,7 @@ pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_CACHE_HOME", ".cache", "Library/Caches")
 }
 
-/// the app's rotating log, under the state directory.
+/// the app's log (appended to, never rotated), under the state directory.
 pub fn app_log_path() -> Result<PathBuf, String> {
     Ok(state_dir()?.join("app.log"))
 }

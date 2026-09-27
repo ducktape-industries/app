@@ -6,7 +6,8 @@
 //! ([`AUTH_PAGE`], RP ID = its host) in the system browser: the request
 //! rides the URL fragment, and the result comes back as a top-level form
 //! POST (`result=<JSON>`) to a one-shot loopback [`Listener`]. The contract
-//! is core's `ops/auth-page/README.md` (b690a31bf^); the verifier every
+//! is core's `ops/auth-page/README.md`, now only in its history
+//! (`git -C core show b690a31bf^:ops/auth-page/README.md`); the verifier every
 //! answer must satisfy is `keyscheme` (`Secp256r1` = the assertion envelope
 //! `authenticatorData ‖ clientDataJSON ‖ sig64`, challenge
 //! `SHA-256(ns ‖ preimage)`).

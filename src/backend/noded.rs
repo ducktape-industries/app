@@ -97,6 +97,8 @@ impl Frame {
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Status {
     pub network: String,
+    /// The chain's founding time (its genesis block's), unix ms — not now.
+    /// With `network`, what `session::bind_keyring` tells two chains apart by.
     pub time: u64,
     pub block_time_ms: u64,
     pub epoch_length: u64,

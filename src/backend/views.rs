@@ -1,13 +1,15 @@
 //! Where a view comes from: the connected node's roster. The registry
 //! names every program and the code blob it runs; a program that ships a
 //! view carries it inside that blob, as the custom section
-//! [`VIEW_SECTION`] — one artifact, one blob id. The app reads the section out and mounts it. A program without the section
-//! has no view, which is the network's fact, not a failure. The registry
-//! also lists view-only entries: a name and a blob that is the view itself,
-//! with no program behind it (Explorer); they follow the programs.
+//! [`VIEW_SECTION`] — one artifact, one blob id. The app reads the section
+//! out and mounts it. A program without the section has no view, which is
+//! the network's fact, not a failure. The registry also lists view-only
+//! entries: a name and a blob that is the view itself, with no program
+//! behind it (Explorer); they follow the programs.
 //!
-//! Nothing here knows a program by name: the roster's order is the rail's
-//! order, the manifest inside the view names the tab.
+//! Nothing here knows a program by name: the roster's order (programs by
+//! name, then view-only entries by name, as the registry folds them) is the
+//! rail's order, the manifest inside the view names the tab.
 
 use std::path::PathBuf;
 
@@ -49,8 +51,9 @@ impl std::fmt::Display for Fetch {
     }
 }
 
-/// The roster, in the order the registry program answers it: asked of that
-/// program through the same query path every view's request takes.
+/// The roster as the registry program answers it (sorted by name, programs
+/// first): asked of that program through the same query path every view's
+/// request takes.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
     use module_registry::{Query, Reply};
     let Reply::Programs(entries) = ask(client, network, Query::At(0)).await? else {

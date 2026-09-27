@@ -1,7 +1,9 @@
-//! This device: its signing key, opened from the keystore and held here
-//! while the person is signed in; the frames it signs; and the small
-//! preferences file. Every write a view submits is signed here — a view
-//! never sees the private key or a password.
+//! This device, signed in: the one private key held in memory while the
+//! person is signed in ([`device_key`](super::device_key) opens it, or the
+//! keystore for a password-locked one) and the frames it signs; the
+//! network's key directory on disk; the prefs file; the recent-nodes list.
+//! Every write a view submits is signed here — a view never sees the
+//! private key or a password.
 
 use std::path::PathBuf;
 
@@ -18,6 +20,9 @@ struct Signer {
     key: ed25519::PrivateKey,
 }
 
+/// The seated key: the one that signs. "Seat" here is the backend's word
+/// for loading this key and "lock" for dropping it — not the runtime's
+/// seat, the slot a program's view is mounted in.
 static SIGNER: tokio::sync::Mutex<Option<Signer>> = tokio::sync::Mutex::const_new(None);
 
 pub(crate) const LOCKED: &str = "this device's key is locked; unlock it first";
@@ -200,8 +205,10 @@ pub(crate) fn session_key_path(keyring: &str) -> Result<PathBuf, String> {
     keystore::wallet::active_user_key(&keystore_root(keyring)?)
 }
 
-/// Whether this device already holds a signing key in `keyring` — the
-/// question the sign-in screen answers before offering Unlock or Create.
+/// Whether a password-locked key file from before keys moved into the OS is
+/// here for `keyring`. The OS-kept key is [`device_key`](super::device_key)'s;
+/// finding one of these instead, the key screen asks its password once and
+/// moves it into the OS store.
 pub(crate) fn key_exists(keyring: &str) -> bool {
     let Ok(path) = session_key_path(keyring) else {
         return false;

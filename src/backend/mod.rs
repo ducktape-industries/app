@@ -1,6 +1,12 @@
-//! The app's side of the wire: a node's daemon ([`noded`]), the device's
-//! key and preferences ([`session`]), and where views come from ([`views`]).
-//! Nothing here names a program.
+//! Everything that crosses the process boundary: the node daemon's client
+//! ([`noded`]), the one signing key held in memory and the prefs file
+//! ([`session`]), this device's per-network key in the OS store
+//! ([`device_key`]), accounts and how a device gets onto one ([`passkey`],
+//! [`join`]), a view's wasm out of its program's blob ([`views`]), and the
+//! app's own directories ([`app_dirs`]).
+//!
+//! No user program is named here. Two system programs are: `identity`
+//! (accounts and their keys) and `module-registry` (the roster).
 
 mod app_dirs;
 pub(crate) mod device_key;
@@ -52,9 +58,10 @@ pub(crate) fn user_error(message: String) -> String {
     message
 }
 
-/// A sentence for a connection attempt that never reached `origin`: the
-/// raw transport error (a reqwest string, e.g. "error sending request for
-/// url (...)") never reaches the screen.
+/// A sentence for a connection attempt that never reached `origin`. The
+/// common shapes — reqwest's "error sending request for url (...)", the
+/// connect step's own timeout — are reworded; any other text falls through
+/// [`user_error`] as it is.
 pub(crate) fn connect_error(origin: &str, message: String) -> String {
     if message.contains("error sending request") {
         return format!("Can't reach {origin}. Check the address, or that the node is running.");
@@ -79,8 +86,9 @@ fn epoch_nanos() -> u128 {
         .unwrap_or_default()
 }
 
-/// The next frame sequence this device signs with: time-ordered, so a
-/// restart never re-uses one the node has seen.
+/// Strictly increasing within this process, near the clock's microseconds;
+/// only [`fresh_id`] mixes it in. Not a frame sequence — that is
+/// `session::next_seq`, which the node dictates.
 pub(crate) fn next_sequence() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);
