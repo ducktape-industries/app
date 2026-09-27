@@ -104,8 +104,6 @@ pub(super) struct Field {
     pub(super) guest_value: String,
     pub(super) placeholder: String,
     pub(super) secure: bool,
-    pub(super) ime: Option<crate::runtime::input::ImeState>,
-    pub(super) _observer: Subscription,
     pub(super) _subscription: Subscription,
 }
 
@@ -152,30 +150,6 @@ impl ViewTree {
                 state
             });
             let input_identity = identity.clone();
-            let observed_identity = identity.clone();
-            let observer = cx.observe_in(&state, window, move |this, input, window, cx| {
-                let Some(field) = this.fields.get_mut(&observed_identity) else {
-                    return;
-                };
-                let (text, marked, cursor, selection) = input.update(cx, |input, cx| {
-                    let marked = input.marked_text_range(window, cx);
-                    (
-                        input.value().to_string(),
-                        marked,
-                        input.cursor(),
-                        input.selected_range(),
-                    )
-                });
-                for event in crate::runtime::input::ime_events(
-                    &mut field.ime,
-                    &text,
-                    marked,
-                    cursor,
-                    selection,
-                ) {
-                    cx.emit(event);
-                }
-            });
             let subscription = cx.subscribe_in(&state, window, move |this, input, event, _, cx| {
                 let Some(field) = this.fields.get_mut(&input_identity) else {
                     return;
@@ -210,8 +184,6 @@ impl ViewTree {
                     guest_value: value.clone(),
                     placeholder: placeholder.clone(),
                     secure: *secure,
-                    ime: None,
-                    _observer: observer,
                     _subscription: subscription,
                 },
             );

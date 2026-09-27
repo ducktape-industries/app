@@ -20,14 +20,14 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, CursorStyle, Div, Element, ElementId,
-    Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable as _, FollowMode,
-    GlobalElementId, HitboxBehavior, Hsla, Image, ImageFormat, InspectorElementId,
-    InteractiveElement as _, InteractiveText, IntoElement, KeyDownEvent, LayoutId, ListAlignment,
-    ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit,
-    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _, Styled,
-    StyledImage as _, StyledText, Subscription, Task, TextLayout, Transformation, Window, canvas,
-    div, fill, img, point, px, radians, relative, rgb, size, svg,
+    Entity, EventEmitter, FocusHandle, Focusable as _, FollowMode, GlobalElementId, HitboxBehavior,
+    Hsla, Image, ImageFormat, InspectorElementId, InteractiveElement as _, InteractiveText,
+    IntoElement, KeyDownEvent, LayoutId, ListAlignment, ListSizingBehavior, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render,
+    RenderImage, ScrollDelta, ScrollHandle, ScrollWheelEvent, SharedString, Size, Stateful,
+    StatefulInteractiveElement as _, Styled, StyledImage as _, StyledText, Subscription, Task,
+    TextLayout, Transformation, Window, canvas, div, fill, img, point, px, radians, relative, rgb,
+    size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;

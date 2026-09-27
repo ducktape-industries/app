@@ -46,7 +46,6 @@ pub struct TextEditor {
     cap: Option<usize>,
     /// the node's mapping; the field's text is added as its value
     accessible: crate::render::Accessible,
-    ime: Option<crate::runtime::input::ImeState>,
     _observation: Subscription,
     _keystrokes: Subscription,
 }
@@ -90,7 +89,6 @@ impl TextEditor {
             fills: true,
             cap: None,
             accessible: Default::default(),
-            ime: None,
             _observation: observation,
             _keystrokes: keystrokes,
         };
@@ -244,22 +242,8 @@ impl TextEditor {
             return;
         }
         let input = self.input.clone();
-        let (text, marked, caret, selected) = input.update(cx, |input, cx| {
-            (
-                input.value().to_string(),
-                input.marked_text_range(window, cx),
-                input.cursor(),
-                input.selected_range(),
-            )
-        });
-        let events =
-            crate::runtime::input::ime_events(&mut self.ime, &text, marked, caret, selected);
-        if !events.is_empty() {
-            self.store.observe_ime(events);
-            cx.emit(());
-        }
-        // Preedit is observation only. The committed native edit follows the
-        // ordinary guest transaction path exactly once after composition ends.
+        // A preedit is not an edit: the committed native edit follows the
+        // ordinary guest transaction path once after composition ends.
         if self.composing(window, cx) {
             return;
         }
