@@ -72,19 +72,28 @@ impl Mounted {
         }
     }
 
-    /// A retry is scheduled and not yet due.
-    pub(super) fn held_off_now(&self) -> bool {
-        self.retry
-            .as_ref()
-            .is_some_and(|retry| Instant::now() < retry.next)
-    }
-
-    /// Whether a block naming `active` is still inside the hold-off a
-    /// failed load for that same candidate left behind.
-    pub(super) fn held_off(&self, active: Option<[u8; 32]>) -> bool {
-        self.retry
-            .as_ref()
-            .is_some_and(|retry| retry.hash == active && Instant::now() < retry.next)
+    /// Whether a roster read at `now` starts a load for this seat, given
+    /// that the program's `code` is the `same_code` the last roster listed
+    /// and the seat was `asked_of_this_node` already:
+    ///
+    /// | hold-off from a failed load | load when                              |
+    /// |-----------------------------|----------------------------------------|
+    /// | none, or its gap is up      | the code moved, or this node not asked |
+    /// | still running               | it is not for this very `code`         |
+    ///
+    /// The hold-off names the bytes the load failed on (`Unloaded.hash`),
+    /// `code` the blob a block names.
+    pub(super) fn reload_due(
+        &self,
+        same_code: bool,
+        asked_of_this_node: bool,
+        code: [u8; 32],
+        now: Instant,
+    ) -> bool {
+        match self.retry.as_ref().filter(|retry| now < retry.next) {
+            None => !(same_code && asked_of_this_node),
+            Some(held_off) => held_off.hash != Some(code),
+        }
     }
 
     /// Opens the next load generation, so an older load still on its way
@@ -467,4 +476,47 @@ pub(super) fn view_override(module: &str) -> Option<PathBuf> {
     let dir = VIEW_OVERRIDE.lock().expect("view override").clone()?;
     let path = dir.join(format!("{module}_view.wasm"));
     path.is_file().then_some(path)
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    /// The table on [`Mounted::reload_due`], row by row.
+    #[test]
+    fn a_roster_read_reloads_by_code_node_and_hold_off() {
+        let now = Instant::now();
+        let code = [1; 32];
+        let held = |hash, next| Retry {
+            hash,
+            next,
+            gap: RETRY_FIRST,
+        };
+        let running = now + RETRY_FIRST;
+        let up = now - RETRY_FIRST;
+        // (retry, same_code, asked_of_this_node) -> load
+        let table = [
+            (None, false, false, true),
+            (None, true, false, true),
+            (None, false, true, true),
+            (None, true, true, false),
+            (Some(held(Some(code), up)), true, true, false),
+            (Some(held(Some(code), up)), false, true, true),
+            (Some(held(Some(code), running)), false, false, false),
+            (Some(held(Some(code), running)), true, true, false),
+            (Some(held(Some([2; 32]), running)), true, true, true),
+            (Some(held(None, running)), true, true, true),
+        ];
+        for (nth, (retry, same_code, asked_of_this_node, load)) in table.into_iter().enumerate() {
+            let seat = Mounted::seat();
+            seat.lock().unwrap().retry = retry;
+            assert_eq!(
+                seat.lock()
+                    .unwrap()
+                    .reload_due(same_code, asked_of_this_node, code, now),
+                load,
+                "row {nth}"
+            );
+        }
+    }
 }

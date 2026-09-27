@@ -235,10 +235,8 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                     .iter()
                     .any(|old| old.name == program.name && old.code == program.code);
                 let asked_of_this_node = locked.generation > 0 && locked.rev == asked_of.rev;
-                if same_code && asked_of_this_node && !locked.held_off_now() {
-                    continue;
-                }
-                if locked.held_off(Some(code_digest(&program.code))) {
+                let code = code_digest(&program.code);
+                if !locked.reload_due(same_code, asked_of_this_node, code, Instant::now()) {
                     continue;
                 }
                 locked.rev = asked_of.rev;
