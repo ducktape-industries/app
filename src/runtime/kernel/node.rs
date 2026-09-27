@@ -200,11 +200,15 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    if program.is_empty() || guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
+    if program.is_empty() {
+        guest.refuse(id, "malformed_request", "`module.changes` names no program");
+        return;
+    }
+    if guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
         guest.refuse(
             id,
-            "malformed_request",
-            "`module.changes` names no program, or too many",
+            "subscription_limit",
+            "too many `module.changes` subscriptions",
         );
         return;
     }
@@ -535,3 +539,6 @@ pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
         Ok(methods::encode(&block.map(block_of)))
     })
 }
+
+#[cfg(test)]
+mod tests;
