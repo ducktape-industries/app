@@ -5,6 +5,34 @@
 //! gives each node its stable id. The rest are the shapes of answers:
 //! [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
+use gpui_kit::accesskit::{HasPopup, Invalid, Live};
+
+/// The actions the door offers, each with its word: a node supporting one
+/// is offered it, and `/act` performs each word (`actions::perform`).
+pub(super) const ACTIONS: [(Action, &str); 9] = [
+    (Action::Click, "press"),
+    (Action::Focus, "focus"),
+    (Action::SetValue, "set_value"),
+    (Action::Increment, "increment"),
+    (Action::Decrement, "decrement"),
+    (Action::Expand, "expand"),
+    (Action::Collapse, "collapse"),
+    (Action::ShowContextMenu, "context_menu"),
+    (Action::ScrollIntoView, "scroll_into_view"),
+];
+
+/// A composite whose rows the arrows pick: the focused row inside one is
+/// its active descendant.
+const COMPOSITES: [&str; 8] = [
+    "Tree",
+    "ListBox",
+    "Menu",
+    "MenuBar",
+    "Grid",
+    "EditableComboBox",
+    "RadioGroup",
+    "TabList",
+];
 
 /// The element id a module view's host draws around the view's tree
 /// (`runtime.rs`): what follows it in a path is that module's.
@@ -26,6 +54,8 @@ pub(crate) struct AxNode {
     pub(crate) value: Option<String>,
     pub(crate) state: Vec<&'static str>,
     pub(crate) actions: Vec<&'static str>,
+    #[serde(flatten)]
+    pub(crate) more: Properties,
     /// `<window>` or `<window>/<module>`.
     #[serde(rename = "in")]
     pub(super) scope: String,
@@ -33,6 +63,75 @@ pub(crate) struct AxNode {
     pub(super) bounds: Option<[i32; 4]>,
     #[serde(skip)]
     pub(super) node: NodeId,
+}
+
+/// What a node says beyond its role, name, value, states and actions: each
+/// key only when the node has it.
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct Properties {
+    /// `polite` or `assertive`: how a change inside it is announced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) live: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) modal: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) level: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) placeholder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) keyboard_shortcut: Option<String>,
+    /// The door id of the focused node inside this composite: gpui moves
+    /// the tree's focus to the row that claims it, and never sets the
+    /// AccessKit property.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) active_descendant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) position_in_set: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) size_of_set: Option<usize>,
+    /// `true`, `grammar` or `spelling`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invalid: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) required: bool,
+    /// `menu`, `listbox`, `tree`, `grid` or `dialog`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) has_popup: Option<&'static str>,
+    /// The door id of the nearest ancestor the snapshot has; none at its root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) parent: Option<String>,
+}
+
+impl Properties {
+    fn of(node: &gpui_kit::accesskit::Node) -> Self {
+        Self {
+            live: node.live().and_then(|live| match live {
+                Live::Off => None,
+                Live::Polite => Some("polite"),
+                Live::Assertive => Some("assertive"),
+            }),
+            modal: node.is_modal(),
+            level: node.level(),
+            placeholder: node.placeholder().map(truncate),
+            keyboard_shortcut: node.keyboard_shortcut().map(str::to_owned),
+            position_in_set: node.position_in_set(),
+            size_of_set: node.size_of_set(),
+            invalid: node.invalid().map(|invalid| match invalid {
+                Invalid::True => "true",
+                Invalid::Grammar => "grammar",
+                Invalid::Spelling => "spelling",
+            }),
+            required: node.is_required(),
+            has_popup: node.has_popup().map(|popup| match popup {
+                HasPopup::Menu => "menu",
+                HasPopup::Listbox => "listbox",
+                HasPopup::Tree => "tree",
+                HasPopup::Grid => "grid",
+                HasPopup::Dialog => "dialog",
+            }),
+            ..Default::default()
+        }
+    }
 }
 
 /// The visible nodes of `window`'s last tree, in tree order; empty before
@@ -51,29 +150,41 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         f64::from(viewport.height) * scale,
     );
     // each node's id prefix (`<window>:` or `<window>:<module>/`), scope
-    // and path segments; the id itself is resolved once all are known
-    let mut out = Vec::new();
+    // and path segments, and its parent's index in `out`; the ids
+    // themselves are resolved once all are known
+    let mut out: Vec<AxNode> = Vec::new();
     let mut paths: Vec<(String, Vec<String>)> = Vec::new();
-    type Frame = (NodeId, String, String, Vec<String>);
+    let mut parents: Vec<Option<usize>> = Vec::new();
+    type Frame = (NodeId, String, String, Vec<String>, Option<usize>);
     let mut stack: Vec<Frame> = Vec::new();
     let root = update.tree.as_ref().map_or(NodeId(0), |tree| tree.root);
-    let push_children =
-        |stack: &mut Vec<Frame>, id: NodeId, prefix: &str, scope: &str, path: &[String]| {
-            if let Some(node) = nodes.get(&id) {
-                for child in node.children().iter().rev() {
-                    stack.push((*child, prefix.to_owned(), scope.to_owned(), path.to_vec()));
-                }
+    let push_children = |stack: &mut Vec<Frame>,
+                         id: NodeId,
+                         prefix: &str,
+                         scope: &str,
+                         path: &[String],
+                         parent: Option<usize>| {
+        if let Some(node) = nodes.get(&id) {
+            for child in node.children().iter().rev() {
+                stack.push((
+                    *child,
+                    prefix.to_owned(),
+                    scope.to_owned(),
+                    path.to_vec(),
+                    parent,
+                ));
             }
-        };
+        }
+    };
     // Children are pushed in reverse so this is a deterministic pre-order
     // walk in paint order; the last visible modal is the nested/tree-topmost
     // boundary, just as the last painted sibling is visually on top.
     let modal = topmost_modal(root, &nodes);
     match modal {
-        Some(id) => stack.push((id, format!("{name}:"), name.to_owned(), Vec::new())),
-        None => push_children(&mut stack, root, &format!("{name}:"), name, &[]),
+        Some(id) => stack.push((id, format!("{name}:"), name.to_owned(), Vec::new(), None)),
+        None => push_children(&mut stack, root, &format!("{name}:"), name, &[], None),
     }
-    while let Some((id, prefix, scope, mut path)) = stack.pop() {
+    while let Some((id, prefix, scope, mut path, parent)) = stack.pop() {
         let Some(node) = nodes.get(&id) else { continue };
         if node.is_hidden() {
             continue;
@@ -93,7 +204,6 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 (prefix, scope, path)
             }
         };
-        push_children(&mut stack, id, &prefix, &scope, &path);
         let rect = node.bounds();
         let shown = rect.is_none_or(|r| {
             r.width() > 0.
@@ -103,6 +213,10 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 && r.x0 < width
                 && r.y0 < height
         });
+        // a node the snapshot drops is no one's parent: its children's is
+        // the nearest one it keeps
+        let ancestor = if shown { Some(out.len()) } else { parent };
+        push_children(&mut stack, id, &prefix, &scope, &path, ancestor);
         if !shown {
             continue;
         }
@@ -142,8 +256,10 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         if node.is_disabled() {
             state.push("disabled");
         }
-        if node.is_selected() == Some(true) {
-            state.push("selected");
+        match node.is_selected() {
+            Some(true) => state.push("selected"),
+            Some(false) => state.push("unselected"),
+            None => {}
         }
         match node.toggled() {
             Some(Toggled::True) => state.push("checked"),
@@ -161,11 +277,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         }
         let mut actions = Vec::new();
         if !node.is_disabled() {
-            for (action, word) in [
-                (Action::Click, "press"),
-                (Action::Focus, "focus"),
-                (Action::SetValue, "set_value"),
-            ] {
+            for (action, word) in ACTIONS {
                 if node.supports_action(action) {
                     actions.push(word);
                 }
@@ -175,6 +287,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             }
         }
         paths.push((prefix, path));
+        parents.push(parent);
         out.push(AxNode {
             id: String::new(),
             role: format!("{role:?}"),
@@ -183,6 +296,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             value,
             state,
             actions,
+            more: Properties::of(node),
             scope,
             bounds: bounds
                 .then_some(())
@@ -193,6 +307,19 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
     }
     for (node, id) in out.iter_mut().zip(door_ids(&paths)) {
         node.id = id;
+    }
+    for (index, parent) in parents.iter().enumerate() {
+        out[index].more.parent = parent.map(|parent| out[parent].id.clone());
+        if out[index].state.contains(&"focused") {
+            let focused = out[index].id.clone();
+            let mut above = *parent;
+            while let Some(at) = above {
+                if COMPOSITES.contains(&out[at].role.as_str()) {
+                    out[at].more.active_descendant = Some(focused.clone());
+                }
+                above = parents[at];
+            }
+        }
     }
     out
 }
@@ -252,50 +379,6 @@ mod modal_tests {
         ]);
 
         assert_eq!(topmost_modal(root_id, &nodes), Some(visible_id));
-    }
-}
-
-#[cfg(test)]
-mod offer_tests {
-    use super::*;
-    use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{
-        AccessibleAction, Context, InteractiveElement as _, IntoElement, Render,
-        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
-    };
-
-    /// A node that advertises an action `/act` has no arm for.
-    struct Scroller;
-
-    impl Render for Scroller {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .id("scroller")
-                .size(px(100.))
-                .role(Role::ScrollView)
-                .aria_label("Rows")
-                .on_a11y_action(AccessibleAction::ScrollIntoView, |_, _, _| {})
-        }
-    }
-
-    /// The door offers only what `/act` performs: a node advertising
-    /// ScrollIntoView is offered nothing for it.
-    #[gpui_kit::test]
-    fn the_door_offers_no_action_it_cannot_perform(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Scroller);
-        let mut native = VisualTestContext::from_window(window.into(), cx);
-        let actions = native.update(|window, cx| {
-            window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
-            snapshot("t", window, false)
-                .into_iter()
-                .find(|node| node.role == "ScrollView")
-                .expect("the scroller is in the tree")
-                .actions
-        });
-        assert!(actions.is_empty(), "{actions:?}");
     }
 }
 
@@ -491,3 +574,8 @@ pub(super) fn nearest(id: &str, nodes: &[AxNode]) -> Vec<String> {
         .map(|(_, node)| node.id.clone())
         .collect()
 }
+
+#[cfg(test)]
+mod key_tests;
+#[cfg(test)]
+mod offer_tests;

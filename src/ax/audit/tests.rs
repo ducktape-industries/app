@@ -11,6 +11,7 @@ fn node(id: &str, role: &str, name: &str) -> AxNode {
         value: None,
         state: Vec::new(),
         actions: Vec::new(),
+        more: Default::default(),
         scope: "w".to_owned(),
         bounds: None,
         node: NodeId(0),

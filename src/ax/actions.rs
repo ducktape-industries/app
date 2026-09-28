@@ -216,9 +216,10 @@ pub(super) fn current(
     snapshot(name, window, bounds)
 }
 
-/// Performs `action` on the node `id` names in window `name`, through the
-/// path an assistive technology's request takes; `type` and `set_value` both
-/// focus the node first, then act. False when no such node is showing.
+/// Performs `action` (a word of [`super::tree::ACTIONS`], or `type`) on the
+/// node `id` names in window `name`, through the path an assistive
+/// technology's request takes; `type` and `set_value` both focus the node
+/// first, then act. False when no such node is showing.
 pub(super) fn perform_by_id(
     name: &str,
     window: &mut Window,
@@ -244,8 +245,6 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
         data,
     };
     match action {
-        "press" => window.dispatch_a11y_action(request(Action::Click, None), cx),
-        "focus" => window.dispatch_a11y_action(request(Action::Focus, None), cx),
         "set_value" => {
             // Focus first, as `type` does: `TextEditor::observed`
             // (editor/text.rs) forwards an edit to the guest only while its
@@ -260,7 +259,11 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
             window.dispatch_a11y_action(request(Action::Focus, None), cx);
             type_text(window, cx, value);
         }
-        _ => {}
+        word => {
+            if let Some((action, _)) = super::tree::ACTIONS.iter().find(|(_, w)| *w == word) {
+                window.dispatch_a11y_action(request(*action, None), cx);
+            }
+        }
     }
 }
 
