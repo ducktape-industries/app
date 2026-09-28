@@ -1,7 +1,7 @@
-//! Container, Responsive and When nodes, and the layout helpers the
-//! other renderers share: `measure` records an element's bounds under its
-//! authored path, `over_padding` floats a bar or a measure over a scroller
-//! without counting as its content, `vertical_bar` is a scroller's bar.
+//! The Container node, and the layout helpers the other renderers share:
+//! `measure` records an element's bounds under its authored path,
+//! `over_padding` floats a bar or a measure over a scroller without counting
+//! as its content, `vertical_bar` is a scroller's bar.
 use super::accessibility::Drift;
 use super::*;
 use crate::render::native_id;
@@ -120,66 +120,6 @@ impl ViewTree {
             use gpui_kit::test::TestSupportExt as _;
             element.test_support()
         };
-        element.into_any_element()
-    }
-
-    pub(super) fn responsive(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Responsive { content, .. } = node else {
-            unreachable!()
-        };
-        let weak = cx.entity().downgrade();
-        let key = self.authored_path.clone();
-        let measure = canvas(
-            move |bounds, _, cx| {
-                let size = [
-                    f32::from(bounds.size.width) as f64,
-                    f32::from(bounds.size.height) as f64,
-                ];
-                let _ = weak.update(cx, |this, cx| {
-                    let changed = this.containers.get(&key) != Some(&size);
-                    if changed {
-                        this.containers.insert(key, size);
-                        cx.notify();
-                    }
-                });
-            },
-            |_, _, _, _| {},
-        )
-        .absolute()
-        .inset_0();
-        div()
-            .relative()
-            .child(self.node(content, window, cx))
-            .child(measure)
-            .into_any_element()
-    }
-
-    pub(super) fn when(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::When {
-            id,
-            condition,
-            children,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut element = div().id(native_id(id)).flex().flex_col();
-        if condition.matches(&self.containers) {
-            for child in children {
-                element = element.child(self.node(child, window, cx));
-            }
-        }
         element.into_any_element()
     }
 

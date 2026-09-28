@@ -2,7 +2,7 @@
 
 use super::*;
 use desk::BAR;
-use screens::Facts;
+use facts::Facts;
 
 impl DesktopWindow {
     /// The bell's panel (the NotifCenter board): 400 wide under the bell,

@@ -105,9 +105,10 @@ pub fn text_field(
         .child(field)
 }
 
-/// The class of a node whose name and value are private: the app's test
-/// door masks them before they leave the process. Assistive technology
-/// still reads them — they are on the screen.
+/// The class of a node whose value is private, and its name too unless it
+/// is a text field (a field's name is its label): the app's test door masks
+/// them before they leave the process. Assistive technology still reads
+/// them — they are on the screen.
 pub const AX_PRIVATE: &str = "ax_private";
 
 /// Class name of a node whose name the AX tree gives whole, past its

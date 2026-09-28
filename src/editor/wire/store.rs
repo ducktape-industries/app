@@ -173,13 +173,9 @@ impl Store {
             Input::Native(edit) => edit.replacement.len(),
             Input::Request(request) => wire::encode(request).len(),
         };
-        let budget = if field.options.rich.is_some() {
-            wire::editor_rich::MAX_RICH_QUEUE_BYTES
-        } else {
-            wire::editor_transaction::MAX_EDITOR_INPUT_BYTES
-        };
-        let overflow =
-            document.queue.len() >= 128 || document.queued_bytes.saturating_add(bytes) > budget;
+        let overflow = document.queue.len() >= 128
+            || document.queued_bytes.saturating_add(bytes)
+                > wire::editor_transaction::MAX_EDITOR_INPUT_BYTES;
         if overflow {
             self.fault = Some("editor input queue is full; document retained".into());
             self.events.push(wire::Event::EditorTransaction {

@@ -3,6 +3,10 @@ use super::wire::methods::{self, Capability};
 use super::{Guest, NativeModuleView};
 use gpui_kit::{ClipboardEntry, Context};
 
+/// Requests a guest may have waiting for the window thread between two
+/// ticks; a view has no reason to read the clipboard sixteen times a frame.
+const MAX_PENDING: usize = 16;
+
 #[derive(Default)]
 pub(super) struct Clipboard {
     pending: Vec<(u64, Request)>,
@@ -37,7 +41,7 @@ pub(super) fn answer(
 }
 
 fn queue(guest: &mut Guest, id: u64, request: Request) {
-    if guest.clipboard.pending.len() >= 16 {
+    if guest.clipboard.pending.len() >= MAX_PENDING {
         guest.refuse(id, "in_flight_limit", "too many pending clipboard requests");
         return;
     }

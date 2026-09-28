@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::relative;
 
 /// The SVG road for commands gpui cannot paint itself. A canvas has no wire
 /// identity, so nothing measures it across frames: the picture is drawn at
