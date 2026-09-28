@@ -147,10 +147,10 @@ fn ax_107_the_focus_in_a_composite_is_on_a_row_the_arrows_move() {
     // on a row: the composite is the one the arrows move
     let on_row = vec![menu(), focused(row("a")), row("b")];
     assert_eq!(
-        crate::ax::audit::phase_two::arrowed(&on_row).map(|node| node.id.as_str()),
+        crate::ax::audit::arrowed(&on_row).map(|node| node.id.as_str()),
         Some("w:menu")
     );
-    assert!(crate::ax::audit::phase_two::arrowed(&[menu(), focused(row("a"))]).is_none());
+    assert!(crate::ax::audit::arrowed(&[menu(), focused(row("a"))]).is_none());
     assert!(!one(on_row).applicable.contains_key("AX-107"));
     // on the composite itself, with rows in it
     let mut held = menu();
