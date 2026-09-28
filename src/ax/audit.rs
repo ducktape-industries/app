@@ -540,6 +540,7 @@ pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
     }
 }
 
+#[cfg(test)]
 impl Report {
     pub(crate) fn errors(&self) -> impl Iterator<Item = &Violation> {
         self.violations

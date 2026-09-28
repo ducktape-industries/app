@@ -6,10 +6,10 @@ fn guest() -> Guest {
         r#"(module
             (memory (export "memory") 1)
             (func (export "alloc") (param i32) (result i32) i32.const 0)
-            (func (export "init") (param i32))
+            (func (export "init"))
             (func (export "tick") (param i32 i32) (result i64) i64.const 0)
             (func (export "snapshot") (result i64) i64.const 0)
-            (func (export "restore") (param i32 i32 i32) (result i64) i64.const 0))"#,
+            (func (export "restore") (param i32 i32) (result i64) i64.const 0))"#,
     )
     .unwrap();
     let mut guest = Guest::instantiate("node-test", &code, "node test").unwrap();
