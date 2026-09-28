@@ -5,6 +5,19 @@
 
 use super::*;
 
+/// The controls Help lists with a chord, each with the key the platform's
+/// modifier goes with: each reports its chord (AX-114).
+const CHORDED: [(&str, &str); 3] = [("New window", "N"), ("Search", "K"), ("Help", "/")];
+
+/// `(control name, chord)` for each control Help lists with a chord, as
+/// the platform writes the chord: what the audit is told (AX-114).
+pub(crate) fn chords() -> Vec<(String, String)> {
+    CHORDED
+        .iter()
+        .map(|(name, key)| ((*name).to_owned(), chord_label(key)))
+        .collect()
+}
+
 /// How the platform writes a chord with Shift: "⌘⇧D" on a Mac, "Ctrl
 /// Shift D" elsewhere.
 fn shift_chord_label(key: &str) -> String {

@@ -39,7 +39,10 @@ fn desk_button(
         })
         .child(mono(400, 12.).text_color(ink.muted).child(chord_label(key)))
         .child(name);
-    crate::a11y::keyboard(button).into_any_element()
+    // its chord, as Help lists it (AX-114)
+    crate::a11y::keyboard(button)
+        .aria_keyshortcuts(chord_label(key))
+        .into_any_element()
 }
 
 impl DesktopWindow {

@@ -22,10 +22,11 @@
 //! A keyboard-only walk sends keys through the window's own key dispatch
 //! ([`press_keys`]) and reads the bindings it can reach ([`shortcuts`]); a
 //! pointer drag goes through its mouse dispatch ([`drag_by_id`]).
-//! `GET /audit?window&view&walk=1&launcher=1` runs the phase-1 rules of
+//! `GET /audit?window&view&walk=1&launcher=1` runs the rules of
 //! `docs/ax.md` ([`audit`]) over one window — the named one, else the one
 //! holding focus, else the first — with the Tab walk when `walk`; `launcher`
-//! is the caller's word that the shell screen is not the desk (AX-018).
+//! is the caller's word that the shell screen is not the desk (AX-018), and
+//! the shell says which controls its Help lists with a chord (AX-114).
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
 use futures::StreamExt as _;
@@ -427,13 +428,14 @@ async fn answer(
                 .unwrap_or_default();
             handle
                 .update(cx, |_, window, cx| {
-                    let reading = audit::observe(
+                    let mut reading = audit::observe(
                         window,
                         cx,
                         walk,
                         |node| filter.keeps(node),
                         |window, cx| current(&name, window, cx, true, seen),
                     );
+                    reading.chords = crate::shell::chords();
                     Reply::ok(json!(audit::audit(&reading, launcher)))
                 })
                 .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })))

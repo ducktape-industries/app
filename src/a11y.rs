@@ -113,6 +113,14 @@ impl Patch {
         }
     }
 
+    /// What its press opens: a menu, a dialog.
+    pub fn has_popup(self, popup: HasPopup) -> Self {
+        Self {
+            has_popup: Some(popup),
+            ..self
+        }
+    }
+
     /// Work it started is in flight ("Creating…").
     pub fn busy(self) -> Self {
         Self { busy: true, ..self }
