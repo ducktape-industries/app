@@ -262,6 +262,20 @@ pub(crate) type Call = (Request, std::sync::mpsc::Sender<Reply>);
 
 const POLL: Duration = Duration::from_millis(50);
 
+/// Longest a call may wait on the tree. The client picks its deadline, so
+/// an absurd one is honoured only this far.
+const MAX_DEADLINE: Duration = Duration::from_secs(60);
+
+/// A call's deadline, `ms` from now, capped at [`MAX_DEADLINE`].
+fn deadline(ms: u64) -> Instant {
+    Instant::now() + bounded(ms)
+}
+
+/// `ms` as a Duration, no longer than [`MAX_DEADLINE`].
+fn bounded(ms: u64) -> Duration {
+    Duration::from_millis(ms).min(MAX_DEADLINE)
+}
+
 /// Answers the door's calls on the app's thread until the door is gone.
 /// `windows` lists the windows it serves, by name.
 pub(crate) async fn serve(
@@ -425,7 +439,7 @@ async fn answer(
                 .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })))
         }
         Request::Wait(wait) => {
-            let deadline = Instant::now() + Duration::from_millis(wait.deadline_ms.min(60_000));
+            let deadline = deadline(wait.deadline_ms);
             loop {
                 let nodes = read(windows, &all, false, seen, cx);
                 if let Some(reply) = wait.step(&nodes, Instant::now() >= deadline) {
@@ -460,7 +474,7 @@ async fn settle(
     seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Vec<AxNode> {
-    let deadline = Instant::now() + Duration::from_millis(deadline_ms.unwrap_or(2000));
+    let deadline = deadline(deadline_ms.unwrap_or(2000));
     let mut after = before.to_vec();
     let mut last = serde_json::to_string(&after).unwrap_or_default();
     let mut quiet = 0;
@@ -496,5 +510,18 @@ fn keyboard_window(
             .find(|node| node.state.contains(&"focused"))
             .and_then(|node| find(node.scope.split('/').next().unwrap_or_default()))
             .or_else(|| list.first().map(|(_, handle)| *handle)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The client names the deadline; u64::MAX must not leave a call waiting
+    /// past the cap.
+    #[test]
+    fn a_deadline_is_capped() {
+        assert_eq!(bounded(u64::MAX), MAX_DEADLINE);
+        assert_eq!(bounded(2000), Duration::from_secs(2));
     }
 }
