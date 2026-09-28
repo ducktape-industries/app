@@ -228,6 +228,7 @@ pub(crate) fn mark(stage: &'static str) {
 }
 
 /// A milestone reached at `at` rather than now: gpui's first present.
+#[cfg(feature = "perf-deep")]
 pub(crate) fn mark_at(stage: &'static str, at: Instant) {
     if !on() {
         return;
@@ -339,7 +340,7 @@ fn json_of(metrics: &[&Metric]) -> serde_json::Value {
             let at = |percent: usize| recent.get((recent.len().saturating_sub(1)) * percent / 100);
             json!({
                 "n": n,
-                "mean": if n == 0 { 0 } else { sum / n },
+                "mean": sum.checked_div(n).unwrap_or(0),
                 "p50": at(50),
                 "p95": at(95),
                 "max": max,
