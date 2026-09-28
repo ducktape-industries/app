@@ -99,6 +99,13 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
             "This help",
         ],
     );
+    // no word of a Tab that only moves focus (AX-022)
+    assert_eq!(
+        labels(&nodes)
+            .iter()
+            .any(|line| line.contains("Tab switches")),
+        command::CHAT_READY
+    );
 
     // Settings › About
     let mut state = gate::desk();

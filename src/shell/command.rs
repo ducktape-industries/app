@@ -1,14 +1,18 @@
 //! An empty window's body: one field that finds a program to open in it,
 //! with a switch beside it for what the field searches (Module | Chat).
+//! Until agent chat is built ([`CHAT_READY`]), Tab there moves focus.
 
 use super::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 
-/// The key context of an empty window's body: Tab there switches modes.
+/// The key context of an empty window's body: Tab there switches modes,
+/// once chat is built.
 pub(super) const CONTEXT: &str = "EmptyWindow";
 
-/// Agent chat isn't built yet: its side of the switch shows, blocked.
-const CHAT_READY: bool = false;
+/// Agent chat isn't built yet: its side of the switch shows, blocked, and
+/// Tab is left to move focus. True brings back what switches to it: the
+/// `tab` binding (`keys::bind`), the "tab switch" hint and Help's line.
+pub(super) const CHAT_READY: bool = false;
 
 /// What an empty window's field searches.
 #[derive(Clone, Copy, Default, PartialEq)]
@@ -180,6 +184,8 @@ impl DesktopWindow {
             "tab switch".to_owned(),
             format!("{} search everything", chord_label("K")),
         ]
+        .into_iter()
+        .filter(|hint| CHAT_READY || hint != "tab switch")
         .map(|hint| div().whitespace_nowrap().child(hint));
         div()
             .id("empty-window")

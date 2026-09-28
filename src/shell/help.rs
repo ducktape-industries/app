@@ -59,8 +59,11 @@ impl DesktopWindow {
                 .to_owned(),
             format!(
                 "{n} opens an empty window: type part of a program's name, pick it \
-                 with ↑↓ and open it with ↵. Tab switches what the field searches, \
-                 Module or Chat; Chat, for talking to an agent, is coming soon."
+                 with ↑↓ and open it with ↵.{}",
+                match super::command::CHAT_READY {
+                    true => " Tab switches what the field searches, Module or Chat.",
+                    false => "",
+                }
             ),
             format!("{k} searches programs, networks and actions from anywhere."),
         ];
