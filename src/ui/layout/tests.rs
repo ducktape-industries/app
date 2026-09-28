@@ -1,5 +1,5 @@
 //! The pane model, moved by hand: selection, splitting, focus, pop-in,
-//! placement, clamping, reclaiming, rescaling, cycling.
+//! placement, clamping, rescaling, cycling.
 
 use super::*;
 
@@ -202,92 +202,20 @@ fn tiled(frames: &[(&'static str, Option<Frame>)]) -> Layout {
     layout
 }
 
+/// A closed window's space stays empty: its neighbours keep their frames.
 #[test]
-fn closing_a_window_gives_its_flush_neighbour_the_space_back() {
-    let whole = Frame::fill(DESK);
-    let right = part(700., 12., 688., 836.);
+fn closing_a_window_leaves_the_others_where_they_are() {
+    let (left, top) = (part(12., 12., 688., 836.), part(700., 12., 688., 418.));
     let mut layout = tiled(&[
-        ("chat", part(12., 12., 688., 836.)),
-        ("files", part(700., 12., 688., 418.)),
+        ("chat", left),
+        ("files", top),
         ("calendar", part(700., 430., 688., 418.)),
     ]);
-    // the lower right quarter goes: the upper one takes the right half
     layout.close(2);
-    assert_eq!(layout.panes[1].frame, right);
-    // the right half goes: chat takes the whole desk again
-    layout.close(1);
-    assert_eq!(layout.panes[0].frame, Some(whole));
-    // a window placed on its own is left alone
-    layout.split("files");
-    layout.place(DESK);
-    let cascaded = layout.panes[1].frame;
+    assert_eq!(layout.panes[0].frame, left);
+    assert_eq!(layout.panes[1].frame, top);
     layout.close(0);
-    assert_eq!(layout.panes[0].frame, cascaded);
-}
-
-#[test]
-fn closing_a_window_gives_the_ones_lined_up_beside_it_its_width() {
-    let whole = Frame::fill(DESK);
-    let (top, bottom) = (
-        Frame {
-            x: 700.,
-            y: 12.,
-            w: 688.,
-            h: 418.,
-        },
-        Frame {
-            x: 700.,
-            y: 430.,
-            w: 688.,
-            h: 418.,
-        },
-    );
-    let mut layout = tiled(&[
-        ("chat", part(12., 12., 688., 836.)),
-        ("files", Some(top)),
-        ("calendar", Some(bottom)),
-    ]);
-    // the left half goes: the right column's quarters take its width
-    layout.close(0);
-    assert_eq!(
-        layout.panes[0].frame,
-        Some(Frame {
-            x: whole.x,
-            w: whole.w,
-            ..top
-        })
-    );
-    assert_eq!(
-        layout.panes[1].frame,
-        Some(Frame {
-            x: whole.x,
-            w: whole.w,
-            ..bottom
-        })
-    );
-    // and in the other direction: a row of two under a closed top
-    let mut layout = tiled(&[
-        ("chat", part(12., 12., 1376., 418.)),
-        ("files", part(12., 430., 688., 418.)),
-        ("calendar", part(700., 430., 688., 418.)),
-    ]);
-    layout.close(0);
-    let (left, right) = (
-        layout.panes[0].frame.unwrap(),
-        layout.panes[1].frame.unwrap(),
-    );
-    assert_eq!(
-        (left.y, left.h, right.y, right.h),
-        (whole.y, whole.h, whole.y, whole.h)
-    );
-    // a window that spans only part of the side is left alone
-    let mut layout = tiled(&[
-        ("chat", part(12., 12., 688., 836.)),
-        ("files", Some(top)),
-        ("calendar", None),
-    ]);
-    layout.close(0);
-    assert_eq!(layout.panes[0].frame, Some(top));
+    assert_eq!(layout.panes[0].frame, top);
 }
 
 #[test]

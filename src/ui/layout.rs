@@ -19,8 +19,6 @@ const NEW_SHARE: (f32, f32) = (0.6, 0.7);
 pub(crate) const INSET: f32 = 12.;
 pub(crate) use crate::render::GRAB;
 
-mod reclaim;
-
 /// A window's place on the desk, in pixels from the desk's top-left.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Frame {
@@ -330,9 +328,6 @@ impl Layout {
             return None;
         }
         let pane = self.panes.remove(index);
-        if let Some(gone) = pane.frame {
-            self.reclaim(gone);
-        }
         // the next focus is the window now on top
         self.focused = (0..self.panes.len())
             .max_by_key(|&index| self.panes[index].z)
