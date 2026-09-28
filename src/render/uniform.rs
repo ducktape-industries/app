@@ -2,7 +2,6 @@
 //! The guest sends only the rows the host asked for (`UniformListRange`),
 //! keyed by index; a row not yet sent draws as a placeholder of
 //! `PLACEHOLDER_HEIGHT`.
-use super::accessibility::Drift;
 use super::*;
 use crate::render::native_id;
 use gpui_kit::UniformListDecoration;
@@ -258,15 +257,7 @@ impl ViewTree {
             let style = group.style.clone();
             list = list.group_active(group.group.clone(), move |_| style);
         }
-        list = self.guest_aria(
-            list,
-            interactivity,
-            Drift {
-                name_from: None,
-                active_descendant: false,
-            },
-            cx,
-        );
+        list = self.guest_aria(list, node, interactivity, cx);
         if let Some(handler) = interactivity.on_click {
             list = list.on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
