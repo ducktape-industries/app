@@ -577,3 +577,45 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
         assert!(page > shown, "squeezed: page {page}, window {shown}");
     });
 }
+
+/// A window placed before its view came widens once the view draws: the
+/// tab seats it, says so (`Intent::Seated`), and the desk fits the window
+/// to the view's minimum and its border.
+#[gpui_kit::test]
+fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-seated-view";
+    let (model, key, view, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    let width = |native: &mut VisualTestContext| {
+        native.update(|_, cx| view.read(cx).layout(cx).panes[0].frame.unwrap().w)
+    };
+    assert_eq!(width(&mut native), 768., "60% of the desk, no view yet");
+    let tab = native.update(|_, cx| {
+        let mounted = &model.read(cx).mounted;
+        let pane = mounted.values().find(|pane| pane.module == MODULE);
+        pane.expect("a tab for the pane").view.clone()
+    });
+    let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let _heard = native.update(|_, cx| {
+        let said = said.clone();
+        cx.subscribe(&tab, move |_, intent: &crate::runtime::Intent, _| {
+            said.borrow_mut().push(intent.clone())
+        })
+    });
+    crate::runtime::seat_for_test(MODULE, 1000);
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    native.run_until_parked();
+    assert!(
+        said.borrow().contains(&crate::runtime::Intent::Seated),
+        "{:?}",
+        said.borrow()
+    );
+    assert_eq!(width(&mut native), 1002.);
+}

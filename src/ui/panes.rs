@@ -265,26 +265,35 @@ mod tests {
         assert_eq!(state.layouts.len(), before);
     }
 
-    /// A window is placed before its view comes (60% of a 1000 px desk);
-    /// once the view is seated, the window widens to the view's minimum
-    /// and its border.
+    /// A window is placed before its view comes (60% of the desk, centred);
+    /// once the view is seated, it widens to the view's minimum and its
+    /// border, pulled left as far as it takes to stay on the desk, and on a
+    /// desk narrower than that it is the desk.
     #[test]
     fn a_window_widens_to_its_view_once_the_view_is_seated() {
-        let (mut state, _) = Ducktape::boot();
-        let console = WindowKey::unique();
-        state.console_win = Some(console);
-        let _ = state.update(Message::DeskShown {
-            window: console,
-            desk: (1000., 700.),
-            seed: Some("seated-wide-view"),
-        });
-        let placed = state.layouts[&console].panes[0].frame.unwrap();
-        assert_eq!(placed.w, 600.);
-        crate::runtime::seat_for_test("seated-wide-view", 680);
-        let seated = crate::runtime::Intent::Seated;
-        let _ = state.update(Message::ViewEvent("seated-wide-view", seated));
-        let widened = state.layouts[&console].panes[0].frame.unwrap();
-        assert_eq!((widened.x, widened.w), (placed.x, 682.));
+        for (module, desk, min_width, placed, widened) in [
+            ("seated-wide-view", 1000., 680, (200., 600.), (200., 682.)),
+            // the console at its smallest, forge opening in it
+            ("seated-console-view", 720., 640, (144., 432.), (78., 642.)),
+            ("seated-cramped-view", 600., 680, (120., 360.), (0., 600.)),
+        ] {
+            let (mut state, _) = Ducktape::boot();
+            let console = WindowKey::unique();
+            state.console_win = Some(console);
+            let _ = state.update(Message::DeskShown {
+                window: console,
+                desk: (desk, 700.),
+                seed: Some(module),
+            });
+            let frame = state.layouts[&console].panes[0].frame.unwrap();
+            assert_eq!((frame.x, frame.w), placed, "{module}");
+            crate::runtime::seat_for_test(module, min_width);
+            let seated = crate::runtime::Intent::Seated;
+            let _ = state.update(Message::ViewEvent(module, seated));
+            let frame = state.layouts[&console].panes[0].frame.unwrap();
+            assert_eq!((frame.x, frame.w), widened, "{module}");
+            assert!(frame.x + frame.w <= desk, "{module}: {frame:?}");
+        }
     }
 
     /// The model's own asks land in the console's layout at once, each of

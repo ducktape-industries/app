@@ -41,11 +41,17 @@ impl Frame {
     /// smallest window high, no larger than the desk, and never so far off
     /// it that its title bar can't be grabbed back. On a desk narrower than
     /// `min_w` it is the desk's width, and the view scrolls sideways in it.
+    /// A frame widened to its floor moves left as far as it takes to stay
+    /// on the desk.
     pub(crate) fn clamped(self, desk: (f32, f32), min_w: f32) -> Self {
         let w = self.w.max(min_w).min(desk.0.max(MIN_WIDTH));
         let h = self.h.max(MIN_HEIGHT).min(desk.1.max(MIN_HEIGHT));
+        let x = match w > self.w {
+            true => self.x.min(desk.0 - w).max(0.),
+            false => self.x,
+        };
         Self {
-            x: self.x.clamp(KEEP - w, (desk.0 - KEEP).max(0.)),
+            x: x.clamp(KEEP - w, (desk.0 - KEEP).max(0.)),
             y: self.y.clamp(0., (desk.1 - KEEP / 2.).max(0.)),
             w,
             h,
@@ -734,6 +740,25 @@ mod tests {
         assert!(!layout.halve(false, DESK), "its half would be 500");
         assert_eq!(layout.panes.len(), 1);
         assert!(layout.halve(true, DESK), "top and bottom as before");
+        // 1364 halves into 682s: the view keeps its half, exactly its floor
+        crate::runtime::seat_for_test("layout-halving-view", 680);
+        let mut layout = Layout::default();
+        layout.split("layout-halving-view");
+        layout.place(DESK);
+        let whole = Frame {
+            x: 0.,
+            w: 1364.,
+            ..whole
+        };
+        layout.set_frame(0, whole, DESK);
+        assert!(layout.halve(false, DESK));
+        let (left, right) = (
+            layout.panes[0].frame.unwrap(),
+            layout.panes[1].frame.unwrap(),
+        );
+        assert_eq!(layout.panes[0].module, "layout-halving-view");
+        assert!(layout.panes[1].is_empty());
+        assert_eq!((left.x, left.w, right.x, right.w), (0., 682., 682., 682.));
     }
 
     #[test]

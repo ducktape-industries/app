@@ -593,16 +593,8 @@ impl DesktopWindow {
         at: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &gpui_kit::App,
     ) {
-        let layout = self.layout(cx);
-        let pane = layout.panes.get(index);
-        if let Some((start, min_w)) = pane.and_then(|pane| Some((pane.frame?, pane.min_width()))) {
-            self.drag = Some(Drag {
-                index,
-                sides,
-                from: (at.x.into(), at.y.into()),
-                start,
-                min_w,
-            });
+        if let Some(drag) = Drag::of(&self.layout(cx), index, sides, (at.x.into(), at.y.into())) {
+            self.drag = Some(drag);
         }
     }
 
@@ -741,6 +733,27 @@ pub(super) struct Drag {
 }
 
 impl Drag {
+    /// Window `index` of `layout` held at `from`, once it has a frame. Its
+    /// edges stop at the pane's floor, or at the desk's width where the
+    /// desk is narrower: the frame is capped there, and an edge held past
+    /// it would carry the whole window.
+    fn of(
+        layout: &layout::Layout,
+        index: usize,
+        sides: [bool; 4],
+        from: (f32, f32),
+    ) -> Option<Self> {
+        let pane = layout.panes.get(index)?;
+        let desk = layout.desk().0.max(layout::MIN_WIDTH);
+        Some(Self {
+            index,
+            sides,
+            from,
+            start: pane.frame?,
+            min_w: pane.min_width().min(desk),
+        })
+    }
+
     /// The frame with the pointer at `to`. A side held past the window's
     /// narrowest (or the smallest window's height) stops; the side across
     /// from it stays put.
@@ -895,6 +908,24 @@ mod drag_tests {
         }
         .frame((1000., 0.));
         assert_eq!((left.w, left.x + left.w), (682., 1000.));
+    }
+
+    /// On a desk narrower than the view the window is the desk: its left
+    /// edge held inwards stays put rather than carrying the window.
+    #[test]
+    fn an_edge_on_a_desk_narrower_than_the_view_stays_put() {
+        crate::runtime::seat_for_test("drag-cramped-view", 680);
+        let desk = (600., 400.);
+        let mut layout = Layout::default();
+        layout.split("drag-cramped-view");
+        layout.measure(desk);
+        layout.settle();
+        let start = layout.panes[0].frame.unwrap();
+        assert_eq!((start.x, start.w), (0., 600.));
+        let drag = Drag::of(&layout, 0, [true, false, false, false], (0., 0.)).unwrap();
+        let held = drag.frame((50., 0.));
+        assert!(layout.set_frame(0, held, desk));
+        assert_eq!(layout.panes[0].frame, Some(start));
     }
 }
 

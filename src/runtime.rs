@@ -183,24 +183,47 @@ pub(crate) fn min_width(module: &str) -> Option<f32> {
         )
 }
 
-/// A drawn view of `module` whose manifest says `min_width`, seated as a
-/// load seats one: a WAT view with the five exports that is never ticked.
+/// Every seat of `module` holds a drawn view whose manifest says
+/// `min_width`, or, with none yet, one is preloaded for its first pane: a
+/// WAT view with the five exports whose every tick draws an empty tree.
 #[cfg(test)]
 pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
+    let frame = wire::encode(&wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    });
+    let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+    let tick = wire::abi::pack(65536, frame.len() as u32);
     let code = Module::new(
         guest::engine(),
-        r#"(module
-            (memory (export "memory") 1)
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (data (i32.const 65536) "{bytes}")
             (func (export "alloc") (param i32) (result i32) i32.const 64)
             (func (export "init"))
-            (func (export "tick") (param i32 i32) (result i64) unreachable)
+            (func (export "tick") (param i32 i32) (result i64) i64.const {tick})
             (func (export "snapshot") (result i64) unreachable)
-            (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
     )
     .unwrap();
-    let mut guest = Guest::instantiate(module, &code, module).unwrap();
-    guest.min_width = min_width;
-    let seat = Mounted::seat();
-    seat.lock().unwrap().slot = Slot::Ready(Box::new(guest));
-    registry().lock().unwrap().insert((module, 0), seat);
+    let ready = || {
+        let mut guest = Guest::instantiate(module, &code, module).unwrap();
+        guest.min_width = min_width;
+        Slot::Ready(Box::new(guest))
+    };
+    let mut registry = registry().lock().unwrap();
+    let mut seats: Vec<_> = registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .map(|(_, seat)| seat.clone())
+        .collect();
+    if seats.is_empty() {
+        seats.push(Mounted::seat());
+        registry.insert((module, 0), seats[0].clone());
+    }
+    for seat in seats {
+        seat.lock().unwrap().slot = ready();
+    }
 }
