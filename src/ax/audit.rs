@@ -88,7 +88,7 @@ pub(crate) const RULES: [Rule; 43] = [
     rule(
         "AX-012",
         Error,
-        "A node with press also offers focus, or sits in a composite that does, or (shell) in a box whose chord hands it the keys.",
+        "A node with press also offers focus, or sits in a composite that does, or (shell) in a box without the keys whose chord hands them to it.",
     ),
     rule("AX-013", Error, "A Status or Alert is named."),
     rule("AX-014", Error, "A Heading or Label is named."),
@@ -584,11 +584,15 @@ fn node_rules(
             .any(|above| tree::COMPOSITES.contains(&above.role.as_str()) && offers(above, "focus"));
         // the shell's own: a desk window without the keys is reached by the
         // chord its box names (⌘1…⌘9), which hands that window the keys, as
-        // a press on it does. A view's rows answer to view_wire::audit alone.
+        // a press on it does. The box holding the focus has them already:
+        // there the chord moves nothing. A view's rows answer to
+        // view_wire::audit alone.
         let chord = shell(node)
-            && snapshot
-                .ancestors(node)
-                .any(|above| above.more.keyboard_shortcut.is_some() && !offers(above, "press"));
+            && snapshot.ancestors(node).any(|above| {
+                above.more.keyboard_shortcut.is_some()
+                    && !offers(above, "press")
+                    && !focus_within(nodes, snapshot, &above.id)
+            });
         tally.check("AX-012", node, focus || composite || chord, || {
             "press without focus: a keyboard never reaches it".to_owned()
         });

@@ -219,8 +219,9 @@ fn ax_012_a_composites_rows_are_reached_through_it() {
 
 /// A desk window without the keys: its rows are reached by the chord its
 /// box names, which hands that window the keys. The shell's own reading: a
-/// view's row answers to view_wire::audit, and a control's chord presses the
-/// control, handing nothing the keys.
+/// view's row answers to view_wire::audit, a control's chord presses the
+/// control, handing nothing the keys, and in the window with the keys the
+/// chord hands it nothing it has not got.
 #[test]
 fn ax_012_a_shell_row_is_reached_by_the_chord_its_window_names() {
     let row = |id, parent: &str| {
@@ -231,6 +232,10 @@ fn ax_012_a_shell_row_is_reached_by_the_chord_its_window_names() {
     };
     let mut window = node("window", "Group", "Empty");
     window.more.keyboard_shortcut = Some("Ctrl 2".into());
+    let mut keyed = node("keyed", "Group", "Empty");
+    keyed.more.keyboard_shortcut = Some("Ctrl 1".into());
+    let mut keys = focused(field("keys", "Open a program"));
+    keys.more.parent = Some("w:keyed".into());
     let bare = node("bare", "Group", "Empty");
     let mut search = button("search", "Search");
     search.more.keyboard_shortcut = Some("Ctrl K".into());
@@ -240,12 +245,15 @@ fn ax_012_a_shell_row_is_reached_by_the_chord_its_window_names() {
         window,
         row("a", "window"),
         in_view,
+        keyed,
+        keys,
+        row("d", "keyed"),
         bare,
         row("b", "bare"),
         search,
         row("c", "search"),
     ]);
-    assert_eq!(fails(&report, "AX-012"), ["w:b", "w:c", "w:v"]);
+    assert_eq!(fails(&report, "AX-012"), ["w:b", "w:c", "w:d", "w:v"]);
 }
 
 #[test]
