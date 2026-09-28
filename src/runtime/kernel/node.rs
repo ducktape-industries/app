@@ -38,20 +38,21 @@ fn unsent(refusal: &wire::Error) -> bool {
     refusal.code == "rpc_client"
 }
 
+/// The answer, and how many times the node was asked for it.
 async fn until_answered(
     budget: std::time::Duration,
     retry_on: fn(&wire::Error) -> bool,
     mut ask: impl FnMut() -> Answered,
-) -> Answer {
+) -> (Answer, u64) {
     let deadline = tokio::time::Instant::now() + budget;
-    let mut attempt = 0;
+    let mut attempt: u32 = 0;
     loop {
         let refusal = match ask().await {
-            Ok(bytes) => return Ok(bytes),
+            Ok(bytes) => return (Ok(bytes), u64::from(attempt) + 1),
             Err(refusal) => refusal,
         };
         if !retry_on(&refusal) {
-            return Err(refusal);
+            return (Err(refusal), u64::from(attempt) + 1);
         }
         let detail = refusal.message;
         attempt += 1;
@@ -64,10 +65,13 @@ async fn until_answered(
                 attempts = attempt,
                 "a view's node request got no answer within its retry budget"
             );
-            return Err(wire::Error::new(
-                "rpc_client",
-                super::super::NODE_UNREACHABLE,
-            ));
+            return (
+                Err(wire::Error::new(
+                    "rpc_client",
+                    super::super::NODE_UNREACHABLE,
+                )),
+                u64::from(attempt),
+            );
         }
         tokio::time::sleep(delay).await;
     }
@@ -76,8 +80,14 @@ async fn until_answered(
 /// Runs `method` on the connected node as a task, RETRYING transport
 /// failures for [`NODE_RETRY_BUDGET`]: for reads, which ask again from
 /// scratch at no cost.
-pub(super) fn spawn_retrying(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
-    spawn_method(guest, id, payload, method, Some(transport_failed));
+pub(super) fn spawn_retrying(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    stage: &'static str,
+) {
+    spawn_method(guest, id, payload, method, Some(transport_failed), stage);
 }
 
 /// Runs `method` on the connected node as a task, retrying for
@@ -89,38 +99,55 @@ pub(super) fn spawn_retrying_unsent(
     id: u64,
     payload: &[u8],
     method: NodeMethod,
+    stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, Some(unsent));
+    spawn_method(guest, id, payload, method, Some(unsent), stage);
 }
 
 /// Runs `method` on the connected node as a task, asking exactly once: a
 /// transport failure is the answer (`invite.create` must not mint twice).
-pub(super) fn spawn_no_retry(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
-    spawn_method(guest, id, payload, method, None);
+pub(super) fn spawn_no_retry(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    stage: &'static str,
+) {
+    spawn_method(guest, id, payload, method, None, stage);
 }
 
+/// `stage` names the call in the perf registry (`host_call.<kind>`): its
+/// latency from here to the reply, and the attempts it took.
 fn spawn_method(
     guest: &mut Guest,
     id: u64,
     payload: &[u8],
     method: NodeMethod,
     retry_on: Option<fn(&wire::Error) -> bool>,
+    stage: &'static str,
 ) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
     };
     let replies = guest.replies.clone();
+    let key = guest.perf_key();
+    let timed = crate::perf::time(key, stage);
+    let attempts_stage = crate::perf::suffixed(stage, ".attempts");
     start(guest, id, async move {
-        let result = match retry_on {
+        let (result, attempts) = match retry_on {
             Some(retry_on) => {
                 until_answered(NODE_RETRY_BUDGET, retry_on, || {
                     method(node.clone(), ask.clone())
                 })
                 .await
             }
-            None => method(node, ask).await,
+            None => (method(node, ask).await, 1),
         };
+        drop(timed);
+        if let Some(attempts_stage) = attempts_stage {
+            crate::perf::count(key, attempts_stage, attempts);
+        }
         replies.item(id, result, true);
     });
 }

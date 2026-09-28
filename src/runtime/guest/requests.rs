@@ -59,9 +59,12 @@ impl Guest {
             self.fault = Some(error);
             return false;
         }
-        if let Err(error) = self.replies.drain_into(&mut self.pending) {
-            self.fault = Some(error);
-            return false;
+        match self.replies.drain_into(&mut self.pending) {
+            Ok(backlog) => crate::perf::record(self.perf_key(), "backlog", backlog as u64),
+            Err(error) => {
+                self.fault = Some(error);
+                return false;
+            }
         }
         self.pending
             .extend(kernel::ticked(&mut self.clocks, std::time::Instant::now()));

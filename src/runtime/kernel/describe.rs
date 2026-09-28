@@ -76,7 +76,7 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
         return Ok(known.clone());
     }
     let bytes = match views::program_bytes(&node.client, &code).await {
-        Ok(bytes) => bytes,
+        Ok((bytes, _)) => bytes,
         // the transport: retried by the node method's loop
         Err(Fetch::Unreachable(reason)) => return Err(wire::Error::new("rpc_client", reason)),
         // not held yet, or not the code asked for: nothing now, asked again later

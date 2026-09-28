@@ -34,6 +34,22 @@ impl Pictures {
         });
     }
 
+    /// Every byte held: the store is insert-only and never evicts, so this
+    /// is what a view's pictures cost for as long as it is seated.
+    pub(super) fn bytes(&self) -> u64 {
+        let raster: usize = self
+            .raster
+            .values()
+            .map(|data| match data {
+                wire::ImageData::Encoded(bytes) => bytes.len(),
+                wire::ImageData::Rgba { pixels, .. } => pixels.len(),
+                _ => 0,
+            })
+            .sum();
+        let vector: usize = self.vector.values().map(Vec::len).sum();
+        (raster + vector) as u64
+    }
+
     pub(super) fn hydrate(&self, root: &mut wire::Node) {
         root.for_each_mut(&mut |node| match node {
             wire::Node::Image { hash, data, .. } => {
