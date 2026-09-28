@@ -1,4 +1,7 @@
-//! Host observations and advisory producer reports retain separate provenance.
+//! Warns once per guest when display text was truncated, kept apart by who
+//! cut it: this host's sanitizer (`local`, the "host" origin) or the view
+//! itself, which reports its own cuts in the frame (`upstream`,
+//! "producer-reported"). Each origin is logged the first time it is seen.
 use super::*;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

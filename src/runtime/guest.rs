@@ -16,10 +16,10 @@ pub(super) struct HostState {
 pub(super) struct Exports {
     memory: Memory,
     alloc: TypedFunc<u32, u32>,
-    init: TypedFunc<u32, ()>,
+    init: TypedFunc<(), ()>,
     tick: TypedFunc<(u32, u32), u64>,
     snapshot: TypedFunc<(), u64>,
-    restore: TypedFunc<(u32, u32, u32), u64>,
+    restore: TypedFunc<(u32, u32), u64>,
 }
 
 impl Exports {
@@ -68,8 +68,8 @@ impl Exports {
             .ok_or_else(|| wasmtime::Error::msg("the view's answer is not a result"))
     }
 
-    pub(super) fn init(&self, store: &mut Store<HostState>, macos: bool) -> wasmtime::Result<()> {
-        self.init.call(store, u32::from(macos))
+    pub(super) fn init(&self, store: &mut Store<HostState>) -> wasmtime::Result<()> {
+        self.init.call(store, ())
     }
 
     pub(super) fn tick(
@@ -79,14 +79,25 @@ impl Exports {
     ) -> wasmtime::Result<Vec<u8>> {
         let (ptr, len) = self.give(store, events)?;
         let packed = self.tick.call(&mut *store, (ptr, len))?;
+        if wire::abi::unpack(packed).1 as usize > MAX_FRAME_BYTES {
+            return Err(wasmtime::Error::msg("frame too large"));
+        }
         self.answer(store, packed)
     }
 
+    /// The view's state, held to `MAX_SNAPSHOT_BYTES` on the length the
+    /// guest names, before the host copies a byte of it.
     pub(super) fn snapshot(
         &self,
         store: &mut Store<HostState>,
     ) -> wasmtime::Result<Result<Vec<u8>, String>> {
         let packed = self.snapshot.call(&mut *store, ())?;
+        // the answer's first byte is its result tag
+        if wire::abi::unpack(packed).1 as usize > wire::MAX_SNAPSHOT_BYTES + 1 {
+            return Ok(Err(
+                "the view's state is past the snapshot byte budget".into()
+            ));
+        }
         self.result(store, packed)
     }
 
@@ -94,12 +105,9 @@ impl Exports {
         &self,
         store: &mut Store<HostState>,
         state: &[u8],
-        macos: bool,
     ) -> wasmtime::Result<Result<(), String>> {
         let (ptr, len) = self.give(store, state)?;
-        let packed = self
-            .restore
-            .call(&mut *store, (ptr, len, u32::from(macos)))?;
+        let packed = self.restore.call(&mut *store, (ptr, len))?;
         Ok(self.result(store, packed)?.map(|_| ()))
     }
 }
@@ -399,14 +407,11 @@ pub(super) fn merge(
     Ok((true, report))
 }
 
-/// What the host is willing to take from one tick's bytes: nothing in here
-/// is trusted — the length, the counts, the tree.
+/// What the host is willing to take from one tick's bytes, already held to
+/// `MAX_FRAME_BYTES`: nothing in here is trusted — the counts, the tree.
 pub(super) fn shape(
     bytes: &[u8],
 ) -> Result<(wire::Frame, display_diagnostics::FrameReports), String> {
-    if bytes.len() > MAX_FRAME_BYTES {
-        return Err("frame too large".to_string());
-    }
     let mut frame: wire::Frame = wire::decode(bytes)?;
     let requests_exceed_budget = frame.requests.len() > MAX_REQUESTS_PER_TICK;
     let cancels_exceed_budget = frame.cancels.len() > 2 * MAX_REQUESTS_PER_TICK;
@@ -442,28 +447,15 @@ pub(super) fn first_line(error: &wasmtime::Error) -> String {
         .to_string()
 }
 
-/// The manifest epoch a view must speak, or the plain refusal sentence for
-/// every unsupported epoch.
-pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {
-    (epoch == wire::WIRE_EPOCH).then_some(()).ok_or_else(|| {
+/// A view built against another wire than this app's, as the plain refusal
+/// sentence.
+pub(super) fn wire_id(id: &str) -> Result<(), String> {
+    (id == wire::WIRE_ID).then_some(()).ok_or_else(|| {
         format!(
-            "this view speaks wire epoch {epoch}; this app speaks {}",
-            wire::WIRE_EPOCH
+            "this view was built against wire {id}; this app speaks {}",
+            wire::WIRE_ID
         )
     })
-}
-
-/// The methods a view was built against, refused at load when this app has
-/// fewer: the view would otherwise run until it asks for one.
-pub(super) fn methods_revision(needed: u32) -> Result<(), String> {
-    (needed <= wire::methods::METHODS_REVISION)
-        .then_some(())
-        .ok_or_else(|| {
-            format!(
-                "this view needs methods revision {needed}; this app has {}",
-                wire::methods::METHODS_REVISION
-            )
-        })
 }
 
 #[cfg(test)]

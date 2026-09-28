@@ -93,12 +93,17 @@ pub(super) fn mono(weight: u16, size: f32) -> Div {
         .text_size(px(fit(size)))
 }
 
-/// `<h1>`: `400 32px/1.18`.
-pub(super) fn h1(text: impl Into<SharedString>, ink: &Ink) -> Div {
+/// `<h1>`: `400 32px/1.18`; a `Heading` named by its words, its id the
+/// words too (Help maps it over its sections).
+pub(super) fn h1(text: impl Into<SharedString>, ink: &Ink) -> Stateful<Div> {
+    let text = text.into();
     sans(400, 32.)
+        .id(text.clone())
+        .role(Role::Heading)
+        .aria_label(text.clone())
         .line_height(px(fit(32.) * 1.18))
         .text_color(ink.ink)
-        .child(text.into())
+        .child(text)
 }
 
 /// The lead under a headline: `400 16px/1.65`, in ink.

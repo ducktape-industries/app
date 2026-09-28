@@ -1,84 +1,9 @@
+//! The Overlay node: a base plus an optional modal layer (dialog, popover,
+//! backdrop, focus trap).
 use super::*;
 use crate::render::native_id;
 
 impl ViewTree {
-    pub(super) fn tooltip(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Tooltip {
-            id,
-            children,
-            delay_ms,
-            style,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let Some(content) = children.first() else {
-            return div().into_any_element();
-        };
-        let mut element = div()
-            .id(native_id(id))
-            .refine_style(style)
-            .tooltip_show_delay(std::time::Duration::from_millis(*delay_ms))
-            .child(self.node(content, window, cx));
-        if let Some(tip) = children.get(1) {
-            let tip = tip.clone();
-            element = element.tooltip(move |_, cx| cx.new(|_| ViewTree::new(tip.clone())).into());
-        }
-        element.into_any_element()
-    }
-
-    pub(super) fn float(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Float {
-            id,
-            content,
-            x,
-            y,
-            scale: _,
-            style,
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut element = div()
-            .absolute()
-            .bg(gpui_kit::component::Theme::global(cx)
-                .color_tokens()
-                .surface)
-            .text_color(
-                gpui_kit::component::Theme::global(cx)
-                    .color_tokens()
-                    .surface_foreground,
-            )
-            .refine_style(style)
-            .left(px(*x))
-            .top(px(*y));
-        // A press inside a floated card is the card's: it never
-        // reaches what the card floats over (a dismissing backdrop,
-        // the document under a comment card).
-        element = element
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
-        // Authored floating rails use unit scale; their measurement is
-        // outside the translated child to avoid positional feedback.
-        div()
-            .id(native_id(id))
-            .relative()
-            .child(element.child(self.node(content, window, cx)))
-            .child(self.measure(&self.authored_path, cx))
-            .into_any_element()
-    }
-
     pub(super) fn overlay(
         &mut self,
         node: &wire::Node,
@@ -108,11 +33,7 @@ impl ViewTree {
                 // trap registers; drop an obscured ancestor before that pass.
                 self.dialogs.remove(&path);
             }
-            let is_float = matches!(modal, wire::Node::Float { .. });
-            let anchored = matches!(
-                modal,
-                wire::Node::Float { .. } | wire::Node::Anchored { .. }
-            );
+            let anchored = matches!(modal, wire::Node::Anchored { .. });
             let shade = shades(anchored, style).then(|| {
                 div()
                     .id("backdrop")
@@ -128,18 +49,12 @@ impl ViewTree {
                     .or_insert_with(|| cx.focus_handle())
                     .clone()
             });
-            let mut layer_style = style.clone();
-            if is_float {
-                layer_style.padding = Default::default();
-            }
             let mut layer = div()
                 .id("layer")
                 .absolute()
                 .inset_0()
-                .refine_style(&layer_style);
-            if !is_float {
-                layer = layer.flex();
-            }
+                .refine_style(style)
+                .flex();
             if let Some(message) = on_dismiss {
                 let message = *message;
                 layer = layer
@@ -154,36 +69,24 @@ impl ViewTree {
                         }
                     }));
             }
-            let content = if is_float {
-                self.node(modal, window, cx)
-            } else {
-                div()
-                    .bg(gpui_kit::component::Theme::global(cx)
+            let content = div()
+                .bg(gpui_kit::component::Theme::global(cx)
+                    .color_tokens()
+                    .surface)
+                .text_color(
+                    gpui_kit::component::Theme::global(cx)
                         .color_tokens()
-                        .surface)
-                    .text_color(
-                        gpui_kit::component::Theme::global(cx)
-                            .color_tokens()
-                            .surface_foreground,
-                    )
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    // a dialog takes the keyboard when it opens; a
-                    // popup's view moves focus itself (widget commands)
-                    .children(
-                        entry
-                            .as_ref()
-                            .map(|entry| dialog_entry(entry, opened, window, cx)),
-                    )
-                    .child(self.node(modal, window, cx))
-                    .into_any_element()
-            };
-            if is_float {
-                layer = layer.children(
+                        .surface_foreground,
+                )
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                // a dialog takes the keyboard when it opens; a
+                // popup's view moves focus itself (widget commands)
+                .children(
                     entry
                         .as_ref()
                         .map(|entry| dialog_entry(entry, opened, window, cx)),
-                );
-            }
+                )
+                .child(self.node(modal, window, cx));
             layer = layer.child(content);
             let layer = if named {
                 let layer = crate::a11y::modal(announce(layer, accessible(node)));
@@ -206,7 +109,7 @@ impl ViewTree {
 }
 
 /// Whether the host dims what an overlay covers. A popover anchored to the
-/// view (a `Float`, an `Anchored`) covers nothing, and an overlay whose view asked for a
+/// view (an `Anchored`) covers nothing, and an overlay whose view asked for a
 /// backdrop (its style's background, drawn on the layer) has one already;
 /// only a bare dialog gets the host's shade.
 pub(super) fn shades(anchored: bool, style: &gpui_kit::StyleRefinement) -> bool {

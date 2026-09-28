@@ -1,15 +1,6 @@
 use super::*;
 use crate::render::native_id;
 
-pub(super) struct RangeControl {
-    pub(super) state: Entity<SliderState>,
-    pub(super) bounds: [f32; 3],
-    pub(super) value: f32,
-    pub(super) on_change: u32,
-    pub(super) on_release: Option<u32>,
-    pub(super) _subscription: Subscription,
-}
-
 pub(super) struct EditorMount {
     pub(super) view: EditorView,
     pub(super) _subscription: Subscription,
@@ -98,14 +89,12 @@ impl EditorView {
 
 pub(super) struct Field {
     pub(super) state: Entity<InputState>,
-    pub(super) on_input: u32,
+    pub(super) on_input: Option<u32>,
     pub(super) on_submit: Option<u32>,
     pub(super) value: String,
     pub(super) guest_value: String,
     pub(super) placeholder: String,
     pub(super) secure: bool,
-    pub(super) ime: Option<crate::runtime::input::ImeState>,
-    pub(super) _observer: Subscription,
     pub(super) _subscription: Subscription,
 }
 
@@ -152,54 +141,38 @@ impl ViewTree {
                 state
             });
             let input_identity = identity.clone();
-            let observed_identity = identity.clone();
-            let observer = cx.observe_in(&state, window, move |this, input, window, cx| {
-                let Some(field) = this.fields.get_mut(&observed_identity) else {
-                    return;
-                };
-                let (text, marked, cursor, selection) = input.update(cx, |input, cx| {
-                    let marked = input.marked_text_range(window, cx);
-                    (
-                        input.value().to_string(),
-                        marked,
-                        input.cursor(),
-                        input.selected_range(),
-                    )
+            let subscription =
+                cx.subscribe_in(&state, window, move |this, input, event, window, cx| {
+                    let Some(field) = this.fields.get_mut(&input_identity) else {
+                        return;
+                    };
+                    match event {
+                        InputEvent::Change => {
+                            let mut text = input.read(cx).value().to_string();
+                            let typed = text.len();
+                            wire::truncate_string(&mut text);
+                            if text.len() < typed {
+                                // the guest's bound is the field's: it shows what it sent
+                                input.update(cx, |state, cx| {
+                                    state.set_value(text.clone(), window, cx)
+                                });
+                            }
+                            if text == field.value {
+                                return;
+                            }
+                            field.value = text.clone();
+                            if let Some(handler) = field.on_input {
+                                cx.emit(wire::Event::Input { handler, text });
+                            }
+                        }
+                        InputEvent::PressEnter { .. } => {
+                            if let Some(message) = field.on_submit {
+                                cx.emit(wire::Event::Message(message));
+                            }
+                        }
+                        InputEvent::Focus | InputEvent::Blur => {}
+                    }
                 });
-                for event in crate::runtime::input::ime_events(
-                    &mut field.ime,
-                    &text,
-                    marked,
-                    cursor,
-                    selection,
-                ) {
-                    cx.emit(event);
-                }
-            });
-            let subscription = cx.subscribe_in(&state, window, move |this, input, event, _, cx| {
-                let Some(field) = this.fields.get_mut(&input_identity) else {
-                    return;
-                };
-                match event {
-                    InputEvent::Change => {
-                        let text = input.read(cx).value().to_string();
-                        if text == field.value {
-                            return;
-                        }
-                        field.value = text.clone();
-                        cx.emit(wire::Event::Input {
-                            handler: field.on_input,
-                            text,
-                        });
-                    }
-                    InputEvent::PressEnter { .. } => {
-                        if let Some(message) = field.on_submit {
-                            cx.emit(wire::Event::Message(message));
-                        }
-                    }
-                    InputEvent::Focus | InputEvent::Blur => {}
-                }
-            });
             self.fields.insert(
                 identity.clone(),
                 Field {
@@ -210,8 +183,6 @@ impl ViewTree {
                     guest_value: value.clone(),
                     placeholder: placeholder.clone(),
                     secure: *secure,
-                    ime: None,
-                    _observer: observer,
                     _subscription: subscription,
                 },
             );
@@ -272,149 +243,6 @@ impl ViewTree {
         announce(field, accessible).into_any_element()
     }
 
-    pub(super) fn button(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Button {
-            id,
-            content,
-            label,
-            checked,
-            on_press,
-            style,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let mut button = Button::new(native_id(id))
-            .refine_style(style)
-            .disabled(on_press.is_none())
-            .selected(checked.unwrap_or(false));
-        button = match content {
-            wire::ButtonContent::Label(text) => button.label(text.clone()),
-            wire::ButtonContent::Child(child) => {
-                button.h_auto().child(self.node(child, window, cx))
-            }
-        };
-        if let Some(label) = label {
-            button = button.accessibility_label(label.clone());
-        }
-        if let Some(message) = on_press {
-            let message = *message;
-            button = button.on_click(cx.listener(move |this, _, _, cx| {
-                this.user_activation.set(Some(message));
-                cx.emit(wire::Event::Message(message));
-                cx.stop_propagation();
-            }));
-        }
-        // the kit button resolves its own role at render, over the one
-        // `announce` sets: a Tab is told so here or it is drawn a Button
-        let accessible = accessible(node);
-        if let Some(role) = accessible.role {
-            button = button.role(role);
-        }
-        // GPUI's generic Click action falls back to a centre-point pointer
-        // click. Register the semantic action on the button itself so an
-        // accessibility press does not depend on overlapping hit-test layers.
-        let button = if let Some(message) = *on_press {
-            let view = cx.entity().downgrade();
-            crate::a11y::aria(button, |node| {
-                node.on_a11y_action(gpui_kit::accesskit::Action::Click, move |_, _, cx| {
-                    let _ = view.update(cx, |this, cx| {
-                        this.user_activation.set(Some(message));
-                        cx.emit(wire::Event::Message(message));
-                    });
-                })
-            })
-        } else {
-            button
-        };
-        announce(button, accessible).into_any_element()
-    }
-
-    pub(super) fn toggle(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
-        let wire::Node::Toggle {
-            id,
-            kind,
-            label,
-            checked,
-            on_toggle,
-            style,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        if *kind == wire::ToggleKind::Switch {
-            let mut toggle = gpui_kit::component::switch::Switch::new(native_id(id))
-                .refine_style(style)
-                .label(label.clone())
-                .checked(*checked)
-                .disabled(on_toggle.is_none());
-            if let Some(handler) = on_toggle {
-                let handler = *handler;
-                toggle = toggle.on_click(cx.listener(move |_, on, _, cx| {
-                    cx.emit(wire::Event::Toggle { handler, on: *on })
-                }));
-            }
-            return toggle.into_any_element();
-        }
-        let mut checkbox = Checkbox::new(native_id(id))
-            .refine_style(style)
-            .label(label.clone())
-            .checked(*checked)
-            .disabled(on_toggle.is_none());
-        if let Some(handler) = on_toggle {
-            let handler = *handler;
-            checkbox =
-                checkbox.on_click(cx.listener(move |_, on, _, cx| {
-                    cx.emit(wire::Event::Toggle { handler, on: *on })
-                }));
-        }
-        announce(checkbox, accessible(node)).into_any_element()
-    }
-
-    pub(super) fn progress(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
-        let wire::Node::Progress {
-            id,
-            value,
-            min,
-            max,
-            axis,
-            style,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let span = max - min;
-        let valid = span.is_finite() && span > 0.0;
-        let fraction = match valid {
-            true => ((value - min) / span).clamp(0.0, 1.0),
-            false => 0.0,
-        };
-        let fill = div().bg(gpui_kit::component::Theme::global(cx)
-            .color_tokens()
-            .primary);
-        let track = match axis {
-            wire::Axis::Row => div().child(fill.w(relative(fraction)).h_full()),
-            wire::Axis::Column => div()
-                .flex()
-                .flex_col()
-                .justify_end()
-                .child(fill.h(relative(fraction)).w_full()),
-        };
-        announce(
-            track.id(native_id(id)).refine_style(style),
-            accessible(node),
-        )
-        .into_any_element()
-    }
-
     pub(super) fn editor(
         &mut self,
         node: &wire::Node,
@@ -470,93 +298,6 @@ impl ViewTree {
         element
             .child(view)
             .child(self.measure(&path, cx))
-            .into_any_element()
-    }
-
-    pub(super) fn slider(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::Slider {
-            id,
-            value,
-            min,
-            max,
-            step,
-            on_change,
-            on_release,
-            axis,
-            style,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        let path = self.authored_path.clone();
-        let bounds = [*min, *max, *step];
-        let rebuild = self
-            .ranges
-            .get(&path)
-            .is_none_or(|control| control.bounds != bounds);
-        if rebuild {
-            let state = cx.new(|_| {
-                SliderState::new()
-                    .min(*min)
-                    .max(*max)
-                    .step(*step)
-                    .default_value(*value)
-            });
-            let route = path.clone();
-            let subscription = cx.subscribe_in(&state, window, move |this, _, event, _, cx| {
-                let Some(control) = this.ranges.get_mut(&route) else {
-                    return;
-                };
-                match event {
-                    SliderEvent::Change(value) => {
-                        control.value = value.start();
-                        cx.emit(wire::Event::Slide {
-                            handler: control.on_change,
-                            value: control.value,
-                        });
-                    }
-                    SliderEvent::Release(_) => {
-                        if let Some(message) = control.on_release {
-                            cx.emit(wire::Event::Message(message));
-                        }
-                    }
-                }
-            });
-            self.ranges.insert(
-                path.clone(),
-                RangeControl {
-                    state,
-                    bounds,
-                    value: *value,
-                    on_change: *on_change,
-                    on_release: *on_release,
-                    _subscription: subscription,
-                },
-            );
-        }
-        let control = self.ranges.get_mut(&path).expect("range inserted");
-        control.on_change = *on_change;
-        control.on_release = *on_release;
-        if control.value != *value {
-            control.value = *value;
-            control
-                .state
-                .update(cx, |state, cx| state.set_value(*value, window, cx));
-        }
-        let slider = match axis {
-            wire::Axis::Row => Slider::new(&control.state).horizontal(),
-            wire::Axis::Column => Slider::new(&control.state).vertical(),
-        };
-        div()
-            .id(native_id(id))
-            .refine_style(style)
-            .child(slider)
             .into_any_element()
     }
 }
