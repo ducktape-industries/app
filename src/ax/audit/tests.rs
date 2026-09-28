@@ -173,20 +173,29 @@ fn ax_012_press_comes_with_focus() {
     assert_eq!(fails(&report, "AX-012"), ["w:row"]);
 }
 
-/// A rich text's clickable range is a link the pointer presses and the
-/// keyboard cannot reach, because gpui gives a node no element draws no
-/// focus: a warning of its own, not AX-012's error the view cannot fix.
+/// A rich text's clickable ranges are links no element draws, reached by
+/// the arrows from the box around the text once Tab has put the keys in
+/// it: under a node that offers focus they pass, and the picked one, a
+/// drawn node the keys are on, passes as focused. A range under no such
+/// box, and a drawn link nothing reaches, fail.
 #[test]
-fn ax_123_a_range_only_the_fork_can_reach_is_a_warning() {
-    let mut range = node("text.Link", "Link", "the docs");
-    range.actions = vec!["press"];
+fn ax_012_a_texts_links_are_reached_through_its_box() {
+    let mut text = node("text", "Group", "Read the docs or the code");
+    text.actions = vec!["focus"];
+    let link = |id, name: &str, parent: Option<&str>| {
+        let mut link = node(id, "Link", name);
+        link.actions = vec!["press"];
+        link.more.parent = parent.map(|parent| format!("w:{parent}"));
+        link
+    };
+    let mut range = link("text.Link", "the docs", Some("text"));
     range.synthetic = true;
-    let mut drawn = node("link", "Link", "the code");
-    drawn.actions = vec!["press"];
-    let report = one(vec![range, drawn]);
-    assert_eq!(fails(&report, "AX-012"), ["w:link"]);
-    assert_eq!(fails(&report, "AX-123"), ["w:text.Link"]);
-    assert!(report.errors().all(|violation| violation.id == "w:link"));
+    let picked = focused(link("text.link", "the code", Some("text")));
+    let mut loose = link("loose.Link", "the code", None);
+    loose.synthetic = true;
+    let drawn = link("drawn", "the docs", Some("text"));
+    let report = one(vec![text, range, picked, loose, drawn]);
+    assert_eq!(fails(&report, "AX-012"), ["w:drawn", "w:loose.Link"]);
 }
 
 /// A composite's rows are reached by the arrows from the composite: a row
@@ -371,6 +380,37 @@ fn ax_021_every_focus_stop_is_reached() {
         vec![focused(a()), b()],
     ]);
     assert_eq!(fails(&skipped, "AX-021"), ["w:b"]);
+}
+
+/// A box the keys went into is reached: a rich text's box has the keys
+/// while its picked link, a node offering no focus of its own, is the one
+/// focused. A stop beside it or around it that Tab never lands on is not:
+/// the keys are on the link's nearest ancestor that offers focus.
+#[test]
+fn ax_021_a_box_holding_the_keys_through_its_picked_link_is_reached() {
+    let card = || {
+        let mut card = node("card", "Group", "A note");
+        card.actions = vec!["focus"];
+        card
+    };
+    let text = || {
+        let mut text = node("text", "Group", "Read the docs");
+        text.actions = vec!["focus"];
+        text.more.parent = Some("w:card".into());
+        text
+    };
+    let link = || {
+        let mut link = node("text.link", "Link", "the docs");
+        link.actions = vec!["press"];
+        link.more.parent = Some("w:text".into());
+        link
+    };
+    let report = walk(vec![
+        vec![card(), text(), link(), button("b", "B")],
+        vec![card(), text(), focused(link()), button("b", "B")],
+        vec![card(), text(), focused(link()), button("b", "B")],
+    ]);
+    assert_eq!(fails(&report, "AX-021"), ["w:b", "w:card"]);
 }
 
 /// A stop the state opened on and Tab never lands on again is not reached.
