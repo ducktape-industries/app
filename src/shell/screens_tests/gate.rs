@@ -1,24 +1,12 @@
-//! The gate of `docs/ax.md` phase 1: every native screen state the console
-//! draws runs through the door's audit, Tab walk included, and any
-//! error-severity violation fails — except the ones [`EXCEPTIONS`] names,
-//! each with its reason, and each of which must still fire.
+//! The gate of `docs/ax.md` phases 1 and 2: every native screen state the
+//! console draws runs through the door's audit, Tab walk included, and any
+//! error-severity violation fails. Nothing is excused.
 use super::*;
 use crate::Secret;
 use crate::ax::audit::{self, Violation};
 use crate::ui::{Account, Phrase, Recover, Unlock};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{TestAppContext, VisualTestContext};
-
-/// `(screen, rule, id prefix, why)`: what the shell still gets wrong, on
-/// purpose or for a fix that is not small. A stale entry fails the gate too.
-const EXCEPTIONS: &[(&str, &str, &str, &str)] = &[(
-    "spotlight",
-    "AX-012",
-    "shell:spotlight/",
-    "Spotlight's rows are picked with the arrow keys and marked only visually: \
-     MenuItems with a press and no focus. docs/ax.md §6.4 asks the owner \
-     whether they become a combobox with active_descendant (AX-107, phase 2).",
-)];
 
 pub(super) type Build = Box<dyn Fn() -> Ducktape>;
 
@@ -148,9 +136,27 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             Box::new(|| booted(Stage::Recover(Recover::default()), true)),
         ),
         (
+            "recover-adding",
+            true,
+            Box::new(|| {
+                let mut state = booted(Stage::Recover(Recover::default()), true);
+                state.sign_in.unlock_busy = true;
+                state
+            }),
+        ),
+        (
             "account-step",
             true,
             Box::new(|| booted(Stage::Account(Account::default()), true)),
+        ),
+        (
+            "account-creating",
+            true,
+            Box::new(|| {
+                let mut state = booted(Stage::Account(Account::default()), true);
+                state.sign_in.unlock_busy = true;
+                state
+            }),
         ),
         (
             "account-passkey-waiting",
@@ -277,6 +283,16 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             false,
             on_desk(crate::Overlay::Menu(crate::Popover::Notifications)),
         ),
+        (
+            "desk-asking",
+            false,
+            Box::new(|| {
+                crate::runtime::notify::center().ask_for_test("gate-asking");
+                let mut state = desk();
+                state.active = Some("gate-asking");
+                state
+            }),
+        ),
     ]
 }
 
@@ -288,44 +304,32 @@ fn snap(window: &mut Window, cx: &mut gpui_kit::App) -> Vec<crate::ax::AxNode> {
 }
 
 /// The audit of the screen `native` shows now, Tab walk included: each
-/// error-severity violation as a line, with the ones EXCEPTIONS excuses for
-/// `screen` taken out and their indices returned instead.
-pub(super) fn errors(
-    native: &mut VisualTestContext,
-    screen: &str,
-    launcher: bool,
-) -> (Vec<String>, Vec<usize>) {
+/// error-severity violation as a line.
+pub(super) fn errors(native: &mut VisualTestContext, screen: &str, launcher: bool) -> Vec<String> {
     native.update(snap);
     let report = native.update(|window, cx| {
-        let reading = audit::observe(window, cx, true, |_| true, snap);
+        let mut reading = audit::observe(window, cx, true, |_| true, snap);
+        reading.chords = crate::shell::chords();
         audit::audit(&reading, launcher)
     });
-    let (mut failures, mut fired) = (Vec::new(), Vec::new());
-    for Violation {
-        rule,
-        id,
-        role,
-        name,
-        message,
-        ..
-    } in report.errors()
-    {
-        let excused = EXCEPTIONS
-            .iter()
-            .position(|(s, r, i, _)| *s == screen && r == rule && id.starts_with(i));
-        match excused {
-            Some(at) => fired.push(at),
-            None => failures.push(format!(
-                "{screen}: {rule} {id} ({role} {name:?}): {message}"
-            )),
-        }
-    }
-    (failures, fired)
+    report
+        .errors()
+        .map(
+            |Violation {
+                 rule,
+                 id,
+                 role,
+                 name,
+                 message,
+                 ..
+             }| format!("{screen}: {rule} {id} ({role} {name:?}): {message}"),
+        )
+        .collect()
 }
 
 /// A screen state a test built by hand passes the audit too.
 pub(super) fn passes(native: &mut VisualTestContext, screen: &str, launcher: bool) {
-    let (failures, _) = errors(native, screen, launcher);
+    let failures = errors(native, screen, launcher);
     assert!(failures.is_empty(), "\n{}\n", failures.join("\n"));
 }
 
@@ -337,21 +341,9 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
         keys::bind(cx);
     });
     let mut failures: Vec<String> = Vec::new();
-    let mut fired: Vec<bool> = vec![false; EXCEPTIONS.len()];
     for (screen, launcher, build) in matrix() {
         let (_view, mut native) = open(build(), cx);
-        let (failed, excused) = errors(&mut native, screen, launcher);
-        failures.extend(failed);
-        for at in excused {
-            fired[at] = true;
-        }
-    }
-    for (at, (screen, rule, id, _)) in EXCEPTIONS.iter().enumerate() {
-        if !fired[at] {
-            failures.push(format!(
-                "{screen}: {rule} {id} no longer fires; drop the exception"
-            ));
-        }
+        failures.extend(errors(&mut native, screen, launcher));
     }
     assert!(failures.is_empty(), "\n{}\n", failures.join("\n"));
 }

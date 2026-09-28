@@ -139,9 +139,11 @@ impl ViewTree {
         // the kit fixes the line at 20px inside `8px` padding: a face over
         // ~16px is clipped top and bottom. The line follows the face and the
         // kit's height centres it; a view's own style still wins.
+        // read-only as disabled is: the kit refuses what the user types
         let mut input = Input::new(&field.state)
             .id(native_id)
             .disabled(options.disabled)
+            .readonly(options.read_only)
             .line_height(gpui_kit::relative(1.4))
             .py_0()
             .refine_style(style);
@@ -153,8 +155,14 @@ impl ViewTree {
             &field.state.read(cx).focus_handle(cx),
             {
                 let state = field.state.clone();
+                // and what assistive technology sets, which the kit takes
+                // as its own programmatic change
                 move |value, window, cx| {
-                    state.update(cx, |state, cx| state.replace_all(value, window, cx))
+                    state.update(cx, |state, cx| {
+                        if state.is_editable() {
+                            state.replace_all(value, window, cx)
+                        }
+                    })
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),

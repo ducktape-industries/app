@@ -42,6 +42,7 @@ mod empty_desk;
 mod facts;
 mod figure;
 mod help;
+pub(crate) use help::chords;
 mod ink;
 mod keys;
 mod launch;

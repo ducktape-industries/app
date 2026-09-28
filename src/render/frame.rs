@@ -68,7 +68,15 @@ impl ViewTree {
                     }
                     uniform_lists.insert(path.clone());
                 }
-                wire::Node::List { path, state, .. } => {
+                wire::Node::List {
+                    path,
+                    state,
+                    interactivity,
+                    ..
+                } => {
+                    if let Some(id) = interactivity.focus_handle {
+                        guest_focus_ids.insert(id);
+                    }
                     variable_lists.insert(VariableListKey {
                         path: path.clone(),
                         state: *state,
@@ -77,7 +85,10 @@ impl ViewTree {
                 wire::Node::Input { .. } => {
                     inputs.insert(path.clone());
                 }
-                wire::Node::ResizeHandle { .. } => {
+                wire::Node::ResizeHandle { interactivity, .. } => {
+                    if let Some(id) = interactivity.focus_handle {
+                        guest_focus_ids.insert(id);
+                    }
                     drags.insert(path.clone());
                 }
                 wire::Node::Overlay {
@@ -130,7 +141,14 @@ impl ViewTree {
             variable_lists.contains(id)
         });
         self.drags.retain(|key, _| drags.contains(key));
-        self.dialogs.retain(|key, _| dialogs.contains(key));
+        let opener = &mut self.opener;
+        self.dialogs.retain(|key, (_, was)| {
+            let open = dialogs.contains(key);
+            if !open && was.is_some() {
+                *opener = was.take();
+            }
+            open
+        });
         self.editors.retain(|key, _| editors.contains(key));
         self.sensors.retain(|key, _| sensors.contains(key));
         self.root = root;

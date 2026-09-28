@@ -206,8 +206,6 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
             id: Some(named_id(key)),
             style: element.style().clone(),
             content,
-            heading: None,
-            live: None,
         })
     };
     let paragraph = text(

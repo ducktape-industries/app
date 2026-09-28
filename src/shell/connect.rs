@@ -17,6 +17,12 @@ impl DesktopWindow {
         use gpui_kit::*;
         let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
+        // The address refusal is about what is typed now; a failed try is
+        // about the last address. Both clear on the next keystroke or try.
+        let note = [&state.endpoint_error, &state.error]
+            .into_iter()
+            .find(|note| !note.is_empty())
+            .cloned();
         let field = self.input(
             TextField {
                 key: "endpoint",
@@ -27,17 +33,12 @@ impl DesktopWindow {
                 on_enter: || Message::ConnectSubmit,
                 label: Some("Node address".into()),
                 private: false,
+                error: note.clone(),
                 size: 15.,
             },
             window,
             cx,
         );
-        // The address refusal is about what is typed now; a failed try is
-        // about the last address. Both clear on the next keystroke or try.
-        let note = [&state.endpoint_error, &state.error]
-            .into_iter()
-            .find(|note| !note.is_empty())
-            .cloned();
         let border = match note {
             Some(_) => ink.danger,
             None => ink.strong,

@@ -197,13 +197,15 @@ impl ViewTree {
                         })
                         .unwrap_or_default();
                     let parent = std::mem::replace(&mut tree.authored_path, list_path.clone());
-                    let elements = rows
-                        .into_iter()
-                        .map(|row| {
-                            row.map(|row| tree.node(&row, window, cx))
-                                .unwrap_or_else(|| {
-                                    div().h(px(PLACEHOLDER_HEIGHT)).into_any_element()
-                                })
+                    let elements = range
+                        .clone()
+                        .zip(rows)
+                        .map(|(index, row)| {
+                            row.map(|row| {
+                                tree.next_row = Some((index + 1, count));
+                                tree.node(&row, window, cx)
+                            })
+                            .unwrap_or_else(|| div().h(px(PLACEHOLDER_HEIGHT)).into_any_element())
                         })
                         .collect();
                     tree.authored_path = parent;
@@ -257,18 +259,7 @@ impl ViewTree {
             let style = group.style.clone();
             list = list.group_active(group.group.clone(), move |_| style);
         }
-        list = self.guest_aria(list, node, interactivity, cx);
-        if let Some(handler) = interactivity.on_click {
-            list = list.on_click(
-                cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                    this.user_activation.set(Some(handler));
-                    cx.emit(wire::Event::Click {
-                        handler,
-                        event: event.into(),
-                    })
-                }),
-            );
-        }
-        list.into_any_element()
+        self.guest_aria(list, node, interactivity, cx)
+            .into_any_element()
     }
 }

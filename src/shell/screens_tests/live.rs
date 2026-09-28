@@ -1,8 +1,8 @@
 //! Live regions (docs/ax.md §4 gap 3): every shell Status is announced
 //! politely and every Alert at once, each carrying its words as its name
-//! and its value — AT-SPI and UIA speak the name, macOS the value. The
-//! door does not export `live` yet (phase 2), so these read the AccessKit
-//! nodes the window built, as the platform adapters do.
+//! and its value — AT-SPI and UIA speak the name, macOS the value. These
+//! read the AccessKit nodes the window built, as the platform adapters do;
+//! the gate reads the same through the door (AX-102).
 use super::*;
 use gpui_kit::Role;
 use gpui_kit::accesskit::Live;
@@ -62,18 +62,7 @@ fn every_shell_status_and_alert_is_live_with_its_words_as_name_and_value(cx: &mu
     ];
     let mut failures = Vec::new();
     let mut found = vec![false; expected.len()];
-    // a program's window asking about its notices: a pane state, which the
-    // gate does not cover yet
-    let asking: gate::Build = Box::new(|| {
-        crate::runtime::notify::center().ask_for_test("gate-asking");
-        let mut state = gate::desk();
-        state.active = Some("gate-asking");
-        state
-    });
-    for (screen, _, build) in gate::matrix()
-        .into_iter()
-        .chain([("desk-asking", false, asking)])
-    {
+    for (screen, _, build) in gate::matrix() {
         let (_view, mut native) = open(build(), cx);
         let nodes = native.update(|window, cx| {
             draw(window, cx);

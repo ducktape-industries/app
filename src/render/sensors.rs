@@ -61,6 +61,7 @@ impl ViewTree {
             content,
             cursor,
             style,
+            interactivity,
         } = node
         else {
             unreachable!()
@@ -144,6 +145,7 @@ impl ViewTree {
             .child(self.node(content, window, cx))
             .child(capture)
             .child(grip);
+        let element = self.guest_aria(element, node, interactivity, cx);
         #[cfg(test)]
         let element = {
             use gpui_kit::test::TestSupportExt as _;

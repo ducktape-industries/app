@@ -74,6 +74,7 @@ impl DesktopWindow {
                     on_enter: || Message::UnlockSubmit,
                     label: Some("Password".into()),
                     private: false,
+                    error: failed.then(|| state.unlock_error.clone()),
                     size: 15.,
                 },
                 window,

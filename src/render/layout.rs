@@ -50,17 +50,6 @@ impl ViewTree {
             element = element.group_active(group.group.clone(), move |_| style);
         }
         element = self.guest_aria(element, node, interactivity, cx);
-        if let Some(handler) = interactivity.on_click {
-            element = element.on_click(cx.listener(
-                move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                    this.user_activation.set(Some(handler));
-                    cx.emit(wire::Event::Click {
-                        handler,
-                        event: event.into(),
-                    });
-                },
-            ));
-        }
         // Only a container with an id of its own owns its path. An id-less one
         // sits on its nearest named ancestor's path: measuring there, it and
         // the ancestor overwrite each other's bounds and notify every frame,

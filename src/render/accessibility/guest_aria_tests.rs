@@ -19,8 +19,6 @@ fn text(id: &str) -> wire::Node {
         id: Some(key(id)),
         style: Default::default(),
         content: WORDS.into(),
-        heading: None,
-        live: None,
     })
 }
 
@@ -58,6 +56,7 @@ fn every_aria(author_id: &str, label: Option<&str>) -> wire::Interactivity {
             column_count: Some(3),
             toggled: Some(Toggled::Mixed),
             orientation: Some(accesskit::Orientation::Vertical),
+            ..Default::default()
         },
         ..Default::default()
     }
@@ -73,12 +72,15 @@ fn unfocusable(label: Option<&str>) -> wire::Interactivity {
 }
 
 /// Where the aria is put: on a Container, an Image, a UniformList itself,
-/// or the one row of a UniformList.
+/// the one row of a UniformList, a ResizeHandle or a (variable) List.
+#[derive(Debug)]
 enum Site {
     Container,
     Image,
     UniformList,
     UniformListRow,
+    ResizeHandle,
+    List,
 }
 
 fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
@@ -140,12 +142,47 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             indices: vec![0],
             children: vec![child(&Site::Container, interactivity)],
         },
+        Site::ResizeHandle => wire::Node::ResizeHandle {
+            id: key("child"),
+            style: boxed(),
+            interactivity,
+            on_press: None,
+            on_release: None,
+            on_drag: None,
+            cursor: None,
+            content: Box::new(text("child-text")),
+        },
+        // a list has no id: its path is where it sits
+        Site::List => wire::Node::List {
+            state: 1,
+            path: Vec::new(),
+            item_count: 1,
+            alignment: wire::ListAlignment::Top,
+            overdraw: 0.,
+            sizing: wire::ListSizingBehavior::Auto,
+            following_tail: false,
+            revision: 0,
+            commands: Vec::new(),
+            request_handler: 1,
+            scroll_handler: None,
+            range_start: 0,
+            style: boxed(),
+            interactivity,
+            children: vec![text("child-text")],
+        },
     }
 }
 
 /// The child under a focusable, roled parent that holds the guest focus
 /// handle: the composite an active descendant is announced within.
 fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
+    let mut child = child(site, interactivity);
+    // a list's path is the one the walk takes to it, through the parent
+    child.for_each_mut(&mut |node| {
+        if let wire::Node::UniformList { path, .. } | wire::Node::List { path, .. } = node {
+            path.insert(0, key("parent"));
+        }
+    });
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("parent")),
         style: div().w(px(280.)).h(px(180.)).style().clone(),
@@ -160,8 +197,18 @@ fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             },
             ..Default::default()
         },
-        children: vec![child(site, interactivity)],
+        children: vec![child],
     })
+}
+
+/// `root` as the host takes it from a guest: through the sanitizer.
+fn sanitized(root: wire::Node) -> wire::Node {
+    let mut frame = wire::Frame {
+        root: Some(root),
+        ..Default::default()
+    };
+    wire::sanitize(&mut frame).expect("the host takes the tree");
+    frame.root.expect("the tree stays")
 }
 
 /// Everything gpui writes onto a node from the guest's aria.
@@ -261,6 +308,7 @@ fn expected(name: &str, focusable: bool) -> Heard {
 /// for it) plus whether the tree reports the child as the focused
 /// (active descendant) node.
 fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Heard>, bool) {
+    let root = sanitized(root);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -295,7 +343,8 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
 /// Every renderer announces the guest's aria alike, a roled node with no
 /// label named by the text it draws; a focusable node never claims the
 /// active descendant (gpui panics, in debug, when the claimant is the
-/// focused node), so focus stays on the parent. A UniformList itself has
+/// focused node): the sanitizer drops its claim, so focus stays on the
+/// parent. A UniformList itself has
 /// no node at all: gpui's `UniformList` element reports no `a11y_role`, so
 /// its aria is dead until the fork gives it one.
 #[gpui_kit::test]
@@ -392,5 +441,509 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
             let want = label.map(|label| (Role::Image, Some(label.to_owned())));
             assert_eq!(heard, want);
         }
+    }
+}
+
+/// A view's own focus handle is a Tab stop when the view says the element
+/// is one, as gpui makes the handle of an element it gives one; one the
+/// view left out of the Tab order stays out.
+#[gpui_kit::test]
+fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let button = |key_name: &str, focus: u64, tab_stop: Option<bool>| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(key(key_name)),
+            style: div().w(px(80.)).h(px(40.)).style().clone(),
+            interactivity: wire::Interactivity {
+                role: Some(Role::Button),
+                focusable: true,
+                focus_handle: Some(focus),
+                tab_stop,
+                aria: wire::Aria {
+                    author_id: Some(key_name.into()),
+                    label: Some(key_name.into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            children: Vec::new(),
+        })
+    };
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("row")),
+        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![button("skipped", 1, None), button("stop", 2, Some(true))],
+    });
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(sanitized(root))
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        // Tab is the app's binding to `focus_next`; a bare window has none
+        window.focus_next(cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let (stop, _) = heard(update, "stop").expect("the stop has a node");
+        assert_eq!(update.focus, stop, "Tab reaches the view's tab stop");
+    });
+}
+
+mod phase_two {
+    //! What phase 2 added to the one mapper: the aria gpui has no setter for,
+    //! through one `a11y::Patch`; a Status's words as its value; a List and a
+    //! ResizeHandle carrying a view's interactivity.
+    use super::*;
+
+    /// Every phase-2 field a view sets that gpui has no setter for, on a
+    /// roled, named node.
+    fn phase_two(role: Role) -> wire::Interactivity {
+        wire::Interactivity {
+            role: Some(role),
+            aria: wire::Aria {
+                author_id: Some("child".into()),
+                label: Some("Phase two".into()),
+                live: Some(accesskit::Live::Polite),
+                busy: true,
+                required: true,
+                read_only: true,
+                invalid: Some(accesskit::Invalid::Spelling),
+                has_popup: Some(accesskit::HasPopup::Menu),
+                current: Some(accesskit::AriaCurrent::Page),
+                custom_actions: vec![(3, "Pin".into())],
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// The node `root` builds for author id `child`, once the tree is on.
+    fn built(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Option<accesskit::Node> {
+        let root = sanitized(root);
+        let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let update = window.a11y_tree().expect("an a11y tree once activated");
+            update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.author_id() == Some("child"))
+                .map(|(_, node)| node.clone())
+        })
+    }
+
+    /// Each phase-2 aria field reaches the node, all of them through one
+    /// patch (a second closure would replace the first), on every renderer
+    /// that carries a view's interactivity: a ResizeHandle and a List too.
+    #[gpui_kit::test]
+    fn every_renderer_puts_the_phase_two_aria_on_its_node(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        for site in [
+            Site::Container,
+            Site::Image,
+            Site::UniformListRow,
+            Site::ResizeHandle,
+            Site::List,
+        ] {
+            let node = built(cx, child(&site, phase_two(Role::Button)))
+                .unwrap_or_else(|| panic!("{site:?} has a node"));
+            assert_eq!(node.role(), Role::Button);
+            assert_eq!(node.label(), Some("Phase two"));
+            assert_eq!(node.live(), Some(accesskit::Live::Polite));
+            assert!(node.is_busy());
+            assert!(node.is_required());
+            assert!(node.is_read_only());
+            assert_eq!(node.invalid(), Some(accesskit::Invalid::Spelling));
+            assert_eq!(node.has_popup(), Some(accesskit::HasPopup::Menu));
+            assert_eq!(node.aria_current(), Some(accesskit::AriaCurrent::Page));
+            assert_eq!(
+                node.custom_actions()
+                    .iter()
+                    .map(|action| (action.id, &*action.description))
+                    .collect::<Vec<_>>(),
+                [(3, "Pin")]
+            );
+        }
+    }
+
+    /// A list the view left plain is gpui's list alone: no box, no node.
+    #[gpui_kit::test]
+    fn a_plain_list_has_no_node(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut plain = wire::Interactivity::default();
+        let node = built(cx, child(&Site::List, plain.clone()));
+        assert!(node.is_none());
+        plain.aria.author_id = Some("child".into());
+        plain.role = Some(Role::List);
+        assert_eq!(
+            built(cx, child(&Site::List, plain)).map(|node| node.role()),
+            Some(Role::List)
+        );
+    }
+
+    /// A Status or Alert the view did not give a value speaks the words it
+    /// draws as its value as well as its name: macOS reads the value.
+    #[gpui_kit::test]
+    fn a_status_speaks_its_drawn_words_as_its_value(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        for role in [Role::Status, Role::Alert] {
+            let status = wire::Interactivity {
+                role: Some(role),
+                aria: wire::Aria {
+                    author_id: Some("child".into()),
+                    live: Some(accesskit::Live::Polite),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let node = built(cx, child(&Site::Container, status)).expect("the status has a node");
+            assert_eq!(node.label(), Some(WORDS));
+            assert_eq!(node.value(), Some(WORDS));
+        }
+    }
+
+    /// A divider as the SDK builds it is a named Splitter Tab reaches, and a
+    /// key pressed on it goes to the view.
+    #[gpui_kit::test]
+    fn a_resize_handle_takes_focus_and_keys(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let divider = wire::Interactivity {
+            role: Some(Role::Splitter),
+            focusable: true,
+            tab_stop: Some(true),
+            on_key_down: Some(9),
+            aria: wire::Aria {
+                author_id: Some("child".into()),
+                label: Some("Resize the list".into()),
+                orientation: Some(accesskit::Orientation::Vertical),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let root = child(&Site::ResizeHandle, divider);
+        let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
+        let tree = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = events.clone();
+        let _subscription = native.update(|_, cx| {
+            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+                seen.borrow_mut().push(event.clone())
+            })
+        });
+        // Tab is the app's binding to `focus_next`; a bare window has none
+        native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.focus_next(cx);
+        });
+        native.simulate_keystrokes("left");
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let (id, node) = update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.author_id() == Some("child"))
+                .expect("the divider has a node");
+            assert_eq!(node.role(), Role::Splitter);
+            assert_eq!(node.label(), Some("Resize the list"));
+            assert_eq!(update.focus, *id, "Tab reaches the divider");
+        });
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, wire::Event::KeyDown { handler: 9, .. })),
+            "{:?}",
+            events.borrow()
+        );
+    }
+
+    /// A divider's arrows move it, end to end: Tab reaches it, each arrow
+    /// reaches the view's key route as the keystroke the SDK's divider reads,
+    /// and the view, stepping as `design::divider` does (8 px, 32 with
+    /// shift), draws its pane that much wider or narrower. No built view
+    /// wasm is loadable here, so the view is this test, re-rendering from
+    /// its key route.
+    #[gpui_kit::test]
+    fn a_dividers_arrows_move_its_pane_by_eight_or_thirty_two(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        const ROUTE: u32 = 9;
+        let panes = |width: f32| {
+            let named = |role: Role, label: &str| wire::Interactivity {
+                role: Some(role),
+                aria: wire::Aria {
+                    label: Some(label.into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let pane = wire::Node::Container(view_wire::ContainerNode {
+                id: Some(key("list-pane")),
+                style: div().w(px(width)).h_full().flex_shrink_0().style().clone(),
+                interactivity: named(Role::Group, "List"),
+                children: Vec::new(),
+            });
+            let divider = wire::Node::ResizeHandle {
+                id: key("list-resize"),
+                style: div().w(px(1.)).h_full().style().clone(),
+                interactivity: wire::Interactivity {
+                    focusable: true,
+                    tab_stop: Some(true),
+                    on_key_down: Some(ROUTE),
+                    aria: wire::Aria {
+                        orientation: Some(accesskit::Orientation::Vertical),
+                        ..named(Role::Splitter, "Resize the list").aria
+                    },
+                    ..named(Role::Splitter, "Resize the list")
+                },
+                on_press: None,
+                on_release: None,
+                on_drag: None,
+                cursor: None,
+                content: Box::new(wire::Node::Container(view_wire::ContainerNode {
+                    id: Some(key("list-rule")),
+                    style: div().w(px(1.)).h_full().style().clone(),
+                    interactivity: Default::default(),
+                    children: Vec::new(),
+                })),
+            };
+            sanitized(wire::Node::Container(view_wire::ContainerNode {
+                id: Some(key("panes")),
+                style: div().flex().w(px(600.)).h(px(200.)).style().clone(),
+                interactivity: Default::default(),
+                children: vec![pane, divider],
+            }))
+        };
+        let window = cx.open_window(size(px(640.), px(240.)), |_, _| ViewTree::new(panes(200.)));
+        let tree = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let seen = events.clone();
+        let _subscription = native.update(|_, cx| {
+            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+                seen.borrow_mut().push(event.clone())
+            })
+        });
+        let wide = |native: &mut gpui_kit::VisualTestContext| {
+            native.update(|window, cx| {
+                window.render_frame(cx);
+                let nodes = serde_json::to_value(crate::ax::snapshot("t", window, true)).unwrap();
+                let nodes = nodes.as_array().unwrap();
+                let pane = nodes
+                    .iter()
+                    .find(|node| node["name"] == "List")
+                    .expect("the pane is in the tree");
+                let bounds = &pane["bounds"];
+                let focus = nodes.iter().find(|node| {
+                    node["state"]
+                        .as_array()
+                        .unwrap()
+                        .contains(&"focused".into())
+                });
+                (
+                    bounds[2].as_i64().unwrap() - bounds[0].as_i64().unwrap(),
+                    focus.map(|node| node["role"].as_str().unwrap().to_owned()),
+                )
+            })
+        };
+        // Tab is the app's binding to `focus_next`; a bare window has none
+        native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.focus_next(cx);
+        });
+        let mut width = 200.;
+        assert_eq!(wide(&mut native), (200, Some("Splitter".into())));
+        for (keystroke, moved) in [("right", 208), ("shift-right", 240), ("left", 232)] {
+            native.simulate_keystrokes(keystroke);
+            for event in events.borrow_mut().drain(..) {
+                // the view: design::divider's step, on the event it is handed
+                let wire::Event::KeyDown {
+                    handler: ROUTE,
+                    event,
+                    ..
+                } = event
+                else {
+                    continue;
+                };
+                let event = event.into_gpui();
+                let step = match event.keystroke.modifiers.shift {
+                    true => 32.,
+                    false => 8.,
+                };
+                width += match event.keystroke.key.as_str() {
+                    "left" => -step,
+                    "right" => step,
+                    _ => 0.,
+                };
+                native.update(|_, cx| tree.update(cx, |tree, cx| tree.replace(panes(width), cx)));
+            }
+            assert_eq!(
+                wide(&mut native),
+                (moved, Some("Splitter".into())),
+                "after {keystroke}"
+            );
+        }
+    }
+
+    /// A handle a view names on a divider or a list outlives the frame that
+    /// made it: a new frame keeps focus where it was.
+    #[gpui_kit::test]
+    fn a_guest_focus_handle_on_a_divider_or_a_list_survives_a_frame(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        for site in [Site::ResizeHandle, Site::List] {
+            let focused = wire::Interactivity {
+                focus_handle: Some(PARENT_FOCUS),
+                ..phase_two(Role::Button)
+            };
+            let root = child(&site, focused);
+            let again = root.clone();
+            let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
+            let tree = window.root(cx).unwrap();
+            let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            native.update(|window, cx| {
+                window.render_frame(cx);
+                let handle = tree.read(cx).guest_focus_targets[&PARENT_FOCUS].clone();
+                tree.update(cx, |tree, cx| tree.replace(again, cx));
+                window.render_frame(cx);
+                assert!(
+                    tree.read(cx).guest_focus_targets[&PARENT_FOCUS] == handle,
+                    "{site:?} made its handle anew"
+                );
+            });
+        }
+    }
+
+    /// A roled row named `row-<n>`, maybe wrapping a roled child `inner-<n>`.
+    fn row(n: usize, role: Option<Role>) -> wire::Node {
+        let named = |id: String| wire::Interactivity {
+            role: Some(Role::ListBoxOption),
+            aria: wire::Aria {
+                author_id: Some(id.clone().into()),
+                label: Some(id.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let inner = wire::Node::Container(view_wire::ContainerNode {
+            id: Some(key(&format!("inner-{n}"))),
+            style: div().h(px(20.)).style().clone(),
+            interactivity: named(format!("inner-{n}")),
+            children: Vec::new(),
+        });
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(key(&format!("row-{n}"))),
+            style: div().h(px(20.)).style().clone(),
+            interactivity: wire::Interactivity {
+                role,
+                ..named(format!("row-{n}"))
+            },
+            children: vec![inner],
+        })
+    }
+
+    /// `(author id, position, size)` of every node the rows built.
+    fn set_places(
+        cx: &mut gpui_kit::TestAppContext,
+        root: wire::Node,
+    ) -> Vec<(String, Option<usize>, Option<usize>)> {
+        let root = sanitized(root);
+        let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let mut places: Vec<_> = update
+                .nodes
+                .iter()
+                .filter_map(|(_, node)| {
+                    let id = node.author_id()?;
+                    (id.starts_with("row-") || id.starts_with("inner-"))
+                        .then(|| (id.to_owned(), node.position_in_set(), node.size_of_set()))
+                })
+                .collect();
+            places.sort();
+            places
+        })
+    }
+
+    /// Each row a virtualized list draws says where it is in the whole list,
+    /// 1-based, unless the view said; what a row holds says nothing of it, and
+    /// a row with no role has no node to say it on (AX-112).
+    #[gpui_kit::test]
+    fn a_list_row_says_where_it_is_in_the_list(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let mut told = row(2, Some(Role::ListBoxOption));
+        if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut told {
+            interactivity.aria.position_in_set = Some(9);
+        }
+        let uniform = wire::Node::UniformList {
+            id: key("list"),
+            path: vec![key("list")],
+            route: 1,
+            style: boxed(),
+            interactivity: Default::default(),
+            count: 5,
+            measure_index: 0,
+            sizing: wire::list::UniformListSizing::Auto,
+            horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
+            y_flipped: false,
+            scroll_request: None,
+            indices: vec![0, 1, 2],
+            children: vec![row(0, Some(Role::ListBoxOption)), row(1, None), told],
+        };
+        let none = || (None, None);
+        let place = |id: &str, (at, of): (Option<usize>, Option<usize>)| (id.to_owned(), at, of);
+        assert_eq!(
+            set_places(cx, uniform),
+            [
+                place("inner-0", none()),
+                place("inner-1", none()),
+                place("inner-2", none()),
+                place("row-0", (Some(1), Some(5))),
+                place("row-2", (Some(9), Some(5))),
+            ]
+        );
+        let variable = wire::Node::List {
+            state: 1,
+            path: Vec::new(),
+            item_count: 4,
+            alignment: wire::ListAlignment::Top,
+            overdraw: 0.,
+            sizing: wire::ListSizingBehavior::Auto,
+            following_tail: false,
+            revision: 0,
+            commands: Vec::new(),
+            request_handler: 1,
+            scroll_handler: None,
+            range_start: 0,
+            style: boxed(),
+            interactivity: Default::default(),
+            children: vec![
+                row(0, Some(Role::ListBoxOption)),
+                row(1, Some(Role::ListBoxOption)),
+            ],
+        };
+        assert_eq!(
+            set_places(cx, variable),
+            [
+                place("inner-0", none()),
+                place("inner-1", none()),
+                place("row-0", (Some(1), Some(4))),
+                place("row-1", (Some(2), Some(4))),
+            ]
+        );
     }
 }

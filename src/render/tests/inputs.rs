@@ -101,6 +101,83 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
     );
 }
 
+/// A read-only field, as a disabled one, takes neither typing nor the text
+/// assistive technology sets, and tells the view nothing; an editable one
+/// takes both.
+#[gpui_kit::test]
+fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
+    cx.update(gpui_kit::init);
+    for (read_only, disabled, changes) in [
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
+        let mut field = input("Room name", false, disabled);
+        let wire::Node::Input { options, .. } = &mut field else {
+            unreachable!()
+        };
+        options.read_only = read_only;
+        let root = container("form", [field]);
+        let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root));
+        let tree = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let observed = events.clone();
+        let _subscription = native.update(|_, cx| {
+            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+                observed.borrow_mut().push(event.clone())
+            })
+        });
+        let state = native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+            state.update(cx, |state, cx| state.focus(window, cx));
+            state
+        });
+        native.simulate_input(" typed");
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let (node, _) = update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == gpui_kit::Role::TextInput)
+                .expect("the field has a node");
+            let node = *node;
+            window.dispatch_a11y_action(
+                ActionRequest {
+                    action: Action::SetValue,
+                    target_tree: TreeId::ROOT,
+                    target_node: node,
+                    data: Some(ActionData::Value("set".into())),
+                },
+                cx,
+            );
+        });
+        native.run_until_parked();
+        let value = state.read_with(&native, |state, _| state.value().to_string());
+        let told: Vec<String> = events
+            .borrow()
+            .iter()
+            .filter_map(|event| match event {
+                wire::Event::Input { text, .. } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        match changes {
+            true => {
+                assert_eq!(value, "set");
+                assert!(told.contains(&"hunter2 typed".into()), "{told:?}");
+                assert_eq!(told.last().map(String::as_str), Some("set"));
+            }
+            false => assert_eq!((value.as_str(), told), ("hunter2", Vec::new())),
+        }
+    }
+}
+
 #[gpui_kit::test]
 fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

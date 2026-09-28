@@ -53,3 +53,57 @@ fn names_say_which_one(cx: &mut TestAppContext) {
     let nodes = native.update(draw);
     find(&nodes, "Button", "Create account");
 }
+
+/// A bar button says what its press opens (AX-113), and a control Help
+/// lists with a chord reports the chord (AX-114): the bar's Search and the
+/// empty desk's three ways out.
+#[gpui_kit::test]
+fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    // a program to open, so the empty desk offers its buttons
+    crate::runtime::list_for_test("chords-test");
+    let (_view, mut native) = open(gate::desk(), cx);
+    let nodes = native.update(draw);
+    for (id, popup) in [
+        ("shell:network-switcher", "menu"),
+        ("shell:rail-search", "dialog"),
+        ("shell:rail-notifications", "dialog"),
+        ("shell:rail-connection", "dialog"),
+        ("shell:rail-account", "dialog"),
+        ("shell:settings", "dialog"),
+    ] {
+        assert_eq!(node(&nodes, id)["has_popup"], popup, "{id}");
+    }
+    for (id, key) in [
+        ("shell:rail-search", "K"),
+        ("shell:empty-desk/new", "N"),
+        ("shell:empty-desk/search", "K"),
+        ("shell:empty-desk/help", "/"),
+    ] {
+        assert_eq!(
+            node(&nodes, id)["keyboard_shortcut"],
+            chord_label(key),
+            "{id}"
+        );
+    }
+    // and the audit, told the chords, finds none of either missing
+    let report = native.update(|window, cx| {
+        let snap = |window: &mut Window, cx: &mut gpui_kit::App| {
+            draw(window, cx);
+            crate::ax::snapshot("shell", window, false)
+        };
+        let mut reading = crate::ax::audit::observe(window, cx, false, |_| true, snap);
+        reading.chords = crate::shell::chords();
+        crate::ax::audit::audit(&reading, false)
+    });
+    let missing: Vec<_> = report
+        .violations
+        .iter()
+        .filter(|violation| matches!(violation.rule, "AX-113" | "AX-114"))
+        .collect();
+    assert!(missing.is_empty(), "{missing:#?}");
+    assert!(report.applicable["AX-114"] >= 4, "{:?}", report.applicable);
+}

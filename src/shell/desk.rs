@@ -214,10 +214,31 @@ impl DesktopWindow {
                 .child(dress(crate::a11y::modal(card)))
                 .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
                 .into_any_element(),
-            false => backdrop
-                .track_focus(&self.modal)
-                .child(dress(card))
-                .into_any_element(),
+            // a menu's rows step with the arrows as with Tab, and stop at
+            // its ends
+            false => {
+                let modal = self.modal.clone();
+                backdrop
+                    .track_focus(&self.modal)
+                    .capture_key_down(move |event: &KeyDownEvent, window, cx| {
+                        let down = match event.keystroke.key.as_str() {
+                            "down" => true,
+                            "up" => false,
+                            _ => return,
+                        };
+                        let step = |window: &mut Window, cx: &mut App, down| match down {
+                            true => window.focus_next(cx),
+                            false => window.focus_prev(cx),
+                        };
+                        cx.stop_propagation();
+                        step(window, cx, down);
+                        if !modal.contains_focused(window, cx) {
+                            step(window, cx, !down);
+                        }
+                    })
+                    .child(dress(card))
+                    .into_any_element()
+            }
         }
     }
 
