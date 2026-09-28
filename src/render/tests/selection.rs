@@ -144,6 +144,55 @@ fn a_drag_across_a_linked_paragraph_selects_its_words(cx: &mut gpui_kit::TestApp
     );
 }
 
+/// Enter on a picked link is its click while words stay selected elsewhere:
+/// a selection tells a click that ended a drag from a click, and a key
+/// ends no drag.
+#[gpui_kit::test]
+fn enter_presses_the_picked_link_while_words_are_selected(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [paragraph("gamma", "gamma"), linked("alpha", "alpha beta")],
+    );
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |window, _| window.tree.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone());
+        })
+    });
+    native.update(|window, cx| window.render_frame(cx));
+    let (from, to) = (point(px(1.), px(10.)), point(px(40.), px(10.)));
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    native.simulate_mouse_up(to, MouseButton::Left, Default::default());
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(gpui_kit::base::TextSelection::has_selection(window, cx));
+        window.focus_next(cx);
+        window.render_frame(cx);
+        window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+    });
+    assert_eq!(
+        events.borrow().as_slice(),
+        [wire::Event::Select {
+            handler: 9,
+            index: 0
+        }]
+    );
+}
+
 #[gpui_kit::test]
 fn a_drag_down_a_pane_selects_its_lines_not_the_pane_beside_it(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

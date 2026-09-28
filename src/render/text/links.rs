@@ -26,8 +26,8 @@ pub(crate) struct Links {
 }
 
 /// A press on a range: the view's handler hears the range's click, as a
-/// real gesture, unless a text selection is what the press ended.
-pub(super) type Press = Rc<dyn Fn(usize, &mut Window, &mut App)>;
+/// real gesture.
+pub(super) type Press = Rc<dyn Fn(usize, &mut App)>;
 
 /// What the box hands the text inside it.
 pub(super) struct Linking {
@@ -74,16 +74,14 @@ impl ViewTree {
         let view = cx.entity().downgrade();
         let press: Press = {
             let view = view.clone();
-            Rc::new(move |index, window, cx| {
-                if !gpui_kit::base::TextSelection::has_selection(window, cx) {
-                    let _ = view.update(cx, |this, cx| {
-                        this.user_activation.set(Some(handler));
-                        cx.emit(wire::Event::Select {
-                            handler,
-                            index: index as u32,
-                        });
+            Rc::new(move |index, cx| {
+                let _ = view.update(cx, |this, cx| {
+                    this.user_activation.set(Some(handler));
+                    cx.emit(wire::Event::Select {
+                        handler,
+                        index: index as u32,
                     });
-                }
+                });
             })
         };
         let ids: Rc<RefCell<Vec<(u32, NodeId)>>> = Rc::default();
@@ -127,7 +125,7 @@ impl ViewTree {
                 })
                 .on_key_down({
                     let (view, press) = (view.clone(), press.clone());
-                    move |event: &KeyDownEvent, window, cx| {
+                    move |event: &KeyDownEvent, _, cx| {
                         let at = pick.get();
                         let to = match event.keystroke.key.as_str() {
                             "left" | "up" => at.saturating_sub(1),
@@ -136,7 +134,7 @@ impl ViewTree {
                             "end" => last,
                             "enter" => {
                                 cx.stop_propagation();
-                                press(at, window, cx);
+                                press(at, cx);
                                 return;
                             }
                             _ => return,

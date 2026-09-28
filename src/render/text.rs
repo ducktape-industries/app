@@ -358,9 +358,12 @@ impl ViewTree {
                 let (element, linking) =
                     self.linked_box(id.as_ref(), text, clickable_ranges, *handler, window, cx);
                 let press = linking.press.clone();
-                interactive = interactive
-                    .on_click(clickable_ranges.clone(), move |index, window, cx| {
-                        press(index, window, cx)
+                // a click that ended a drag selected words; it pressed nothing
+                interactive =
+                    interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
+                        if !gpui_kit::base::TextSelection::has_selection(window, cx) {
+                            press(index, cx)
+                        }
                     });
                 Some((element, linking))
             }
