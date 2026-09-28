@@ -64,6 +64,20 @@ impl DesktopWindow {
         cx.notify();
     }
 
+    /// A press on a row of empty window `index`: that window takes the keys
+    /// first, as a pointer's press on it does (`pane_drag::raise`), so the
+    /// program opens there, not in the window that had them.
+    pub(super) fn open_here(
+        &mut self,
+        index: usize,
+        module: &'static str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pane_message(PaneMessage::Focus(index), window, cx);
+        self.open_view(module, window, cx);
+    }
+
     /// A menu bar click, or a pick in an empty window: see `Layout::open`.
     pub(super) fn open_view(
         &mut self,
@@ -152,6 +166,7 @@ impl DesktopWindow {
             return self.empty_desk(moved, &ink, window, cx);
         }
         let props = self.model.read(cx).state.view_props();
+        let center = self.model.read(cx).state.center.clone();
         let this = cx.entity();
         let mut stage = div().id("panes").relative().size_full().child(
             canvas(
@@ -179,16 +194,20 @@ impl DesktopWindow {
             let pane = &layout.panes[index];
             let focused = index == layout.focused;
             let own = self.pane_focus(pane.instance, focused && moved, window, cx);
-            let view = self.pane_body(pane, focused, &own, &props, window, cx);
+            let view = self.pane_body(index, pane, focused, &own, &props, window, cx);
             // it holds the pane's keys when nothing in the view does; Tab
             // never lands on it, so it offers assistive technology no focus
-            // either (as the window's root)
+            // either (as the window's root). On the desk it names the chord
+            // that hands it the keys (`keys::FocusPane`).
             let view = crate::a11y::Patch::default()
                 .keys_fallback()
                 .on(div()
                     .id(SharedString::from(format!("pane/{index}/view")))
                     .role(gpui_kit::Role::Group)
                     .aria_label(label(pane.module))
+                    .when(self.kind == crate::shell::WindowKind::Console, |view| {
+                        view.aria_keyshortcuts(super::chord_label(&(index + 1).to_string()))
+                    })
                     .track_focus(&own))
                 .flex_1()
                 .min_h_0()
@@ -197,7 +216,7 @@ impl DesktopWindow {
             // Every window has a title bar, so a view owns all of its
             // rectangle: nothing floats over its corners.
             let title = self.pane_title_bar(index, &layout, &ink, window, cx);
-            let asking = (pane.is_view() && crate::runtime::notify::center().asking(pane.module))
+            let asking = (pane.is_view() && center.lock().asking(pane.module))
                 .then(|| self.permission_bar(pane.module, cx));
             let contents = [Some(title), asking, Some(view.into_any_element())]
                 .into_iter()
@@ -264,8 +283,10 @@ impl DesktopWindow {
 
     /// What a pane shows: its program view, told whether it is in front and
     /// given the session's props, or else the app's own Help or the finder.
+    #[allow(clippy::too_many_arguments, reason = "one pane, drawn")]
     fn pane_body(
         &mut self,
+        index: usize,
         pane: &layout::Pane,
         focused: bool,
         own: &gpui_kit::FocusHandle,
@@ -295,7 +316,7 @@ impl DesktopWindow {
                 if focused && own.is_focused(window) {
                     self.focus_command(window, cx);
                 }
-                self.command_view(focused, window, cx)
+                self.command_view(index, focused, window, cx)
             }
         }
     }

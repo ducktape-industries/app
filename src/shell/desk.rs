@@ -21,6 +21,7 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
+        self.menu_left(window, cx);
         let state = self.model.read(cx).state.facts();
         let rail = crate::runtime::rail();
         if rail.iter().any(|row| row.note == Some("Loading")) {
@@ -91,7 +92,10 @@ impl DesktopWindow {
             .panes
             .get(layout.focused)
             .map_or(layout::EMPTY, |pane| pane.module);
-        crate::runtime::notify::center().set_front(self.key, window.is_window_active(), focused);
+        state
+            .center
+            .lock()
+            .set_front(self.key, window.is_window_active(), focused);
         let console = self.kind == crate::shell::WindowKind::Console;
         let bar = console.then(|| self.menubar(&state, &rail, narrow, window, cx));
         let seat = self.pane_stage(window, cx);
@@ -110,10 +114,11 @@ impl DesktopWindow {
         if state.overlay != Some(Overlay::Spotlight) {
             self.spotlight_focused = false;
         }
-        // Whatever opens takes the keys (its backdrop holds `modal`),
-        // unless something in it already did, as Spotlight's field does;
-        // one giving way to the next hands them on. The last to close gives
-        // them back to what had them before the first opened.
+        // Whatever opens takes the keys (its backdrop holds `modal`, or a
+        // menu's `menu`), unless something in it already did, as
+        // Spotlight's field does; one giving way to the next hands them on.
+        // The last to close gives them back to what had them before the
+        // first opened, unless they left a menu and closed it.
         let open = state.overlay.filter(|_| console);
         if open != self.covered {
             match (self.covered, open) {
@@ -125,8 +130,11 @@ impl DesktopWindow {
                 }
                 _ => {}
             }
-            if open.is_some() {
-                let modal = self.modal.clone();
+            if let Some(open) = open {
+                let modal = match open {
+                    Overlay::Network | Overlay::Menu(_) => self.menu.clone(),
+                    _ => self.modal.clone(),
+                };
                 window.defer(cx, move |window, cx| {
                     if !modal.contains_focused(window, cx) {
                         modal.focus(window, cx);
@@ -154,9 +162,11 @@ impl DesktopWindow {
     /// canvas dresses its menus and dialogs in, `border: 1.5px solid ink`
     /// and a soft shadow. `dress` places and fills the card. Escape closes
     /// it through `keys::CloseOverlay` (bound under the `overlay` context).
-    /// The backdrop holds `modal`, the handle the keys enter it by
-    /// (`desk_view`). Dimmed, it is modal: Tab and Shift+Tab go round its
-    /// controls, never out to the bar.
+    /// The backdrop holds the handle the keys enter it by (`desk_view`).
+    /// Dimmed, it is modal, on `modal`: Tab and Shift+Tab go round its
+    /// controls, never out to the bar. Not dimmed, it is a menu, on `menu`:
+    /// the keys may leave it, and it closes when they do
+    /// (`DesktopWindow::menu_left`).
     #[allow(clippy::too_many_arguments, reason = "one frame, five overlays")]
     pub(super) fn overlay(
         &self,
@@ -217,9 +227,9 @@ impl DesktopWindow {
             // a menu's rows step with the arrows as with Tab, and stop at
             // its ends
             false => {
-                let modal = self.modal.clone();
+                let modal = self.menu.clone();
                 backdrop
-                    .track_focus(&self.modal)
+                    .track_focus(&self.menu)
                     .capture_key_down(move |event: &KeyDownEvent, window, cx| {
                         let down = match event.keystroke.key.as_str() {
                             "down" => true,

@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use super::center::center;
+use super::center::Center;
 use crate::backend::{read_prefs, write_prefs};
 
 /// The prefs keys, device-global like `appearance`.
@@ -98,20 +98,19 @@ pub(crate) fn save_burst(burst: u32) {
 }
 
 /// The person answered a view: its bar goes, and the word is kept.
-pub(crate) fn set_permission(module: &str, permission: Permission) {
+pub(crate) fn set_permission(center: &mut Center, module: &str, permission: Permission) {
     edit_prefs(|prefs| {
         if !prefs[VIEWS_PREF].is_object() {
             prefs[VIEWS_PREF] = serde_json::json!({});
         }
         prefs[VIEWS_PREF][module] = serde_json::json!(permission.word());
     });
-    center().asking.remove(module);
+    center.asking.remove(module);
 }
 
 /// "Not now": the bar goes for this run; the view's notices stay logged
 /// silently, and the bar asks again next launch.
-pub(crate) fn not_now(module: &str) {
-    let mut center = center();
+pub(crate) fn not_now(center: &mut Center, module: &str) {
     center.asking.remove(module);
     center.not_now.insert(module.to_owned());
 }

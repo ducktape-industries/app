@@ -52,6 +52,9 @@ pub struct TextEditor {
     cap: Option<usize>,
     /// the node's mapping; the field's text is added as its value
     accessible: crate::render::Accessible,
+    /// Esc let go of Tab: the next Tab leaves the field instead of
+    /// indenting. Any other key takes it back.
+    tab_released: bool,
     _observation: Subscription,
     _keystrokes: Subscription,
 }
@@ -94,6 +97,7 @@ impl TextEditor {
             fills: true,
             cap: None,
             accessible: Default::default(),
+            tab_released: false,
             _observation: observation,
             _keystrokes: keystrokes,
         };
@@ -295,13 +299,16 @@ impl TextEditor {
     /// else — every arrow, every Backspace, every selection — belongs to the
     /// editing engine, and taking one of those away is how an editor stops
     /// being one.
+    ///
+    /// Esc lets go of Tab for the next key, whatever else it does: the guest
+    /// that claimed it still hears it, and the field and the view still see
+    /// it pass (owner, 2026-09-28; AX-022).
     fn key_down(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.is_focused(window, cx) {
+        if !self.is_focused(window, cx) || self.composing(window, cx) {
+            self.tab_released = false;
             return;
         }
-        if self.composing(window, cx) {
-            return;
-        }
+        let released = std::mem::replace(&mut self.tab_released, keystroke.key == "escape");
         let key = wire::keyboard::KeyState::from(keystroke);
         let claimed = self
             .projection
@@ -322,7 +329,9 @@ impl TextEditor {
             cx.emit(());
             return;
         }
-        self.tab(keystroke, window, cx);
+        if !released {
+            self.tab(keystroke, window, cx);
+        }
     }
 
     /// Tab, which the writer means as an indent and the field would otherwise
@@ -330,7 +339,8 @@ impl TextEditor {
     /// not run it here — it is switched off for a field that grows with its
     /// text, which is every guest editor — so the keystroke walks on to the
     /// window's focus ring and the caret never sees it. Type the indent
-    /// instead, exactly as if the two spaces had been pressed.
+    /// instead, exactly as if the two spaces had been pressed. Right after
+    /// Esc it is not called, and Tab walks on.
     fn tab(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         let tab = keystroke.key == "tab";
         let plain = !keystroke.modifiers.control

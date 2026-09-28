@@ -82,7 +82,7 @@ impl DesktopWindow {
             );
             let border = match failed {
                 true => ink.danger,
-                false => ink.strong,
+                false => ink.field,
             };
             self.field(
                 "password-label",

@@ -282,7 +282,7 @@ impl DesktopWindow {
                 let module = row.module;
                 let name = super::menubar::tab_label(&row);
                 let chosen = settings.views.get(module).copied();
-                let week = notify::center().this_week(module, now);
+                let week = state.center.lock().this_week(module, now);
                 let hint = match week {
                     0 => "None yet".to_owned(),
                     week => format!("{week} this week"),
