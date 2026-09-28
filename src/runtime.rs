@@ -72,7 +72,7 @@ use wire::methods::Capability;
 /// One desktop window, as the shell and the notification policy (which
 /// window is in front) name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct WindowKey(u64);
+pub(crate) struct WindowKey(pub(crate) u64);
 
 impl WindowKey {
     pub(crate) fn unique() -> Self {
