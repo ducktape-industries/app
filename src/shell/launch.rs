@@ -125,14 +125,16 @@ pub(crate) fn run() {
 }
 
 /// With `perf-deep` and perf on: gpui's first present as the
-/// `first_present` mark, and its hang incidents as a count, read off the
-/// foreground journal once a second. A default build has no journal.
+/// `first_present` mark, read off the foreground journal once a second
+/// until it lands. A default build has no journal.
 #[cfg(feature = "perf-deep")]
 fn first_present(cx: &mut gpui_kit::App) {
     use std::time::Duration;
     if !crate::perf::on() {
         return;
     }
+    // only its first-present latch is read; the thresholds are its hang
+    // rules, which nothing here reports
     let mut detector = gpui_kit::hang::HangDetector::new(
         cx.foreground_journal(),
         Duration::from_millis(100),
@@ -141,12 +143,10 @@ fn first_present(cx: &mut gpui_kit::App) {
     cx.spawn(async move |cx: &mut AsyncApp| {
         loop {
             cx.background_executor().timer(Duration::from_secs(1)).await;
-            let hangs = detector.poll().len() as u64;
-            if hangs > 0 {
-                crate::perf::count(crate::perf::Key::Shell, "gpui_hangs", hangs);
-            }
+            detector.poll();
             if let Some(at) = detector.first_present_at() {
                 crate::perf::mark_at("first_present", at);
+                return;
             }
         }
     })

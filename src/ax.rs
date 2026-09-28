@@ -550,8 +550,9 @@ fn perf_reply(by_instance: bool, windows: &[ServedPerf]) -> Reply {
 }
 
 /// gpui's frame and input histograms for one window, `perf-deep` only: the
-/// end-to-end frame time (dirty to present) and input-to-frame latency the
-/// registry cannot see.
+/// end-to-end frame time (dirty to present), the draw, the present
+/// interval and the input-to-frame latency the registry cannot see. They
+/// cover the window's life: `POST /perf/reset` does not reach them.
 #[cfg(feature = "perf-deep")]
 fn gpui_perf(window: &Window) -> serde_json::Value {
     // the histograms hold nanoseconds; gpui does not re-export their type
@@ -574,8 +575,6 @@ fn gpui_perf(window: &Window) -> serde_json::Value {
             "present_interval": us!(frames.present_interval_histogram),
             "input_latency": us!(input.latency_histogram),
         },
-        "events_per_frame_max": input.events_per_frame_histogram.max(),
-        "mid_draw_events_dropped": input.mid_draw_events_dropped,
     })
 }
 
