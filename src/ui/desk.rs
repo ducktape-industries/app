@@ -135,6 +135,10 @@ impl Ducktape {
                 if self.focused_win == Some(key) {
                     self.focused_win = None;
                 }
+                // the keys left the window: a hold on one of its panes ends
+                if let Some(layout) = self.layouts.get_mut(&key) {
+                    layout.held = None;
+                }
                 Task::none()
             }
             Message::ModifierStateChanged(modifiers) => {

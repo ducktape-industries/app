@@ -113,6 +113,7 @@ impl DesktopWindow {
             menu_held: false,
             pane_keys: HashMap::new(),
             panes_moved: false,
+            holding: None,
             front: None,
             bar_buttons: Default::default(),
             rail: Default::default(),

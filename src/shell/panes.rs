@@ -163,6 +163,7 @@ impl DesktopWindow {
         let layout = self.layout(cx);
         let moved = self.keys_move(&layout, cx);
         if layout.panes.is_empty() {
+            self.sync_hold(&layout, window, cx);
             return self.empty_desk(moved, &ink, window, cx);
         }
         let props = self.model.read(cx).state.view_props();
@@ -190,9 +191,16 @@ impl DesktopWindow {
         }
         self.pane_keys
             .retain(|instance, _| layout.panes.iter().any(|pane| pane.instance == *instance));
+        // before the windows are seated, so a window coming to the front
+        // has the keys after the hold gives them back, not before
+        self.sync_hold(&layout, window, cx);
         for index in layout.stacking() {
             let pane = &layout.panes[index];
             let focused = index == layout.focused;
+            let held = layout
+                .held
+                .is_some_and(|held| held.instance == pane.instance)
+                && self.kind == crate::shell::WindowKind::Console;
             let own = self.pane_focus(pane.instance, focused && moved, window, cx);
             let view = self.pane_body(index, pane, focused, &own, &props, window, cx);
             // it holds the pane's keys when nothing in the view does; Tab
@@ -207,6 +215,23 @@ impl DesktopWindow {
                     .aria_label(label(pane.module))
                     .when(self.kind == crate::shell::WindowKind::Console, |view| {
                         view.aria_keyshortcuts(super::chord_label(&(index + 1).to_string()))
+                    })
+                    // a held window's keys are the hold's (`pane_hold.rs`)
+                    .when(held, |view| {
+                        view.key_context("hold")
+                            .on_key_down(cx.listener(move |this, event, _, cx| {
+                                this.held_key(index, event, cx)
+                            }))
+                            .child(
+                                crate::a11y::live(
+                                    div().id("hold-say").role(Role::Status),
+                                    accesskit::Live::Polite,
+                                    pane_hold::hold_words(pane.module),
+                                )
+                                .absolute()
+                                .size(px(1.))
+                                .overflow_hidden(),
+                            )
                     })
                     .track_focus(&own))
                 .flex_1()
@@ -257,11 +282,13 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::FocusHandle {
+        let holding = self.holding.is_some();
         let (own, last) = self
             .pane_keys
             .entry(instance)
             .or_insert_with(|| (cx.focus_handle(), None));
-        if own.contains_focused(window, cx) {
+        // the box of a held window has the keys, and nothing in it does
+        if own.contains_focused(window, cx) && !holding {
             *last = window.focused(cx);
         }
         let (own, last) = (own.clone(), last.clone());
@@ -313,7 +340,7 @@ impl DesktopWindow {
             None if pane.module == layout::HELP => self.help_view(cx),
             None => {
                 // the bare window box has the keys: the field takes them
-                if focused && own.is_focused(window) {
+                if focused && own.is_focused(window) && self.holding.is_none() {
                     self.focus_command(window, cx);
                 }
                 self.command_view(index, focused, window, cx)
@@ -418,6 +445,10 @@ impl DesktopWindow {
         let focused = index == layout.focused;
         let multi = layout.panes.len() > 1;
         let on_desk = self.kind == crate::shell::WindowKind::Console && pane.frame.is_some();
+        let held = on_desk
+            && layout
+                .held
+                .is_some_and(|held| held.instance == pane.instance);
         let body = div()
             .id(SharedString::from(format!("pane/{index}")))
             .flex()
@@ -447,7 +478,17 @@ impl DesktopWindow {
                     })
                     .when(focused, |pane| pane.shadow_lg())
                     .when(!focused, |pane| pane.shadow_sm())
-                    .children(contents);
+                    .children(contents)
+                    // the keyboard holds it (`pane_hold.rs`): the focus ring
+                    // on its border, over the title bar
+                    .when(held, |pane| {
+                        pane.child(
+                            div()
+                                .absolute()
+                                .size_full()
+                                .shadow(vec![crate::a11y::ring()]),
+                        )
+                    });
                 div()
                     .absolute()
                     .left(px(frame.x - grab))

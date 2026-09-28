@@ -85,6 +85,14 @@ impl Ducktape {
                 layout.set_frame(index, frame, desk);
                 sets_active = false;
             }
+            PaneMessage::Hold(index) => {
+                layout.hold(index);
+                sets_active = false;
+            }
+            PaneMessage::Release { keep } => {
+                layout.release(keep, desk);
+                sets_active = false;
+            }
         }
         if let Some(layout) = self.layouts.get_mut(&key) {
             layout.settle();
@@ -94,6 +102,22 @@ impl Ducktape {
             }
         }
         task
+    }
+
+    /// The console's window in front and its place on the desk: what a
+    /// window command (Fill, Move or size) acts on, once it has a frame.
+    pub(crate) fn framed_pane(&self) -> Option<(WindowKey, usize)> {
+        let key = self.console_win?;
+        let layout = self.layouts.get(&key)?;
+        let pane = layout.panes.get(layout.focused)?;
+        pane.frame.map(|_| (key, layout.focused))
+    }
+
+    /// The keyboard lets go of every window it holds, each where it is.
+    pub(super) fn let_go_of_holds(&mut self) {
+        for layout in self.layouts.values_mut() {
+            layout.held = None;
+        }
     }
 
     /// Help on the desk: into the focused window if it is empty, else

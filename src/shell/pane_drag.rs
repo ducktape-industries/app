@@ -157,6 +157,16 @@ impl Sides {
         right: false,
         bottom: false,
     };
+    /// The right edge: the keyboard sizes a window's width by it.
+    pub(super) const RIGHT: Sides = Sides {
+        right: true,
+        ..Sides::NONE
+    };
+    /// The bottom edge: the keyboard sizes a window's height by it.
+    pub(super) const BOTTOM: Sides = Sides {
+        bottom: true,
+        ..Sides::NONE
+    };
 }
 
 /// A window held by the pointer.
@@ -175,7 +185,12 @@ impl Drag {
     /// edges stop at the pane's floor, or at the desk's width where the
     /// desk is narrower: the frame is capped there, and an edge held past
     /// it would carry the whole window.
-    fn of(layout: &layout::Layout, index: usize, sides: Sides, from: (f32, f32)) -> Option<Self> {
+    pub(super) fn of(
+        layout: &layout::Layout,
+        index: usize,
+        sides: Sides,
+        from: (f32, f32),
+    ) -> Option<Self> {
         let pane = layout.panes.get(index)?;
         let desk = layout.desk().0.max(layout::MIN_WIDTH);
         Some(Self {
@@ -190,7 +205,7 @@ impl Drag {
     /// The frame with the pointer at `to`. A side held past the window's
     /// narrowest (or the smallest window's height) stops; the side across
     /// from it stays put.
-    fn frame(&self, to: (f32, f32)) -> layout::Frame {
+    pub(super) fn frame(&self, to: (f32, f32)) -> layout::Frame {
         let (dx, dy) = (to.0 - self.from.0, to.1 - self.from.1);
         let start = self.start;
         let Sides {
@@ -245,7 +260,11 @@ pub(super) fn raise(
             // a press on something open over the desk is not on a window
             let covered = this.kind == crate::shell::WindowKind::Console
                 && this.model.read(cx).state.overlay.is_some();
+            // a press ends the hold the keyboard has on a window, as it is
             let layout = this.layout(cx);
+            if layout.held.is_some() {
+                this.hold_message(PaneMessage::Release { keep: true }, cx);
+            }
             let Some(index) = layout.under(at).filter(|_| !covered) else {
                 return;
             };

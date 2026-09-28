@@ -1,6 +1,7 @@
 //! What opens over the desk: Spotlight, Settings, the network switcher,
 //! the bar's menus, and closing each.
 
+use super::layout::PaneMessage;
 use super::{AppMessage as Message, Appearance, Ducktape, Overlay, Spot, SpotRow};
 use crate::ui::task::Task;
 
@@ -53,6 +54,18 @@ impl Ducktape {
                     Spot::Appearance(mode) => Message::SetAppearance(mode),
                     Spot::OtherNetwork => Message::Disconnect,
                     Spot::Help => Message::OpenHelp,
+                    Spot::FillWindow | Spot::HoldWindow => {
+                        let Some((key, index)) = self.framed_pane() else {
+                            return Task::none();
+                        };
+                        Message::Pane(
+                            key,
+                            match spot {
+                                Spot::FillWindow => PaneMessage::Fill(index),
+                                _ => PaneMessage::Hold(index),
+                            },
+                        )
+                    }
                 };
                 self.update(message)
             }
@@ -167,6 +180,14 @@ impl Ducktape {
                 "this device's key".into(),
                 Spot::Lock,
             ));
+        }
+        if self.framed_pane().is_some() {
+            for (title, spot) in [
+                ("Fill window", Spot::FillWindow),
+                ("Move or size window", Spot::HoldWindow),
+            ] {
+                rows.push(row("Actions", title.into(), "this desk".into(), spot));
+            }
         }
         for (title, mode) in [
             ("Light appearance", Appearance::Light),

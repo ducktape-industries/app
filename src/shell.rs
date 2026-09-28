@@ -52,6 +52,9 @@ mod menus;
 mod mount;
 mod notifications;
 mod pane_drag;
+mod pane_hold;
+#[cfg(test)]
+mod pane_hold_tests;
 mod panes;
 #[cfg(test)]
 mod panes_tests;
@@ -88,11 +91,19 @@ pub(crate) enum WindowKind {
 }
 
 /// How the platform writes a command chord: "⌘K" on a Mac, "Ctrl K"
-/// elsewhere.
+/// elsewhere. A key led by ⇧ is with Shift ("⌘⇧M", "Ctrl Shift M"), and ↩
+/// is Enter where the key has no such glyph.
 pub(crate) fn chord_label(key: &str) -> String {
-    match cfg!(target_os = "macos") {
-        true => format!("⌘{key}"),
-        false => format!("Ctrl {key}"),
+    let mac = cfg!(target_os = "macos");
+    let (shift, key) = match key.strip_prefix('⇧') {
+        Some(key) => (true, key),
+        None => (false, key),
+    };
+    match (mac, shift) {
+        (true, false) => format!("⌘{key}"),
+        (true, true) => format!("⌘⇧{key}"),
+        (false, false) => format!("Ctrl {key}"),
+        (false, true) => format!("Ctrl Shift {}", key.replace('↩', "Enter")),
     }
 }
 
@@ -616,6 +627,8 @@ pub(crate) struct DesktopWindow {
     /// focused one.
     panes_moved: bool,
     front: Option<u64>,
+    /// The keyboard holds the window in front (⌘⇧M): see `pane_hold.rs`.
+    holding: Option<pane_hold::Holding>,
     /// Where the bar's menu buttons were last painted: each menu hangs
     /// under its own.
     bar_buttons: HashMap<crate::Overlay, gpui_kit::Bounds<gpui_kit::Pixels>>,

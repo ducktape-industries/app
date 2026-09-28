@@ -15,6 +15,10 @@ impl Ducktape {
     pub(crate) fn handle(&mut self, message: Message) -> Task<Message> {
         let launcher = self.in_launcher();
         let task = self.update(message);
+        // a window the keyboard held is let go of where an overlay opens
+        if self.overlay.is_some() {
+            self.let_go_of_holds();
+        }
         match launcher == self.in_launcher() {
             true => task,
             false => Task::batch([task, crate::shell::swap_console()]),

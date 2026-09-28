@@ -63,6 +63,10 @@ impl DesktopWindow {
             )
             .control(Role::Tab, SharedString::from(name))
             .aria_selected(selected)
+            .aria_description(format!(
+                "Shift+{} shows it in this window",
+                pane_hold::keep_key()
+            ))
             .h(px(BAR))
             .flex_shrink_0()
             .flex()
@@ -81,6 +85,16 @@ impl DesktopWindow {
                 match event.modifiers().shift {
                     true => this.pane_message(PaneMessage::Select(module), window, cx),
                     false => this.open_view(module, window, cx),
+                }
+            }))
+            // the keyboard's shift-click: a press with Shift is no click
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, window, cx| {
+                let stroke = &event.keystroke;
+                if stroke.modifiers == Modifiers::shift()
+                    && matches!(stroke.key.as_str(), "enter" | "space")
+                {
+                    cx.stop_propagation();
+                    this.pane_message(PaneMessage::Select(module), window, cx);
                 }
             }))
             .child(shown)

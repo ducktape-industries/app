@@ -6,8 +6,15 @@
 use super::*;
 
 /// The controls Help lists with a chord, each with the key the platform's
-/// modifier goes with: each reports its chord (AX-114).
-const CHORDED: [(&str, &str); 3] = [("New window", "N"), ("Search", "K"), ("Help", "/")];
+/// modifier goes with (⇧ leading it: with Shift): each reports its chord
+/// (AX-114). "Fill window" and "Move or size window" are Search's rows.
+const CHORDED: [(&str, &str); 5] = [
+    ("New window", "N"),
+    ("Search", "K"),
+    ("Help", "/"),
+    ("Fill window", "⇧↩"),
+    ("Move or size window", "⇧M"),
+];
 
 /// `(control name, chord)` for each control Help lists with a chord, as
 /// the platform writes the chord: what the audit is told (AX-114).
@@ -74,6 +81,16 @@ impl DesktopWindow {
              arrow moves the window out into one of its own (its arrow brings it \
              back), and × closes it."
                 .to_owned(),
+            format!(
+                "{} fills the desk with the window you are in; {} lets the arrows \
+                 move it ({} sizes it).",
+                chord_label("⇧↩"),
+                chord_label("⇧M"),
+                match cfg!(target_os = "macos") {
+                    true => "⌥",
+                    false => "Alt",
+                }
+            ),
         ];
         let bar = [
             "Left to right: the network's name, to switch networks; the programs; \
@@ -81,6 +98,11 @@ impl DesktopWindow {
              doing; your name, for the account menu; and the gear, for Ducktape's \
              settings (appearance, notifications, networks)."
                 .to_owned(),
+            format!(
+                "Shift-click a program's name, or press Shift+{} on it, to show it \
+                 in the window you are in.",
+                super::pane_hold::keep_key()
+            ),
         ];
         let account = [
             "The key that signs for you is kept by this device's system. The \
@@ -102,6 +124,8 @@ impl DesktopWindow {
             (w, "Close the window"),
             (chord_label("`"), "The next window"),
             (chord_label("1–9"), "A window by its place"),
+            (chord_label("⇧↩"), "Fill the desk with this window"),
+            (chord_label("⇧M"), "Move this window with the arrows"),
             (chord_label("/"), "This help"),
             ("Esc".to_owned(), "Close search, a menu or settings"),
             (
@@ -122,7 +146,7 @@ impl DesktopWindow {
                 .border_color(ink.line)
                 .child(
                     mono(400, 12.)
-                        .w(px(104.))
+                        .w(px(128.))
                         .flex_shrink_0()
                         .text_color(ink.ink)
                         .child(words(SharedString::from(format!("keys/{n}/chord")), chord)),

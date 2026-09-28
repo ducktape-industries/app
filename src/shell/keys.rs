@@ -30,6 +30,10 @@ gpui_kit::actions!(
         CycleForward,
         /// ⌘⇧` / ctrl-shift-tab: the previous one.
         CycleBack,
+        /// ⌘⇧↩: the window in front fills the desk, or goes back.
+        FillPane,
+        /// ⌘⇧M: the arrows move the window in front (⌥ sizes it).
+        HoldPane,
         /// ⌘K.
         ToggleSpotlight,
         /// ⌘/: the app's help, in a window on the desk.
@@ -57,6 +61,8 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-n", NewWindow, DESK),
         KeyBinding::new("secondary-/", OpenHelp, DESK),
         KeyBinding::new("secondary-w", CloseWindow, Some(CONTEXT)),
+        KeyBinding::new("secondary-shift-enter", FillPane, DESK),
+        KeyBinding::new("secondary-shift-m", HoldPane, DESK),
         KeyBinding::new("secondary-`", CycleForward, DESK),
         KeyBinding::new("secondary-~", CycleForward, DESK),
         KeyBinding::new("secondary-shift-`", CycleBack, DESK),
@@ -94,6 +100,9 @@ pub(crate) fn menus(cx: &mut gpui_kit::App) {
         Menu::new("Window").items([
             MenuItem::action("New Window", NewWindow),
             MenuItem::action("Close", CloseWindow),
+            MenuItem::separator(),
+            MenuItem::action("Fill", FillPane),
+            MenuItem::action("Move or Size", HoldPane),
             MenuItem::separator(),
             MenuItem::action("Next Window", CycleForward),
             MenuItem::action("Previous Window", CycleBack),
@@ -142,6 +151,8 @@ impl DesktopWindow {
             .on_action(cx.listener(|this, _: &NewWindow, window, cx| {
                 this.pane_message(PaneMessage::Split(layout::EMPTY), window, cx)
             }))
+            .on_action(cx.listener(|this, _: &FillPane, window, cx| this.fill_pane(window, cx)))
+            .on_action(cx.listener(|this, _: &HoldPane, _, cx| this.hold_pane(cx)))
             .on_action(cx.listener(|this, _: &CycleForward, window, cx| {
                 this.pane_message(PaneMessage::Cycle { forward: true }, window, cx)
             }))
@@ -233,6 +244,32 @@ mod tests {
             Some("desk::CloseOverlay")
         );
         assert_eq!(resolve("escape", &[desk], cx), None);
+    }
+
+    /// ⌘⇧↩ fills and ⌘⇧M holds, on the desk only, and neither takes the
+    /// plain keys of the chords they sit beside.
+    #[gpui_kit::test]
+    fn the_pane_chords_answer_on_the_desk_only(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(bind);
+        let desk = "Ducktape console on_desk desk";
+        for (stroke, action) in [
+            ("secondary-shift-enter", "desk::FillPane"),
+            ("secondary-shift-m", "desk::HoldPane"),
+        ] {
+            assert_eq!(resolve(stroke, &[desk], cx).as_deref(), Some(action));
+            assert_eq!(resolve(stroke, &["Ducktape console"], cx), None);
+            assert_eq!(
+                resolve(stroke, &["Ducktape console on_desk overlay"], cx),
+                None,
+                "an overlay keeps its keys"
+            );
+        }
+        assert_eq!(resolve("secondary-enter", &[desk], cx), None);
+        assert_eq!(resolve("secondary-m", &[desk], cx), None);
+        assert_eq!(
+            resolve("secondary-shift-m", &[desk, "hold"], cx).as_deref(),
+            Some("desk::HoldPane")
+        );
     }
 
     /// Tab in an empty window switches to agent chat only once chat is
