@@ -384,12 +384,19 @@ fn ax_021_every_focus_stop_is_reached() {
 
 /// A box the keys went into is reached: a rich text's box has the keys
 /// while its picked link, a node offering no focus of its own, is the one
-/// focused. A stop beside it that Tab never lands on is not.
+/// focused. A stop beside it or around it that Tab never lands on is not:
+/// the keys are on the link's nearest ancestor that offers focus.
 #[test]
 fn ax_021_a_box_holding_the_keys_through_its_picked_link_is_reached() {
+    let card = || {
+        let mut card = node("card", "Group", "A note");
+        card.actions = vec!["focus"];
+        card
+    };
     let text = || {
         let mut text = node("text", "Group", "Read the docs");
         text.actions = vec!["focus"];
+        text.more.parent = Some("w:card".into());
         text
     };
     let link = || {
@@ -399,11 +406,11 @@ fn ax_021_a_box_holding_the_keys_through_its_picked_link_is_reached() {
         link
     };
     let report = walk(vec![
-        vec![text(), link(), button("b", "B")],
-        vec![text(), focused(link()), button("b", "B")],
-        vec![text(), focused(link()), button("b", "B")],
+        vec![card(), text(), link(), button("b", "B")],
+        vec![card(), text(), focused(link()), button("b", "B")],
+        vec![card(), text(), focused(link()), button("b", "B")],
     ]);
-    assert_eq!(fails(&report, "AX-021"), ["w:b"]);
+    assert_eq!(fails(&report, "AX-021"), ["w:b", "w:card"]);
 }
 
 /// A stop the state opened on and Tab never lands on again is not reached.

@@ -116,7 +116,7 @@ pub(crate) const RULES: [Rule; 42] = [
     rule(
         "AX-021",
         Error,
-        "Every node offering focus in the first snapshot is focused once in the walk, or holds them through a node inside it that offers no focus of its own, or had the keys as a dialog or menu the walk closed opened.",
+        "Every node offering focus in the first snapshot is focused once in the walk, or is the nearest node offering focus above a focused node that offers none (the keys are in it), or had the keys as a dialog or menu the walk closed opened.",
     ),
     rule(
         "AX-022",
@@ -841,8 +841,9 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             .any(|nodes| nodes.iter().all(|other| other.id != id))
     };
     // a focused node that offers no focus of its own is the active
-    // descendant of the node that has the keys (a rich text's picked link,
-    // under the box around the text): every ancestor of it was reached
+    // descendant of the node that has the keys, its nearest ancestor that
+    // offers focus (a rich text's picked link, under the box around the
+    // text): that ancestor was reached
     let mut through = std::collections::HashSet::new();
     for nodes in &snapshots[1..] {
         let snapshot = Snapshot::of(nodes);
@@ -850,7 +851,12 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             .iter()
             .filter(|node| has(node, "focused") && !offers(node, "focus"))
         {
-            through.extend(snapshot.ancestors(node).map(|above| above.id.as_str()));
+            through.extend(
+                snapshot
+                    .ancestors(node)
+                    .find(|above| offers(above, "focus"))
+                    .map(|above| above.id.as_str()),
+            );
         }
     }
     for node in first.iter().filter(|node| walked && offers(node, "focus")) {
