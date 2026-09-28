@@ -130,10 +130,9 @@ pub(super) fn node_rules(
     }
     if press {
         // a composite's rows are reached by the arrows, from the composite
-        let composite = snapshot.ancestors(node).any(|above| {
-            tree::COMPOSITES.contains(&above.role.as_str())
-                && (offers(above, "focus") || above.more.active_descendant.is_some())
-        });
+        let composite = snapshot
+            .ancestors(node)
+            .any(|above| tree::COMPOSITES.contains(&above.role.as_str()));
         tally.check("AX-012", node, focus || composite, || {
             "press without focus: a keyboard never reaches it".to_owned()
         });

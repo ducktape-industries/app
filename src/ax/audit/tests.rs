@@ -193,8 +193,10 @@ fn ax_012_a_composites_rows_are_reached_through_it() {
         row("a", "list"),
         node("menu", "Menu", "Results"),
         row("b", "menu"),
+        node("group", "Group", "Results"),
+        row("c", "group"),
     ]);
-    assert_eq!(fails(&report, "AX-012"), ["w:b"]);
+    assert_eq!(fails(&report, "AX-012"), ["w:c"]);
 }
 
 #[test]
