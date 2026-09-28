@@ -57,17 +57,19 @@ impl Replies {
         self.changed.subscribe()
     }
 
+    /// Answers how many were waiting: the backlog at this drain.
     pub(in crate::runtime) fn drain_into(
         &self,
         pending: &mut Vec<wire::Event>,
-    ) -> Result<(), String> {
+    ) -> Result<usize, String> {
         let mut events = self.events.lock().expect("kernel replies");
         if let Some(fault) = self.fault() {
             return Err(fault);
         }
+        let backlog = events.len();
         pending.append(&mut events);
         self.drained.send_replace(());
-        Ok(())
+        Ok(backlog)
     }
 
     /// Told on every drain: what a parked subscription waits on.

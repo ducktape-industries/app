@@ -306,6 +306,7 @@ impl Center {
 
     // ponytail: the whole log rewritten on each change, 500 small rows at most
     fn save(&self) {
+        let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
         let Some(path) = log_path(&self.network) else {
             return;
         };

@@ -13,12 +13,15 @@ pub(crate) fn run() {
         let _ = url_sender.unbounded_send(urls);
     });
     application.run(move |cx| {
+        crate::perf::mark("gpui");
         gpui_kit::init(cx);
         keys::bind(cx);
         keys::menus(cx);
         initialize_rendering(cx);
+        crate::perf::mark("fonts");
         let mut commands = commands();
         let (state, initial) = Ducktape::boot();
+        crate::perf::mark("boot");
         let (mut tray, mut tray_events) = crate::tray::init(cx);
         tray.sync(&state);
         let desktop = cx.new(|_| Desktop::new(state, tray));
@@ -86,6 +89,7 @@ pub(crate) fn run() {
             desktop.start(initial, cx).detach();
             desktop.subscriptions(cx);
         });
+        first_present(cx);
         if let Some(calls) = crate::ax::open() {
             let door_desktop = desktop.downgrade();
             cx.spawn(async move |cx: &mut AsyncApp| {
@@ -112,11 +116,45 @@ pub(crate) fn run() {
         let mut desktop = Some(desktop);
         cx.on_app_quit(move |_| {
             drop(desktop.take());
+            // the one hook every quit path reaches
+            crate::perf::summary();
             async {}
         })
         .detach();
     });
 }
+
+/// With `perf-deep` and perf on: gpui's first present as the
+/// `first_present` mark, read off the foreground journal once a second
+/// until it lands. A default build has no journal.
+#[cfg(feature = "perf-deep")]
+fn first_present(cx: &mut gpui_kit::App) {
+    use std::time::Duration;
+    if !crate::perf::on() {
+        return;
+    }
+    // only its first-present latch is read; the thresholds are its hang
+    // rules, which nothing here reports
+    let mut detector = gpui_kit::hang::HangDetector::new(
+        cx.foreground_journal(),
+        Duration::from_millis(100),
+        Duration::from_millis(16),
+    );
+    cx.spawn(async move |cx: &mut AsyncApp| {
+        loop {
+            cx.background_executor().timer(Duration::from_secs(1)).await;
+            detector.poll();
+            if let Some(at) = detector.first_present_at() {
+                crate::perf::mark_at("first_present", at);
+                return;
+            }
+        }
+    })
+    .detach();
+}
+
+#[cfg(not(feature = "perf-deep"))]
+fn first_present(_: &mut gpui_kit::App) {}
 
 /// The bundled fonts into gpui's text system, then the product theme.
 pub(super) fn initialize_rendering(cx: &mut gpui_kit::App) {

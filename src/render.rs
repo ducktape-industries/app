@@ -176,6 +176,9 @@ pub struct ViewTree {
     user_activation: std::cell::Cell<Option<u32>>,
     /// The pane box this tree is clipped to, for its tooltip windows.
     slot_mask: tooltip_containment::SlotMask,
+    /// The seat this tree draws for, once a widget owns it: its renders and
+    /// their time are counted there (docs/perf.md).
+    perf_key: Option<crate::perf::Key>,
     #[cfg(test)]
     renders: u64,
 }
@@ -211,9 +214,16 @@ impl ViewTree {
             next_row: None,
             row: None,
             selection_order: Default::default(),
+            perf_key: None,
             #[cfg(test)]
             renders: 0,
         }
+    }
+
+    /// The perf key this tree's renders count under.
+    pub(crate) fn with_perf_key(mut self, key: crate::perf::Key) -> Self {
+        self.perf_key = Some(key);
+        self
     }
 
     fn node(
@@ -265,6 +275,10 @@ impl Render for ViewTree {
         {
             self.renders += 1;
         }
+        let _timed = self.perf_key.and_then(|key| {
+            crate::perf::count(key, "renders", 1);
+            crate::perf::time(key, "render")
+        });
         self.mounted.clear();
         self.authored_path.clear();
         self.render_index = 0;

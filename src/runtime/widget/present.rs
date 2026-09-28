@@ -40,9 +40,11 @@ impl NativeModuleView {
     ) -> Result<f32, Standin> {
         let mounted = self.seat.clone();
         let mut locked = mounted.lock().expect("module view lock");
-        locked.shown = Some(Instant::now());
+        let shown = Instant::now();
+        locked.shown = Some(shown);
         let Mounted { slot, props, .. } = &mut *locked;
         let guest = seated(slot, self.module, window)?;
+        guest.instance = self.instance;
         let ticks = guest.ticks;
         guest.set_visible(true);
         guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
@@ -73,6 +75,15 @@ impl NativeModuleView {
         }
         for intent in std::mem::take(&mut guest.intents) {
             cx.emit(intent);
+        }
+        if ticks == 0 && guest.ticks == 1 && crate::perf::on() {
+            // a fresh view's first tree: from this frame's start, the first
+            // to find it seated, to its tree mounted
+            crate::perf::record(
+                guest.perf_key(),
+                "first_tree",
+                shown.elapsed().as_micros() as u64,
+            );
         }
         Ok(laid_out_from(guest))
     }
@@ -108,6 +119,8 @@ impl NativeModuleView {
         cx: &mut gpui_kit::Context<Self>,
     ) {
         let generation = guest.seated_generation();
+        let key = guest.perf_key();
+        let _replacing = crate::perf::time(key, "replace");
         let mut root = guest.frame.root.clone().unwrap_or_else(wire::Node::empty);
         guest.pictures.hydrate(&mut root);
         let root = native_root(root);
@@ -119,6 +132,9 @@ impl NativeModuleView {
         // a first view here, or a new deployment's: its minimum may be
         // new, so the desk fits its windows to it
         cx.emit(Intent::Seated);
+        if crate::perf::on() {
+            crate::perf::mark(intern(&format!("first_seated.{}", self.module)));
+        }
         self.generation = generation;
         self.alive = Some(guest.alive.clone());
         let mut changes = guest.replies.changes();
@@ -139,8 +155,11 @@ impl NativeModuleView {
             .as_ref()
             .map(|content| content.read(cx).presentation(window, cx))
             .unwrap_or_default();
-        let content =
-            cx.new(|_| crate::render::ViewTree::new(root).with_presentation(presentation));
+        let content = cx.new(|_| {
+            crate::render::ViewTree::new(root)
+                .with_presentation(presentation)
+                .with_perf_key(key)
+        });
         content.update(cx, |tree, cx| {
             tree.set_editor_store(guest.inputs.clone(), cx)
         });

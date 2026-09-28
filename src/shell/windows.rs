@@ -88,7 +88,10 @@ impl DesktopWindow {
         let activation =
             cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
                 let message = match window.is_window_active() {
-                    true => Message::WindowFocused(key),
+                    true => {
+                        this.start_switch();
+                        Message::WindowFocused(key)
+                    }
                     false => Message::WindowUnfocused(key),
                 };
                 let model = this.model.clone();
@@ -119,6 +122,7 @@ impl DesktopWindow {
             bar_needs: 0.,
             bar_made: 0,
             bar_drawn: None,
+            switching: None,
             focus,
             _activation: activation,
             _observer: observer,
@@ -209,6 +213,7 @@ impl Desktop {
             });
             match opened {
                 Ok(handle) => {
+                    crate::perf::mark("window");
                     model.update(cx, |model, _| {
                         model.windows.insert(key, handle.into());
                         if let Some(view) = opened_view {

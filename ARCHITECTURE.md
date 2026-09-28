@@ -485,7 +485,8 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
 - **Fuel.** `FUEL_PER_TICK` (`runtime.rs`, 250M instructions) is armed by
   `guest::arm` before every entry into a view: `init`, `tick`, `snapshot`,
   `restore`, and instantiate. There is no wall-clock or epoch budget.
-  `RUST_LOG=ducktape::fuel=debug` logs fuel used per tick.
+  `RUST_LOG=ducktape::perf=debug` logs fuel used per tick, and
+  `DUCKTAPE_PERF=1` keeps the counters `GET /perf` reads (docs/perf.md).
 - **Limits** (`runtime.rs`, `kernel.rs`), as of this writing: `MEMORY_LIMIT`
   64 MiB per store, `MAX_FRAME_BYTES` 8 MiB (a bigger frame ends the view),
   `MAX_REQUESTS_PER_TICK` 256, `MAX_PAYLOAD_BYTES` 1 MiB, `MAX_OP_BYTES`
@@ -508,9 +509,12 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   `Roster::rail()` more than once, and each call locks every seat.
 - **Off-thread.** View loads, roster reads, node I/O, describe, banners and
   key opening are off the window thread (§2).
-- **Measured today.** A `view_load` info line per network load
-  (`seat::LoadTiming`) and the fuel debug line. Nothing else is timed.
-  The plan is in [docs/perf.md](docs/perf.md).
+- **Measured.** A `view_load` info line per network load
+  (`seat::LoadTiming`) and the fuel debug line, both on `ducktape::perf`.
+  With `DUCKTAPE_PERF=1`, `src/perf.rs` also times and counts the shell,
+  each window and each view's load, tick and render stages, served at
+  `GET /perf` and logged as a `perf_summary` line every 10 minutes and at
+  quit ([docs/perf.md](docs/perf.md)).
 
 ## 9. Glossary
 
@@ -705,7 +709,7 @@ House words, and where one word means several things.
   (`Refused`, `Wire`); did `init` or the first tick
   trap (`Trapped` — a panic message is in the sentence). To bypass the
   node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<module>_view.wasm`.
-  `RUST_LOG=ducktape::fuel=debug` shows per-tick fuel.
+  `RUST_LOG=ducktape::perf=debug` shows per-tick fuel.
 - **Run against a node.** Start a node from `ducktape-industries/ducktape`
   (the branch README names), then `cargo run -p ducktape-app`;
   `DUCKTAPE_RPC=<url>` skips the connect screen. Keys go to the OS store;

@@ -44,6 +44,8 @@ pub(super) struct Spin {
     glyphs: Option<Glyphs>,
     /// Waiting for the next frame.
     ticking: bool,
+    /// When it last drew, for `figure.interval`; kept only with perf on.
+    last_drawn: Option<Instant>,
 }
 
 fn smoothstep((from, to): (f32, f32), x: f32) -> f32 {
@@ -72,6 +74,7 @@ impl Spin {
             ticks: 0,
             glyphs: None,
             ticking: false,
+            last_drawn: None,
         }
     }
 
@@ -231,7 +234,16 @@ impl Render for Spin {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.run(cx);
         let glyphs = *self.glyphs.get_or_insert_with(|| Glyphs::shape(window));
+        let timed = crate::perf::time(crate::perf::Key::Shell, "figure.frame");
+        if let Some(timed) = &timed {
+            if let Some(last) = self.last_drawn {
+                let between = timed.started().duration_since(last).as_micros() as u64;
+                crate::perf::record(crate::perf::Key::Shell, "figure.interval", between);
+            }
+            self.last_drawn = Some(timed.started());
+        }
         let stamps = stamps(&self.figure.frame(self.turn, self.t()));
+        drop(timed);
         let ink = self.ink;
         let spin = cx.entity();
         let holding = self.drag.is_some();

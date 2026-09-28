@@ -4,8 +4,8 @@
 //! ships beside the binary, and with no node there is no view. A view
 //! developer's `DUCKTAPE_VIEWS_DIR` ([`override_views_from`]) is the one
 //! exception, and says so in app.log for every view it supplies. A view is
-//! ticked inside a fuel and time budget, and presented through native
-//! gpui-kit controls in its seat.
+//! ticked inside a fuel budget (`FUEL_PER_TICK`, the one ceiling on a
+//! call), and presented through native gpui-kit controls in its seat.
 //!
 //! The app knows no program by name. The roster's order is the rail's, a
 //! view's manifest names its tab, and what a view asks of the app is the
@@ -68,7 +68,7 @@ use wire::methods::Capability;
 /// One desktop window, as the shell and the notification policy (which
 /// window is in front) name it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct WindowKey(u64);
+pub(crate) struct WindowKey(pub(crate) u64);
 
 impl WindowKey {
     pub(crate) fn unique() -> Self {
@@ -94,7 +94,7 @@ pub enum Intent {
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a
-/// runaway, not a cost. Measured 2026-09 (`RUST_LOG=ducktape::fuel=debug`):
+/// runaway, not a cost. Measured 2026-09 (`RUST_LOG=ducktape::perf=debug`):
 /// chat's heaviest tick ~72M (#general, a menu or the emoji picker opening),
 /// forge with a large file ~45M, explorer ~26M; the ceiling keeps the
 /// heaviest under 30% of it.
@@ -192,8 +192,14 @@ pub(crate) fn min_width(module: &str) -> Option<f32> {
 /// WAT view with the five exports whose every tick draws an empty tree.
 #[cfg(test)]
 pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
+    seat_drawing_for_test(module, min_width, wire::Node::empty());
+}
+
+/// [`seat_for_test`], its view drawing `root` on every tick.
+#[cfg(test)]
+pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: wire::Node) {
     let frame = wire::encode(&wire::Frame {
-        root: Some(wire::Node::empty()),
+        root: Some(root),
         ..Default::default()
     });
     let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();

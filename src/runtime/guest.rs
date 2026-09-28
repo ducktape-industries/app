@@ -30,6 +30,10 @@ pub(super) struct Guest {
     pub(crate) connection_rev: u64,
     pub(crate) user_activation: Option<()>,
     pub(crate) module: &'static str,
+    /// The widget instance showing this seat (`NativeModuleView.instance`;
+    /// 0 for a preloaded seat no tab has claimed): with `module`, the key
+    /// this instance's perf samples land under.
+    pub(crate) instance: u64,
     /// The manifest's name: what a registered view's tab is called.
     pub(crate) name: String,
     /// The capabilities the manifest declares: a method whose capability is
@@ -103,6 +107,30 @@ pub(super) struct Guest {
     pub(crate) staged: bool,
 }
 
+impl Guest {
+    pub(crate) fn perf_key(&self) -> crate::perf::Key {
+        crate::perf::Key::View {
+            module: self.module,
+            instance: self.instance,
+        }
+    }
+
+    /// How much of the budget the last call into the view took.
+    pub(crate) fn fuel_used(&self) -> u64 {
+        FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0)
+    }
+}
+
+/// One `view_perf` line as an installed instance leaves: a swap drops the
+/// old guest, a retry and a roster removal empty its slot.
+impl Drop for Guest {
+    fn drop(&mut self) {
+        if self.installed_generation.is_some() {
+            crate::perf::retire(self.module, self.instance);
+        }
+    }
+}
+
 /// The first six bytes of a hash as hex: how a view is named in logs and
 /// errors.
 pub(super) fn hex_short(hash: &[u8; 32]) -> String {
@@ -155,49 +183,71 @@ impl ViewCodeCache {
     }
 }
 
-pub(super) fn compiled_view(bytes: &[u8]) -> Result<Arc<Module>, String> {
+/// The view's code, and where it came from: `memory` for the in-process
+/// cache, `disk` for wasmtime's compile cache, `cold` for a cranelift run.
+/// ponytail: the disk/cold split reads wasmtime's process-wide hit counter
+/// around the compile, and loaders compile concurrently on purpose, so a
+/// hit landing from another thread can name a cold compile `disk`.
+pub(super) fn compiled_view(bytes: &[u8]) -> Result<(Arc<Module>, &'static str), String> {
     static CODE: OnceLock<Mutex<ViewCodeCache>> = OnceLock::new();
-    compile_view(engine(), CODE.get_or_init(Mutex::default), bytes)
+    let (engine, disk) = runtime();
+    let hits_before = disk.as_ref().map(Cache::cache_hits);
+    let (module, compiled) = compile_view(engine, CODE.get_or_init(Mutex::default), bytes)?;
+    let source = match (compiled, hits_before, disk.as_ref().map(Cache::cache_hits)) {
+        (false, _, _) => "memory",
+        (true, Some(before), Some(after)) if after > before => "disk",
+        (true, _, _) => "cold",
+    };
+    Ok((module, source))
 }
 
 // Cache code only: every load still creates its own Store, instance and assets.
 // The cache belongs to this one Engine. Compile outside the lock so unrelated
 // views can prepare concurrently; a competing result adopts the existing entry.
+// The flag says whether this call ran `Module::new`.
 pub(super) fn compile_view(
     engine: &Engine,
     cache: &Mutex<ViewCodeCache>,
     bytes: &[u8],
-) -> Result<Arc<Module>, String> {
+) -> Result<(Arc<Module>, bool), String> {
     use sha2::{Digest, Sha256};
     let hash = Sha256::digest(bytes).into();
     if let Some(module) = cache.lock().expect("view code cache").get(&hash) {
-        return Ok(module);
+        return Ok((module, false));
     }
     let module = Arc::new(Module::new(engine, bytes).map_err(|error| error.to_string())?);
     let mut cache = cache.lock().expect("view code cache");
     if let Some(existing) = cache.get(&hash) {
-        return Ok(existing);
+        return Ok((existing, true));
     }
     cache.insert(CompiledView {
         hash,
         source_bytes: bytes.len(),
         module: module.clone(),
     });
-    Ok(module)
+    Ok((module, true))
 }
 
 pub(super) fn engine() -> &'static Engine {
-    static ENGINE: OnceLock<Engine> = OnceLock::new();
+    &runtime().0
+}
+
+/// The one wasmtime engine, and a handle on its compile cache: `Cache` is
+/// `Clone`, and the clone reads the hit counters the engine's copy writes.
+fn runtime() -> &'static (Engine, Option<Cache>) {
+    static ENGINE: OnceLock<(Engine, Option<Cache>)> = OnceLock::new();
     ENGINE.get_or_init(|| {
         let mut config = Config::new();
         config.cranelift_opt_level(OptLevel::Speed);
         config.consume_fuel(true);
+        let mut disk = None;
         match crate::backend::cache_dir() {
             Ok(directory) => {
                 let mut cache = CacheConfig::new();
                 cache.with_directory(directory.join("view-code"));
                 match Cache::new(cache) {
                     Ok(cache) => {
+                        disk = Some(cache.clone());
                         config.cache(Some(cache));
                     }
                     Err(error) => tracing::warn!(reason = "view_cache_unavailable", %error),
@@ -205,7 +255,7 @@ pub(super) fn engine() -> &'static Engine {
             }
             Err(error) => tracing::warn!(reason = "view_cache_directory_unavailable", %error),
         }
-        Engine::new(&config).expect("wasmtime engine")
+        (Engine::new(&config).expect("wasmtime engine"), disk)
     })
 }
 

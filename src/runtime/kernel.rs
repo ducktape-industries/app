@@ -203,15 +203,37 @@ pub(super) fn answer(
             guest.route_subscriptions.push(id);
             guest.sync_route();
         }
-        (Capability::Module, "query") => spawn_retrying(guest, id, payload, query),
-        (Capability::Chain, "status") => spawn_retrying(guest, id, payload, status),
-        (Capability::Chain, "network") => spawn_retrying(guest, id, payload, network),
-        (Capability::Chain, "blocks") => spawn_retrying(guest, id, payload, blocks),
-        (Capability::Chain, "block") => spawn_retrying(guest, id, payload, block),
-        (Capability::Invite, "create") => spawn_no_retry(guest, id, payload, invite),
-        (Capability::Op, "submit") => spawn_retrying_unsent(guest, id, payload, submit),
-        (Capability::Blob, "get") => spawn_retrying(guest, id, payload, blob_get),
-        (Capability::Module, "describe") => spawn_retrying(guest, id, payload, describe::describe),
+        (Capability::Module, "query") => {
+            spawn_retrying(guest, id, payload, query, "host_call.module.query")
+        }
+        (Capability::Chain, "status") => {
+            spawn_retrying(guest, id, payload, status, "host_call.chain.status")
+        }
+        (Capability::Chain, "network") => {
+            spawn_retrying(guest, id, payload, network, "host_call.chain.network")
+        }
+        (Capability::Chain, "blocks") => {
+            spawn_retrying(guest, id, payload, blocks, "host_call.chain.blocks")
+        }
+        (Capability::Chain, "block") => {
+            spawn_retrying(guest, id, payload, block, "host_call.chain.block")
+        }
+        (Capability::Invite, "create") => {
+            spawn_no_retry(guest, id, payload, invite, "host_call.invite.create")
+        }
+        (Capability::Op, "submit") => {
+            spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit")
+        }
+        (Capability::Blob, "get") => {
+            spawn_retrying(guest, id, payload, blob_get, "host_call.blob.get")
+        }
+        (Capability::Module, "describe") => spawn_retrying(
+            guest,
+            id,
+            payload,
+            describe::describe,
+            "host_call.module.describe",
+        ),
         (Capability::Module, "changes") => changes(guest, id, payload),
         (Capability::Chain, "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the

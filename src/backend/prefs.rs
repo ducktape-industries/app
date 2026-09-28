@@ -10,6 +10,7 @@ fn prefs_path() -> Option<PathBuf> {
 }
 
 pub(crate) fn read_prefs() -> serde_json::Value {
+    let _timed = crate::perf::time(crate::perf::Key::Shell, "io.read_prefs");
     let Some(path) = prefs_path() else {
         return serde_json::json!({});
     };
@@ -20,6 +21,7 @@ pub(crate) fn read_prefs() -> serde_json::Value {
 }
 
 pub(crate) fn write_prefs(prefs: &serde_json::Value) -> bool {
+    let _timed = crate::perf::time(crate::perf::Key::Shell, "io.write_prefs");
     let Some(path) = prefs_path() else {
         return false;
     };

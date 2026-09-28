@@ -10,6 +10,9 @@ pub struct Loads {
 /// Shared by the tab's widget on the window thread and the loader thread,
 /// which swaps a finished load in place; the tab polls it while loading.
 pub(super) struct Mounted {
+    /// The widget instance that claimed this seat; 0 while preloaded. The
+    /// loader reads it for the perf key a load's stages land under.
+    pub(super) instance: u64,
     /// The connection this seat was last asked of.
     pub(super) rev: u64,
     pub(super) slot: Slot,
@@ -55,6 +58,7 @@ impl Mounted {
     /// asked, under generation 0, which no load answers for.
     pub(super) fn seat() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self {
+            instance: 0,
             rev: 0,
             slot: Slot::Loading,
             props: None,
@@ -241,6 +245,10 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
     registry.insert((module, instance), seat.clone());
     let snapshot = connection().lock().expect("views rpc").clone();
     let mut locked = seat.lock().expect("module view lock");
+    locked.instance = instance;
+    if let Slot::Ready(guest) = &mut locked.slot {
+        guest.instance = instance;
+    }
     if locked.generation == 0 && (snapshot.client.is_some() || view_override(module).is_some()) {
         locked.rev = snapshot.rev;
         let generation = locked.start();
@@ -295,98 +303,141 @@ pub(super) fn spawn_load(
         // a failure is held off under this, not under the view section's
         // own hash, which never equals a blob id
         let asked_for = roster().code(module).map(|(code, _)| code_digest(&code));
-        let loaded = Guest::load(module, &asked_of, generation, &loading);
+        let mut timing = LoadTiming::default();
+        let loaded = Guest::load(module, &asked_of, generation, &loading, &mut timing);
+        // the window thread holds this lock while it ticks the seat
+        let waited = Instant::now();
         let mut locked = loading.lock().expect("module view lock");
-        if locked.generation != generation {
-            return;
-        }
-        // the connection lock is a leaf: read under the seat's lock, never
-        // across it. A connect bumps the revision before it reaches this
-        // seat, so the revision read here is the one the seat installs
-        // against — and `connected` reconnects a seat it passed already
-        let current_rev = connection().lock().expect("views rpc").rev;
-        let from_the_node = view_override(module).is_none();
-        let node_since_left = current_rev != asked_of.rev;
-        if from_the_node && node_since_left {
-            return;
-        }
-        // a load that came back at all clears the hold-off; only a failure
-        // puts one back, widened against the one taken here
-        let held_off = locked.retry.take();
-        let loaded = match loaded {
-            Ok(loaded) => loaded,
-            Err(unloaded) => return locked.load_failed(module, held_off, asked_for, unloaded),
+        timing.lock_wait = waited.elapsed();
+        let key = crate::perf::Key::View {
+            module,
+            instance: locked.instance,
         };
-        let Mounted { slot, .. } = &mut *locked;
-        match loaded {
-            Loaded::Fresh(mut guest) => {
-                guest.installed_generation = Some(generation);
-                guest.report_display_truncation();
-                *slot = Slot::Ready(guest);
-            }
-            Loaded::Unchanged => {
-                if let Slot::Ready(guest) = slot {
-                    guest.reconnect(current_rev);
-                }
-            }
-            Loaded::Empty(_) => {
-                *slot = Slot::Empty;
-            }
-            // the same tab, the same surface handle, the same host-side
-            // input text and pictures: only the instance behind them moves
-            Loaded::Swap {
-                mut fresh,
-                alive,
-                ticks,
-            } => {
-                let Slot::Ready(old) = slot else {
-                    log_source(
-                        module,
-                        fresh.hash.as_ref(),
-                        "Failed",
-                        generation,
-                        "the view left while its replacement was prepared",
-                    );
-                    return;
-                };
-                let still_eligible = old.ticks == ticks && old.settled();
-                if !Arc::ptr_eq(&old.alive, &alive) || !still_eligible {
-                    log_source(
-                        module,
-                        fresh.hash.as_ref(),
-                        "Failed",
-                        generation,
-                        "the view moved while its replacement was prepared",
-                    );
-                    return;
-                }
-                fresh.frame_rev = old.frame_rev + 1;
-                if let Some(root) = &fresh.frame.root
-                    && let Err(reason) = fresh.inputs.retain_restored_projections(&old.inputs, root)
-                {
-                    log_source(module, fresh.hash.as_ref(), "Failed", generation, &reason);
-                    return;
-                }
-                if let Some(root) = &mut fresh.frame.root {
-                    fresh.pictures.hydrate(root);
-                    old.pictures.adopt(root);
-                    root.for_each_mut(&mut |node| match node {
-                        wire::Node::Svg {
-                            source: wire::SvgSource::Data { bytes, .. },
-                            ..
-                        } => *bytes = None,
-                        wire::Node::Image { data, .. } => *data = None,
-                        _ => {}
-                    });
-                }
-                fresh.pictures = std::mem::take(&mut old.pictures);
-                fresh.installed_generation = Some(generation);
-                fresh.report_display_truncation();
-                log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
-                *slot = Slot::Ready(fresh);
-            }
+        let installed = Instant::now();
+        install(
+            module,
+            &mut locked,
+            generation,
+            &asked_of,
+            asked_for,
+            loaded,
+        );
+        timing.install = installed.elapsed();
+        if timing.started.is_some() {
+            crate::perf::record(
+                key,
+                "install.lock_wait",
+                timing.lock_wait.as_micros() as u64,
+            );
+            crate::perf::record(key, "install", timing.install.as_micros() as u64);
+            timing.log(module);
         }
     })
+}
+
+/// Puts what a load came back with into the seat, if the seat still waits
+/// for this very load and, for a network's view, the app is still on the
+/// node it was asked of. A swap also drops the old `Guest` here, its store
+/// and memory with it.
+fn install(
+    module: &'static str,
+    locked: &mut Mounted,
+    generation: u64,
+    asked_of: &Connection,
+    asked_for: Option<[u8; 32]>,
+    loaded: Result<Loaded, Unloaded>,
+) {
+    if locked.generation != generation {
+        return;
+    }
+    // the connection lock is a leaf: read under the seat's lock, never
+    // across it. A connect bumps the revision before it reaches this
+    // seat, so the revision read here is the one the seat installs
+    // against — and `connected` reconnects a seat it passed already
+    let current_rev = connection().lock().expect("views rpc").rev;
+    let from_the_node = view_override(module).is_none();
+    let node_since_left = current_rev != asked_of.rev;
+    if from_the_node && node_since_left {
+        return;
+    }
+    // a load that came back at all clears the hold-off; only a failure
+    // puts one back, widened against the one taken here
+    let held_off = locked.retry.take();
+    let loaded = match loaded {
+        Ok(loaded) => loaded,
+        Err(unloaded) => return locked.load_failed(module, held_off, asked_for, unloaded),
+    };
+    let Mounted { slot, instance, .. } = &mut *locked;
+    match loaded {
+        Loaded::Fresh(mut guest) => {
+            guest.instance = *instance;
+            guest.installed_generation = Some(generation);
+            guest.report_display_truncation();
+            *slot = Slot::Ready(guest);
+        }
+        Loaded::Unchanged => {
+            if let Slot::Ready(guest) = slot {
+                guest.reconnect(current_rev);
+            }
+        }
+        Loaded::Empty(_) => {
+            *slot = Slot::Empty;
+        }
+        // the same tab, the same surface handle, the same host-side
+        // input text and pictures: only the instance behind them moves
+        Loaded::Swap {
+            mut fresh,
+            alive,
+            ticks,
+        } => {
+            let Slot::Ready(old) = slot else {
+                log_source(
+                    module,
+                    fresh.hash.as_ref(),
+                    "Failed",
+                    generation,
+                    "the view left while its replacement was prepared",
+                );
+                return;
+            };
+            let still_eligible = old.ticks == ticks && old.settled();
+            if !Arc::ptr_eq(&old.alive, &alive) || !still_eligible {
+                log_source(
+                    module,
+                    fresh.hash.as_ref(),
+                    "Failed",
+                    generation,
+                    "the view moved while its replacement was prepared",
+                );
+                return;
+            }
+            fresh.frame_rev = old.frame_rev + 1;
+            if let Some(root) = &fresh.frame.root
+                && let Err(reason) = fresh.inputs.retain_restored_projections(&old.inputs, root)
+            {
+                log_source(module, fresh.hash.as_ref(), "Failed", generation, &reason);
+                return;
+            }
+            if let Some(root) = &mut fresh.frame.root {
+                fresh.pictures.hydrate(root);
+                old.pictures.adopt(root);
+                root.for_each_mut(&mut |node| match node {
+                    wire::Node::Svg {
+                        source: wire::SvgSource::Data { bytes, .. },
+                        ..
+                    } => *bytes = None,
+                    wire::Node::Image { data, .. } => *data = None,
+                    _ => {}
+                });
+            }
+            fresh.pictures = std::mem::take(&mut old.pictures);
+            fresh.instance = *instance;
+            fresh.installed_generation = Some(generation);
+            fresh.report_display_truncation();
+            log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
+            *slot = Slot::Ready(fresh);
+        }
+    }
 }
 
 /// What a load came back with.
@@ -437,40 +488,66 @@ pub(super) fn log_source(
     );
 }
 
-/// How long each stage of one module-owned load took: `fetch` is the
-/// node's answer, `compile` is cranelift, `init` the instance and its `on
-/// mount` or restore, `first_frame` the tree a replacement proves (a fresh
-/// view draws its first on the window thread). `path` is `first` for a load
-/// over an empty slot, `swap` over a view drawn.
+/// How long each stage of one module-owned load took, and where its bytes
+/// and code came from: `fetch` is the node's answer (`blob`: `disk` or
+/// `node`), `compile` is cranelift (`code`: `memory`, `disk` or `cold`),
+/// then `instantiate`, a swap's `snapshot` of the old view and `restore`
+/// into the new, `init` for a fresh start, `first_frame` the tree a
+/// replacement proves (a fresh view draws its first on the window thread),
+/// and `install` under the seat's lock after `lock_wait` for it. `path` is
+/// `first` for a load over an empty slot, `swap` over a view drawn.
+/// `started` is set once the load got past the roster: only those log.
 #[derive(Default)]
 pub(super) struct LoadTiming {
     pub(super) path: &'static str,
+    pub(super) started: Option<Instant>,
+    pub(super) hash: Option<[u8; 32]>,
+    pub(super) outcome: &'static str,
+    pub(super) blob: &'static str,
+    pub(super) code: &'static str,
     pub(super) fetch: Duration,
     pub(super) compile: Duration,
+    pub(super) instantiate: Duration,
+    pub(super) snapshot: Duration,
+    pub(super) snapshot_bytes: usize,
+    pub(super) restore: Duration,
     pub(super) init: Duration,
     pub(super) first_frame: Option<Duration>,
+    pub(super) lock_wait: Duration,
+    pub(super) install: Duration,
 }
 
 impl LoadTiming {
-    /// One `view_load` line per load, every field every time, through the
-    /// same logger and test tap as `view_source`.
-    pub(super) fn log(&self, module: &str, hash: Option<&[u8; 32]>, started: Instant, state: &str) {
+    /// One `view_load` line per load, every field every time, once the
+    /// load is installed, on the perf target.
+    pub(super) fn log(&self, module: &str) {
         let ms = |duration: Duration| duration.as_millis();
-        let hash = hash.map_or_else(|| "-".to_owned(), |hash| crate::backend::hex_encode(hash));
+        let word = |word: &'static str| if word.is_empty() { "-" } else { word };
+        let hash = self
+            .hash
+            .map_or_else(|| "-".to_owned(), |hash| crate::backend::hex_encode(&hash));
         let first_frame = self
             .first_frame
             .map_or_else(|| "-".to_owned(), |frame| ms(frame).to_string());
-        let total = ms(started.elapsed());
+        let total = self.started.map_or(0, |started| ms(started.elapsed()));
         tracing::info!(
-            target: "ducktape::app",
+            target: "ducktape::perf",
             module,
             hash = %hash,
             path = self.path,
-            outcome = state,
+            outcome = self.outcome,
+            blob = word(self.blob),
+            code = word(self.code),
             fetch_ms = ms(self.fetch),
             compile_ms = ms(self.compile),
+            instantiate_ms = ms(self.instantiate),
+            snapshot_ms = ms(self.snapshot),
+            snapshot_bytes = self.snapshot_bytes,
+            restore_ms = ms(self.restore),
             init_ms = ms(self.init),
             first_frame_ms = %first_frame,
+            lock_wait_ms = ms(self.lock_wait),
+            install_ms = ms(self.install),
             total_ms = total,
             "view_load"
         );
