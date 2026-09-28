@@ -560,9 +560,13 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 }
 
 /// The reading of one window: `snap` once, and with `walk`, `tab` through the
-/// window's own key dispatch N + 1 times (N: nodes offering focus in the
-/// first snapshot, counted before `keep` filters), `snap` after each. Focus
-/// goes back where it was — nowhere included.
+/// window's own key dispatch, `snap` after each: N + 1 times (N: nodes
+/// offering focus in the first snapshot, counted before `keep` filters),
+/// and on until focus has come back to where the first press put it. A
+/// stop the first snapshot does not show (scrolled away, drawn since) makes
+/// the Tab cycle longer than N + 1; the walk still goes all the way round,
+/// up to 4 (N + 1) presses. Focus goes back where it was — nowhere
+/// included.
 pub(crate) fn observe(
     window: &mut Window,
     cx: &mut App,
@@ -584,9 +588,19 @@ pub(crate) fn observe(
     // after the first snap: a read switches the tree on and draws it
     reading.modal = tree::modal_active(window);
     if walk {
-        for _ in 0..=stops {
+        // the handle, not the node: a stop off the viewport has no node
+        let (mut first, mut round) = (None, false);
+        for press in 1..=4 * (stops + 1) {
             let _ = press_keys(window, cx, "tab", "");
+            let now = window.focused(cx);
             take(window, cx, &mut reading);
+            match press {
+                1 => first = now,
+                _ => round |= now == first,
+            }
+            if press > stops && (round || first.is_none()) {
+                break;
+            }
         }
         match before {
             Some(handle) => handle.focus(window, cx),
