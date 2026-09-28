@@ -1,6 +1,7 @@
-//! Everywhere else the notifier is the freedesktop notifications service,
-//! which every desktop off macOS answers through its own daemon. Pure Rust,
-//! and no new dependency — zbus is already in this binary's graph.
+//! Banners on every desktop off macOS: the freedesktop notifications
+//! service (`org.freedesktop.Notifications` on the session D-Bus), which
+//! each desktop answers through its own daemon. Pure Rust, and no new
+//! dependency — zbus is already in this binary's graph.
 
 use super::Notice;
 use std::collections::HashMap;
@@ -155,7 +156,7 @@ pub(super) fn withdraw(tag: &str) {
 /// One `Notify` request: `(app_name, replaces_id, app_icon, summary,
 /// body, actions, hints, expire_timeout)` → the banner's id. A banner
 /// that opens something declares the default action, a click on it.
-pub(super) fn notify(
+fn notify(
     bus: &zbus::blocking::Connection,
     notice: &Notice,
     replaces: u32,
@@ -185,4 +186,12 @@ pub(super) fn notify(
         ),
     )?;
     reply.body().deserialize::<u32>()
+}
+
+#[cfg(test)]
+/// A notice's own markup characters reach the freedesktop body escaped,
+/// so a server that renders markup shows them as the view typed them.
+#[test]
+fn the_freedesktop_body_escapes_the_notices_markup() {
+    assert_eq!(markup_escaped("a <b> & c"), "a &lt;b&gt; &amp; c");
 }

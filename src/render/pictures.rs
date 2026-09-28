@@ -5,13 +5,6 @@ use crate::render::native_id;
 mod svg_canvas;
 use svg_canvas::SvgCanvas;
 
-#[derive(Clone, Default)]
-pub(super) struct ViewerState {
-    pub(super) scale: f32,
-    pub(super) offset: Point<Pixels>,
-    pub(super) drag: Option<Point<Pixels>>,
-}
-
 pub(crate) fn qr(code: &wire::Qr) -> AnyElement {
     let Some(payload) = &code.payload else {
         return div().into_any_element();
@@ -232,121 +225,6 @@ impl ViewTree {
             return;
         }
         self.vectors.insert(hash, Arc::from(bytes));
-    }
-
-    pub(super) fn image_viewer(
-        &mut self,
-        node: &wire::Node,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let wire::Node::ImageViewer {
-            id,
-            hash,
-            data,
-            style,
-            options,
-            ..
-        } = node
-        else {
-            unreachable!()
-        };
-        if let Some(data) = data {
-            self.remember_image(*hash, data);
-        }
-        let frame = self.image_frame(*hash, data.as_ref());
-        let path = self.authored_path.clone();
-        let viewer = self.viewers.entry(path.clone()).or_default();
-        if viewer.scale == 0.0 {
-            viewer.scale = 1.0;
-        }
-        let mut element = announce(
-            div()
-                .relative()
-                .overflow_hidden()
-                .refine_style(style)
-                .id(native_id(id)),
-            accessible(node),
-        );
-        if let Some(image) = frame {
-            let original = image.size(0);
-            let viewport = self
-                .bounds
-                .get(&path)
-                .map_or(window.viewport_size(), |bounds| bounds.size);
-            let inset = options.padding.unwrap_or_default() * 2.0;
-            let ratio = ((f32::from(viewport.width) - inset) / u32::from(original.width) as f32)
-                .min((f32::from(viewport.height) - inset) / u32::from(original.height) as f32)
-                .max(0.0);
-            let width = u32::from(original.width) as f32 * ratio * viewer.scale;
-            let height = u32::from(original.height) as f32 * ratio * viewer.scale;
-            let x = (f32::from(viewport.width) - width) / 2.0 + f32::from(viewer.offset.x);
-            let y = (f32::from(viewport.height) - height) / 2.0 + f32::from(viewer.offset.y);
-            if !matches!(data, Some(wire::ImageData::Resource(_))) {
-                element = element.child(
-                    div()
-                        .absolute()
-                        .left(px(x))
-                        .top(px(y))
-                        .w(px(width))
-                        .h(px(height))
-                        .child(img(image.clone())),
-                );
-            }
-        }
-        let (minimum, maximum) = options.scale_bounds.unwrap_or((0.25, 10.0));
-        let step = options.scale_step.unwrap_or(0.1);
-        let wheel_key = path.clone();
-        element =
-            element.on_scroll_wheel(cx.listener(move |this, event: &ScrollWheelEvent, _, cx| {
-                let delta = match event.delta {
-                    ScrollDelta::Pixels(delta) => f32::from(delta.y),
-                    ScrollDelta::Lines(delta) => delta.y,
-                };
-                let Some(viewer) = this.viewers.get_mut(&wheel_key) else {
-                    return;
-                };
-                viewer.scale =
-                    (viewer.scale * (1.0 + step).powf(delta.signum())).clamp(minimum, maximum);
-                cx.stop_propagation();
-                cx.notify();
-            }));
-        let down_key = path.clone();
-        element = element.on_mouse_down(
-            MouseButton::Left,
-            cx.listener(move |this, event: &MouseDownEvent, _, cx| {
-                if let Some(viewer) = this.viewers.get_mut(&down_key) {
-                    viewer.drag = Some(event.position);
-                }
-                cx.stop_propagation();
-            }),
-        );
-        let move_key = path.clone();
-        element = element.on_mouse_move(cx.listener(move |this, event: &MouseMoveEvent, _, cx| {
-            let Some(viewer) = this.viewers.get_mut(&move_key) else {
-                return;
-            };
-            let Some(previous) = viewer.drag else {
-                return;
-            };
-            if event.pressed_button != Some(MouseButton::Left) {
-                viewer.drag = None;
-                return;
-            }
-            viewer.offset += event.position - previous;
-            viewer.drag = Some(event.position);
-            cx.notify();
-        }));
-        let up_key = path.clone();
-        element = element.on_mouse_up(
-            MouseButton::Left,
-            cx.listener(move |this, _, _, _| {
-                if let Some(viewer) = this.viewers.get_mut(&up_key) {
-                    viewer.drag = None;
-                }
-            }),
-        );
-        element.child(self.measure(&path, cx)).into_any_element()
     }
 
     pub(super) fn picture(

@@ -8,17 +8,24 @@
 //! — and writes `{port, token}` to `http::door_file` mode 0600; a request without
 //! that token is refused. `ducktape-app ax …` ([`cli`]) is its client.
 //!
-//! Ids are `<window>:<element id>`: a native node's own string ElementId, a
-//! view node's `<module>/<wire key>`, widened with its ancestors' ids
-//! (`rail.view:chat`) only while another node in the window shares it. Entity,
-//! focus-handle and the kit's type-path segments never count: they change per
-//! run or say nothing. Never an AccessKit NodeId, never a position. A password field's value and a node marked
-//! [`crate::a11y::AX_PRIVATE`] (the recovery-phrase words) are
-//! masked here, before anything leaves the process. Only a rig that also sets
+//! Ids are `<window>:<path>`: a native node's own string ElementId
+//! (`console:network-switcher`), a view node's `<module>/<wire key>`
+//! (`console:chat/send`), widened with its ancestors' ids (`console:row.send`)
+//! only while another node in the window shares it, and `~2`, `~3` … when
+//! even the whole path is shared ([`tree::door_ids`]). A synthetic child with
+//! no element of its own ends in its role. Entity, focus-handle and the kit's
+//! type-path segments never count: they change per run or say nothing. Never
+//! an AccessKit NodeId, never a position. A password field's value and a node
+//! marked [`crate::a11y::AX_PRIVATE`] (the recovery-phrase words) are masked
+//! here, before anything leaves the process. Only a rig that also sets
 //! `DUCKTAPE_AX_DOOR_PRIVATE=1` may ask for one private node's text ([`reveal`]).
 //! A keyboard-only walk sends keys through the window's own key dispatch
 //! ([`press_keys`]) and reads the bindings it can reach ([`shortcuts`]); a
 //! pointer drag goes through its mouse dispatch ([`drag_by_id`]).
+//! `GET /audit?window&view&walk=1&launcher=1` runs the phase-1 rules of
+//! `docs/ax.md` ([`audit`]) over one window — the named one, else the one
+//! holding focus, else the first — with the Tab walk when `walk`; `launcher`
+//! is the caller's word that the shell screen is not the desk (AX-018).
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
 use futures::StreamExt as _;
@@ -35,10 +42,11 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 mod actions;
+pub(crate) mod audit;
 mod http;
 mod tree;
 
-use actions::{drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
+use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
 pub(crate) use http::{cli, open};
 pub(crate) use tree::{AxNode, VIEW_MARK, snapshot};
 use tree::{compact, delta, nearest, offers};
@@ -189,6 +197,11 @@ pub(crate) enum Request {
     Key(Key),
     Keys(Filter),
     Drag(Drag),
+    Audit {
+        filter: Filter,
+        walk: bool,
+        launcher: bool,
+    },
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -395,6 +408,34 @@ async fn answer(
             };
             handle
                 .update(cx, |_, window, cx| Reply::ok(json!(shortcuts(window, cx))))
+                .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })))
+        }
+        Request::Audit {
+            filter,
+            walk,
+            launcher,
+        } => {
+            let before = read(windows, &all, false, seen, cx);
+            let Some(handle) = keyboard_window(filter.window.as_deref(), &before, windows, cx)
+            else {
+                return Reply::new(404, json!({ "error": "no such window" }));
+            };
+            let name = cx
+                .update(|cx| windows(cx))
+                .into_iter()
+                .find_map(|(name, other)| (other == handle).then_some(name))
+                .unwrap_or_default();
+            handle
+                .update(cx, |_, window, cx| {
+                    let reading = audit::observe(
+                        window,
+                        cx,
+                        walk,
+                        |node| filter.keeps(node),
+                        |window, cx| current(&name, window, cx, true, seen),
+                    );
+                    Reply::ok(json!(audit::audit(&reading, launcher)))
+                })
                 .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })))
         }
         Request::Wait(wait) => {

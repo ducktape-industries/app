@@ -4,7 +4,8 @@
 use super::*;
 use crate::{Overlay, Popover};
 use desk::BAR;
-use screens::{Facts, pulse};
+use facts::Facts;
+use status_bar::pulse;
 
 impl DesktopWindow {
     /// The menu bar (the Menubar board): `height: 36px; padding: 0 8px;
@@ -281,7 +282,7 @@ impl DesktopWindow {
             .child(
                 div()
                     .id("rail-rows")
-                    .role(Role::TabList)
+                    .control(Role::TabList, "Programs")
                     .min_w_0()
                     .flex()
                     // folded and still too many: they scroll
