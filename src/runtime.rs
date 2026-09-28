@@ -29,18 +29,14 @@ mod store;
 mod widget;
 
 pub(crate) use kernel::{command_held, local_offset};
-#[cfg(test)]
-pub(crate) use roster::list_for_test;
-pub use roster::{
-    Link, RailRow, connected, deployments_checked, listed_view, parse_link, props, rail,
-    valid_route,
-};
+pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
+pub(crate) use roster::{Roster, roster};
 pub(crate) use seat::{Failure, NODE_UNREACHABLE, retry};
 pub use seat::{Loads, override_views_from};
 pub(crate) use widget::NativeModuleView;
 
 use guest::Guest;
-use roster::{Connection, code_digest, connection, listed_code};
+use roster::{Connection, code_digest, connection};
 use seat::{
     LoadTiming, Loaded, Mounted, Slot, Unloaded, log_source, mounted, registry, spawn_load,
     view_override,

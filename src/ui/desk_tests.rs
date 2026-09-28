@@ -8,8 +8,7 @@ use crate::runtime::Intent;
 fn a_link_on_this_chain_hands_its_view_the_route() {
     let (mut state, _) = Ducktape::boot();
     state.chain = "testkit#0a1b2c3d".into();
-    crate::runtime::list_for_test("link-test-here");
-    crate::runtime::list_for_test("link-test-away");
+    state.roster = crate::runtime::Roster::listing(&["link-test-here", "link-test-away"]);
     let _ = state.update(Message::OpenLink(
         "duck://testkit-0a1b2c3d/link-test-here/tx/00ff".into(),
     ));
@@ -55,7 +54,7 @@ fn a_view_event_sets_its_badge_and_opens_its_link() {
     let _ = state.update(Message::ViewEvent("chat", Intent::Notified));
     assert!(state.badges.is_empty() && state.active.is_none());
 
-    crate::runtime::list_for_test("view-event-link");
+    state.roster = crate::runtime::Roster::listing(&["view-event-link"]);
     let console = crate::shell::WindowKey::unique();
     state.console_win = Some(console);
     let _ = state.update(Message::ViewEvent(

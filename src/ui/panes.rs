@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn spotlight_and_links_both_land_in_the_desk() {
         let (mut state, console) = desk();
-        crate::runtime::list_for_test("pane-link");
+        state.roster = crate::runtime::Roster::listing(&["pane-link"]);
         let _ = state.update(Message::SelectView("forge"));
         let _ = state.update(Message::OpenLink("duck://pane-link/x".into()));
         assert_eq!(modules(&state, console), ["forge", "pane-link"]);

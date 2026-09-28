@@ -23,7 +23,7 @@ impl DesktopWindow {
         use gpui_kit::*;
         self.menu_left(window, cx);
         let state = self.model.read(cx).state.facts();
-        let rail = crate::runtime::rail();
+        let rail = state.roster.rail();
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
         }
