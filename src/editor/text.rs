@@ -53,8 +53,8 @@ pub struct TextEditor {
     cap: Option<usize>,
     /// the node's mapping; the field's text is added as its value
     accessible: crate::render::Accessible,
-    /// Esc let go of Tab: the next Tab leaves the field (Shift+Tab goes
-    /// back) instead of indenting. Any other key takes it back.
+    /// Esc let go of Tab: the next Tab leaves the field instead of
+    /// indenting. Any other key takes it back.
     tab_released: bool,
     _observation: Subscription,
     _keystrokes: Subscription,
