@@ -310,8 +310,9 @@ impl ViewTree {
         if let Some(value) = aria.orientation {
             element = element.aria_orientation(value);
         }
-        // gpui panics (debug) when the node claiming it is the focused one
-        if aria.active_descendant && !interactivity.focusable {
+        // gpui panics (debug) on a claim by the focused node or on a second
+        // claim in a frame: the sanitizer keeps neither
+        if aria.active_descendant {
             element = element.aria_active_descendant();
         }
         element = crate::a11y::Patch {

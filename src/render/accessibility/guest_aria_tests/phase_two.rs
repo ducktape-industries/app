@@ -27,6 +27,7 @@ fn phase_two(role: Role) -> wire::Interactivity {
 
 /// The node `root` builds for author id `child`, once the tree is on.
 fn built(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Option<accesskit::Node> {
+    let root = sanitized(root);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
@@ -231,6 +232,7 @@ fn set_places(
     cx: &mut gpui_kit::TestAppContext,
     root: wire::Node,
 ) -> Vec<(String, Option<usize>, Option<usize>)> {
+    let root = sanitized(root);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| {
@@ -291,7 +293,7 @@ fn a_list_row_says_where_it_is_in_the_list(cx: &mut gpui_kit::TestAppContext) {
     );
     let variable = wire::Node::List {
         state: 1,
-        path: vec![key("list")],
+        path: Vec::new(),
         item_count: 4,
         alignment: wire::ListAlignment::Top,
         overdraw: 0.,

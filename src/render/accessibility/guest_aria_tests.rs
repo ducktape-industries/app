@@ -152,9 +152,10 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             cursor: None,
             content: Box::new(text("child-text")),
         },
+        // a list has no id: its path is where it sits
         Site::List => wire::Node::List {
             state: 1,
-            path: vec![key("child")],
+            path: Vec::new(),
             item_count: 1,
             alignment: wire::ListAlignment::Top,
             overdraw: 0.,
@@ -175,6 +176,13 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
 /// The child under a focusable, roled parent that holds the guest focus
 /// handle: the composite an active descendant is announced within.
 fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
+    let mut child = child(site, interactivity);
+    // a list's path is the one the walk takes to it, through the parent
+    child.for_each_mut(&mut |node| {
+        if let wire::Node::UniformList { path, .. } | wire::Node::List { path, .. } = node {
+            path.insert(0, key("parent"));
+        }
+    });
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("parent")),
         style: div().w(px(280.)).h(px(180.)).style().clone(),
@@ -189,8 +197,18 @@ fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             },
             ..Default::default()
         },
-        children: vec![child(site, interactivity)],
+        children: vec![child],
     })
+}
+
+/// `root` as the host takes it from a guest: through the sanitizer.
+fn sanitized(root: wire::Node) -> wire::Node {
+    let mut frame = wire::Frame {
+        root: Some(root),
+        ..Default::default()
+    };
+    wire::sanitize(&mut frame).expect("the host takes the tree");
+    frame.root.expect("the tree stays")
 }
 
 /// Everything gpui writes onto a node from the guest's aria.
@@ -290,6 +308,7 @@ fn expected(name: &str, focusable: bool) -> Heard {
 /// for it) plus whether the tree reports the child as the focused
 /// (active descendant) node.
 fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Heard>, bool) {
+    let root = sanitized(root);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -324,7 +343,8 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
 /// Every renderer announces the guest's aria alike, a roled node with no
 /// label named by the text it draws; a focusable node never claims the
 /// active descendant (gpui panics, in debug, when the claimant is the
-/// focused node), so focus stays on the parent. A UniformList itself has
+/// focused node): the sanitizer drops its claim, so focus stays on the
+/// parent. A UniformList itself has
 /// no node at all: gpui's `UniformList` element reports no `a11y_role`, so
 /// its aria is dead until the fork gives it one.
 #[gpui_kit::test]
