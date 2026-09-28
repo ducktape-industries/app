@@ -178,7 +178,7 @@ pub struct ViewTree {
     /// their time are counted there (docs/perf.md).
     perf_key: Option<crate::perf::Key>,
     #[cfg(test)]
-    pub(crate) renders: u64,
+    renders: u64,
 }
 
 impl EventEmitter<wire::Event> for ViewTree {}

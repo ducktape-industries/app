@@ -196,8 +196,14 @@ pub(crate) fn min_width(module: &str) -> Option<f32> {
 /// WAT view with the five exports whose every tick draws an empty tree.
 #[cfg(test)]
 pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
+    seat_drawing_for_test(module, min_width, wire::Node::empty());
+}
+
+/// [`seat_for_test`], its view drawing `root` on every tick.
+#[cfg(test)]
+pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: wire::Node) {
     let frame = wire::encode(&wire::Frame {
-        root: Some(wire::Node::empty()),
+        root: Some(root),
         ..Default::default()
     });
     let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
