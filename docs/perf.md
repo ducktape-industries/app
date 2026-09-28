@@ -288,7 +288,8 @@ only when on and only when the tree changed.
   A gate refuses to judge cache metrics (`misses`, `hits`, full redraws per
   switch, idle drawing) from a reply with `cache_on: false` (§4.3).
 - `"gpui"` per window only with `perf-deep` (§3.5), µs from nanosecond
-  histograms; `door_draws` counts the door's own draws for the process,
+  histograms kept since the window opened, not since the last reset;
+  `door_draws` counts the door's own draws for the process,
   since `ax::actions::current` has no window key.
 - `misses` and `hits` are derived by the reader: `renders` and `draws`
   per view.
@@ -342,7 +343,8 @@ only when on and only when the tree changed.
   `Window::input_latency_snapshot` into each window's `"gpui"` object in
   `/perf` (`ax::gpui_perf`), and polls a `HangDetector` over
   `App::foreground_journal` once a second (`shell::launch::first_present`)
-  for the `first_present` startup mark and a `gpui_hangs` count.
+  until it latches the `first_present` startup mark. gpui's histograms
+  cover the window's whole life: `POST /perf/reset` does not clear them.
   `cargo build --features perf-deep`; a default build has none of it.
 
 ---
@@ -515,13 +517,16 @@ Design:
   This covers load (fetch/compile/init), swap (a view redeployed mid-run;
   `kit seed` fills a stage with data and deploys no view), tick, switch and
   idle in one pass.
-- **`cargo test` counts**, already in CI: `ViewTree.renders` stays the
-  `cfg(test)` field (the perf counter `renders` is its production twin) and
-  deterministic counts are asserted on it — an idle ViewTree renders zero
+- **`cargo test` counts**, already in CI. An idle ViewTree renders zero
   times across N frames (#347's `an_unchanged_guest_tree_is_not_drawn_again`
-  in `src/render/tests/layout.rs`), and a seated view at rest renders no
-  more than it ticks (`an_idle_view_renders_no_more_than_it_ticks`,
-  `src/runtime/widget/tests.rs`). Still to write: a hand-dispatched
+  in `src/render/tests/layout.rs`, on the `cfg(test)` field
+  `ViewTree.renders`). A seated view drawing #347's tree shape renders no
+  more than it ticks, read off the registry's `renders` and `ticks` as
+  `/perf` serves them (`an_idle_view_renders_no_more_than_it_ticks`,
+  `src/runtime/widget/tests.rs`): undoing #347's selection fix fails it.
+  Undoing its layout fix does not — under the test scheduler a notify from
+  inside a draw is cleared with that frame — so the bounds assertion in
+  #347's own test guards that one. Still to write: a hand-dispatched
   `WallTick` with nothing changed renders no ViewTree; a still figure asks
   for no frames. Times are flaky under the test scheduler; counts are not.
 
@@ -574,8 +579,9 @@ Phase 1, as listed:
 - `door_draws` in `ax::actions::current`, for the process.
 - The idle rule as an app test:
   `runtime::widget::tests::an_idle_view_renders_no_more_than_it_ticks`
-  (`renders ≤ ticks + 2` over eight cached frames; a notify loop on the
-  tree fails it).
+  (`renders ≤ ticks + 2` on the registry's counters over eight cached
+  frames of #347's tree shape; a notify loop on the tree or #347's
+  selection refresh fails it).
 
 Where the landed code differs from §2: `input::Observe` no longer exists,
 so there is no per-view `layout`/`paint` histogram (gpui's own, under

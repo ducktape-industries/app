@@ -508,9 +508,12 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   `runtime::rail()` more than once, and each call locks every seat.
 - **Off-thread.** View loads, roster reads, node I/O, describe, banners and
   key opening are off the window thread (§2).
-- **Measured today.** A `view_load` info line per network load
-  (`seat::LoadTiming`) and the fuel debug line. Nothing else is timed.
-  The plan is in [docs/perf.md](docs/perf.md).
+- **Measured.** A `view_load` info line per network load
+  (`seat::LoadTiming`) and the fuel debug line, both on `ducktape::perf`.
+  With `DUCKTAPE_PERF=1`, `src/perf.rs` also times and counts the shell,
+  each window and each view's load, tick and render stages, served at
+  `GET /perf` and logged as a `perf_summary` line every 10 minutes and at
+  quit ([docs/perf.md](docs/perf.md)).
 
 ## 9. Glossary
 
