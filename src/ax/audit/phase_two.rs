@@ -132,7 +132,7 @@ pub(super) fn node_rules(
             format!("Heading has level {:?}", more.level)
         });
     }
-    if node::TEXT_INPUT.contains(&role) {
+    if TEXT_INPUT.contains(&role) {
         if more.invalid.is_some() {
             let described = node
                 .description
@@ -153,7 +153,7 @@ pub(super) fn node_rules(
             });
         }
     }
-    if node::CONTROL.contains(&role) && in_flight(&node.name) {
+    if CONTROL.contains(&role) && in_flight(&node.name) {
         tally.check("AX-110", node, has(node, "busy"), || {
             format!("{:?} says work is in flight and is not busy", node.name)
         });
