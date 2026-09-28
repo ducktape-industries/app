@@ -58,6 +58,12 @@ zeroize = "1"
 wasmtime = "=46.0.3"
 libc = "0.2"
 
+[features]
+# dev and qa builds only (owner, 2026-09-28): gpui's own frame and input
+# histograms and its first present into `GET /perf` (docs/perf.md §3.5).
+# A default build compiles none of it: hdrhistogram is not in its graph.
+perf-deep = ["gpui-kit/profiler"]
+
 [dependencies]
 gpui-kit = "=0.6.1"
 gpui-base = "=0.6.4"

@@ -551,22 +551,25 @@ fn perf_reply(by_instance: bool, windows: &[ServedPerf]) -> Reply {
 /// registry cannot see.
 #[cfg(feature = "perf-deep")]
 fn gpui_perf(window: &Window) -> serde_json::Value {
-    let stats = |histogram: &gpui_kit::hdrhistogram::Histogram<u64>| {
-        json!({
-            "n": histogram.len(),
-            "p50": histogram.value_at_quantile(0.5) / 1000,
-            "p95": histogram.value_at_quantile(0.95) / 1000,
-            "max": histogram.max() / 1000,
-        })
-    };
+    // the histograms hold nanoseconds; gpui does not re-export their type
+    macro_rules! us {
+        ($histogram:expr) => {
+            json!({
+                "n": $histogram.len(),
+                "p50": $histogram.value_at_quantile(0.5) / 1000,
+                "p95": $histogram.value_at_quantile(0.95) / 1000,
+                "max": $histogram.max() / 1000,
+            })
+        };
+    }
     let frames = window.frame_duration_snapshot();
     let input = window.input_latency_snapshot();
     json!({
         "us": {
-            "dirty_to_present": stats(&frames.dirty_to_present_histogram),
-            "draw": stats(&frames.draw_duration_histogram),
-            "present_interval": stats(&frames.present_interval_histogram),
-            "input_latency": stats(&input.latency_histogram),
+            "dirty_to_present": us!(frames.dirty_to_present_histogram),
+            "draw": us!(frames.draw_duration_histogram),
+            "present_interval": us!(frames.present_interval_histogram),
+            "input_latency": us!(input.latency_histogram),
         },
         "events_per_frame_max": input.events_per_frame_histogram.max(),
         "mid_draw_events_dropped": input.mid_draw_events_dropped,

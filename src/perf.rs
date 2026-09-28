@@ -227,6 +227,19 @@ pub(crate) fn mark(stage: &'static str) {
     registry.changed = true;
 }
 
+/// A milestone reached at `at` rather than now: gpui's first present.
+pub(crate) fn mark_at(stage: &'static str, at: Instant) {
+    if !on() {
+        return;
+    }
+    let ms = T0
+        .get()
+        .map_or(0, |t0| at.saturating_duration_since(*t0).as_millis() as u64);
+    let mut registry = registry();
+    registry.marks.entry(stage).or_insert(ms);
+    registry.changed = true;
+}
+
 /// `stage` with `suffix` appended, interned; built only when on, so an
 /// off run never allocates for it.
 pub(crate) fn suffixed(stage: &str, suffix: &str) -> Option<&'static str> {
