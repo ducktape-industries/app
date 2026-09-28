@@ -236,11 +236,13 @@ impl NativeModuleView {
         }
     }
 
+    /// The seat's view drawn into this tab, and the width it is laid out
+    /// from; or what to draw in its stead.
     pub(super) fn frame(
         &mut self,
         window: &mut gpui_kit::Window,
         cx: &mut gpui_kit::Context<Self>,
-    ) -> Result<(), Standin> {
+    ) -> Result<f32, Standin> {
         let mounted = self.seat.clone();
         let mut locked = mounted.lock().expect("module view lock");
         locked.shown = Some(Instant::now());
@@ -305,6 +307,9 @@ impl NativeModuleView {
             match (&self.content, same_instance) {
                 (Some(content), true) => content.update(cx, |tree, cx| tree.replace(root, cx)),
                 _ => {
+                    // a first view here, or a new deployment's: its minimum
+                    // may be new, so the desk fits its windows to it
+                    cx.emit(Intent::Seated);
                     self.generation = generation;
                     self.alive = Some(guest.alive.clone());
                     let mut changes = guest.replies.changes();
@@ -405,7 +410,7 @@ impl NativeModuleView {
         for intent in std::mem::take(&mut guest.intents) {
             cx.emit(intent);
         }
-        Ok(())
+        Ok(laid_out_from(guest))
     }
 }
 
@@ -504,8 +509,11 @@ impl NativeModuleView {
     }
 }
 
-/// The narrowest a view is laid out: a window narrower scrolls it sideways.
-const MIN_WIDTH: f32 = 480.;
+/// The narrowest a view is laid out, its manifest's `MIN_WINDOW_WIDTH`: a
+/// window narrower scrolls it sideways.
+pub(super) fn laid_out_from(guest: &Guest) -> f32 {
+    guest.min_width as f32
+}
 
 impl gpui_kit::Render for NativeModuleView {
     fn render(
@@ -520,7 +528,7 @@ impl gpui_kit::Render for NativeModuleView {
         self.bind_observers(window, cx);
         self.drawn = true;
         match self.frame(window, cx) {
-            Ok(()) => match &self.content {
+            Ok(min_width) => match &self.content {
                 Some(content) => {
                     let content = content.clone();
                     // GPUI rebuilds the accessibility tree from prepaint on
@@ -542,7 +550,7 @@ impl gpui_kit::Render for NativeModuleView {
                         format!("view{}", cx.entity().entity_id().as_u64()),
                     );
                     // A view owns its own inset: a split pane runs to the edges.
-                    // Narrower than `MIN_WIDTH`, it scrolls sideways rather
+                    // Narrower than its minimum, it scrolls sideways rather
                     // than being squeezed and cut at the window's edge. The
                     // layer occludes: a guest under another one is never
                     // hovered, as if each were its own window.
@@ -555,7 +563,7 @@ impl gpui_kit::Render for NativeModuleView {
                         .child(
                             gpui_kit::div()
                                 .size_full()
-                                .min_w(gpui_kit::px(MIN_WIDTH))
+                                .min_w(gpui_kit::px(min_width))
                                 .occlude()
                                 .child(guest),
                         )

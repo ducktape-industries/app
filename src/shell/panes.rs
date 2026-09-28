@@ -133,14 +133,21 @@ impl DesktopWindow {
     ) {
         let message = match message {
             // it opens where it sat on the desk
-            PaneMessage::PopOut { index, at: None } => PaneMessage::PopOut {
-                index,
-                at: Some(super::windows::unseated(
-                    window.bounds(),
-                    self.layout(cx).panes.get(index).and_then(|pane| pane.frame),
-                    window.display(cx).map(|display| display.bounds()),
-                )),
-            },
+            PaneMessage::PopOut { index, at: None } => {
+                let layout = self.layout(cx);
+                let pane = layout.panes.get(index);
+                PaneMessage::PopOut {
+                    index,
+                    at: Some(super::windows::unseated(
+                        window.bounds(),
+                        pane.and_then(|pane| pane.frame),
+                        window.display(cx).map(|display| display.bounds()),
+                        pane.map_or(super::windows::POPOUT_MIN, |pane| {
+                            super::windows::popout_min(pane.module)
+                        }),
+                    )),
+                }
+            }
             message => message,
         };
         let key = self.key;
@@ -586,12 +593,15 @@ impl DesktopWindow {
         at: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &gpui_kit::App,
     ) {
-        if let Some(start) = self.layout(cx).panes.get(index).and_then(|pane| pane.frame) {
+        let layout = self.layout(cx);
+        let pane = layout.panes.get(index);
+        if let Some((start, min_w)) = pane.and_then(|pane| Some((pane.frame?, pane.min_width()))) {
             self.drag = Some(Drag {
                 index,
                 sides,
                 from: (at.x.into(), at.y.into()),
                 start,
+                min_w,
             });
         }
     }
@@ -726,11 +736,14 @@ pub(super) struct Drag {
     sides: [bool; 4],
     from: (f32, f32),
     start: layout::Frame,
+    /// The window's [`layout::Pane::min_width`].
+    min_w: f32,
 }
 
 impl Drag {
-    /// The frame with the pointer at `to`. A side held past the smallest
-    /// window stops; the side across from it stays put.
+    /// The frame with the pointer at `to`. A side held past the window's
+    /// narrowest (or the smallest window's height) stops; the side across
+    /// from it stays put.
     fn frame(&self, to: (f32, f32)) -> layout::Frame {
         let (dx, dy) = (to.0 - self.from.0, to.1 - self.from.1);
         let start = self.start;
@@ -741,13 +754,13 @@ impl Drag {
             frame.y += dy;
         }
         if right {
-            frame.w = (start.w + dx).max(layout::MIN_WIDTH);
+            frame.w = (start.w + dx).max(self.min_w);
         }
         if bottom {
             frame.h = (start.h + dy).max(layout::MIN_HEIGHT);
         }
         if left {
-            frame.w = (start.w - dx).max(layout::MIN_WIDTH);
+            frame.w = (start.w - dx).max(self.min_w);
             frame.x = start.x + start.w - frame.w;
         }
         if top {
@@ -848,6 +861,7 @@ mod drag_tests {
             sides,
             from: (0., 0.),
             start,
+            min_w: MIN_WIDTH,
         };
         let moved = drag([false; 4]).frame((30., -20.));
         assert_eq!(
@@ -872,6 +886,15 @@ mod drag_tests {
         assert_eq!((left.w, left.x + left.w), (MIN_WIDTH, 600.));
         let top = drag([false, true, false, false]).frame((0., -60.));
         assert_eq!((top.y, top.h), (40., 460.));
+        // a window holding a view laid out from 680 stops at 682
+        let wide = Frame { w: 900., ..start };
+        let left = Drag {
+            start: wide,
+            min_w: 682.,
+            ..drag([true, false, false, false])
+        }
+        .frame((1000., 0.));
+        assert_eq!((left.w, left.x + left.w), (682., 1000.));
     }
 }
 

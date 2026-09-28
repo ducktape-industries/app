@@ -107,3 +107,14 @@ fn same_module_instances_receive_independent_props(cx: &mut gpui_kit::TestAppCon
         );
     });
 }
+
+/// The root a view is drawn in is laid out from the view's own minimum.
+#[test]
+fn a_view_is_laid_out_from_its_own_minimum() {
+    crate::runtime::seat_for_test("laid-out-from", 560);
+    let seat = registry().lock().unwrap()[&("laid-out-from", 0)].clone();
+    let Slot::Ready(guest) = &seat.lock().unwrap().slot else {
+        panic!("seated");
+    };
+    assert_eq!(laid_out_from(guest), 560.);
+}

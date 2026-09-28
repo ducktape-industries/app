@@ -265,6 +265,28 @@ mod tests {
         assert_eq!(state.layouts.len(), before);
     }
 
+    /// A window is placed before its view comes (60% of a 1000 px desk);
+    /// once the view is seated, the window widens to the view's minimum
+    /// and its border.
+    #[test]
+    fn a_window_widens_to_its_view_once_the_view_is_seated() {
+        let (mut state, _) = Ducktape::boot();
+        let console = WindowKey::unique();
+        state.console_win = Some(console);
+        let _ = state.update(Message::DeskShown {
+            window: console,
+            desk: (1000., 700.),
+            seed: Some("seated-wide-view"),
+        });
+        let placed = state.layouts[&console].panes[0].frame.unwrap();
+        assert_eq!(placed.w, 600.);
+        crate::runtime::seat_for_test("seated-wide-view", 680);
+        let seated = crate::runtime::Intent::Seated;
+        let _ = state.update(Message::ViewEvent("seated-wide-view", seated));
+        let widened = state.layouts[&console].panes[0].frame.unwrap();
+        assert_eq!((widened.x, widened.w), (placed.x, 682.));
+    }
+
     /// The model's own asks land in the console's layout at once, each of
     /// them: two in a row no longer overwrite each other.
     #[test]

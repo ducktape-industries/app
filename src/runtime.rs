@@ -84,6 +84,9 @@ pub enum Intent {
     OpenLink(String),
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
+    /// A view was seated in its tab, first or after a new deployment: its
+    /// minimum width is known, and the desk widens a window under it.
+    Seated,
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a
@@ -156,11 +159,48 @@ mod display_diagnostics;
 
 pub(crate) mod pictures;
 
-/// The name a view's manifest gives it and the capabilities it declares;
-/// empty for one whose manifest cannot be read (`compile` refuses those
-/// before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>) {
+/// The name a view's manifest gives it, the capabilities it declares and
+/// the narrowest it is laid out; empty and 0 for one whose manifest cannot
+/// be read (`compile` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32) {
     view_wire::manifest::read_manifest(bytes)
-        .map(|manifest| (manifest.name, manifest.capabilities))
+        .map(|manifest| (manifest.name, manifest.capabilities, manifest.min_width))
         .unwrap_or_default()
+}
+
+/// The narrowest `module`'s view is laid out, in px, once one of its seats
+/// holds it drawn; `None` while it loads, failed, or has none.
+pub(crate) fn min_width(module: &str) -> Option<f32> {
+    let registry = registry().lock().expect("module views");
+    registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .find_map(
+            |(_, seat)| match &seat.lock().expect("module view lock").slot {
+                Slot::Ready(guest) => Some(guest.min_width as f32),
+                _ => None,
+            },
+        )
+}
+
+/// A drawn view of `module` whose manifest says `min_width`, seated as a
+/// load seats one: a WAT view with the five exports that is never ticked.
+#[cfg(test)]
+pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
+    let code = Module::new(
+        guest::engine(),
+        r#"(module
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) unreachable)
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+    )
+    .unwrap();
+    let mut guest = Guest::instantiate(module, &code, module).unwrap();
+    guest.min_width = min_width;
+    let seat = Mounted::seat();
+    seat.lock().unwrap().slot = Slot::Ready(Box::new(guest));
+    registry().lock().unwrap().insert((module, 0), seat);
 }

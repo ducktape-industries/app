@@ -37,10 +37,12 @@ impl Frame {
         }
     }
 
-    /// At least the smallest window, no larger than the desk, and never so
-    /// far off it that its title bar can't be grabbed back.
-    pub(crate) fn clamped(self, desk: (f32, f32)) -> Self {
-        let w = self.w.max(MIN_WIDTH).min(desk.0.max(MIN_WIDTH));
+    /// At least `min_w` wide (its pane's [`Pane::min_width`]) and the
+    /// smallest window high, no larger than the desk, and never so far off
+    /// it that its title bar can't be grabbed back. On a desk narrower than
+    /// `min_w` it is the desk's width, and the view scrolls sideways in it.
+    pub(crate) fn clamped(self, desk: (f32, f32), min_w: f32) -> Self {
+        let w = self.w.max(min_w).min(desk.0.max(MIN_WIDTH));
         let h = self.h.max(MIN_HEIGHT).min(desk.1.max(MIN_HEIGHT));
         Self {
             x: self.x.clamp(KEEP - w, (desk.0 - KEEP).max(0.)),
@@ -87,6 +89,17 @@ impl Pane {
     /// A program's view is in it: not empty, not the app's help.
     pub(crate) fn is_view(&self) -> bool {
         !matches!(self.module, EMPTY | HELP)
+    }
+
+    /// The narrowest its frame goes: once its view is drawn, the view's
+    /// own minimum and the frame's 1px border on each side; never under
+    /// the smallest window.
+    pub(crate) fn min_width(&self) -> f32 {
+        let view = self
+            .is_view()
+            .then(|| crate::runtime::min_width(self.module));
+        view.flatten()
+            .map_or(MIN_WIDTH, |min_width| MIN_WIDTH.max(min_width + 2.))
     }
 }
 
@@ -256,14 +269,18 @@ impl Layout {
     /// `below`): it keeps the first half, a new empty window takes the
     /// other. With no window, an empty one fills the desk.
     pub(crate) fn halve(&mut self, below: bool, desk: (f32, f32)) -> bool {
-        let Some(whole) = self.panes.get(self.focused).map(|pane| pane.frame) else {
+        let Some(kept) = self.panes.get(self.focused) else {
             return self.split(EMPTY);
         };
-        let whole = whole.unwrap_or_else(|| Frame::fill(desk));
-        // halves under the smallest window would be pushed apart, one past
-        // the other and off the desk
+        let whole = kept.frame.unwrap_or_else(|| Frame::fill(desk));
+        // halves under their smallest window would be pushed apart, one past
+        // the other and off the desk: the kept half under its view's, the
+        // new empty one under the smallest
         let fits = match below {
-            false => whole.w / 2. >= MIN_WIDTH,
+            false => {
+                let first = (whole.w / 2.).floor();
+                first >= kept.min_width() && whole.w - first >= MIN_WIDTH
+            }
             true => whole.h / 2. >= MIN_HEIGHT,
         };
         if !fits || !self.split(EMPTY) {
@@ -478,7 +495,8 @@ impl Layout {
             self.panes[index].frame = Some(frame);
         }
         for pane in &mut self.panes {
-            pane.frame = pane.frame.map(|frame| frame.clamped(desk));
+            let min_w = pane.min_width();
+            pane.frame = pane.frame.map(|frame| frame.clamped(desk, min_w));
         }
     }
 
@@ -488,7 +506,7 @@ impl Layout {
             .all(|v| v.is_finite());
         match self.panes.get_mut(index) {
             Some(pane) if valid => {
-                pane.frame = Some(frame.clamped(desk));
+                pane.frame = Some(frame.clamped(desk, pane.min_width()));
                 pane.restore = None;
                 true
             }
@@ -502,7 +520,7 @@ impl Layout {
             return;
         };
         match pane.restore.take() {
-            Some(restore) => pane.frame = Some(restore.clamped(desk)),
+            Some(restore) => pane.frame = Some(restore.clamped(desk, pane.min_width())),
             None => {
                 pane.restore = pane.frame;
                 pane.frame = Some(Frame::fill(desk));
@@ -672,6 +690,50 @@ mod tests {
         layout.place((600., 400.));
         let shrunk = layout.panes[0].frame.unwrap();
         assert!(shrunk.x <= 600. - KEEP);
+    }
+
+    /// A window holding a drawn view is never narrower than the view's
+    /// own minimum and its border, unless the desk is: then it is the desk.
+    #[test]
+    fn a_window_is_never_narrower_than_its_view() {
+        let narrow = Frame {
+            x: 100.,
+            y: 100.,
+            w: 10.,
+            h: 400.,
+        };
+        assert_eq!(narrow.clamped(DESK, 682.).w, 682.);
+        assert_eq!(narrow.clamped((600., 400.), 682.).w, 600., "the desk");
+        crate::runtime::seat_for_test("layout-wide-view", 680);
+        let mut layout = Layout::default();
+        layout.split("layout-wide-view");
+        layout.place(DESK);
+        assert_eq!(layout.panes[0].min_width(), 682.);
+        assert!(layout.set_frame(0, narrow, DESK));
+        assert_eq!(layout.panes[0].frame.unwrap().w, 682.);
+        // a narrow view still goes down to the smallest window
+        crate::runtime::seat_for_test("layout-narrow-view", 280);
+        assert_eq!(Pane::new("layout-narrow-view").min_width(), MIN_WIDTH);
+    }
+
+    /// Left and right halves each keep their own minimum: a view laid out
+    /// from 680 in a 1000 px window is not halved into 500s.
+    #[test]
+    fn a_view_is_not_halved_under_its_minimum() {
+        crate::runtime::seat_for_test("layout-halved-view", 680);
+        let mut layout = Layout::default();
+        layout.split("layout-halved-view");
+        layout.place(DESK);
+        let whole = Frame {
+            x: 100.,
+            y: 100.,
+            w: 1000.,
+            h: 600.,
+        };
+        layout.set_frame(0, whole, DESK);
+        assert!(!layout.halve(false, DESK), "its half would be 500");
+        assert_eq!(layout.panes.len(), 1);
+        assert!(layout.halve(true, DESK), "top and bottom as before");
     }
 
     #[test]
