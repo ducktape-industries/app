@@ -2,6 +2,9 @@ use super::picture_resources::{cache_fits, decode_image};
 use super::*;
 use crate::render::native_id;
 
+mod svg_canvas;
+use svg_canvas::SvgCanvas;
+
 pub(crate) fn qr(code: &wire::Qr) -> AnyElement {
     let Some(payload) = &code.payload else {
         return div().into_any_element();
@@ -132,14 +135,14 @@ impl ViewTree {
         self.primitive_interactivity(element, id.as_ref(), interactivity, cx)
     }
 
-    pub(super) fn drawing(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn drawing(&mut self, node: &wire::Node, _cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Canvas { commands, style } = node else {
             unreachable!()
         };
         let mut root = div().relative().overflow_hidden();
         *root.style() = style.clone();
-        if native_canvas_commands(commands) {
-            let commands = commands.clone();
+        let commands = commands.clone();
+        if native_canvas_commands(&commands) {
             return root
                 .child(
                     canvas(
@@ -150,26 +153,9 @@ impl ViewTree {
                     )
                     .size_full(),
                 )
-                .child(self.measure(&self.authored_path, cx))
                 .into_any_element();
         }
-        let bounds = self
-            .bounds
-            .get(&self.authored_path)
-            .copied()
-            .unwrap_or_default();
-        let width = f32::from(bounds.size.width).max(1.);
-        let height = f32::from(bounds.size.height).max(1.);
-        let svg_bytes = canvas_svg(commands, width, height);
-        let source = SvgPaintSource::data(&svg_bytes);
-        root.child(guarded_svg_paint(
-            source,
-            img(Arc::new(Image::from_bytes(ImageFormat::Svg, svg_bytes)))
-                .size_full()
-                .object_fit(ObjectFit::Fill),
-        ))
-        .child(self.measure(&self.authored_path, cx))
-        .into_any_element()
+        root.child(SvgCanvas { commands }).into_any_element()
     }
 
     fn image_state(
