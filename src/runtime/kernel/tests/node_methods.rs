@@ -112,6 +112,25 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
     }
 }
 
+/// A node from before `/v1/network` answers a bare 404: `unknown_request`
+/// at once, which the retry loop takes as the node's word, not a transport
+/// failure to ask again.
+#[tokio::test]
+async fn a_node_without_the_network_route_is_refused_at_once() {
+    let (node, server) = node_server(
+        "GET /v1/network HTTP/1.1",
+        vec![("404 Not Found", Vec::new())],
+    );
+    let refused = network(node, Vec::new()).await.unwrap_err();
+    server.join().unwrap();
+    assert_eq!(refused.code, "unknown_request");
+    assert_eq!(
+        refused.message,
+        "This node doesn't report its validators' votes. Update the node."
+    );
+    assert!(!node::transport_failed(&refused), "not retried");
+}
+
 #[tokio::test]
 async fn system_status_preserves_borsh_and_refusals() {
     let expected = backend::noded::Status {

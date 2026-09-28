@@ -45,48 +45,32 @@ impl DesktopWindow {
         };
         let mut rows = vec![];
         if let Some(node) = &state.node {
-            rows.push(row("Height", grouped(node.height), true));
-            rows.push(row(
-                "Last block",
-                match state.block_age {
-                    ..=0 => "just now".to_owned(),
-                    age => format!("{age} s ago"),
-                },
-                false,
-            ));
-            rows.push(row(
-                "Block time",
-                format!("{:.1} s", node.block_time_ms as f64 / 1000.),
-                false,
-            ));
-            let (into, of) = match node.epoch_length {
-                0 => (0, 0),
-                length => (node.height % length, length),
-            };
-            rows.push(row(
-                "Epoch",
-                format!("{} · {into} / {of}", node.epoch),
-                true,
-            ));
-            let share = match of {
-                0 => 0.,
-                of => into as f32 / of as f32,
-            };
-            rows.push(
-                div()
-                    .mx(px(16.))
-                    .mt(px(2.))
-                    .mb(px(8.))
-                    .h(px(2.))
-                    .bg(ink.line)
-                    .child(div().h_full().w(relative(share)).bg(ink.ink)),
-            );
-            rows.push(row("Tip", short_hex(&node.tip), true));
-            rows.push(row("State root", short_hex(&node.root.0), true));
-            rows.push(row("Node key", short_hex(&node.identity), true));
-            rows.push(row("Contract", format!("v{}", node.contract), true));
-            rows.push(row("Chain founded", founded(node.time), false));
+            for (key, value, code) in node_facts(node, state.block_age, ok) {
+                rows.push(row(key, value, code));
+                if key == "Epoch" {
+                    rows.push(
+                        div()
+                            .mx(px(16.))
+                            .mt(px(2.))
+                            .mb(px(8.))
+                            .h(px(2.))
+                            .bg(ink.line)
+                            .child(div().h_full().w(relative(epoch_share(node))).bg(ink.ink)),
+                    );
+                }
+            }
         }
+        // down: when it was last heard, and that the numbers are from then
+        let heard = match (ok, &state.node) {
+            (false, Some(node)) => Some(
+                div().px(px(16.)).pb(px(10.)).child(
+                    sans(400, 13.)
+                        .text_color(ink.muted)
+                        .child(last_heard(node.height, state.heard_age)),
+                ),
+            ),
+            _ => None,
+        };
         let copy = {
             let url = state.connected_rpc.clone();
             self.menu_row(
@@ -129,6 +113,7 @@ impl DesktopWindow {
                             ),
                     ),
             )
+            .children(heard)
             .child(div().h(px(1.)).mb(px(6.)).bg(ink.line))
             .children(rows)
             .child(div().h(px(1.)).my(px(6.)).bg(ink.line))
@@ -138,6 +123,15 @@ impl DesktopWindow {
                     .control(Role::Menu, "Node actions")
                     .flex()
                     .flex_col()
+                    // the bottom bar's Retry now: the same status poll, now
+                    .children((!ok).then(|| {
+                        self.menu_row(
+                            "node-retry",
+                            "Retry now",
+                            self.dispatching(|| Message::Tick),
+                            cx,
+                        )
+                    }))
                     .child(copy)
                     .child(self.menu_row(
                         "node-switch",
@@ -407,9 +401,84 @@ fn short_hex(bytes: &[u8]) -> String {
     }
 }
 
-/// The chain's founding time as a date. The node's clock reads in
-/// milliseconds; a value that small is taken as seconds.
+/// The popover's rows in the words and formats Nodes uses: label, value,
+/// and whether the value is mono. Last block only while it answers.
+fn node_facts(
+    node: &crate::backend::NodeStatus,
+    block_age: i64,
+    answering: bool,
+) -> Vec<(&'static str, String, bool)> {
+    let mut facts = vec![("Height", grouped(node.height), true)];
+    if answering {
+        let last = match block_age {
+            ..=0 => "just now".to_owned(),
+            age => format!("{} ago", ago(age)),
+        };
+        facts.push(("Last block", last, false));
+    }
+    facts.push((
+        "Block time",
+        format!("{:.1} s", node.block_time_ms as f64 / 1000.),
+        false,
+    ));
+    let (into, of) = epoch_into(node);
+    facts.extend([
+        ("Epoch", format!("{} · {into} / {of}", node.epoch), true),
+        ("Tip", short_hex(&node.tip), true),
+        ("State root", short_hex(&node.root.0), true),
+        ("Node identity", short_hex(&node.identity), true),
+        ("Contract version", node.contract.to_string(), true),
+        ("Chain founded", founded(node.time), false),
+    ]);
+    facts
+}
+
+/// How many blocks into its epoch the tip is, and the epoch's length. A
+/// block closes epoch `e` when `height + 1` reaches `(e + 1) × length`, so
+/// right after a close it reads 0.
+fn epoch_into(node: &crate::backend::NodeStatus) -> (u64, u64) {
+    match node.epoch_length {
+        0 => (0, 0),
+        length => ((node.height + 1) % length, length),
+    }
+}
+
+fn epoch_share(node: &crate::backend::NodeStatus) -> f32 {
+    match epoch_into(node) {
+        (_, 0) => 0.,
+        (into, of) => into as f32 / of as f32,
+    }
+}
+
+/// The down popover's line: `Last heard at block 4,295, 38s ago. The
+/// numbers below are what it said then.` The age counts from the node's
+/// last answer, not from the last block: a chain that stood still for
+/// minutes under a node that went quiet just now was heard just now.
+fn last_heard(height: u64, heard_age: i64) -> String {
+    format!(
+        "Last heard at block {}, {} ago. The numbers below are what it said then.",
+        grouped(height),
+        ago(heard_age)
+    )
+}
+
+/// An age in seconds as Nodes writes it (the view SDK's `design::ago`):
+/// `13s`, `3m`, `4h`, `5d`.
+fn ago(seconds: i64) -> String {
+    match seconds.max(0) {
+        seconds @ ..60 => format!("{seconds}s"),
+        seconds @ 60..3_600 => format!("{}m", seconds / 60),
+        seconds @ 3_600..86_400 => format!("{}h", seconds / 3_600),
+        seconds => format!("{}d", seconds / 86_400),
+    }
+}
+
+/// The chain's founding time as a day: `27 Sep 2026`. The node's clock
+/// reads in milliseconds; a value that small is taken as seconds.
 fn founded(time: u64) -> String {
+    const MONTHS: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
     let seconds = match time > 100_000_000_000 {
         true => time / 1000,
         false => time,
@@ -424,7 +493,7 @@ fn founded(time: u64) -> String {
     let day = doy - (153 * mp + 2) / 5 + 1;
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = yoe + era * 400 + i64::from(month <= 2);
-    format!("{year}-{month:02}-{day:02}")
+    format!("{day} {} {year}", MONTHS[(month - 1) as usize])
 }
 
 #[cfg(test)]
@@ -438,8 +507,99 @@ mod tests {
         assert_eq!(grouped(1_000_000), "1,000,000");
         assert_eq!(short_hex(&[0xab; 32]), "abababab…abab");
         assert_eq!(short_hex(&[1, 2]), "0102");
-        assert_eq!(founded(0), "1970-01-01");
-        assert_eq!(founded(1_790_121_600), "2026-09-23");
-        assert_eq!(founded(1_790_121_600_000), "2026-09-23");
+        assert_eq!(founded(0), "1 Jan 1970");
+        assert_eq!(founded(1_790_121_600), "23 Sep 2026");
+        assert_eq!(founded(1_790_121_600_000), "23 Sep 2026");
+    }
+
+    fn node() -> crate::backend::NodeStatus {
+        crate::backend::NodeStatus {
+            network: "testkit".into(),
+            time: 1_790_121_600_000,
+            block_time_ms: 1000,
+            epoch_length: 64,
+            height: 4295,
+            tip: [0xb2; 32],
+            root: abi::Root([0x41; 32]),
+            epoch: 67,
+            identity: vec![0x24; 32],
+            contract: 1,
+            genesis: [0; 32],
+        }
+    }
+
+    /// Nodes' words: Node identity, Contract version and its number, the
+    /// day the chain was founded, the epoch by core's rule.
+    #[test]
+    fn the_popover_says_what_nodes_says() {
+        let facts: Vec<(&str, String)> = node_facts(&node(), 0, true)
+            .into_iter()
+            .map(|(key, value, _)| (key, value))
+            .collect();
+        let expected = [
+            ("Height", "4,295"),
+            ("Last block", "just now"),
+            ("Block time", "1.0 s"),
+            ("Epoch", "67 · 8 / 64"),
+            ("Tip", "b2b2b2b2…b2b2"),
+            ("State root", "41414141…4141"),
+            ("Node identity", "24242424…2424"),
+            ("Contract version", "1"),
+            ("Chain founded", "23 Sep 2026"),
+        ];
+        let expected: Vec<(&str, String)> = expected
+            .iter()
+            .map(|(key, value)| (*key, value.to_string()))
+            .collect();
+        assert_eq!(facts, expected);
+        // the block that closes epoch 67 leaves the tip 0 into epoch 68
+        let closed = crate::backend::NodeStatus {
+            height: 4351,
+            epoch: 68,
+            ..node()
+        };
+        assert_eq!(epoch_into(&closed), (0, 64));
+    }
+
+    /// Down: no Last block, and the line that says when it was last heard.
+    #[test]
+    fn a_node_not_answering_says_when_it_was_last_heard() {
+        let keys: Vec<&str> = node_facts(&node(), 38, false)
+            .into_iter()
+            .map(|(key, _, _)| key)
+            .collect();
+        assert!(!keys.contains(&"Last block"), "{keys:?}");
+        assert_eq!(
+            last_heard(4295, 38),
+            "Last heard at block 4,295, 38s ago. The numbers below are what it said then."
+        );
+        // the same age format as Nodes: `13s ago`, then minutes
+        assert_eq!(node_facts(&node(), 13, true)[1].1, "13s ago");
+        assert!(last_heard(4295, 150).starts_with("Last heard at block 4,295, 2m ago."));
+        assert_eq!(ago(-1), "0s");
+    }
+
+    /// Last heard counts from the node's last answer: a chain stalled for
+    /// five minutes, then a node gone quiet 4s ago, was heard 4s ago.
+    #[test]
+    fn last_heard_counts_from_the_last_answer() {
+        let (mut state, _) = crate::Ducktape::boot();
+        // the height stands still throughout: nothing else is asked for
+        (state.connected, state.height) = (true, 4295);
+        let _ = state.update(Message::StatusPushed(node()));
+        for _ in 0..300 {
+            let _ = state.update(Message::WallTick);
+            let _ = state.update(Message::StatusPushed(node()));
+        }
+        for _ in 0..4 {
+            let _ = state.update(Message::WallTick);
+            let _ = state.update(Message::StatusMissed);
+        }
+        let facts = state.facts();
+        assert!(facts.reconnecting);
+        assert_eq!((facts.block_age, facts.heard_age), (304, 4));
+        assert!(
+            last_heard(4295, facts.heard_age).starts_with("Last heard at block 4,295, 4s ago.")
+        );
     }
 }

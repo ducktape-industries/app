@@ -25,7 +25,7 @@ const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60
 
 /// A refusal the transport produced is retried; one that is the node's
 /// own word ends the retry loop. For a READ: asking again costs nothing.
-fn transport_failed(refusal: &wire::Error) -> bool {
+pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
     matches!(refusal.code.as_str(), "rpc_client" | "node_failed")
 }
 
@@ -480,6 +480,37 @@ pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
             epoch: status.epoch,
             identity: status.identity,
             contract: status.contract,
+        }))
+    })
+}
+
+/// `chain.network`: each member's newest finalize vote. A node from before
+/// `/v1/network` answers a bare 404: refused at once as a request it does
+/// not know, not retried as a node that is down would be, so the view says
+/// to update it.
+pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
+    Box::pin(async move {
+        if !ask.is_empty() {
+            return Err(malformed("chain.network takes no payload"));
+        }
+        let network = node.client.network().await.map_err(|error| match error {
+            noded::Error::Failed { status: 404, .. } => wire::Error::new(
+                "unknown_request",
+                "This node doesn't report its validators' votes. Update the node.",
+            ),
+            error => refused(error),
+        })?;
+        let members = network
+            .members
+            .into_iter()
+            .map(|peer| methods::Peer {
+                key: peer.key,
+                signed: peer.signed,
+            })
+            .collect();
+        Ok(methods::encode(&methods::NetworkStatus {
+            height: network.height,
+            members,
         }))
     })
 }

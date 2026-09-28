@@ -30,6 +30,7 @@ pub mod route {
     pub const CHANGES: &str = "/v1/changes";
     pub const BLOCKS: &str = "/v1/blocks";
     pub const BLOCK: &str = "/v1/block";
+    pub const NETWORK: &str = "/v1/network";
 }
 
 /// `host::Layer`: which state a read sees.
@@ -110,6 +111,27 @@ pub struct Status {
     pub contract: u32,
     /// The genesis block's digest: with the network name, the chain's id.
     pub genesis: [u8; 32],
+}
+
+/// Every member of the current epoch as the node sees it (`/v1/network`):
+/// its applied tip when it answered, and the members in key order. No
+/// member's `signed` exceeds `height`.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Network {
+    pub height: u64,
+    pub members: Vec<PeerStatus>,
+}
+
+/// One member: the newest block the node applied that this key sent a
+/// finalize vote for, as the node's consensus engine heard it. A vote for a
+/// block not applied yet counts once it is. `None` for a resident, for a
+/// validator not heard since the node started or began validating, and for
+/// every member while the node is not itself seated as a validator: it runs
+/// no engine, so it hears no votes.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct PeerStatus {
+    pub key: Vec<u8>,
+    pub signed: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -243,6 +265,11 @@ impl Client {
 
     pub async fn status(&self) -> Result<Status> {
         self.fetch(route::STATUS).await
+    }
+
+    /// Every member's sync state as the node sees it.
+    pub async fn network(&self) -> Result<Network> {
+        self.fetch(route::NETWORK).await
     }
 
     /// A signed frame, as bytes; the node answers the receipt of its execute.
@@ -379,6 +406,35 @@ mod tests {
         assert_eq!(receipt.outcome, abi::Outcome::Applied { output: vec![7] });
         assert_eq!(receipt.nested.len(), 1);
         assert_eq!(receipt.nested[0].program, "b");
+    }
+
+    /// The bytes noded's own test pins `Network` to (noded/src/network.rs,
+    /// `the_route_is_borsh_in_declaration_order`, core 4c12e1eac).
+    #[test]
+    fn network_decodes_the_nodes_bytes() {
+        let mut bytes = Vec::new();
+        bytes.extend(2u64.to_le_bytes());
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend([9, 1]);
+        bytes.extend(1u64.to_le_bytes());
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend([7, 0]);
+        let network = Network {
+            height: 2,
+            members: vec![
+                PeerStatus {
+                    key: vec![9],
+                    signed: Some(1),
+                },
+                PeerStatus {
+                    key: vec![7],
+                    signed: None,
+                },
+            ],
+        };
+        assert_eq!(abi::decode::<Network>(&bytes).unwrap(), network);
+        assert_eq!(abi::encode(&network), bytes);
     }
 
     #[test]

@@ -108,8 +108,8 @@ mod replies;
 
 pub(super) use node::{NodeTask, spawn_reply};
 use node::{
-    blob_get, block, blocks, changes, heads, invite, query, spawn_no_retry, spawn_retrying,
-    spawn_retrying_unsent, status, submit,
+    blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
+    spawn_retrying, spawn_retrying_unsent, status, submit,
 };
 pub(super) use replies::Replies;
 
@@ -205,6 +205,7 @@ pub(super) fn answer(
         }
         (Capability::Module, "query") => spawn_retrying(guest, id, payload, query),
         (Capability::Chain, "status") => spawn_retrying(guest, id, payload, status),
+        (Capability::Chain, "network") => spawn_retrying(guest, id, payload, network),
         (Capability::Chain, "blocks") => spawn_retrying(guest, id, payload, blocks),
         (Capability::Chain, "block") => spawn_retrying(guest, id, payload, block),
         (Capability::Invite, "create") => spawn_no_retry(guest, id, payload, invite),

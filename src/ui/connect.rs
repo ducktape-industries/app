@@ -226,6 +226,7 @@ impl Ducktape {
         if height != self.height {
             self.block_seen = self.wall_now;
         }
+        self.heard = self.wall_now;
         self.height = height;
         self.node = Some(status.clone());
         // mid-switch the line reads "Reaching …" until the other node answers
