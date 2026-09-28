@@ -165,7 +165,6 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 (Action::Click, "press"),
                 (Action::Focus, "focus"),
                 (Action::SetValue, "set_value"),
-                (Action::ScrollIntoView, "scroll_into_view"),
             ] {
                 if node.supports_action(action) {
                     actions.push(word);
@@ -253,6 +252,50 @@ mod modal_tests {
         ]);
 
         assert_eq!(topmost_modal(root_id, &nodes), Some(visible_id));
+    }
+}
+
+#[cfg(test)]
+mod offer_tests {
+    use super::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AccessibleAction, Context, InteractiveElement as _, IntoElement, Render,
+        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+    };
+
+    /// A node that advertises an action `/act` has no arm for.
+    struct Scroller;
+
+    impl Render for Scroller {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("scroller")
+                .size(px(100.))
+                .role(Role::ScrollView)
+                .aria_label("Rows")
+                .on_a11y_action(AccessibleAction::ScrollIntoView, |_, _, _| {})
+        }
+    }
+
+    /// The door offers only what `/act` performs: a node advertising
+    /// ScrollIntoView is offered nothing for it.
+    #[gpui_kit::test]
+    fn the_door_offers_no_action_it_cannot_perform(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Scroller);
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        let actions = native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+            snapshot("t", window, false)
+                .into_iter()
+                .find(|node| node.role == "ScrollView")
+                .expect("the scroller is in the tree")
+                .actions
+        });
+        assert!(actions.is_empty(), "{actions:?}");
     }
 }
 

@@ -2326,7 +2326,6 @@ name = "ducktape-app"
 version = "0.1.0"
 dependencies = [
  "abi",
- "accesskit_consumer",
  "base64 0.22.1",
  "block2 0.5.1",
  "borsh",

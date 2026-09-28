@@ -277,7 +277,7 @@ fn call(door: &DoorFile, method: &str, target: &str, body: &str) -> std::io::Res
 
 const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--compact] [--bounds]
        ducktape-app ax actions [--window W] [--view V]
-       ducktape-app ax act <id> <press|focus|set_value|type|scroll_into_view> [value]
+       ducktape-app ax act <id> <press|focus|set_value|type> [value]
        ducktape-app ax key <keys> [--text T] [--window W]   (keys: tab, shift-tab, enter, ctrl-k …)
        ducktape-app ax keys [--window W]
        ducktape-app ax drag <x1,y1> <x2,y2> [--id ID] [--steps N] [--window W]   (px; local to ID's bounds when given)
