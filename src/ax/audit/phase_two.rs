@@ -1,6 +1,6 @@
 //! The phase-2 rules (`docs/ax.md` §1.3): what the door's phase-2 keys say
 //! about one node (AX-101, 102, 106, 108, 109, 111 … 114, 116 … 118), and
-//! where a node sits through `parent` (AX-119).
+//! where a node sits through `parent` (AX-105, 119).
 use super::*;
 use std::collections::HashMap;
 
@@ -37,6 +37,19 @@ impl<'a> Snapshot<'a> {
     }
 }
 
+/// The container roles `role` belongs in (AX-105), when it has any.
+fn home(role: &str) -> Option<&'static [&'static str]> {
+    Some(match role {
+        "MenuItem" | "MenuItemCheckBox" | "MenuItemRadio" => &["Menu", "MenuBar"],
+        "Tab" => &["TabList"],
+        "RadioButton" => &["RadioGroup"],
+        "ListBoxOption" => &["ListBox"],
+        "TreeItem" => &["Tree"],
+        "Row" | "Cell" => &["Table", "Grid"],
+        _ => return None,
+    })
+}
+
 /// The phase-2 rules on one node of `nodes`, `snapshot` their index.
 pub(super) fn node_rules(
     node: &AxNode,
@@ -68,6 +81,14 @@ pub(super) fn node_rules(
                 "{role} is live {:?} with value {:?}; wants {live} and a value",
                 more.live, node.value
             )
+        });
+    }
+    if let Some(homes) = home(role) {
+        let pass = snapshot
+            .ancestors(node)
+            .any(|above| homes.contains(&above.role.as_str()));
+        tally.check("AX-105", node, pass, || {
+            format!("{role} is in no {}", homes.join(" or "))
         });
     }
     if role == "Heading" {

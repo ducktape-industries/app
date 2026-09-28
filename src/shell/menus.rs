@@ -132,13 +132,20 @@ impl DesktopWindow {
             .child(div().h(px(1.)).mb(px(6.)).bg(ink.line))
             .children(rows)
             .child(div().h(px(1.)).my(px(6.)).bg(ink.line))
-            .child(copy)
-            .child(self.menu_row(
-                "node-switch",
-                "Switch node…",
-                self.dispatching(|| Message::ToggleNetworkMenu),
-                cx,
-            ));
+            .child(
+                div()
+                    .id("node-actions")
+                    .control(Role::Menu, "Node actions")
+                    .flex()
+                    .flex_col()
+                    .child(copy)
+                    .child(self.menu_row(
+                        "node-switch",
+                        "Switch node…",
+                        self.dispatching(|| Message::ToggleNetworkMenu),
+                        cx,
+                    )),
+            );
         self.hanging(crate::Popover::Node, 340., body, window, cx)
     }
 
@@ -215,18 +222,30 @@ impl DesktopWindow {
                     ),
             )
             .child(div().h(px(1.)).mb(px(6.)).bg(ink.line))
-            .child(rows)
-            .child(div().h(px(1.)).my(px(6.)).bg(ink.line))
             .child(
                 div()
-                    .child(self.menu_row("lock", "Lock", self.dispatching(|| Message::Lock), cx))
-                    .child(self.menu_row(
-                        "disconnect",
-                        "Switch node…",
-                        // as the node menu's: the networks this device reached
-                        self.dispatching(|| Message::ToggleNetworkMenu),
-                        cx,
-                    )),
+                    .id("account-actions")
+                    .control(Role::Menu, "Account actions")
+                    .flex()
+                    .flex_col()
+                    .child(rows)
+                    .child(div().h(px(1.)).my(px(6.)).bg(ink.line))
+                    .child(
+                        div()
+                            .child(self.menu_row(
+                                "lock",
+                                "Lock",
+                                self.dispatching(|| Message::Lock),
+                                cx,
+                            ))
+                            .child(self.menu_row(
+                                "disconnect",
+                                "Switch node…",
+                                // as the node menu's: the networks this device reached
+                                self.dispatching(|| Message::ToggleNetworkMenu),
+                                cx,
+                            )),
+                    ),
             );
         self.hanging(crate::Popover::Account, 300., body, window, cx)
     }

@@ -43,6 +43,23 @@ fn ax_102_a_status_is_polite_an_alert_assertive_and_both_carry_a_value() {
 }
 
 #[test]
+fn ax_105_a_row_is_in_its_container() {
+    let item = |id, parent| under(node(id, "MenuItem", "Lock"), parent);
+    let report = one(vec![
+        node("menu", "Menu", "Account actions"),
+        under(node("group", "Group", ""), "menu"),
+        item("deep", "group"),
+        node("dialog", "Dialog", "Account"),
+        item("loose", "dialog"),
+        under(node("tab", "Tab", "Chat"), "dialog"),
+        node("list", "TabList", "Programs"),
+        under(node("held", "Tab", "Forge"), "list"),
+    ]);
+    assert_eq!(fails(&report, "AX-105"), ["w:loose", "w:tab"]);
+    assert_eq!(report.applicable["AX-105"], 4);
+}
+
+#[test]
 fn ax_106_a_heading_has_a_level_from_one_to_six() {
     let heading = |id, level| {
         let mut node = node(id, "Heading", "Connect");

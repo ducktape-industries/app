@@ -27,7 +27,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 37] = [
+pub(crate) const RULES: [Rule; 38] = [
     rule(
         "AX-001",
         Error,
@@ -129,6 +129,11 @@ pub(crate) const RULES: [Rule; 37] = [
         "AX-102",
         Error,
         "A Status is live polite, an Alert live assertive, and both have a value.",
+    ),
+    rule(
+        "AX-105",
+        Error,
+        "A menu item, tab, radio button, option, tree item, row or cell is in its container.",
     ),
     rule("AX-106", Error, "A Heading has a level in 1..=6."),
     rule(
