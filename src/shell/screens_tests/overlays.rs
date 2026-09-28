@@ -117,3 +117,45 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
         assert_eq!(window.focused(cx), before);
     });
 }
+
+/// Settings' page scrolls the row Tab reaches into view: in a short window
+/// the Notifications rows run past the dialog's foot, and the walk still
+/// finds every stop it reaches on screen (AX-020). A press on a row's words
+/// leaves the keys where they were.
+#[gpui_kit::test]
+fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) {
+    let _turn = notices();
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let notifications = || {
+        let mut state = gate::desk();
+        state.overlay = Some(Overlay::Settings);
+        state.settings_page = crate::ui::SettingsPage::Notifications;
+        state
+    };
+    let (_view, mut native) = open(notifications(), cx);
+    native.simulate_resize(size(px(1280.), px(360.)));
+    gate::passes(&mut native, "settings-notifications", false);
+
+    let (_view, mut native) = open(notifications(), cx);
+    native.update(draw);
+    native.simulate_keystrokes("tab");
+    let (keys, nodes) = native.update(|window, cx| {
+        draw(window, cx);
+        let nodes = crate::ax::snapshot("shell", window, true);
+        (window.focused(cx), serde_json::to_value(nodes).unwrap())
+    });
+    let words = find(&nodes, "Label", "Burst limit");
+    let at = |n: usize| words["bounds"][n].as_f64().unwrap() as f32;
+    native.simulate_click(
+        gpui_kit::point(px(at(0) + 4.), px(at(1) + 4.)),
+        gpui_kit::Modifiers::none(),
+    );
+    native.update(|window, cx| {
+        draw(window, cx);
+        assert!(keys.is_some());
+        assert_eq!(window.focused(cx), keys, "a press on a row took the keys");
+    });
+}

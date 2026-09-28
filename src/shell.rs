@@ -587,6 +587,8 @@ pub(crate) struct DesktopWindow {
     spotlight_focused: bool,
     /// ⌘K's list: ↑↓ scroll the picked row into it.
     spotlight_rows: gpui_kit::ScrollHandle,
+    /// Settings' page: the row holding the keys scrolls into view.
+    settings_rows: settings::Page,
     /// An empty window's field, made the first time one shows.
     command: Option<command::CommandLine>,
     /// What was open over the desk when it was last drawn.

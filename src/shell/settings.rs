@@ -6,6 +6,16 @@ use super::*;
 use crate::SettingsPage;
 use ink::{Ink, mono, sans, words};
 
+/// Settings' page as it scrolls: a handle on each row, never a Tab stop
+/// itself, so the row that takes the keys scrolls into view.
+#[derive(Default)]
+pub(super) struct Page {
+    scroll: gpui_kit::ScrollHandle,
+    rows: Vec<gpui_kit::FocusHandle>,
+    /// The row that held the keys when the page was last drawn.
+    held: Option<usize>,
+}
+
 impl DesktopWindow {
     /// The dialog: `760 × 680; border: 1.5px solid ink` (the board's 540,
     /// taller so every view's row fits), a 34px title strip with its close, on a scrim below the bar. A click on the scrim, or
@@ -14,6 +24,7 @@ impl DesktopWindow {
         &mut self,
         state: &facts::Facts,
         window: &Window,
+        cx: &gpui_kit::App,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         // the Settings board: nav `padding: 12px 8px; gap: 2px`, each
@@ -57,12 +68,31 @@ impl DesktopWindow {
                     .child(label),
             )
         });
-        let page = match state.settings_page {
+        let rows = match state.settings_page {
             SettingsPage::Appearance => self.appearance_page(state),
             SettingsPage::Notifications => self.notifications_page(state),
             SettingsPage::Networks => self.networks_page(state),
             SettingsPage::About => about_page(&ink),
         };
+        let page = &mut self.settings_rows;
+        while page.rows.len() < rows.len() {
+            page.rows.push(cx.focus_handle().tab_stop(false));
+        }
+        let held = page.rows[..rows.len()]
+            .iter()
+            .position(|row| row.contains_focused(window, cx));
+        if held != page.held
+            && let Some(row) = held
+        {
+            page.scroll.scroll_to_item(row);
+        }
+        page.held = held;
+        let rows = rows.into_iter().zip(&page.rows).map(|(row, handle)| {
+            // a press on a row's words leaves the keys where they were
+            row.flex_shrink_0()
+                .track_focus(handle)
+                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        });
         let body = div()
             .id("settings-body")
             .flex_1()
@@ -91,10 +121,13 @@ impl DesktopWindow {
                     .flex_1()
                     .min_w_0()
                     .h_full()
+                    .flex()
+                    .flex_col()
                     .overflow_y_scroll()
+                    .track_scroll(&page.scroll)
                     .px(px(32.))
                     .py(px(24.))
-                    .child(page),
+                    .children(rows),
             );
         let shut = self.model.clone();
         let surface = ink.surface;
@@ -153,9 +186,8 @@ impl DesktopWindow {
         )
     }
 
-    fn appearance_page(&self, state: &facts::Facts) -> gpui_kit::AnyElement {
+    fn appearance_page(&self, state: &facts::Facts) -> Vec<gpui_kit::Div> {
         use crate::Appearance;
-        use gpui_kit::*;
         let ink = Ink::of(state.dark);
         // one look for every choice in Settings: the segmented row
         let theme = self.segmented(
@@ -180,28 +212,26 @@ impl DesktopWindow {
             Message::SetMotion,
             &ink,
         );
-        div()
-            .flex()
-            .flex_col()
-            .child(heading("Appearance", &ink))
-            .child(setting(
+        vec![
+            heading("Appearance", &ink),
+            setting(
                 "Theme",
                 "Follows the system unless you pick one.",
                 theme,
                 &ink,
-            ))
-            .child(setting(
+            ),
+            setting(
                 "Moving figures",
                 "The drawings in characters turn slowly, and the node's dot breathes. Off keeps them still.",
                 motion,
                 &ink,
-            ))
-            .into_any_element()
+            ),
+        ]
     }
 
     /// The NotifSettings board: the device's say over banners, then each
     /// view's.
-    fn notifications_page(&self, state: &facts::Facts) -> gpui_kit::AnyElement {
+    fn notifications_page(&self, state: &facts::Facts) -> Vec<gpui_kit::Div> {
         use crate::runtime::notify::{self, Permission};
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
@@ -295,49 +325,45 @@ impl DesktopWindow {
                     )
                     .child(div().flex_shrink_0().child(control))
             });
-        div()
-            .flex()
-            .flex_col()
-            .child(heading("Notifications", &ink))
-            .child(
-                ink::note(
-                    "notifications-intro",
-                    "On this device. Views ask; Ducktape decides what reaches the screen.",
-                    ink.muted,
-                )
-                .pb(px(12.))
-                .border_b_1()
-                .border_color(ink.line),
+        [
+            heading("Notifications", &ink),
+            ink::note(
+                "notifications-intro",
+                "On this device. Views ask; Ducktape decides what reaches the screen.",
+                ink.muted,
             )
-            .child(setting(
+            .pb(px(12.))
+            .border_b_1()
+            .border_color(ink.line),
+            setting(
                 "Desktop banners",
                 "Off keeps everything in Notifications, silently.",
                 banners,
                 &ink,
-            ))
-            .child(setting(
+            ),
+            setting(
                 "While Ducktape is in front",
                 "Banners for a window you are looking at never show.",
                 front,
                 &ink,
-            ))
-            .child(setting(
+            ),
+            setting(
                 "Burst limit",
                 "Per view. Past it, one banner says how many more are waiting.",
                 burst,
                 &ink,
-            ))
-            .child(
-                mono(400, 12.)
-                    .text_color(ink.muted)
-                    .pt(px(24.))
-                    .pb(px(8.))
-                    .border_b_1()
-                    .border_color(ink.line)
-                    .child(words("views", "Views")),
-            )
-            .children(views)
-            .into_any_element()
+            ),
+            mono(400, 12.)
+                .text_color(ink.muted)
+                .pt(px(24.))
+                .pb(px(8.))
+                .border_b_1()
+                .border_color(ink.line)
+                .child(words("views", "Views")),
+        ]
+        .into_iter()
+        .chain(views)
+        .collect()
     }
 
     /// An on/off setting: on, an ink track with the knob at the right; off,
@@ -431,7 +457,7 @@ impl DesktopWindow {
             )
     }
 
-    fn networks_page(&self, state: &facts::Facts) -> gpui_kit::AnyElement {
+    fn networks_page(&self, state: &facts::Facts) -> Vec<gpui_kit::Div> {
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
         let (muted, danger) = (ink.muted, ink.danger);
@@ -481,16 +507,14 @@ impl DesktopWindow {
                             .child("Forget"),
                     ))
             });
-        div()
-            .flex()
-            .flex_col()
-            .child(heading("Networks", &ink))
-            .child(
-                ink::note("networks-intro", "Nodes this device reached. Forgetting one takes it off the list; its key stays on this device.", muted)
-                    .pb(px(12.)),
-            )
-            .children(rows)
-            .into_any_element()
+        [
+            heading("Networks", &ink),
+            ink::note("networks-intro", "Nodes this device reached. Forgetting one takes it off the list; its key stays on this device.", muted)
+                .pb(px(12.)),
+        ]
+        .into_iter()
+        .chain(rows)
+        .collect()
     }
 }
 
@@ -538,7 +562,7 @@ fn setting(
         .child(div().flex_shrink_0().child(control))
 }
 
-fn about_page(ink: &Ink) -> gpui_kit::AnyElement {
+fn about_page(ink: &Ink) -> Vec<gpui_kit::Div> {
     use gpui_kit::*;
     let log = crate::backend::app_log_path()
         .map(|path| path.display().to_string())
@@ -564,20 +588,16 @@ fn about_page(ink: &Ink) -> gpui_kit::AnyElement {
                     .child(words(SharedString::from(format!("{key}/value")), value)),
             )
     };
-    div()
-        .flex()
-        .flex_col()
-        .child(heading("About", ink))
-        .child(
-            sans(400, 22.)
-                .pb(px(12.))
-                .child(words("product", "Ducktape")),
-        )
-        .child(line("Version", env!("CARGO_PKG_VERSION").into()))
-        .child(line(
+    vec![
+        heading("About", ink),
+        sans(400, 22.)
+            .pb(px(12.))
+            .child(words("product", "Ducktape")),
+        line("Version", env!("CARGO_PKG_VERSION").into()),
+        line(
             "Node contract",
             format!("v{}", crate::backend::noded::NODE_CONTRACT),
-        ))
-        .child(line("Log", log))
-        .into_any_element()
+        ),
+        line("Log", log),
+    ]
 }

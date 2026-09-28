@@ -340,12 +340,6 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
     let mut fired: Vec<bool> = vec![false; EXCEPTIONS.len()];
     for (screen, launcher, build) in matrix() {
         let (_view, mut native) = open(build(), cx);
-        if screen == "settings-notifications" {
-            // one row per listed program, and other tests list programs
-            // into the same roster: give the page room not to scroll. A
-            // scrolled position is its own screen state (docs/ax.md §1.2).
-            native.simulate_resize(gpui_kit::size(gpui_kit::px(1280.), gpui_kit::px(2400.)));
-        }
         let (failed, excused) = errors(&mut native, screen, launcher);
         failures.extend(failed);
         for at in excused {

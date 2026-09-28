@@ -99,7 +99,7 @@ impl DesktopWindow {
             None => None,
             Some(Overlay::Spotlight) => Some(self.spotlight(&state, window, cx)),
             Some(Overlay::Approve) => Some(self.approve(&state, window, cx)),
-            Some(Overlay::Settings) => Some(self.settings(&state, window)),
+            Some(Overlay::Settings) => Some(self.settings(&state, window, cx)),
             Some(Overlay::Network) => Some(self.network_menu(&state, narrow, window)),
             Some(Overlay::Menu(Popover::Node)) => Some(self.node_menu(&state, window, cx)),
             Some(Overlay::Menu(Popover::Account)) => Some(self.account_menu(&state, window, cx)),
