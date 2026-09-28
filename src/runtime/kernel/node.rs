@@ -411,9 +411,10 @@ pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
     })
 }
 
-/// `chain.network`. A node from before `/v1/network` answers a bare 404:
-/// refused at once, not retried as a node that is down would be, so the
-/// view falls back to what it knows without it.
+/// `chain.network`: each member's signed height. A node from before
+/// `/v1/network` answers a bare 404: refused at once as a request it does
+/// not know, not retried as a node that is down would be, so the view
+/// falls back.
 pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
         if !ask.is_empty() {
@@ -421,8 +422,8 @@ pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
         }
         let network = node.client.network().await.map_err(|error| match error {
             noded::Error::Failed { status: 404, .. } => wire::Error::new(
-                "network_unsupported",
-                "This node doesn't report its members' sync state.",
+                "unknown_request",
+                "This node doesn't report its validators' signatures.",
             ),
             error => refused(error),
         })?;
@@ -432,20 +433,10 @@ pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
             .map(|peer| methods::Peer {
                 key: peer.key,
                 signed: peer.signed,
-                said: peer.said.map(|said| methods::Said {
-                    at: said.at,
-                    report: match said.report {
-                        noded::Report::Height { height, tip } => {
-                            methods::Report::Height { height, tip }
-                        }
-                        noded::Report::Withheld => methods::Report::Withheld,
-                    },
-                }),
             })
             .collect();
         Ok(methods::encode(&methods::NetworkStatus {
             height: network.height,
-            at: network.at,
             members,
         }))
     })
