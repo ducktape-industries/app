@@ -64,6 +64,7 @@ pub struct Patch {
     modal: bool,
     live: Option<Live>,
     class_name: Option<&'static str>,
+    fallback: bool,
 }
 
 impl Patch {
@@ -92,6 +93,17 @@ impl Patch {
         }
     }
 
+    /// A box that holds the keys only when nothing inside it does (a
+    /// window's root): the app focuses it, Tab never lands on it, so it
+    /// offers assistive technology no focus the keyboard cannot reach
+    /// either. gpui offers one on every element that tracks a handle.
+    pub fn keys_fallback(self) -> Self {
+        Self {
+            fallback: true,
+            ..self
+        }
+    }
+
     /// Installs the one closure on `element`.
     pub fn on<E: InteractiveElement>(self, element: E) -> E {
         if self == Self::default() {
@@ -108,6 +120,9 @@ impl Patch {
                 }
                 if let Some(class_name) = self.class_name {
                     node.set_class_name(class_name);
+                }
+                if self.fallback {
+                    node.remove_action(gpui_kit::accesskit::Action::Focus);
                 }
             })
         })
@@ -194,7 +209,7 @@ mod tests {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Context, Render, TestAppContext, VisualTestContext, px, size};
 
-    struct Patched;
+    struct Patched(FocusHandle);
 
     impl Render for Patched {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
@@ -202,7 +217,12 @@ mod tests {
                 .modal()
                 .live(Live::Polite)
                 .class_name(AX_PRIVATE)
-                .on(div().id("patched").role(Role::Dialog).aria_label("Patched"))
+                .keys_fallback()
+                .on(div()
+                    .id("patched")
+                    .role(Role::Dialog)
+                    .aria_label("Patched")
+                    .track_focus(&self.0))
         }
     }
 
@@ -211,7 +231,7 @@ mod tests {
     #[gpui_kit::test]
     fn one_patch_writes_every_property_it_collects(cx: &mut TestAppContext) {
         cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Patched);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, cx| Patched(cx.focus_handle()));
         let mut native = VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| {
             window.activate_a11y();
@@ -226,6 +246,7 @@ mod tests {
             assert!(node.is_modal());
             assert_eq!(node.live(), Some(Live::Polite));
             assert_eq!(node.class_name(), Some(AX_PRIVATE));
+            assert!(!node.supports_action(gpui_kit::accesskit::Action::Focus));
         });
     }
 }

@@ -110,33 +110,32 @@ impl DesktopWindow {
         if state.overlay != Some(Overlay::Spotlight) {
             self.spotlight_focused = false;
         }
-        match (self.covered, state.overlay.filter(|_| console)) {
-            (None, Some(open)) => {
-                let before = window.focused(cx);
-                self.refocus = before.clone();
-                // a dialog on a scrim takes the keys, unless its own field
-                // already did, and keeps Tab (`overlay`)
-                if matches!(
-                    open,
-                    Overlay::Spotlight | Overlay::Approve | Overlay::Settings
-                ) {
-                    let modal = self.modal.clone();
-                    window.defer(cx, move |window, cx| {
-                        if window.focused(cx) == before {
-                            modal.focus(window, cx);
-                            window.focus_next(cx);
-                        }
-                    });
+        // Whatever opens takes the keys (its backdrop holds `modal`),
+        // unless something in it already did, as Spotlight's field does;
+        // one giving way to the next hands them on. The last to close gives
+        // them back to what had them before the first opened.
+        let open = state.overlay.filter(|_| console);
+        if open != self.covered {
+            match (self.covered, open) {
+                (None, Some(_)) => self.refocus = window.focused(cx),
+                (Some(_), None) => {
+                    if let Some(handle) = self.refocus.take() {
+                        window.defer(cx, move |window, cx| handle.focus(window, cx));
+                    }
                 }
+                _ => {}
             }
-            (Some(_), None) => {
-                if let Some(handle) = self.refocus.take() {
-                    window.defer(cx, move |window, cx| handle.focus(window, cx));
-                }
+            if open.is_some() {
+                let modal = self.modal.clone();
+                window.defer(cx, move |window, cx| {
+                    if !modal.contains_focused(window, cx) {
+                        modal.focus(window, cx);
+                        window.focus_next(cx);
+                    }
+                });
             }
-            _ => {}
         }
-        self.covered = state.overlay.filter(|_| console);
+        self.covered = open;
         div()
             .id("console")
             .size_full()
@@ -155,8 +154,9 @@ impl DesktopWindow {
     /// canvas dresses its menus and dialogs in, `border: 1.5px solid ink`
     /// and a soft shadow. `dress` places and fills the card. Escape closes
     /// it through `keys::CloseOverlay` (bound under the `overlay` context).
-    /// Dimmed, it is modal: Tab and Shift+Tab go round its controls, never
-    /// out to the bar.
+    /// The backdrop holds `modal`, the handle the keys enter it by
+    /// (`desk_view`). Dimmed, it is modal: Tab and Shift+Tab go round its
+    /// controls, never out to the bar.
     #[allow(clippy::too_many_arguments, reason = "one frame, five overlays")]
     pub(super) fn overlay(
         &self,
@@ -214,7 +214,10 @@ impl DesktopWindow {
                 .child(dress(crate::a11y::modal(card)))
                 .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
                 .into_any_element(),
-            false => backdrop.child(dress(card)).into_any_element(),
+            false => backdrop
+                .track_focus(&self.modal)
+                .child(dress(card))
+                .into_any_element(),
         }
     }
 

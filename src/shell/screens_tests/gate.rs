@@ -331,6 +331,7 @@ pub(super) fn passes(native: &mut VisualTestContext, screen: &str, launcher: boo
 
 #[gpui_kit::test]
 fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
+    let _turn = notices();
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);

@@ -7,6 +7,7 @@ use super::*;
 mod gate;
 mod launcher;
 mod live;
+mod overlays;
 mod text;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
@@ -48,6 +49,16 @@ fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::Ap
         },
         cx,
     );
+}
+
+/// The notification centre is one per process: the test that posts to it
+/// and the tests that draw it and move the keys through it take turns, or
+/// a row appears or goes under a walk.
+pub(super) fn notices() -> std::sync::MutexGuard<'static, ()> {
+    static NOTICES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    NOTICES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn find<'a>(nodes: &'a serde_json::Value, role: &str, name: &str) -> &'a serde_json::Value {
@@ -435,6 +446,7 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
 #[gpui_kit::test]
 fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     use crate::runtime::notify::{Permission, Settings, center};
+    let _turn = notices();
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
