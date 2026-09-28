@@ -302,7 +302,7 @@ pub(super) fn spawn_load(
         // the blob this load is asked for, as the roster reads compare it:
         // a failure is held off under this, not under the view section's
         // own hash, which never equals a blob id
-        let asked_for = listed_code(module).map(|(code, _)| code_digest(&code));
+        let asked_for = roster().code(module).map(|(code, _)| code_digest(&code));
         let mut timing = LoadTiming::default();
         let loaded = Guest::load(module, &asked_of, generation, &loading, &mut timing);
         // the window thread holds this lock while it ticks the seat

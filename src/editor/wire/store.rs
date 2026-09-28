@@ -104,11 +104,7 @@ impl Store {
             return;
         };
         for work in document.queue.drain(..) {
-            let Some(binding) = self
-                .fields
-                .get(&work.key)
-                .and_then(|f| f.options.binding.as_ref())
-            else {
+            let Some(binding) = self.fields.get(&work.key).and_then(|f| f.binding.as_ref()) else {
                 continue;
             };
             self.events.push(view_wire::Event::EditorTransaction {
@@ -183,7 +179,7 @@ impl Store {
         if overflow {
             self.fault = Some("editor input queue is full; document retained".into());
             self.events.push(view_wire::Event::EditorTransaction {
-                handler: field.options.binding.as_ref().map_or(0, |b| b.on_event),
+                handler: field.binding.as_ref().map_or(0, |b| b.on_event),
                 event: view_wire::EditorTransactionEvent::Fault {
                     id: transaction_id(self.instance, &document.reference, sequence),
                     state: document.reference.clone(),

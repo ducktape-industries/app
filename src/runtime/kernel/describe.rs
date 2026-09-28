@@ -45,7 +45,7 @@ pub(super) fn describe(node: Node, ask: Vec<u8>) -> Answered {
 
 async fn described(node: &Node, program: &str, op: Vec<u8>) -> Result<Description, wire::Error> {
     // a view-only entry is no program: it runs no ops
-    let Some((code, false)) = super::super::roster::listed_code(program) else {
+    let Some((code, false)) = super::super::roster::roster().code(program) else {
         return Ok(None);
     };
     let key = (code, sha2::Sha256::digest(&op).into());
@@ -112,13 +112,13 @@ mod tests {
     /// (already compiled, so nothing is fetched).
     fn list_program(program: &str, seed: u8, bare: bool, wat: Option<&str>) {
         let code = abi::BlobId::Sha256([seed; 32]);
-        super::super::super::roster::listed().lock().unwrap().push(
-            crate::backend::views::Program {
+        super::super::super::roster::roster()
+            .lock()
+            .push(crate::backend::views::Program {
                 name: program.into(),
                 code,
                 bare,
-            },
-        );
+            });
         let module = wat.and_then(|wat| {
             ::describe::host::compile(
                 super::super::super::guest::engine(),
@@ -205,7 +205,7 @@ mod stage {
         let programs = views::programs(&client, &network)
             .await
             .expect("its roster");
-        *super::super::super::roster::listed().lock().unwrap() = programs;
+        *super::super::super::roster::roster().lock() = programs;
         let node = Node { client, network };
         let mut counts: std::collections::BTreeMap<String, (u64, u64)> = Default::default();
         let mut before = None;

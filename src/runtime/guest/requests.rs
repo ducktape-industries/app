@@ -487,7 +487,7 @@ mod tests {
 
     fn editor(id: &str) -> wire::Node {
         wire::Node::Editor {
-            options: Box::new(wire::EditorOptions::default()),
+            binding: None,
             id: wire::ElementIdWire::Name(id.into()),
             style: Default::default(),
             placeholder: String::new(),

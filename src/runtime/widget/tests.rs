@@ -17,7 +17,7 @@ use super::*;
 #[test]
 fn native_root_does_not_shift_the_authored_path_editor_store_indexes_by() {
     let editor = wire::Node::Editor {
-        options: Box::new(wire::EditorOptions::default()),
+        binding: None,
         id: wire::ElementIdWire::Name("editor".into()),
         style: Default::default(),
         placeholder: String::new(),

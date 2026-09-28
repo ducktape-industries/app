@@ -40,7 +40,7 @@ Three things cross between a view and the app, and only three:
 What the app deliberately does not know:
 
 - **No user program by name.** Panes, tabs and labels come from the roster
-  (`runtime::rail`), a tab's name from the view's manifest. Three *system*
+  (`Roster::rail`), a tab's name from the view's manifest. Three *system*
   programs are named by id and nothing else: `identity`
   (`backend/passkey.rs`, `backend/join.rs`: accounts and keys),
   `module-registry` (`backend/views.rs`: the roster query;
@@ -82,7 +82,7 @@ Dependencies, top down (an arrow means "calls into"):
 main
  └─ shell ──────────► ui (state + reducer)
      │  │              └──► backend (connect, keys, prefs)
-     │  │              └──► runtime (rail, connected, parse_link, notify)
+     │  │              └──► runtime (Roster, connected, notify)
      │  └─► runtime::NativeModuleView ──► render::ViewTree ──► a11y
      │          │                              └──► editor (TextEditor)
      │          ├─► runtime::guest (wasmtime) ──► editor::wire (EditorStore)
@@ -120,9 +120,10 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 1. **Roster.** `ui/connect.rs` on `Connected` calls `runtime::connected`,
    which bumps `Connection.rev` and starts `roster::spawn_roster_read`.
    That thread calls `backend::views::programs` (the `module-registry`
-   query), stores the list in `roster::listed`, retires seats of programs
-   that left, creates a preloaded seat `(module, 0)` for each program and
-   starts a load for every seat whose active code moved (or that was never
+   query), stores the list in the app's `Roster` (`roster::roster`, the
+   one `Ducktape.roster` holds), retires seats of programs that left,
+   creates a preloaded seat `(module, 0)` for each program and starts a
+   load for every seat whose active code moved (or that was never
    asked of this node). Each new block (`Message::StatusPushed` with a moved
    height → `runtime::deployments_checked`) repeats it, one read in flight
    at a time. A load that finds the drawn view already current
@@ -340,7 +341,7 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   recipes the shell diffs.
 - **Geometry.** `ui/layout.rs` is pure: `Layout` per window holds `Pane`s
   (frame, `instance`, `module`, z), focus and the desk size; operations
-  (`halve`, `split`, `cycle`, fill/restore, place, reclaim, measure) are
+  (`split`, `cycle`, fill/restore, place, measure) are
   driven by `PaneMessage` through `ui/panes.rs`. Sentinel modules: `EMPTY`
   (an empty pane shows the program finder) and `HELP`.
 - **Shell.** `Desktop` (`shell.rs`) owns `Ducktape`, the tray, the OS
@@ -505,7 +506,7 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   `Desktop::dispatch` ends in `cx.notify()`, and every `DesktopWindow`
   observes the model, so each message re-renders every window; the wall and
   toast timers alone make that several times a second. A desk render calls
-  `runtime::rail()` more than once, and each call locks every seat.
+  `Roster::rail()` more than once, and each call locks every seat.
 - **Off-thread.** View loads, roster reads, node I/O, describe, banners and
   key opening are off the window thread (§2).
 - **Measured.** A `view_load` info line per network load
@@ -529,8 +530,9 @@ House words, and where one word means several things.
   (`ducklink::ChainId`), used for links, the view store and the notify log.
 - **contract** — `noded::NODE_CONTRACT`, the `/v1` version; a node with
   another is refused at connect. Also "the kernel contract" (§4).
-- **roster / listed / registry** — the node's program list
-  (`backend::views::programs`, kept in `roster::listed`). "Registry" is
+- **roster / registry** — the node's program list
+  (`backend::views::programs`, kept in a `Roster`: the app's one is
+  `roster::roster`, and a test builds its own). "Registry" is
   also `seat::registry()`, the seat map. **bare** — a roster entry whose
   blob is the view itself.
 - **module** — a program's name as the roster lists it, interned to
@@ -599,7 +601,7 @@ House words, and where one word means several things.
   subscriber (`take_route`). (2) `runtime::input::Route`: the
   (seat, generation, revision, alive) an input event is addressed to.
   (3) a closure-local name for a cloned authored path in `render/`.
-- **link** — a `duck://` URL (`runtime::parse_link`, `Link`), or, in
+- **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
 - **standin / stage words** — the native placeholder drawn where a view is
   not (`widget::Standin`, `stage_words`). **Stage** (`ui/app.rs`) is which
@@ -622,11 +624,10 @@ House words, and where one word means several things.
   (`Focused`, `CloseRequested`, `Closed`, …) a guest receives.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
   `Desktop.mounted`; `NativeModuleView.instance` is its own counter.
-- **split / halve / cycle / fill / reclaim / measure** — pane geometry
-  operations in `ui/layout.rs`. Note: `split` adds a pane, `halve` cuts the
-  focused one in two.
+- **split / cycle / fill / measure** — pane geometry operations in
+  `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows
-  as tabs (`runtime::rail`). The name is from an older side rail and
+  as tabs (`Roster::rail`). The name is from an older side rail and
   survives in AX ids (`rail/<module>`, `rail-search`) that qa depends on.
 - **overlay / popover / scrim** — the one thing open over the desk
   (`Overlay`: Spotlight, Approve, Settings, Network, a bar menu); a

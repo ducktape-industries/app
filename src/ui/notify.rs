@@ -14,7 +14,7 @@ impl Ducktape {
                     Some(entry) if !entry.link.is_empty() => {
                         return self.update(Message::OpenLink(entry.link));
                     }
-                    Some(entry) if crate::runtime::listed_view(&entry.module) => {
+                    Some(entry) if self.roster.lists(&entry.module) => {
                         self.open_seat(crate::runtime::intern(&entry.module), None);
                     }
                     _ => {}

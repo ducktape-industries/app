@@ -275,7 +275,9 @@ impl DesktopWindow {
                     .child(words("burst-unit", "a minute")),
             );
         let now = notify::wall();
-        let views = crate::runtime::rail()
+        let views = state
+            .roster
+            .rail()
             .into_iter()
             .filter(|row| !row.empty)
             .map(|row| {
