@@ -247,7 +247,8 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// and on until focus has come back to where the first press put it. A
 /// stop the first snapshot does not show (scrolled away, drawn since) makes
 /// the Tab cycle longer than N + 1; the walk still goes all the way round,
-/// up to 4 (N + 1) presses. Before the walk, when the focus starts in a
+/// up to 4 (M + 1) presses, M the most stops a snapshot has shown so far.
+/// Before the walk, when the focus starts in a
 /// composite with two rows or more, `down` then `up`, `snap` after each
 /// ([`Arrows`]). Focus goes back where it was — nowhere included.
 pub(crate) fn observe(
@@ -284,10 +285,13 @@ pub(crate) fn observe(
     if walk {
         // the handle, not the node: a stop off the viewport has no node
         let (mut first, mut round) = (None, false);
-        for press in 1..=4 * (stops + 1) {
+        let (mut press, mut most) = (0, stops);
+        while press < 4 * (most + 1) {
+            press += 1;
             let _ = press_keys(window, cx, "tab", "");
             let now = window.focused(cx);
-            let (nodes, _) = read(window, cx);
+            let (nodes, seen) = read(window, cx);
+            most = most.max(seen);
             reading.take(nodes, window, cx);
             match press {
                 1 => first = now,

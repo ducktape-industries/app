@@ -283,6 +283,16 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             false,
             on_desk(crate::Overlay::Menu(crate::Popover::Notifications)),
         ),
+        (
+            "desk-asking",
+            false,
+            Box::new(|| {
+                crate::runtime::notify::center().ask_for_test("gate-asking");
+                let mut state = desk();
+                state.active = Some("gate-asking");
+                state
+            }),
+        ),
     ]
 }
 

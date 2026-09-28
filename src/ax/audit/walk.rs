@@ -45,7 +45,8 @@ pub(super) fn walk_rules(reading: &Reading, tally: &mut Tally) {
     }
     let walked = snapshots.len() > 1;
     for node in first.iter().filter(|node| walked && offers(node, "focus")) {
-        let reached = snapshots.iter().any(|nodes| {
+        // a Tab press reached it: where the state opened does not count
+        let reached = snapshots[1..].iter().any(|nodes| {
             nodes
                 .iter()
                 .any(|other| other.id == node.id && holds(other))

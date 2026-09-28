@@ -314,6 +314,19 @@ fn ax_021_every_focus_stop_is_reached() {
     assert_eq!(fails(&skipped, "AX-021"), ["w:b"]);
 }
 
+/// A stop the state opened on and Tab never lands on again is not reached.
+#[test]
+fn ax_021_where_the_state_opened_does_not_count() {
+    let a = || button("a", "A");
+    let b = || button("b", "B");
+    let report = walk(vec![
+        vec![focused(a()), b()],
+        vec![a(), focused(b())],
+        vec![a(), focused(b())],
+    ]);
+    assert_eq!(fails(&report, "AX-021"), ["w:a"]);
+}
+
 /// A combo box never shows as focused: gpui moves the tree's focus to its
 /// active row. It holds the keys while it names one.
 #[test]

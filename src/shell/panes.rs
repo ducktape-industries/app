@@ -173,11 +173,16 @@ impl DesktopWindow {
             let focused = index == layout.focused;
             let own = self.pane_focus(pane.instance, focused && moved, window, cx);
             let view = self.pane_body(pane, focused, &own, &props, window, cx);
-            let view = div()
-                .id(SharedString::from(format!("pane/{index}/view")))
-                .role(gpui_kit::Role::Group)
-                .aria_label(label(pane.module))
-                .track_focus(&own)
+            // it holds the pane's keys when nothing in the view does; Tab
+            // never lands on it, so it offers assistive technology no focus
+            // either (as the window's root)
+            let view = crate::a11y::Patch::default()
+                .keys_fallback()
+                .on(div()
+                    .id(SharedString::from(format!("pane/{index}/view")))
+                    .role(gpui_kit::Role::Group)
+                    .aria_label(label(pane.module))
+                    .track_focus(&own))
                 .flex_1()
                 .min_h_0()
                 .w_full()
