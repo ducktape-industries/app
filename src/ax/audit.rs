@@ -41,7 +41,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 43] = [
+pub(crate) const RULES: [Rule; 42] = [
     rule(
         "AX-001",
         Error,
@@ -88,7 +88,7 @@ pub(crate) const RULES: [Rule; 43] = [
     rule(
         "AX-012",
         Error,
-        "A node with press also offers focus, or sits in a composite that does, or (shell) in a box without the keys whose chord hands them to it.",
+        "A node with press also offers focus, or holds the keys now, or sits in a composite that does, or (a node no element draws) under a node that does, or (shell) in a box without the keys whose chord hands them to it.",
     ),
     rule("AX-013", Error, "A Status or Alert is named."),
     rule("AX-014", Error, "A Heading or Label is named."),
@@ -116,7 +116,7 @@ pub(crate) const RULES: [Rule; 43] = [
     rule(
         "AX-021",
         Error,
-        "Every node offering focus in the first snapshot is focused once in the walk, or had the keys as a dialog or menu the walk closed opened.",
+        "Every node offering focus in the first snapshot is focused once in the walk, or holds them through a node inside it that offers no focus of its own, or had the keys as a dialog or menu the walk closed opened.",
     ),
     rule(
         "AX-022",
@@ -215,11 +215,6 @@ pub(crate) const RULES: [Rule; 43] = [
         "AX-119",
         Error,
         "Nothing pressable sits inside a button, link, tab, menu item or toggle.",
-    ),
-    rule(
-        "AX-123",
-        Warn,
-        "A press node no element draws (a rich text's clickable range) offers focus.",
     ),
 ];
 
@@ -484,8 +479,7 @@ impl Tally {
     }
 }
 
-/// Every per-node rule on one node: AX-001 … AX-017, and AX-123 in
-/// AX-012's place on a node no element draws; then what the door's
+/// Every per-node rule on one node: AX-001 … AX-017; then what the door's
 /// phase-2 keys say about it (AX-101, 102, 106, 108 … 114, 116 … 118) and
 /// where it sits (AX-105, 119). AX-016 and AX-112 look at its siblings in
 /// `nodes`, AX-012, AX-105 and AX-119 at its ancestors through
@@ -569,19 +563,19 @@ fn node_rules(
             format!("{role} offers no press and is not disabled")
         });
     }
-    if press && node.synthetic {
-        // gpui gives a node no element draws no focus: the gap is the
-        // fork's to close, not the view's (docs/ax.md §5, item 8)
-        tally.check("AX-123", node, focus, || {
-            format!("a {role} the pointer presses and the keyboard cannot reach")
-        });
-    } else if press {
+    if press {
         // a composite's rows are reached by the arrows, from the composite,
         // once the keys are in it: one that takes focus (view_wire::audit's
         // Unreachable also asks it to hear a key, which the door cannot see)
         let composite = snapshot
             .ancestors(node)
             .any(|above| tree::COMPOSITES.contains(&above.role.as_str()) && offers(above, "focus"));
+        // a rich text's links, which no element draws, are reached by the
+        // arrows from the box around the text once Tab has put the keys in
+        // it (src/render/text/links.rs); the picked one is a node the keys
+        // are on, the box's active descendant, which the snapshot reports
+        // focused
+        let linked = node.synthetic && snapshot.ancestors(node).any(|above| offers(above, "focus"));
         // the shell's own: a desk window without the keys is reached by the
         // chord its box names (⌘1…⌘9), which hands that window the keys, as
         // a press on it does. The box holding the focus has them already:
@@ -593,9 +587,13 @@ fn node_rules(
                     && !offers(above, "press")
                     && !focus_within(nodes, snapshot, &above.id)
             });
-        tally.check("AX-012", node, focus || composite || chord, || {
-            "press without focus: a keyboard never reaches it".to_owned()
-        });
+        let held = has(node, "focused");
+        tally.check(
+            "AX-012",
+            node,
+            focus || held || composite || linked || chord,
+            || "press without focus: a keyboard never reaches it".to_owned(),
+        );
     }
     if matches!(role, "Status" | "Alert") {
         tally.check("AX-013", node, named(node), || {
@@ -842,6 +840,19 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             .iter()
             .any(|nodes| nodes.iter().all(|other| other.id != id))
     };
+    // a focused node that offers no focus of its own is the active
+    // descendant of the node that has the keys (a rich text's picked link,
+    // under the box around the text): every ancestor of it was reached
+    let mut through = std::collections::HashSet::new();
+    for nodes in &snapshots[1..] {
+        let snapshot = Snapshot::of(nodes);
+        for node in nodes
+            .iter()
+            .filter(|node| has(node, "focused") && !offers(node, "focus"))
+        {
+            through.extend(snapshot.ancestors(node).map(|above| above.id.as_str()));
+        }
+    }
     for node in first.iter().filter(|node| walked && offers(node, "focus")) {
         // a Tab press reached it: where the state opened does not count,
         // but in a dialog that closed when Tab left it: it had the keys as
@@ -850,10 +861,11 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             nodes
                 .iter()
                 .any(|other| other.id == node.id && holds(other))
-        }) || holds(node)
-            && opened
-                .ancestors(node)
-                .any(|above| matches!(above.role.as_str(), "Dialog" | "Menu") && closed(&above.id));
+        }) || through.contains(node.id.as_str())
+            || holds(node)
+                && opened.ancestors(node).any(|above| {
+                    matches!(above.role.as_str(), "Dialog" | "Menu") && closed(&above.id)
+                });
         tally.check("AX-021", node, reached, || {
             "offers focus but the tab walk never reached it".to_owned()
         });

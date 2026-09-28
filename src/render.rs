@@ -132,6 +132,8 @@ pub struct ViewTree {
 
     // Native widgets, one per mounted node.
     fields: HashMap<AuthoredPath, Field>,
+    /// A rich text with links: its Tab stop and the link its arrows picked.
+    links: HashMap<AuthoredPath, text::links::Links>,
     editors: HashMap<AuthoredPath, EditorMount>,
     /// The guest's editor documents; handed over by the runtime, not built here.
     editor_store: Option<crate::editor::wire::EditorStore>,
@@ -189,6 +191,7 @@ impl ViewTree {
             focus_targets: HashMap::new(),
             guest_focus_targets: HashMap::new(),
             fields: HashMap::new(),
+            links: HashMap::new(),
             authored_path: Vec::new(),
             scrolls: HashMap::new(),
             uniform_lists: HashMap::new(),
@@ -265,6 +268,9 @@ impl Render for ViewTree {
         self.mounted.clear();
         self.authored_path.clear();
         self.render_index = 0;
+        // a linked text the last render did not draw is gone
+        self.links
+            .retain(|_, links| std::mem::take(&mut links.drawn));
         // Paragraph selection order starts at a base unique to this view (its
         // entity id in the high 32 bits) and restarts there every render, so
         // paragraphs keep stable numbers and two views never interleave.

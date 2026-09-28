@@ -5,7 +5,7 @@
 use super::*;
 use crate::render::native_id;
 
-mod links;
+pub(super) mod links;
 
 fn rich_tooltip_content(
     node: &wire::Node,
@@ -206,23 +206,19 @@ impl Element for RichParagraph {
     }
 }
 
-pub(super) fn paint_rich_selection(
-    layout: &TextLayout,
-    range: &std::ops::Range<usize>,
-    window: &mut Window,
-    cx: &App,
-) {
+/// The box `range` covers on each line it touches.
+fn line_boxes(layout: &TextLayout, range: &std::ops::Range<usize>) -> Vec<Bounds<Pixels>> {
+    let mut boxes = Vec::new();
     let (Some(start), Some(end)) = (
         layout.position_for_index(range.start),
         layout.position_for_index(range.end),
     ) else {
-        return;
+        return boxes;
     };
     let height = layout.line_height();
     if height <= px(0.) {
-        return;
+        return boxes;
     }
-    let color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
     let mut y = start.y;
     while y <= end.y {
         let left = if y == start.y {
@@ -235,11 +231,40 @@ pub(super) fn paint_rich_selection(
         } else {
             layout.bounds().right()
         };
-        window.paint_quad(fill(
-            Bounds::from_corners(point(left, y), point(right, y + height)),
-            color,
+        boxes.push(Bounds::from_corners(
+            point(left, y),
+            point(right, y + height),
         ));
         y += height;
+    }
+    boxes
+}
+
+pub(super) fn paint_rich_selection(
+    layout: &TextLayout,
+    range: &std::ops::Range<usize>,
+    window: &mut Window,
+    cx: &App,
+) {
+    let color = gpui_kit::base::Theme::global(cx).tokens.colors.selection;
+    for bounds in line_boxes(layout, range) {
+        window.paint_quad(fill(bounds, color));
+    }
+}
+
+/// The mark on the link the arrows picked: the shell focus ring's grey,
+/// 2px around the range's words, which reads at 3:1 on either theme.
+fn paint_picked_link(layout: &TextLayout, range: &std::ops::Range<usize>, window: &mut Window) {
+    let ring = crate::a11y::ring();
+    for bounds in line_boxes(layout, range) {
+        window.paint_quad(gpui_kit::quad(
+            bounds,
+            px(0.),
+            gpui_kit::transparent_black(),
+            ring.spread_radius,
+            ring.color,
+            gpui_kit::BorderStyle::Solid,
+        ));
     }
 }
 
@@ -324,22 +349,23 @@ impl ViewTree {
         let layout = styled.layout().clone();
         let rich_id: ElementId = "rich-text".into();
         let mut interactive = InteractiveText::new(rich_id, styled);
-        if let Some(handler) = on_click {
-            let handler = *handler;
-            let view = cx.entity().downgrade();
-            interactive =
-                interactive.on_click(clickable_ranges.clone(), move |index, window, cx| {
-                    if !gpui_kit::base::TextSelection::has_selection(window, cx) {
-                        let _ = view.update(cx, |this, cx| {
-                            this.user_activation.set(Some(handler));
-                            cx.emit(wire::Event::Select {
-                                handler,
-                                index: index as u32,
-                            });
-                        });
-                    }
-                });
-        }
+        // a text with clickable ranges is one Tab stop whose arrows pick a
+        // link, and each range a Link to assistive technology; a pointer
+        // click on a range, Enter on the picked link and a press from
+        // assistive technology all reach the view as the range's click
+        let linked = match on_click {
+            Some(handler) if !clickable_ranges.is_empty() => {
+                let (element, linking) =
+                    self.linked_box(id.as_ref(), text, clickable_ranges, *handler, window, cx);
+                let press = linking.press.clone();
+                interactive = interactive
+                    .on_click(clickable_ranges.clone(), move |index, window, cx| {
+                        press(index, window, cx)
+                    });
+                Some((element, linking))
+            }
+            _ => None,
+        };
         let hover_handler = *on_hover;
         let tooltip_request = tooltip.as_ref().map(|tooltip| tooltip.request);
         if hover_handler.is_some() || tooltip_request.is_some() {
@@ -389,6 +415,10 @@ impl ViewTree {
                     .map(|content| super::tooltip_containment::build(parent.clone(), content, cx))
             });
         }
+        let picked = linked
+            .as_ref()
+            .and_then(|(_, linking)| linking.picked)
+            .map(|index| clickable_ranges[index].clone());
         let selection_range = std::rc::Rc::new(std::cell::RefCell::new(None));
         let selection_for_paint = selection_range.clone();
         let selection_layout = layout.clone();
@@ -398,30 +428,30 @@ impl ViewTree {
                 if let Some(range) = selection_for_paint.borrow().as_ref() {
                     paint_rich_selection(&selection_layout, range, window, cx);
                 }
+                if let Some(range) = &picked {
+                    paint_picked_link(&selection_layout, range, window);
+                }
             },
         )
         .absolute()
         .size_full();
-        // each clickable range a Link to assistive technology, its press
-        // the range's click
-        let interactive = match on_click {
-            Some(handler) if !clickable_ranges.is_empty() => links::Linked::new(
-                interactive,
-                text,
-                clickable_ranges,
-                *handler,
-                cx.entity().downgrade(),
-            )
-            .into_any_element(),
-            _ => interactive.into_any_element(),
+        let content = match linked {
+            Some((mut boxed, linking)) => {
+                *boxed.style() = style.clone();
+                let interactive = links::Linked::new(interactive, linking, cx.entity().downgrade());
+                boxed.child(selection).child(interactive).into_any_element()
+            }
+            None => {
+                let mut content = div().relative().child(selection).child(interactive);
+                *content.style() = style.clone();
+                content.into_any_element()
+            }
         };
-        let mut content = div().relative().child(selection).child(interactive);
-        *content.style() = style.clone();
         let handle = gpui_kit::base::TextSelectionHandle::new(text.clone(), cx);
         let refresh = refresh_on_change(&handle, window, cx);
         RichParagraph {
             id: native_id,
-            content: content.into_any_element(),
+            content,
             text: shared,
             layout,
             fallback: RichSelection {

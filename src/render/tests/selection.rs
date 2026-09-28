@@ -14,6 +14,21 @@ fn paragraph(key: &str, text: &str) -> wire::Node {
     }
 }
 
+/// `paragraph`, every word of it a link.
+fn linked(key: &str, text: &str) -> wire::Node {
+    let mut node = paragraph(key, text);
+    if let wire::Node::RichText {
+        clickable_ranges,
+        on_click,
+        ..
+    } = &mut node
+    {
+        clickable_ranges.push(0..text.len());
+        *on_click = Some(9);
+    }
+    node
+}
+
 /// Two clipped panes side by side, as chat's room and thread: the room's
 /// lines at y 0 and 60, the thread's between them at y 30.
 fn panes() -> wire::Node {
@@ -78,8 +93,17 @@ fn drag(
     through: &[Point<Pixels>],
     cx: &mut gpui_kit::TestAppContext,
 ) -> String {
+    drag_over(panes(), from, through, cx)
+}
+
+fn drag_over(
+    root: wire::Node,
+    from: Point<Pixels>,
+    through: &[Point<Pixels>],
+    cx: &mut gpui_kit::TestAppContext,
+) -> String {
     let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
-        tree: cx.new(|_| ViewTree::new(panes())),
+        tree: cx.new(|_| ViewTree::new(root)),
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
@@ -96,6 +120,28 @@ fn drag(
         window.render_frame(cx);
         gpui_kit::base::TextSelection::selected_text(window, cx)
     })
+}
+
+/// A paragraph with links is a Tab stop, and still a drag selects its
+/// words: the box takes no pointer press for itself.
+#[gpui_kit::test]
+fn a_drag_across_a_linked_paragraph_selects_its_words(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [linked("alpha", "alpha beta"), paragraph("gamma", "gamma")],
+    );
+    let copied = drag_over(
+        root,
+        point(px(1.), px(10.)),
+        &[point(px(140.), px(30.))],
+        cx,
+    );
+    assert!(
+        copied.contains("alpha") && copied.contains("gamma"),
+        "{copied:?}"
+    );
 }
 
 #[gpui_kit::test]
