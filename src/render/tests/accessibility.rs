@@ -323,6 +323,55 @@ fn a_rich_texts_ranges_are_a_warning_not_an_error(cx: &mut gpui_kit::TestAppCont
     );
 }
 
+/// A rich text carries no aria of its own (the wire gives it no
+/// interactivity), so its links and a view's phase-2 aria never share a
+/// node: a roled box around it keeps both, its patch on its own node and
+/// the links under the text's.
+#[gpui_kit::test]
+fn a_roled_box_keeps_its_aria_and_the_links_of_the_text_it_holds(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let rich = wire::Node::RichText {
+        id: Some(named_id("rich")),
+        style: Default::default(),
+        text: "Read the docs or the code".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: vec![5..13, 17..25],
+        on_click: Some(72),
+        on_hover: None,
+        tooltip: None,
+    };
+    let note = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(named_id("note")),
+        style: Default::default(),
+        interactivity: wire::Interactivity {
+            role: Some(gpui_kit::Role::Status),
+            aria: wire::Aria {
+                label: Some("Note".into()),
+                live: Some(gpui_kit::accesskit::Live::Polite),
+                busy: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        children: vec![rich],
+    });
+    let nodes = door(cx, note);
+    let status = nodes
+        .iter()
+        .find(|node| node["role"] == "Status")
+        .expect("the box is in the tree");
+    assert_eq!(status["live"], "polite");
+    assert_eq!(status["state"], serde_json::json!(["busy"]));
+    let links: Vec<_> = nodes
+        .iter()
+        .filter(|node| node["role"] == "Link")
+        .map(|node| node["name"].clone())
+        .collect();
+    assert_eq!(links, ["the docs", "the code"]);
+}
+
 /// A RichText's clickable ranges are Links, each named by its words, and a
 /// press on one from assistive technology is that range's click (AX-117).
 #[gpui_kit::test]
