@@ -217,3 +217,44 @@ fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
     );
     assert_eq!(accessible(&overlay(None, true)), Accessible::default());
 }
+
+/// What the door reads of `root`, drawn in a window with the tree on.
+fn door(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<serde_json::Value> {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("t", window, false)
+            .iter()
+            .map(|node| serde_json::to_value(node).unwrap())
+            .collect()
+    })
+}
+
+/// A view's words are what its text is called, through the door as through
+/// the OS adapters, which name a Label by its value: a Text, and a RichText
+/// (gpui's `InteractiveText`, which carries its words only as the value).
+#[gpui_kit::test]
+fn a_view_text_reads_its_words_as_its_name_through_the_door(cx: &mut gpui_kit::TestAppContext) {
+    let rich = wire::Node::RichText {
+        id: Some(named_id("rich")),
+        style: Default::default(),
+        text: "Three online".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: Vec::new(),
+        on_click: None,
+        on_hover: None,
+        tooltip: None,
+    };
+    let root = axis_container("root", Axis::Column, [text("plain", "Members"), rich]);
+    let labels: Vec<_> = door(cx, root)
+        .into_iter()
+        .filter(|node| node["role"] == "Label")
+        .map(|node| node["name"].clone())
+        .collect();
+    assert_eq!(labels, ["Members", "Three online"]);
+}
