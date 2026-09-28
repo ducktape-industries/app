@@ -1,10 +1,24 @@
 //! The phase-2 rules (`docs/ax.md` §1.3): what the door's phase-2 keys say
 //! about one node (AX-101, 102, 106, 108, 109, 111 … 114, 116 … 118),
-//! where a node sits through `parent` (AX-105, 119), and whether the focus
-//! is in the dialog that shows (AX-103, 104).
+//! where a node sits through `parent` (AX-105, 119), whether the focus is
+//! in the dialog that shows (AX-103, 104), and whether the arrows move it
+//! through a composite's rows (AX-107).
 use super::*;
 use std::collections::HashMap;
 
+/// A composite whose rows the arrows pick (AX-107).
+const ARROWED: [&str; 5] = ["Tree", "ListBox", "Menu", "Grid", "EditableComboBox"];
+/// A row of a composite.
+const ITEM: [&str; 8] = [
+    "ListBoxOption",
+    "MenuItem",
+    "MenuItemCheckBox",
+    "MenuItemRadio",
+    "TreeItem",
+    "Row",
+    "Cell",
+    "GridCell",
+];
 /// A node whose press is the whole of it: nothing pressable inside (AX-119).
 const PRESSED_WHOLE: [&str; 9] = [
     "Button",
@@ -194,9 +208,41 @@ pub(super) fn node_rules(
     }
 }
 
-/// AX-103 and AX-104. A dialog that shows has the focus as the state
-/// opens (AX-104); a non-modal one may let the walk out. One the Tab walk
-/// never leaves is modal to the keyboard, and says so (AX-103).
+/// AX-107's own half on one snapshot: focus on a composite that has rows
+/// is on one of them, not on the composite.
+pub(super) fn snapshot_rules(nodes: &[AxNode], snapshot: &Snapshot<'_>, tally: &mut Tally) {
+    for node in nodes.iter().filter(|node| has(node, "focused")) {
+        let role = node.role.as_str();
+        if ARROWED.contains(&role) && rows(nodes, snapshot, node) > 0 {
+            tally.check("AX-107", node, false, || {
+                format!("the focus sits on the {role}, and no row is active")
+            });
+        }
+    }
+}
+
+/// How many rows of a composite `nodes` has inside `composite`.
+fn rows(nodes: &[AxNode], snapshot: &Snapshot<'_>, composite: &AxNode) -> usize {
+    nodes
+        .iter()
+        .filter(|node| ITEM.contains(&node.role.as_str()) && snapshot.within(node, &composite.id))
+        .count()
+}
+
+/// The composite an arrow press moves in `nodes` (AX-107): the nearest
+/// one at or above the focus with two rows or more.
+pub(super) fn arrowed(nodes: &[AxNode]) -> Option<&AxNode> {
+    let snapshot = Snapshot::of(nodes);
+    let focus = nodes.iter().find(|node| has(node, "focused"))?;
+    std::iter::once(focus)
+        .chain(snapshot.ancestors(focus))
+        .find(|node| ARROWED.contains(&node.role.as_str()) && rows(nodes, &snapshot, node) > 1)
+}
+
+/// AX-103, AX-104 and AX-107's arrows. A dialog that shows has the focus
+/// as the state opens (AX-104); a non-modal one may let the walk out. One
+/// the Tab walk never leaves is modal to the keyboard, and says so
+/// (AX-103). Each arrow press of the probe moves the active row (AX-107).
 pub(super) fn walk_rules(reading: &Reading, tally: &mut Tally) {
     let snapshots = &reading.snapshots;
     let Some(first) = snapshots.first() else {
@@ -219,5 +265,11 @@ pub(super) fn walk_rules(reading: &Reading, tally: &mut Tally) {
                 "Tab never leaves the dialog, and it is not modal".to_owned()
             });
         }
+    }
+    for Arrows { composite, focused } in &reading.arrows {
+        let pass = focused[0] != focused[1] && focused[1] != focused[2];
+        tally.check("AX-107", composite, pass, || {
+            format!("down then up leaves the active row at {focused:?}")
+        });
     }
 }

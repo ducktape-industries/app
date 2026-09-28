@@ -137,6 +137,39 @@ fn invalid(id: &str, description: Option<&str>) -> AxNode {
 }
 
 #[test]
+fn ax_107_the_focus_in_a_composite_is_on_a_row_the_arrows_move() {
+    let menu = || node("menu", "Menu", "Networks");
+    let row = |id| {
+        let mut row = under(node(id, "MenuItemRadio", id), "menu");
+        row.actions = vec!["press", "focus"];
+        row
+    };
+    // on a row: the composite is the one the arrows move
+    let on_row = vec![menu(), focused(row("a")), row("b")];
+    assert_eq!(
+        crate::ax::audit::phase_two::arrowed(&on_row).map(|node| node.id.as_str()),
+        Some("w:menu")
+    );
+    assert!(crate::ax::audit::phase_two::arrowed(&[menu(), focused(row("a"))]).is_none());
+    assert!(!one(on_row).applicable.contains_key("AX-107"));
+    // on the composite itself, with rows in it
+    let mut held = menu();
+    held.state = vec!["focused"];
+    assert_eq!(fails(&one(vec![held, row("a")]), "AX-107"), ["w:menu"]);
+    // the probe: each press moves the active row, or it does not
+    let probe = |focused: [&str; 3]| {
+        let mut told = reading(vec![vec![menu()]]);
+        told.arrows = vec![Arrows {
+            composite: menu(),
+            focused: focused.map(|id| Some(format!("w:{id}"))),
+        }];
+        audit(&told, false)
+    };
+    assert!(fails(&probe(["a", "b", "a"]), "AX-107").is_empty());
+    assert_eq!(fails(&probe(["a", "a", "a"]), "AX-107"), ["w:menu"]);
+}
+
+#[test]
 fn ax_108_an_invalid_field_says_why() {
     let report = one(vec![
         invalid("said", Some("no route to host")),

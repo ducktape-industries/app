@@ -66,14 +66,24 @@ pub(crate) struct Report {
 
 /// What one screen state showed the door: the first snapshot, then one per
 /// tab press; `escape`, one per snapshot, whether `escape` was bound then;
-/// and, the caller's word, `chords`: `(control name, chord)` for each
-/// control the app's Help lists with a chord (AX-114).
+/// `arrows`, the arrow probe of the composite the focus started in; and,
+/// the caller's word, `chords`: `(control name, chord)` for each control
+/// the app's Help lists with a chord (AX-114).
 #[derive(Debug, Default)]
 pub(crate) struct Reading {
     pub(crate) snapshots: Vec<Vec<AxNode>>,
     pub(crate) escape: Vec<bool>,
     pub(crate) modal: bool,
+    pub(crate) arrows: Vec<Arrows>,
     pub(crate) chords: Vec<(String, String)>,
+}
+
+/// An arrow probe (AX-107): the composite the focus sat in, and the
+/// focused id before, after `down`, and after `up`.
+#[derive(Debug)]
+pub(crate) struct Arrows {
+    pub(crate) composite: AxNode,
+    pub(crate) focused: [Option<String>; 3],
 }
 
 fn named(node: &AxNode) -> bool {
@@ -156,6 +166,7 @@ pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
             phase_two::node_rules(node, nodes, &snapshot, reading, &mut tally);
         }
         screen_rules(nodes, reading, launcher, &mut tally);
+        phase_two::snapshot_rules(nodes, &snapshot, &mut tally);
     }
     walk_rules(reading, &mut tally);
     phase_two::walk_rules(reading, &mut tally);
@@ -211,6 +222,14 @@ impl Report {
     }
 }
 
+impl Reading {
+    /// One more snapshot, with whether `escape` is bound now.
+    fn take(&mut self, nodes: Vec<AxNode>, window: &Window, cx: &App) {
+        self.escape.push(escape_bound(window, cx));
+        self.snapshots.push(nodes);
+    }
+}
+
 /// `escape` is bound where focus is now.
 fn escape_bound(window: &Window, cx: &App) -> bool {
     serde_json::to_value(shortcuts(window, cx))
@@ -228,8 +247,9 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// and on until focus has come back to where the first press put it. A
 /// stop the first snapshot does not show (scrolled away, drawn since) makes
 /// the Tab cycle longer than N + 1; the walk still goes all the way round,
-/// up to 4 (N + 1) presses. Focus goes back where it was — nowhere
-/// included.
+/// up to 4 (N + 1) presses. Before the walk, when the focus starts in a
+/// composite with two rows or more, `down` then `up`, `snap` after each
+/// ([`Arrows`]). Focus goes back where it was — nowhere included.
 pub(crate) fn observe(
     window: &mut Window,
     cx: &mut App,
@@ -239,24 +259,36 @@ pub(crate) fn observe(
 ) -> Reading {
     let before = window.focused(cx);
     let mut reading = Reading::default();
-    let mut take = |window: &mut Window, cx: &mut App, reading: &mut Reading| {
+    let mut read = |window: &mut Window, cx: &mut App| {
         let mut nodes = snap(window, cx);
         let stops = nodes.iter().filter(|node| offers(node, "focus")).count();
         nodes.retain(&keep);
-        reading.escape.push(escape_bound(window, cx));
-        reading.snapshots.push(nodes);
-        stops
+        (nodes, stops)
     };
-    let stops = take(window, cx, &mut reading);
+    let (nodes, stops) = read(window, cx);
+    reading.take(nodes, window, cx);
     // after the first snap: a read switches the tree on and draws it
     reading.modal = tree::modal_active(window);
+    if walk && let Some(composite) = phase_two::arrowed(&reading.snapshots[0]).cloned() {
+        let at = |nodes: &[AxNode]| focused(nodes).first().map(|id| (*id).to_owned());
+        let mut seen = [at(&reading.snapshots[0]), None, None];
+        for (n, key) in [(1, "down"), (2, "up")] {
+            let _ = press_keys(window, cx, key, "");
+            seen[n] = at(&read(window, cx).0);
+        }
+        reading.arrows.push(Arrows {
+            composite,
+            focused: seen,
+        });
+    }
     if walk {
         // the handle, not the node: a stop off the viewport has no node
         let (mut first, mut round) = (None, false);
         for press in 1..=4 * (stops + 1) {
             let _ = press_keys(window, cx, "tab", "");
             let now = window.focused(cx);
-            take(window, cx, &mut reading);
+            let (nodes, _) = read(window, cx);
+            reading.take(nodes, window, cx);
             match press {
                 1 => first = now,
                 _ => round |= now == first,

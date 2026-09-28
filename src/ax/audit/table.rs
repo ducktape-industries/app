@@ -27,7 +27,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 40] = [
+pub(crate) const RULES: [Rule; 41] = [
     rule(
         "AX-001",
         Error,
@@ -146,6 +146,11 @@ pub(crate) const RULES: [Rule; 40] = [
         "A menu item, tab, radio button, option, tree item, row or cell is in its container.",
     ),
     rule("AX-106", Error, "A Heading has a level in 1..=6."),
+    rule(
+        "AX-107",
+        Error,
+        "Focus in a composite is on a row, and each down or up press moves it.",
+    ),
     rule(
         "AX-108",
         Error,
