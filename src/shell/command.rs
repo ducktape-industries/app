@@ -12,7 +12,7 @@ const CHAT_READY: bool = false;
 
 /// What an empty window's field searches.
 #[derive(Clone, Copy, Default, PartialEq)]
-pub(super) enum Mode {
+enum Mode {
     #[default]
     Module,
     Chat,
@@ -28,8 +28,9 @@ impl Mode {
     }
 }
 
-/// A window's field: only its focused empty window shows it.
-pub(super) struct Command {
+/// The command line's state: the field, the picked row and the mode. Only a
+/// window's focused empty pane shows it.
+pub(super) struct CommandLine {
     field: Entity<InputState>,
     pick: usize,
     mode: Mode,
@@ -52,7 +53,7 @@ pub(super) fn matching(
 }
 
 impl DesktopWindow {
-    fn command(&mut self, window: &mut Window, cx: &mut Context<Self>) -> &mut Command {
+    fn command(&mut self, window: &mut Window, cx: &mut Context<Self>) -> &mut CommandLine {
         self.command.get_or_insert_with(|| {
             let field = cx.new(|cx| InputState::new(window, cx).placeholder("Open a program"));
             let changed = cx.subscribe_in(&field, window, |this, _, event, _, cx| {
@@ -63,7 +64,7 @@ impl DesktopWindow {
                     cx.notify();
                 }
             });
-            Command {
+            CommandLine {
                 field,
                 pick: 0,
                 mode: Mode::default(),
@@ -101,7 +102,7 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use super::ink::*;
         use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
+        let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
         let command = self.command(window, cx);
         let (field, mode) = (command.field.clone(), command.mode);
@@ -303,10 +304,7 @@ impl DesktopWindow {
             sans(500, 13.)
                 .id(id)
                 .control(Role::Button, SharedString::from(name))
-                .aria_toggled(match on {
-                    true => gpui_kit::accesskit::Toggled::True,
-                    false => gpui_kit::accesskit::Toggled::False,
-                })
+                .aria_toggled(on.into())
                 .h_full()
                 .px(px(10.))
                 .flex()
