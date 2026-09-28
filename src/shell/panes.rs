@@ -332,7 +332,6 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         let pane = &layout.panes[index];
-        let name = label(&self.model.read(cx).state.roster, pane.module);
         let focused = index == layout.focused;
         let console = self.kind == crate::shell::WindowKind::Console;
         let on_desk = console && pane.frame.is_some();
@@ -393,7 +392,7 @@ impl DesktopWindow {
                     super::ink::mono(500, 12.)
                         .flex_shrink_0()
                         .text_color(ink.ink)
-                        .child(name),
+                        .child(label(&self.model.read(cx).state.roster, pane.module)),
                 )
             })
             // pushes the controls to the bar's right end
