@@ -30,19 +30,22 @@ pub fn keyboard<E: StatefulInteractiveElement>(element: E) -> E {
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
 }
 
-/// The mark a control reached by the keyboard wears: a grey ring inside its
-/// edge, which reads on the light theme and the dark one alike, over a
-/// filled button as over a bare word, and moves nothing.
+/// The focus ring: grey, 2px inside the edge, which reads on the light
+/// theme and the dark one alike, over a filled button as over a bare word,
+/// and moves nothing.
+pub fn ring() -> gpui_kit::BoxShadow {
+    gpui_kit::BoxShadow {
+        color: gpui_kit::hsla(0., 0., 0.5, 1.),
+        offset: gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
+        blur_radius: gpui_kit::px(0.),
+        spread_radius: gpui_kit::px(2.),
+        inset: true,
+    }
+}
+
+/// The mark a control reached by the keyboard wears: the [`ring`].
 pub fn focus_shown<E: InteractiveElement>(element: E) -> E {
-    element.focus_visible(|style| {
-        style.shadow(vec![gpui_kit::BoxShadow {
-            color: gpui_kit::hsla(0., 0., 0.5, 1.),
-            offset: gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
-            blur_radius: gpui_kit::px(0.),
-            spread_radius: gpui_kit::px(2.),
-            inset: true,
-        }])
-    })
+    element.focus_visible(|style| style.shadow(vec![ring()]))
 }
 
 /// The accessibility setters of any interactive element, kit widgets that
@@ -165,6 +168,8 @@ impl StatefulInteractiveElement for Aria<'_> {}
 /// stop on an inner element with no role, so this node tracks the text's own
 /// `focus` handle and hands SetValue to `set_value`. The caller draws `field`
 /// with no node of its own and sets the role, the name and the states here.
+/// Focused, it wears the [`ring`] however it got there: a caret alone is too
+/// faint a mark for where typing goes.
 pub fn text_field(
     id: impl Into<ElementId>,
     focus: &FocusHandle,
@@ -175,6 +180,7 @@ pub fn text_field(
         .id(id)
         .w_full()
         .track_focus(focus)
+        .focus(|style| style.shadow(vec![ring()]))
         .on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
             if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
                 set_value(value.to_string(), window, cx);
@@ -248,5 +254,48 @@ mod tests {
             assert_eq!(node.class_name(), Some(AX_PRIVATE));
             assert!(!node.supports_action(gpui_kit::accesskit::Action::Focus));
         });
+    }
+
+    /// Draws a text field and keeps the shadow it computed.
+    struct Probe(
+        FocusHandle,
+        std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::BoxShadow>>>,
+    );
+
+    impl Render for Probe {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let (focus, seen) = (self.0.clone(), self.1.clone());
+            gpui_kit::canvas(
+                move |_, window, cx| {
+                    let mut field = text_field("field", &focus, |_, _, _| {}, div());
+                    *seen.borrow_mut() = field
+                        .interactivity()
+                        .compute_style(None, None, window, cx)
+                        .box_shadow;
+                },
+                |_, _, _, _| {},
+            )
+            .size_full()
+        }
+    }
+
+    /// A focused field wears the buttons' ring, pointer-focused too; an
+    /// unfocused one wears nothing.
+    #[gpui_kit::test]
+    fn a_focused_text_field_wears_the_ring(cx: &mut TestAppContext) {
+        cx.update(gpui_kit::init);
+        let seen = std::rc::Rc::default();
+        let kept = std::rc::Rc::clone(&seen);
+        let focus = cx.update(|cx| cx.focus_handle());
+        let handle = focus.clone();
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, _| Probe(handle, kept));
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        assert!(seen.borrow().is_empty());
+        native.update(|window, cx| {
+            focus.focus(window, cx);
+            window.render_frame(cx);
+        });
+        assert_eq!(*seen.borrow(), vec![ring()]);
     }
 }
