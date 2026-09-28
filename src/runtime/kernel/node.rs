@@ -24,12 +24,25 @@ pub(super) struct Node {
 const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// A refusal the transport produced is retried; one that is the node's
-/// own word ends the retry loop.
+/// own word ends the retry loop. For a READ: asking again costs nothing.
 fn transport_failed(refusal: &wire::Error) -> bool {
     matches!(refusal.code.as_str(), "rpc_client" | "node_failed")
 }
 
-async fn until_answered(budget: std::time::Duration, mut ask: impl FnMut() -> Answered) -> Answer {
+/// Only a refusal that proves no frame went out is retried (a connect
+/// failure, `backend::refused`; or a transport failure of the sequence read
+/// that comes before the frame, `submitted`). For a WRITE: a request the node
+/// may have applied is not signed and sent again — the sequence moved, so
+/// the node would apply it twice.
+fn unsent(refusal: &wire::Error) -> bool {
+    refusal.code == "rpc_client"
+}
+
+async fn until_answered(
+    budget: std::time::Duration,
+    retry_on: fn(&wire::Error) -> bool,
+    mut ask: impl FnMut() -> Answered,
+) -> Answer {
     let deadline = tokio::time::Instant::now() + budget;
     let mut attempt = 0;
     loop {
@@ -37,7 +50,7 @@ async fn until_answered(budget: std::time::Duration, mut ask: impl FnMut() -> An
             Ok(bytes) => return Ok(bytes),
             Err(refusal) => refusal,
         };
-        if !transport_failed(&refusal) {
+        if !retry_on(&refusal) {
             return Err(refusal);
         }
         let detail = refusal.message;
@@ -61,29 +74,52 @@ async fn until_answered(budget: std::time::Duration, mut ask: impl FnMut() -> An
 }
 
 /// Runs `method` on the connected node as a task, RETRYING transport
-/// failures for [`NODE_RETRY_BUDGET`]; a retry asks again from scratch
-/// (`op.submit` re-signs at a fresh sequence).
+/// failures for [`NODE_RETRY_BUDGET`]: for reads, which ask again from
+/// scratch at no cost.
 pub(super) fn spawn_retrying(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
-    spawn_method(guest, id, payload, method, true);
+    spawn_method(guest, id, payload, method, Some(transport_failed));
+}
+
+/// Runs `method` on the connected node as a task, retrying for
+/// [`NODE_RETRY_BUDGET`] only while nothing reached the node: for
+/// `op.submit`, which re-signs at a fresh sequence and so must not follow
+/// an answer that went missing with a second submission.
+pub(super) fn spawn_retrying_unsent(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+) {
+    spawn_method(guest, id, payload, method, Some(unsent));
 }
 
 /// Runs `method` on the connected node as a task, asking exactly once: a
 /// transport failure is the answer (`invite.create` must not mint twice).
 pub(super) fn spawn_no_retry(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
-    spawn_method(guest, id, payload, method, false);
+    spawn_method(guest, id, payload, method, None);
 }
 
-fn spawn_method(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod, retry: bool) {
+fn spawn_method(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    retry_on: Option<fn(&wire::Error) -> bool>,
+) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
     };
     let replies = guest.replies.clone();
     start(guest, id, async move {
-        let result = if retry {
-            until_answered(NODE_RETRY_BUDGET, || method(node.clone(), ask.clone())).await
-        } else {
-            method(node, ask).await
+        let result = match retry_on {
+            Some(retry_on) => {
+                until_answered(NODE_RETRY_BUDGET, retry_on, || {
+                    method(node.clone(), ask.clone())
+                })
+                .await
+            }
+            None => method(node, ask).await,
         };
         replies.item(id, result, true);
     });
@@ -200,11 +236,15 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         .unwrap_or_default()
         .trim()
         .to_owned();
-    if program.is_empty() || guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
+    if program.is_empty() {
+        guest.refuse(id, "malformed_request", "`module.changes` names no program");
+        return;
+    }
+    if guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
         guest.refuse(
             id,
-            "malformed_request",
-            "`module.changes` names no program, or too many",
+            "subscription_limit",
+            "too many `module.changes` subscriptions",
         );
         return;
     }
@@ -380,7 +420,14 @@ pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
 
 /// The receipt's output on success, the program's refusal otherwise.
 async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
-    let frame = backend::seated_frame(&node.client, &node.network, &target, payload).await?;
+    // the sequence read comes before any frame: nothing signed, nothing
+    // sent, so its lost answer is asked again as a read's is
+    let frame = backend::seated_frame(&node.client, &node.network, &target, payload)
+        .await
+        .map_err(|refusal| match transport_failed(&refusal) {
+            true => wire::Error::new("rpc_client", refusal.message),
+            false => refusal,
+        })?;
     let receipt = node.client.submit(frame).await.map_err(refused)?;
     match receipt.outcome {
         abi::Outcome::Applied { output } => Ok(output),
@@ -535,3 +582,6 @@ pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
         Ok(methods::encode(&block.map(block_of)))
     })
 }
+
+#[cfg(test)]
+mod tests;
