@@ -1,5 +1,5 @@
 //! The pane model, moved by hand: selection, splitting, focus, pop-in,
-//! placement, clamping, halving, reclaiming, rescaling, cycling.
+//! placement, clamping, reclaiming, rescaling, cycling.
 
 use super::*;
 
@@ -145,6 +145,30 @@ fn frames_stay_grabbable_and_reject_invalid_input() {
     assert!(shrunk.x <= 600. - KEEP);
 }
 
+/// A window holding a drawn view is never narrower than the view's
+/// own minimum and its border, unless the desk is: then it is the desk.
+#[test]
+fn a_window_is_never_narrower_than_its_view() {
+    let narrow = Frame {
+        x: 100.,
+        y: 100.,
+        w: 10.,
+        h: 400.,
+    };
+    assert_eq!(narrow.clamped(DESK, 682.).w, 682.);
+    assert_eq!(narrow.clamped((600., 400.), 682.).w, 600., "the desk");
+    crate::runtime::seat_for_test("layout-wide-view", 680);
+    let mut layout = Layout::default();
+    layout.split("layout-wide-view");
+    layout.place(DESK);
+    assert_eq!(layout.panes[0].min_width(), 682.);
+    assert!(layout.set_frame(0, narrow, DESK));
+    assert_eq!(layout.panes[0].frame.unwrap().w, 682.);
+    // a narrow view still goes down to the smallest window
+    crate::runtime::seat_for_test("layout-narrow-view", 280);
+    assert_eq!(Pane::new("layout-narrow-view").min_width(), MIN_WIDTH);
+}
+
 #[test]
 fn filling_a_window_and_filling_it_again_puts_it_back() {
     let mut layout = Layout::default();
@@ -163,59 +187,33 @@ fn filling_a_window_and_filling_it_again_puts_it_back() {
     assert_eq!(layout.panes[0].frame, Some(small));
 }
 
-#[test]
-fn halving_splits_the_focused_frame_into_an_empty_window() {
+/// A frame on the desk, for windows laid edge to edge by hand.
+fn part(x: f32, y: f32, w: f32, h: f32) -> Option<Frame> {
+    Some(Frame { x, y, w, h })
+}
+
+/// `modules` in windows at `frames`, the last one focused.
+fn tiled(frames: &[(&'static str, Option<Frame>)]) -> Layout {
     let mut layout = Layout::default();
-    assert!(layout.halve(false, DESK), "no window: an empty one");
-    layout.place(DESK);
-    layout.toggle_fill(0, DESK);
-    assert!(layout.panes[0].is_empty());
-    assert_eq!(layout.panes[0].frame, Some(Frame::fill(DESK)));
-    layout.load("chat");
-    assert_eq!(layout.panes[0].module, "chat");
-    let whole = layout.panes[0].frame.unwrap();
-    assert!(layout.halve(false, DESK));
-    let (left, right) = (
-        layout.panes[0].frame.unwrap(),
-        layout.panes[1].frame.unwrap(),
-    );
-    assert_eq!(layout.focused, 1);
-    assert!(layout.panes[1].is_empty());
-    assert_eq!(
-        (left.x, left.w + right.w, right.x),
-        (whole.x, whole.w, whole.x + left.w)
-    );
-    assert_eq!((left.h, right.h), (whole.h, whole.h));
-    assert!(layout.halve(true, DESK));
-    let (top, bottom) = (
-        layout.panes[1].frame.unwrap(),
-        layout.panes[2].frame.unwrap(),
-    );
-    assert_eq!((top.h + bottom.h, bottom.y), (right.h, right.y + top.h));
-    assert_eq!((top.x, bottom.x, bottom.w), (right.x, right.x, right.w));
-    // a half narrower (or lower) than the smallest window isn't made
-    assert!(layout.halve(false, DESK));
-    let count = layout.panes.len();
-    let narrow = layout.panes[layout.focused].frame.unwrap();
-    assert!(narrow.w / 2. < MIN_WIDTH, "{narrow:?}");
-    assert!(!layout.halve(false, DESK), "too narrow to halve");
-    assert_eq!(layout.panes.len(), count);
-    while layout.split("files") {}
-    assert!(!layout.halve(false, DESK), "no room for another");
+    for &(module, frame) in frames {
+        layout.split(module);
+        layout.panes[layout.focused].frame = frame;
+    }
+    layout
 }
 
 #[test]
-fn closing_a_half_gives_its_sibling_the_whole_frame_back() {
-    let mut layout = Layout::default();
-    layout.split("chat");
-    layout.place(DESK);
-    let whole = layout.panes[0].frame.unwrap();
-    layout.halve(false, DESK);
-    let right = layout.panes[1].frame.unwrap();
-    layout.halve(true, DESK);
+fn closing_a_window_gives_its_flush_neighbour_the_space_back() {
+    let whole = Frame::fill(DESK);
+    let right = part(700., 12., 688., 836.);
+    let mut layout = tiled(&[
+        ("chat", part(12., 12., 688., 836.)),
+        ("files", part(700., 12., 688., 418.)),
+        ("calendar", part(700., 430., 688., 418.)),
+    ]);
     // the lower right quarter goes: the upper one takes the right half
     layout.close(2);
-    assert_eq!(layout.panes[1].frame, Some(right));
+    assert_eq!(layout.panes[1].frame, right);
     // the right half goes: chat takes the whole desk again
     layout.close(1);
     assert_eq!(layout.panes[0].frame, Some(whole));
@@ -228,17 +226,27 @@ fn closing_a_half_gives_its_sibling_the_whole_frame_back() {
 }
 
 #[test]
-fn closing_a_half_gives_the_quarters_beside_it_the_whole_width() {
-    let mut layout = Layout::default();
-    layout.split("chat");
-    layout.place(DESK);
-    let whole = layout.panes[0].frame.unwrap();
-    layout.halve(false, DESK);
-    layout.halve(true, DESK);
+fn closing_a_window_gives_the_ones_lined_up_beside_it_its_width() {
+    let whole = Frame::fill(DESK);
     let (top, bottom) = (
-        layout.panes[1].frame.unwrap(),
-        layout.panes[2].frame.unwrap(),
+        Frame {
+            x: 700.,
+            y: 12.,
+            w: 688.,
+            h: 418.,
+        },
+        Frame {
+            x: 700.,
+            y: 430.,
+            w: 688.,
+            h: 418.,
+        },
     );
+    let mut layout = tiled(&[
+        ("chat", part(12., 12., 688., 836.)),
+        ("files", Some(top)),
+        ("calendar", Some(bottom)),
+    ]);
     // the left half goes: the right column's quarters take its width
     layout.close(0);
     assert_eq!(
@@ -257,12 +265,12 @@ fn closing_a_half_gives_the_quarters_beside_it_the_whole_width() {
             ..bottom
         })
     );
-    // and in the other direction: a row of halves under a closed top
-    let mut layout = Layout::default();
-    layout.split("chat");
-    layout.place(DESK);
-    layout.halve(true, DESK);
-    layout.halve(false, DESK);
+    // and in the other direction: a row of two under a closed top
+    let mut layout = tiled(&[
+        ("chat", part(12., 12., 1376., 418.)),
+        ("files", part(12., 430., 688., 418.)),
+        ("calendar", part(700., 430., 688., 418.)),
+    ]);
     layout.close(0);
     let (left, right) = (
         layout.panes[0].frame.unwrap(),
@@ -273,25 +281,22 @@ fn closing_a_half_gives_the_quarters_beside_it_the_whole_width() {
         (whole.y, whole.h, whole.y, whole.h)
     );
     // a window that spans only part of the side is left alone
-    let mut layout = Layout::default();
-    layout.split("chat");
-    layout.place(DESK);
-    layout.halve(false, DESK);
-    layout.halve(true, DESK);
-    let top = layout.panes[1].frame;
-    layout.panes[2].frame = None;
+    let mut layout = tiled(&[
+        ("chat", part(12., 12., 688., 836.)),
+        ("files", Some(top)),
+        ("calendar", None),
+    ]);
     layout.close(0);
-    assert_eq!(layout.panes[0].frame, top);
+    assert_eq!(layout.panes[0].frame, Some(top));
 }
 
 #[test]
 fn a_resized_desk_scales_every_window_with_it() {
-    let mut layout = Layout::default();
-    layout.split("chat");
+    let mut layout = tiled(&[
+        ("chat", part(12., 12., 688., 836.)),
+        (EMPTY, part(700., 12., 688., 836.)),
+    ]);
     layout.measure(DESK);
-    layout.place(DESK);
-    layout.toggle_fill(0, DESK);
-    layout.halve(false, DESK);
     let small = Frame {
         x: 100.,
         y: 80.,
@@ -309,7 +314,7 @@ fn a_resized_desk_scales_every_window_with_it() {
         layout.panes[1].frame.unwrap(),
     );
     assert_eq!((left.x, left.y), (INSET, INSET));
-    assert_eq!(left.x + left.w, right.x, "halves stay flush");
+    assert_eq!(left.x + left.w, right.x, "edge to edge stays flush");
     assert_eq!(right.x + right.w, big.0 - INSET);
     assert_eq!(left.h, big.1 - 2. * INSET);
     let floating = layout.panes[2].frame.unwrap();

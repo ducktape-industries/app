@@ -268,7 +268,7 @@ fn panes(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> (usize
     })
 }
 
-/// The desk's own keys (⌘D, ⌘1, ⌘W) act on its windows only while no
+/// The desk's own keys (⌘N, ⌘1, ⌘W) act on its windows only while no
 /// overlay is open; an overlay keeps its keys, and ⌘W is then the app
 /// window's (checked through `command_w_pane`: on Linux that window
 /// minimizes, which the test platform can't).
@@ -279,8 +279,8 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
         draw(window, cx);
     });
     assert_eq!(panes(&mut native, &view), (1, 0));
-    key(&mut native, "secondary-d");
-    assert_eq!(panes(&mut native, &view), (2, 1), "⌘D halves the window");
+    key(&mut native, "secondary-n");
+    assert_eq!(panes(&mut native, &view), (2, 1), "⌘N opens a window");
     key(&mut native, "secondary-1");
     assert_eq!(panes(&mut native, &view), (2, 0), "⌘1 focuses the first");
 
@@ -291,7 +291,7 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
             None,
             "⌘W under {name:?} closes the window, not a pane"
         );
-        for stroke in ["secondary-d", "secondary-2"] {
+        for stroke in ["secondary-n", "secondary-2"] {
             key(&mut native, stroke);
             assert_eq!(
                 panes(&mut native, &view),
@@ -440,15 +440,15 @@ fn the_focused_window_is_the_active_program(cx: &mut TestAppContext) {
     assert_eq!(active(&mut native), Some("pane-ax-test"));
 }
 
-/// A window that comes to the front (⌘D, ⌘W, ⌘1…9, ⌃Tab) has the keys:
+/// A window that comes to the front (⌘N, ⌘W, ⌘1…9, ⌃Tab) has the keys:
 /// what had them in it before, else its first control, else the window
 /// itself — never the root, where typing goes nowhere.
 #[gpui_kit::test]
 fn a_window_brought_to_the_front_has_the_keys(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = console(cx);
     let focused = |native: &mut VisualTestContext| native.update(|window, cx| window.focused(cx));
-    key(&mut native, "secondary-d");
-    assert!(in_front(&mut native, &view), "⌘D: the new window");
+    key(&mut native, "secondary-n");
+    assert!(in_front(&mut native, &view), "⌘N: the new window");
     key(&mut native, "secondary-1");
     assert!(in_front(&mut native, &view), "⌘1");
     let first = focused(&mut native);
@@ -684,6 +684,48 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
         // the page runs past the window: there is something to scroll to
         assert!(page > shown, "squeezed: page {page}, window {shown}");
     });
+}
+
+/// A window placed before its view came widens once the view draws: the
+/// tab seats it, says so (`Intent::Seated`), and the desk fits the window
+/// to the view's minimum and its border.
+#[gpui_kit::test]
+fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-seated-view";
+    let (model, key, view, mut native) = console(cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    let width = |native: &mut VisualTestContext| {
+        native.update(|_, cx| view.read(cx).layout(cx).panes[0].frame.unwrap().w)
+    };
+    assert_eq!(width(&mut native), 768., "60% of the desk, no view yet");
+    let tab = native.update(|_, cx| {
+        let mounted = &model.read(cx).mounted;
+        let pane = mounted.values().find(|pane| pane.module == MODULE);
+        pane.expect("a tab for the pane").view.clone()
+    });
+    let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let _heard = native.update(|_, cx| {
+        let said = said.clone();
+        cx.subscribe(&tab, move |_, intent: &crate::runtime::Intent, _| {
+            said.borrow_mut().push(intent.clone())
+        })
+    });
+    crate::runtime::seat_for_test(MODULE, 1000);
+    native.update(|window, cx| {
+        draw(window, cx);
+    });
+    native.run_until_parked();
+    assert!(
+        said.borrow().contains(&crate::runtime::Intent::Seated),
+        "{:?}",
+        said.borrow()
+    );
+    assert_eq!(width(&mut native), 1002.);
 }
 
 /// A Help window brought to the front keeps the keys in its own box: it

@@ -41,13 +41,21 @@ impl Frame {
         }
     }
 
-    /// At least the smallest window, no larger than the desk, and never so
-    /// far off it that its title bar can't be grabbed back.
-    pub(crate) fn clamped(self, desk: (f32, f32)) -> Self {
-        let w = self.w.max(MIN_WIDTH).min(desk.0.max(MIN_WIDTH));
+    /// At least `min_w` wide (its pane's [`Pane::min_width`]) and the
+    /// smallest window high, no larger than the desk, and never so far off
+    /// it that its title bar can't be grabbed back. On a desk narrower than
+    /// `min_w` it is the desk's width, and the view scrolls sideways in it.
+    /// A frame widened to its floor moves left as far as it takes to stay
+    /// on the desk.
+    pub(crate) fn clamped(self, desk: (f32, f32), min_w: f32) -> Self {
+        let w = self.w.max(min_w).min(desk.0.max(MIN_WIDTH));
         let h = self.h.max(MIN_HEIGHT).min(desk.1.max(MIN_HEIGHT));
+        let x = match w > self.w {
+            true => self.x.min(desk.0 - w).max(0.),
+            false => self.x,
+        };
         Self {
-            x: self.x.clamp(KEEP - w, (desk.0 - KEEP).max(0.)),
+            x: x.clamp(KEEP - w, (desk.0 - KEEP).max(0.)),
             y: self.y.clamp(0., (desk.1 - KEEP / 2.).max(0.)),
             w,
             h,
@@ -95,6 +103,17 @@ impl Pane {
     pub(crate) fn is_view(&self) -> bool {
         !matches!(self.module, EMPTY | HELP)
     }
+
+    /// The narrowest its frame goes: once its view is drawn, the view's
+    /// own minimum and the frame's 1px border on each side; never under
+    /// the smallest window.
+    pub(crate) fn min_width(&self) -> f32 {
+        let view = self
+            .is_view()
+            .then(|| crate::runtime::min_width(self.module));
+        view.flatten()
+            .map_or(MIN_WIDTH, |min_width| MIN_WIDTH.max(min_width + 2.))
+    }
 }
 
 #[derive(Clone, Default, Debug)]
@@ -129,10 +148,6 @@ pub(crate) enum PaneMessage {
     },
     /// This pop-out's pane back onto the console's desk.
     PopIn,
-    /// ⌘D / ⌘⇧D.
-    Halve {
-        below: bool,
-    },
     /// ⌘` / ⌘⇧` / ctrl-tab.
     Cycle {
         forward: bool,
@@ -168,7 +183,8 @@ impl Layout {
     /// The desk as the shell measured it. On a desk that changed size
     /// (the window resized, filled the screen or left it) every window
     /// keeps its share of it: its edges keep their place between the
-    /// desk's insets, so halves stay flush and a filled window stays filled.
+    /// desk's insets, so windows edge to edge stay flush and a filled
+    /// window stays filled.
     pub(crate) fn measure(&mut self, desk: (f32, f32)) {
         let Some(old) = self.desk.replace(desk).filter(|old| *old != desk) else {
             return;
@@ -258,42 +274,6 @@ impl Layout {
             self.focused = 0;
             self.raise(0);
         }
-    }
-
-    /// Halves the focused window, left|right (or top|bottom when
-    /// `below`): it keeps the first half, a new empty window takes the
-    /// other. With no window, an empty one fills the desk.
-    pub(crate) fn halve(&mut self, below: bool, desk: (f32, f32)) -> bool {
-        let Some(whole) = self.panes.get(self.focused).map(|pane| pane.frame) else {
-            return self.split(EMPTY);
-        };
-        let whole = whole.unwrap_or_else(|| Frame::fill(desk));
-        // halves under the smallest window would be pushed apart, one past
-        // the other and off the desk
-        let fits = match below {
-            false => whole.w / 2. >= MIN_WIDTH,
-            true => whole.h / 2. >= MIN_HEIGHT,
-        };
-        if !fits || !self.split(EMPTY) {
-            return false;
-        }
-        let (mut first, mut second) = (whole, whole);
-        match below {
-            false => {
-                first.w = (whole.w / 2.).floor();
-                second.x = whole.x + first.w;
-                second.w = whole.w - first.w;
-            }
-            true => {
-                first.h = (whole.h / 2.).floor();
-                second.y = whole.y + first.h;
-                second.h = whole.h - first.h;
-            }
-        }
-        let new = self.focused;
-        self.set_frame(new - 1, first, desk);
-        self.set_frame(new, second, desk);
-        true
     }
 
     /// The next window up (`forward`: the one at the bottom comes to the
@@ -394,7 +374,7 @@ impl Layout {
                 .filter(|pane| pane.frame.is_some())
                 .max_by_key(|pane| pane.z)
                 .and_then(|pane| pane.frame);
-            // whole pixels: a halved and rejoined frame must add back up
+            // whole pixels: frames laid edge to edge add back up
             let w = (desk.0 * NEW_SHARE.0).round().max(MIN_WIDTH);
             let h = (desk.1 * NEW_SHARE.1).round().max(MIN_HEIGHT);
             let frame = match beneath {
@@ -418,7 +398,8 @@ impl Layout {
             self.panes[index].frame = Some(frame);
         }
         for pane in &mut self.panes {
-            pane.frame = pane.frame.map(|frame| frame.clamped(desk));
+            let min_w = pane.min_width();
+            pane.frame = pane.frame.map(|frame| frame.clamped(desk, min_w));
         }
     }
 
@@ -428,7 +409,7 @@ impl Layout {
             .all(|v| v.is_finite());
         match self.panes.get_mut(index) {
             Some(pane) if valid => {
-                pane.frame = Some(frame.clamped(desk));
+                pane.frame = Some(frame.clamped(desk, pane.min_width()));
                 pane.restore = None;
                 true
             }
@@ -442,7 +423,7 @@ impl Layout {
             return;
         };
         match pane.restore.take() {
-            Some(restore) => pane.frame = Some(restore.clamped(desk)),
+            Some(restore) => pane.frame = Some(restore.clamped(desk, pane.min_width())),
             None => {
                 pane.restore = pane.frame;
                 pane.frame = Some(Frame::fill(desk));

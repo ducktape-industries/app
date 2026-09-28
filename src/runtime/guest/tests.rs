@@ -343,6 +343,7 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
     let bytes = std::fs::read(path).expect("probe bytes");
     let mut old = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
     assert_eq!(old.name, "Exported");
+    assert_eq!(old.min_width, 480, "the probe declares none: the default");
     old.tick();
     old.ticks += 1;
     assert_eq!(old.fault, None);
@@ -383,6 +384,23 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
         next.restore(b"not a snapshot", "probe"),
         Ok(Restored::Refused(_))
     ));
+}
+
+/// A module's minimum width is its drawn view's: none while the seat loads.
+#[test]
+fn a_view_says_its_min_width_once_it_is_drawn() {
+    let seat = Mounted::seat();
+    registry()
+        .lock()
+        .unwrap()
+        .insert(("min-width-seat", 7), seat.clone());
+    assert_eq!(min_width("min-width-seat"), None, "loading");
+    let mut guest = wat_view("unreachable", "unreachable", None);
+    guest.min_width = 680;
+    seat.lock().unwrap().slot = Slot::Ready(Box::new(guest));
+    assert_eq!(min_width("min-width-seat"), Some(680.));
+    registry().lock().unwrap().remove(&("min-width-seat", 7));
+    assert_eq!(min_width("min-width-seat"), None, "gone");
 }
 
 #[test]

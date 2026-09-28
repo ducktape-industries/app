@@ -76,7 +76,6 @@ impl Ducktape {
                     task = crate::shell::close(key);
                 }
             }
-            PaneMessage::Halve { below } => drop(layout.halve(below, desk)),
             PaneMessage::Cycle { forward } => drop(layout.cycle(forward)),
             PaneMessage::Fill(index) => {
                 layout.toggle_fill(index, desk);
@@ -181,20 +180,19 @@ mod tests {
         assert_eq!(state.active, Some("chat"));
         pane(&mut state, console, PaneMessage::Select("calendar"));
         assert_eq!(modules(&state, console), ["calendar", "files"]);
-        pane(&mut state, console, PaneMessage::Halve { below: false });
+        pane(&mut state, console, PaneMessage::Split(EMPTY));
         assert_eq!(modules(&state, console), ["calendar", EMPTY, "files"]);
         pane(&mut state, console, PaneMessage::Open("chat"));
         assert_eq!(modules(&state, console), ["calendar", "chat", "files"]);
     }
 
-    /// ⌘D halves, ⌘⇧D halves below, ⌘1–9 focus, ⌘` cycles; closing a
-    /// half gives its sibling the space back (#295).
+    /// ⌘N opens an empty window, ⌘1–9 focus, ⌘` cycles, ⌘W closes.
     #[test]
     fn the_desk_keys_move_the_model() {
         let (mut state, console) = desk();
         let whole = state.layouts[&console].panes[0].frame;
-        pane(&mut state, console, PaneMessage::Halve { below: false });
-        pane(&mut state, console, PaneMessage::Halve { below: true });
+        pane(&mut state, console, PaneMessage::Split(EMPTY));
+        pane(&mut state, console, PaneMessage::Split(EMPTY));
         assert_eq!(state.layouts[&console].panes.len(), 3);
         pane(&mut state, console, PaneMessage::Focus(0));
         assert_eq!(
@@ -205,7 +203,7 @@ mod tests {
         assert_ne!(state.layouts[&console].focused, 0);
         pane(&mut state, console, PaneMessage::Close(2));
         pane(&mut state, console, PaneMessage::Close(1));
-        assert_eq!(state.layouts[&console].panes[0].frame, whole, "#295");
+        assert_eq!(state.layouts[&console].panes[0].frame, whole, "untouched");
     }
 
     #[test]
@@ -253,7 +251,7 @@ mod tests {
         let _ = state.update(Message::WindowWasClosed(popped));
         assert!(!state.layouts.contains_key(&popped));
         // an empty window has no view to carry out
-        pane(&mut state, console, PaneMessage::Halve { below: false });
+        pane(&mut state, console, PaneMessage::Split(EMPTY));
         let before = state.layouts.len();
         let focused = state.layouts[&console].focused;
         pane(
@@ -265,6 +263,37 @@ mod tests {
             },
         );
         assert_eq!(state.layouts.len(), before);
+    }
+
+    /// A window is placed before its view comes (60% of the desk, centred);
+    /// once the view is seated, it widens to the view's minimum and its
+    /// border, pulled left as far as it takes to stay on the desk, and on a
+    /// desk narrower than that it is the desk.
+    #[test]
+    fn a_window_widens_to_its_view_once_the_view_is_seated() {
+        for (module, desk, min_width, placed, widened) in [
+            ("seated-wide-view", 1000., 680, (200., 600.), (200., 682.)),
+            // the console at its smallest, forge opening in it
+            ("seated-console-view", 720., 640, (144., 432.), (78., 642.)),
+            ("seated-cramped-view", 600., 680, (120., 360.), (0., 600.)),
+        ] {
+            let (mut state, _) = Ducktape::boot();
+            let console = WindowKey::unique();
+            state.console_win = Some(console);
+            let _ = state.update(Message::DeskShown {
+                window: console,
+                desk: (desk, 700.),
+                seed: Some(module),
+            });
+            let frame = state.layouts[&console].panes[0].frame.unwrap();
+            assert_eq!((frame.x, frame.w), placed, "{module}");
+            crate::runtime::seat_for_test(module, min_width);
+            let seated = crate::runtime::Intent::Seated;
+            let _ = state.update(Message::ViewEvent(module, seated));
+            let frame = state.layouts[&console].panes[0].frame.unwrap();
+            assert_eq!((frame.x, frame.w), widened, "{module}");
+            assert!(frame.x + frame.w <= desk, "{module}: {frame:?}");
+        }
     }
 
     /// The model's own asks land in the console's layout at once, each of

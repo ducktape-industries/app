@@ -134,12 +134,13 @@ impl Guest {
             timing.compile = compiled.elapsed();
             let code = code?;
             let seated = Instant::now();
-            let (name, capabilities) = manifest_of(&view_bytes);
+            let (name, capabilities, min_width) = manifest_of(&view_bytes);
             let prepared = (|| -> Result<Self, Failure> {
                 let mut fresh =
                     Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
                 fresh.name = name.clone();
                 fresh.capabilities = capabilities.clone();
+                fresh.min_width = min_width;
                 fresh.deployed(hash);
                 match &mut against {
                     Some((alive, ticks)) => {
@@ -369,7 +370,7 @@ impl Guest {
     ) -> Result<Self, String> {
         let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
         let mut guest = Self::instantiate(module, &code, shown)?;
-        (guest.name, guest.capabilities) = manifest_of(bytes);
+        (guest.name, guest.capabilities, guest.min_width) = manifest_of(bytes);
         guest.init(shown)?;
         Ok(guest)
     }
@@ -377,7 +378,8 @@ impl Guest {
     /// The view's bytes checked and compiled — the cranelift stage of
     /// a load, measured on its own.
     pub(crate) fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Module>, Failure> {
-        // the manifest's preferred size is not read: a view fills its tab
+        // refused here, a manifest `manifest_of` would read as empty never
+        // reaches a seat
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
@@ -449,6 +451,7 @@ impl Guest {
             module,
             name: String::new(),
             capabilities: Vec::new(),
+            min_width: 0,
             undeclared_logged: Vec::new(),
             store,
             exports,

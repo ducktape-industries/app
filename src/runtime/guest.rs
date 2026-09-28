@@ -35,6 +35,9 @@ pub(super) struct Guest {
     /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
     pub(crate) capabilities: Vec<Capability>,
+    /// The manifest's `MIN_WINDOW_WIDTH`: the narrowest the view is laid
+    /// out, and so the narrowest a window holding it is sized.
+    pub(crate) min_width: u32,
     /// The undeclared capabilities already logged, so each is logged once.
     pub(crate) undeclared_logged: Vec<Capability>,
     store: Store<HostState>,

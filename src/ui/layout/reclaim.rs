@@ -2,14 +2,13 @@
 
 use super::{Frame, Layout};
 
-/// Edges within half a pixel count as one: halves are floored apart.
+/// Edges within half a pixel count as one.
 const SLACK: f32 = 0.5;
 
 impl Layout {
     /// The windows beside a closed one grow back over its frame: the one
-    /// that shared a whole edge with it (its other half, once halved), or
-    /// else the windows lined up along one side of it that together span
-    /// that side (the two quarters beside a closed half).
+    /// that shared a whole edge with it, or else the windows lined up
+    /// along one side of it that together span that side.
     pub(super) fn reclaim(&mut self, gone: Frame) {
         // a frame along the axis it grows on, then across it
         let along = |frame: Frame, row: bool| match row {
@@ -18,8 +17,8 @@ impl Layout {
         };
         let near = |a: f32, b: f32| (a - b).abs() < SLACK;
         let frames: &Vec<Option<Frame>> = &self.panes.iter().map(|pane| pane.frame).collect();
-        // same span, touching or overlapping (a half clamped to the
-        // smallest window overlaps its sibling): the one on top
+        // same span, touching or overlapping (a window clamped to its
+        // floor can overlap its neighbour): the one on top
         let whole = [true, false]
             .into_iter()
             .flat_map(|row| {

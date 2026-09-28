@@ -92,6 +92,9 @@ pub enum Intent {
     OpenLink(String),
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
+    /// A view was seated in its tab, first or after a new deployment: its
+    /// minimum width is known, and the desk widens a window under it.
+    Seated,
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a
@@ -164,11 +167,71 @@ mod display_diagnostics;
 
 pub(crate) mod pictures;
 
-/// The name a view's manifest gives it and the capabilities it declares;
-/// empty for one whose manifest cannot be read (`compile` refuses those
-/// before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>) {
+/// The name a view's manifest gives it, the capabilities it declares and
+/// the narrowest it is laid out; empty and 0 for one whose manifest cannot
+/// be read (`compile` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32) {
     view_wire::manifest::read_manifest(bytes)
-        .map(|manifest| (manifest.name, manifest.capabilities))
+        .map(|manifest| (manifest.name, manifest.capabilities, manifest.min_width))
         .unwrap_or_default()
+}
+
+/// The narrowest `module`'s view is laid out, in px, once one of its seats
+/// holds it drawn; `None` while it loads, failed, or has none.
+pub(crate) fn min_width(module: &str) -> Option<f32> {
+    let registry = registry().lock().expect("module views");
+    registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .find_map(
+            |(_, seat)| match &seat.lock().expect("module view lock").slot {
+                Slot::Ready(guest) => Some(guest.min_width as f32),
+                _ => None,
+            },
+        )
+}
+
+/// Every seat of `module` holds a drawn view whose manifest says
+/// `min_width`, or, with none yet, one is preloaded for its first pane: a
+/// WAT view with the five exports whose every tick draws an empty tree.
+#[cfg(test)]
+pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
+    let frame = wire::encode(&wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    });
+    let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+    let tick = wire::abi::pack(65536, frame.len() as u32);
+    let code = Module::new(
+        guest::engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (data (i32.const 65536) "{bytes}")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) i64.const {tick})
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
+    )
+    .unwrap();
+    let ready = || {
+        let mut guest = Guest::instantiate(module, &code, module).unwrap();
+        guest.min_width = min_width;
+        Slot::Ready(Box::new(guest))
+    };
+    let mut registry = registry().lock().unwrap();
+    let mut seats: Vec<_> = registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .map(|(_, seat)| seat.clone())
+        .collect();
+    if seats.is_empty() {
+        seats.push(Mounted::seat());
+        registry.insert((module, 0), seats[0].clone());
+    }
+    for seat in seats {
+        seat.lock().unwrap().slot = ready();
+    }
 }
