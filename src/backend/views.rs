@@ -1,13 +1,15 @@
 //! Where a view comes from: the connected node's roster. The registry
 //! names every program and the code blob it runs; a program that ships a
 //! view carries it inside that blob, as the custom section
-//! [`VIEW_SECTION`] — one artifact, one blob id. The app reads the section out and mounts it. A program without the section
-//! has no view, which is the network's fact, not a failure. The registry
-//! also lists view-only entries: a name and a blob that is the view itself,
-//! with no program behind it (Explorer); they follow the programs.
+//! [`VIEW_SECTION`] — one artifact, one blob id. The app reads the section
+//! out and mounts it. A program without the section has no view, which is
+//! the network's fact, not a failure. The registry also lists view-only
+//! entries: a name and a blob that is the view itself, with no program
+//! behind it (Explorer); they follow the programs.
 //!
-//! Nothing here knows a program by name: the roster's order is the rail's
-//! order, the manifest inside the view names the tab.
+//! Nothing here knows a program by name: the roster's order (programs by
+//! name, then view-only entries by name, as the registry folds them) is the
+//! rail's order, the manifest inside the view names the tab.
 
 use std::path::PathBuf;
 
@@ -49,8 +51,9 @@ impl std::fmt::Display for Fetch {
     }
 }
 
-/// The roster, in the order the registry program answers it: asked of that
-/// program through the same query path every view's request takes.
+/// The roster as the registry program answers it (sorted by name, programs
+/// first): asked of that program through the same query path every view's
+/// request takes.
 pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>, Fetch> {
     use module_registry::{Query, Reply};
     let Reply::Programs(entries) = ask(client, network, Query::At(0)).await? else {
@@ -84,7 +87,7 @@ async fn ask(
     let answer = client
         .query(Layer::Preconfirmed, frame)
         .await
-        .map_err(unreachable)?;
+        .map_err(fetch_error)?;
     abi::decode(&answer).map_err(|refusal| Fetch::Refused(refusal.sentence))
 }
 
@@ -115,7 +118,7 @@ pub async fn program_bytes(client: &RpcClient, code: &BlobId) -> Result<Vec<u8>,
     let framed = client
         .blob(*code)
         .await
-        .map_err(unreachable)?
+        .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
     let body = super::noded::unframe(&framed)
         .ok_or_else(|| Fetch::Refused("the blob carries no git header".into()))?
@@ -145,18 +148,16 @@ fn cache_path(code: &BlobId) -> Option<PathBuf> {
 /// cache holds the body, which is re-framed as a blob before the check.
 fn hashes_to(bytes: &[u8], code: &BlobId) -> bool {
     use sha2::Digest as _;
-    let framed = match super::noded::unframe(bytes) {
-        Some(_) => bytes.to_vec(),
-        None => {
-            let mut framed = format!("blob {}\0", bytes.len()).into_bytes();
-            framed.extend_from_slice(bytes);
-            framed
-        }
+    // The cache holds a bare body, the store a git-framed blob; a body is
+    // not told apart by its bytes (a wasm body opens with a NUL, exactly
+    // where a frame ends), so both readings are hashed and either may match.
+    let mut framed = format!("blob {}\0", bytes.len()).into_bytes();
+    framed.extend_from_slice(bytes);
+    let matches = |candidate: &[u8]| match code.kind() {
+        abi::HashKind::Sha1 => sha1::Sha1::digest(candidate)[..] == *code.digest(),
+        abi::HashKind::Sha256 => sha2::Sha256::digest(candidate)[..] == *code.digest(),
     };
-    match code.kind() {
-        abi::HashKind::Sha1 => sha1::Sha1::digest(&framed)[..] == *code.digest(),
-        abi::HashKind::Sha256 => sha2::Sha256::digest(&framed)[..] == *code.digest(),
-    }
+    matches(bytes) || matches(&framed)
 }
 
 /// The bytes of the [`VIEW_SECTION`] custom section, out of a core module or
@@ -172,7 +173,7 @@ pub fn view_section(bytes: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-fn unreachable(error: super::noded::Error) -> Fetch {
+fn fetch_error(error: super::noded::Error) -> Fetch {
     match error {
         super::noded::Error::Refused(refusal) | super::noded::Error::Decode(refusal) => {
             Fetch::Refused(refusal.sentence)
@@ -210,5 +211,17 @@ mod tests {
         assert!(hashes_to(body, &id));
         assert!(hashes_to(framed, &id));
         assert!(!hashes_to(b"other", &id));
+    }
+
+    #[test]
+    fn a_cached_wasm_body_hashes_like_the_framed_blob() {
+        use sha2::Digest as _;
+        // a wasm body opens with a NUL: it must not pass for a framed blob
+        let body = b"\0asm\x01\0\0\0";
+        let mut framed = b"blob 8\0".to_vec();
+        framed.extend_from_slice(body);
+        let id = BlobId::Sha256(sha2::Sha256::digest(&framed).into());
+        assert!(hashes_to(body, &id));
+        assert!(hashes_to(&framed, &id));
     }
 }

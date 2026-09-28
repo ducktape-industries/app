@@ -1,7 +1,9 @@
-//! The desk: a menu bar across the top, the open programs' windows under
-//! it. The bar holds, left to right: the network (its menu switches), the
-//! network's programs as tabs, then Search (⌘K), the node's breath (its
-//! status on a click), who is signed in (their menu), and Settings.
+//! The desk frame of a window: the menu bar (console only), the pane area,
+//! whatever is open over it, and the footer. Here the bar is measured for
+//! folding, the desk's size is reported to the model, and the keys go back
+//! where they were when an overlay closes. Also the pieces every overlay is
+//! built from: `overlay` (backdrop and card), `hanging` (a menu under its
+//! bar button), `menu_row`, `dialog_fit`.
 
 use super::*;
 use crate::{Overlay, Popover};
@@ -10,26 +12,32 @@ use crate::{Overlay, Popover};
 pub(super) const BAR: f32 = 36.;
 
 impl DesktopWindow {
-    /// Inside a node. Reached with an unlocked key, or by choosing to read
-    /// without one.
-    pub(super) fn console(
+    /// The desk, in the console and in a pop-out alike: the bar (console
+    /// only), the panes, the open overlay, the footer. Reached with an
+    /// unlocked key, or by choosing to read without one.
+    pub(super) fn desk_view(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
+        let state = self.model.read(cx).state.facts();
         let rail = crate::runtime::rail();
         if rail.iter().any(|row| row.note == Some("Loading")) {
             window.request_animation_frame();
         }
-        // the bar folds its words once, drawn whole, its tabs ran past their
-        // strip at this width: all of them fold together, none is cut.
-        // `bar_needs` only grows while the bar is made of the same words; new
-        // words (a network switched, a program listed or gone, a sign-in)
-        // measure again, or the bar would stay folded for words it no longer
-        // shows. Badges are left out: they tick while folded, and a
-        // re-measure draws the bar whole for a frame.
+        // Folding. The tabs show their full labels until they overflow their
+        // strip; then every tab folds to its icon or initial, so none is cut.
+        // `bar_needs` is the narrowest window the full labels are known to
+        // need: the width the bar was last drawn unfolded at, plus how far
+        // the strip overflowed there (`self.rail.max_offset()`). Layout
+        // reports that overflow one frame late, so a bar drawn unfolded at a
+        // new width asks for one more frame to be measured in. `bar_needs`
+        // only grows while the bar shows the same words. New words (the
+        // network, the tab list, the sign-in state: `bar_made` hashes them)
+        // reset it to measure again, and the overflow the old words left is
+        // skipped on that frame. Badge counts stay out of the hash: they
+        // tick while folded, and a re-measure draws the bar whole for a frame.
         let made_of = {
             use std::hash::{Hash as _, Hasher as _};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -46,8 +54,7 @@ impl DesktopWindow {
             self.bar_needs = 0.;
         }
         let width = f32::from(window.viewport_size().width);
-        // the strip's overflow is the last frame's layout: of the old words
-        // on the frame that remade the bar
+        // last frame's overflow: the old words', on the frame that remade the bar
         let over = f32::from(self.rail.max_offset().x);
         if let Some(drawn) = self.bar_drawn
             && !remade
@@ -58,14 +65,14 @@ impl DesktopWindow {
         }
         let narrow = width < self.bar_needs;
         let drawn = (!narrow).then_some(width);
-        // a bar drawn whole at a new width or of new words is measured by
-        // the next frame, so ask for it: nothing else may draw one soon
+        // drawn whole at a new width or of new words: the next frame measures
+        // it, so ask for one (nothing else may draw one soon)
         if drawn.is_some() && (remade || drawn != self.bar_drawn) {
             window.request_animation_frame();
         }
         self.bar_drawn = drawn;
-        // the desk's size, and on an untouched console the program a link
-        // already opened; otherwise it starts empty
+        // report the desk's size; on the console's first draw also `seed`, a
+        // program a link opened before the desk existed (else it starts empty)
         let desk = self.desk(window);
         let layout = self.layout(cx);
         let seed = (self.kind == crate::shell::WindowKind::Console && !layout.initialized)
@@ -77,8 +84,8 @@ impl DesktopWindow {
                 model.dispatch(Message::DeskShown { window, desk, seed }, cx)
             });
         }
-        // the policy's "in front": this window, if it is, and the view
-        // focused in it
+        // tell the notification centre which window is in front and which
+        // view is focused in it: that view's banners stay away (unless asked for)
         let layout = self.layout(cx);
         let focused = layout
             .panes
@@ -92,7 +99,7 @@ impl DesktopWindow {
             None => None,
             Some(Overlay::Spotlight) => Some(self.spotlight(&state, window, cx)),
             Some(Overlay::Approve) => Some(self.approve(&state, window, cx)),
-            Some(Overlay::Settings) => Some(self.settings(&state, window)),
+            Some(Overlay::Settings) => Some(self.settings(&state, window, cx)),
             Some(Overlay::Network) => Some(self.network_menu(&state, narrow, window)),
             Some(Overlay::Menu(Popover::Node)) => Some(self.node_menu(&state, window, cx)),
             Some(Overlay::Menu(Popover::Account)) => Some(self.account_menu(&state, window, cx)),
@@ -103,33 +110,32 @@ impl DesktopWindow {
         if state.overlay != Some(Overlay::Spotlight) {
             self.spotlight_focused = false;
         }
-        match (self.covered, state.overlay.filter(|_| console)) {
-            (None, Some(open)) => {
-                let before = window.focused(cx);
-                self.refocus = before.clone();
-                // a dialog on a scrim takes the keys, unless its own field
-                // already did, and keeps Tab (`overlay`)
-                if matches!(
-                    open,
-                    Overlay::Spotlight | Overlay::Approve | Overlay::Settings
-                ) {
-                    let modal = self.modal.clone();
-                    window.defer(cx, move |window, cx| {
-                        if window.focused(cx) == before {
-                            modal.focus(window, cx);
-                            window.focus_next(cx);
-                        }
-                    });
+        // Whatever opens takes the keys (its backdrop holds `modal`),
+        // unless something in it already did, as Spotlight's field does;
+        // one giving way to the next hands them on. The last to close gives
+        // them back to what had them before the first opened.
+        let open = state.overlay.filter(|_| console);
+        if open != self.covered {
+            match (self.covered, open) {
+                (None, Some(_)) => self.refocus = window.focused(cx),
+                (Some(_), None) => {
+                    if let Some(handle) = self.refocus.take() {
+                        window.defer(cx, move |window, cx| handle.focus(window, cx));
+                    }
                 }
+                _ => {}
             }
-            (Some(_), None) => {
-                if let Some(handle) = self.refocus.take() {
-                    window.defer(cx, move |window, cx| handle.focus(window, cx));
-                }
+            if open.is_some() {
+                let modal = self.modal.clone();
+                window.defer(cx, move |window, cx| {
+                    if !modal.contains_focused(window, cx) {
+                        modal.focus(window, cx);
+                        window.focus_next(cx);
+                    }
+                });
             }
-            _ => {}
         }
-        self.covered = state.overlay.filter(|_| console);
+        self.covered = open;
         div()
             .id("console")
             .size_full()
@@ -146,8 +152,10 @@ impl DesktopWindow {
     /// and one menu gives way to the next in one click): a backdrop that
     /// closes it on a click, dimmed when `scrim`, and on it the card the
     /// canvas dresses its menus and dialogs in, `border: 1.5px solid ink`
-    /// and a soft shadow. `dress` places and fills the card. Escape is
-    /// `global_key`'s. Dimmed, it is modal: Tab and Shift+Tab go round its
+    /// and a soft shadow. `dress` places and fills the card. Escape closes
+    /// it through `keys::CloseOverlay` (bound under the `overlay` context).
+    /// The backdrop holds `modal`, the handle the keys enter it by
+    /// (`desk_view`). Dimmed, it is modal: Tab and Shift+Tab go round its
     /// controls, never out to the bar.
     #[allow(clippy::too_many_arguments, reason = "one frame, five overlays")]
     pub(super) fn overlay(
@@ -188,6 +196,9 @@ impl DesktopWindow {
         let card = div()
             .id(id)
             .control(role, name)
+            // a press inside the card stays inside: occluded, the backdrop
+            // is not under the pointer and its click never fires. No
+            // `on_click` here: that would offer a press on the dialog.
             .occlude()
             .flex()
             .flex_col()
@@ -195,14 +206,18 @@ impl DesktopWindow {
             .text_color(ink.ink)
             .border(px(1.5))
             .border_color(ink.ink)
-            .shadow_lg()
-            .on_click(|_, _, cx| cx.stop_propagation());
-        let backdrop = backdrop.child(dress(card));
+            .shadow_lg();
         match scrim {
+            // modal to assistive technology as to the keyboard: what is
+            // behind the scrim is not reachable
             true => backdrop
+                .child(dress(crate::a11y::modal(card)))
                 .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
                 .into_any_element(),
-            false => backdrop.into_any_element(),
+            false => backdrop
+                .track_focus(&self.modal)
+                .child(dress(card))
+                .into_any_element(),
         }
     }
 
@@ -262,8 +277,7 @@ impl DesktopWindow {
             .snap_to_window_with_margin(px(8.))
     }
 
-    /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`, a mono
-    /// hint at its right end.
+    /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`.
     pub(super) fn menu_row(
         &self,
         id: &'static str,
@@ -271,18 +285,7 @@ impl DesktopWindow {
         run: impl Fn(&mut gpui_kit::App) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        self.menu_row_hint(id, label, "", run, cx)
-    }
-
-    pub(super) fn menu_row_hint(
-        &self,
-        id: &'static str,
-        label: &'static str,
-        hint: &'static str,
-        run: impl Fn(&mut gpui_kit::App) + 'static,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        use super::ink::{Ink, mono, sans};
+        use super::ink::{Ink, sans};
         use gpui_kit::*;
         let ink = Ink::of(self.model.read(cx).state.dark());
         let surface = ink.surface;
@@ -301,8 +304,7 @@ impl DesktopWindow {
                     cx.stop_propagation();
                     run(cx)
                 })
-                .child(label)
-                .child(mono(400, 12.).text_color(ink.muted).child(hint)),
+                .child(label),
         )
     }
 

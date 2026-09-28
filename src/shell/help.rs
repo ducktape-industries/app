@@ -5,29 +5,26 @@
 
 use super::*;
 
-/// How the platform writes a chord with Shift: "⌘⇧D" on a Mac, "Ctrl
-/// Shift D" elsewhere.
-fn shift_chord_label(key: &str) -> String {
-    match cfg!(target_os = "macos") {
-        true => format!("⌘⇧{key}"),
-        false => format!("Ctrl Shift {key}"),
-    }
-}
-
 impl DesktopWindow {
     pub(super) fn help_view(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         use super::ink::*;
         use gpui_kit::*;
         let welcome = self.model.read(cx).state.welcome;
         let ink = Ink::of(self.model.read(cx).state.dark());
-        let section = |title: &'static str| {
+        let section = |id: &'static str, title: &'static str| {
             mono(400, 12.)
                 .text_color(ink.muted)
                 .pt(px(28.))
                 .pb(px(8.))
-                .child(title)
+                .child(words(id, title))
         };
-        let line = |text: String| div().pb(px(6.)).child(note(text, ink.ink));
+        // each paragraph its own id: `<section>/<n>`
+        let lines = |section: &'static str, texts: Vec<String>| {
+            texts.into_iter().enumerate().map(move |(n, text)| {
+                let id = SharedString::from(format!("{section}/{n}"));
+                div().pb(px(6.)).child(note(id, text, ink.ink))
+            })
+        };
         let (heading, lead_text) = match welcome {
             true => (
                 "Welcome to Ducktape",
@@ -40,12 +37,7 @@ impl DesktopWindow {
                  each one opens in a window on this desk.",
             ),
         };
-        let (n, k, w, d) = (
-            chord_label("N"),
-            chord_label("K"),
-            chord_label("W"),
-            chord_label("D"),
-        );
+        let (n, k, w) = (chord_label("N"), chord_label("K"), chord_label("W"));
         let open = [
             "Click a program's name in the bar. It opens in the window you are \
              in if that one is empty, brings its window to the front if it is \
@@ -53,8 +45,11 @@ impl DesktopWindow {
                 .to_owned(),
             format!(
                 "{n} opens an empty window: type part of a program's name, pick it \
-                 with ↑↓ and open it with ↵. Tab switches what the field searches, \
-                 Module or Chat; Chat, for talking to an agent, is coming soon."
+                 with ↑↓ and open it with ↵.{}",
+                match super::command::CHAT_READY {
+                    true => " Tab switches what the field searches, Module or Chat.",
+                    false => "",
+                }
             ),
             format!("{k} searches programs, networks and actions from anywhere."),
         ];
@@ -66,11 +61,6 @@ impl DesktopWindow {
              arrow moves the window out into one of its own (its arrow brings it \
              back), and × closes it."
                 .to_owned(),
-            format!(
-                "{d} splits the window you are in, left and right; {} top and \
-                 bottom. The new half opens empty.",
-                shift_chord_label("D")
-            ),
         ];
         let bar = [
             "Left to right: the network's name, to switch networks; the programs; \
@@ -97,15 +87,15 @@ impl DesktopWindow {
             (n, "An empty window: type to find a program for it"),
             (k, "Search programs, networks and actions"),
             (w, "Close the window"),
-            (d, "Split the window, left and right"),
-            (shift_chord_label("D"), "Split the window, top and bottom"),
             (chord_label("`"), "The next window"),
             (chord_label("1–9"), "A window by its place"),
             (chord_label("/"), "This help"),
             ("Esc".to_owned(), "Close search, a menu or settings"),
             (chord_label("Q"), "Quit"),
         ]
-        .map(|(chord, what)| {
+        .into_iter()
+        .enumerate()
+        .map(|(n, (chord, what))| {
             div()
                 .flex()
                 .items_baseline()
@@ -118,9 +108,13 @@ impl DesktopWindow {
                         .w(px(104.))
                         .flex_shrink_0()
                         .text_color(ink.ink)
-                        .child(chord),
+                        .child(words(SharedString::from(format!("keys/{n}/chord")), chord)),
                 )
-                .child(sans(400, 13.).text_color(ink.ink).child(what))
+                .child(
+                    sans(400, 13.)
+                        .text_color(ink.ink)
+                        .child(words(SharedString::from(format!("keys/{n}")), what)),
+                )
         });
         div()
             .id("help")
@@ -144,17 +138,17 @@ impl DesktopWindow {
                     .py(px(32.))
                     .flex()
                     .flex_col()
-                    .child(h1(heading, &ink))
-                    .child(div().pt(px(12.)).child(lead(lead_text, &ink)))
-                    .child(section("OPEN A PROGRAM"))
-                    .children(open.map(line))
-                    .child(section("WINDOWS"))
-                    .children(windows.map(line))
-                    .child(section("THE BAR"))
-                    .children(bar.map(line))
-                    .child(section("YOUR ACCOUNT"))
-                    .children(account.map(line))
-                    .child(section("KEYS"))
+                    .child(h1("heading", heading, &ink))
+                    .child(div().pt(px(12.)).child(lead("lead", lead_text, &ink)))
+                    .child(section("open", "OPEN A PROGRAM"))
+                    .children(lines("open", open.into()))
+                    .child(section("windows", "WINDOWS"))
+                    .children(lines("windows", windows.into()))
+                    .child(section("bar", "THE BAR"))
+                    .children(lines("bar", bar.into()))
+                    .child(section("account", "YOUR ACCOUNT"))
+                    .children(lines("account", account.into()))
+                    .child(section("keys", "KEYS"))
                     .children(keys),
             )
             .into_any_element()

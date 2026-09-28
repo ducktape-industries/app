@@ -1,8 +1,9 @@
 //! ⌘K: search the programs, the networks and the things to do.
 
+use super::text_field::TextField;
 use super::*;
 use crate::Spot;
-use screens::Facts;
+use facts::Facts;
 
 impl DesktopWindow {
     /// ⌘K: one field, and what it finds among the programs, the networks
@@ -17,15 +18,17 @@ impl DesktopWindow {
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
         let field = self.input(
-            "spotlight",
-            "Search programs, networks, actions",
-            false,
-            |state| &state.spotlight_query,
-            Message::SpotlightTyped,
-            || Message::SpotlightSubmit,
-            Some("Search".into()),
-            false,
-            20.,
+            TextField {
+                key: "spotlight",
+                placeholder: "Search programs, networks, actions",
+                masked: false,
+                value: |state| &state.spotlight_query,
+                on_change: Message::SpotlightTyped,
+                on_enter: || Message::SpotlightSubmit,
+                label: Some("Search".into()),
+                private: false,
+                size: 20.,
+            },
             window,
             cx,
         );
@@ -43,7 +46,7 @@ impl DesktopWindow {
         let pick = state.spotlight_pick.min(count.saturating_sub(1));
         let mut list = div()
             .id("spotlight-rows")
-            .role(Role::Menu)
+            .control(Role::Menu, "Results")
             .max_h(px(380.))
             .min_h_0()
             .overflow_y_scroll()

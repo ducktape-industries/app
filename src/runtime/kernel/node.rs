@@ -1,8 +1,17 @@
+//! The node-backed methods and how a view request becomes a task: a
+//! handler is `fn(Node, Vec<u8>) -> Answered`, run on [`handle`] with an
+//! in-flight slot from [`Replies::admit`], its answer put in [`Replies`];
+//! transport failures are retried for [`NODE_RETRY_BUDGET`]. A subscription
+//! (`module.changes`, `chain.heads`) is one long task writing items. Every
+//! task is a [`NodeTask`] in `guest.tasks`, aborted when dropped.
 use super::*;
 use crate::backend::noded;
 
 pub(super) type Answered = std::pin::Pin<Box<dyn std::future::Future<Output = Answer> + Send>>;
-type Call = fn(Node, Vec<u8>) -> Answered;
+/// One node-backed method: the node to ask and the request's payload in,
+/// the answer out. Not a [`methods::Call`], which is `module.query`'s and
+/// `op.submit`'s envelope.
+type NodeMethod = fn(Node, Vec<u8>) -> Answered;
 
 /// The node a view's request goes to, and the network its frames name.
 #[derive(Clone)]
@@ -14,14 +23,37 @@ pub(super) struct Node {
 /// How long a view's node request keeps asking a node that does not answer.
 const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
-async fn until_answered(budget: std::time::Duration, mut call: impl FnMut() -> Answered) -> Answer {
+/// A refusal the transport produced is retried; one that is the node's
+/// own word ends the retry loop. For a READ: asking again costs nothing.
+pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
+    matches!(refusal.code.as_str(), "rpc_client" | "node_failed")
+}
+
+/// Only a refusal that proves no frame went out is retried (a connect
+/// failure, `backend::refused`; or a transport failure of the sequence read
+/// that comes before the frame, `submitted`). For a WRITE: a request the node
+/// may have applied is not signed and sent again — the sequence moved, so
+/// the node would apply it twice.
+fn unsent(refusal: &wire::Error) -> bool {
+    refusal.code == "rpc_client"
+}
+
+async fn until_answered(
+    budget: std::time::Duration,
+    retry_on: fn(&wire::Error) -> bool,
+    mut ask: impl FnMut() -> Answered,
+) -> Answer {
     let deadline = tokio::time::Instant::now() + budget;
     let mut attempt = 0;
     loop {
-        let detail = unanswered(match call().await {
+        let refusal = match ask().await {
             Ok(bytes) => return Ok(bytes),
             Err(refusal) => refusal,
-        })?;
+        };
+        if !retry_on(&refusal) {
+            return Err(refusal);
+        }
+        let detail = refusal.message;
         attempt += 1;
         let delay = backend::retry_delay(attempt);
         if tokio::time::Instant::now() + delay > deadline {
@@ -41,108 +73,139 @@ async fn until_answered(budget: std::time::Duration, mut call: impl FnMut() -> A
     }
 }
 
-pub(super) fn spawn(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
-    spawn_call(guest, id, payload, call, true);
+/// Runs `method` on the connected node as a task, RETRYING transport
+/// failures for [`NODE_RETRY_BUDGET`]: for reads, which ask again from
+/// scratch at no cost.
+pub(super) fn spawn_retrying(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
+    spawn_method(guest, id, payload, method, Some(transport_failed));
 }
 
-pub(super) fn spawn_once(guest: &mut Guest, id: u64, payload: &[u8], call: Call) {
-    spawn_call(guest, id, payload, call, false);
+/// Runs `method` on the connected node as a task, retrying for
+/// [`NODE_RETRY_BUDGET`] only while nothing reached the node: for
+/// `op.submit`, which re-signs at a fresh sequence and so must not follow
+/// an answer that went missing with a second submission.
+pub(super) fn spawn_retrying_unsent(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+) {
+    spawn_method(guest, id, payload, method, Some(unsent));
 }
 
-fn spawn_call(guest: &mut Guest, id: u64, payload: &[u8], call: Call, retry: bool) {
+/// Runs `method` on the connected node as a task, asking exactly once: a
+/// transport failure is the answer (`invite.create` must not mint twice).
+pub(super) fn spawn_no_retry(guest: &mut Guest, id: u64, payload: &[u8], method: NodeMethod) {
+    spawn_method(guest, id, payload, method, None);
+}
+
+fn spawn_method(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    method: NodeMethod,
+    retry_on: Option<fn(&wire::Error) -> bool>,
+) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
     };
     let replies = guest.replies.clone();
-    let Some(counted) = replies.admit() else {
+    start(guest, id, async move {
+        let result = match retry_on {
+            Some(retry_on) => {
+                until_answered(NODE_RETRY_BUDGET, retry_on, || {
+                    method(node.clone(), ask.clone())
+                })
+                .await
+            }
+            None => method(node, ask).await,
+        };
+        replies.item(id, result, true);
+    });
+}
+
+/// Every task starts here: an in-flight slot from [`Replies::admit`] — or
+/// the request refused `in_flight_limit`, and `false` — then `task` on
+/// [`handle`] holding the slot, its [`NodeTask`] kept in `guest.tasks`
+/// (finished ones pruned) so it is aborted with the guest.
+fn start(
+    guest: &mut Guest,
+    id: u64,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) -> bool {
+    let Some(counted) = guest.replies.admit() else {
         guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
-        return;
+        return false;
     };
     let task = handle().spawn(async move {
         let _counted = counted;
-        let result = if retry {
-            until_answered(NODE_RETRY_BUDGET, || call(node.clone(), ask.clone())).await
-        } else {
-            call(node, ask).await
-        };
-        replies.item(id, result, true);
+        task.await;
     });
     guest
         .tasks
         .retain(|(_, pending)| !pending.task.is_finished());
     guest.tasks.push((id, NodeTask { task }));
+    true
 }
 
-/// One SUBSCRIPTION's writing end, handed to a host-fed stream the way the
-/// node's own socket loop writes: every item goes through the same backlog
-/// park, so a device that outruns the redraw holds its own frames instead of
-/// growing the reply queue into a fault.
-pub(in crate::runtime) struct Items {
+/// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every
+/// item goes through the same backlog park as a node socket's, so a source
+/// that outruns the redraw waits instead of growing the reply queue into a
+/// fault.
+struct Items {
     replies: std::sync::Arc<Replies>,
     drained: tokio::sync::watch::Receiver<()>,
     id: u64,
 }
 
 impl Items {
-    /// One more item. `false` when the view is gone and the subscription
-    /// should end — the caller returns, and everything it holds is dropped.
-    pub(in crate::runtime) async fn send(&mut self, result: Answer) -> bool {
+    /// One more item. `false` when the view is gone or its reply queue
+    /// faulted, and the subscription should end — the caller returns, and
+    /// everything it holds is dropped.
+    async fn send(&mut self, result: Answer) -> bool {
         self.replies
             .subscription_item(&mut self.drained, self.id, result)
             .await
     }
 }
 
-/// A subscription the HOST feeds — a device rather than a node socket. The
-/// body owns whatever the stream holds open, so dropping the task releases
-/// it: a cancel drops the [`NodeTask`], and so do a guest's teardown, swap
-/// and trap, which drop the whole `tasks` list.
-pub(in crate::runtime) fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body)
+/// A subscription whose items come from a host loop (`chain.heads` polls
+/// the node for them). The body owns whatever it holds open, so dropping
+/// the task releases it: a cancel drops the [`NodeTask`], and so do a
+/// guest's teardown, swap and trap, which drop the whole `tasks` list.
+fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body)
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     let replies = guest.replies.clone();
-    let Some(counted) = replies.admit() else {
-        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
-        return;
-    };
     let items = Items {
         drained: replies.drains(),
         replies,
         id,
     };
-    let task = handle().spawn(async move {
-        let _counted = counted;
-        body(items).await;
-    });
-    guest
-        .tasks
-        .retain(|(_, pending)| !pending.task.is_finished());
-    guest.tasks.push((id, NodeTask { task }));
+    start(guest, id, body(items));
 }
 
-pub(in crate::runtime) fn spawn_device(
+/// Runs `future` on the kernel runtime and delivers its result as the one
+/// reply to request `id`; counted in flight, aborted with the guest. For a
+/// host method that waits on something other than the node (`notify.post`
+/// waits on its banner).
+pub(in crate::runtime) fn spawn_reply(
     guest: &mut Guest,
     id: u64,
     future: impl std::future::Future<Output = Answer> + Send + 'static,
 ) {
     let replies = guest.replies.clone();
-    let Some(counted) = replies.admit() else {
-        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
-        return;
-    };
-    let task = handle().spawn(async move {
-        let _counted = counted;
+    start(guest, id, async move {
         replies.item(id, future.await, true);
     });
-    guest
-        .tasks
-        .retain(|(_, pending)| !pending.task.is_finished());
-    guest.tasks.push((id, NodeTask { task }));
 }
 
+/// The node to ask, or `None` with the request REFUSED: `stale_connection`
+/// for a view from before the last (re)connect, `not_connected` without a
+/// node.
 fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
     let connection = super::super::connection().lock().expect("views rpc");
     if connection.rev != guest.connection_rev {
@@ -168,16 +231,20 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
 }
 
 /// `module.changes <program>`: one item per block that wrote to the program.
-pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
+pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     let program = methods::decode::<String>(payload)
         .unwrap_or_default()
         .trim()
         .to_owned();
-    if program.is_empty() || guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
+    if program.is_empty() {
+        guest.refuse(id, "malformed_request", "`module.changes` names no program");
+        return;
+    }
+    if guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
         guest.refuse(
             id,
-            "malformed_request",
-            "`module.changes` names no program, or too many",
+            "subscription_limit",
+            "too many `module.changes` subscriptions",
         );
         return;
     }
@@ -185,14 +252,9 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
         return;
     };
     let replies = guest.replies.clone();
-    let Some(counted) = replies.admit() else {
-        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
-        return;
-    };
-    guest.live_subscriptions.push((id, program.clone()));
-    let task = handle().spawn(async move {
+    let subscribed = (id, program.clone());
+    let started = start(guest, id, async move {
         use futures::StreamExt as _;
-        let _counted = counted;
         let mut drained = replies.drains();
         loop {
             let mut changes = match node.client.changes(&program).await {
@@ -223,7 +285,9 @@ pub(super) fn live(guest: &mut Guest, id: u64, payload: &[u8]) {
             tokio::time::sleep(backend::retry_delay(1)).await;
         }
     });
-    guest.tasks.push((id, NodeTask { task }));
+    if started {
+        guest.live_subscriptions.push(subscribed);
+    }
 }
 
 /// The most blocks one `/v1/blocks` page answers (the node's cap).
@@ -305,6 +369,8 @@ async fn next_heads(node: &Node, last: Option<u64>) -> noded::Result<(Vec<method
     Ok((heads, status.block_time_ms))
 }
 
+/// A running request or subscription; dropping it aborts the task, which is
+/// how a cancel, a swap or a teardown stops a socket waiting on the node.
 pub(in crate::runtime) struct NodeTask {
     task: tokio::task::JoinHandle<()>,
 }
@@ -354,7 +420,14 @@ pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
 
 /// The receipt's output on success, the program's refusal otherwise.
 async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
-    let frame = backend::seated_frame(&node.client, &node.network, &target, payload).await?;
+    // the sequence read comes before any frame: nothing signed, nothing
+    // sent, so its lost answer is asked again as a read's is
+    let frame = backend::seated_frame(&node.client, &node.network, &target, payload)
+        .await
+        .map_err(|refusal| match transport_failed(&refusal) {
+            true => wire::Error::new("rpc_client", refusal.message),
+            false => refusal,
+        })?;
     let receipt = node.client.submit(frame).await.map_err(refused)?;
     match receipt.outcome {
         abi::Outcome::Applied { output } => Ok(output),
@@ -459,6 +532,8 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
             }
             wire::Error::new(error.reason(), error.message())
         };
+        // `/v1/invite` is JSON and not in `backend::noded`; ducktape-rpc is
+        // used for it alone
         let client = ducktape_rpc::Client::new(node.client.endpoint()).map_err(refusal)?;
         let minted = client.mint_invite(ttl).await.map_err(refusal)?;
         let notes = minted
@@ -538,3 +613,6 @@ pub(super) fn block(node: Node, ask: Vec<u8>) -> Answered {
         Ok(methods::encode(&block.map(block_of)))
     })
 }
+
+#[cfg(test)]
+mod tests;

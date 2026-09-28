@@ -1,18 +1,22 @@
 //! An empty window's body: one field that finds a program to open in it,
 //! with a switch beside it for what the field searches (Module | Chat).
+//! Until agent chat is built ([`CHAT_READY`]), Tab there moves focus.
 
 use super::*;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 
-/// The key context of an empty window's body: Tab there switches modes.
+/// The key context of an empty window's body: Tab there switches modes,
+/// once chat is built.
 pub(super) const CONTEXT: &str = "EmptyWindow";
 
-/// Agent chat isn't built yet: its side of the switch shows, blocked.
-const CHAT_READY: bool = false;
+/// Agent chat isn't built yet: its side of the switch shows, blocked, and
+/// Tab is left to move focus. True brings back what switches to it: the
+/// `tab` binding (`keys::bind`), the "tab switch" hint and Help's line.
+pub(super) const CHAT_READY: bool = false;
 
 /// What an empty window's field searches.
 #[derive(Clone, Copy, Default, PartialEq)]
-pub(super) enum Mode {
+enum Mode {
     #[default]
     Module,
     Chat,
@@ -28,8 +32,9 @@ impl Mode {
     }
 }
 
-/// A window's field: only its focused empty window shows it.
-pub(super) struct Command {
+/// The command line's state: the field, the picked row and the mode. Only a
+/// window's focused empty pane shows it.
+pub(super) struct CommandLine {
     field: Entity<InputState>,
     pick: usize,
     mode: Mode,
@@ -52,7 +57,7 @@ pub(super) fn matching(
 }
 
 impl DesktopWindow {
-    fn command(&mut self, window: &mut Window, cx: &mut Context<Self>) -> &mut Command {
+    fn command(&mut self, window: &mut Window, cx: &mut Context<Self>) -> &mut CommandLine {
         self.command.get_or_insert_with(|| {
             let field = cx.new(|cx| InputState::new(window, cx).placeholder("Open a program"));
             let changed = cx.subscribe_in(&field, window, |this, _, event, _, cx| {
@@ -63,7 +68,7 @@ impl DesktopWindow {
                     cx.notify();
                 }
             });
-            Command {
+            CommandLine {
                 field,
                 pick: 0,
                 mode: Mode::default(),
@@ -101,7 +106,7 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use super::ink::*;
         use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
+        let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
         let command = self.command(window, cx);
         let (field, mode) = (command.field.clone(), command.mode);
@@ -179,6 +184,8 @@ impl DesktopWindow {
             "tab switch".to_owned(),
             format!("{} search everything", chord_label("K")),
         ]
+        .into_iter()
+        .filter(|hint| CHAT_READY || hint != "tab switch")
         .map(|hint| div().whitespace_nowrap().child(hint));
         div()
             .id("empty-window")
@@ -303,10 +310,7 @@ impl DesktopWindow {
             sans(500, 13.)
                 .id(id)
                 .control(Role::Button, SharedString::from(name))
-                .aria_toggled(match on {
-                    true => gpui_kit::accesskit::Toggled::True,
-                    false => gpui_kit::accesskit::Toggled::False,
-                })
+                .aria_toggled(on.into())
                 .h_full()
                 .px(px(10.))
                 .flex()
@@ -336,7 +340,7 @@ impl DesktopWindow {
             .border_1()
             .border_color(ink.ink)
             .child(module)
-            .child(crate::a11y::disabled(chat, true))
+            .child(chat.aria_disabled(true))
             .into_any_element()
     }
 }

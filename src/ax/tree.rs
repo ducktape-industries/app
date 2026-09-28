@@ -1,3 +1,9 @@
+//! The door's view of one window: `Window::a11y_tree` turned into the node
+//! list every read serves. [`snapshot`] walks the tree in paint order under
+//! the topmost modal, drops what is hidden, zero-sized or off the viewport,
+//! masks what is secret, and words the states and actions; [`door_ids`]
+//! gives each node its stable id. The rest are the shapes of answers:
+//! [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
 
 /// The element id a module view's host draws around the view's tree
@@ -103,7 +109,14 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         let role = node.role();
         let private = node.class_name() == Some(crate::a11y::AX_PRIVATE);
         let secret = private || role == Role::PasswordInput;
-        let name = match (private, node.label()) {
+        // a Label is named by its value first, as the adapters name it
+        // (gpui's `Text` sets only the value)
+        let label = match role {
+            Role::Label => node.value().or(node.label()),
+            _ => node.label(),
+        };
+        // a private text field's name is its label; its value is the secret
+        let name = match (private && !is_text_input(role), label) {
             (true, Some(_)) => MASK.to_owned(),
             (_, label) if node.class_name() == Some(crate::a11y::AX_WHOLE) => {
                 label.unwrap_or_default().to_owned()
@@ -152,7 +165,6 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 (Action::Click, "press"),
                 (Action::Focus, "focus"),
                 (Action::SetValue, "set_value"),
-                (Action::ScrollIntoView, "scroll_into_view"),
             ] {
                 if node.supports_action(action) {
                     actions.push(word);
@@ -183,6 +195,15 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         node.id = id;
     }
     out
+}
+
+/// A modal scopes `window`'s snapshot now.
+pub(super) fn modal_active(window: &Window) -> bool {
+    window.a11y_tree().is_some_and(|update| {
+        let nodes = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+        let root = update.tree.as_ref().map_or(NodeId(0), |tree| tree.root);
+        topmost_modal(root, &nodes).is_some()
+    })
 }
 
 /// The last painted modal that is actually reachable. A hidden ancestor hides
@@ -231,6 +252,50 @@ mod modal_tests {
         ]);
 
         assert_eq!(topmost_modal(root_id, &nodes), Some(visible_id));
+    }
+}
+
+#[cfg(test)]
+mod offer_tests {
+    use super::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AccessibleAction, Context, InteractiveElement as _, IntoElement, Render,
+        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+    };
+
+    /// A node that advertises an action `/act` has no arm for.
+    struct Scroller;
+
+    impl Render for Scroller {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("scroller")
+                .size(px(100.))
+                .role(Role::ScrollView)
+                .aria_label("Rows")
+                .on_a11y_action(AccessibleAction::ScrollIntoView, |_, _, _| {})
+        }
+    }
+
+    /// The door offers only what `/act` performs: a node advertising
+    /// ScrollIntoView is offered nothing for it.
+    #[gpui_kit::test]
+    fn the_door_offers_no_action_it_cannot_perform(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Scroller);
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        let actions = native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+            snapshot("t", window, false)
+                .into_iter()
+                .find(|node| node.role == "ScrollView")
+                .expect("the scroller is in the tree")
+                .actions
+        });
+        assert!(actions.is_empty(), "{actions:?}");
     }
 }
 

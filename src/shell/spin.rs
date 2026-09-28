@@ -1,7 +1,10 @@
-//! A figure, held: it tumbles on its own; a drag turns it by hand and a
-//! release lets it fly on, slowing, until it eases back into its own
-//! tumble. Each tick draws a frame live, painted as one layer of glyphs.
-//! With motion off (the Settings switch) it only turns by hand.
+//! A figure (`figure.rs`: a small 3D shape in characters), held: it tumbles
+//! on its own at `figure::FPS`; a drag turns it by hand and a release lets
+//! it fly on, slowing, until it eases back into its own tumble. Each tick
+//! draws a frame live, painted as one layer of glyphs. With motion off (the
+//! Settings switch), or the system asking for less motion
+//! (`App::reduce_motion`, which the kit reads from the OS), it only turns
+//! by hand.
 
 use std::time::Instant;
 
@@ -21,7 +24,11 @@ const FLING_MAX: f32 = 8.;
 
 pub(super) struct Spin {
     pub(super) figure: Figure,
-    pub(super) moving: bool,
+    /// The app's motion switch.
+    switch: bool,
+    /// It tumbles on its own: the switch is on and the system does not ask
+    /// for less motion. Read at `new` and on every tick.
+    moving: bool,
     pub(super) ink: Hsla,
     /// How it is held now.
     turn: Rotation,
@@ -44,11 +51,19 @@ fn smoothstep((from, to): (f32, f32), x: f32) -> f32 {
     t * t * (3. - 2. * t)
 }
 
+/// The switch on, and the system not asking for less motion. Never written
+/// back into `reduce_motion`: gpui-base stops following the OS once the
+/// app has set it.
+fn moving(switch: bool, cx: &App) -> bool {
+    switch && !cx.reduce_motion()
+}
+
 impl Spin {
-    pub(super) fn new(figure: Figure, moving: bool, ink: Hsla) -> Self {
+    pub(super) fn new(figure: Figure, switch: bool, ink: Hsla, cx: &App) -> Self {
         Self {
             figure,
-            moving,
+            switch,
+            moving: moving(switch, cx),
             ink,
             turn: figure::start(),
             fling: [0., 0.],
@@ -75,7 +90,8 @@ impl Spin {
 
     /// One frame on: its own tumble (faded in after a release) and what
     /// is left of a fling.
-    fn tick(&mut self) {
+    fn tick(&mut self, cx: &App) {
+        self.moving = moving(self.switch, cx);
         let dt = 1. / figure::FPS as f32;
         self.ticks += 1;
         if self.drag.is_some() {
@@ -139,7 +155,7 @@ impl Spin {
                 .await;
             let _ = spin.update(cx, |spin, cx| {
                 spin.ticking = false;
-                spin.tick();
+                spin.tick(cx);
                 cx.notify();
             });
         })
@@ -303,7 +319,8 @@ fn listen(spin: Entity<Spin>, bounds: Bounds<Pixels>, window: &mut Window) {
 }
 
 /// The figure, kept across frames under `id` without tying its redraws to
-/// the view it sits in: it redraws alone, at the display's rate.
+/// the view it sits in: it redraws alone, `figure::FPS` times a second
+/// while it moves.
 pub(super) fn drawing(
     id: impl Into<ElementId>,
     figure: Figure,
@@ -314,14 +331,16 @@ pub(super) fn drawing(
 ) -> AnyElement {
     let spin = window.with_global_id(id.into(), |global, window| {
         window.with_element_state(global, |kept: Option<Entity<Spin>>, _| {
-            let spin = kept.unwrap_or_else(|| cx.new(|_| Spin::new(figure, moving, ink)));
+            let spin = kept.unwrap_or_else(|| cx.new(|cx| Spin::new(figure, moving, ink, cx)));
             (spin.clone(), spin)
         })
     });
     spin.update(cx, |spin, cx| {
-        if (spin.figure, spin.moving, spin.ink) != (figure, moving, ink) {
+        let now = self::moving(moving, cx);
+        if (spin.figure, spin.switch, spin.moving, spin.ink) != (figure, moving, now, ink) {
             spin.figure = figure;
-            spin.moving = moving;
+            spin.switch = moving;
+            spin.moving = now;
             spin.ink = ink;
             cx.notify();
         }
@@ -343,16 +362,24 @@ mod tests {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Hsla, point, px, size};
 
-    /// `moving` figure in a window, drawn `frames` times a tick apart:
-    /// how many ticks it counted.
-    fn play(moving: bool, frames: u64, cx: &mut gpui_kit::TestAppContext) -> u64 {
+    /// A figure with the motion switch `moving` in a window, the system
+    /// asking for less motion when `reduce` (as the kit sets it from the
+    /// OS), drawn `frames` times a tick apart: how many ticks it counted.
+    fn play(moving: bool, reduce: bool, frames: u64, cx: &mut gpui_kit::TestAppContext) -> u64 {
         cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(400.), px(400.)), move |_, _| {
-            Spin::new(Figure::Roll, moving, Hsla::default())
+        cx.update(|cx| cx.set_reduce_motion(reduce));
+        let window = cx.open_window(size(px(400.), px(400.)), move |_, cx| {
+            Spin::new(Figure::Roll, moving, Hsla::default(), cx)
         });
         let spin = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| window.render_frame(cx));
+        frame(&mut native, frames);
+        native.update(|_, cx| spin.read(cx).ticks)
+    }
+
+    /// `frames` frames, a tick apart.
+    fn frame(native: &mut gpui_kit::VisualTestContext, frames: u64) {
         for _ in 0..frames {
             native
                 .executor()
@@ -360,7 +387,6 @@ mod tests {
             native.run_until_parked();
             native.update(|window, cx| window.render_frame(cx));
         }
-        native.update(|_, cx| spin.read(cx).ticks)
     }
 
     fn at(x: f32) -> gpui_kit::Point<gpui_kit::Pixels> {
@@ -369,53 +395,80 @@ mod tests {
 
     /// A drag turns it, and a release while still moving flings it on,
     /// slowing until it rests.
-    #[test]
-    fn a_drag_turns_it_and_a_release_flings_it() {
-        let mut spin = Spin::new(Figure::Roll, false, Hsla::default());
-        let (before, now) = (spin.turn, std::time::Instant::now());
-        let ms = |n| now + std::time::Duration::from_millis(n);
-        spin.press(at(0.), ms(0));
-        spin.pull(at(40.), ms(40));
-        assert_ne!(spin.turn, before, "the drag turned it");
-        let held = spin.turn;
-        spin.release(ms(50));
-        assert!(
-            spin.fling[1] < -1.,
-            "a rightward drag flings it on: {:?}",
-            spin.fling
-        );
-        assert!(spin.alive());
-        spin.tick();
-        assert_ne!(spin.turn, held, "it flies on after the release");
-        for _ in 0..10 * figure::FPS {
-            spin.tick();
-        }
-        assert!(!spin.alive(), "with motion off, a fling comes to rest");
+    #[gpui_kit::test]
+    fn a_drag_turns_it_and_a_release_flings_it(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let mut spin = Spin::new(Figure::Roll, false, Hsla::default(), cx);
+            let (before, now) = (spin.turn, std::time::Instant::now());
+            let ms = |n| now + std::time::Duration::from_millis(n);
+            spin.press(at(0.), ms(0));
+            spin.pull(at(40.), ms(40));
+            assert_ne!(spin.turn, before, "the drag turned it");
+            let held = spin.turn;
+            spin.release(ms(50));
+            assert!(
+                spin.fling[1] < -1.,
+                "a rightward drag flings it on: {:?}",
+                spin.fling
+            );
+            assert!(spin.alive());
+            spin.tick(cx);
+            assert_ne!(spin.turn, held, "it flies on after the release");
+            for _ in 0..10 * figure::FPS {
+                spin.tick(cx);
+            }
+            assert!(!spin.alive(), "with motion off, a fling comes to rest");
+        });
     }
 
     /// Held still before the release, it stays where it was put.
-    #[test]
-    fn a_release_after_holding_still_does_not_fling() {
-        let mut spin = Spin::new(Figure::Roll, false, Hsla::default());
-        let now = std::time::Instant::now();
-        let ms = |n| now + std::time::Duration::from_millis(n);
-        spin.press(at(0.), ms(0));
-        spin.pull(at(30.), ms(20));
-        spin.release(ms(500));
-        assert_eq!(spin.fling, [0., 0.]);
-        assert!(!spin.alive());
+    #[gpui_kit::test]
+    fn a_release_after_holding_still_does_not_fling(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(|cx| {
+            let mut spin = Spin::new(Figure::Roll, false, Hsla::default(), cx);
+            let now = std::time::Instant::now();
+            let ms = |n| now + std::time::Duration::from_millis(n);
+            spin.press(at(0.), ms(0));
+            spin.pull(at(30.), ms(20));
+            spin.release(ms(500));
+            assert_eq!(spin.fling, [0., 0.]);
+            assert!(!spin.alive());
+        });
     }
 
     /// It plays on for good: every tick is a frame, long past any loop.
     #[gpui_kit::test]
     fn a_moving_figure_never_stops(cx: &mut gpui_kit::TestAppContext) {
-        assert_eq!(play(true, 600, cx), 600);
+        assert_eq!(play(true, false, 600, cx), 600);
     }
 
     /// With motion off it holds still and asks for no frames.
     #[gpui_kit::test]
     fn a_still_figure_asks_for_no_frames(cx: &mut gpui_kit::TestAppContext) {
-        assert_eq!(play(false, 30, cx), 0);
+        assert_eq!(play(false, false, 30, cx), 0);
+    }
+
+    /// The system asking for less motion holds it still whatever the
+    /// switch says (AX-122), from its first frame or from the tick after
+    /// the system asks.
+    #[gpui_kit::test]
+    fn a_figure_holds_still_when_the_system_asks_for_less_motion(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        assert_eq!(play(true, true, 30, cx), 0);
+        cx.update(|cx| cx.set_reduce_motion(false));
+        let window = cx.open_window(size(px(400.), px(400.)), |_, cx| {
+            Spin::new(Figure::Roll, true, Hsla::default(), cx)
+        });
+        let spin = window.root(cx).unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        frame(&mut native, 10);
+        native.update(|_, cx| cx.set_reduce_motion(true));
+        let asked = native.update(|_, cx| spin.read(cx).ticks);
+        frame(&mut native, 30);
+        let ticks = native.update(|_, cx| spin.read(cx).ticks);
+        assert!(asked >= 10 && ticks <= asked + 1, "{asked} then {ticks}");
     }
 
     #[test]

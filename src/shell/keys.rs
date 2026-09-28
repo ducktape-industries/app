@@ -4,11 +4,15 @@
 //!
 //! What decides where a key goes is the key context of the focused element
 //! and its parents: a window's root says what it is (`Ducktape`, `console`),
-//! whether the desk's keys reach it (`desk`: on the desk, nothing open over
-//! it), and whether something is open over it (`overlay`). A guest editor
-//! (`GuestEditor`) sits deeper, so its own keys come first. An empty
-//! window's ↑↓ and Enter are its field's (`command.rs` takes them); Tab
-//! there is `SwitchMode`, under the field's own context.
+//! whether it is past the launcher (`on_desk`: ⌘K works here even with
+//! something open), whether the desk's keys reach it (`desk`: on the desk,
+//! nothing open over it), and whether something is open over it
+//! (`overlay`). A guest editor (`GuestEditor`) sits deeper, so its own keys
+//! come first. An empty window's ↑↓ and Enter are its field's (`command.rs`
+//! takes them); Tab there is `SwitchMode` once agent chat is built
+//! (`command::CHAT_READY`), under the empty window's own context
+//! (`command::CONTEXT`), and until then moves focus. A desk window is a
+//! pane; an OS window is a `DesktopWindow`.
 
 use super::*;
 use gpui_kit::{Action, KeyBinding, KeyContext, Menu, MenuItem};
@@ -22,10 +26,6 @@ gpui_kit::actions!(
         NewWindow,
         /// ⌘W: the focused desk window, else this window.
         CloseWindow,
-        /// ⌘D: the focused window halved, left | right.
-        Halve,
-        /// ⌘⇧D: halved, top / bottom.
-        HalveBelow,
         /// ⌘` / ctrl-tab: the next window to the front.
         CycleForward,
         /// ⌘⇧` / ctrl-shift-tab: the previous one.
@@ -46,7 +46,7 @@ gpui_kit::actions!(
 #[action(namespace = desk, no_json)]
 pub(crate) struct FocusPane(pub(crate) usize);
 
-/// The desk's context, on every window's root.
+/// The app's context, on every window's root.
 pub(super) const CONTEXT: &str = "Ducktape";
 
 /// Every key the app answers, with the context it answers in.
@@ -57,8 +57,6 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-n", NewWindow, DESK),
         KeyBinding::new("secondary-/", OpenHelp, DESK),
         KeyBinding::new("secondary-w", CloseWindow, Some(CONTEXT)),
-        KeyBinding::new("secondary-d", Halve, DESK),
-        KeyBinding::new("secondary-shift-d", HalveBelow, DESK),
         KeyBinding::new("secondary-`", CycleForward, DESK),
         KeyBinding::new("secondary-~", CycleForward, DESK),
         KeyBinding::new("secondary-shift-`", CycleBack, DESK),
@@ -67,8 +65,14 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-shift-tab", CycleBack, DESK),
         KeyBinding::new("secondary-k", ToggleSpotlight, Some("Ducktape && on_desk")),
         KeyBinding::new("escape", CloseOverlay, Some("Ducktape && overlay")),
-        KeyBinding::new("tab", SwitchMode, Some(super::command::CONTEXT)),
     ];
+    if super::command::CHAT_READY {
+        bindings.push(KeyBinding::new(
+            "tab",
+            SwitchMode,
+            Some(super::command::CONTEXT),
+        ));
+    }
     for nth in 1..=9 {
         bindings.push(KeyBinding::new(
             &format!("secondary-{nth}"),
@@ -90,9 +94,6 @@ pub(crate) fn menus(cx: &mut gpui_kit::App) {
         Menu::new("Window").items([
             MenuItem::action("New Window", NewWindow),
             MenuItem::action("Close", CloseWindow),
-            MenuItem::separator(),
-            MenuItem::action("Split", Halve),
-            MenuItem::action("Split Below", HalveBelow),
             MenuItem::separator(),
             MenuItem::action("Next Window", CycleForward),
             MenuItem::action("Previous Window", CycleBack),
@@ -140,12 +141,6 @@ impl DesktopWindow {
             ))
             .on_action(cx.listener(|this, _: &NewWindow, window, cx| {
                 this.pane_message(PaneMessage::Split(layout::EMPTY), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &Halve, window, cx| {
-                this.pane_message(PaneMessage::Halve { below: false }, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &HalveBelow, window, cx| {
-                this.pane_message(PaneMessage::Halve { below: true }, window, cx)
             }))
             .on_action(cx.listener(|this, _: &CycleForward, window, cx| {
                 this.pane_message(PaneMessage::Cycle { forward: true }, window, cx)
@@ -212,26 +207,25 @@ mod tests {
         cx.update(bind);
         let desk = "Ducktape console on_desk desk";
         assert_eq!(
-            resolve("secondary-d", &[desk], cx).as_deref(),
-            Some("desk::Halve")
+            resolve("secondary-n", &[desk], cx).as_deref(),
+            Some("desk::NewWindow")
         );
         assert_eq!(
-            resolve("secondary-d", &["Ducktape console"], cx),
+            resolve("secondary-n", &["Ducktape console"], cx),
             None,
             "the launcher"
         );
         assert_eq!(
-            resolve("secondary-d", &["Ducktape console on_desk overlay"], cx),
+            resolve("secondary-n", &["Ducktape console on_desk overlay"], cx),
             None,
             "an overlay keeps its keys"
         );
+        // no key halves a window
+        assert_eq!(resolve("secondary-d", &[desk], cx), None);
+        assert_eq!(resolve("secondary-shift-d", &[desk], cx), None);
         assert_eq!(
             resolve("secondary-w", &["Ducktape console on_desk overlay"], cx).as_deref(),
             Some("desk::CloseWindow")
-        );
-        assert_eq!(
-            resolve("secondary-n", &[desk], cx).as_deref(),
-            Some("desk::NewWindow")
         );
         assert_eq!(resolve("3", &[desk], cx), None, "a pane with a view types");
         assert_eq!(
@@ -239,5 +233,20 @@ mod tests {
             Some("desk::CloseOverlay")
         );
         assert_eq!(resolve("escape", &[desk], cx), None);
+    }
+
+    /// Tab in an empty window switches to agent chat only once chat is
+    /// built; until then it moves focus, as everywhere (AX-022).
+    #[gpui_kit::test]
+    fn tab_in_an_empty_window_moves_focus_until_chat_is_built(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(bind);
+        let empty = [
+            "Ducktape console on_desk desk",
+            super::super::command::CONTEXT,
+        ];
+        assert_eq!(
+            resolve("tab", &empty, cx).is_some(),
+            super::super::command::CHAT_READY
+        );
     }
 }

@@ -93,38 +93,57 @@ pub(super) fn mono(weight: u16, size: f32) -> Div {
         .text_size(px(fit(size)))
 }
 
-/// `<h1>`: `400 32px/1.18`.
-pub(super) fn h1(text: impl Into<SharedString>, ink: &Ink) -> Div {
+/// Words assistive technology reads: a `Label` whose value is `text`, as
+/// gpui's own `Text` has it. `id` is explicit: the `text!` macro derives
+/// one from its call site, and text mapped over a list would share it.
+pub(super) fn words(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Text {
+    Text::new(id.into(), text.into())
+}
+
+/// `<h1>`: `400 32px/1.18`; the screen's one `Heading`, level 1, its words
+/// its name and its value, as the presenter's headings carry them. One
+/// node: a `Text` inside would be a second one reading the same words.
+pub(super) fn h1(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    ink: &Ink,
+) -> Stateful<Div> {
+    let text = text.into();
     sans(400, 32.)
+        .id(id)
+        .role(Role::Heading)
+        .aria_label(text.clone())
+        .aria_value(text.clone())
+        .aria_level(1)
         .line_height(px(fit(32.) * 1.18))
         .text_color(ink.ink)
-        .child(text.into())
+        .child(text)
 }
 
 /// The lead under a headline: `400 16px/1.65`, in ink.
-pub(super) fn lead(text: impl Into<SharedString>, ink: &Ink) -> Div {
+pub(super) fn lead(id: impl Into<ElementId>, text: impl Into<SharedString>, ink: &Ink) -> Div {
     sans(400, 16.)
         .line_height(px(fit(16.) * 1.65))
         .text_color(ink.ink)
-        .child(text.into())
+        .child(words(id, text))
 }
 
 /// A small muted note: `400 13px/1.55`.
-pub(super) fn note(text: impl Into<SharedString>, color: Hsla) -> Div {
+pub(super) fn note(id: impl Into<ElementId>, text: impl Into<SharedString>, color: Hsla) -> Div {
     sans(400, 13.)
         .line_height(px(13. * 1.55))
         .text_color(color)
-        .child(text.into())
+        .child(words(id, text))
 }
 
 /// A step label or caption: `400 12px MONO`, muted.
-pub(super) fn tag(text: impl Into<SharedString>, ink: &Ink) -> Div {
-    mono(400, 12.).text_color(ink.muted).child(text.into())
+pub(super) fn tag(id: impl Into<ElementId>, text: impl Into<SharedString>, ink: &Ink) -> Div {
+    mono(400, 12.).text_color(ink.muted).child(words(id, text))
 }
 
 /// A field's `<label>`: `500 14px`.
-pub(super) fn label(text: impl Into<SharedString>, ink: &Ink) -> Div {
-    sans(500, 14.).text_color(ink.ink).child(text.into())
+pub(super) fn label(id: impl Into<ElementId>, text: impl Into<SharedString>, ink: &Ink) -> Div {
+    sans(500, 14.).text_color(ink.ink).child(words(id, text))
 }
 
 /// The canvas's button kinds: a filled ink block, an ink outline.
@@ -178,7 +197,9 @@ impl DesktopWindow {
                 })
             })
             .child(text);
-        crate::a11y::disabled(crate::a11y::keyboard(button), disabled).into_any_element()
+        crate::a11y::keyboard(button)
+            .aria_disabled(disabled)
+            .into_any_element()
     }
 
     /// `<a>`: `400 15px`, underlined, in ink; `small` is the back link's
@@ -215,14 +236,15 @@ impl DesktopWindow {
         .into_any_element()
     }
 
-    /// `<span role=alert>`: `400 13px/1.5` in danger, read out as it shows.
+    /// `<span role=alert>`: `400 13px/1.5` in danger, read out at once as
+    /// it shows.
     pub(super) fn alert(&self, id: &'static str, said: String, ink: &Ink) -> AnyElement {
-        sans(400, 13.)
+        let alert = sans(400, 13.)
             .line_height(px(13. * 1.5))
             .id(id)
             .role(Role::Alert)
-            .aria_label(said.clone())
-            .text_color(ink.danger)
+            .text_color(ink.danger);
+        crate::a11y::live(alert, accesskit::Live::Assertive, said.clone())
             .child(said)
             .into_any_element()
     }
@@ -242,4 +264,83 @@ pub(super) fn field_box(field: AnyElement, border: Hsla, height: f32, ink: &Ink)
         .bg(ink.bg)
         .text_color(ink.ink)
         .child(div().flex_1().min_w_0().child(field))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Ink;
+    use gpui_kit::{Hsla, Rgba};
+
+    /// WCAG 2.2's contrast ratio of two opaque colors.
+    fn contrast(one: Hsla, other: Hsla) -> f32 {
+        let luminance = |color: Hsla| {
+            let Rgba { r, g, b, .. } = color.to_rgb();
+            let linear = |v: f32| match v <= 0.04045 {
+                true => v / 12.92,
+                false => ((v + 0.055) / 1.055).powf(2.4),
+            };
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        let (one, other) = (luminance(one), luminance(other));
+        (one.max(other) + 0.05) / (one.min(other) + 0.05)
+    }
+
+    /// Each pair, on the light theme and the dark, reads at `floor`:1.
+    fn reach(floor: f32, pairs: fn(&Ink) -> Vec<(&'static str, Hsla, Hsla)>) {
+        for (theme, dark) in [("light", false), ("dark", true)] {
+            for (what, fore, back) in pairs(&Ink::of(dark)) {
+                let ratio = contrast(fore, back);
+                assert!(
+                    ratio >= floor,
+                    "{what}, {theme}: {ratio:.2}:1, under {floor}:1"
+                );
+            }
+        }
+    }
+
+    /// AX-121: the words the shell draws, on each ground it draws them on.
+    #[test]
+    fn text_reads_at_four_and_a_half_to_one() {
+        reach(4.5, |ink| {
+            vec![
+                ("text", ink.ink, ink.bg),
+                ("text on a chosen row", ink.ink, ink.surface),
+                ("muted text", ink.muted, ink.bg),
+                ("muted text on a chosen row", ink.muted, ink.surface),
+                ("a filled button's words", ink.bg, ink.ink),
+                ("an error", ink.danger, ink.bg),
+                ("an unread notification", ink.figure, ink.bg),
+                ("the drawing in characters", ink.figure, ink.surface),
+            ]
+        });
+    }
+
+    /// AX-121: the focus ring over every fill it lands on, and the marks
+    /// that say a state.
+    #[test]
+    fn the_focus_ring_and_state_marks_read_at_three_to_one() {
+        reach(3., |ink| {
+            let ring = crate::a11y::ring().color;
+            vec![
+                ("the focus ring", ring, ink.bg),
+                ("the focus ring on a chosen row", ring, ink.surface),
+                ("the focus ring on a filled button", ring, ink.ink),
+                ("a chosen pane's frame, a switch on", ink.ink, ink.bg),
+                ("the node's dot, in sync", ink.ok, ink.bg),
+                (
+                    "the node's dot, not answering; a failed tab",
+                    ink.danger,
+                    ink.bg,
+                ),
+            ]
+        });
+    }
+
+    /// AX-121's control boundary: a field's border, a switch off, the
+    /// segmented row's frame.
+    #[test]
+    #[ignore = "strong border is 1.56:1/1.66:1 against the page; owner keeps the look (ax.md §6 Q1)"]
+    fn a_field_border_reads_at_three_to_one() {
+        reach(3., |ink| vec![("a field's border", ink.strong, ink.bg)]);
+    }
 }

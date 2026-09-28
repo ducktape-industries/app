@@ -28,13 +28,13 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules feat/nodes-one-sheet @ 10625564 (chain.network; re-pin to dev once it merges), crates/sdk (abi, view-wire, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "106255640248941ce23911740d88a582d2ce4d1f", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "106255640248941ce23911740d88a582d2ce4d1f", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "106255640248941ce23911740d88a582d2ce4d1f", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "106255640248941ce23911740d88a582d2ce4d1f", package = "design" }
+# --- sdk-line: modules dev @ 52fb469a (#210 merged: nodes one sheet, chain.network; over #209 and #211), crates/sdk (abi, view-wire, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "106255640248941ce23911740d88a582d2ce4d1f", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -77,9 +77,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "106255640248941ce23911740d88a582d2ce4d1f", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "106255640248941ce23911740d88a582d2ce4d1f", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -132,8 +132,6 @@ zbus = "5"
 # hand-written wasm for the describe method's hostile-section tests
 wat = "1"
 gpui-kit = { version = "=0.6.1", features = ["test-support"] }
-# walks the AccessKit tree the ax_contract gate reads (the adapters' version)
-accesskit_consumer = "=0.38.0"
 syn = { version = "2", features = ["full", "visit"] }
 quote = "1"
 # the dependency line this app is held to is read off the manifests, not

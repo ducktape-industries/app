@@ -1,3 +1,7 @@
+//! The UniformList node: a gpui `uniform_list` over a host-owned viewport.
+//! The guest sends only the rows the host asked for (`UniformListRange`),
+//! keyed by index; a row not yet sent draws as a placeholder of
+//! `PLACEHOLDER_HEIGHT`.
 use super::*;
 use crate::render::native_id;
 use gpui_kit::UniformListDecoration;
@@ -5,12 +9,17 @@ use std::ops::Range;
 
 const PLACEHOLDER_HEIGHT: f32 = 24.;
 
+/// A UniformList's retained state, per wire `path`.
 pub(super) struct UniformListHostState {
+    /// The guest's list generation: a new route means row nodes and handler
+    /// ids from older frames are invalid, so the rows are dropped.
     pub(super) route: u32,
     pub(super) count: usize,
     pub(super) rows: HashMap<usize, wire::Node>,
     pub(super) scroll: gpui_kit::UniformListScrollHandle,
+    /// The last range asked of the guest; asked again only when it changes.
     pub(super) requested: Option<Range<usize>>,
+    /// The last (top index, scrollable, scrolled to end) reported.
     observed: Option<(usize, bool, Option<bool>)>,
 }
 
@@ -27,6 +36,10 @@ impl UniformListHostState {
     }
 }
 
+/// Not a visual decoration: `compute` is the one per-layout hook gpui's
+/// uniform_list gives with the visible range, so it reports the range and
+/// the scroll state to the guest (`UniformListRange`, `UniformListState`)
+/// and draws nothing.
 struct RangeObserver {
     tree: gpui_kit::WeakEntity<ViewTree>,
     path: Vec<wire::ElementIdWire>,
@@ -66,8 +79,9 @@ impl UniformListDecoration for RangeObserver {
                     end: range.end as u32,
                 });
             }
-            // GPUI's convenience query is test-support-only. Its public native
-            // state exposes the same pending target and settled logical offset.
+            // gpui's `logical_scroll_top_index` is test-support-only. Its
+            // public native state exposes the same pending target and settled
+            // logical offset.
             let native = self.scroll.0.borrow();
             let top_index = native
                 .deferred_scroll_to_item
@@ -243,16 +257,7 @@ impl ViewTree {
             let style = group.style.clone();
             list = list.group_active(group.group.clone(), move |_| style);
         }
-        if interactivity.focusable {
-            list = list.focusable();
-        }
-        let focus_handle = interactivity.focus_handle.map(|id| {
-            self.guest_focus_targets
-                .entry(id)
-                .or_insert_with(|| cx.focus_handle())
-                .clone()
-        });
-        list = super::interactivity::apply(list, interactivity, focus_handle, cx);
+        list = self.guest_aria(list, node, interactivity, cx);
         if let Some(handler) = interactivity.on_click {
             list = list.on_click(
                 cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
@@ -263,75 +268,6 @@ impl ViewTree {
                     })
                 }),
             );
-        }
-        if let Some(role) = interactivity.role {
-            list = list.role(role);
-        }
-        if let Some(value) = &interactivity.aria.author_id {
-            list = list.accessibility_id(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.label {
-            list = list.aria_label(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.description {
-            list = list.aria_description(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.keyshortcuts {
-            list = list.aria_keyshortcuts(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.value {
-            list = list.aria_value(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.placeholder {
-            list = list.aria_placeholder(value.clone());
-        }
-        if let Some(value) = interactivity.aria.selected {
-            list = list.aria_selected(value);
-        }
-        if let Some(value) = interactivity.aria.expanded {
-            list = list.aria_expanded(value);
-        }
-        if let Some(value) = interactivity.aria.disabled {
-            list = list.aria_disabled(value);
-        }
-        if let Some(value) = interactivity.aria.numeric_value {
-            list = list.aria_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.numeric_value_step {
-            list = list.aria_numeric_value_step(value);
-        }
-        if let Some(value) = interactivity.aria.min_numeric_value {
-            list = list.aria_min_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.max_numeric_value {
-            list = list.aria_max_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.level {
-            list = list.aria_level(value);
-        }
-        if let Some(value) = interactivity.aria.position_in_set {
-            list = list.aria_position_in_set(value);
-        }
-        if let Some(value) = interactivity.aria.size_of_set {
-            list = list.aria_size_of_set(value);
-        }
-        if let Some(value) = interactivity.aria.row_index {
-            list = list.aria_row_index(value);
-        }
-        if let Some(value) = interactivity.aria.column_index {
-            list = list.aria_column_index(value);
-        }
-        if let Some(value) = interactivity.aria.row_count {
-            list = list.aria_row_count(value);
-        }
-        if let Some(value) = interactivity.aria.column_count {
-            list = list.aria_column_count(value);
-        }
-        if let Some(value) = interactivity.aria.toggled {
-            list = list.aria_toggled(value);
-        }
-        if let Some(value) = interactivity.aria.orientation {
-            list = list.aria_orientation(value);
         }
         list.into_any_element()
     }

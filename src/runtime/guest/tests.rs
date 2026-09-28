@@ -1,21 +1,7 @@
 use super::*;
 
 fn tooltip_route(request: u32) -> wire::Node {
-    let interactivity = wire::Interactivity {
-        tooltip: Some(wire::Tooltip {
-            request,
-            content: None,
-            hoverable: false,
-            delay_ms: 250,
-        }),
-        ..Default::default()
-    };
-    wire::Node::Container(view_wire::ContainerNode {
-        id: None,
-        style: Default::default(),
-        interactivity,
-        children: Vec::new(),
-    })
+    primitive_tooltip_route("container", request)
 }
 
 fn primitive_tooltip_route(kind: &str, request: u32) -> wire::Node {
@@ -101,7 +87,7 @@ fn rich_tooltip_route(request: u32) -> wire::Node {
         clickable_ranges: Vec::new(),
         on_click: None,
         on_hover: None,
-        tooltip: Some(wire::RichTextTooltip {
+        tooltip: Some(wire::TooltipResponse {
             request,
             character_index: None,
             content: None,
@@ -345,54 +331,204 @@ fn tooltip_response_is_sanitized_against_the_combined_held_tree_budget() {
     assert!(frame.root.unwrap().count() <= wire::MAX_NODES);
 }
 
-/// Every export of a real view, through guest memory. The bytes are
-/// view-guest's `exported_view` example built for wasm32 by modules'
-/// `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
+/// Every export of a real view, through guest memory and the swap a
+/// deployment takes: the drawn view ticked, its state carried into a fresh
+/// instance of the same code, and that instance's first tree drawn from
+/// it. The bytes are view-guest's `exported_view` example built for wasm32
+/// by modules' `make view-wasm-check`, named by `DUCKTAPE_VIEW_PROBE`.
 #[test]
 #[ignore = "needs DUCKTAPE_VIEW_PROBE=<exported_view.wasm>"]
-fn a_core_module_view_inits_ticks_snapshots_and_restores() {
+fn a_ticked_view_survives_a_swap_with_its_state() {
     let path = std::env::var("DUCKTAPE_VIEW_PROBE").expect("DUCKTAPE_VIEW_PROBE");
     let bytes = std::fs::read(path).expect("probe bytes");
-    let mut guest = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
-    assert_eq!(guest.name, "Exported");
-    guest.tick();
-    assert_eq!(guest.fault, None);
-    let (text, press) = label(&guest);
+    let mut old = Guest::from_bytes("probe", &bytes, "probe").expect("loads");
+    assert_eq!(old.name, "Exported");
+    assert_eq!(old.min_width, 480, "the probe declares none: the default");
+    old.tick();
+    old.ticks += 1;
+    assert_eq!(old.fault, None);
+    let (text, press) = label(&old);
     assert_eq!(text, "0");
 
-    guest.pending.push(wire::Event::Click {
+    old.pending.push(wire::Event::Click {
         handler: press,
         event: wire::click::Click::Keyboard {
             button: wire::click::KeyboardButton::Enter,
             bounds: Default::default(),
         },
     });
-    guest.tick();
-    assert_eq!(label(&guest).0, "1");
+    old.tick();
+    old.ticks += 1;
+    assert_eq!(label(&old).0, "1");
+    let state = old.snapshot().expect("no trap").expect("settled");
+    assert!(state[0] >= 0x80, "the state is a named MessagePack map");
 
-    let state = guest.snapshot().expect("settled");
+    let alive = old.alive.clone();
+    let mounted = Mounted::seat();
+    mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
     let code = Guest::compile(&bytes, "probe")
         .map_err(|f| f.to_string())
         .expect("compiles");
+    let fresh = Guest::instantiate("probe", &code, "probe").expect("instantiates");
+    let mut ticks = 0;
+    let mut timing = LoadTiming::default();
+    let fresh = Guest::replacement(fresh, &alive, &mut ticks, &mounted, "probe", &mut timing)
+        .expect("the replacement carries the state");
+    assert_eq!(ticks, 2, "the count the snapshot was taken at");
+    assert!(fresh.staged && fresh.fault.is_none());
+    assert_eq!(label(&fresh).0, "1", "drawn from the state it was handed");
+
+    // a state that is not the view's own is the guest's refusal, not a trap
     let mut next = Guest::instantiate("probe", &code, "probe").expect("instantiates");
     assert!(matches!(
-        next.restore(&state, "probe"),
-        Ok(Restored::Carried)
-    ));
-    assert!(matches!(
-        next.restore(b"not json", "probe"),
+        next.restore(b"not a snapshot", "probe"),
         Ok(Restored::Refused(_))
     ));
-    next.tick();
-    assert_eq!(next.fault, None);
-    assert_eq!(label(&next).0, "1");
+}
+
+/// A module's minimum width is its drawn view's: none while the seat loads.
+#[test]
+fn a_view_says_its_min_width_once_it_is_drawn() {
+    let seat = Mounted::seat();
+    registry()
+        .lock()
+        .unwrap()
+        .insert(("min-width-seat", 7), seat.clone());
+    assert_eq!(min_width("min-width-seat"), None, "loading");
+    let mut guest = wat_view("unreachable", "unreachable", None);
+    guest.min_width = 680;
+    seat.lock().unwrap().slot = Slot::Ready(Box::new(guest));
+    assert_eq!(min_width("min-width-seat"), Some(680.));
+    registry().lock().unwrap().remove(&("min-width-seat", 7));
+    assert_eq!(min_width("min-width-seat"), None, "gone");
 }
 
 #[test]
-fn a_view_built_against_newer_methods_is_refused_at_load() {
-    let now = wire::methods::METHODS_REVISION;
-    assert!(methods_revision(0).is_ok(), "a v1 manifest names none");
-    assert!(methods_revision(now).is_ok());
-    let refused = methods_revision(now + 1).unwrap_err();
-    assert!(refused.contains(&format!("{}", now + 1)), "{refused}");
+fn a_view_built_against_another_wire_is_refused_at_load() {
+    assert!(wire_id(wire::WIRE_ID).is_ok());
+    let refused = wire_id("0").unwrap_err();
+    assert!(
+        refused.contains("wire 0;") && refused.contains(wire::WIRE_ID),
+        "{refused}"
+    );
+}
+
+/// Pages a view's memory holds for the swap tests: a full snapshot budget
+/// plus its tag byte, with room to spare for the events and the frame.
+const SWAP_PAGES: usize = wire::MAX_SNAPSHOT_BYTES / 65536 + 1;
+
+/// A view in WAT whose `snapshot`, `restore` and `tick` are the bodies
+/// given, each leaving the packed `i64` it answers with. Memory byte 0 is
+/// a result's Ok tag and byte 1 a refusal's; `init` marks byte 2 so a test
+/// sees whether it ran; `tick`'s frame sits at the top of memory, clear of
+/// the buffer `alloc` hands out at 64.
+fn wat_view(snapshot: &str, restore: &str, tick: Option<&[u8]>) -> Guest {
+    let top = SWAP_PAGES * 65536;
+    let tick_body = match tick {
+        Some(frame) => format!(
+            "i64.const {}",
+            wire::abi::pack((top - frame.len()) as u32, frame.len() as u32)
+        ),
+        None => "unreachable".to_string(),
+    };
+    let module = wasmtime::Module::new(
+        engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") {SWAP_PAGES})
+            (data (i32.const 1) "\01")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init") (i32.store8 (i32.const 2) (i32.const 1)))
+            (func (export "tick") (param i32 i32) (result i64) {tick_body})
+            (func (export "snapshot") (result i64) {snapshot})
+            (func (export "restore") (param i32 i32) (result i64) {restore}))"#
+        ),
+    )
+    .unwrap();
+    let mut guest = Guest::instantiate("wat", &module, "wat").unwrap();
+    if let Some(frame) = tick {
+        guest
+            .exports
+            .memory
+            .write(&mut guest.store, top - frame.len(), frame)
+            .unwrap();
+    }
+    guest
+}
+
+/// `fresh` prepared as the replacement of `old`, seated as a drawn view.
+fn swap(mut old: Guest, fresh: Guest) -> (Result<Guest, Failure>, Arc<Mutex<Mounted>>) {
+    old.ticks = 1;
+    let alive = old.alive.clone();
+    let mounted = Mounted::seat();
+    mounted.lock().unwrap().slot = Slot::Ready(Box::new(old));
+    let mut ticks = 0;
+    let mut timing = LoadTiming::default();
+    let swapped = Guest::replacement(fresh, &alive, &mut ticks, &mounted, "wat", &mut timing);
+    (swapped, mounted)
+}
+
+fn init_ran(guest: &Guest) -> bool {
+    guest.exports.memory.data(&guest.store)[2] == 1
+}
+
+/// Every arm of `Guest::replacement` a real view cannot be made to take on
+/// demand: the state past its budget, the guest refusing the state and
+/// starting clean, the first frame trapping, and the drawn view's own
+/// snapshot trapping.
+#[test]
+fn a_replacement_takes_the_state_it_is_handed_or_says_why_not() {
+    let frame = wire::encode(&wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    });
+    let ok = |len: usize| format!("i64.const {}", wire::abi::pack(0, len as u32));
+    let refused = format!("i64.const {}", wire::abi::pack(1, 1));
+
+    // one byte past the budget (the tag not counted) is refused before a
+    // byte of it is copied; the budget itself carries over whole
+    let (swapped, _) = swap(
+        wat_view(&ok(wire::MAX_SNAPSHOT_BYTES + 2), &ok(1), Some(&frame)),
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+    );
+    assert!(matches!(
+        swapped.err(),
+        Some(Failure::Refused(why)) if why.contains("snapshot byte budget")
+    ));
+    let (swapped, _) = swap(
+        wat_view(&ok(wire::MAX_SNAPSHOT_BYTES + 1), &ok(1), Some(&frame)),
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+    );
+    let fresh = swapped.expect("a full budget carries over");
+    assert!(fresh.staged && !init_ran(&fresh), "restored, not inited");
+
+    // the guest refuses the state as not its own: it inits instead
+    let (swapped, _) = swap(
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+        wat_view(&ok(1), &refused, Some(&frame)),
+    );
+    let fresh = swapped.expect("a refused state starts clean");
+    assert!(
+        fresh.staged && init_ran(&fresh),
+        "inited in the state's place"
+    );
+
+    // the first frame traps: no replacement
+    let (swapped, _) = swap(
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+        wat_view(&ok(1), &ok(1), None),
+    );
+    assert!(matches!(swapped.err(), Some(Failure::Trapped(_))));
+
+    // the drawn view's snapshot traps: the load fails, and the view it
+    // leaves seated is faulted rather than entered again
+    let (swapped, mounted) = swap(
+        wat_view("unreachable", &ok(1), Some(&frame)),
+        wat_view(&ok(1), &ok(1), Some(&frame)),
+    );
+    assert!(matches!(swapped.err(), Some(Failure::Trapped(_))));
+    assert!(matches!(
+        &mounted.lock().unwrap().slot,
+        Slot::Ready(old) if old.fault.is_some()
+    ));
 }

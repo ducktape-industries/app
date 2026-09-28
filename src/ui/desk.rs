@@ -3,7 +3,7 @@
 use super::{AppMessage as Message, Ducktape};
 use crate::backend;
 use crate::runtime::Intent;
-use view_wire::Task;
+use crate::ui::task::Task;
 
 impl Ducktape {
     /// Views, links, toasts, windows and the tray.
@@ -50,6 +50,15 @@ impl Ducktape {
                 Intent::OpenLink(link) => self.update(Message::OpenLink(link)),
                 // the dispatch redraws
                 Intent::Notified => Task::none(),
+                // a window placed before its view came is widened to it
+                Intent::Seated => {
+                    for layout in self.layouts.values_mut() {
+                        if layout.panes.iter().any(|pane| pane.module == module) {
+                            layout.settle();
+                        }
+                    }
+                    Task::none()
+                }
             },
             Message::OpenLink(link) => {
                 // `duck://<chain>/<program>/<tail>` on this chain, or the short

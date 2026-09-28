@@ -1,19 +1,18 @@
 use super::*;
 
-/// Whether `target` names a node mounted in `root`, matched as a SUFFIX of
-/// that node's full authored path (the ancestry `crate::render::enter_scope`
-/// walks), not the whole of it. A view composes a widget command's target
-/// from context it already holds when it dispatches — an editor's own key
-/// (`"draft-general/editor"`), a list's own key — never from every named
-/// ancestor above it, which can live in other modules entirely (a pane, a
-/// room, the composer's own wrapper each carry an id of their own) and
-/// change shape without the dispatching code's knowledge. Requiring the
-/// FULL path here silently refused every such command — a `window.dispatch`
-/// is a fire-and-forget notify, so the refusal never reached the guest —
-/// which is why a composer's Send button (`WidgetCommand::EditorAction`)
-/// stayed dead while Enter, which never goes through a widget command, kept
-/// working. `ViewTree::resolve_target` (the native renderer) matches the
-/// same way, so the two walks keep agreeing.
+/// The `methods::Call` envelope around an op: its target name and two
+/// lengths, allowed on top of MAX_OP_BYTES.
+const OP_ENVELOPE_BYTES: usize = 256;
+/// Widget commands waiting for a frame that mounts their target: at most
+/// one tick's worth of requests.
+const MAX_PENDING_WIDGET_COMMANDS: usize = MAX_REQUESTS_PER_TICK;
+
+/// Whether `target` is a SUFFIX of some mounted node's authored path (the
+/// ancestry `crate::render::enter_scope` walks). A view names a command's
+/// target by the key it holds where it dispatches — the editor's own, the
+/// list's own — never by every named ancestor above it, which other code
+/// owns and reshapes. `ViewTree::resolve_target` (the native renderer)
+/// matches the same way, so the two walks keep agreeing.
 pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::ElementIdWire]) -> bool {
     fn contains(
         node: &wire::Node,
@@ -124,15 +123,15 @@ impl Guest {
                 || self.inputs.ready() == Ok(false))
     }
 
-    /// Routes one request: the props subscription is answered from what the
-    /// app holds, an intent the module declares goes to the app, the log
-    /// goes to the log, and anything else is refused.
+    /// Routes one request: the size cap, the manifest's capability gate,
+    /// then the kernel contract (`kernel::answer`), then the three methods
+    /// only this side has — `host.widget`, `host.session` answered from the
+    /// props the app holds, `host.log` — and anything else is refused.
     pub(crate) fn answer(&mut self, request: wire::Request, props: &Option<Vec<u8>>) {
         let wire::Request { id, kind, payload } = request;
-        // an op rides a `methods::Call`: the target and two lengths around it;
-        // one to describe, beside its program's name
+        // `op.submit` and `module.describe` carry an op inside a `methods::Call`
         let payload_limit = match kind.as_str() {
-            "op.submit" | "module.describe" => MAX_OP_BYTES + 256,
+            "op.submit" | "module.describe" => MAX_OP_BYTES + OP_ENVELOPE_BYTES,
             _ => MAX_PAYLOAD_BYTES,
         };
         if payload.len() > payload_limit {
@@ -209,7 +208,6 @@ impl Guest {
             C::FocusPrevious | C::FocusNext | C::FocusHandle { .. } => None,
             C::EditorAction { target, .. }
             | C::Focus { target }
-            | C::Focused { target }
             | C::CursorFront { target }
             | C::CursorEnd { target }
             | C::Cursor { target, .. }
@@ -218,7 +216,6 @@ impl Guest {
             | C::Snap { target, .. }
             | C::SnapEnd { target }
             | C::ScrollTo { target, .. }
-            | C::ScrollToKey { target, .. }
             | C::ScrollBy { target, .. } => Some(target),
         }
     }
@@ -247,7 +244,7 @@ impl Guest {
                 return Err("widget request has trailing bytes".into());
             }
             command.validate()?;
-            let queue_full = self.widget_commands.len() >= MAX_REQUESTS_PER_TICK;
+            let queue_full = self.widget_commands.len() >= MAX_PENDING_WIDGET_COMMANDS;
             if queue_full {
                 return Err("too many pending widget requests".into());
             }
@@ -266,34 +263,14 @@ impl Guest {
     /// native editor work to drain, since a caret or a selection is placed in
     /// the document as it stands. A Focus does not wait: a field the view
     /// just opened has to hold the keys typed into it before its document
-    /// arrives. A rich editor's Focus still waits — it puts the caret in a
-    /// block of its document, and has none until the document is here.
+    /// arrives.
     pub(crate) fn runnable_widget_commands(&self) -> usize {
         if !self.inputs.pending() {
             return self.widget_commands.len();
         }
-        fn rich(
-            node: &wire::Node,
-            path: &mut Vec<wire::ElementIdWire>,
-            target: &[wire::ElementIdWire],
-        ) -> bool {
-            let entered = crate::render::enter_scope(node, path);
-            let found = matches!(node, wire::Node::Editor { options, .. } if path == target && options.rich.is_some())
-                || node
-                    .children()
-                    .iter()
-                    .any(|child| rich(child, path, target));
-            if entered {
-                path.pop();
-            }
-            found
-        }
         self.widget_commands
             .iter()
-            .take_while(|(_, command)| {
-                matches!(command, wire::WidgetCommand::Focus { target }
-                    if !self.frame.root.as_ref().is_some_and(|root| rich(root, &mut Vec::new(), target)))
-            })
+            .take_while(|(_, command)| matches!(command, wire::WidgetCommand::Focus { .. }))
             .count()
     }
 
@@ -324,6 +301,15 @@ impl Guest {
             id,
             result,
             done: true,
+        });
+    }
+
+    /// One item on the subscription `id`: the stream stays open.
+    pub(crate) fn stream_item(&mut self, id: u64, item: Vec<u8>) {
+        self.pending.push(wire::Event::Response {
+            id,
+            result: Ok(item),
+            done: false,
         });
     }
 
@@ -389,8 +375,7 @@ impl Guest {
                                     source: wire::SvgSource::Data { bytes, .. },
                                     ..
                                 } => *bytes = None,
-                                wire::Node::Image { data, .. }
-                                | wire::Node::ImageViewer { data, .. } => *data = None,
+                                wire::Node::Image { data, .. } => *data = None,
                                 _ => {}
                             });
                         }
@@ -472,14 +457,8 @@ mod tests {
         }
     }
 
-    /// The real shape a chat composer's editor mounts under — see the live
-    /// `chat-view` tree: `chat-viewport > chat-root > chat-panes >
-    /// chat-room > draft-general > draft-general/editor`. Every one of
-    /// those named ancestors is owned by a different file (`lib.rs`,
-    /// `room.rs`, the composer's own wrapper), none of which `compose.rs`
-    /// knows about or threads through — it targets the editor by its own
-    /// key alone, exactly like `actions.rs`'s `Focus` and `room.rs`'s
-    /// `ScrollToKey`.
+    /// An editor five named ancestors deep, the way a composer mounts in a
+    /// real view; the editor is targeted by its own key alone.
     fn chat_shaped_tree() -> wire::Node {
         container(
             "chat-viewport",
@@ -499,15 +478,9 @@ mod tests {
         )
     }
 
-    /// The composer's own dispatch (`Outcome::Enqueue` in `chat-view`'s
-    /// `compose.rs`) sends `EditorAction { target: vec![Name("{key}/editor")], .. }`
-    /// — one segment. Before this fix, `target_is_mounted` required that
-    /// segment to equal the editor's FULL authored path, so it never
-    /// matched anything nested (which every real composer is), and the
-    /// guest refused its own `host.widget` request with
-    /// `widget target is outside this guest tree`. Because `window.dispatch`
-    /// is a fire-and-forget notify, nothing ever reported that refusal:
-    /// clicking Send just did nothing, forever.
+    /// A one-segment target matches a nested editor: a full-path match
+    /// would refuse every real composer's command, and `window.dispatch`
+    /// is a notify, so nothing would report the refusal.
     #[test]
     fn a_short_target_matches_its_editor_however_deep_the_named_ancestry() {
         let tree = chat_shaped_tree();

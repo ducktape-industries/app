@@ -28,9 +28,9 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     let notice = container_with_style("error", notice_style.style().clone(), [error_text]);
     let mut room_column = axis_container(
         "room-column",
-        wire::Axis::Column,
+        Axis::Column,
         [
-            rule("header-rule", wire::Axis::Row),
+            rule("header-rule", Axis::Row),
             notice,
             wire::Node::Space {
                 style: sized_style(None, Some(fill())),
@@ -63,14 +63,14 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         .overflow_hidden();
     let mut workspace_row = axis_container(
         "workspace-row",
-        wire::Axis::Row,
+        Axis::Row,
         [
             container_with_style(
                 "sidebar",
                 sidebar_style.style().clone(),
                 [wire::Node::empty()],
             ),
-            rule("sidebar-resize", wire::Axis::Column),
+            rule("sidebar-resize", Axis::Column),
             room,
         ],
     );
@@ -88,12 +88,8 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     // A room's real root: a viewport sensor around the press area.
     let root = wire::Node::Sensor {
         id: named_id("viewport"),
-        reset: None,
         on_show: None,
         on_resize: Some(1),
-        on_hide: None,
-        anticipate: None,
-        delay: None,
         style: sized_style(Some(fill()), Some(fill())),
         child: Box::new(wire::Node::Container(view_wire::ContainerNode {
             id: Some(named_id("press-area")),
@@ -175,79 +171,6 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
             .filter(|quad| quad.bounds.size.width.as_f32() <= scale)
             .count();
         assert_eq!(rules, 1, "the sidebar-resize rule: {quads:?}");
-    });
-}
-
-#[gpui_kit::test]
-fn a_float_modal_uses_viewport_coordinates_and_one_surface(cx: &mut gpui_kit::TestAppContext) {
-    cx.update(gpui_kit::init);
-    let card = sized(
-        "float-card-box",
-        container("float-card", [wire::Node::empty()]),
-        Some(fixed(40.)),
-        Some(fixed(20.)),
-    );
-    let root = wire::Node::Overlay {
-        id: named_id("float-overlay"),
-        label: Some("Context menu".into()),
-        style: {
-            let mut layer = div()
-                .p(px(30.))
-                .justify_end()
-                .items_end()
-                .bg(gpui_kit::Rgba {
-                    r: 0.0,
-                    g: 0.0,
-                    b: 0.0,
-                    a: 0.0,
-                });
-            layer.style().clone()
-        },
-        on_dismiss: None,
-        children: vec![
-            wire::Node::Space {
-                style: sized_style(Some(fill()), Some(fill())),
-            },
-            wire::Node::Float {
-                id: named_id("float"),
-                x: 37.,
-                y: 29.,
-                scale: 1.,
-                style: gpui_kit::StyleRefinement::default(),
-                content: Box::new(card),
-            },
-        ],
-    };
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
-    let card = tree
-        .read_with(&native, |tree, _| {
-            tree.measured_bounds(&[
-                named_id("float-overlay"),
-                named_id("float"),
-                named_id("float-card-box"),
-                named_id("float-card"),
-            ])
-        })
-        .expect("the floated card was measured");
-    assert_eq!(card.origin, point(px(37.), px(29.)));
-    native.update(|window, cx| {
-        window.render_frame(cx);
-        let quads = window.painted_quads();
-        let scale = window.scale_factor();
-        let card_surfaces = quads
-            .iter()
-            .filter(|quad| {
-                quad.bounds.size.width.as_f32() == 40. * scale
-                    && quad.bounds.size.height.as_f32() == 20. * scale
-            })
-            .count();
-        assert_eq!(
-            card_surfaces, 1,
-            "the Float owns the card surface: {quads:?}"
-        );
     });
 }
 
@@ -374,7 +297,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
                 button: wire::click::MouseButton::Left,
                 click_count: 3,
                 first_mouse: true,
-                modifiers: wire::keyboard::Modifiers { shift: true, .. },
+                modifiers: gpui_kit::Modifiers { shift: true, .. },
                 ..
             }
         }

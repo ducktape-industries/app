@@ -2,7 +2,7 @@
 
 use super::*;
 use desk::BAR;
-use screens::Facts;
+use facts::Facts;
 
 impl DesktopWindow {
     /// The bell's panel (the NotifCenter board): 400 wide under the bell,
@@ -120,10 +120,13 @@ impl DesktopWindow {
                     .truncate()
                     .child(text)
             };
+            // when and from where, as the row shows them, after its name
+            let about = format!("{} · {source}", ago(entry.at, now));
             list = list.child(crate::a11y::keyboard(
                 div()
                     .id(SharedString::from(format!("notif/{id}")))
                     .control(Role::MenuItem, SharedString::from(said))
+                    .aria_description(about)
                     .flex()
                     .gap(px(10.))
                     .pl(px(8.))
@@ -215,21 +218,22 @@ impl DesktopWindow {
         }
         if entries.is_empty() {
             list = list.child(
-                div()
-                    .id("notif-empty")
-                    .role(Role::Status)
-                    .aria_label("You\u{2019}re all caught up")
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(6.))
-                    .py(px(44.))
-                    .child(sans(500, 14.).child("You\u{2019}re all caught up"))
-                    .child(
-                        sans(400, 13.)
-                            .text_color(ink.muted)
-                            .child("Mentions and messages land here."),
-                    ),
+                crate::a11y::live(
+                    div().id("notif-empty").role(Role::Status),
+                    accesskit::Live::Polite,
+                    "You\u{2019}re all caught up",
+                )
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.))
+                .py(px(44.))
+                .child(sans(500, 14.).child("You\u{2019}re all caught up"))
+                .child(
+                    sans(400, 13.)
+                        .text_color(ink.muted)
+                        .child("Mentions and messages land here."),
+                ),
             );
         }
         let footer = div()

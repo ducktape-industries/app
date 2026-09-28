@@ -1,3 +1,7 @@
+//! OS windows: where a new one goes (`cascade`, `centered`, `unseated`),
+//! how a `DesktopWindow` and the `Desktop` are made, and how the model
+//! opens a window (`Desktop::open_window`).
+
 use super::*;
 use gpui_kit::{Bounds, Pixels, Size, point, px, size};
 
@@ -6,6 +10,16 @@ pub(super) const WINDOW_SIZE: (f32, f32) = (1280., 800.);
 
 /// How far a pop-out steps down and right of the window it left.
 const CASCADE: f32 = 32.;
+
+/// The narrowest and lowest a pop-out goes, whatever its view: its own
+/// title strip and bar are not laid out under this.
+pub(super) const POPOUT_MIN: f32 = 480.;
+
+/// The narrowest a pop-out holding `module`'s view goes: the view's own
+/// minimum once it is drawn, never under [`POPOUT_MIN`].
+pub(super) fn popout_min(module: &str) -> f32 {
+    crate::runtime::min_width(module).map_or(POPOUT_MIN, |min_width| min_width.max(POPOUT_MIN))
+}
 
 /// Where a pop-out opens: stepped off its source window so it does not
 /// land exactly on top of it, and pulled back inside `display` when the
@@ -33,17 +47,19 @@ pub(super) fn centered(extent: Size<Pixels>, display: Bounds<Pixels>) -> Bounds<
 }
 
 /// Where a window leaving the desk opens: on the screen right where it sat,
-/// under the console's bar rather than over it, and inside `display`.
-/// With no place on the desk to keep, it cascades.
+/// under the console's bar rather than over it, at least `min_w` wide
+/// ([`popout_min`]), and inside `display`. With no place on the desk to
+/// keep, it cascades.
 pub(super) fn unseated(
     source: Bounds<Pixels>,
     frame: Option<layout::Frame>,
     display: Option<Bounds<Pixels>>,
+    min_w: f32,
 ) -> Bounds<Pixels> {
     let Some(frame) = frame else {
         return cascade(source, display);
     };
-    let extent = size(px(frame.w.max(720.)), px(frame.h.max(480.)));
+    let extent = size(px(frame.w.max(min_w)), px(frame.h.max(POPOUT_MIN)));
     let mut origin = point(
         source.origin.x + px(frame.x),
         source.origin.y + px(desk::BAR + frame.y),
@@ -68,7 +84,6 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.on_release(Self::released).detach();
         let observer = cx.observe(&model, |_, _, cx| cx.notify());
         let activation =
             cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
@@ -89,12 +104,14 @@ impl DesktopWindow {
             inputs: HashMap::new(),
             spotlight_focused: false,
             spotlight_rows: Default::default(),
+            settings_rows: Default::default(),
             command: None,
             covered: None,
             refocus: None,
             modal: cx.focus_handle(),
             pane_keys: HashMap::new(),
             panes_moved: false,
+            front: None,
             bar_buttons: Default::default(),
             rail: Default::default(),
             bar_needs: 0.,
@@ -121,6 +138,9 @@ impl Desktop {
         }
     }
 
+    /// Opens the OS window for `key` (deferred: the caller is mid-update)
+    /// and remembers its handle and view. On failure a pane on its way
+    /// there goes back to the desk and the model hears the window closed.
     pub(super) fn open_window(
         &mut self,
         key: WindowKey,
@@ -154,8 +174,15 @@ impl Desktop {
                 // the buttons are 14px tall: centred in the 36px bar
                 traffic_light_position: Some(point(px(11.), px(11.))),
             }),
-            // one window serves the launcher and the desk, so it resizes
-            window_min_size: Some(gpui_kit::size(px(720.), px(480.))),
+            // one window serves the launcher and the desk, so it resizes;
+            // a pop-out goes down to its view's minimum, as it stands when
+            // the window opens (there is no setting it later)
+            window_min_size: Some(match kind {
+                crate::shell::WindowKind::Console => gpui_kit::size(px(720.), px(480.)),
+                crate::shell::WindowKind::View { module } => {
+                    gpui_kit::size(px(popout_min(module)), px(POPOUT_MIN))
+                }
+            }),
             app_id: Some("dev.ducktape.app".into()),
             kind: gpui_kit::WindowKind::Normal,
             icon: image::RgbaImage::from_raw(
@@ -172,11 +199,7 @@ impl Desktop {
             let opened = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| DesktopWindow::new(window_model, key, kind, window, cx));
                 opened_view = Some(view.downgrade());
-                let closing = view.downgrade();
                 window.on_window_should_close(cx, move |window, cx| {
-                    let _ = closing.update(cx, |this, cx| {
-                        this.observe_window(view_wire::events::Window::CloseRequested, cx)
-                    });
                     release_window_input(window, cx);
                     true
                 });
@@ -224,12 +247,39 @@ mod tests {
             h: 600.,
         };
         let display = frame(0., 0., 2560., 1440.);
-        let at = unseated(frame(200., 100., 1280., 800.), Some(seat), Some(display));
+        let at = unseated(
+            frame(200., 100., 1280., 800.),
+            Some(seat),
+            Some(display),
+            POPOUT_MIN,
+        );
         assert_eq!(at, frame(300., 100. + desk::BAR + 50., 900., 600.));
         assert!(
             at.origin.y >= px(100. + desk::BAR),
             "the console's bar stays uncovered"
         );
+        // no narrower than its view: a 500 px frame of a view laid out from 680
+        let narrow = layout::Frame { w: 500., ..seat };
+        let at = unseated(
+            frame(200., 100., 1280., 800.),
+            Some(narrow),
+            Some(display),
+            680.,
+        );
+        assert_eq!(at.size.width, px(680.));
+    }
+
+    #[test]
+    fn a_popout_is_never_narrower_than_its_view_nor_480() {
+        assert_eq!(
+            popout_min("popout-unseated-view"),
+            POPOUT_MIN,
+            "not drawn yet"
+        );
+        crate::runtime::seat_for_test("popout-wide-view", 640);
+        assert_eq!(popout_min("popout-wide-view"), 640.);
+        crate::runtime::seat_for_test("popout-narrow-view", 320);
+        assert_eq!(popout_min("popout-narrow-view"), POPOUT_MIN);
     }
 
     #[test]

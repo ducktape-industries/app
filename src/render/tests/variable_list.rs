@@ -1,4 +1,5 @@
 use super::*;
+use gpui_kit::relative;
 
 fn variable_list_node(
     count: usize,
@@ -142,7 +143,7 @@ fn accepted_frames_retain_anonymous_list_scroll_and_clear_old_listener_rows(
     cx.update(gpui_kit::init);
     let root = axis_container(
         "room",
-        wire::Axis::Column,
+        Axis::Column,
         [variable_list_node(
             3,
             wire::ListAlignment::Top,

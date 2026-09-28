@@ -1,10 +1,11 @@
-//! The bar's menus: the node's status, the account, and the networks this
-//! device has reached. The network menu is the old app's "Switch network"
-//! block (before #216), without its detour through the Connect screen and a
-//! second password prompt for the network already in hand.
+//! The bar's drop-down menus: the node's status (height, epoch, hashes),
+//! the account (copy the number, add a device, a recovery key, Lock), and
+//! the networks this device has reached, switched to without a trip through
+//! Connect. Plus the number, hash and date formatters they read by.
 
 use super::*;
-use screens::{Facts, pulse};
+use facts::Facts;
+use status_bar::pulse;
 
 /// The program whose view is Account (the account, its keys, agents and
 /// invites), which the account menu opens.
@@ -24,6 +25,7 @@ impl DesktopWindow {
         let ink = Ink::of(state.dark);
         let ok = !state.reconnecting;
         let host = crate::backend::host_of(&state.connected_rpc).to_owned();
+        // the key and its value, each a Label: `Height`, `6,230`
         let row = |key: &'static str, value: String, code: bool| {
             div()
                 .flex()
@@ -31,14 +33,14 @@ impl DesktopWindow {
                 .items_baseline()
                 .px(px(16.))
                 .py(px(7.))
-                .child(sans(400, 13.).text_color(ink.muted).child(key))
+                .child(sans(400, 13.).text_color(ink.muted).child(words(key, key)))
                 .child(
                     match code {
                         true => mono(400, 13.),
                         false => sans(400, 13.),
                     }
                     .text_color(ink.ink)
-                    .child(value),
+                    .child(words(SharedString::from(format!("{key}/value")), value)),
                 )
         };
         let mut rows = vec![];
@@ -97,14 +99,17 @@ impl DesktopWindow {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(sans(500, 15.).child(match ok {
-                                true => "In sync",
-                                false => "Not answering",
-                            }))
+                            .child(sans(500, 15.).child(words(
+                                "sync",
+                                match ok {
+                                    true => "In sync",
+                                    false => "Not answering",
+                                },
+                            )))
                             .child(
                                 mono(400, 12.)
                                     .text_color(ink.muted)
-                                    .child(format!("{} · {host}", state.network)),
+                                    .child(words("node", format!("{} · {host}", state.network))),
                             ),
                     ),
             )
@@ -191,12 +196,16 @@ impl DesktopWindow {
                     .pt(px(10.))
                     .px(px(16.))
                     .pb(px(12.))
-                    .child(sans(500, 16.).child(name))
-                    .child(mono(400, 12.).text_color(ink.muted).child(detail))
+                    .child(sans(500, 16.).child(words("name", name)))
+                    .child(
+                        mono(400, 12.)
+                            .text_color(ink.muted)
+                            .child(words("detail", detail)),
+                    )
                     .child(
                         sans(400, 13.)
                             .text_color(ink.muted)
-                            .child("This device's key, kept by the system"),
+                            .child(words("key", "This device's key, kept by the system")),
                     ),
             )
             .child(div().h(px(1.)).mb(px(6.)).bg(ink.line))
@@ -264,10 +273,7 @@ impl DesktopWindow {
                 name,
                 Message::SwitchNetwork(entry.url.clone()),
             )
-            .aria_toggled(match current {
-                true => gpui_kit::accesskit::Toggled::True,
-                false => gpui_kit::accesskit::Toggled::False,
-            })
+            .aria_toggled(current.into())
             .flex()
             .items_baseline()
             .gap(px(12.))

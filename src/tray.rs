@@ -5,38 +5,52 @@ use crate::{AppMessage as Message, Appearance, Ducktape};
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui_kit::App;
 
+/// What the item shows, diffed before each native update.
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct Snapshot {
-    icon: usize,
+    /// picks the icon: online or offline
+    connected: bool,
     tooltip: String,
     labels: [String; ROWS],
 }
 
-/// network, status, sep, Open, sep, Appearance ▸ (System, Light, Dark), sep, Quit
+// The menu, top to bottom, by row: network, status, sep, Open, sep,
+// Appearance ▸ (System, Light, Dark), sep, Quit. A click comes back as
+// the row's index.
+const NETWORK: usize = 0;
+const STATUS: usize = 1;
+const OPEN: usize = 3;
+const APPEARANCE: usize = 5;
+const SYSTEM: usize = 6;
+const LIGHT: usize = 7;
+const DARK: usize = 8;
+const QUIT: usize = 10;
 const ROWS: usize = 11;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const SEPARATORS: [usize; 3] = [2, 4, 9];
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const SUBMENU: (usize, [usize; 3]) = (5, [6, 7, 8]);
-const QUIT: usize = 10;
+const SUBMENU: (usize, [usize; 3]) = (APPEARANCE, [SYSTEM, LIGHT, DARK]);
 /// every row the menu lists directly: not the submenu's children, not Quit
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-const TOP_LEVEL: [usize; 7] = [0, 1, 2, 3, 4, 5, 9];
+const TOP_LEVEL: [usize; 7] = [NETWORK, STATUS, 2, OPEN, 4, APPEARANCE, 9];
+/// the two rows of status text: listed, not clickable
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+const STATUS_ROWS: [usize; 2] = [NETWORK, STATUS];
 
 impl Snapshot {
     fn of(state: &Ducktape) -> Self {
         let mut labels: [String; ROWS] = std::array::from_fn(|_| String::new());
-        labels[0] = match state.network.is_empty() {
+        labels[NETWORK] = match state.network.is_empty() {
             true => "No network".into(),
             false => state.network.clone(),
         };
-        labels[1] = state.status.clone();
-        labels[3] = "Open Ducktape".into();
-        labels[5] = "Appearance".into();
+        labels[STATUS] = state.status.clone();
+        labels[OPEN] = "Open Ducktape".into();
+        labels[APPEARANCE] = "Appearance".into();
         for (row, label, mode) in [
-            (6, "System", Appearance::System),
-            (7, "Light", Appearance::Light),
-            (8, "Dark", Appearance::Dark),
+            (SYSTEM, "System", Appearance::System),
+            (LIGHT, "Light", Appearance::Light),
+            (DARK, "Dark", Appearance::Dark),
         ] {
             labels[row] = match state.appearance == mode {
                 true => format!("✓ {label}"),
@@ -45,8 +59,8 @@ impl Snapshot {
         }
         labels[QUIT] = "Quit Ducktape".into();
         Self {
-            icon: usize::from(state.connected),
-            tooltip: format!("{} — {}", labels[0], labels[1]),
+            connected: state.connected,
+            tooltip: format!("{} — {}", labels[NETWORK], labels[STATUS]),
             labels,
         }
     }
@@ -54,10 +68,10 @@ impl Snapshot {
 
 pub fn message(row: usize) -> Option<Message> {
     match row {
-        3 => Some(Message::TrayOpen),
-        6 => Some(Message::SetAppearance(Appearance::System)),
-        7 => Some(Message::SetAppearance(Appearance::Light)),
-        8 => Some(Message::SetAppearance(Appearance::Dark)),
+        OPEN => Some(Message::TrayOpen),
+        SYSTEM => Some(Message::SetAppearance(Appearance::System)),
+        LIGHT => Some(Message::SetAppearance(Appearance::Light)),
+        DARK => Some(Message::SetAppearance(Appearance::Dark)),
         QUIT => Some(Message::TrayQuit),
         _ => None,
     }
@@ -110,7 +124,7 @@ impl Tray {
 
 #[cfg(target_os = "macos")]
 mod native {
-    use super::{ROWS, SEPARATORS, SUBMENU, Snapshot, TOP_LEVEL};
+    use super::{ROWS, SEPARATORS, STATUS_ROWS, SUBMENU, Snapshot, TOP_LEVEL};
     use futures::channel::mpsc::UnboundedSender;
     use tray_icon::{
         Icon, TrayIcon, TrayIconBuilder,
@@ -190,7 +204,7 @@ mod native {
             rows[parent] = Some(Row::Submenu(submenu));
             for row in TOP_LEVEL.into_iter().chain([super::QUIT]) {
                 if rows[row].is_none() {
-                    rows[row] = Some(Row::Item(item(row, row >= 2)));
+                    rows[row] = Some(Row::Item(item(row, !STATUS_ROWS.contains(&row))));
                 }
             }
             let rows: Vec<Row> = rows
@@ -218,9 +232,9 @@ mod native {
             previous: Option<&Snapshot>,
             next: &Snapshot,
         ) -> Result<(), String> {
-            if previous.is_none_or(|old| old.icon != next.icon) {
+            if previous.is_none_or(|old| old.connected != next.connected) {
                 self.tray
-                    .set_icon(Some(self.icons[next.icon].clone()))
+                    .set_icon(Some(self.icons[usize::from(next.connected)].clone()))
                     .map_err(|error| error.to_string())?;
             }
             if previous.is_none_or(|old| old.tooltip != next.tooltip) {
@@ -244,15 +258,22 @@ mod tests {
 
     #[test]
     fn the_menu_routes_open_appearance_and_quit() {
-        assert!(matches!(message(3), Some(Message::TrayOpen)));
+        assert!(matches!(message(OPEN), Some(Message::TrayOpen)));
         assert!(matches!(message(QUIT), Some(Message::TrayQuit)));
-        for row in [0, 1, 2, 4, 5, 9] {
+        for (row, mode) in [
+            (SYSTEM, Appearance::System),
+            (LIGHT, Appearance::Light),
+            (DARK, Appearance::Dark),
+        ] {
+            assert!(matches!(message(row), Some(Message::SetAppearance(set)) if set == mode));
+        }
+        for row in [NETWORK, STATUS, 2, 4, APPEARANCE, 9] {
             assert!(message(row).is_none());
         }
         let (mut app, _) = Ducktape::boot();
         app.network = "dognet".into();
         let snapshot = Snapshot::of(&app);
-        assert_eq!(snapshot.labels[0], "dognet");
-        assert_eq!(snapshot.icon, 0);
+        assert_eq!(snapshot.labels[NETWORK], "dognet");
+        assert!(!snapshot.connected);
     }
 }

@@ -11,6 +11,13 @@
 //! view's manifest names its tab, and what a view asks of the app is the
 //! kernel contract (`kernel`) alone; its props are the session basics every
 //! view gets.
+//!
+//! This file is also the submodules' PRELUDE: `guest`, `roster`, `seat`,
+//! `widget`, `input` and `display_diagnostics` open with `use super::*;`,
+//! so every private `use` below (`Guest`, `Connection`, `Mounted`, `Slot`,
+//! `Instant`, `wire`, the wasmtime types...) and every constant is theirs
+//! too. A name a child uses without importing it comes from here. `kernel`,
+//! `clipboard`, `notify` and `store` import what they need by name.
 
 mod clipboard;
 mod guest;
@@ -75,7 +82,8 @@ impl WindowKey {
     }
 }
 
-/// What a module view asked the app itself to do, off its `host.*` methods.
+/// What a view asked the app itself to do: `host.badge`, `link.open`, or a
+/// `notify.post` that changed the centre.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
@@ -84,6 +92,9 @@ pub enum Intent {
     OpenLink(String),
     /// A notice was posted: the bell and the permission bar redraw.
     Notified,
+    /// A view was seated in its tab, first or after a new deployment: its
+    /// minimum width is known, and the desk widens a window under it.
+    Seated,
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a
@@ -111,8 +122,6 @@ const MAX_OP_BYTES: usize = 16 << 20;
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 
-// ---------- the node seat ----------
-
 /// The route a link asked of each module's view, waiting for that view's
 /// first `host.route` subscriber. One per module: a newer link replaces an
 /// older one no view has read yet.
@@ -138,6 +147,8 @@ pub(crate) fn take_route(module: &str) -> Option<String> {
         .remove(module)
 }
 
+/// Leaks one copy of each distinct module name, so a name can be the
+/// `&'static str` key the registry, the rail and the routes use.
 pub(crate) fn intern(id: &str) -> &'static str {
     static INTERNED: OnceLock<Mutex<std::collections::BTreeSet<&'static str>>> = OnceLock::new();
     let mut interned = INTERNED
@@ -154,14 +165,73 @@ pub(crate) fn intern(id: &str) -> &'static str {
 
 mod display_diagnostics;
 
-pub(crate) mod input;
-mod pictures;
+pub(crate) mod pictures;
 
-/// The name a view's manifest gives it and the capabilities it declares;
-/// empty for one whose manifest cannot be read (`compile` refuses those
-/// before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>) {
+/// The name a view's manifest gives it, the capabilities it declares and
+/// the narrowest it is laid out; empty and 0 for one whose manifest cannot
+/// be read (`compile` refuses those before a seat).
+fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32) {
     view_wire::manifest::read_manifest(bytes)
-        .map(|manifest| (manifest.name, manifest.capabilities))
+        .map(|manifest| (manifest.name, manifest.capabilities, manifest.min_width))
         .unwrap_or_default()
+}
+
+/// The narrowest `module`'s view is laid out, in px, once one of its seats
+/// holds it drawn; `None` while it loads, failed, or has none.
+pub(crate) fn min_width(module: &str) -> Option<f32> {
+    let registry = registry().lock().expect("module views");
+    registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .find_map(
+            |(_, seat)| match &seat.lock().expect("module view lock").slot {
+                Slot::Ready(guest) => Some(guest.min_width as f32),
+                _ => None,
+            },
+        )
+}
+
+/// Every seat of `module` holds a drawn view whose manifest says
+/// `min_width`, or, with none yet, one is preloaded for its first pane: a
+/// WAT view with the five exports whose every tick draws an empty tree.
+#[cfg(test)]
+pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
+    let frame = wire::encode(&wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    });
+    let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+    let tick = wire::abi::pack(65536, frame.len() as u32);
+    let code = Module::new(
+        guest::engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (data (i32.const 65536) "{bytes}")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) i64.const {tick})
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
+    )
+    .unwrap();
+    let ready = || {
+        let mut guest = Guest::instantiate(module, &code, module).unwrap();
+        guest.min_width = min_width;
+        Slot::Ready(Box::new(guest))
+    };
+    let mut registry = registry().lock().unwrap();
+    let mut seats: Vec<_> = registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .map(|(_, seat)| seat.clone())
+        .collect();
+    if seats.is_empty() {
+        seats.push(Mounted::seat());
+        registry.insert((module, 0), seats[0].clone());
+    }
+    for seat in seats {
+        seat.lock().unwrap().slot = ready();
+    }
 }

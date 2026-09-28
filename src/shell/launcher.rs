@@ -13,6 +13,7 @@
 
 use super::ink::{self, *};
 use super::*;
+use facts::Facts;
 use figure::Figure;
 
 /// The launcher window's size; it does not change.
@@ -32,34 +33,53 @@ const _: () = assert!(LAUNCHER_SIZE.0 >= FIGURE_W + COLUMN_MIN);
 /// A quiet link above a screen: its element id, its words, what it does.
 pub(super) type Back = (&'static str, &'static str, fn() -> Message);
 
+/// What a launcher screen puts in the frame (`DesktopWindow::launcher`).
+pub(super) struct LauncherScreen {
+    /// The reading column's element id: the screen's name to the AX tree.
+    pub(super) id: &'static str,
+    /// A tighter column (`padding-top: 24px; gap: 16px`) for a long body
+    /// (the phrase's 24 words).
+    pub(super) tight: bool,
+    /// The drawing on the left.
+    pub(super) figure: Figure,
+    /// The mono line under the drawing.
+    pub(super) caption: String,
+    /// The small link above the column, if the screen has a way back.
+    pub(super) back: Option<Back>,
+    /// The step tag over the headline: `[02 / 03] Key`.
+    pub(super) label: String,
+    /// The `<h1>`.
+    pub(super) headline: String,
+    /// The paragraph under it.
+    pub(super) lead: Option<String>,
+    /// The screen's own controls, after the lead.
+    pub(super) body: Vec<gpui_kit::AnyElement>,
+}
+
 impl DesktopWindow {
-    /// One launcher screen, the canvas's frame: on the left a 380px panel,
+    /// One launcher screen in the canvas's frame: on the left a 380px panel,
     /// `padding: 20px; gap: 12px`, the drawing on `surface` and its mono
-    /// `caption`; on the right the reading column, `padding: 32px 40px 0;
-    /// gap: 22px` — a small back link, then `[step]`, the `<h1>` and the
-    /// lead (`gap: 18px`), then the screen's own `body`. A `tight` column
-    /// (`padding-top: 24px; gap: 16px`) gives a long body the room (the
-    /// phrase's 24 words).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one frame, every screen fills it"
-    )]
+    /// caption; on the right the reading column, `padding: 32px 40px 0;
+    /// gap: 22px`.
     pub(super) fn launcher(
         &self,
-        id: &'static str,
-        tight: bool,
-        figure: Figure,
-        caption: String,
-        back: Option<Back>,
-        label: String,
-        headline: String,
-        lead: Option<String>,
-        body: Vec<gpui_kit::AnyElement>,
+        screen: LauncherScreen,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        let LauncherScreen {
+            id,
+            tight,
+            figure,
+            caption,
+            back,
+            label,
+            headline,
+            lead,
+            body,
+        } = screen;
         use gpui_kit::*;
-        let state = self.model.read(cx).state.clone_facts();
+        let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
         // The canvas draws a title bar. macOS lends the window's own
         // (transparent, the traffic lights in it); elsewhere the system's
@@ -111,7 +131,7 @@ impl DesktopWindow {
                         cx,
                     )),
             )
-            .child(tag(caption, &ink));
+            .child(tag("caption", caption, &ink));
         let reading =
             div()
                 .id(id)
@@ -132,9 +152,9 @@ impl DesktopWindow {
                         .flex()
                         .flex_col()
                         .gap(px(18.))
-                        .child(tag(label, &ink))
-                        .child(h1(headline, &ink))
-                        .children(lead.map(|text| ink::lead(text, &ink))),
+                        .child(tag("step", label, &ink))
+                        .child(h1("headline", headline, &ink))
+                        .children(lead.map(|text| ink::lead("lead", text, &ink))),
                 )
                 .children(body);
         div()
@@ -160,9 +180,11 @@ impl DesktopWindow {
             .into_any_element()
     }
 
-    /// `<label>` over its control, `gap: 8px`, and a line under it.
+    /// `<label>` over its control, `gap: 8px`, and a line under it; `id`
+    /// is the label's.
     pub(super) fn field(
         &self,
+        id: impl Into<gpui_kit::ElementId>,
         text: impl Into<gpui_kit::SharedString>,
         control: gpui_kit::AnyElement,
         below: Option<gpui_kit::AnyElement>,
@@ -173,8 +195,43 @@ impl DesktopWindow {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(label(text, ink))
+            .child(label(id, text, ink))
             .child(control)
             .children(below)
     }
+}
+
+/// The canvas's button row: `display: flex; gap: 12px; margin-top: 4px`.
+pub(super) fn buttons(children: impl IntoIterator<Item = gpui_kit::AnyElement>) -> gpui_kit::Div {
+    use gpui_kit::*;
+    div()
+        .flex()
+        .flex_wrap()
+        .gap(px(12.))
+        .mt(px(4.))
+        .children(children)
+}
+
+/// The canvas's closing links: `gap: 10px; padding-top: 20px;
+/// border-top: 1px solid line`.
+pub(super) fn closing(
+    children: impl IntoIterator<Item = gpui_kit::AnyElement>,
+    ink: &Ink,
+) -> gpui_kit::Div {
+    use gpui_kit::*;
+    div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(10.))
+        .pt(px(20.))
+        .border_t_1()
+        .border_color(ink.line)
+        .children(children)
+}
+
+/// The node reached, as the drawing's caption: "testkit · 127.0.0.1:8844".
+pub(super) fn node_caption(state: &Facts) -> String {
+    let host = crate::backend::host_of(&state.connected_rpc);
+    format!("{} · {host}", state.network)
 }

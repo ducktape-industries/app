@@ -1,6 +1,7 @@
-//! The app's state, and what moves it. Small on purpose: a node to reach,
-//! a key to unlock, the programs the node runs, and which one is open.
-//! Everything a person does inside a view is the view's.
+//! The app's own state (`Ducktape`), every message that moves it
+//! (`AppMessage`), and the per-step sign-in structs. The reducer is
+//! update.rs and the per-area files beside it; the shell draws the state.
+//! Everything a person does inside a view is the view's, not here.
 
 use std::collections::BTreeMap;
 
@@ -9,7 +10,8 @@ use crate::runtime::Intent;
 use crate::shell::WindowKey;
 
 /// Unanswered status polls in a row before the node counts as lost: one
-/// miss is a hiccup, two (four seconds) is a node that went away.
+/// miss is a hiccup, two (one `STATUS_EVERY` each, update.rs) is a node
+/// that went away.
 pub(crate) const LOST_AFTER: u32 = 2;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,11 +21,11 @@ pub(crate) enum Appearance {
     Dark,
 }
 
-/// What is open over the desk: one at a time, and it keeps the desk's
-/// keys while it is.
+/// What is open over the desk: one at a time. While it is, the desk's
+/// shortcuts are off and Escape closes it (shell/keys.rs).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Overlay {
-    /// ⌘K.
+    /// The command palette, ⌘K.
     Spotlight,
     /// "Add a device…".
     Approve,
@@ -37,11 +39,11 @@ pub(crate) enum Overlay {
 /// A menu hanging off the menu bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Popover {
-    /// The breathing dot: how the node is doing.
+    /// Node status, off the breathing dot.
     Node,
     /// The account's name: who is signed in, and Lock.
     Account,
-    /// The bell: the notification centre.
+    /// The notification centre, off the bell.
     Notifications,
 }
 
@@ -167,10 +169,10 @@ pub(crate) struct Account {
     /// "From another device": the code this device shows while it waits
     /// for one on the account to approve it.
     pub(crate) link_code: String,
-    pub(crate) link_task: Option<view_wire::task::Handle>,
+    pub(crate) link_task: Option<crate::ui::task::Handle>,
     /// A passkey ceremony in flight (the browser has it); dropping the
     /// handle cancels it.
-    pub(crate) passkey_task: Option<view_wire::task::Handle>,
+    pub(crate) passkey_task: Option<crate::ui::task::Handle>,
     /// Set once the person picks "Use a phone instead"; the ceremony reads it.
     pub(crate) passkey_phone: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The QR URL of the touch in flight (its callback is the relay slot).
@@ -206,19 +208,29 @@ impl std::fmt::Debug for Account {
     }
 }
 
+/// Everything the app itself knows: the node reached, this device's key
+/// and its account, which screen the console shows, what is open over the
+/// desk, and each native window's panes. The reducer (update.rs and the
+/// files beside it) moves it; the shell draws it. Nothing in here belongs
+/// to a program: a view keeps its own.
 pub struct Ducktape {
     pub(crate) appearance: Appearance,
+    /// The OS says dark; counts under `Appearance::System`.
     pub(crate) system_dark: bool,
     /// The console window's screen.
     pub(crate) stage: Stage,
-    /// The node URL being typed.
+    /// The node URL being typed, or tried.
     pub(crate) endpoint: String,
+    /// The typed URL refused before it was tried ([`backend::ENDPOINT_REFUSAL`]).
     pub(crate) endpoint_error: String,
     pub(crate) recent_endpoints: Vec<backend::RecentEndpoint>,
-    /// The node reached: its origin and the network it serves.
+    /// The node reached, by origin; empty off every network.
     pub(crate) connected_rpc: String,
+    /// The network that node serves.
     pub(crate) network: String,
-    /// The chain links name, `<network>#<salt>` ([`ducklink::ChainId`]).
+    /// The chain id `duck://` links carry, `<network>#<salt>`
+    /// ([`ducklink::ChainId`]); the network's name alone when its genesis
+    /// yields none. Views get it as `chain_id`.
     pub(crate) chain: String,
     /// Each native window's panes: which view is where, their frames and
     /// focus. The console's is `console_win`'s.
@@ -230,9 +242,14 @@ pub struct Ducktape {
     /// The network shares its name with another chain this device met
     /// first: its keys are its own, and the sign-in screen says so.
     pub(crate) other_chain: bool,
+    /// A node answered and is polled; stays true through a switch in flight.
     pub(crate) connected: bool,
+    /// A `ConnectTo` is out and not yet answered.
     pub(crate) connecting: bool,
+    /// The status line as drawn: "Not connected", "Reaching …",
+    /// "Connected · block N", "Reconnecting…".
     pub(crate) status: String,
+    /// The node's height; -1 until one answered.
     pub(crate) height: i64,
     /// Status polls gone unanswered in a row; from [`LOST_AFTER`] on the
     /// footer says the node is not answering (the poll keeps running) until
@@ -254,13 +271,18 @@ pub struct Ducktape {
     pub(crate) welcome: bool,
     /// The Settings page shown, kept while Settings is closed.
     pub(crate) settings_page: SettingsPage,
-    /// The drawings in characters turn; off keeps them on their first frame.
+    /// Animations: the figures tumble on their own and the status dot
+    /// pulses. Off, a figure turns only by hand and the dot holds still.
     pub(crate) motion: bool,
+    /// The last connect attempt's failure, drawn under the address field;
+    /// cleared by the next keystroke or try. shell/windows.rs also parks a
+    /// pop-out that would not open here, so it is only seen on that screen.
     pub(crate) error: String,
     /// The seated key's public half, hex; empty while locked.
     pub(crate) signer_key: String,
-    /// The account the seated key belongs to, as `(number, name)`: `None`
-    /// until the node was asked, `Some(None)` while the key holds none.
+    /// The account the seated key belongs to. Three states: `None`, the
+    /// node was not asked (or not answered) yet; `Some(None)`, it answered
+    /// and the key holds no account; `Some(Some((number, name)))`, found.
     pub(crate) account: Option<Option<(u64, String)>>,
     /// A password-locked key file is here for `network` and this device's
     /// OS-kept key is not: the key screen asks for its password, once, and
@@ -270,16 +292,32 @@ pub struct Ducktape {
     /// failure, and the device-approval dialog. Leaving a network drops it
     /// whole.
     pub(crate) sign_in: SignIn,
-    /// The program whose view is open.
+    /// The program in front: the focused pane's, or the one just opened.
+    /// The bar highlights it; an untouched console desk opens it.
     pub(crate) active: Option<&'static str>,
+    /// Each view's unread count (`host.badge`), on its tab in the bar;
+    /// a count of 0 or less takes it off.
     pub(crate) badges: BTreeMap<&'static str, i64>,
+    /// The one-line notice up, empty when none.
     pub(crate) toast: String,
+    /// `ToastTick`s since the toast was set; it clears itself past 12.
     pub(crate) toast_age: i64,
+    /// The main native window, once opened; the launcher and the desk both
+    /// live in it.
     pub(crate) console_win: Option<WindowKey>,
+    /// The native window with focus, if one of ours has it. Nothing reads
+    /// it yet.
     pub(crate) focused_win: Option<WindowKey>,
+    /// ⌘ (ctrl off macOS) is down, kept on every modifier change. Nothing
+    /// reads it yet.
     pub(crate) cmd_held: bool,
+    /// Bumped by every connect attempt and by Disconnect: a `Connected` or
+    /// `ConnectFailed` stamped with an older one is not this attempt's.
     pub(crate) connect_generation: u64,
-    pub(crate) connect_task: Option<view_wire::task::Handle>,
+    /// The attempt in flight; dropping it aborts the request.
+    pub(crate) connect_task: Option<crate::ui::task::Handle>,
+    /// Seconds since launch, one `WallTick` each; `block_seen` is read
+    /// against it.
     pub(crate) wall_now: i64,
 }
 
@@ -287,7 +325,11 @@ pub struct Ducktape {
 /// the step's failure and busy mark, and the "Add a device…" dialog.
 #[derive(Default)]
 pub(crate) struct SignIn {
+    /// The failure the current sign-in step shows, whichever step: the
+    /// key, a phrase, the account, a passkey, "Add a device…". Cleared
+    /// by the next keystroke or try.
     pub(crate) unlock_error: String,
+    /// A sign-in call is out (any step's); a second submit is ignored.
     pub(crate) unlock_busy: bool,
     /// This device's key is being opened (or made) for the network reached.
     pub(crate) seating: bool,
@@ -443,7 +485,7 @@ pub(crate) enum AppMessage {
 impl Ducktape {
     /// The state at launch, and the first thing to do: reach the node last
     /// used, if there was one.
-    pub(crate) fn boot() -> (Self, view_wire::Task<AppMessage>) {
+    pub(crate) fn boot() -> (Self, crate::ui::task::Task<AppMessage>) {
         let recent = backend::recent_endpoints();
         let endpoint = recent
             .first()
@@ -496,8 +538,8 @@ impl Ducktape {
             .ok()
             .or_else(|| (!state.recent_endpoints.is_empty()).then(|| endpoint.clone()))
         {
-            Some(endpoint) => view_wire::Task::done(AppMessage::ConnectTo(endpoint)),
-            None => view_wire::Task::none(),
+            Some(endpoint) => crate::ui::task::Task::done(AppMessage::ConnectTo(endpoint)),
+            None => crate::ui::task::Task::none(),
         };
         (state, first)
     }
