@@ -186,7 +186,8 @@ impl ViewTree {
     /// The one aria mapper: `node`'s `Interactivity` as assistive
     /// technology receives it, on the element a renderer built. Role,
     /// focusable, the author id, every `aria.*` gpui has a setter for, the
-    /// rest in one `a11y::Patch`, then the guest focus handle (made once per
+    /// rest in one `a11y::Patch`, each advertised action routed back as
+    /// `Event::A11yAction`, then the guest focus handle (made once per
     /// id, kept in `guest_focus_targets`), the rest of the interactivity
     /// through `interactivity::apply`, and `on_click`. A picture with no role
     /// takes `accessible`'s (a labelled one is an Image); a roled node with
@@ -304,6 +305,18 @@ impl ViewTree {
             ..Default::default()
         }
         .on(element);
+        // an action the view advertised goes back to it on the route it
+        // named; every custom action shares CustomAction's, told apart by
+        // its id in the data
+        for &(action, handler) in &aria.actions {
+            let tree = cx.entity().downgrade();
+            element = element.on_a11y_action(action, move |data, _, cx| {
+                let data = data.cloned();
+                let _ = tree.update(cx, |_, cx| {
+                    cx.emit(wire::Event::A11yAction { handler, data })
+                });
+            });
+        }
         let focus_handle = interactivity.focus_handle.map(|id| {
             self.guest_focus_targets
                 .entry(id)

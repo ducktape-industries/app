@@ -1,5 +1,6 @@
 //! Regression tests for the AX door's editor path: `perform_by_id` on a
-//! nested editor must reach the guest's own document.
+//! nested editor must reach the guest's own document; and an action a view
+//! advertises reaches the view.
 
 use super::*;
 use crate::editor::wire::{EditorStore, seed_editor_text};
@@ -139,4 +140,63 @@ fn ax_type_on_a_nested_editor_reaches_the_guests_document(cx: &mut gpui_kit::Tes
 #[gpui_kit::test]
 fn ax_set_value_on_a_nested_editor_reaches_the_guests_document(cx: &mut gpui_kit::TestAppContext) {
     ax_action_reaches_the_guests_document(cx, "set_value");
+}
+
+/// A view's stepper advertising increment, decrement and one custom
+/// action: the door offers the two it has words for, `/act` performs them,
+/// and each request, the custom one too, reaches the view on the route it
+/// named, with its data (AX-116).
+#[gpui_kit::test]
+fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::accesskit::Action as A;
+    cx.update(gpui_kit::init);
+    let mut stepper = container("stepper", Vec::new());
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut stepper {
+        interactivity.role = Some(Role::SpinButton);
+        interactivity.aria.label = Some("Count".into());
+        interactivity.aria.numeric_value = Some(3.);
+        interactivity.aria.actions =
+            vec![(A::Increment, 7), (A::Decrement, 8), (A::CustomAction, 9)];
+        interactivity.aria.custom_actions = vec![(4, "Reset".into())];
+    }
+    let root = container("chat-viewport", vec![stepper]);
+    let window = cx.open_window(size(px(200.), px(120.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            if let wire::Event::A11yAction { handler, data } = event {
+                seen.borrow_mut().push((*handler, data.clone()));
+            }
+        })
+    });
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let node = snapshot("t", window, false)
+            .into_iter()
+            .find(|node| node.role == "SpinButton")
+            .expect("the stepper is in the tree");
+        assert_eq!(node.actions, ["increment", "decrement"]);
+        for word in ["increment", "decrement"] {
+            assert!(perform_by_id("t", window, cx, &node.id, word, ""));
+            window.render_frame(cx);
+        }
+        window.dispatch_a11y_action(
+            ActionRequest {
+                action: A::CustomAction,
+                target_tree: TreeId::ROOT,
+                target_node: node.node,
+                data: Some(ActionData::CustomAction(4)),
+            },
+            cx,
+        );
+    });
+    assert_eq!(
+        *events.borrow(),
+        [(7, None), (8, None), (9, Some(ActionData::CustomAction(4)))]
+    );
 }
