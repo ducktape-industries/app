@@ -39,6 +39,12 @@ DUCKTAPE_VIEWS_DIR=/path/to/views cargo run -p ducktape-app     # a view develop
 
 ## Layout
 
+New to the code? Start with [ARCHITECTURE.md](ARCHITECTURE.md): the map of
+`src/`, the life of a view and of a request, the threads, and the glossary
+of the app's house words. The plans for accessibility and performance
+tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
+
+
 | Path | What |
 |---|---|
 | `src/backend/noded.rs` | the node's `/v1` wire and the signed frame, mirrored from the kernel branch |
