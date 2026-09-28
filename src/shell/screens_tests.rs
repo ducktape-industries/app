@@ -172,6 +172,26 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
         phrase["value"], "•••",
         "recovery phrase leaked into the AX tree: {phrase}"
     );
+    // a Label is named by its value now: no node anywhere in the tree may
+    // carry the words, not the field's own text either
+    assert!(
+        !nodes.to_string().contains("abandon"),
+        "recovery phrase leaked somewhere in the AX tree: {nodes}"
+    );
+
+    // The new key's sheet: its words are the sheet's name, masked; no other
+    // node carries them.
+    model.update(cx, |model, _| {
+        model.state.stage = Stage::Phrase(crate::ui::Phrase {
+            words: crate::Secret::from(String::from("canoe pond forest")),
+            ..Default::default()
+        });
+    });
+    let nodes = native.update(draw);
+    assert!(
+        !nodes.to_string().contains("canoe"),
+        "new recovery phrase leaked into the AX tree: {nodes}"
+    );
 }
 
 /// The key and the account are two steps: the key screen is only about

@@ -339,7 +339,7 @@ mod tests {
     /// AX-121's control boundary: a field's border, a switch off, the
     /// segmented row's frame.
     #[test]
-    #[ignore = "a look change awaiting the owner (docs/ax.md §6 question 1): `strong` reads 1.56:1 light, 1.66:1 dark"]
+    #[ignore = "strong border is 1.56:1/1.66:1 against the page; owner keeps the look (ax.md §6 Q1)"]
     fn a_field_border_reads_at_three_to_one() {
         reach(3., |ink| vec![("a field's border", ink.strong, ink.bg)]);
     }
