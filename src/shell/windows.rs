@@ -1,3 +1,7 @@
+//! OS windows: where a new one goes (`cascade`, `centered`, `unseated`),
+//! how a `DesktopWindow` and the `Desktop` are made, and how the model
+//! opens a window (`Desktop::open_window`).
+
 use super::*;
 use gpui_kit::{Bounds, Pixels, Size, point, px, size};
 
@@ -120,6 +124,9 @@ impl Desktop {
         }
     }
 
+    /// Opens the OS window for `key` (deferred: the caller is mid-update)
+    /// and remembers its handle and view. On failure a pane on its way
+    /// there goes back to the desk and the model hears the window closed.
     pub(super) fn open_window(
         &mut self,
         key: WindowKey,

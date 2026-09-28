@@ -11,6 +11,13 @@
 //! view's manifest names its tab, and what a view asks of the app is the
 //! kernel contract (`kernel`) alone; its props are the session basics every
 //! view gets.
+//!
+//! This file is also the submodules' PRELUDE: `guest`, `roster`, `seat`,
+//! `widget`, `input` and `display_diagnostics` open with `use super::*;`,
+//! so every private `use` below (`Guest`, `Connection`, `Mounted`, `Slot`,
+//! `Instant`, `wire`, the wasmtime types...) and every constant is theirs
+//! too. A name a child uses without importing it comes from here. `kernel`,
+//! `clipboard`, `notify` and `store` import what they need by name.
 
 mod clipboard;
 mod guest;
@@ -75,7 +82,8 @@ impl WindowKey {
     }
 }
 
-/// What a module view asked the app itself to do, off its `host.*` methods.
+/// What a view asked the app itself to do: `host.badge`, `link.open`, or a
+/// `notify.post` that changed the centre.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
@@ -111,8 +119,6 @@ const MAX_OP_BYTES: usize = 16 << 20;
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
 
-// ---------- the node seat ----------
-
 /// The route a link asked of each module's view, waiting for that view's
 /// first `host.route` subscriber. One per module: a newer link replaces an
 /// older one no view has read yet.
@@ -138,6 +144,8 @@ pub(crate) fn take_route(module: &str) -> Option<String> {
         .remove(module)
 }
 
+/// Leaks one copy of each distinct module name, so a name can be the
+/// `&'static str` key the registry, the rail and the routes use.
 pub(crate) fn intern(id: &str) -> &'static str {
     static INTERNED: OnceLock<Mutex<std::collections::BTreeSet<&'static str>>> = OnceLock::new();
     let mut interned = INTERNED
