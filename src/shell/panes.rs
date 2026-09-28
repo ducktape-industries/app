@@ -137,7 +137,7 @@ impl DesktopWindow {
         use gpui_kit::*;
         let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
         let layout = self.layout(cx);
-        let moved = std::mem::take(&mut self.panes_moved);
+        let moved = self.keys_move(&layout, cx);
         if layout.panes.is_empty() {
             return self.empty_desk(moved, &ink, window, cx);
         }
@@ -191,6 +191,29 @@ impl DesktopWindow {
             stage = stage.child(self.place_pane(index, &layout, contents, &ink, cx));
         }
         stage.into_any_element()
+    }
+
+    /// Whether the keys go to the window in front on this draw: another
+    /// came there, whoever brought it (a key, the bar, the model), or this
+    /// window moved its panes. Not while a dialog over the desk holds them;
+    /// once it closes, and then to the new front, not back to what had
+    /// them when it opened.
+    fn keys_move(&mut self, layout: &layout::Layout, cx: &gpui_kit::App) -> bool {
+        use crate::Overlay::{Approve, Settings, Spotlight};
+        let dialog = self.kind == crate::shell::WindowKind::Console
+            && matches!(
+                self.model.read(cx).state.overlay,
+                Some(Spotlight | Approve | Settings)
+            );
+        if dialog {
+            return false;
+        }
+        let front = layout.panes.get(layout.focused).map(|pane| pane.instance);
+        let turned = std::mem::replace(&mut self.front, front) != front;
+        if turned {
+            self.refocus = None;
+        }
+        std::mem::take(&mut self.panes_moved) || turned
     }
 
     /// The focus handle of the pane with `instance`, remembering what had
@@ -254,15 +277,14 @@ impl DesktopWindow {
                 });
                 view.into_any_element()
             }
+            // Help draws no field: its box keeps the keys
+            None if pane.module == layout::HELP => self.help_view(cx),
             None => {
                 // the bare window box has the keys: the field takes them
                 if focused && own.is_focused(window) {
                     self.focus_command(window, cx);
                 }
-                match pane.module == layout::HELP {
-                    true => self.help_view(cx),
-                    false => self.command_view(focused, window, cx),
-                }
+                self.command_view(focused, window, cx)
             }
         }
     }
