@@ -9,7 +9,6 @@
 //! learned is an edit the writer cannot make.
 
 use super::{EditorStore, Projection, offset, position};
-use gpui_base::StyledExt as _;
 use gpui_kit::base::input::{Textarea, TextareaState};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
@@ -314,7 +313,7 @@ impl TextEditor {
         let claimed = self
             .projection
             .as_ref()
-            .and_then(|projection| projection.options.binding.as_ref())
+            .and_then(|projection| projection.binding.as_ref())
             .is_some_and(|binding| {
                 binding
                     .claims
@@ -405,16 +404,6 @@ impl TextEditor {
 impl Render for TextEditor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync(window, cx);
-        let options = self
-            .projection
-            .as_ref()
-            .map(|projection| projection.options.clone())
-            .unwrap_or_default();
-        let presentation_style = options
-            .presentation
-            .as_ref()
-            .map(|value| value.style.clone())
-            .unwrap_or_default();
         let accessible = crate::render::Accessible {
             value: Some(self.input.read(cx).value().to_string()),
             ..self.accessible.clone()
@@ -426,7 +415,6 @@ impl Render for TextEditor {
             .key_context(GUEST_EDITOR_CONTEXT)
             .relative()
             .w_full()
-            .refine_style(&presentation_style)
             // The box the guest gave, not the room the words take: a press in
             // the empty part of a card is a press on the card's writing. A
             // field asked to shrink has no empty part to press — its box IS
