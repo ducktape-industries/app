@@ -54,6 +54,38 @@ fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::Ap
     );
 }
 
+/// An assistive technology's press (AccessKit's Click) on the node whose
+/// element is `id` inside the element `within`: the path the door's
+/// `/act press` takes.
+fn press(within: &str, id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
+    draw(window, cx);
+    let named = |element: &ElementId, want: &str| matches!(element, ElementId::Name(name) if name.as_ref() == want);
+    let target = window
+        .a11y_tree()
+        .unwrap()
+        .nodes
+        .iter()
+        .find_map(|(node, _)| {
+            window
+                .a11y_element_id(*node)
+                .is_some_and(|path| {
+                    path.last().is_some_and(|element| named(element, id))
+                        && path.iter().any(|element| named(element, within))
+                })
+                .then_some(*node)
+        })
+        .unwrap_or_else(|| panic!("missing AX control {id} in {within}"));
+    window.dispatch_a11y_action(
+        ActionRequest {
+            action: Action::Click,
+            target_tree: TreeId::ROOT,
+            target_node: target,
+            data: None,
+        },
+        cx,
+    );
+}
+
 /// The notification centre is one per process: the test that posts to it
 /// and the tests that draw it and move the keys through it take turns, or
 /// a row appears or goes under a walk.

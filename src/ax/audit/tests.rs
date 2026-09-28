@@ -217,6 +217,37 @@ fn ax_012_a_composites_rows_are_reached_through_it() {
     assert_eq!(fails(&report, "AX-012"), ["w:b", "w:c"]);
 }
 
+/// A desk window without the keys: its rows are reached by the chord its
+/// box names, which hands that window the keys. The shell's own reading: a
+/// view's row answers to view_wire::audit, and a control's chord presses the
+/// control, handing nothing the keys.
+#[test]
+fn ax_012_a_shell_row_is_reached_by_the_chord_its_window_names() {
+    let row = |id, parent: &str| {
+        let mut row = node(id, "ListBoxOption", id);
+        row.actions = vec!["press"];
+        row.more.parent = Some(format!("w:{parent}"));
+        row
+    };
+    let mut window = node("window", "Group", "Empty");
+    window.more.keyboard_shortcut = Some("Ctrl 2".into());
+    let bare = node("bare", "Group", "Empty");
+    let mut search = button("search", "Search");
+    search.more.keyboard_shortcut = Some("Ctrl K".into());
+    let mut in_view = row("v", "window");
+    in_view.scope = "w/chat".into();
+    let report = one(vec![
+        window,
+        row("a", "window"),
+        in_view,
+        bare,
+        row("b", "bare"),
+        search,
+        row("c", "search"),
+    ]);
+    assert_eq!(fails(&report, "AX-012"), ["w:b", "w:c", "w:v"]);
+}
+
 #[test]
 fn ax_013_status_and_alert_are_named() {
     let report = one(vec![
