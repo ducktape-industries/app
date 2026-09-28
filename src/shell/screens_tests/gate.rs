@@ -14,6 +14,9 @@ fn booted(stage: Stage, key: bool) -> Ducktape {
     let (mut state, _) = Ducktape::boot();
     // boot reads this machine's recent nodes; the screen states set their own
     state.recent_endpoints.clear();
+    // and hands over the app's notification centre, which every test
+    // shares: a screen state gets its own
+    state.center = Default::default();
     state.stage = stage;
     if key {
         state.signer_key = "ab".into();
@@ -287,8 +290,8 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             "desk-asking",
             false,
             Box::new(|| {
-                crate::runtime::notify::center().ask_for_test("gate-asking");
                 let mut state = desk();
+                state.center.lock().ask_for_test("gate-asking");
                 state.active = Some("gate-asking");
                 state
             }),
@@ -335,7 +338,6 @@ pub(super) fn passes(native: &mut VisualTestContext, screen: &str, launcher: boo
 
 #[gpui_kit::test]
 fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
-    let _turn = notices();
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);

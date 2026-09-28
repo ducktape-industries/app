@@ -9,7 +9,7 @@ impl Ducktape {
         match message {
             Message::NotifyOpen(id) => {
                 self.close_menu();
-                let entry = crate::runtime::notify::center().open(id);
+                let entry = self.center.lock().open(id);
                 match entry {
                     Some(entry) if !entry.link.is_empty() => {
                         return self.update(Message::OpenLink(entry.link));
@@ -22,11 +22,11 @@ impl Ducktape {
                 Task::none()
             }
             Message::NotifyMarkAllRead => {
-                crate::runtime::notify::center().mark_all_read();
+                self.center.lock().mark_all_read();
                 Task::none()
             }
             Message::NotifyClearRead => {
-                crate::runtime::notify::center().clear_read();
+                self.center.lock().clear_read();
                 Task::none()
             }
             Message::NotifySettings => {
@@ -34,11 +34,11 @@ impl Ducktape {
                 self.update(Message::OpenSettings)
             }
             Message::NotifyPermission(module, permission) => {
-                crate::runtime::notify::set_permission(module, permission);
+                crate::runtime::notify::set_permission(&mut self.center.lock(), module, permission);
                 Task::none()
             }
             Message::NotifyNotNow(module) => {
-                crate::runtime::notify::not_now(module);
+                crate::runtime::notify::not_now(&mut self.center.lock(), module);
                 Task::none()
             }
             Message::SetNotifyBanners(on) => {

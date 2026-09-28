@@ -91,7 +91,10 @@ impl DesktopWindow {
             .panes
             .get(layout.focused)
             .map_or(layout::EMPTY, |pane| pane.module);
-        crate::runtime::notify::center().set_front(self.key, window.is_window_active(), focused);
+        state
+            .center
+            .lock()
+            .set_front(self.key, window.is_window_active(), focused);
         let console = self.kind == crate::shell::WindowKind::Console;
         let bar = console.then(|| self.menubar(&state, &rail, narrow, window, cx));
         let seat = self.pane_stage(window, cx);

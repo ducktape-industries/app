@@ -166,6 +166,7 @@ impl DesktopWindow {
             return self.empty_desk(moved, &ink, window, cx);
         }
         let props = self.model.read(cx).state.view_props();
+        let center = self.model.read(cx).state.center.clone();
         let this = cx.entity();
         let mut stage = div().id("panes").relative().size_full().child(
             canvas(
@@ -215,7 +216,7 @@ impl DesktopWindow {
             // Every window has a title bar, so a view owns all of its
             // rectangle: nothing floats over its corners.
             let title = self.pane_title_bar(index, &layout, &ink, window, cx);
-            let asking = (pane.is_view() && crate::runtime::notify::center().asking(pane.module))
+            let asking = (pane.is_view() && center.lock().asking(pane.module))
                 .then(|| self.permission_bar(pane.module, cx));
             let contents = [Some(title), asking, Some(view.into_any_element())]
                 .into_iter()
