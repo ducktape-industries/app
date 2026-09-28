@@ -1,24 +1,52 @@
-//! The app's side of the wire: a node's daemon ([`noded`]), the device's
-//! key and preferences ([`session`]), and where views come from ([`views`]).
-//! Nothing here names a program.
+//! Everything that crosses the process boundary. The node daemon's client
+//! ([`noded`]); the one signing key held in memory and the frames it signs
+//! ([`session`]); this device's per-network key in the OS store
+//! ([`device_key`]) and the key directory it falls back to ([`key_dir`]);
+//! the identity program's client ([`identity`]) and the two ways onto an
+//! account, a passkey ([`passkey`], through [`auth_page`], [`relay`] and
+//! [`loopback`]) or another key ([`join`]); a view's wasm out of its
+//! program's blob ([`views`]); prefs.json ([`prefs`]) and the recent-nodes
+//! list ([`endpoints`]); the app's own directories ([`app_dirs`]).
+//!
+//! No user program is named here. Two system programs are: `identity`
+//! (accounts and their keys) and `module-registry` (the roster).
 
 mod app_dirs;
+pub(crate) mod auth_page;
 pub(crate) mod device_key;
+mod endpoints;
+pub(crate) mod identity;
 pub(crate) mod join;
+mod key_dir;
+mod loopback;
 pub(crate) mod noded;
 pub(crate) mod passkey;
+mod prefs;
+mod relay;
 mod session;
 pub(crate) mod views;
 
 pub use app_dirs::app_log_path;
 pub(crate) use app_dirs::{cache_dir, config_dir, state_dir};
+pub(crate) use endpoints::{
+    DEFAULT_ENDPOINT, ENDPOINT_REFUSAL, RecentEndpoint, endpoint_origin, forget_endpoint, host_of,
+    note_endpoint, recent_endpoints,
+};
+pub(crate) use key_dir::{Keyring, bind_keyring, key_exists, keystore_root, session_key_path};
 pub(crate) use noded::{Client as RpcClient, Layer, Status as NodeStatus};
-pub(crate) use session::*;
+pub(crate) use prefs::{
+    load_appearance, load_motion, read_prefs, save_appearance, save_motion, write_prefs,
+};
+pub(crate) use session::{
+    lock_signer, next_seq, query_frame, seat_key, seated_frame, seated_key, seated_sign,
+};
 
 use std::time::Duration;
 
 /// A refusal the NODE or the PROGRAM authored, carried through with its
-/// own token; a transport failure gets the app's.
+/// own token; a transport failure gets the app's: `rpc_client` when nothing
+/// reached the node, `node_failed` when the request may have and the answer
+/// is what went missing — a write's caller must not treat the two alike.
 pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
     use noded::Error;
     match error {
@@ -29,7 +57,10 @@ pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
         Error::Failed { status, sentence } => {
             view_wire::Error::new("node_failed", format!("{status}: {sentence}"))
         }
-        Error::Transport(sentence) => view_wire::Error::new("rpc_client", sentence),
+        Error::Unreachable(sentence) => view_wire::Error::new("rpc_client", sentence),
+        Error::Transport(sentence) => {
+            view_wire::Error::new("node_failed", format!("no answer came back: {sentence}"))
+        }
     }
 }
 
@@ -52,9 +83,10 @@ pub(crate) fn user_error(message: String) -> String {
     message
 }
 
-/// A sentence for a connection attempt that never reached `origin`: the
-/// raw transport error (a reqwest string, e.g. "error sending request for
-/// url (...)") never reaches the screen.
+/// A sentence for a connection attempt that never reached `origin`. The
+/// common shapes — reqwest's "error sending request for url (...)", the
+/// connect step's own timeout — are reworded; any other text falls through
+/// [`user_error`] as it is.
 pub(crate) fn connect_error(origin: &str, message: String) -> String {
     if message.contains("error sending request") {
         return format!("Can't reach {origin}. Check the address, or that the node is running.");
@@ -69,7 +101,7 @@ pub(crate) fn connect_error(origin: &str, message: String) -> String {
 
 /// One id, unique on this device, for a record a view mints.
 pub(crate) fn fresh_id(prefix: &str) -> String {
-    format!("{prefix}-{:x}-{}", epoch_nanos(), next_sequence())
+    format!("{prefix}-{:x}-{}", epoch_nanos(), fresh_counter())
 }
 
 fn epoch_nanos() -> u128 {
@@ -79,9 +111,11 @@ fn epoch_nanos() -> u128 {
         .unwrap_or_default()
 }
 
-/// The next frame sequence this device signs with: time-ordered, so a
-/// restart never re-uses one the node has seen.
-pub(crate) fn next_sequence() -> u64 {
+/// Only ever climbs within this process (1, then the clock's microseconds
+/// or the last value plus one, whichever is later); only [`fresh_id`] mixes
+/// it in. Not a frame sequence — that is `session::next_seq`, which the
+/// node dictates.
+pub(crate) fn fresh_counter() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static LAST: AtomicU64 = AtomicU64::new(0);
     let now = (epoch_nanos() / 1_000) as u64;
@@ -142,8 +176,8 @@ mod tests {
 
     #[test]
     fn sequences_climb_and_hex_round_trips() {
-        let first = next_sequence();
-        let second = next_sequence();
+        let first = fresh_counter();
+        let second = fresh_counter();
         assert!(second > first);
         assert_eq!(
             hex_decode(&hex_encode(&[0, 255, 16])).unwrap(),

@@ -5,60 +5,45 @@ pub struct Loads {
     pub(super) _threads: Vec<std::thread::JoinHandle<()>>,
 }
 
-/// The node's deployments moved (a new block): every module-owned view
-/// whose module's active code is not the one it was drawn from is loaded
-/// again, under a new generation, and swapped in place when it is ready.
-/// One check in flight at a time; a block that lands during one is
-/// covered by the next. The loads it starts swap in place, so nobody waits
-/// on them but a test; the block stream drops them.
+/// One seat: the load state, props and retry hold-off of one view instance
+/// of one module (instance 0 is the preloaded seat no tab has claimed yet).
+/// Shared by the tab's widget on the window thread and the loader thread,
+/// which swaps a finished load in place; the tab polls it while loading.
 pub(super) struct Mounted {
-    pub(super) changes: tokio::sync::watch::Sender<()>,
     /// The connection this seat was last asked of.
     pub(super) rev: u64,
     pub(super) slot: Slot,
     pub(super) props: Option<Vec<u8>>,
     pub(super) generation: u64,
-    /// The deployment the slot answers for — the view drawn, or the empty
-    /// slot of a deployment without one — so a block moves it only when the
-    /// active code moved. A load that failed never seated anything, so it
-    /// leaves this alone and is held off by `retry` instead.
-    pub(super) hash: Option<[u8; 32]>,
-    /// A load is on its way for `generation`, and the deployment it is
-    /// after when a block named one: a block that names it again waits
-    /// for it instead of starting over.
-    pub(super) in_flight: bool,
-    /// The proposed frame this device tastes in place of the active one:
-    /// the seat's wanted hash is `tasting.or(active)`. Cleared, with a
-    /// notice, when the hash leaves the taste set — withdrawn, or
-    /// activated into the very hash the seat already draws.
-    /// The candidate a load last failed on, and when the next block may try
-    /// it again. Cleared by any load that comes back, so only a repeated
-    /// failure on the same candidate widens the gap.
+    /// The code a load last failed on, and when the next block may try it
+    /// again. Cleared by any load that comes back, so only a repeated
+    /// failure on the same code widens the gap.
     pub(super) retry: Option<Retry>,
     /// When a tab last drew this seat: a load for a seat on screen does not
     /// queue for the link.
     pub(super) shown: Option<Instant>,
 }
 
-/// A failed load's hold-off: the candidate it failed on, when the next
-/// attempt at that same candidate is due, and the gap that produced it.
+/// A failed load's hold-off: the code (the roster's blob id, as
+/// `code_digest` spells it) the load was asked for when it failed, when the
+/// next attempt at that same code is due, and the gap that produced it.
 pub(super) struct Retry {
-    pub(super) hash: Option<[u8; 32]>,
+    pub(super) code: Option<[u8; 32]>,
     pub(super) next: Instant,
     pub(super) gap: Duration,
 }
 
 impl Retry {
-    /// The hold-off after a load for `hash` failed: the gap doubles up to
-    /// `RETRY_MAX` while the same candidate keeps failing, and starts over
-    /// at `RETRY_FIRST` for a different one.
-    pub(super) fn after(previous: Option<&Retry>, hash: Option<[u8; 32]>) -> Retry {
+    /// The hold-off after a load for `code` failed: the gap doubles up to
+    /// `RETRY_MAX` while the same code keeps failing, and starts over at
+    /// `RETRY_FIRST` for a different one.
+    pub(super) fn after(previous: Option<&Retry>, code: Option<[u8; 32]>) -> Retry {
         let gap = match previous {
-            Some(previous) if previous.hash == hash => (previous.gap * 2).min(RETRY_MAX),
+            Some(previous) if previous.code == code => (previous.gap * 2).min(RETRY_MAX),
             _ => RETRY_FIRST,
         };
         Retry {
-            hash,
+            code,
             next: Instant::now() + gap,
             gap,
         }
@@ -70,13 +55,10 @@ impl Mounted {
     /// asked, under generation 0, which no load answers for.
     pub(super) fn seat() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self {
-            changes: tokio::sync::watch::channel(()).0,
             rev: 0,
             slot: Slot::Loading,
             props: None,
             generation: 0,
-            hash: None,
-            in_flight: false,
             retry: None,
             shown: None,
         }))
@@ -91,27 +73,66 @@ impl Mounted {
         }
     }
 
-    /// A retry is scheduled and not yet due.
-    pub(super) fn held_off_now(&self) -> bool {
-        self.retry
-            .as_ref()
-            .is_some_and(|retry| Instant::now() < retry.next)
+    /// Whether a roster read at `now` starts a load for this seat, given
+    /// that the program's `code` is the `same_code` the last roster listed
+    /// and the seat was `asked_of_this_node` already:
+    ///
+    /// | hold-off from a failed load | load when                              |
+    /// |-----------------------------|----------------------------------------|
+    /// | none                        | the code moved, or this node not asked |
+    /// | still running               | it is not for this very `code`         |
+    /// | its gap is up               | always: the re-attempt it promised     |
+    ///
+    /// The hold-off and `code` both name the blob the roster lists
+    /// (`Retry.code`, [`code_digest`]), so a failed view is left alone until
+    /// its gap is up and then asked for again, RETRY_FIRST's way.
+    pub(super) fn reload_due(
+        &self,
+        same_code: bool,
+        asked_of_this_node: bool,
+        code: [u8; 32],
+        now: Instant,
+    ) -> bool {
+        match &self.retry {
+            None => !(same_code && asked_of_this_node),
+            Some(held_off) if now < held_off.next => held_off.code != Some(code),
+            Some(_) => true,
+        }
     }
 
-    /// Whether a block naming `active` is still inside the hold-off a
-    /// failed load for that same candidate left behind.
-    pub(super) fn held_off(&self, active: Option<[u8; 32]>) -> bool {
-        self.retry
-            .as_ref()
-            .is_some_and(|retry| retry.hash == active && Instant::now() < retry.next)
+    /// A load for `asked_for` came back with no view: the next block leaves
+    /// that code alone until the gap is up, widened against `held_off` when
+    /// it is the same code failing again. A failure before any candidate (a
+    /// status or transport error, `hash` none) holds nothing off, and any
+    /// other code is unaffected. A view that is there stays: the failure is
+    /// the replacement's, not its own.
+    pub(super) fn load_failed(
+        &mut self,
+        module: &str,
+        held_off: Option<Retry>,
+        asked_for: Option<[u8; 32]>,
+        Unloaded {
+            hash: failed_on,
+            failure,
+        }: Unloaded,
+    ) {
+        tracing::warn!(
+            target: "ducktape::app",
+            module,
+            reason = "module_view_unloadable",
+            error = %failure,
+            "module view not loaded"
+        );
+        self.retry = Some(Retry::after(held_off.as_ref(), failed_on.and(asked_for)));
+        if !matches!(self.slot, Slot::Ready(_)) {
+            self.slot = Slot::Failed(failure);
+        }
     }
 
-    /// Opens the next generation for a load after `wanted` (None: whatever
-    /// the node holds active), and names it.
+    /// Opens the next load generation, so an older load still on its way
+    /// lands nowhere, and names it.
     pub(super) fn start(&mut self) -> u64 {
-        self.changes.send_replace(());
         self.generation += 1;
-        self.in_flight = true;
         self.generation
     }
 }
@@ -247,7 +268,6 @@ pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
         locked.slot = Slot::Loading;
-        locked.hash = None;
     }
     locked.retry = None;
     let generation = locked.start();
@@ -271,12 +291,15 @@ pub(super) fn spawn_load(
 ) -> std::thread::JoinHandle<()> {
     let loading = mounted.clone();
     std::thread::spawn(move || {
+        // the blob this load is asked for, as the roster reads compare it:
+        // a failure is held off under this, not under the view section's
+        // own hash, which never equals a blob id
+        let asked_for = listed_code(module).map(|(code, _)| code_digest(&code));
         let loaded = Guest::load(module, &asked_of, generation, &loading);
         let mut locked = loading.lock().expect("module view lock");
         if locked.generation != generation {
             return;
         }
-        locked.in_flight = false;
         // the connection lock is a leaf: read under the seat's lock, never
         // across it. A connect bumps the revision before it reaches this
         // seat, so the revision read here is the one the seat installs
@@ -287,35 +310,35 @@ pub(super) fn spawn_load(
         if from_the_node && node_since_left {
             return;
         }
-        let Mounted {
-            slot, hash, retry, ..
-        } = &mut *locked;
-        // a load that came back at all clears the hold-off; only the error
-        // arm below puts one back, widened against the one taken here
-        let held_off = retry.take();
+        // a load that came back at all clears the hold-off; only a failure
+        // puts one back, widened against the one taken here
+        let held_off = locked.retry.take();
+        let loaded = match loaded {
+            Ok(loaded) => loaded,
+            Err(unloaded) => return locked.load_failed(module, held_off, asked_for, unloaded),
+        };
+        let Mounted { slot, .. } = &mut *locked;
         match loaded {
-            Ok(Loaded::Fresh(mut guest)) => {
+            Loaded::Fresh(mut guest) => {
                 guest.installed_generation = Some(generation);
                 guest.report_display_truncation();
-                *hash = guest.hash;
                 *slot = Slot::Ready(guest);
             }
-            Ok(Loaded::Unchanged) => {
+            Loaded::Unchanged => {
                 if let Slot::Ready(guest) = slot {
                     guest.reconnect(current_rev);
                 }
             }
-            Ok(Loaded::Empty(removed)) => {
-                *hash = Some(removed);
+            Loaded::Empty(_) => {
                 *slot = Slot::Empty;
             }
             // the same tab, the same surface handle, the same host-side
             // input text and pictures: only the instance behind them moves
-            Ok(Loaded::Swap {
+            Loaded::Swap {
                 mut fresh,
                 alive,
                 ticks,
-            }) => {
+            } => {
                 let Slot::Ready(old) = slot else {
                     log_source(
                         module,
@@ -360,33 +383,9 @@ pub(super) fn spawn_load(
                 fresh.installed_generation = Some(generation);
                 fresh.report_display_truncation();
                 log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
-                *hash = fresh.hash;
                 *slot = Slot::Ready(fresh);
             }
-            Err(Unloaded {
-                hash: failed_on,
-                failure,
-            }) => {
-                tracing::warn!(
-                    target: "ducktape::app",
-                    module,
-                    reason = "module_view_unloadable",
-                    error = %failure,
-                    "module view not loaded"
-                );
-                // the next block leaves the candidate this failed on alone
-                // until the gap is up; a failure before any candidate (a
-                // status or transport error) holds nothing off, and any
-                // other deployment is unaffected
-                *retry = Some(Retry::after(held_off.as_ref(), failed_on));
-                // a view that is there stays, with its hash: the failure is
-                // the replacement's, not its own
-                if !matches!(slot, Slot::Ready(_)) {
-                    *slot = Slot::Failed(failure);
-                }
-            }
         }
-        locked.changes.send_replace(());
     })
 }
 
@@ -404,20 +403,22 @@ pub(super) enum Loaded {
         alive: Arc<()>,
         ticks: u64,
     },
-    /// The deployment (this hash) ships no view.
+    /// The deployment ships no view. Nothing reads the hash any more; it
+    /// goes when `Guest::load` (guest/lifecycle.rs) stops handing it over.
+    #[allow(dead_code)]
     Empty([u8; 32]),
 }
 
-/// A load that came back with no view, and the candidate it failed on —
-/// none when it never got as far as one — so the block check's hold-off
-/// keys on the bytes that failed, never on what the load was asked after.
+/// A load that came back with no view, and the view bytes it failed on —
+/// none when it never got as far as any, which is what tells the block
+/// check whether there is a code to hold off at all.
 pub(super) struct Unloaded {
     pub(super) hash: Option<[u8; 32]>,
     pub(super) failure: Failure,
 }
 
-/// One `view_source` line per outcome, with the same fields every time —
-/// the canary greps them.
+/// One `view_source` line per outcome, with the same fields every time:
+/// stable keys for anyone reading loads out of app.log.
 pub(super) fn log_source(
     module: &str,
     hash: Option<&[u8; 32]>,
@@ -436,21 +437,18 @@ pub(super) fn log_source(
     );
 }
 
-/// How long each stage of one module-owned load took: `status` and
-/// `fetch` are the node's answers, `compile` is cranelift, `init` the
-/// instance and its `on mount` or restore, `first_frame` the tree a
-/// replacement proves (a fresh view draws its first on the window thread),
-/// `check` the second look at the registry before the seat. `path` is
-/// `first` for a load over an empty slot, `swap` over a view drawn.
+/// How long each stage of one module-owned load took: `fetch` is the
+/// node's answer, `compile` is cranelift, `init` the instance and its `on
+/// mount` or restore, `first_frame` the tree a replacement proves (a fresh
+/// view draws its first on the window thread). `path` is `first` for a load
+/// over an empty slot, `swap` over a view drawn.
 #[derive(Default)]
 pub(super) struct LoadTiming {
     pub(super) path: &'static str,
-    pub(super) status: Duration,
     pub(super) fetch: Duration,
     pub(super) compile: Duration,
     pub(super) init: Duration,
     pub(super) first_frame: Option<Duration>,
-    pub(super) check: Duration,
 }
 
 impl LoadTiming {
@@ -469,12 +467,10 @@ impl LoadTiming {
             hash = %hash,
             path = self.path,
             outcome = state,
-            status_ms = ms(self.status),
             fetch_ms = ms(self.fetch),
             compile_ms = ms(self.compile),
             init_ms = ms(self.init),
             first_frame_ms = %first_frame,
-            check_ms = ms(self.check),
             total_ms = total,
             "view_load"
         );
@@ -498,3 +494,6 @@ pub(super) fn view_override(module: &str) -> Option<PathBuf> {
     let path = dir.join(format!("{module}_view.wasm"));
     path.is_file().then_some(path)
 }
+
+#[cfg(test)]
+mod tests;

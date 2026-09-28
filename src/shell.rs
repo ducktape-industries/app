@@ -1,6 +1,17 @@
-//! The native chrome, and nothing a network decides: a window, a screen to
-//! reach a node and unlock a key, a menu bar of whatever programs that node
-//! runs, and one seat that draws the open program's view.
+//! The native shell: every OS window the app opens, and everything drawn
+//! in one that is not a program's view. Nothing a network decides is here.
+//!
+//! `Desktop` is the one model entity: it owns the app state (`Ducktape`),
+//! runs the reducer for every message, keeps the tray in step and holds
+//! one live program view per pane. Each OS window is a `DesktopWindow`,
+//! a gpui view that draws the launcher (connect, key, account, recovery
+//! screens) until sign-in, then the desk: the menu bar and the panes
+//! floating under it, with the open overlay (⌘K, a menu, Settings) on top.
+//!
+//! The reducer's tasks run without `&mut App`, so they cannot touch a
+//! window. They ask for a native effect through the `NativeCommand` channel
+//! below; `launch::run` pumps it into `Desktop::execute` on the window
+//! thread.
 
 use crate::a11y::Control as _;
 use crate::ui::task::Task;
@@ -25,7 +36,10 @@ mod fixtures;
 pub(crate) use fixtures::render_tree_fixture;
 mod approve;
 mod command;
+mod connect;
 mod desk;
+mod empty_desk;
+mod facts;
 mod figure;
 mod help;
 mod ink;
@@ -34,7 +48,9 @@ mod launch;
 mod launcher;
 mod menubar;
 mod menus;
+mod mount;
 mod notifications;
+mod pane_drag;
 mod panes;
 #[cfg(test)]
 mod panes_tests;
@@ -42,11 +58,15 @@ mod screens;
 #[cfg(test)]
 mod screens_tests;
 mod spotlight;
+mod status_bar;
+mod text_field;
 mod windows;
 
 pub(crate) use launch::run;
+mod account_screens;
+mod key_screen;
+mod recovery_screens;
 mod settings;
-mod sign_in;
 mod spin;
 mod theme;
 
@@ -57,9 +77,12 @@ use theme::configure_native_theme;
 
 pub(crate) use crate::runtime::WindowKey;
 
+/// What an OS window is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowKind {
+    /// The main window: the launcher, then the desk with its menu bar.
     Console,
+    /// A pop-out: one pane that left the desk, in a window of its own.
     View { module: &'static str },
 }
 
@@ -72,7 +95,11 @@ pub(crate) fn chord_label(key: &str) -> String {
     }
 }
 
-pub(crate) enum Command {
+/// A native effect the reducer asks for. Its tasks have no `&mut App`, so
+/// they send one of these over a channel; `launch::run` pumps it into
+/// `Desktop::execute` on the window thread. `send` waits until it ran;
+/// `post` does not, and works from any thread.
+pub(crate) enum NativeCommand {
     Open {
         key: WindowKey,
         kind: WindowKind,
@@ -95,8 +122,9 @@ pub(crate) enum Command {
     Quit,
 }
 
+/// A command on the channel, and the pump's word that it ran.
 pub(crate) struct PendingCommand {
-    pub command: Command,
+    pub command: NativeCommand,
     pub completed: oneshot::Sender<()>,
 }
 
@@ -105,18 +133,21 @@ fn sender() -> &'static Mutex<Option<mpsc::UnboundedSender<PendingCommand>>> {
     SENDER.get_or_init(Mutex::default)
 }
 
+/// Installs the channel's sender for this process and hands back its
+/// receiver for the pump.
 pub(crate) fn commands() -> mpsc::UnboundedReceiver<PendingCommand> {
     let (send, receive) = mpsc::unbounded();
     let mut current = sender().lock().expect("native shell commands");
     assert!(current.is_none(), "one native shell per process");
-    // the layers below hand these up without naming the shell
-    crate::runtime::notify::on_open_link(open_link);
-    crate::backend::passkey::on_open_url(open_url_now);
+    // runtime::notify and backend::auth_page cannot depend on shell: they
+    // call these hooks instead
+    crate::runtime::notify::on_open_link(post_open_link);
+    crate::backend::auth_page::on_open_url(post_open_url);
     *current = Some(send);
     receive
 }
 
-async fn send(command: Command) {
+async fn send(command: NativeCommand) {
     let (completed, received) = oneshot::channel();
     let pending = PendingCommand { command, completed };
     let sent = sender()
@@ -144,7 +175,7 @@ pub(crate) fn open_at(
     let task = Task::stream(
         futures::stream::once(async move {
             let (reply, receive) = oneshot::channel();
-            send(Command::Open {
+            send(NativeCommand::Open {
                 key,
                 kind,
                 at,
@@ -158,7 +189,7 @@ pub(crate) fn open_at(
     (key, task)
 }
 
-fn effect<M: 'static>(command: Command) -> Task<M> {
+fn effect<M: 'static>(command: NativeCommand) -> Task<M> {
     Task::future(async move {
         send(command).await;
     })
@@ -166,44 +197,44 @@ fn effect<M: 'static>(command: Command) -> Task<M> {
 }
 
 pub(crate) fn raise<M: 'static>(key: WindowKey) -> Task<M> {
-    effect(Command::Raise(key))
+    effect(NativeCommand::Raise(key))
 }
 
 pub(crate) fn close<M: 'static>(key: WindowKey) -> Task<M> {
-    effect(Command::Close(key))
+    effect(NativeCommand::Close(key))
 }
 
 pub(crate) fn swap_console<M: 'static>() -> Task<M> {
-    effect(Command::SwapConsole)
+    effect(NativeCommand::SwapConsole)
 }
 
 pub(crate) fn sync_appearance<M: 'static>() -> Task<M> {
-    effect(Command::SyncAppearance)
+    effect(NativeCommand::SyncAppearance)
 }
 
 pub(crate) fn quit<M: 'static>() -> Task<M> {
-    effect(Command::Quit)
+    effect(NativeCommand::Quit)
 }
 
 /// A web page, in the system browser.
 pub(crate) fn open_url<M: 'static>(url: String) -> Task<M> {
-    effect(Command::OpenUrl(url))
+    effect(NativeCommand::OpenUrl(url))
 }
 
 /// A link pressed off the window thread (a banner's click), handed to the
 /// reducer as `Message::OpenLink`.
-fn open_link(url: String) {
-    post(Command::OpenLink(url));
+fn post_open_link(url: String) {
+    post(NativeCommand::OpenLink(url));
 }
 
 /// A web page for the system browser, asked for off the window thread
 /// (the passkey ceremony's page).
-fn open_url_now(url: String) {
-    post(Command::OpenUrl(url));
+fn post_open_url(url: String) {
+    post(NativeCommand::OpenUrl(url));
 }
 
 /// A command sent without waiting for it to be done.
-fn post(command: Command) {
+fn post(command: NativeCommand) {
     let (completed, _dropped) = oneshot::channel();
     let pending = PendingCommand { command, completed };
     let sent = sender()
@@ -259,15 +290,22 @@ async fn left_full_size(
 
 // ---------- the desktop actor ----------
 
+/// The one model entity. It owns the app state, runs the reducer
+/// (`dispatch`), and keeps what outlives a draw: the tray, every OS
+/// window's handle and view, the subscription streams, and each pane's
+/// live program view. Not a window: `DesktopWindow` is.
 struct Desktop {
     state: Ducktape,
     tray: crate::tray::Tray,
     windows: BTreeMap<WindowKey, gpui_kit::AnyWindowHandle>,
+    /// Each OS window's `DesktopWindow` (not a program's view).
     views: BTreeMap<WindowKey, gpui_kit::WeakEntity<DesktopWindow>>,
+    /// The model's subscriptions (`Ducktape::subscriptions`), by recipe
+    /// key: each a task feeding its stream's messages into `dispatch`.
     streams: HashMap<u64, gpui_kit::Task<()>>,
     /// Every pane's view, by its instance: a pane keeps its view whichever
     /// window the model puts it in.
-    mounted: BTreeMap<u64, panes::MountedPane>,
+    mounted: BTreeMap<u64, mount::MountedPane>,
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
     desk_bounds: Option<gpui_kit::WindowBounds>,
@@ -472,28 +510,28 @@ impl Desktop {
         }
     }
 
-    fn execute(&mut self, command: Command, cx: &mut Context<Self>) {
+    fn execute(&mut self, command: NativeCommand, cx: &mut Context<Self>) {
         match command {
-            Command::Open {
+            NativeCommand::Open {
                 key,
                 kind,
                 at,
                 reply,
             } => self.open_window(key, kind, reply, at, cx),
-            Command::Raise(key) => self.raise_window(key, cx),
-            Command::Close(key) => {
+            NativeCommand::Raise(key) => self.raise_window(key, cx),
+            NativeCommand::Close(key) => {
                 if let Some(handle) = self.windows.get(&key) {
                     remove(*handle, cx);
                 }
             }
-            Command::SwapConsole => self.swap_console(cx),
-            Command::SyncAppearance => {
+            NativeCommand::SwapConsole => self.swap_console(cx),
+            NativeCommand::SyncAppearance => {
                 self.sync_appearance(cx);
                 cx.notify();
             }
-            Command::OpenLink(link) => self.dispatch(Message::OpenLink(link), cx),
-            Command::OpenUrl(url) => cx.open_url(&url),
-            Command::Quit => self.quit(cx),
+            NativeCommand::OpenLink(link) => self.dispatch(Message::OpenLink(link), cx),
+            NativeCommand::OpenUrl(url) => cx.open_url(&url),
+            NativeCommand::Quit => self.quit(cx),
         }
     }
 
@@ -533,19 +571,24 @@ fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
 
 // ---------- the window ----------
 
+/// The gpui view of one OS window. It draws the launcher or the desk from
+/// the model's state (`Render` below), turns clicks and keys into
+/// messages for `Desktop::dispatch`, and keeps what is the window's own:
+/// its native text fields, drag, focus and bar measurements.
 pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
-    drag: Option<panes::Drag>,
-    inputs: HashMap<&'static str, NativeInput>,
+    drag: Option<pane_drag::Drag>,
+    /// The native text fields drawn in this window, by their element id.
+    inputs: HashMap<&'static str, text_field::NativeInput>,
     /// ⌘K's field took focus when it opened; it is not taken again while
     /// Spotlight stays open.
     spotlight_focused: bool,
     /// ⌘K's list: ↑↓ scroll the picked row into it.
     spotlight_rows: gpui_kit::ScrollHandle,
     /// An empty window's field, made the first time one shows.
-    command: Option<command::Command>,
+    command: Option<command::CommandLine>,
     /// What was open over the desk when it was last drawn.
     covered: Option<crate::Overlay>,
     /// What had the keys when something opened over the desk: they go back
@@ -560,6 +603,7 @@ pub(crate) struct DesktopWindow {
     /// Its panes moved: the frame that draws them hands the keys to the
     /// focused one.
     panes_moved: bool,
+    front: Option<u64>,
     /// Where the bar's menu buttons were last painted: each menu hangs
     /// under its own.
     bar_buttons: HashMap<crate::Overlay, gpui_kit::Bounds<gpui_kit::Pixels>>,
@@ -576,14 +620,6 @@ pub(crate) struct DesktopWindow {
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
     _focus_lost: gpui_kit::Subscription,
-}
-
-struct NativeInput {
-    state: Entity<gpui_kit::component::input::InputState>,
-    /// A digest of the model text the field last agreed with — what it
-    /// sent on its last change, or what the model last pushed into it.
-    mirrored: std::rc::Rc<std::cell::Cell<u64>>,
-    _subscription: gpui_kit::Subscription,
 }
 
 impl DesktopWindow {
@@ -646,16 +682,16 @@ impl Render for DesktopWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
         let content = match self.kind {
-            WindowKind::View { .. } => self.console(window, cx),
+            WindowKind::View { .. } => self.desk_view(window, cx),
             WindowKind::Console => {
-                let state = self.model.read(cx).state.clone_facts();
+                let state = self.model.read(cx).state.facts();
                 match self.model.read(cx).state.stage {
                     Stage::Connect => self.connect(window, cx),
                     Stage::Phrase(_) => self.phrase(&state, window, cx),
                     Stage::Unlock(_) => self.unlock(&state, window, cx),
                     Stage::Recover(_) => self.recover(&state, window, cx),
                     Stage::Account(_) => self.account_step(&state, window, cx),
-                    Stage::Desk => self.console(window, cx),
+                    Stage::Desk => self.desk_view(window, cx),
                 }
             }
         };

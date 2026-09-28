@@ -1,11 +1,12 @@
+//! The node in hand and what it runs: the global [`Connection`], the roster
+//! (the node's program list and each one's code), the rail rows the shell
+//! draws from it, the loads a connect or a new block starts, and the reading
+//! of a `duck://` link against the views this connection lists.
 use super::*;
 
-// ---------- mounting ----------
-
-// ---------- the roster ----------
-
-/// The session facts every view is handed as its props: the seated key as `signer`
-/// (hex) and the `account` it holds, `None` until one is resolved.
+/// The session facts every view is handed as its props: the signing key
+/// unlocked in this session as `signer` (hex) and the `account` it holds,
+/// `None` until one is resolved.
 pub fn props(
     dark: bool,
     connected: bool,
@@ -143,22 +144,15 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
         connection.chain = chain.to_owned();
         connection.clone()
     };
-    let registry = registry().lock().expect("module views");
-    for mounted in registry.values() {
-        mounted
-            .lock()
-            .expect("module view lock")
-            .changes
-            .send_replace(());
-    }
-    drop(registry);
     Loads {
         _threads: vec![spawn_roster_read(snapshot)],
     }
 }
 
 /// The node moved (a block landed): the roster is read again, and a
-/// program whose code changed is loaded again. Cheap when nothing moved.
+/// program whose code changed is loaded again, under a new generation, and
+/// swapped in place when ready. One check in flight at a time; a block
+/// that lands during one is covered by the next. Cheap when nothing moved.
 pub fn deployments_checked() -> Loads {
     static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     use std::sync::atomic::Ordering;
@@ -219,7 +213,6 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                     let mut retired = retired.lock().expect("module view lock");
                     retired.generation += 1;
                     retired.slot = Slot::Empty;
-                    retired.changes.send_replace(());
                 }
                 if gone.1 == 0 {
                     registry.remove(&gone);
@@ -242,10 +235,8 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                     .iter()
                     .any(|old| old.name == program.name && old.code == program.code);
                 let asked_of_this_node = locked.generation > 0 && locked.rev == asked_of.rev;
-                if same_code && asked_of_this_node && !locked.held_off_now() {
-                    continue;
-                }
-                if locked.held_off(Some(code_digest(&program.code))) {
+                let code = code_digest(&program.code);
+                if !locked.reload_due(same_code, asked_of_this_node, code, Instant::now()) {
                     continue;
                 }
                 locked.rev = asked_of.rev;

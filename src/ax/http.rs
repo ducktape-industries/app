@@ -1,3 +1,9 @@
+//! The door's transport and its client. The server side: `DUCKTAPE_AX_DOOR`
+//! parsed, 127.0.0.1 bound, the `{port, token}` door file written 0600, a
+//! hand-written HTTP/1.1 loop on the `ax-door` thread that checks the bearer
+//! token and routes each request to [`Request`] for [`serve`]. The client
+//! side: `ducktape-app ax …` ([`cli`]) reads the same door file and prints
+//! the door's JSON.
 use super::*;
 
 /// `DUCKTAPE_AX_DOOR`: unset or empty is no door; a port (0 picks one) is a
@@ -217,6 +223,11 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
         ("POST", "key") => parse(body).map(Request::Key),
         ("GET", "keys") => Ok(Request::Keys(filter)),
         ("POST", "drag") => parse(body).map(Request::Drag),
+        ("GET", "audit") => Ok(Request::Audit {
+            filter,
+            walk: flag("walk"),
+            launcher: flag("launcher"),
+        }),
         _ => {
             let mut endpoints = vec![
                 "GET /tree",
@@ -226,6 +237,7 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
                 "POST /key",
                 "GET /keys",
                 "POST /drag",
+                "GET /audit",
             ];
             if private {
                 endpoints.push("POST /reveal");
@@ -269,6 +281,7 @@ const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--comp
        ducktape-app ax key <keys> [--text T] [--window W]   (keys: tab, shift-tab, enter, ctrl-k …)
        ducktape-app ax keys [--window W]
        ducktape-app ax drag <x1,y1> <x2,y2> [--id ID] [--steps N] [--window W]   (px; local to ID's bounds when given)
+       ducktape-app ax audit [--window W] [--view V] [--walk] [--launcher]   (docs/ax.md phase 1; --launcher: the shell screen is not the desk)
        ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]
        ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)";
 
@@ -286,7 +299,7 @@ pub(crate) fn cli(args: &[String]) -> i32 {
     let mut rest = args.iter().skip(1);
     while let Some(arg) = rest.next() {
         match arg.strip_prefix("--") {
-            Some(name @ ("compact" | "bounds" | "gone")) => {
+            Some(name @ ("compact" | "bounds" | "gone" | "walk" | "launcher")) => {
                 flags.insert(name, "1");
             }
             Some(name) => {
@@ -317,6 +330,11 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             json!({ "keys": keys.first().copied().unwrap_or_default(), "text": flags.get("text").copied().unwrap_or_default(), "window": flags.get("window") }).to_string(),
         ),
         (Some("keys"), []) => ("GET", format!("/keys?{}", query(&["window"])), String::new()),
+        (Some("audit"), []) => (
+            "GET",
+            format!("/audit?{}", query(&["window", "view", "walk", "launcher"])),
+            String::new(),
+        ),
         (Some("drag"), [from, to]) if point(from).is_some() && point(to).is_some() => (
             "POST",
             "/drag".to_owned(),

@@ -1,16 +1,25 @@
+//! The List node: variable-height rows in a gpui `ListState`. The guest
+//! sends a window of rows from `range_start`; a row the list needs and does
+//! not have is asked for with one `ListRequest` per frame, and a row it has
+//! is rendered under the list's own authored path.
 use super::*;
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(super) struct VariableListKey {
     pub(super) path: Vec<wire::ElementIdWire>,
+    /// The guest's list id (wire `List.state`), not the gpui state.
     pub(super) state: u64,
 }
 
+/// A List's retained state, per key.
 pub(super) struct VariableList {
     pub(super) state: ListState,
     pub(super) rows: HashMap<usize, wire::Node>,
     item_count: usize,
+    /// The guest's command-batch revision; commands replay only when it
+    /// changes.
     revision: u64,
+    /// The rows to ask for in the request already scheduled this frame.
     requested: Option<std::ops::Range<usize>>,
     request_scheduled: bool,
 }
