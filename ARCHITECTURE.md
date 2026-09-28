@@ -136,8 +136,8 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 3. **Compile.** `Guest::load` on the loader thread: `DUCKTAPE_VIEWS_DIR`
    override first (`seat::view_override`, unverified, logged), else the
    network's bytes. Either way `Guest::compile` reads the manifest
-   (upstream `view_wire::manifest::read_manifest`), checks `wire_epoch` and
-   `methods_revision`, then `compiled_view` compiles through the one
+   (upstream `view_wire::manifest::read_manifest`), checks its `wire_id`
+   against `view_wire::WIRE_ID`, then `compiled_view` compiles through the one
    `Engine` (`guest::engine`: `consume_fuel(true)`, opt level Speed, a
    wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`
    reads the same manifest again for the tab name and the capabilities.
@@ -230,7 +230,8 @@ activate a deployment that ships one."); or a `Failure` with a
 title and Retry — `Unreachable` (node or blob), `HashMismatch`,
 `NotListed`, `Trapped` (fuel exhausted or a wasm trap, the panic message
 from `HostState::panic` when there is one), `Refused` (bytes this build does
-not run, or a load overtaken), `WireEpoch`. A failed candidate is held off
+not run, or a load overtaken), `Wire` (built against another wire than
+this app's). A failed candidate is held off
 `RETRY_FIRST` doubling to `RETRY_MAX` while the same bytes keep failing
 (`seat::Retry`). At run time a trap, an `EditorStore` fault, a frame past
 `MAX_FRAME_BYTES` or a `Replies` overflow latch `guest.fault`: the view never
@@ -699,8 +700,8 @@ House words, and where one word means several things.
   `Failure`. Check in order: is the program in
   the roster (`NotListed`); does the node hold the blob (`Unreachable`);
   does the section exist (`Slot::Empty`); do the bytes hash
-  (`HashMismatch`); does the manifest parse and speak `WIRE_EPOCH` and the
-  methods revision (`Refused`, `WireEpoch`); did `init` or the first tick
+  (`HashMismatch`); does the manifest parse and name this app's `WIRE_ID`
+  (`Refused`, `Wire`); did `init` or the first tick
   trap (`Trapped` — a panic message is in the sentence). To bypass the
   node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<module>_view.wasm`.
   `RUST_LOG=ducktape::fuel=debug` shows per-tick fuel.
