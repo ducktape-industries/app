@@ -38,7 +38,6 @@ fn store_with(
                     on_event: 3,
                     claims,
                 })),
-                ..Default::default()
             },
         },
     );

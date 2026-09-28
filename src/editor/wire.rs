@@ -274,7 +274,7 @@ impl EditorStore {
         self.request(
             key,
             view_wire::EditorRequestInput::Interaction {
-                action: view_wire::editor_presentation::EditorInteraction::Action { tag },
+                action: view_wire::EditorInteraction::Action { tag },
             },
         );
     }

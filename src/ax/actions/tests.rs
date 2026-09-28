@@ -40,7 +40,6 @@ fn chat_shaped_editor() -> (wire::Node, crate::render::AuthoredPath) {
                 on_request: 1,
                 on_event: 2,
             })),
-            ..Default::default()
         }),
         id: named_id("draft-general/editor"),
         style: Default::default(),

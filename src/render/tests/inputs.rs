@@ -254,12 +254,7 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
         id: named_id("document"),
         style: authored.style().clone(),
         label: None,
-        options: Box::new(wire::EditorOptions {
-            presentation: Some(Box::new(wire::editor_presentation::EditorPresentation {
-                style: div().p_0().style().clone(),
-            })),
-            ..Default::default()
-        }),
+        options: Box::default(),
         placeholder: String::new(),
         document: wire::editor_document::EditorDocumentRef {
             document: "sizing".into(),
