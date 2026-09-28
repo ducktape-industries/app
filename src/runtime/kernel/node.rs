@@ -132,7 +132,9 @@ fn spawn_method(
     };
     let replies = guest.replies.clone();
     let key = guest.perf_key();
-    let timed = crate::perf::time(key, stage);
+    // not a `perf::Timer`: its drop would record a call refused
+    // `in_flight_limit` or cancelled by the view, which never got a reply
+    let asked = crate::perf::on().then(std::time::Instant::now);
     let attempts_stage = crate::perf::suffixed(stage, ".attempts");
     start(guest, id, async move {
         let (result, attempts) = match retry_on {
@@ -144,7 +146,9 @@ fn spawn_method(
             }
             None => (method(node, ask).await, 1),
         };
-        drop(timed);
+        if let Some(asked) = asked {
+            crate::perf::record(key, stage, asked.elapsed().as_micros() as u64);
+        }
         if let Some(attempts_stage) = attempts_stage {
             crate::perf::count(key, attempts_stage, attempts);
         }
