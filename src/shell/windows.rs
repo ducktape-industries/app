@@ -110,6 +110,7 @@ impl DesktopWindow {
             modal: cx.focus_handle(),
             pane_keys: HashMap::new(),
             panes_moved: false,
+            front: None,
             bar_buttons: Default::default(),
             rail: Default::default(),
             bar_needs: 0.,
