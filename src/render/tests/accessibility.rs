@@ -8,6 +8,7 @@ fn text_is_a_label_its_content_names() {
         Accessible {
             role: Some(gpui_kit::Role::Label),
             name: Some("Members".into()),
+            value: Some("Members".into()),
             ..Default::default()
         }
     );
@@ -172,6 +173,7 @@ fn a_text_heading_has_its_level_and_a_live_text_its_politeness() {
             Accessible {
                 role: Some(gpui_kit::Role::Heading),
                 name: Some("Members".into()),
+                value: Some("Members".into()),
                 level: Some(level.into()),
                 ..Default::default()
             }
@@ -183,6 +185,7 @@ fn a_text_heading_has_its_level_and_a_live_text_its_politeness() {
             Accessible {
                 role: Some(gpui_kit::Role::Label),
                 name: Some("Members".into()),
+                value: Some("Members".into()),
                 live: Some(live),
                 ..Default::default()
             }
@@ -257,4 +260,16 @@ fn a_view_text_reads_its_words_as_its_name_through_the_door(cx: &mut gpui_kit::T
         .map(|node| node["name"].clone())
         .collect();
     assert_eq!(labels, ["Members", "Three online"]);
+}
+
+/// A view Text carries its words as its value, as gpui's own `Text` does:
+/// what a live region announces and what the door reads back.
+#[gpui_kit::test]
+fn a_view_text_carries_its_words_as_its_value_through_the_door(cx: &mut gpui_kit::TestAppContext) {
+    let nodes = door(cx, text("plain", "Members"));
+    let label = nodes
+        .iter()
+        .find(|node| node["role"] == "Label")
+        .expect("the text is in the tree");
+    assert_eq!(label["value"], "Members");
 }

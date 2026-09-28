@@ -14,7 +14,7 @@ pub(crate) struct Accessible {
     pub role: Option<gpui_kit::Role>,
     pub name: Option<String>,
     pub description: Option<String>,
-    /// Text a field holds. Never a secure field's.
+    /// Text a field holds, or a text's own words. Never a secure field's.
     pub value: Option<String>,
     /// A heading's level, 1 to 6.
     pub level: Option<usize>,
@@ -70,6 +70,8 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
         ..Default::default()
     };
     match node {
+        // the words are the value too, as gpui's own `Text` has them: the
+        // adapters name a Label by its value
         Node::Text(view_wire::TextNode {
             content,
             heading,
@@ -81,6 +83,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
                 None => Role::Label,
             }),
             name: named(content),
+            value: named(content),
             level: heading.map(usize::from),
             live: *live,
             ..Default::default()
