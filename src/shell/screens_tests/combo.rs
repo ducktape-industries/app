@@ -34,6 +34,11 @@ fn spotlight_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppC
         by_id(&nodes, "shell:spotlight/1")["state"],
         json!(["unselected"])
     );
+    // a row Help lists with a chord reports it (AX-114)
+    assert_eq!(
+        find(&nodes, "ListBoxOption", "Help")["keyboard_shortcut"],
+        chord_label("/")
+    );
     native.simulate_keystrokes("down");
     let nodes = native.update(draw);
     let combo = find(&nodes, "EditableComboBox", "Search");

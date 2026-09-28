@@ -59,6 +59,8 @@ impl DesktopWindow {
         // the hairline before it count too), for ↑↓ to scroll it into view
         let mut children = 0;
         let mut at = Vec::with_capacity(count);
+        // a row Help lists with a chord reports it (AX-114)
+        let chords = super::chords();
         let mut group = "";
         for (nth, row) in rows.into_iter().enumerate() {
             if row.group != group {
@@ -80,6 +82,10 @@ impl DesktopWindow {
             let model = self.model.clone();
             let spot = row.spot.clone();
             let picked = nth == pick;
+            let chord = chords
+                .iter()
+                .find(|(name, _)| *name == row.title)
+                .map(|(_, chord)| chord.clone());
             let hint = match (&row.spot, picked) {
                 (_, false) => "",
                 (Spot::Switch(_), true) => "switch",
@@ -95,6 +101,7 @@ impl DesktopWindow {
                     // the picked row is the one the field's ↑↓ move
                     .aria_selected(picked)
                     .when(picked, |row| row.aria_active_descendant())
+                    .when_some(chord, |row, chord| row.aria_keyshortcuts(chord))
                     .flex()
                     .items_baseline()
                     .gap(px(12.))
