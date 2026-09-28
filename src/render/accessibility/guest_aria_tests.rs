@@ -19,8 +19,6 @@ fn text(id: &str) -> wire::Node {
         id: Some(key(id)),
         style: Default::default(),
         content: WORDS.into(),
-        heading: None,
-        live: None,
     })
 }
 
@@ -58,6 +56,7 @@ fn every_aria(author_id: &str, label: Option<&str>) -> wire::Interactivity {
             column_count: Some(3),
             toggled: Some(Toggled::Mixed),
             orientation: Some(accesskit::Orientation::Vertical),
+            ..Default::default()
         },
         ..Default::default()
     }

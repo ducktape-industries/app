@@ -19,7 +19,7 @@ pub(crate) struct Accessible {
     /// A heading's level, 1 to 6.
     pub level: Option<usize>,
     /// How a change to text that is not focused is announced.
-    pub live: Option<wire::Live>,
+    pub live: Option<gpui_kit::accesskit::Live>,
     /// A control with no handler: it is drawn, and does nothing.
     pub disabled: bool,
 }
@@ -72,20 +72,10 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
     match node {
         // the words are the value too, as gpui's own `Text` has them: the
         // adapters name a Label by its value
-        Node::Text(view_wire::TextNode {
-            content,
-            heading,
-            live,
-            ..
-        }) => Accessible {
-            role: Some(match heading {
-                Some(_) => Role::Heading,
-                None => Role::Label,
-            }),
+        Node::Text(view_wire::TextNode { content, .. }) => Accessible {
+            role: Some(Role::Label),
             name: named(content),
             value: named(content),
-            level: heading.map(usize::from),
-            live: *live,
             ..Default::default()
         },
         Node::Input {
@@ -164,8 +154,7 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         description,
         value,
         level,
-        // no SDK view can set `TextNode.live`: phase 2 moves it to
-        // `Aria.live`, written through `a11y::Patch`
+        // a view says `Aria.live` on a roled container (`guest_aria`)
         live: _,
         disabled,
     } = accessible;

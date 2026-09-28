@@ -96,8 +96,6 @@ fn text(key: &str, content: impl Into<String>) -> wire::Node {
         id: Some(named_id(key)),
         style: gpui_kit::StyleRefinement::default(),
         content: content.into(),
-        heading: None,
-        live: None,
     })
 }
 

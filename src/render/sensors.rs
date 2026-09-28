@@ -61,6 +61,7 @@ impl ViewTree {
             content,
             cursor,
             style,
+            interactivity: _,
         } = node
         else {
             unreachable!()

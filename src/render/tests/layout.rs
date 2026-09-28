@@ -16,8 +16,6 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
         id: Some(named_id("error-text")),
         style: error_text_style.style().clone(),
         content: refusal.into(),
-        heading: None,
-        live: None,
     });
     let mut notice_style = div()
         .p_2()

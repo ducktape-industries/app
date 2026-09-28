@@ -44,6 +44,7 @@ impl ViewTree {
             scroll_handler,
             range_start,
             style,
+            interactivity: _,
             children,
         } = node
         else {

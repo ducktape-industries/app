@@ -122,8 +122,6 @@ fn tooltip_response_only_attaches_to_its_current_frame_route() {
         id: None,
         style: Default::default(),
         content: "Help".into(),
-        heading: None,
-        live: None,
     });
     let mut frame = wire::Frame {
         unchanged: true,

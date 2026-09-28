@@ -157,43 +157,6 @@ fn layout_is_not_in_the_accessibility_tree() {
 }
 
 #[test]
-fn a_text_heading_has_its_level_and_a_live_text_its_politeness() {
-    let text = |heading, live| {
-        wire::Node::Text(view_wire::TextNode {
-            id: Some(named_id("t")),
-            style: gpui_kit::StyleRefinement::default(),
-            content: "Members".into(),
-            heading,
-            live,
-        })
-    };
-    for level in 1..=6u8 {
-        assert_eq!(
-            accessible(&text(Some(level), None)),
-            Accessible {
-                role: Some(gpui_kit::Role::Heading),
-                name: Some("Members".into()),
-                value: Some("Members".into()),
-                level: Some(level.into()),
-                ..Default::default()
-            }
-        );
-    }
-    for live in [wire::Live::Polite, wire::Live::Assertive] {
-        assert_eq!(
-            accessible(&text(None, Some(live))),
-            Accessible {
-                role: Some(gpui_kit::Role::Label),
-                name: Some("Members".into()),
-                value: Some("Members".into()),
-                live: Some(live),
-                ..Default::default()
-            }
-        );
-    }
-}
-
-#[test]
 fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
     let overlay = |label: Option<&str>, open| wire::Node::Overlay {
         id: named_id("o"),
