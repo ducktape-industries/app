@@ -1,8 +1,15 @@
-//! Native tooltip passes retain the source view slot and event authority.
+//! Tooltips whose content is a guest node. gpui draws a tooltip as its own
+//! view on a top layer; `build` renders the content in a child `ViewTree`,
+//! clips it to the source view's slot (`SlotMask`, recorded each frame in
+//! `Render for ViewTree`) so it can neither paint nor take clicks outside the
+//! view's box, and re-emits the child's events from the source tree with its
+//! one-shot user activation, so the runtime accepts a click inside the
+//! tooltip as the user's.
 use super::*;
 use gpui_kit::{ContentMask, Subscription, WeakEntity};
 use std::{cell::Cell, rc::Rc};
 
+/// The source view's clip, shared with the tooltips it opens.
 pub(super) type SlotMask = Rc<Cell<ContentMask<Pixels>>>;
 
 pub(super) fn build(

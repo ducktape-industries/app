@@ -2,8 +2,8 @@
 //! has its own sub-reducer; this match only routes.
 
 use super::{AppMessage as Message, Ducktape};
-use view_wire::Subscription;
-use view_wire::Task;
+use crate::ui::task::Subscription;
+use crate::ui::task::Task;
 
 /// How often the node's status is asked for while connected.
 pub(super) const STATUS_EVERY: std::time::Duration = std::time::Duration::from_secs(2);

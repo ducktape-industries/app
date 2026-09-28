@@ -3,7 +3,7 @@
 use super::update::STATUS_EVERY;
 use super::{AppMessage as Message, Ducktape, Overlay, Stage, Unlock};
 use crate::backend;
-use view_wire::Task;
+use crate::ui::task::Task;
 
 /// How long a node has to answer the first status before it is not reached.
 const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);

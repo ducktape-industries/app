@@ -19,11 +19,6 @@ pub(crate) struct NativeModuleView {
     pub(super) replies_changed: Option<gpui_kit::Task<()>>,
     pub(super) deadline: Option<(Instant, gpui_kit::Task<()>)>,
     pub(super) observers: Vec<gpui_kit::Subscription>,
-    pub(super) hovered_files: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
-    pub(super) pointer_inside: std::rc::Rc<std::cell::Cell<bool>>,
-    /// The hitbox whose press took the pointer; GPUI numbers hitboxes per
-    /// frame, so the presenter re-arms the capture on each one it paints.
-    pub(super) pointer_held: std::rc::Rc<std::cell::Cell<Option<gpui_kit::HitboxId>>>,
     /// Drawn since the props were last set: a layer mounted this frame.
     pub(super) drawn: bool,
 }
@@ -130,9 +125,6 @@ impl NativeModuleView {
             replies_changed: None,
             deadline: None,
             observers: Vec::new(),
-            hovered_files: Default::default(),
-            pointer_inside: Default::default(),
-            pointer_held: Default::default(),
             drawn: false,
         }
     }
@@ -140,14 +132,6 @@ impl NativeModuleView {
     pub(crate) fn set_focused(&mut self, focused: bool, cx: &mut gpui_kit::Context<Self>) {
         if self.focused != focused {
             self.focused = focused;
-            self.observe_window(
-                if focused {
-                    wire::events::Window::Focused
-                } else {
-                    wire::events::Window::Unfocused
-                },
-                cx,
-            );
             cx.notify();
         }
     }
@@ -218,38 +202,38 @@ impl NativeModuleView {
         std::mem::take(&mut guest.intents)
     }
 
-    /// Closing has no next paint. Deliver the final semantic observation through
-    /// one bounded guest redraw and return its intents to the surviving shell.
-    pub(crate) fn observe_final_window_event(
+    pub(super) fn bind_observers(
         &mut self,
-        event: wire::events::Window,
+        window: &mut gpui_kit::Window,
         cx: &mut gpui_kit::Context<Self>,
-    ) -> Vec<Intent> {
-        let Some(alive) = &self.alive else {
-            return Vec::new();
-        };
-        let seat = self.seat.clone();
-        let mut mounted = seat.lock().expect("module view lock");
-        let Mounted { slot, props, .. } = &mut *mounted;
-        let Slot::Ready(guest) = slot else {
-            return Vec::new();
-        };
-        if guest.seated_generation() != self.generation || !Arc::ptr_eq(alive, &guest.alive) {
-            return Vec::new();
+    ) {
+        let current_window = window.window_handle().window_id();
+        if self.observed_window != Some(current_window) {
+            self.observers.clear();
+            self.observed_window = Some(current_window);
         }
-        let accepted = input::deliver(
-            guest,
-            wire::Event::Observation {
-                event: wire::events::Event::Window(event),
-                captured: false,
-            },
-        );
-        if !accepted {
-            return Vec::new();
+        if self.observers.is_empty() {
+            self.observers
+                .push(cx.observe_global::<gpui_kit::component::Theme>(|this, cx| {
+                    this.turn(cx);
+                    cx.notify();
+                }));
+            let window_id = window.window_handle().window_id();
+            let view = cx.entity().downgrade();
+            self.observers.push(cx.on_window_closed(move |cx, closed| {
+                if closed != window_id {
+                    return;
+                }
+                let view = view.clone();
+                cx.defer(move |cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        for intent in view.hide() {
+                            cx.emit(intent);
+                        }
+                    });
+                });
+            }));
         }
-        guest.redraw(props);
-        cx.notify();
-        std::mem::take(&mut guest.intents)
     }
 
     pub(super) fn frame(
@@ -351,9 +335,6 @@ impl NativeModuleView {
                     let alive = guest.alive.clone();
                     self.subscription =
                         Some(cx.subscribe(&content, move |this, source, event, cx| {
-                            if !this.focused && input::needs_focus(event) {
-                                return;
-                            }
                             let activation = source.read(cx).take_user_activation(event);
                             let mut locked = seat.lock().expect("module view lock");
                             let Slot::Ready(guest) = &mut locked.slot else {
@@ -366,7 +347,7 @@ impl NativeModuleView {
                                 return;
                             }
                             guest.user_activation = activation;
-                            input::deliver(guest, event.clone());
+                            guest.pending.push(event.clone());
                             cx.notify();
                         }));
                     self.content = Some(content);
@@ -562,7 +543,9 @@ impl gpui_kit::Render for NativeModuleView {
                     );
                     // A view owns its own inset: a split pane runs to the edges.
                     // Narrower than `MIN_WIDTH`, it scrolls sideways rather
-                    // than being squeezed and cut at the window's edge.
+                    // than being squeezed and cut at the window's edge. The
+                    // layer occludes: a guest under another one is never
+                    // hovered, as if each were its own window.
                     gpui_kit::div()
                         .id(self.ax_mark())
                         .key_context(context)
@@ -573,10 +556,8 @@ impl gpui_kit::Render for NativeModuleView {
                             gpui_kit::div()
                                 .size_full()
                                 .min_w(gpui_kit::px(MIN_WIDTH))
-                                // Observe wraps the guest: its hitbox sits
-                                // under the guest's controls, a sibling after
-                                // them would block their clicks.
-                                .child(input::Observe::new(guest, self, cx)),
+                                .occlude()
+                                .child(guest),
                         )
                         .into_any_element()
                 }

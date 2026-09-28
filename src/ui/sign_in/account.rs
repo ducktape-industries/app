@@ -2,9 +2,9 @@
 //! joins one, and "From another device", which waits to be approved.
 
 use crate::backend;
+use crate::ui::task::Task;
 use crate::ui::{Account, AppMessage as Message, Ducktape, Stage};
 use futures::StreamExt as _;
-use view_wire::Task;
 
 impl Ducktape {
     pub(super) fn on_account(&mut self, message: Message) -> Task<Message> {

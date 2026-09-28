@@ -8,6 +8,7 @@ mod notify;
 mod overlay;
 mod panes;
 mod sign_in;
+pub(crate) mod task;
 mod update;
 
 #[cfg(test)]

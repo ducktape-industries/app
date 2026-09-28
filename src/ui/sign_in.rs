@@ -8,7 +8,7 @@ mod key;
 mod recovery;
 
 use super::{AppMessage as Message, Ducktape};
-use view_wire::Task;
+use crate::ui::task::Task;
 
 impl Ducktape {
     /// The key, phrase, account and device-approval steps.

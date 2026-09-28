@@ -2,8 +2,8 @@
 //! password-locked one moved into the OS, locked, and reading without it.
 
 use crate::backend;
+use crate::ui::task::Task;
 use crate::ui::{AppMessage as Message, Ducktape, Secret, Stage, Unlock};
-use view_wire::Task;
 
 impl Ducktape {
     pub(super) fn on_key(&mut self, message: Message) -> Task<Message> {

@@ -3,8 +3,8 @@
 
 use super::{normalize_phrase, quiz_matches, quiz_positions};
 use crate::backend;
+use crate::ui::task::Task;
 use crate::ui::{Account, AppMessage as Message, Ducktape, Phrase, Recover, Stage};
-use view_wire::Task;
 
 impl Ducktape {
     pub(super) fn on_recovery(&mut self, message: Message) -> Task<Message> {

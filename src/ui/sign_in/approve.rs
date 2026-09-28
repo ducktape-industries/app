@@ -2,8 +2,8 @@
 //! the joining key found by it, and the approval.
 
 use crate::backend;
+use crate::ui::task::Task;
 use crate::ui::{AppMessage as Message, Ducktape, Overlay};
-use view_wire::Task;
 
 impl Ducktape {
     pub(super) fn on_approve(&mut self, message: Message) -> Task<Message> {
