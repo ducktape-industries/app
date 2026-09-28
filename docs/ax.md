@@ -230,7 +230,7 @@ The deleted whole-tree gate (`git show f54ac106^:app/src/tests/ax_contract.rs`):
 9. **Motion**: the figures ignore the OS preference and the switch cannot be reached before the desk.
 10. **Focus cues**: text fields have no ring; the active option is marked by a 1.09:1 background and a "↵".
 11. **States missing**: busy, has-popup, invalid, keyboard shortcuts; the tab badge, notification time/source, Spotlight meta are left out of names; pane buttons read the same in every pane; the menu bar's account button (`rail-account`, `src/shell/menubar.rs`) shows "Create account" and is named "Account: no account yet — create one" (the sign-in screen's own "Create account" button is named by its label).
-12. **Contrast**: the `strong` field border is 1.56:1 (light) / 1.66:1 (dark) against the page; text pairs and the focus ring pass. Changing it alters the look (owner call).
+12. **Contrast**: the `strong` field border is 1.56:1 (light) / 1.66:1 (dark) against the page; text pairs and the focus ring pass. Changing it alters the look (owner call; done 2026-09-28, §6 Q1).
 13. **Not gated**: no whole-tree rule check anywhere; the qa oracle is broken by a casing bug; no adapter is ever activated in automation; no macOS or Windows run exists.
 14. **Fork-level**: no caret/selection, no OS contrast or text-size preference, X11 root bounds never pushed, cache bypass lives in the app instead of the fork.
 
@@ -295,6 +295,7 @@ Continuously: the app CI gate over the shell matrix (phase 1), the modules CI ga
 ## 6. Open questions for the owner
 
 1. **Border colour.** The `strong` field border is 1.56:1/1.66:1 against the page (AX-121 needs 3:1). Fixing it changes the look; the standing preference is "keep current look". Approve a darker border, or waive the boundary rule for fields?
+   **Answered (owner, 2026-09-28): a darker border for text fields only.** `Ink.field` (light #8E8E8E, dark #666666) draws every shell text field's border (`ink::field_box`); `strong` stays for the switch off, the segmented row and a window's frame. `shell::ink::tests::a_field_border_reads_at_three_to_one` holds it at 3:1 on the page and on a chosen row. A view's Input is drawn by the kit with its own theme's border, not `strong`, and is unchanged.
 2. **Editor Tab.** The guest editor keeps Tab for indentation; AX-022 is `warn` for that reason. Do you want Escape-then-Tab as the documented exit (and said so in Help), or Tab always leaves and indentation moves to a chord?
 3. **Motion switch shape.** Tri-state System/On/Off (honours the OS preference, reachable from the tray and app menu), or a plain OR of "OS says reduce" and "switch off"?
 4. **Spotlight and the empty window** as a combobox: focused `EditableComboBox` wrapping a `ListBox` with `aria_active_descendant` on rows. It changes how those two are built. Go, or wait for the VoiceOver smoke to show whether the current shape reads at all?
