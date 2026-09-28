@@ -201,6 +201,27 @@ fn ax_109_a_field_refused_empty_is_required() {
 }
 
 #[test]
+fn ax_110_a_control_that_says_work_is_in_flight_is_busy() {
+    let off = |id, name| {
+        let mut node = node(id, "Button", name);
+        node.state = vec!["disabled"];
+        node
+    };
+    let mut creating = off("creating", "Creating…");
+    creating.state.push("busy");
+    let report = one(vec![
+        creating,
+        off("adding", "Adding…"),
+        off("loading", "Loading"),
+        off("opens", "Add a device…"),
+        button("save", "Save"),
+        node("status", "Status", "Connecting…"),
+    ]);
+    assert_eq!(fails(&report, "AX-110"), ["w:adding", "w:loading"]);
+    assert_eq!(report.applicable["AX-110"], 3);
+}
+
+#[test]
 fn ax_111_a_fields_name_is_not_its_placeholder() {
     let hinted = |id, name, placeholder: &str| {
         let mut node = field(id, name);

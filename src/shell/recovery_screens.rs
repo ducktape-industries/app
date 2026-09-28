@@ -78,7 +78,7 @@ impl DesktopWindow {
                 },
                 Kind::Primary,
                 || Message::RecoverSubmit,
-                state.unlock_busy,
+                Press::busy(state.unlock_busy),
                 &ink,
             )]));
         self.launcher(

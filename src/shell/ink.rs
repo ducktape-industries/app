@@ -146,6 +146,34 @@ pub(super) fn label(id: impl Into<ElementId>, text: impl Into<SharedString>, ink
     sans(500, 14.).text_color(ink.ink).child(words(id, text))
 }
 
+/// Whether a button takes a press: `Off` reads at 0.3, and `Busy` is off
+/// because the work it starts is in flight, which it says to assistive
+/// technology too. A `bool` is whether it is off.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Press {
+    Ready,
+    Off,
+    Busy,
+}
+
+impl Press {
+    pub(super) fn busy(busy: bool) -> Self {
+        match busy {
+            true => Self::Busy,
+            false => Self::Ready,
+        }
+    }
+}
+
+impl From<bool> for Press {
+    fn from(off: bool) -> Self {
+        match off {
+            true => Self::Off,
+            false => Self::Ready,
+        }
+    }
+}
+
 /// The canvas's button kinds: a filled ink block, an ink outline.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -157,16 +185,19 @@ pub(super) enum Kind {
 
 impl DesktopWindow {
     /// `<button>`: `height 44px; padding 0 18px; border 1.5px solid ink;
-    /// font 500 15px`, filled for [`Kind::Primary`]. Disabled reads at 0.3.
+    /// font 500 15px`, filled for [`Kind::Primary`]. Off or busy, it reads
+    /// at 0.3 ([`Press`]).
     pub(super) fn button(
         &self,
         id: impl Into<ElementId>,
         text: impl Into<SharedString>,
         kind: Kind,
         message: fn() -> Message,
-        disabled: bool,
+        press: impl Into<Press>,
         ink: &Ink,
     ) -> AnyElement {
+        let press = press.into();
+        let disabled = press != Press::Ready;
         let text = text.into();
         let model = self.model.clone();
         let (bg, fg) = match kind {
@@ -197,9 +228,12 @@ impl DesktopWindow {
                 })
             })
             .child(text);
-        crate::a11y::keyboard(button)
-            .aria_disabled(disabled)
-            .into_any_element()
+        let button = crate::a11y::keyboard(button).aria_disabled(disabled);
+        match press {
+            Press::Busy => crate::a11y::Patch::default().busy().on(button),
+            _ => button,
+        }
+        .into_any_element()
     }
 
     /// `<a>`: `400 15px`, underlined, in ink; `small` is the back link's

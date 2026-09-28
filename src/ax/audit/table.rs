@@ -27,7 +27,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 41] = [
+pub(crate) const RULES: [Rule; 42] = [
     rule(
         "AX-001",
         Error,
@@ -160,6 +160,11 @@ pub(crate) const RULES: [Rule; 41] = [
         "AX-109",
         Warn,
         "A text field refused empty (invalid, with no value) is required.",
+    ),
+    rule(
+        "AX-110",
+        Error,
+        "A control whose name says work is in flight is busy.",
     ),
     rule(
         "AX-111",

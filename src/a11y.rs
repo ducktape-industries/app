@@ -97,6 +97,11 @@ impl Patch {
         }
     }
 
+    /// Work it started is in flight ("Creating…").
+    pub fn busy(self) -> Self {
+        Self { busy: true, ..self }
+    }
+
     /// One of the door's classes, [`AX_PRIVATE`] or [`AX_WHOLE`].
     pub fn class_name(self, class_name: &'static str) -> Self {
         Self {

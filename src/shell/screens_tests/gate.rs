@@ -136,9 +136,27 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             Box::new(|| booted(Stage::Recover(Recover::default()), true)),
         ),
         (
+            "recover-adding",
+            true,
+            Box::new(|| {
+                let mut state = booted(Stage::Recover(Recover::default()), true);
+                state.sign_in.unlock_busy = true;
+                state
+            }),
+        ),
+        (
             "account-step",
             true,
             Box::new(|| booted(Stage::Account(Account::default()), true)),
+        ),
+        (
+            "account-creating",
+            true,
+            Box::new(|| {
+                let mut state = booted(Stage::Account(Account::default()), true);
+                state.sign_in.unlock_busy = true;
+                state
+            }),
         ),
         (
             "account-passkey-waiting",

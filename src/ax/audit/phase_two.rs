@@ -1,5 +1,5 @@
 //! The phase-2 rules (`docs/ax.md` §1.3): what the door's phase-2 keys say
-//! about one node (AX-101, 102, 106, 108, 109, 111 … 114, 116 … 118),
+//! about one node (AX-101, 102, 106, 108 … 114, 116 … 118),
 //! where a node sits through `parent` (AX-105, 119), whether the focus is
 //! in the dialog that shows (AX-103, 104), and whether the arrows move it
 //! through a composite's rows (AX-107).
@@ -77,6 +77,14 @@ fn home(role: &str) -> Option<&'static [&'static str]> {
     })
 }
 
+/// A label that says work is in flight: "Creating…", "Loading".
+fn in_flight(name: &str) -> bool {
+    let name = name.trim();
+    let first = name.split_whitespace().next().unwrap_or_default();
+    let first = first.trim_end_matches(['…', '.']);
+    name.starts_with("Loading") || (first.ends_with("ing") && name.ends_with(['…', '.']))
+}
+
 /// The phase-2 rules on one node of `nodes`, `snapshot` their index.
 pub(super) fn node_rules(
     node: &AxNode,
@@ -144,6 +152,11 @@ pub(super) fn node_rules(
                 "its name is its placeholder".to_owned()
             });
         }
+    }
+    if node::CONTROL.contains(&role) && in_flight(&node.name) {
+        tally.check("AX-110", node, has(node, "busy"), || {
+            format!("{:?} says work is in flight and is not busy", node.name)
+        });
     }
     let positioned = more.position_in_set.is_some() || more.size_of_set.is_some();
     let siblings = || {

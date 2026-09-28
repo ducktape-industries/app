@@ -87,7 +87,7 @@ impl DesktopWindow {
                         },
                         Kind::Primary,
                         || Message::CreateAccountSubmit,
-                        busy,
+                        Press::busy(busy),
                         &ink,
                     ),
                     self.button(
