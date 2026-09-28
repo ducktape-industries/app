@@ -294,7 +294,7 @@ pub(super) fn spawn_load(
         // the blob this load is asked for, as the roster reads compare it:
         // a failure is held off under this, not under the view section's
         // own hash, which never equals a blob id
-        let asked_for = listed_code(module).map(|(code, _)| code_digest(&code));
+        let asked_for = roster().code(module).map(|(code, _)| code_digest(&code));
         let loaded = Guest::load(module, &asked_of, generation, &loading);
         let mut locked = loading.lock().expect("module view lock");
         if locked.generation != generation {

@@ -452,6 +452,8 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
         keys::bind(cx);
     });
     let (mut state, _) = Ducktape::boot();
+    // its own roster, not the app's one every test shares
+    state.roster = Default::default();
     state.stage = Stage::Desk;
     state.connected = true;
     state.network = "testkit".into();
@@ -496,9 +498,10 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         keys::bind(cx);
     });
     let (mut state, _) = Ducktape::boot();
-    // its own centre, not the app's one every test shares
+    // its own centre and roster, not the app's ones every test shares
     let center = CenterHandle::default();
     state.center = center.clone();
+    state.roster = Default::default();
     state.stage = Stage::Desk;
     state.connected = true;
     state.network = "testkit".into();

@@ -69,7 +69,7 @@ impl Guest {
                 reason.to_owned(),
             )));
         };
-        let Some((code, bare)) = listed_code(module) else {
+        let Some((code, bare)) = roster().code(module) else {
             let reason = format!("this network's roster does not list {module}");
             logged(None, "Failed", &reason);
             return Err(before_any_candidate(Failure::NotListed(reason)));

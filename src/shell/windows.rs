@@ -154,7 +154,7 @@ impl Desktop {
         use gpui_kit::*;
         let title = match kind {
             crate::shell::WindowKind::Console => "Ducktape".to_owned(),
-            crate::shell::WindowKind::View { module } => panes::label(module),
+            crate::shell::WindowKind::View { module } => panes::label(&self.state.roster, module),
         };
         // the launcher is a small window of a fixed size; the desk grows
         let launcher = kind == crate::shell::WindowKind::Console && self.state.in_launcher();
