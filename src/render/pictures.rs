@@ -1,6 +1,14 @@
+//! Image, Svg and Canvas nodes, and the per-view caches behind them:
+//! `images` (decoded rasters) and `vectors` (SVG bytes), both keyed by the
+//! guest's content hash so a later frame can name a picture without
+//! resending it. `qr` is the shell's (sign-in); no wire node draws one.
+use super::accessibility::Drift;
 use super::picture_resources::{cache_fits, decode_image};
 use super::*;
 use crate::render::native_id;
+
+mod svg_canvas;
+use svg_canvas::SvgCanvas;
 
 pub(crate) fn qr(code: &wire::Qr) -> AnyElement {
     let Some(payload) = &code.payload else {
@@ -132,14 +140,14 @@ impl ViewTree {
         self.primitive_interactivity(element, id.as_ref(), interactivity, cx)
     }
 
-    pub(super) fn drawing(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn drawing(&mut self, node: &wire::Node, _cx: &mut Context<Self>) -> AnyElement {
         let wire::Node::Canvas { commands, style } = node else {
             unreachable!()
         };
         let mut root = div().relative().overflow_hidden();
         *root.style() = style.clone();
-        if native_canvas_commands(commands) {
-            let commands = commands.clone();
+        let commands = commands.clone();
+        if native_canvas_commands(&commands) {
             return root
                 .child(
                     canvas(
@@ -150,28 +158,15 @@ impl ViewTree {
                     )
                     .size_full(),
                 )
-                .child(self.measure(&self.authored_path, cx))
                 .into_any_element();
         }
-        let bounds = self
-            .bounds
-            .get(&self.authored_path)
-            .copied()
-            .unwrap_or_default();
-        let width = f32::from(bounds.size.width).max(1.);
-        let height = f32::from(bounds.size.height).max(1.);
-        let svg_bytes = canvas_svg(commands, width, height);
-        let source = SvgPaintSource::data(&svg_bytes);
-        root.child(guarded_svg_paint(
-            source,
-            img(Arc::new(Image::from_bytes(ImageFormat::Svg, svg_bytes)))
-                .size_full()
-                .object_fit(ObjectFit::Fill),
-        ))
-        .child(self.measure(&self.authored_path, cx))
-        .into_any_element()
+        root.child(SvgCanvas { commands }).into_any_element()
     }
 
+    /// The loading or the fallback child of an Image. `children` holds them
+    /// in that order, each present only when its flag says so (the guest SDK
+    /// pushes loading first, then fallback), so which index is which depends
+    /// on both flags.
     fn image_state(
         loading: bool,
         fallback: bool,
@@ -233,8 +228,9 @@ impl ViewTree {
             return;
         }
         let used = self.vectors.values().map(|bytes| bytes.len()).sum();
-        // Keep accepted hashes stable: eviction would break hash-only frames.
-        // Further resources use the existing refusal/fallback path at capacity.
+        // Never evict: a guest sends an SVG's bytes once and names it by hash
+        // afterwards, so an evicted entry could never come back. When full, a
+        // new SVG is not cached and draws as "SVG data unavailable" (`vector`).
         if !cache_fits(self.vectors.len(), used, bytes.len()) {
             return;
         }
@@ -288,7 +284,8 @@ impl ViewTree {
                 } else if let Some(child) =
                     Self::image_state(*loading, *fallback, state_children, false)
                 {
-                    // State recipes remain ordinary guest nodes and therefore stay inside the slot clip.
+                    // the loading placeholder is an ordinary guest node, laid
+                    // out and clipped inside this image's box
                     element = element.child(self.node(child, window, cx));
                 }
             }
@@ -329,85 +326,15 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_active(group.group.clone(), move |_| style);
         }
-        if let Some(role) = interactivity.role {
-            element = element.role(role);
-        }
-        if interactivity.focusable {
-            element = element.focusable();
-        }
-        if let Some(value) = &interactivity.aria.author_id {
-            element = element.accessibility_id(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.label {
-            element = element.aria_label(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.description {
-            element = element.aria_description(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.keyshortcuts {
-            element = element.aria_keyshortcuts(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.value {
-            element = element.aria_value(value.clone());
-        }
-        if let Some(value) = &interactivity.aria.placeholder {
-            element = element.aria_placeholder(value.clone());
-        }
-        if let Some(value) = interactivity.aria.selected {
-            element = element.aria_selected(value);
-        }
-        if let Some(value) = interactivity.aria.expanded {
-            element = element.aria_expanded(value);
-        }
-        if let Some(value) = interactivity.aria.disabled {
-            element = element.aria_disabled(value);
-        }
-        if let Some(value) = interactivity.aria.numeric_value {
-            element = element.aria_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.numeric_value_step {
-            element = element.aria_numeric_value_step(value);
-        }
-        if let Some(value) = interactivity.aria.min_numeric_value {
-            element = element.aria_min_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.max_numeric_value {
-            element = element.aria_max_numeric_value(value);
-        }
-        if let Some(value) = interactivity.aria.level {
-            element = element.aria_level(value);
-        }
-        if let Some(value) = interactivity.aria.position_in_set {
-            element = element.aria_position_in_set(value);
-        }
-        if let Some(value) = interactivity.aria.size_of_set {
-            element = element.aria_size_of_set(value);
-        }
-        if let Some(value) = interactivity.aria.row_index {
-            element = element.aria_row_index(value);
-        }
-        if let Some(value) = interactivity.aria.column_index {
-            element = element.aria_column_index(value);
-        }
-        if let Some(value) = interactivity.aria.row_count {
-            element = element.aria_row_count(value);
-        }
-        if let Some(value) = interactivity.aria.column_count {
-            element = element.aria_column_count(value);
-        }
-        if let Some(value) = interactivity.aria.toggled {
-            element = element.aria_toggled(value);
-        }
-        if let Some(value) = interactivity.aria.orientation {
-            element = element.aria_orientation(value);
-        }
-        let focus_handle = interactivity.focus_handle.map(|id| {
-            self.guest_focus_targets
-                .entry(id)
-                .or_insert_with(|| cx.focus_handle())
-                .clone()
-        });
-        element = super::interactivity::apply(element, interactivity, focus_handle, cx);
+        element = self.guest_aria(
+            element,
+            interactivity,
+            Drift {
+                name_from: None,
+                active_descendant: false,
+            },
+            cx,
+        );
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {
