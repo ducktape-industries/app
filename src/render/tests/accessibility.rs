@@ -275,6 +275,54 @@ fn a_field_says_it_is_invalid_required_and_read_only(cx: &mut gpui_kit::TestAppC
     assert_eq!(field["description"], "Shown to members");
 }
 
+/// A view whose rich text has clickable ranges is not red on the door: each
+/// range is a link the pointer presses and the keyboard cannot reach,
+/// which only the fork can change, so the audit warns (AX-123) and does
+/// not fail it (AX-012).
+#[gpui_kit::test]
+fn a_rich_texts_ranges_are_a_warning_not_an_error(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ax::audit::{Reading, Severity, audit};
+    let rich = wire::Node::RichText {
+        id: Some(named_id("rich")),
+        style: Default::default(),
+        text: "Read the docs or the code".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: vec![5..13, 17..25],
+        on_click: Some(72),
+        on_hover: None,
+        tooltip: None,
+    };
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(rich));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let nodes = native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("t", window, false)
+    });
+    let report = audit(
+        &Reading {
+            snapshots: vec![nodes],
+            ..Default::default()
+        },
+        false,
+    );
+    let found: Vec<_> = report
+        .violations
+        .iter()
+        .map(|violation| (violation.rule, violation.severity, violation.id.as_str()))
+        .collect();
+    assert_eq!(
+        found,
+        [
+            ("AX-123", Severity::Warn, "t:Link"),
+            ("AX-123", Severity::Warn, "t:Link2"),
+        ]
+    );
+}
+
 /// A RichText's clickable ranges are Links, each named by its words, and a
 /// press on one from assistive technology is that range's click (AX-117).
 #[gpui_kit::test]

@@ -1,5 +1,6 @@
 //! The per-node rules of phase 1 (AX-001 … AX-017): what one node, and
-//! its siblings for AX-016 and its ancestors for AX-012, must be.
+//! its siblings for AX-016 and its ancestors for AX-012, must be; and
+//! AX-123, AX-012's warning for a node only the fork can make reachable.
 use super::*;
 
 pub(super) const TEXT_INPUT: [&str; 9] = [
@@ -128,7 +129,13 @@ pub(super) fn node_rules(
             format!("{role} offers no press and is not disabled")
         });
     }
-    if press {
+    if press && node.synthetic {
+        // gpui gives a node no element draws no focus: the gap is the
+        // fork's to close, not the view's (docs/ax.md §5, item 8)
+        tally.check("AX-123", node, focus, || {
+            format!("a {role} the pointer presses and the keyboard cannot reach")
+        });
+    } else if press {
         // a composite's rows are reached by the arrows, from the composite,
         // once the keys are in it: one that takes focus (view_wire::audit's
         // Unreachable also asks it to hear a key, which the door cannot see)

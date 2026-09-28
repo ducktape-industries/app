@@ -27,7 +27,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 42] = [
+pub(crate) const RULES: [Rule; 43] = [
     rule(
         "AX-001",
         Error,
@@ -205,6 +205,11 @@ pub(crate) const RULES: [Rule; 42] = [
         "AX-119",
         Error,
         "Nothing pressable sits inside a button, link, tab, menu item or toggle.",
+    ),
+    rule(
+        "AX-123",
+        Warn,
+        "A press node no element draws (a rich text's clickable range) offers focus.",
     ),
 ];
 

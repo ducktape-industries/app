@@ -63,6 +63,11 @@ pub(crate) struct AxNode {
     pub(super) bounds: Option<[i32; 4]>,
     #[serde(skip)]
     pub(super) node: NodeId,
+    /// A node no element draws: one an element's `a11y_synthetic_children`
+    /// pushed (a RichText's clickable range). gpui gives such a node no
+    /// focus.
+    #[serde(skip)]
+    pub(super) synthetic: bool,
 }
 
 /// What a node says beyond its role, name, value, states and actions: each
@@ -220,6 +225,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         if node.is_hidden() {
             continue;
         }
+        let synthetic = window.a11y_element_id(id).is_none();
         let (prefix, scope, path) = match window.a11y_element_id(id) {
             Some(element) => match element_path(element.iter()) {
                 (Some(module), path) => (
@@ -334,6 +340,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 .and(rect)
                 .map(|r| [r.x0, r.y0, r.x1, r.y1].map(|edge| (edge / scale).round() as i32)),
             node: id,
+            synthetic,
         });
     }
     for (node, id) in out.iter_mut().zip(door_ids(&paths)) {

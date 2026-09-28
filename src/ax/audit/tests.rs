@@ -16,6 +16,7 @@ fn node(id: &str, role: &str, name: &str) -> AxNode {
         scope: "w".to_owned(),
         bounds: None,
         node: NodeId(0),
+        synthetic: false,
     }
 }
 
@@ -170,6 +171,22 @@ fn ax_012_press_comes_with_focus() {
     mouse_only.actions = vec!["press"];
     let report = one(vec![button("ok", "Save"), mouse_only]);
     assert_eq!(fails(&report, "AX-012"), ["w:row"]);
+}
+
+/// A rich text's clickable range is a link the pointer presses and the
+/// keyboard cannot reach, because gpui gives a node no element draws no
+/// focus: a warning of its own, not AX-012's error the view cannot fix.
+#[test]
+fn ax_123_a_range_only_the_fork_can_reach_is_a_warning() {
+    let mut range = node("text.Link", "Link", "the docs");
+    range.actions = vec!["press"];
+    range.synthetic = true;
+    let mut drawn = node("link", "Link", "the code");
+    drawn.actions = vec!["press"];
+    let report = one(vec![range, drawn]);
+    assert_eq!(fails(&report, "AX-012"), ["w:link"]);
+    assert_eq!(fails(&report, "AX-123"), ["w:text.Link"]);
+    assert!(report.errors().all(|violation| violation.id == "w:link"));
 }
 
 /// A composite's rows are reached by the arrows from the composite: a row
