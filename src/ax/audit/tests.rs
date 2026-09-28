@@ -378,6 +378,52 @@ fn ax_021_where_the_state_opened_does_not_count() {
     assert_eq!(fails(&report, "AX-021"), ["w:a"]);
 }
 
+/// A menu Tab leaves closes (a Dialog or a Menu hanging from the bar): the
+/// control it opened on had the keys as it opened, and no Tab comes back
+/// to it. One that stays open is held to the walk like anything else, and
+/// so is what goes with any other box.
+#[test]
+fn ax_021_a_menu_the_walk_closed_had_the_keys_where_it_opened() {
+    let walked = |role: &str, closes: bool| {
+        let menu = || node("menu", role, "Account");
+        let inside = |id, name| {
+            let mut node = button(id, name);
+            node.more.parent = Some("w:menu".into());
+            node
+        };
+        let bar = || button("bar", "Search");
+        let last = match closes {
+            true => vec![focused(bar())],
+            false => vec![
+                menu(),
+                inside("a", "Lock"),
+                inside("b", "Log out"),
+                focused(bar()),
+            ],
+        };
+        walk(vec![
+            vec![
+                menu(),
+                focused(inside("a", "Lock")),
+                inside("b", "Log out"),
+                bar(),
+            ],
+            vec![
+                menu(),
+                inside("a", "Lock"),
+                focused(inside("b", "Log out")),
+                bar(),
+            ],
+            last,
+        ])
+    };
+    for role in ["Dialog", "Menu"] {
+        assert!(fails(&walked(role, true), "AX-021").is_empty(), "{role}");
+        assert_eq!(fails(&walked(role, false), "AX-021"), ["w:a"], "{role}");
+    }
+    assert_eq!(fails(&walked("Group", true), "AX-021"), ["w:a"]);
+}
+
 /// A combo box never shows as focused: gpui moves the tree's focus to its
 /// active row. It holds the keys while it names one.
 #[test]
@@ -677,16 +723,20 @@ mod phase_two {
             focused(button("bar", "Search")),
         ]);
         assert_eq!(fails(&outside, "AX-104"), ["w:dlg"]);
-        // a dialog that is not modal may let the walk out once it has the focus
-        let left = walk(vec![
-            vec![dialog(), focused(under(button("a", "Lock"), "dlg"))],
-            vec![
-                dialog(),
-                under(button("a", "Lock"), "dlg"),
-                focused(button("bar", "Search")),
-            ],
-        ]);
-        assert!(fails(&left, "AX-104").is_empty());
+        // every snapshot: a menu the walk leaves closes, one that stays
+        // open with the focus outside it fails
+        let left = |stays: bool| {
+            let mut after = vec![focused(button("bar", "Search"))];
+            if stays {
+                after.extend([dialog(), under(button("a", "Lock"), "dlg")]);
+            }
+            walk(vec![
+                vec![dialog(), focused(under(button("a", "Lock"), "dlg"))],
+                after,
+            ])
+        };
+        assert!(fails(&left(false), "AX-104").is_empty());
+        assert_eq!(fails(&left(true), "AX-104"), ["w:dlg"]);
     }
 
     #[test]

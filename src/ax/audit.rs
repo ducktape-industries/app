@@ -116,7 +116,7 @@ pub(crate) const RULES: [Rule; 43] = [
     rule(
         "AX-021",
         Error,
-        "Every node offering focus in the first snapshot is focused once in the walk.",
+        "Every node offering focus in the first snapshot is focused once in the walk, or had the keys as a dialog or menu the walk closed opened.",
     ),
     rule(
         "AX-022",
@@ -153,11 +153,7 @@ pub(crate) const RULES: [Rule; 43] = [
         Error,
         "A Dialog the Tab walk never leaves is modal.",
     ),
-    rule(
-        "AX-104",
-        Error,
-        "A Dialog the screen state shows holds the focus as it opens.",
-    ),
+    rule("AX-104", Error, "A Dialog in a snapshot holds the focus."),
     rule(
         "AX-105",
         Error,
@@ -813,10 +809,10 @@ fn holds(node: &AxNode) -> bool {
 
 /// AX-020 … AX-025 over the sequence, `step N` the snapshot after N
 /// presses; then AX-103, AX-104 and AX-107's arrows. A dialog that shows
-/// has the focus as the state opens (AX-104); a non-modal one may let the
-/// walk out. One the Tab walk never leaves is modal to the keyboard, and
-/// says so (AX-103). Each arrow press of the probe moves the active row
-/// (AX-107).
+/// has the focus, in every snapshot (AX-104): a menu the walk leaves has
+/// closed (owner, 2026-09-28). One the Tab walk never leaves is modal to
+/// the keyboard, and says so (AX-103). Each arrow press of the probe moves
+/// the active row (AX-107).
 fn walk_rules(reading: &Reading, tally: &mut Tally) {
     let snapshots = &reading.snapshots;
     let Some(first) = snapshots.first() else {
@@ -834,13 +830,26 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
         });
     }
     let walked = snapshots.len() > 1;
+    let opened = Snapshot::of(first);
+    // gone from a snapshot the walk took: a menu Tab left, which closed
+    // (a Dialog or a Menu, as the shell's hang from the bar)
+    let closed = |id: &str| {
+        snapshots[1..]
+            .iter()
+            .any(|nodes| nodes.iter().all(|other| other.id != id))
+    };
     for node in first.iter().filter(|node| walked && offers(node, "focus")) {
-        // a Tab press reached it: where the state opened does not count
+        // a Tab press reached it: where the state opened does not count,
+        // but in a dialog that closed when Tab left it: it had the keys as
+        // the dialog opened, and no Tab comes back to it
         let reached = snapshots[1..].iter().any(|nodes| {
             nodes
                 .iter()
                 .any(|other| other.id == node.id && holds(other))
-        });
+        }) || holds(node)
+            && opened
+                .ancestors(node)
+                .any(|above| matches!(above.role.as_str(), "Dialog" | "Menu") && closed(&above.id));
         tally.check("AX-021", node, reached, || {
             "offers focus but the tab walk never reached it".to_owned()
         });
@@ -864,14 +873,18 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             }
         }
     }
-    let opened = Snapshot::of(first);
+    for nodes in snapshots {
+        let snapshot = Snapshot::of(nodes);
+        for dialog in nodes.iter().filter(|node| node.role == "Dialog") {
+            tally.check(
+                "AX-104",
+                dialog,
+                focus_within(nodes, &snapshot, &dialog.id),
+                || "the dialog shows and the focus is outside it".to_owned(),
+            );
+        }
+    }
     for dialog in first.iter().filter(|node| node.role == "Dialog") {
-        tally.check(
-            "AX-104",
-            dialog,
-            focus_within(first, &opened, &dialog.id),
-            || "the dialog shows and the focus is outside it".to_owned(),
-        );
         let held = snapshots.len() > 1
             && snapshots
                 .iter()

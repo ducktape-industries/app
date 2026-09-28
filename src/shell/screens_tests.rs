@@ -571,6 +571,21 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     find(&nodes, "MenuItem", "Unread. Lin: @grace look");
     find(&nodes, "Button", "Mark all read");
     assert!(!nodes.to_string().contains("all caught up"));
+    // the panel opened on them: its keys at its first control, as the bell
+    // gives them, and a Tab past its last closes it (a menu)
+    for overlay in [
+        None,
+        Some(crate::Overlay::Menu(crate::Popover::Notifications)),
+    ] {
+        view.update(&mut native, |view, cx| {
+            view.model.update(cx, |model, cx| {
+                model.state.overlay = overlay;
+                cx.notify();
+            })
+        });
+        native.update(draw);
+        native.update(draw);
+    }
     gate::passes(&mut native, "notifications-menu-unread", false);
 
     view.update(&mut native, |view, cx| {
