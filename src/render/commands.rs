@@ -1,8 +1,8 @@
 //! What a guest asks of the mounted tree between frames: widget commands
 //! (`host.widget`: focus, cursor, scroll, editor action) resolved against
 //! the paths this tree mounts, the walk that names those paths, the
-//! user-activation mark an event may spend, and the entry a dialog gives
-//! the keyboard when it opens.
+//! user-activation mark an event may spend, the entry a dialog gives the
+//! keyboard when it opens, and the way back when it closes.
 
 use super::*;
 
@@ -55,6 +55,19 @@ pub(crate) fn dialog_entry(
         });
     }
     div().id("dialog-entry").track_focus(entry)
+}
+
+/// Where focus goes when a dialog closes: back to `opener`, what held it as
+/// the dialog opened, after the frame that drops the dialog — if focus went
+/// with it. Focus the view moved elsewhere itself stays there.
+pub(crate) fn dialog_exit(opener: WeakFocusHandle, window: &mut Window, cx: &mut App) {
+    window.defer(cx, move |window, cx| {
+        if window.focused(cx).is_none()
+            && let Some(opener) = opener.upgrade()
+        {
+            window.focus(&opener, cx);
+        }
+    });
 }
 
 impl ViewTree {

@@ -12,8 +12,8 @@ use gpui_kit::{
     IntoElement, KeyDownEvent, LayoutId, ListAlignment, ListSizingBehavior, ListState, MouseButton,
     MouseDownEvent, MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render,
     RenderImage, ScrollHandle, SharedString, Size, Stateful, StatefulInteractiveElement as _,
-    Styled, StyledImage as _, StyledText, Subscription, TextLayout, Transformation, Window, canvas,
-    div, fill, img, point, px, radians, rgb, size, svg,
+    Styled, StyledImage as _, StyledText, Subscription, TextLayout, Transformation,
+    WeakFocusHandle, Window, canvas, div, fill, img, point, px, radians, rgb, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -151,8 +151,12 @@ pub struct ViewTree {
     // the guest names by number.
     focus_targets: HashMap<AuthoredPath, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
     guest_focus_targets: HashMap<u64, FocusHandle>,
-    /// The overlays showing a dialog, and where focus enters each.
-    dialogs: HashMap<AuthoredPath, FocusHandle>,
+    /// The overlays showing a dialog: where focus enters each, and what
+    /// held focus as it opened.
+    dialogs: HashMap<AuthoredPath, (FocusHandle, Option<WeakFocusHandle>)>,
+    /// What held focus as a dialog that has just closed opened: it gets
+    /// focus back, if focus went with the dialog.
+    opener: Option<WeakFocusHandle>,
 
     // Measured geometry by path: what `measure` records for identified
     // containers, editor mounts and canvases, and the sensor canvas for sensors.
@@ -191,6 +195,7 @@ impl ViewTree {
             variable_lists: HashMap::new(),
             drags: HashMap::new(),
             dialogs: HashMap::new(),
+            opener: None,
             bounds: HashMap::new(),
             sensors: HashMap::new(),
             images: HashMap::new(),
@@ -265,6 +270,9 @@ impl Render for ViewTree {
         // paragraphs keep stable numbers and two views never interleave.
         self.selection_order
             .set((cx.entity_id().as_u64() & u64::from(u32::MAX)) << 32);
+        if let Some(opener) = self.opener.take() {
+            commands::dialog_exit(opener, window, cx);
+        }
         let node = self.node(&self.root.clone(), window, cx);
         // Carried-over state is for the first render of a new tree only:
         // whatever it did not claim is dropped.

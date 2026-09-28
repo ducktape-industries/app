@@ -173,6 +173,7 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
 use crate::editor::wire::seed_editor_text;
 
 mod accessibility;
+mod dialog_focus;
 mod gpui_activation;
 mod gpui_clip;
 mod grip;

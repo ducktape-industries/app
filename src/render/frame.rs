@@ -141,7 +141,14 @@ impl ViewTree {
             variable_lists.contains(id)
         });
         self.drags.retain(|key, _| drags.contains(key));
-        self.dialogs.retain(|key, _| dialogs.contains(key));
+        let opener = &mut self.opener;
+        self.dialogs.retain(|key, (_, was)| {
+            let open = dialogs.contains(key);
+            if !open && was.is_some() {
+                *opener = was.take();
+            }
+            open
+        });
         self.editors.retain(|key, _| editors.contains(key));
         self.sensors.retain(|key, _| sensors.contains(key));
         self.root = root;
