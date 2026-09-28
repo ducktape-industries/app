@@ -1,11 +1,12 @@
-//! The phase-1 audit (`docs/ax.md` §1.2, §2): the rule table applied to what
+//! The audit (`docs/ax.md` §1.2, §1.3, §2): the rule table applied to what
 //! the door saw. Per-node rules run over every node of every snapshot; walk
 //! rules over the sequence a Tab walk yields. [`audit`] is pure: [`observe`]
 //! is the one function here that touches a window, and it only takes the
 //! snapshots and presses the keys. What the door cannot see it is told:
 //! whether a modal scopes the snapshot, whether `escape` was bound at each
 //! step, and — the caller's word, never a guess from the tree — whether the
-//! shell screen is a launcher screen (AX-018).
+//! shell screen is a launcher screen (AX-018), and which controls the
+//! app's Help lists with a chord (AX-114).
 use super::actions::{press_keys, shortcuts};
 use super::{AxNode, tree};
 use gpui_kit::{App, Window};
@@ -16,11 +17,13 @@ use std::collections::{BTreeMap, BTreeSet};
 mod tests;
 
 mod node;
+mod phase_two;
 mod table;
 mod walk;
 
 use Severity::Error;
 use node::node_rules;
+use phase_two::Snapshot;
 pub(crate) use table::Severity;
 use table::severity;
 use walk::{screen_rules, walk_rules};
@@ -62,12 +65,15 @@ pub(crate) struct Report {
 }
 
 /// What one screen state showed the door: the first snapshot, then one per
-/// tab press; `escape`, one per snapshot, whether `escape` was bound then.
+/// tab press; `escape`, one per snapshot, whether `escape` was bound then;
+/// and, the caller's word, `chords`: `(control name, chord)` for each
+/// control the app's Help lists with a chord (AX-114).
 #[derive(Debug, Default)]
 pub(crate) struct Reading {
     pub(crate) snapshots: Vec<Vec<AxNode>>,
     pub(crate) escape: Vec<bool>,
     pub(crate) modal: bool,
+    pub(crate) chords: Vec<(String, String)>,
 }
 
 fn named(node: &AxNode) -> bool {
@@ -144,8 +150,10 @@ impl Tally {
 pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
     let mut tally = Tally::default();
     for nodes in &reading.snapshots {
+        let snapshot = Snapshot::of(nodes);
         for node in nodes {
             node_rules(node, nodes, &mut tally);
+            phase_two::node_rules(node, nodes, &snapshot, reading, &mut tally);
         }
         screen_rules(nodes, reading, launcher, &mut tally);
     }

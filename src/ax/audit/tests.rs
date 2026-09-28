@@ -42,7 +42,7 @@ fn reading(snapshots: Vec<Vec<AxNode>>) -> Reading {
     Reading {
         escape: vec![true; snapshots.len()],
         snapshots,
-        modal: false,
+        ..Default::default()
     }
 }
 
@@ -363,11 +363,13 @@ fn ax_025_a_dialog_shows_with_something_focused() {
 fn coverage_counts_actionable_nodes_clean_of_errors_and_rules_failed_over_applicable() {
     let mut warned = button("thin", "Go");
     warned.bounds = Some([0, 0, 10, 10]);
+    let mut heading = node("h", "Heading", "");
+    heading.more.level = Some(1);
     let report = one(vec![
         button("ok", "Save"),
         button("bare", ""),
         warned,
-        node("h", "Heading", ""),
+        heading,
     ]);
     assert_eq!(report.nodes, 4);
     assert_eq!(report.actionable, 3);
@@ -473,3 +475,5 @@ fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     assert!(fails(&report, "AX-021").is_empty(), "{report:?}");
     assert_eq!(report.presses, 7);
 }
+
+mod phase_two;

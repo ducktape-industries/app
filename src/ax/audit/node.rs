@@ -2,7 +2,7 @@
 //! its siblings for AX-016, must be.
 use super::*;
 
-const TEXT_INPUT: [&str; 8] = [
+pub(super) const TEXT_INPUT: [&str; 8] = [
     "TextInput",
     "MultilineTextInput",
     "SearchInput",
@@ -19,7 +19,7 @@ const TOGGLE: [&str; 5] = [
     "MenuItemCheckBox",
     "MenuItemRadio",
 ];
-const CONTROL: [&str; 10] = [
+pub(super) const CONTROL: [&str; 10] = [
     "Button",
     "Link",
     "Tab",
