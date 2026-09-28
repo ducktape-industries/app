@@ -148,18 +148,16 @@ fn cache_path(code: &BlobId) -> Option<PathBuf> {
 /// cache holds the body, which is re-framed as a blob before the check.
 fn hashes_to(bytes: &[u8], code: &BlobId) -> bool {
     use sha2::Digest as _;
-    let framed = match super::noded::unframe(bytes) {
-        Some(_) => bytes.to_vec(),
-        None => {
-            let mut framed = format!("blob {}\0", bytes.len()).into_bytes();
-            framed.extend_from_slice(bytes);
-            framed
-        }
+    // The cache holds a bare body, the store a git-framed blob; a body is
+    // not told apart by its bytes (a wasm body opens with a NUL, exactly
+    // where a frame ends), so both readings are hashed and either may match.
+    let mut framed = format!("blob {}\0", bytes.len()).into_bytes();
+    framed.extend_from_slice(bytes);
+    let matches = |candidate: &[u8]| match code.kind() {
+        abi::HashKind::Sha1 => sha1::Sha1::digest(candidate)[..] == *code.digest(),
+        abi::HashKind::Sha256 => sha2::Sha256::digest(candidate)[..] == *code.digest(),
     };
-    match code.kind() {
-        abi::HashKind::Sha1 => sha1::Sha1::digest(&framed)[..] == *code.digest(),
-        abi::HashKind::Sha256 => sha2::Sha256::digest(&framed)[..] == *code.digest(),
-    }
+    matches(bytes) || matches(&framed)
 }
 
 /// The bytes of the [`VIEW_SECTION`] custom section, out of a core module or
@@ -213,5 +211,17 @@ mod tests {
         assert!(hashes_to(body, &id));
         assert!(hashes_to(framed, &id));
         assert!(!hashes_to(b"other", &id));
+    }
+
+    #[test]
+    fn a_cached_wasm_body_hashes_like_the_framed_blob() {
+        use sha2::Digest as _;
+        // a wasm body opens with a NUL: it must not pass for a framed blob
+        let body = b"\0asm\x01\0\0\0";
+        let mut framed = b"blob 8\0".to_vec();
+        framed.extend_from_slice(body);
+        let id = BlobId::Sha256(sha2::Sha256::digest(&framed).into());
+        assert!(hashes_to(body, &id));
+        assert!(hashes_to(&framed, &id));
     }
 }

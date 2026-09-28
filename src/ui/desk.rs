@@ -3,7 +3,7 @@
 use super::{AppMessage as Message, Ducktape};
 use crate::backend;
 use crate::runtime::Intent;
-use view_wire::Task;
+use crate::ui::task::Task;
 
 impl Ducktape {
     /// Views, links, toasts, windows and the tray.

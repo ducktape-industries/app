@@ -1,5 +1,13 @@
+//! The Canvas node's two painters. When every command is a primitive gpui
+//! draws itself (`native_canvas_commands`), `paint_canvas_commands` paints
+//! quads and paths; otherwise `canvas_svg` writes the commands out as an SVG
+//! for gpui's rasterizer. `ViewTree::drawing` (pictures.rs) picks between
+//! them.
 use super::*;
 
+/// Whether every command paints natively: a solid (undashed) Draw of a
+/// rectangle with one radius, a circle, or a line that is not square-capped.
+/// Anything else (a Path, a dash, a Push/Pop) needs the SVG fallback.
 pub(super) fn native_canvas_commands(commands: &[wire::CanvasCommand]) -> bool {
     commands.iter().all(|command| {
         let wire::CanvasCommand::Draw { shape, stroke, .. } = command else {
@@ -95,7 +103,7 @@ pub(super) fn paint_canvas_commands(
     }
 }
 
-pub(super) fn svg_color(color: Hsla) -> String {
+fn svg_color(color: Hsla) -> String {
     let color = color.to_rgb();
     let (r, g, b, a) = (color.r, color.g, color.b, color.a);
     format!(
@@ -106,6 +114,9 @@ pub(super) fn svg_color(color: Hsla) -> String {
     )
 }
 
+/// The commands as an SVG document of `width` by `height`. Push opens a
+/// transformed group (and a clip group, always paired so Pop closes both);
+/// unclosed groups are closed at the end.
 pub(super) fn canvas_svg(commands: &[wire::CanvasCommand], width: f32, height: f32) -> Vec<u8> {
     use std::fmt::Write;
     let mut svg =
@@ -196,7 +207,7 @@ pub(super) fn canvas_svg(commands: &[wire::CanvasCommand], width: f32, height: f
     svg.into_bytes()
 }
 
-pub(super) fn canvas_path(shape: &wire::CanvasShape) -> String {
+fn canvas_path(shape: &wire::CanvasShape) -> String {
     let segments = match shape {
         wire::CanvasShape::Rectangle {
             position,
@@ -325,6 +336,11 @@ pub(super) fn canvas_path(shape: &wire::CanvasShape) -> String {
     path
 }
 
+/// The most `A` segments one arc is cut into: one per half turn is what
+/// the SVG arc command needs to stay unambiguous, and a guest cannot ask
+/// for a path longer than this by sweeping many turns.
+const MAX_ARC_SEGMENTS: f32 = 128.;
+
 pub(super) fn append_arc(
     path: &mut String,
     center: [f32; 2],
@@ -347,7 +363,7 @@ pub(super) fn append_arc(
     let _ = write!(path, "M{} {} ", a[0], a[1]);
     let steps = ((end - start).abs() / std::f32::consts::PI)
         .ceil()
-        .clamp(1.0, 128.0) as usize;
+        .clamp(1.0, MAX_ARC_SEGMENTS) as usize;
     for index in 1..=steps {
         let b = point(start + (end - start) * index as f32 / steps as f32);
         let _ = write!(

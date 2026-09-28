@@ -44,7 +44,9 @@ pub(crate) use session::{
 use std::time::Duration;
 
 /// A refusal the NODE or the PROGRAM authored, carried through with its
-/// own token; a transport failure gets the app's.
+/// own token; a transport failure gets the app's: `rpc_client` when nothing
+/// reached the node, `node_failed` when the request may have and the answer
+/// is what went missing — a write's caller must not treat the two alike.
 pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
     use noded::Error;
     match error {
@@ -55,7 +57,10 @@ pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
         Error::Failed { status, sentence } => {
             view_wire::Error::new("node_failed", format!("{status}: {sentence}"))
         }
-        Error::Transport(sentence) => view_wire::Error::new("rpc_client", sentence),
+        Error::Unreachable(sentence) => view_wire::Error::new("rpc_client", sentence),
+        Error::Transport(sentence) => {
+            view_wire::Error::new("node_failed", format!("no answer came back: {sentence}"))
+        }
     }
 }
 

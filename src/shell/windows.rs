@@ -1,3 +1,7 @@
+//! OS windows: where a new one goes (`cascade`, `centered`, `unseated`),
+//! how a `DesktopWindow` and the `Desktop` are made, and how the model
+//! opens a window (`Desktop::open_window`).
+
 use super::*;
 use gpui_kit::{Bounds, Pixels, Size, point, px, size};
 
@@ -68,7 +72,6 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.on_release(Self::released).detach();
         let observer = cx.observe(&model, |_, _, cx| cx.notify());
         let activation =
             cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
@@ -95,6 +98,7 @@ impl DesktopWindow {
             modal: cx.focus_handle(),
             pane_keys: HashMap::new(),
             panes_moved: false,
+            front: None,
             bar_buttons: Default::default(),
             rail: Default::default(),
             bar_needs: 0.,
@@ -121,6 +125,9 @@ impl Desktop {
         }
     }
 
+    /// Opens the OS window for `key` (deferred: the caller is mid-update)
+    /// and remembers its handle and view. On failure a pane on its way
+    /// there goes back to the desk and the model hears the window closed.
     pub(super) fn open_window(
         &mut self,
         key: WindowKey,
@@ -172,11 +179,7 @@ impl Desktop {
             let opened = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| DesktopWindow::new(window_model, key, kind, window, cx));
                 opened_view = Some(view.downgrade());
-                let closing = view.downgrade();
                 window.on_window_should_close(cx, move |window, cx| {
-                    let _ = closing.update(cx, |this, cx| {
-                        this.observe_window(view_wire::events::Window::CloseRequested, cx)
-                    });
                     release_window_input(window, cx);
                     true
                 });

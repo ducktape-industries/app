@@ -17,11 +17,6 @@ impl Pictures {
                 hash,
                 data: Some(data),
                 ..
-            }
-            | wire::Node::ImageViewer {
-                hash,
-                data: Some(data),
-                ..
             } => {
                 self.raster.entry(*hash).or_insert_with(|| data.clone());
             }
@@ -41,7 +36,7 @@ impl Pictures {
 
     pub(super) fn hydrate(&self, root: &mut wire::Node) {
         root.for_each_mut(&mut |node| match node {
-            wire::Node::Image { hash, data, .. } | wire::Node::ImageViewer { hash, data, .. } => {
+            wire::Node::Image { hash, data, .. } => {
                 if data.is_none() {
                     *data = self.raster.get(hash).cloned();
                 }

@@ -1,3 +1,7 @@
+//! Not styles, despite the name: the wire-to-gpui cursor mapping
+//! (`native_cursor`, used by ResizeHandle) and the rule for when an Overlay
+//! is a dialog (`named_overlay`, `has_named_overlay`), shared by the overlay
+//! renderer, the AX mapping and focus commands.
 use super::*;
 
 pub(super) fn native_cursor(cursor: Option<wire::mouse::Cursor>) -> CursorStyle {
@@ -32,10 +36,13 @@ pub(super) fn native_cursor(cursor: Option<wire::mouse::Cursor>) -> CursorStyle 
     }
 }
 
+/// An Overlay is a dialog when it is open (a modal child after its base) and
+/// has a non-empty label; anything else is plain layout.
 pub(super) fn named_overlay(label: &Option<String>, children: &[wire::Node]) -> bool {
     label.as_deref().is_some_and(|label| !label.is_empty()) && children.len() > 1
 }
 
+/// Whether `node` or any descendant is an open dialog.
 pub(super) fn has_named_overlay(node: &wire::Node) -> bool {
     match node {
         wire::Node::Overlay {

@@ -188,7 +188,10 @@ pub enum Error {
     Refused(Refusal),
     /// the node failed or answered a status this client does not read
     Failed { status: u16, sentence: String },
-    /// the transport did not answer
+    /// no connection was made: nothing reached the node
+    Unreachable(String),
+    /// the transport failed after the request may have gone out: whether
+    /// the node acted on it is not known
     Transport(String),
     /// the body did not decode as the type asked for
     Decode(Refusal),
@@ -201,7 +204,7 @@ impl std::fmt::Display for Error {
                 write!(f, "{}: {}", refusal.reason, refusal.sentence)
             }
             Error::Failed { status, sentence } => write!(f, "node answered {status}: {sentence}"),
-            Error::Transport(sentence) => write!(f, "{sentence}"),
+            Error::Unreachable(sentence) | Error::Transport(sentence) => write!(f, "{sentence}"),
         }
     }
 }
@@ -210,7 +213,10 @@ impl std::error::Error for Error {}
 
 impl From<reqwest::Error> for Error {
     fn from(error: reqwest::Error) -> Self {
-        Error::Transport(error.to_string())
+        match error.is_connect() {
+            true => Error::Unreachable(error.to_string()),
+            false => Error::Transport(error.to_string()),
+        }
     }
 }
 

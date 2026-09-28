@@ -2,7 +2,7 @@
 //! the bar's menus, and closing each.
 
 use super::{AppMessage as Message, Appearance, Ducktape, Overlay, Spot, SpotRow};
-use view_wire::Task;
+use crate::ui::task::Task;
 
 impl Ducktape {
     /// What is open over the desk, and what it holds.
