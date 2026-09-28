@@ -5,7 +5,6 @@ mod standin;
 #[cfg(test)]
 mod tests;
 
-use present::native_root;
 use standin::Standin;
 
 // ---------- the widget ----------
