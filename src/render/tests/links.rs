@@ -48,8 +48,9 @@ fn press(native: &mut gpui_kit::VisualTestContext, stroke: &str) -> Option<Strin
 }
 
 /// Tab lands on the text with its first link picked; the arrows, Home and
-/// End move the pick along the links without wrapping; Enter is the picked
-/// range's click, a real gesture; Tab leaves.
+/// End move the pick along the links without wrapping; a press from
+/// assistive technology on the picked link is its range's click, no
+/// gesture; Enter is the picked range's click, a real gesture; Tab leaves.
 #[gpui_kit::test]
 fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     cx: &mut gpui_kit::TestAppContext,
@@ -79,6 +80,30 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     assert_eq!(press(&mut native, "left").as_deref(), Some("the docs"));
     assert_eq!(press(&mut native, "left").as_deref(), Some("the docs"));
     assert_eq!(press(&mut native, "down").as_deref(), Some("the code"));
+    native.update(|window, cx| {
+        use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
+        let focus = window.a11y_tree().unwrap().focus;
+        window.dispatch_a11y_action(
+            ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: focus,
+                data: None,
+            },
+            cx,
+        );
+    });
+    let code = wire::Event::Select {
+        handler: 72,
+        index: 1,
+    };
+    assert_eq!(
+        events.borrow_mut().drain(..).collect::<Vec<_>>(),
+        std::slice::from_ref(&code)
+    );
+    tree.read_with(&native, |tree, _| {
+        assert!(tree.take_user_activation(&code).is_none());
+    });
     assert_eq!(press(&mut native, "up").as_deref(), Some("the docs"));
     assert!(events.borrow().is_empty(), "picking presses nothing");
     press(&mut native, "enter");
