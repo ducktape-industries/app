@@ -49,6 +49,7 @@ pub(crate) struct Facts {
     /// Seconds since the node last answered its status.
     pub(crate) heard_age: i64,
     pub(crate) settings_page: crate::SettingsPage,
+    pub(crate) center: crate::runtime::notify::CenterHandle,
 }
 
 impl Ducktape {
@@ -93,6 +94,7 @@ impl Ducktape {
             block_age: self.block_age(),
             heard_age: self.heard_age(),
             settings_page: self.settings_page,
+            center: self.center.clone(),
         }
     }
 }

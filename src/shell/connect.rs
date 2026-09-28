@@ -41,7 +41,7 @@ impl DesktopWindow {
         );
         let border = match note {
             Some(_) => ink.danger,
-            None => ink.strong,
+            None => ink.field,
         };
         // Only a try in flight has a status worth reading.
         let below = match (&note, state.connecting) {

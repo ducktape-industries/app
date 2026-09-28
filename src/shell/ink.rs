@@ -15,8 +15,11 @@ pub(super) struct Ink {
     pub(super) muted: Hsla,
     /// hairlines
     pub(super) line: Hsla,
-    /// a field's border
+    /// a switch off, the segmented row's frame, a window's frame on the desk
     pub(super) strong: Hsla,
+    /// a text field's border: 3:1 against the page and a chosen row
+    /// (AX-121; owner, 2026-09-28)
+    pub(super) field: Hsla,
     /// the figure's panel, a chosen row
     pub(super) surface: Hsla,
     /// the drawing in characters
@@ -39,6 +42,7 @@ impl Ink {
                 muted: rgb(0x6B6B6B),
                 line: rgb(0xE6E6E6),
                 strong: rgb(0xCFCFCF),
+                field: rgb(0x8E8E8E),
                 surface: rgb(0xF5F5F3),
                 figure: rgb(0x3A3A3A),
                 danger: rgb(0xB42318),
@@ -51,6 +55,7 @@ impl Ink {
                 muted: rgb(0x8F8F8F),
                 line: rgb(0x2A2A2A),
                 strong: rgb(0x3A3A3A),
+                field: rgb(0x666666),
                 surface: rgb(0x1A1A1A),
                 figure: rgb(0xBDBDBD),
                 danger: rgb(0xF97066),
@@ -285,7 +290,7 @@ impl DesktopWindow {
 }
 
 /// `<input>`'s box around a bare field: `height 44px; padding 0 12px;
-/// border 1px solid strong; font 400 15px`. `border` recolors it (an
+/// border 1px solid field; font 400 15px`. `border` recolors it (an
 /// error's danger, a match's green).
 pub(super) fn field_box(field: AnyElement, border: Hsla, height: f32, ink: &Ink) -> Div {
     sans(400, 15.)
@@ -370,11 +375,15 @@ mod tests {
         });
     }
 
-    /// AX-121's control boundary: a field's border, a switch off, the
-    /// segmented row's frame.
+    /// AX-121's control boundary: a text field's border, on the page and
+    /// on a chosen row.
     #[test]
-    #[ignore = "strong border is 1.56:1/1.66:1 against the page; owner keeps the look (ax.md §6 Q1)"]
     fn a_field_border_reads_at_three_to_one() {
-        reach(3., |ink| vec![("a field's border", ink.strong, ink.bg)]);
+        reach(3., |ink| {
+            vec![
+                ("a field's border", ink.field, ink.bg),
+                ("a field's border on a chosen row", ink.field, ink.surface),
+            ]
+        });
     }
 }

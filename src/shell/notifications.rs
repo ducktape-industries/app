@@ -23,7 +23,7 @@ impl DesktopWindow {
         let width = WIDTH.min(wide - 16.).max(0.);
         let now = crate::runtime::notify::wall();
         let midnight = local_midnight(now);
-        let center = crate::runtime::notify::center();
+        let center = state.center.lock();
         let unread = center.unread();
         let entries: Vec<_> = center.entries().cloned().collect();
         drop(center);

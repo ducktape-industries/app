@@ -1,11 +1,12 @@
 //! The notification centre: the log of the chain in hand (one JSON file
 //! per chain under `<config>/notifications`) and the banner policy —
 //! permission, focus, the per-view token bucket — that decides what a
-//! posted notice becomes. One global, reached through [`center`].
+//! posted notice becomes. The app keeps one, reached through [`center`];
+//! a test builds its own.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
 use super::settings::{Permission, Settings};
@@ -68,12 +69,24 @@ pub(crate) struct Center {
     pub(super) not_now: BTreeSet<String>,
 }
 
-pub(crate) fn center() -> MutexGuard<'static, Center> {
-    static CENTER: OnceLock<Mutex<Center>> = OnceLock::new();
-    CENTER
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// A notification centre, shared by whoever holds a clone: the app's one
+/// ([`center`]), which its views post into and its windows draw, or a
+/// test's own.
+#[derive(Clone, Default)]
+pub(crate) struct CenterHandle(Arc<Mutex<Center>>);
+
+impl CenterHandle {
+    pub(crate) fn lock(&self) -> MutexGuard<'_, Center> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// The app's one centre.
+pub(crate) fn center() -> &'static CenterHandle {
+    static CENTER: OnceLock<CenterHandle> = OnceLock::new();
+    CENTER.get_or_init(CenterHandle::default)
 }
 
 /// Unix seconds now.
@@ -249,7 +262,7 @@ impl Center {
     }
 
     /// `module`'s window asks, with nothing logged: the permission bar
-    /// drawn without touching the unread count other tests read.
+    /// drawn without an unread count on the bell.
     #[cfg(test)]
     pub(crate) fn ask_for_test(&mut self, module: &str) {
         self.asking.insert(module.to_owned());

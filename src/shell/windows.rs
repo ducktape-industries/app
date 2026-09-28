@@ -109,6 +109,8 @@ impl DesktopWindow {
             covered: None,
             refocus: None,
             modal: cx.focus_handle(),
+            menu: cx.focus_handle(),
+            menu_held: false,
             pane_keys: HashMap::new(),
             panes_moved: false,
             front: None,

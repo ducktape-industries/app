@@ -61,7 +61,7 @@ impl DesktopWindow {
                         phrase,
                         match failed {
                             true => ink.danger,
-                            false => ink.strong,
+                            false => ink.field,
                         },
                         44.,
                         &ink,
@@ -250,7 +250,7 @@ impl DesktopWindow {
                 self.field(
                     SharedString::from(format!("{key}-label")),
                     format!("Word {}", nth + 1),
-                    field_box(field, ink.strong, 44., &ink).into_any_element(),
+                    field_box(field, ink.field, 44., &ink).into_any_element(),
                     None,
                     &ink,
                 )

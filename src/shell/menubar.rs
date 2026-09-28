@@ -163,7 +163,7 @@ impl DesktopWindow {
                 .border_color(ink.line)
                 .child(chord),
         );
-        let unread = crate::runtime::notify::center().unread();
+        let unread = state.center.lock().unread();
         let bell_open = state.overlay == Some(Overlay::Menu(Popover::Notifications));
         let bell = item(
             "rail-notifications",

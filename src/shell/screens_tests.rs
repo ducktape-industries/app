@@ -54,14 +54,36 @@ fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::Ap
     );
 }
 
-/// The notification centre is one per process: the test that posts to it
-/// and the tests that draw it and move the keys through it take turns, or
-/// a row appears or goes under a walk.
-pub(super) fn notices() -> std::sync::MutexGuard<'static, ()> {
-    static NOTICES: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    NOTICES
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// An assistive technology's press (AccessKit's Click) on the node whose
+/// element is `id` inside the element `within`: the path the door's
+/// `/act press` takes.
+fn press(within: &str, id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
+    draw(window, cx);
+    let named = |element: &ElementId, want: &str| matches!(element, ElementId::Name(name) if name.as_ref() == want);
+    let target = window
+        .a11y_tree()
+        .unwrap()
+        .nodes
+        .iter()
+        .find_map(|(node, _)| {
+            window
+                .a11y_element_id(*node)
+                .is_some_and(|path| {
+                    path.last().is_some_and(|element| named(element, id))
+                        && path.iter().any(|element| named(element, within))
+                })
+                .then_some(*node)
+        })
+        .unwrap_or_else(|| panic!("missing AX control {id} in {within}"));
+    window.dispatch_a11y_action(
+        ActionRequest {
+            action: Action::Click,
+            target_tree: TreeId::ROOT,
+            target_node: target,
+            data: None,
+        },
+        cx,
+    );
 }
 
 fn find<'a>(nodes: &'a serde_json::Value, role: &str, name: &str) -> &'a serde_json::Value {
@@ -468,13 +490,15 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
 /// in the header, and Settings opening on Notifications.
 #[gpui_kit::test]
 fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
-    use crate::runtime::notify::{Permission, Settings, center};
-    let _turn = notices();
+    use crate::runtime::notify::{CenterHandle, Permission, Settings};
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
     let (mut state, _) = Ducktape::boot();
+    // its own centre, not the app's one every test shares
+    let center = CenterHandle::default();
+    state.center = center.clone();
     state.stage = Stage::Desk;
     state.connected = true;
     state.network = "testkit".into();
@@ -500,7 +524,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         link: "duck://chat/design".into(),
     };
     {
-        let mut center = center();
+        let mut center = center.lock();
         let at = std::time::Instant::now();
         center.post(
             &silent,
@@ -547,6 +571,21 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     find(&nodes, "MenuItem", "Unread. Lin: @grace look");
     find(&nodes, "Button", "Mark all read");
     assert!(!nodes.to_string().contains("all caught up"));
+    // the panel opened on them: its keys at its first control, as the bell
+    // gives them, and a Tab past its last closes it (a menu)
+    for overlay in [
+        None,
+        Some(crate::Overlay::Menu(crate::Popover::Notifications)),
+    ] {
+        view.update(&mut native, |view, cx| {
+            view.model.update(cx, |model, cx| {
+                model.state.overlay = overlay;
+                cx.notify();
+            })
+        });
+        native.update(draw);
+        native.update(draw);
+    }
     gate::passes(&mut native, "notifications-menu-unread", false);
 
     view.update(&mut native, |view, cx| {
@@ -564,7 +603,6 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     let nodes = native.update(draw);
     find(&nodes, "Switch", "Desktop banners");
     find(&nodes, "RadioGroup", "Burst limit");
-    center().clear_read();
 }
 
 /// A press inside an overlay's card stays inside: the card offers no press

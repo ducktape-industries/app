@@ -104,6 +104,10 @@ impl DesktopWindow {
             (chord_label("1–9"), "A window by its place"),
             (chord_label("/"), "This help"),
             ("Esc".to_owned(), "Close search, a menu or settings"),
+            (
+                "Esc, then Tab".to_owned(),
+                "In a text editor, move on (Tab alone indents)",
+            ),
             (chord_label("Q"), "Quit"),
         ]
         .into_iter()
