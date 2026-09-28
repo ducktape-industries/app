@@ -544,9 +544,7 @@ impl Desktop {
 
     fn raise_window(&mut self, key: WindowKey, cx: &mut Context<Self>) {
         if let Some(view) = self.views.get(&key) {
-            let _ = view.update(cx, |view, _| {
-                view.switching = crate::perf::time(perf_key(key), "switch");
-            });
+            let _ = view.update(cx, |view, _| view.start_switch());
         }
         if let Some(handle) = self.windows.get(&key) {
             let _ = handle.update(cx, |_, window, _| window.activate_window());
@@ -649,6 +647,14 @@ pub(crate) struct DesktopWindow {
 }
 
 impl DesktopWindow {
+    /// A switch asked for: timed from here to the frame after the one that
+    /// shows it. One under way already keeps its start.
+    fn start_switch(&mut self) {
+        if self.switching.is_none() {
+            self.switching = crate::perf::time(perf_key(self.key), "switch");
+        }
+    }
+
     /// On the desk: connected, and past the key and account steps.
     fn on_desk(&self, cx: &gpui_kit::App) -> bool {
         !self.model.read(cx).state.in_launcher()

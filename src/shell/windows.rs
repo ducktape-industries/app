@@ -89,7 +89,7 @@ impl DesktopWindow {
             cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
                 let message = match window.is_window_active() {
                     true => {
-                        this.switching = crate::perf::time(perf_key(key), "switch");
+                        this.start_switch();
                         Message::WindowFocused(key)
                     }
                     false => Message::WindowUnfocused(key),

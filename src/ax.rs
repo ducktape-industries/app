@@ -483,13 +483,7 @@ async fn answer(
             }
             perf_reply(by_instance, &windows)
         }
-        Request::PerfReset => match crate::perf::on() {
-            true => {
-                crate::perf::reset();
-                Reply::ok(json!({ "reset": true }))
-            }
-            false => perf_off(),
-        },
+        Request::PerfReset => perf_reset_reply(),
         Request::Reveal(Reveal { id }) => {
             // a window's tree is switched on by the read
             let _ = read(windows, &all, false, seen, cx);
@@ -522,6 +516,15 @@ fn perf_off() -> Reply {
         409,
         json!({ "error": "perf is off: launch with DUCKTAPE_PERF=1" }),
     )
+}
+
+/// `POST /perf/reset`: the counters and samples back to zero; 409 while off.
+fn perf_reset_reply() -> Reply {
+    if !crate::perf::on() {
+        return perf_off();
+    }
+    crate::perf::reset();
+    Reply::ok(json!({ "reset": true }))
 }
 
 /// The registry as the door gives it: 409 while off, so a gate fails
@@ -681,5 +684,26 @@ mod tests {
         let cached = perf_reply(false, &[served("console", 41, false)]);
         let body: serde_json::Value = serde_json::from_str(&cached.body).unwrap();
         assert_eq!(body["cache_on"], true);
+    }
+
+    /// A reset is refused off; on, it zeroes what `/perf` then shows.
+    #[test]
+    fn perf_reset_is_refused_off_and_clears_on() {
+        let off = {
+            let _off = crate::perf::off_for_test();
+            perf_reset_reply()
+        };
+        assert_eq!(off.status, 409);
+
+        let _on = crate::perf::on_for_test();
+        let window = crate::perf::Key::Window(crate::runtime::WindowKey(43));
+        crate::perf::count(window, "renders", 3);
+        let reset = perf_reset_reply();
+        assert_eq!(
+            (reset.status, reset.body.as_str()),
+            (200, r#"{"reset":true}"#)
+        );
+        let body: serde_json::Value = serde_json::from_str(&perf_reply(false, &[]).body).unwrap();
+        assert!(body["windows"]["43"].is_null(), "the count was cleared");
     }
 }
