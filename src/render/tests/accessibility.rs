@@ -253,6 +253,28 @@ fn a_fields_placeholder_reaches_the_door(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(field["placeholder"], "Type here");
 }
 
+/// A field the view marks invalid, required and read-only says so on its
+/// node, and the door reads each back (AX-108, AX-109).
+#[gpui_kit::test]
+fn a_field_says_it_is_invalid_required_and_read_only(cx: &mut gpui_kit::TestAppContext) {
+    let mut field = input("Room name", false, false);
+    let wire::Node::Input { options, .. } = &mut field else {
+        unreachable!()
+    };
+    options.invalid = Some(gpui_kit::accesskit::Invalid::True);
+    options.required = true;
+    options.read_only = true;
+    let nodes = door(cx, axis_container("root", Axis::Column, [field]));
+    let field = nodes
+        .iter()
+        .find(|node| node["role"] == "TextInput")
+        .expect("the field is in the tree");
+    assert_eq!(field["invalid"], "true");
+    assert_eq!(field["required"], true);
+    assert_eq!(field["read_only"], true);
+    assert_eq!(field["description"], "Shown to members");
+}
+
 /// A RichText's clickable ranges are Links, each named by its words, and a
 /// press on one from assistive technology is that range's click (AX-117).
 #[gpui_kit::test]

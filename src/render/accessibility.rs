@@ -20,6 +20,12 @@ pub(crate) struct Accessible {
     pub value: Option<String>,
     /// A control with no handler: it is drawn, and does nothing.
     pub disabled: bool,
+    /// A field drawn with an error; its description says which.
+    pub invalid: Option<gpui_kit::accesskit::Invalid>,
+    /// A field its form refuses empty.
+    pub required: bool,
+    /// A field whose text is read and selected, never changed.
+    pub read_only: bool,
 }
 
 fn named(text: &str) -> Option<String> {
@@ -93,6 +99,9 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             placeholder: named(placeholder),
             value: (!secure).then(|| value.clone()),
             disabled: options.disabled,
+            invalid: options.invalid,
+            required: options.required,
+            read_only: options.read_only,
         },
         // the document is not on the node: the editor mount adds its text as
         // the value (`TextEditor::render`)
@@ -147,7 +156,9 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
 
 /// Puts `accessible` on an element the presenter built. A kit widget draws
 /// its own role, name and value over these; the states it does not report
-/// itself (disabled, a description, a placeholder) are the ones this adds.
+/// itself (disabled, a description, a placeholder) are the ones this adds,
+/// and those gpui has no setter for (invalid, required, read-only) go
+/// through the element's one `a11y::Patch`.
 pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
     let Accessible {
         role,
@@ -156,7 +167,17 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         placeholder,
         value,
         disabled,
+        invalid,
+        required,
+        read_only,
     } = accessible;
+    let element = crate::a11y::Patch {
+        invalid,
+        required,
+        read_only,
+        ..Default::default()
+    }
+    .on(element);
     crate::a11y::aria(element, |mut node| {
         if let Some(role) = role {
             node = node.role(role);

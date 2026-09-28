@@ -16,6 +16,7 @@ impl Render for Keys {
             live: Some(Live::Polite),
             invalid: Some(Invalid::True),
             required: true,
+            read_only: true,
             has_popup: Some(HasPopup::Listbox),
             ..Default::default()
         }
@@ -89,7 +90,7 @@ fn the_door_says_what_else_a_node_carries(cx: &mut gpui_kit::TestAppContext) {
             "state": ["focused", "unselected"], "actions": ["focus"],
             "live": "polite", "level": 2, "placeholder": "hint",
             "keyboard_shortcut": "Ctrl+1", "position_in_set": 1, "size_of_set": 3,
-            "invalid": "true", "required": true, "has_popup": "listbox",
+            "invalid": "true", "required": true, "read_only": true, "has_popup": "listbox",
             "parent": "t:list", "in": "t",
         })
     );

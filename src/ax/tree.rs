@@ -94,6 +94,9 @@ pub(crate) struct Properties {
     pub(crate) invalid: Option<&'static str>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub(crate) required: bool,
+    /// A field whose text is read and selected, never changed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) read_only: bool,
     /// `menu`, `listbox`, `tree`, `grid` or `dialog`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) has_popup: Option<&'static str>,
@@ -122,6 +125,7 @@ impl Properties {
                 Invalid::Spelling => "spelling",
             }),
             required: node.is_required(),
+            read_only: node.is_read_only(),
             has_popup: node.has_popup().map(|popup| match popup {
                 HasPopup::Menu => "menu",
                 HasPopup::Listbox => "listbox",
