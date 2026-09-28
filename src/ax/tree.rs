@@ -319,7 +319,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                     actions.push(word);
                 }
             }
-            if node.supports_action(Action::Focus) && is_text_input(role) {
+            if node.supports_action(Action::Focus) && is_text_input(role) && !node.is_read_only() {
                 actions.push("type");
             }
         }

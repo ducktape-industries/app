@@ -166,7 +166,9 @@ impl Patch {
                     node.set_required();
                 }
                 if self.read_only {
+                    // its text is not changed, so it offers no change
                     node.set_read_only();
+                    node.remove_action(gpui_kit::accesskit::Action::SetValue);
                 }
                 if let Some(invalid) = self.invalid {
                     node.set_invalid(invalid);

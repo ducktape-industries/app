@@ -254,7 +254,8 @@ fn a_fields_placeholder_reaches_the_door(cx: &mut gpui_kit::TestAppContext) {
 }
 
 /// A field the view marks invalid, required and read-only says so on its
-/// node, and the door reads each back (AX-108, AX-109).
+/// node, and the door reads each back (AX-108, AX-109). Read-only, it
+/// offers no edit it would refuse; an editable one offers both.
 #[gpui_kit::test]
 fn a_field_says_it_is_invalid_required_and_read_only(cx: &mut gpui_kit::TestAppContext) {
     let mut field = input("Room name", false, false);
@@ -264,15 +265,27 @@ fn a_field_says_it_is_invalid_required_and_read_only(cx: &mut gpui_kit::TestAppC
     options.invalid = Some(gpui_kit::accesskit::Invalid::True);
     options.required = true;
     options.read_only = true;
-    let nodes = door(cx, axis_container("root", Axis::Column, [field]));
-    let field = nodes
-        .iter()
-        .find(|node| node["role"] == "TextInput")
-        .expect("the field is in the tree");
+    let mut editable = input("Topic", false, false);
+    if let wire::Node::Input { id, .. } = &mut editable {
+        *id = wire::ElementIdWire::Name("topic".into());
+    }
+    let nodes = door(cx, axis_container("root", Axis::Column, [field, editable]));
+    let named = |name: &str| {
+        nodes
+            .iter()
+            .find(|node| node["role"] == "TextInput" && node["name"] == name)
+            .expect("the field is in the tree")
+    };
+    let field = named("Room name");
     assert_eq!(field["invalid"], "true");
     assert_eq!(field["required"], true);
     assert_eq!(field["read_only"], true);
     assert_eq!(field["description"], "Shown to members");
+    assert_eq!(field["actions"], serde_json::json!(["focus"]));
+    assert_eq!(
+        named("Topic")["actions"],
+        serde_json::json!(["focus", "set_value", "type"])
+    );
 }
 
 /// A view whose rich text has clickable ranges is not red on the door: each
