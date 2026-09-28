@@ -248,6 +248,13 @@ impl Center {
         self.asking.contains(module)
     }
 
+    /// `module`'s window asks, with nothing logged: the permission bar
+    /// drawn without touching the unread count other tests read.
+    #[cfg(test)]
+    pub(crate) fn ask_for_test(&mut self, module: &str) {
+        self.asking.insert(module.to_owned());
+    }
+
     /// Notices from `module` this past week, folded ones counted.
     pub(crate) fn this_week(&self, module: &str, wall: i64) -> u32 {
         self.entries

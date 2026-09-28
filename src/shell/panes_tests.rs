@@ -604,7 +604,7 @@ fn an_empty_window_opens_what_its_field_finds(cx: &mut TestAppContext) {
         draw(window, cx);
     });
     native.simulate_input("cmdtest");
-    native.simulate_keystrokes("down tab enter");
+    native.simulate_keystrokes("down enter");
     native.update(|window, cx| {
         draw(window, cx);
         let layout = view.read(cx).layout(cx);

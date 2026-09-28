@@ -2,7 +2,6 @@
 //! `images` (decoded rasters) and `vectors` (SVG bytes), both keyed by the
 //! guest's content hash so a later frame can name a picture without
 //! resending it. `qr` is the shell's (sign-in); no wire node draws one.
-use super::accessibility::Drift;
 use super::picture_resources::{cache_fits, decode_image};
 use super::*;
 use crate::render::native_id;
@@ -76,11 +75,9 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Svg {
-            id,
             source,
             transformation,
             style,
-            interactivity,
             ..
         } = node
         else {
@@ -137,7 +134,7 @@ impl ViewTree {
             wire::SvgSource::External(_) => element.child("External SVG path refused"),
             wire::SvgSource::None => element.child("SVG source unavailable"),
         };
-        self.primitive_interactivity(element, id.as_ref(), interactivity, cx)
+        self.primitive_interactivity(element, node, cx)
     }
 
     pub(super) fn drawing(&mut self, node: &wire::Node, _cx: &mut Context<Self>) -> AnyElement {
@@ -244,7 +241,6 @@ impl ViewTree {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let wire::Node::Image {
-            id,
             hash,
             data,
             image_style,
@@ -252,7 +248,6 @@ impl ViewTree {
             fallback,
             state_children,
             style,
-            interactivity,
             ..
         } = node
         else {
@@ -290,16 +285,27 @@ impl ViewTree {
                 }
             }
         }
-        self.primitive_interactivity(element, id.as_ref(), interactivity, cx)
+        self.primitive_interactivity(element, node, cx)
     }
 
+    /// An Image's or Svg's box as the guest styled and wired it; its role
+    /// and name come through `accessible` (`guest_aria`), so a labelled
+    /// picture with no role is an Image.
     fn primitive_interactivity(
         &mut self,
         element: Div,
-        id: Option<&wire::ElementIdWire>,
-        interactivity: &wire::Interactivity,
+        node: &wire::Node,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let (wire::Node::Image {
+            id, interactivity, ..
+        }
+        | wire::Node::Svg {
+            id, interactivity, ..
+        }) = node
+        else {
+            unreachable!()
+        };
         let mut element = element;
         if let Some(group) = &interactivity.group {
             element = element.group(group.clone());
@@ -312,7 +318,7 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_hover(group.group.clone(), move |_| style);
         }
-        let native_id = id.map(native_id).unwrap_or_else(|| {
+        let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;
             ElementId::NamedInteger("guest-primitive".into(), index)
@@ -326,15 +332,7 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_active(group.group.clone(), move |_| style);
         }
-        element = self.guest_aria(
-            element,
-            interactivity,
-            Drift {
-                name_from: None,
-                active_descendant: false,
-            },
-            cx,
-        );
+        element = self.guest_aria(element, node, interactivity, cx);
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {

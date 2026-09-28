@@ -25,6 +25,7 @@ impl DesktopWindow {
         let ink = Ink::of(state.dark);
         let ok = !state.reconnecting;
         let host = crate::backend::host_of(&state.connected_rpc).to_owned();
+        // the key and its value, each a Label: `Height`, `6,230`
         let row = |key: &'static str, value: String, code: bool| {
             div()
                 .flex()
@@ -32,14 +33,14 @@ impl DesktopWindow {
                 .items_baseline()
                 .px(px(16.))
                 .py(px(7.))
-                .child(sans(400, 13.).text_color(ink.muted).child(key))
+                .child(sans(400, 13.).text_color(ink.muted).child(words(key, key)))
                 .child(
                     match code {
                         true => mono(400, 13.),
                         false => sans(400, 13.),
                     }
                     .text_color(ink.ink)
-                    .child(value),
+                    .child(words(SharedString::from(format!("{key}/value")), value)),
                 )
         };
         let mut rows = vec![];
@@ -114,14 +115,17 @@ impl DesktopWindow {
                             .flex()
                             .flex_col()
                             .gap(px(2.))
-                            .child(sans(500, 15.).child(match ok {
-                                true => "In sync",
-                                false => "Not answering",
-                            }))
+                            .child(sans(500, 15.).child(words(
+                                "sync",
+                                match ok {
+                                    true => "In sync",
+                                    false => "Not answering",
+                                },
+                            )))
                             .child(
                                 mono(400, 12.)
                                     .text_color(ink.muted)
-                                    .child(format!("{} · {host}", state.network)),
+                                    .child(words("node", format!("{} · {host}", state.network))),
                             ),
                     ),
             )
@@ -198,12 +202,16 @@ impl DesktopWindow {
                     .pt(px(10.))
                     .px(px(16.))
                     .pb(px(12.))
-                    .child(sans(500, 16.).child(name))
-                    .child(mono(400, 12.).text_color(ink.muted).child(detail))
+                    .child(sans(500, 16.).child(words("name", name)))
+                    .child(
+                        mono(400, 12.)
+                            .text_color(ink.muted)
+                            .child(words("detail", detail)),
+                    )
                     .child(
                         sans(400, 13.)
                             .text_color(ink.muted)
-                            .child("This device's key, kept by the system"),
+                            .child(words("key", "This device's key, kept by the system")),
                     ),
             )
             .child(div().h(px(1.)).mb(px(6.)).bg(ink.line))

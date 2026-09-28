@@ -587,6 +587,8 @@ pub(crate) struct DesktopWindow {
     spotlight_focused: bool,
     /// ⌘K's list: ↑↓ scroll the picked row into it.
     spotlight_rows: gpui_kit::ScrollHandle,
+    /// Settings' page: the row holding the keys scrolls into view.
+    settings_rows: settings::Page,
     /// An empty window's field, made the first time one shows.
     command: Option<command::CommandLine>,
     /// What was open over the desk when it was last drawn.
@@ -594,8 +596,9 @@ pub(crate) struct DesktopWindow {
     /// What had the keys when something opened over the desk: they go back
     /// to it when it closes, so typing carries on where it was.
     refocus: Option<gpui_kit::FocusHandle>,
-    /// A dialog on a scrim (Spotlight, Settings, Approve): the keys go into
-    /// it when it opens, and Tab and Shift+Tab stay in it.
+    /// Whatever is open over the desk: the keys go into it when it opens.
+    /// A dialog on a scrim (Spotlight, Settings, Approve) keeps Tab and
+    /// Shift+Tab in it; a menu lets them out to the bar.
     modal: gpui_kit::FocusHandle,
     /// Each window's own focus (its view's box), by instance, and what in it
     /// last had the keys: a window that comes to the front gets them back.
@@ -702,10 +705,10 @@ impl Render for DesktopWindow {
         // the window's root takes the keys whenever nothing inside has them
         // (a screen gave way, a pane moved): named, so assistive technology
         // says where the keys are instead of reading the whole window out
-        let root = root
+        let root = crate::a11y::Patch::default().keys_fallback().on(root
             .id("desktop-root")
             .role(gpui_kit::Role::Group)
-            .aria_label("Ducktape");
+            .aria_label("Ducktape"));
         self.on_keys(root, cx)
             .size_full()
             .bg(ink.bg)

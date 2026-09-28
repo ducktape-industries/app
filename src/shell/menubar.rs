@@ -34,6 +34,11 @@ impl DesktopWindow {
                 Some(note) => format!("{shown} · {note}"),
                 None => shown.clone(),
             };
+            // the count the tab shows is in what it is called
+            let name = match badge {
+                ..=0 => name,
+                count => format!("{name}, {count} unread"),
+            };
             // folded: the program's icon, its initial when it has none,
             // and its whole name on hover
             let shown: AnyElement = match (narrow, tab_icon(module)) {
@@ -167,37 +172,45 @@ impl DesktopWindow {
                         .size(px(16.))
                         .text_color(ink.muted),
                 )
+                // the count, announced as notices land
                 .when(unread > 0, |bell| {
                     bell.child(
-                        mono(500, 9.)
-                            .absolute()
-                            .top(px(-5.))
-                            .left(px(8.))
-                            .min_w(px(14.))
-                            .h(px(14.))
-                            .px(px(3.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .bg(ink.ink)
-                            .text_color(ink.bg)
-                            .child(match unread {
-                                ..=99 => unread.to_string(),
-                                _ => "99+".to_owned(),
-                            }),
+                        crate::a11y::live(
+                            mono(500, 9.).id("rail-unread").role(Role::Status),
+                            accesskit::Live::Polite,
+                            format!("{unread} unread notifications"),
+                        )
+                        .absolute()
+                        .top(px(-5.))
+                        .left(px(8.))
+                        .min_w(px(14.))
+                        .h(px(14.))
+                        .px(px(3.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(ink.ink)
+                        .text_color(ink.bg)
+                        .child(match unread {
+                            ..=99 => unread.to_string(),
+                            _ => "99+".to_owned(),
+                        }),
                     )
                 }),
         );
+        // the height moves every block: it is the description, so the
+        // name holds still
         let (breath, said) = match (state.connecting, state.reconnecting) {
-            (true, _) => (true, "Node: switching".to_owned()),
-            (_, true) => (false, "Node: not answering".to_owned()),
-            (false, false) => (true, format!("Node: in sync, block {}", state.height)),
+            (true, _) => (true, "Node: switching"),
+            (_, true) => (false, "Node: not answering"),
+            (false, false) => (true, "Node: in sync"),
         };
         let node_open = state.overlay == Some(Overlay::Menu(Popover::Node));
         let node = item("rail-connection", said.into(), node_open, || {
             Message::TogglePopover(Popover::Node)
         })
+        .aria_description(format!("Block {}", state.height))
         .aria_expanded(node_open)
         .relative()
         .child(self.button_probe(Overlay::Menu(Popover::Node), cx))
@@ -208,12 +221,10 @@ impl DesktopWindow {
         let who = match (&state.account, unlocked) {
             (_, false) => item("sign-in", "Sign in".into(), false, || Message::SignIn)
                 .child(div().underline().child("Sign in")),
-            (Some(None), true) => item(
-                "rail-account",
-                "Account: no account yet — create one".into(),
-                false,
-                || Message::ShowCreateAccount,
-            )
+            // named by what it says
+            (Some(None), true) => item("rail-account", "Create account".into(), false, || {
+                Message::ShowCreateAccount
+            })
             .child(div().underline().child("Create account")),
             (account, true) => {
                 let name = match account {

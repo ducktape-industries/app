@@ -1,7 +1,7 @@
-//! The three renderers that carry the guest's own `Interactivity.aria` must
-//! keep announcing exactly what they did before the setter chain was folded
-//! into `guest_aria`: the properties AccessKit receives, read off the tree
-//! gpui hands the OS, not off `ax::snapshot` (which drops half of them).
+//! The renderers that carry the guest's own `Interactivity.aria` announce
+//! it alike through the one mapper, `guest_aria`: the properties AccessKit
+//! receives, read off the tree gpui hands the OS, not off `ax::snapshot`
+//! (which drops half of them).
 use super::*;
 use gpui_kit::accesskit::{self, Action, NodeId, Toggled, TreeUpdate};
 use gpui_kit::test::TestWindowExt as _;
@@ -63,11 +63,22 @@ fn every_aria(author_id: &str, label: Option<&str>) -> wire::Interactivity {
     }
 }
 
-/// What one node's renderer announces, as the three call sites build it.
+/// `every_aria` on a node nothing can focus: the one that may claim the
+/// active descendant.
+fn unfocusable(label: Option<&str>) -> wire::Interactivity {
+    wire::Interactivity {
+        focusable: false,
+        ..every_aria("child", label)
+    }
+}
+
+/// Where the aria is put: on a Container, an Image, a UniformList itself,
+/// or the one row of a UniformList.
 enum Site {
     Container,
     Image,
     UniformList,
+    UniformListRow,
 }
 
 fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
@@ -114,12 +125,27 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
                 children: vec![text("child-text")],
             })],
         },
+        Site::UniformListRow => wire::Node::UniformList {
+            id: key("list"),
+            path: vec![key("list")],
+            route: 1,
+            style: boxed(),
+            interactivity: Default::default(),
+            count: 1,
+            measure_index: 0,
+            sizing: wire::list::UniformListSizing::Auto,
+            horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
+            y_flipped: false,
+            scroll_request: None,
+            indices: vec![0],
+            children: vec![child(&Site::Container, interactivity)],
+        },
     }
 }
 
 /// The child under a focusable, roled parent that holds the guest focus
 /// handle: the composite an active descendant is announced within.
-fn root(site: &Site, label: Option<&str>) -> wire::Node {
+fn root(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
     wire::Node::Container(view_wire::ContainerNode {
         id: Some(key("parent")),
         style: div().w(px(280.)).h(px(180.)).style().clone(),
@@ -134,7 +160,7 @@ fn root(site: &Site, label: Option<&str>) -> wire::Node {
             },
             ..Default::default()
         },
-        children: vec![child(site, every_aria("child", label))],
+        children: vec![child(site, interactivity)],
     })
 }
 
@@ -202,10 +228,10 @@ fn heard(update: &TreeUpdate, author_id: &str) -> Option<(NodeId, Heard)> {
     ))
 }
 
-fn expected(name: Option<&str>) -> Heard {
+fn expected(name: &str, focusable: bool) -> Heard {
     Heard {
         role: Role::Button,
-        name: name.map(str::to_owned),
+        name: Some(name.to_owned()),
         description: Some("described".into()),
         keyshortcuts: Some("Ctrl+K".into()),
         value: Some("worth".into()),
@@ -226,7 +252,7 @@ fn expected(name: Option<&str>) -> Heard {
         column_count: Some(3),
         toggled: Some(Toggled::Mixed),
         orientation: Some(accesskit::Orientation::Vertical),
-        focus_action: true,
+        focus_action: focusable,
     }
 }
 
@@ -266,28 +292,105 @@ fn announce(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> (Option<Hear
     })
 }
 
-/// Each renderer keeps announcing what its own copy of the chain set:
-/// every aria property alike; a roled Container with no label named by
-/// its descendant text and honouring `active_descendant`; an Image
-/// unnamed, leaving focus on the parent (the `Drift` the owner decides
-/// on). A UniformList has no node at all: gpui's `UniformList` element
-/// reports no `a11y_role`, so its whole chain is dead until the fork
-/// gives it one. Written and green before the fold, kept after it.
+/// Every renderer announces the guest's aria alike, a roled node with no
+/// label named by the text it draws; a focusable node never claims the
+/// active descendant (gpui panics, in debug, when the claimant is the
+/// focused node), so focus stays on the parent. A UniformList itself has
+/// no node at all: gpui's `UniformList` element reports no `a11y_role`, so
+/// its aria is dead until the fork gives it one.
 #[gpui_kit::test]
 fn guest_aria_announces_what_each_renderer_did(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    for (site, unlabelled_name, active) in [
-        (Site::Container, Some(WORDS), true),
-        (Site::Image, None, false),
-    ] {
-        let (unlabelled, focus_on_child) = announce(cx, root(&site, None));
-        assert_eq!(unlabelled, Some(expected(unlabelled_name)));
-        assert_eq!(focus_on_child, active, "active descendant of the parent");
-        let (labelled, focus_on_child) = announce(cx, root(&site, Some("Labelled")));
-        assert_eq!(labelled, Some(expected(Some("Labelled"))));
-        assert_eq!(focus_on_child, active);
+    for site in [Site::Container, Site::Image, Site::UniformListRow] {
+        for (label, name) in [(None, WORDS), (Some("Labelled"), "Labelled")] {
+            let (heard, focus_on_child) = announce(cx, root(&site, every_aria("child", label)));
+            assert_eq!(heard, Some(expected(name, true)));
+            assert!(
+                !focus_on_child,
+                "a focusable node claims no active descendant"
+            );
+        }
     }
     for label in [None, Some("Labelled")] {
-        assert_eq!(announce(cx, root(&Site::UniformList, label)), (None, false));
+        let list = root(&Site::UniformList, every_aria("child", label));
+        assert_eq!(announce(cx, list), (None, false));
+    }
+}
+
+/// The same Aria on a row of a UniformList and on an Image is what it is
+/// on a Container: every property, the name from the drawn text when
+/// unlabelled, and the active descendant within the focused parent.
+#[gpui_kit::test]
+fn a_uniform_list_row_and_an_image_get_the_aria_a_container_gets(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    for label in [None, Some("Labelled")] {
+        let container = announce(cx, root(&Site::Container, unfocusable(label)));
+        assert_eq!(
+            container,
+            (Some(expected(label.unwrap_or(WORDS), false)), true)
+        );
+        for site in [Site::UniformListRow, Site::Image] {
+            assert_eq!(announce(cx, root(&site, unfocusable(label))), container);
+        }
+    }
+}
+
+/// A picture the guest labelled and gave no role is an Image named by its
+/// label, as `accessible` says; an unlabelled one stays out of the tree.
+#[gpui_kit::test]
+fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    for label in [Some("Ada's avatar"), None] {
+        let aria = wire::Interactivity {
+            aria: wire::Aria {
+                author_id: Some("picture".into()),
+                // the SDK sends the label on the node and in its aria
+                label: label.map(Into::into),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let image = wire::Node::Image {
+            id: Some(key("picture")),
+            hash: 0,
+            data: None,
+            label: label.map(Into::into),
+            image_style: wire::ImageStyle {
+                grayscale: false,
+                object_fit: wire::ImageObjectFit::Contain,
+            },
+            loading: false,
+            fallback: false,
+            state_children: Vec::new(),
+            style: boxed(),
+            interactivity: aria.clone(),
+        };
+        let vector = wire::Node::Svg {
+            id: Some(key("picture")),
+            source: wire::SvgSource::None,
+            transformation: wire::SvgTransformation {
+                scale: [1., 1.],
+                translate: [0., 0.],
+                rotate: 0.,
+            },
+            label: label.map(Into::into),
+            style: boxed(),
+            interactivity: aria,
+        };
+        for picture in [image, vector] {
+            let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(picture));
+            let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+            let heard = native.update(|window, cx| {
+                window.activate_a11y();
+                window.render_frame(cx);
+                window.render_frame(cx);
+                let update = window.a11y_tree().expect("an a11y tree once activated");
+                heard(update, "picture").map(|(_, heard)| (heard.role, heard.name))
+            });
+            let want = label.map(|label| (Role::Image, Some(label.to_owned())));
+            assert_eq!(heard, want);
+        }
     }
 }
