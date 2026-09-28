@@ -17,13 +17,6 @@ use zeroize::Zeroizing;
 
 const SERVICE: &str = "dev.ducktape.app";
 
-/// Where a device key lives.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Store {
-    Os,
-    File,
-}
-
 fn file_only() -> bool {
     cfg!(test) || std::env::var("DUCKTAPE_DEVICE_KEY_STORE").is_ok_and(|store| store == "file")
 }
@@ -73,20 +66,19 @@ fn load_file(path: &std::path::Path) -> Result<Option<ed25519::PrivateKey>, Stri
 
 /// Keeps `key` as this device's key for `keyring`: in the OS store, else
 /// the file.
-pub(crate) fn save(keyring: &str, key: &ed25519::PrivateKey) -> Result<Store, String> {
+pub(crate) fn save(keyring: &str, key: &ed25519::PrivateKey) -> Result<(), String> {
     let seed = Zeroizing::new(key.encode().to_vec());
     if !file_only()
         && let Some(entry) = entry(keyring)
     {
         match entry.set_secret(&seed) {
-            Ok(()) => return Ok(Store::Os),
+            Ok(()) => return Ok(()),
             Err(error) => {
                 tracing::info!(target: "ducktape::keys", %error, "OS key store refused the key, keeping it in a file");
             }
         }
     }
-    save_file(&file(keyring)?, &seed)?;
-    Ok(Store::File)
+    save_file(&file(keyring)?, &seed)
 }
 
 fn save_file(path: &std::path::Path, seed: &[u8]) -> Result<(), String> {

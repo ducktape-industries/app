@@ -227,6 +227,8 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
 
 #[test]
 fn geometry_and_pixels_keep_the_wire_meaning() {
+    use crate::render::canvas::{append_arc, append_arc_to};
+    use crate::render::picture_resources::decode_image;
     let mut path = String::new();
     let end = append_arc_to(&mut path, [0.0, 0.0], [10.0, 0.0], [10.0, 10.0], 2.0);
     assert!((end[0] - 10.0).abs() < 0.001 && (end[1] - 2.0).abs() < 0.001);

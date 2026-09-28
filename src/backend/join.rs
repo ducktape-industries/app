@@ -18,22 +18,20 @@
 
 use commonware_codec::DecodeExt as _;
 use commonware_cryptography::{Signer as _, ed25519};
-use identity::{Admission, CONSENT_NAMESPACE, Consent, Op, Query, Reply};
+use identity::{CONSENT_NAMESPACE, Consent, Op, Query, Reply};
 use sha2::{Digest as _, Sha256};
 
-use super::noded::Frame;
-use super::passkey::{
-    ask, auth_page, expires_at, generation, get, person, submit, submit_seated, url_encode,
+use super::auth_page::auth_page;
+use super::identity::{
+    DEVICE_KEY_LABEL, account_by_number, admission, ask, person, submit, submit_seated,
 };
+use super::noded::Frame;
+use super::relay::{POLL, post, slot, take};
 use super::{RpcClient, hex_decode, hex_encode, next_seq, seated_key, seated_sign};
-
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 
 /// How long a new device waits for the other to approve: the relay's own
 /// hold.
-pub(crate) const WAIT: std::time::Duration = std::time::Duration::from_secs(300);
-const POLL: std::time::Duration = std::time::Duration::from_millis(1500);
+const APPROVAL_WAIT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Crockford's base32: no I, L, O, U to misread.
 const ALPHABET: &[u8; 32] = b"0123456789ABCDEFGHJKMNPQRSTVWXYZ";
@@ -73,59 +71,6 @@ pub(crate) fn fingerprint(key: &[u8]) -> String {
     format!("{} {}", &hex[..4], &hex[4..])
 }
 
-/// The relay slot for one side of a code: `request` (new → old) or
-/// `consent` (old → new).
-fn slot(page: &str, code: &str, side: &str) -> Result<String, String> {
-    let mut url = reqwest::Url::parse(page)
-        .map_err(|error| format!("The auth host address is unusable: {error}"))?;
-    let mut hash = Sha256::new();
-    hash.update(b"ducktape:link:v1\0");
-    hash.update(side.as_bytes());
-    hash.update(b"\0");
-    hash.update(code.as_bytes());
-    url.set_path(&format!("/r/{}", B64.encode(hash.finalize())));
-    url.set_query(None);
-    url.set_fragment(None);
-    Ok(url.into())
-}
-
-async fn post(url: &str, json: String) -> Result<(), String> {
-    let reply = reqwest::Client::new()
-        .post(url)
-        .header("content-type", "application/x-www-form-urlencoded")
-        .body(format!("result={}", url_encode(&json)))
-        .send()
-        .await
-        .map_err(|_| {
-            "Can't reach the auth host. Check the connection and try again.".to_string()
-        })?;
-    match reply.status().is_success() {
-        true => Ok(()),
-        false => Err(format!(
-            "The auth host refused the message ({}).",
-            reply.status()
-        )),
-    }
-}
-
-/// One GET of a slot: its message, or `None` while nothing has arrived.
-async fn take(url: &str) -> Result<Option<String>, String> {
-    let reply = reqwest::Client::new()
-        .get(url)
-        .send()
-        .await
-        .map_err(|_| "Can't reach the auth host.".to_string())?;
-    match reply.status() {
-        reqwest::StatusCode::OK => reply
-            .text()
-            .await
-            .map(Some)
-            .map_err(|_| "Lost the message on the way.".to_string()),
-        reqwest::StatusCode::NO_CONTENT => Ok(None),
-        status => Err(format!("The auth host refused ({status}).")),
-    }
-}
-
 /// A new device asking to join: which network, and its key.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Request {
@@ -148,7 +93,7 @@ pub(crate) async fn join_from_device(
     let request = serde_json::json!({ "v": 1, "network": network, "key": hex_encode(&device) });
     post(&slot(&page, &code, "request")?, request.to_string()).await?;
     let answer = slot(&page, &code, "consent")?;
-    let deadline = tokio::time::Instant::now() + WAIT;
+    let deadline = tokio::time::Instant::now() + APPROVAL_WAIT;
     let json = loop {
         if let Some(json) = take(&answer).await? {
             break json;
@@ -161,7 +106,7 @@ pub(crate) async fn join_from_device(
     let consent = parse_consent(&json)?;
     let add = Op::AddKey {
         scheme: abi::Scheme::Ed25519,
-        label: Some("Desktop".into()),
+        label: Some(DEVICE_KEY_LABEL.into()),
         consent,
     };
     submit_seated(client, network, &add).await.map(drop)
@@ -226,14 +171,14 @@ pub(crate) async fn approve(
         ));
     }
     let code = normalized(code).ok_or("That code is malformed.")?;
-    let admission = Admission {
-        network: network.as_bytes().to_vec(),
-        scheme: abi::Scheme::Ed25519,
-        key: request.key.clone(),
-        generation: generation(client, network, &request.key).await?,
+    let admission = admission(
+        client,
+        network,
+        abi::Scheme::Ed25519,
+        request.key.clone(),
         account,
-        expires_at: expires_at(),
-    };
+    )
+    .await?;
     let (key, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
         .map_err(|refusal| refusal.message)?;
@@ -286,15 +231,15 @@ pub(crate) async fn add_recovery_key(
     let account = account_of(client, network, device)
         .await?
         .ok_or("This device's key holds no account yet.")?;
-    person(&get(client, network, account).await?)?;
-    let admission = Admission {
-        network: network.as_bytes().to_vec(),
-        scheme: abi::Scheme::Ed25519,
-        key: public.clone(),
-        generation: generation(client, network, &public).await?,
+    person(&account_by_number(client, network, account).await?)?;
+    let admission = admission(
+        client,
+        network,
+        abi::Scheme::Ed25519,
+        public.clone(),
         account,
-        expires_at: expires_at(),
-    };
+    )
+    .await?;
     let (key, proof) = seated_sign(CONSENT_NAMESPACE, &admission.preimage())
         .await
         .map_err(|refusal| refusal.message)?;
@@ -332,20 +277,20 @@ pub(crate) async fn join_with_recovery_key(
     let account = account_of(client, network, recovery.public_key().as_ref().to_vec())
         .await?
         .ok_or_else(|| format!("That recovery key isn't on an account on {network}."))?;
-    person(&get(client, network, account).await?)?;
+    person(&account_by_number(client, network, account).await?)?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
-    let admission = Admission {
-        network: network.as_bytes().to_vec(),
-        scheme: abi::Scheme::Ed25519,
-        key: device.clone(),
-        generation: generation(client, network, &device).await?,
+    let admission = admission(
+        client,
+        network,
+        abi::Scheme::Ed25519,
+        device.clone(),
         account,
-        expires_at: expires_at(),
-    };
+    )
+    .await?;
     let proof = recovery.sign(CONSENT_NAMESPACE, &admission.preimage());
     let add = Op::AddKey {
         scheme: abi::Scheme::Ed25519,
-        label: Some("Desktop".into()),
+        label: Some(DEVICE_KEY_LABEL.into()),
         consent: Consent {
             key: recovery.public_key().as_ref().to_vec(),
             account,
@@ -378,18 +323,6 @@ mod tests {
         );
         assert_eq!(normalized("KQ4M-9XP"), None);
         assert_eq!(normalized("KQ4M-9XPU"), None, "U is not in the alphabet");
-    }
-
-    #[test]
-    fn the_two_sides_of_a_code_are_different_slots() {
-        let page = "https://auth.ducktape.industries/";
-        let request = slot(page, "KQ4M9XPT", "request").unwrap();
-        let consent = slot(page, "KQ4M9XPT", "consent").unwrap();
-        assert_ne!(request, consent);
-        // the relay takes 43-character ids only
-        let id = request.rsplit('/').next().unwrap();
-        assert_eq!(id.len(), 43);
-        assert!(request.starts_with("https://auth.ducktape.industries/r/"));
     }
 
     #[test]

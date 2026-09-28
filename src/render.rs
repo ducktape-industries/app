@@ -29,6 +29,8 @@ mod anchored;
 mod canvas;
 mod commands;
 mod deferred;
+mod editor_mount;
+mod frame;
 mod inputs;
 mod interactivity;
 mod layout;
@@ -46,14 +48,12 @@ mod variable_list;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use accessibility::{Accessible, accessible, announce, descendant_text};
-#[cfg(test)]
-use canvas::{append_arc, append_arc_to};
+pub(crate) use accessibility::{Accessible, announce};
+use accessibility::{accessible, descendant_text};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
-use inputs::{EditorMount, Field};
-#[cfg(test)]
-use picture_resources::decode_image;
+use editor_mount::EditorMount;
+use inputs::Field;
 pub(crate) use pictures::qr;
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
@@ -61,6 +61,11 @@ use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
 use uniform::UniformListHostState;
 use variable_list::{VariableList, VariableListKey};
 
+/// The ids of a node and of its identified ancestors, root first: the key
+/// every piece of retained native state is stored under. Only a node with an
+/// id (`Node::identity`) adds a segment; one without shares its nearest
+/// identified ancestor's path, so only identified nodes may write a map
+/// keyed by it.
 pub(crate) type AuthoredPath = Vec<wire::ElementIdWire>;
 
 /// The gpui id for a sanitized wire id. Sanitize refuses every id that
@@ -81,15 +86,22 @@ pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {
     }
 }
 
+/// Native widget state worth carrying into a fresh `ViewTree` when a view's
+/// guest is re-instantiated: plain data only, no entity or handler id, since
+/// the new guest's handler ids mean different things. Taken by
+/// `ViewTree::presentation`, consumed by the new tree's first render.
 #[derive(Default)]
 pub(crate) struct NativePresentation {
     images: HashMap<u64, Arc<RenderImage>>,
     vectors: HashMap<u64, Arc<[u8]>>,
     focused_container: Option<(AuthoredPath, std::mem::Discriminant<wire::Node>)>,
     inputs: HashMap<AuthoredPath, InputPresentation>,
+    /// The focused editors' documents; the field named takes the caret back.
     editors: HashMap<AuthoredPath, wire::editor_document::EditorDocumentRef>,
 }
 
+/// A text field as its user left it: restored only onto a field the new
+/// guest gives the same value and secrecy.
 struct InputPresentation {
     value: String,
     secure: bool,
@@ -97,32 +109,61 @@ struct InputPresentation {
     focused: bool,
 }
 
+/// The gpui entity that draws one guest view's wire tree and keeps the
+/// native state that outlives a frame, keyed by [`AuthoredPath`]. `replace`
+/// adopts each new root and retains every map to the paths it still mounts.
 pub struct ViewTree {
-    user_activation: std::cell::Cell<Option<u32>>,
-    slot_mask: tooltip_containment::SlotMask,
+    // The frame being drawn.
     root: wire::Node,
-    // Structural nodes enter the native focus path only on an explicit Focus request.
-    focus_targets: HashMap<AuthoredPath, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
-    fields: HashMap<AuthoredPath, Field>,
+    /// The path of the node `node()` is drawing; pushed and popped on the way.
     authored_path: AuthoredPath,
-    scrolls: HashMap<AuthoredPath, ScrollHandle>,
-    drags: HashMap<AuthoredPath, Point<Pixels>>,
-    /// The overlays showing a dialog, and where focus enters each.
-    dialogs: HashMap<AuthoredPath, FocusHandle>,
-    bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
-    sensors: HashMap<AuthoredPath, SensorState>,
-    guest_focus_targets: HashMap<u64, FocusHandle>,
-    uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
-    variable_lists: HashMap<VariableListKey, VariableList>,
-    images: HashMap<u64, Arc<RenderImage>>,
-    vectors: HashMap<u64, Arc<[u8]>>,
-    editor_store: Option<crate::editor::wire::EditorStore>,
-    editors: HashMap<AuthoredPath, EditorMount>,
+    /// Every identified path this render passed: what a widget command may target.
     mounted: std::collections::HashSet<AuthoredPath>,
-    presentation: NativePresentation,
+    /// Counts the anonymous elements of a render, for ids of their own.
     render_index: u64,
     /// The document order the next rich paragraph registers for selection.
     selection_order: std::rc::Rc<std::cell::Cell<u64>>,
+
+    // Native widgets, one per mounted node.
+    fields: HashMap<AuthoredPath, Field>,
+    editors: HashMap<AuthoredPath, EditorMount>,
+    /// The guest's editor documents; handed over by the runtime, not built here.
+    editor_store: Option<crate::editor::wire::EditorStore>,
+    sensors: HashMap<AuthoredPath, SensorState>,
+    /// A resize handle's press position while its drag lasts.
+    drags: HashMap<AuthoredPath, Point<Pixels>>,
+
+    // Scrolling.
+    /// Identified containers with `overflow.y: scroll`; the scroll widget commands' targets.
+    scrolls: HashMap<AuthoredPath, ScrollHandle>,
+    uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
+    variable_lists: HashMap<VariableListKey, VariableList>,
+
+    // Focus: two systems. A container enters the native focus path only on
+    // an explicit Focus widget command (keyed by path, with the node kind
+    // it was granted as); a guest `Interactivity::focus_handle` is a handle
+    // the guest names by number.
+    focus_targets: HashMap<AuthoredPath, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
+    guest_focus_targets: HashMap<u64, FocusHandle>,
+    /// The overlays showing a dialog, and where focus enters each.
+    dialogs: HashMap<AuthoredPath, FocusHandle>,
+
+    // Measured geometry by path: what `measure` records for identified
+    // containers, editor mounts and canvases, and the sensor canvas for sensors.
+    bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
+
+    // Decoded pictures by content hash; a frame resends bytes only for a
+    // hash the host has not remembered.
+    images: HashMap<u64, Arc<RenderImage>>,
+    vectors: HashMap<u64, Arc<[u8]>>,
+
+    // Plumbing.
+    /// State carried over from the previous guest instance's tree; emptied by the first render.
+    presentation: NativePresentation,
+    /// The handler a real gesture last pressed; `take_user_activation` spends it once.
+    user_activation: std::cell::Cell<Option<u32>>,
+    /// The pane box this tree is clipped to, for its tooltip windows.
+    slot_mask: tooltip_containment::SlotMask,
     #[cfg(test)]
     renders: u64,
 }
@@ -165,11 +206,12 @@ impl ViewTree {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // One arm, one method: this dispatcher is on the recursion chain for
-        // every nesting level the wire allows (`wire::MAX_DEPTH`), and an
-        // unoptimised build gives a function the stack of ALL its arms at
-        // once — inlined bodies here once cost 570 KiB a level and overflowed
-        // the main thread at a depth of fourteen.
+        // One arm, one method (Space, a bare div, is the one exception): this
+        // dispatcher is on the recursion chain for every nesting level the
+        // wire allows (`wire::MAX_DEPTH`), and an unoptimised build gives a
+        // function the stack of ALL its arms at once — inlined bodies here
+        // once cost 570 KiB a level and overflowed the main thread at a depth
+        // of fourteen.
         let entered_scope = enter_scope(node, &mut self.authored_path);
         if entered_scope {
             self.mounted.insert(self.authored_path.clone());
@@ -209,16 +251,20 @@ impl Render for ViewTree {
         self.mounted.clear();
         self.authored_path.clear();
         self.render_index = 0;
-        // Each view counts its paragraphs from its own base, so two views'
-        // orders never interleave and a frame repeats the last one's.
+        // Paragraph selection order starts at a base unique to this view (its
+        // entity id in the high 32 bits) and restarts there every render, so
+        // paragraphs keep stable numbers and two views never interleave.
         self.selection_order
             .set((cx.entity_id().as_u64() & u64::from(u32::MAX)) << 32);
         let node = self.node(&self.root.clone(), window, cx);
-        // Only controls mounted by this replacement frame may recover focus.
+        // Carried-over state is for the first render of a new tree only:
+        // whatever it did not claim is dropped.
         self.presentation = NativePresentation::default();
         let slot_mask = self.slot_mask.clone();
-        // This boundary belongs to the host, never to guest style. It also
-        // supplies the mask captured by deferred guest draws.
+        // Host-owned clip box around the guest root (guest style never
+        // reaches it). The zero-size canvas records this box's content mask
+        // into `slot_mask`, which tooltip windows (`tooltip_containment::
+        // build`) use to stay inside this pane.
         div()
             .relative()
             .size_full()

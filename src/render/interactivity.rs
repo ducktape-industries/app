@@ -1,3 +1,7 @@
+//! A node's `wire::Interactivity` onto a gpui element: focus and tab
+//! order, key context, tooltips, and one listener per handler the guest
+//! set, each emitting the matching `wire::Event`.
+
 use super::ViewTree;
 use gpui_kit::{
     Context, FocusHandle, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton,

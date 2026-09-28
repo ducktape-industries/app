@@ -1,5 +1,21 @@
 use super::*;
 
+/// Ticks a replacement gets to publish its tree and finish its document
+/// transfers. The host fetches documents one at a time, and a view answers
+/// the request with `Begin`, then one chunk a tick, then `Complete`, and
+/// hears the acknowledgement on one more tick; the last tick is the quiet
+/// one that shows the transfer done.
+const FIRST_FRAME_TICK_LIMIT: usize = wire::editor_document::MAX_EDITOR_DOCUMENTS
+    * (wire::editor_document::MAX_EDITOR_CHUNKS + 3)
+    + 1;
+/// Tables are allocated eagerly at their declared minimum, before any fuel
+/// or memory limit is consulted; a view is one core instance and one memory.
+const MAX_TABLES: usize = 4;
+const MAX_TABLE_ELEMENTS: usize = 1 << 20;
+/// How much of a panic message the host keeps: this many bytes read from
+/// the guest, the first line, at most this many chars.
+const MAX_PANIC_BYTES: u32 = 1024;
+
 impl Guest {
     /// Reusing identical code still retires work started on the old connection.
     pub(crate) fn reconnect(&mut self, revision: u64) {
@@ -15,16 +31,17 @@ impl Guest {
         self.connection_rev = revision;
     }
 
-    /// A view comes from its registry entry's active deployment on the
-    /// connected node — nothing else, so with no node there is nothing to
-    /// load yet, and no file is ever opened for it unless the developer's
-    /// override ([`override_views_from`]) supplies one. With a view of the module already
-    /// drawn, the deployment's view is prepared as its replacement:
-    /// instantiated without `init`, restored from the drawn view's snapshot,
-    /// and its first tree verified — and the active code is read again
-    /// right before it is handed over, so a deployment that moved meanwhile
-    /// is not installed. Every outcome for a module-owned view is one
-    /// `view_source` log line with stable fields.
+    /// A view comes from the roster's code for `module` on the connected
+    /// node — nothing else, so with no node there is nothing to load yet,
+    /// and no file is ever opened for it unless the developer's override
+    /// ([`override_views_from`]) supplies one. Over an empty seat the view
+    /// is `init`ed. With a view of the module already drawn, the same code
+    /// is `Unchanged`, and different code is prepared as its replacement
+    /// (`replacement`): instantiated without `init`, restored from the drawn
+    /// view's snapshot, its first tree verified, and handed to the seat to
+    /// swap in. Overridden, Missing, Ready and Failed each log one
+    /// `view_source` line here (the seat logs `Swapped`); every load that
+    /// got past the roster logs one `view_load` timing line.
     pub(crate) fn load(
         module: &'static str,
         asked_of: &Connection,
@@ -239,8 +256,9 @@ impl Guest {
         self.hash = Some(hash);
     }
 
-    /// Candidate attempts do not retire a seated view or its input routes.
-    /// Direct test fixtures have no loader-assigned generation and use zero.
+    /// The load generation that seated this instance — zero for one built
+    /// directly by a test — so a candidate still loading retires nothing
+    /// of the seated view.
     pub(crate) fn seated_generation(&self) -> u64 {
         self.installed_generation.unwrap_or_default()
     }
@@ -289,7 +307,7 @@ impl Guest {
         })
     }
 
-    /// `on mount` runs in here.
+    /// The view's `init` export: a fresh start, with no snapshot to restore.
     pub(crate) fn init(&mut self, shown: &str) -> Result<(), String> {
         arm(&mut self.store);
         if let Err(error) = self.exports.init(&mut self.store) {
@@ -304,10 +322,7 @@ impl Guest {
     pub(crate) fn first_frame(&mut self, shown: &str) -> Result<(), String> {
         let mut requests = Vec::new();
         let mut cancels = Vec::new();
-        let limit = wire::editor_document::MAX_EDITOR_DOCUMENTS
-            * (wire::editor_document::MAX_EDITOR_CHUNKS + 3)
-            + 1;
-        for _ in 0..limit {
+        for _ in 0..FIRST_FRAME_TICK_LIMIT {
             self.tick();
             if let Some(fault) = &self.fault {
                 return Err(format!("{shown}: {fault}"));
@@ -319,7 +334,7 @@ impl Guest {
             }
             requests.append(&mut self.frame.requests);
             cancels.append(&mut self.frame.cancels);
-            if requests.len() > MAX_REQUESTS_PER_TICK || cancels.len() > 2 * MAX_REQUESTS_PER_TICK {
+            if requests.len() > MAX_REQUESTS_PER_TICK || cancels.len() > MAX_CANCELS_PER_TICK {
                 return Err(format!(
                     "{shown}: replacement requests exceed the first-frame budget"
                 ));
@@ -380,15 +395,12 @@ impl Guest {
         shown: &str,
     ) -> Result<Self, String> {
         let engine = engine();
-        // Tables are allocated eagerly at their declared minimum, before any
-        // fuel or memory limit is consulted; a view is one core instance
-        // and one memory.
         let limits = StoreLimitsBuilder::new()
             .memory_size(MEMORY_LIMIT)
             .memories(1)
             .instances(1)
-            .tables(4)
-            .table_elements(1 << 20)
+            .tables(MAX_TABLES)
+            .table_elements(MAX_TABLE_ELEMENTS)
             .trap_on_grow_failure(true)
             .build();
         let mut store = Store::new(
@@ -412,14 +424,15 @@ impl Guest {
                         .and_then(|export| export.into_memory())
                         .and_then(|memory| {
                             let start = ptr as usize;
-                            let bytes = memory
-                                .data(&caller)
-                                .get(start..start.saturating_add(len.min(1024) as usize))?;
+                            let bytes = memory.data(&caller).get(
+                                start..start.saturating_add(len.min(MAX_PANIC_BYTES) as usize),
+                            )?;
                             Some(String::from_utf8_lossy(bytes).into_owned())
                         })
                         .unwrap_or_default();
                     let line = message.lines().next().unwrap_or_default();
-                    caller.data_mut().panic = Some(line.chars().take(1024).collect());
+                    caller.data_mut().panic =
+                        Some(line.chars().take(MAX_PANIC_BYTES as usize).collect());
                 },
             )
             .map_err(|error| error.to_string())?;
@@ -488,11 +501,7 @@ impl Guest {
         }
         self.props_sent = props.clone();
         let props = props.clone().unwrap_or_default();
-        self.pending.push(wire::Event::Response {
-            id,
-            result: Ok(props),
-            done: false,
-        });
+        self.stream_item(id, props);
     }
 
     pub(crate) fn set_visible(&mut self, visible: bool) {
@@ -510,11 +519,7 @@ impl Guest {
             return;
         };
         if let Some(route) = crate::runtime::take_route(self.module) {
-            self.pending.push(wire::Event::Response {
-                id,
-                result: Ok(wire::methods::encode(&route)),
-                done: false,
-            });
+            self.stream_item(id, wire::methods::encode(&route));
         }
     }
 
@@ -525,12 +530,8 @@ impl Guest {
             return;
         }
         self.offset_sent = Some(minutes);
-        for id in &self.offset_subscriptions {
-            self.pending.push(wire::Event::Response {
-                id: *id,
-                result: Ok(wire::methods::encode(&minutes)),
-                done: false,
-            });
+        for id in self.offset_subscriptions.clone() {
+            self.stream_item(id, wire::methods::encode(&minutes));
         }
     }
 
@@ -538,12 +539,8 @@ impl Guest {
         let Some(visible) = self.visibility_change.take() else {
             return;
         };
-        for id in &self.visibility_subscriptions {
-            self.pending.push(wire::Event::Response {
-                id: *id,
-                result: Ok(wire::methods::encode(&visible)),
-                done: false,
-            });
+        for id in self.visibility_subscriptions.clone() {
+            self.stream_item(id, wire::methods::encode(&visible));
         }
     }
 }

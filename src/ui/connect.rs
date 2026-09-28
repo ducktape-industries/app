@@ -294,7 +294,7 @@ impl Ducktape {
         let network = self.network.clone();
         let signer = self.signer_key.clone();
         Task::future(async move {
-            match backend::passkey::account_of_key(&client, &network, key).await {
+            match backend::identity::account_of_key(&client, &network, key).await {
                 Ok(account) => Some(Message::AccountResolved {
                     node,
                     key: signer,
