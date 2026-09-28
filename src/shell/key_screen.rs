@@ -72,7 +72,7 @@ impl DesktopWindow {
                     on_change: Message::PasswordTyped,
                     on_enter: || Message::UnlockSubmit,
                     label: Some("Password".into()),
-                    secret: true,
+                    private: false,
                     size: 15.,
                 },
                 window,

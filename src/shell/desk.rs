@@ -196,6 +196,9 @@ impl DesktopWindow {
         let card = div()
             .id(id)
             .control(role, name)
+            // a press inside the card stays inside: occluded, the backdrop
+            // is not under the pointer and its click never fires. No
+            // `on_click` here: that would offer a press on the dialog.
             .occlude()
             .flex()
             .flex_col()
@@ -203,14 +206,15 @@ impl DesktopWindow {
             .text_color(ink.ink)
             .border(px(1.5))
             .border_color(ink.ink)
-            .shadow_lg()
-            .on_click(|_, _, cx| cx.stop_propagation());
-        let backdrop = backdrop.child(dress(card));
+            .shadow_lg();
         match scrim {
+            // modal to assistive technology as to the keyboard: what is
+            // behind the scrim is not reachable
             true => backdrop
+                .child(dress(crate::a11y::modal(card)))
                 .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
                 .into_any_element(),
-            false => backdrop.into_any_element(),
+            false => backdrop.child(dress(card)).into_any_element(),
         }
     }
 

@@ -282,7 +282,7 @@ impl DesktopWindow {
             .child(
                 div()
                     .id("rail-rows")
-                    .role(Role::TabList)
+                    .control(Role::TabList, "Programs")
                     .min_w_0()
                     .flex()
                     // folded and still too many: they scroll
