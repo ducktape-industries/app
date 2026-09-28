@@ -82,7 +82,7 @@ Notes an implementer needs:
 
 ### 1.3 Phase-2 rule table
 
-Shipped on `ax/phase2` (`src/ax/audit/phase_two.rs`; the table with severities is `src/ax/audit/table.rs` `RULES`), except AX-115 and AX-108's `error_message` relation, which wait for a fork relation setter (the fork's `accesskit_node_id` is `pub(crate)` and `a11y_element_id` is last frame's map, so the host cannot compute a relation in-frame). AX-120 is not a door rule: no walk closes a dialog; it is a render test. AX-121 and AX-122 are unit tests over the palette and `Spin`. The "needs" column is the plan's; it says where each datum came from: **door** = export an AccessKit property the host sets; **wire** = a view-wire field; **SDK** = a view-guest builder change; **fork** = a gpui-pre setter.
+Shipped on `ax/phase2` (`src/ax/audit/phase_two.rs`; the table with severities is `src/ax/audit.rs` `RULES`), except AX-115 and AX-108's `error_message` relation, which wait for a fork relation setter (the fork's `accesskit_node_id` is `pub(crate)` and `a11y_element_id` is last frame's map, so the host cannot compute a relation in-frame). AX-120 is not a door rule: no walk closes a dialog; it is a render test. AX-121 and AX-122 are unit tests over the palette and `Spin`. The "needs" column is the plan's; it says where each datum came from: **door** = export an AccessKit property the host sets; **wire** = a view-wire field; **SDK** = a view-guest builder change; **fork** = a gpui-pre setter.
 
 | id | predicate | severity | scope | needs |
 |---|---|---|---|---|
@@ -307,7 +307,7 @@ Continuously: the app CI gate over the shell matrix (phase 1), the modules CI ga
 
 ## 7. Phase-1 rules, machine-readable
 
-The whole table, phase 2 included, is `src/ax/audit/table.rs` `RULES`; `GET /audit` reports by these ids. The phase-1 rows as first written:
+The whole table, phase 2 included, is `src/ax/audit.rs` `RULES`; `GET /audit` reports by these ids. The phase-1 rows as first written:
 
 ```json
 [
