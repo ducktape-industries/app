@@ -324,7 +324,6 @@ mod ax_editor_tests {
         let editor = wire::Node::Editor {
             options: Box::new(wire::EditorOptions {
                 binding: Some(Box::new(wire::EditorBinding {
-                    authored: false,
                     claims: Vec::new(),
                     on_request: 1,
                     on_event: 2,

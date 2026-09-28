@@ -14,6 +14,7 @@
 //! thread.
 
 use crate::a11y::Control as _;
+use crate::ui::task::Task;
 use futures::{
     StreamExt as _,
     channel::{mpsc, oneshot},
@@ -25,7 +26,6 @@ use gpui_kit::{
 };
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
-use view_wire::Task;
 
 use crate::ui::layout::{self, PaneMessage};
 use crate::{AppMessage as Message, Ducktape, Stage};
@@ -662,10 +662,6 @@ impl DesktopWindow {
         self.focus.focus(window, cx);
     }
 
-    fn released(&mut self, cx: &mut gpui_kit::App) {
-        self.observe_window(view_wire::events::Window::Closed, cx);
-    }
-
     /// This window's panes, as the model has them.
     fn layout(&self, cx: &gpui_kit::App) -> layout::Layout {
         self.model
@@ -675,28 +671,6 @@ impl DesktopWindow {
             .get(&self.key)
             .cloned()
             .unwrap_or_default()
-    }
-
-    fn observe_window(&mut self, event: view_wire::events::Window, cx: &mut gpui_kit::App) {
-        let panes = self.layout(cx).panes;
-        let views: Vec<_> = {
-            let mounted = &self.model.read(cx).mounted;
-            panes
-                .iter()
-                .filter_map(|pane| mounted.get(&pane.instance))
-                .map(|mounted| (mounted.module, mounted.view.clone()))
-                .collect()
-        };
-        for (module, view) in views {
-            let intents = view.update(cx, |view, cx| {
-                view.observe_final_window_event(event.clone(), cx)
-            });
-            for intent in intents {
-                self.model.update(cx, |model, cx| {
-                    model.dispatch(Message::ViewEvent(module, intent), cx)
-                });
-            }
-        }
     }
 }
 

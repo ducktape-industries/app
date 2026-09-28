@@ -58,7 +58,7 @@ fn on_desk(overlay: crate::Overlay) -> Build {
 /// Every screen state, with whether it is a launcher screen (AX-018).
 fn matrix() -> Vec<(&'static str, bool, Build)> {
     let words = || Secret::from(String::from("canoe pond forest"));
-    let passkey = || view_wire::task::Task::<()>::none().abortable().1;
+    let passkey = || crate::ui::task::Task::<()>::none().abortable().1;
     vec![
         ("connect", true, Box::new(|| booted(Stage::Connect, false))),
         (

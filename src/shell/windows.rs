@@ -72,7 +72,6 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        cx.on_release(Self::released).detach();
         let observer = cx.observe(&model, |_, _, cx| cx.notify());
         let activation =
             cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
@@ -179,11 +178,7 @@ impl Desktop {
             let opened = cx.open_window(options, |window, cx| {
                 let view = cx.new(|cx| DesktopWindow::new(window_model, key, kind, window, cx));
                 opened_view = Some(view.downgrade());
-                let closing = view.downgrade();
                 window.on_window_should_close(cx, move |window, cx| {
-                    let _ = closing.update(cx, |this, cx| {
-                        this.observe_window(view_wire::events::Window::CloseRequested, cx)
-                    });
                     release_window_input(window, cx);
                     true
                 });

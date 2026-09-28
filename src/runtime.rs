@@ -162,8 +162,7 @@ pub(crate) fn intern(id: &str) -> &'static str {
 
 mod display_diagnostics;
 
-pub(crate) mod input;
-mod pictures;
+pub(crate) mod pictures;
 
 /// The name a view's manifest gives it and the capabilities it declares;
 /// empty for one whose manifest cannot be read (`compile` refuses those

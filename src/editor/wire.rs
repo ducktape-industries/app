@@ -274,12 +274,6 @@ impl EditorStore {
         store.pump();
     }
 
-    // NativeModuleView applies the guest's event-interest mask on dispatch.
-    // These observations never mutate the authoritative editor document.
-    fn observe_ime(&self, events: Vec<wire::Event>) {
-        self.lock().events.extend(events);
-    }
-
     fn native(
         &self,
         key: &[wire::ElementIdWire],
