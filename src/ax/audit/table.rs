@@ -27,7 +27,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 38] = [
+pub(crate) const RULES: [Rule; 40] = [
     rule(
         "AX-001",
         Error,
@@ -129,6 +129,16 @@ pub(crate) const RULES: [Rule; 38] = [
         "AX-102",
         Error,
         "A Status is live polite, an Alert live assertive, and both have a value.",
+    ),
+    rule(
+        "AX-103",
+        Error,
+        "A Dialog the Tab walk never leaves is modal.",
+    ),
+    rule(
+        "AX-104",
+        Error,
+        "A Dialog the screen state shows holds the focus as it opens.",
     ),
     rule(
         "AX-105",

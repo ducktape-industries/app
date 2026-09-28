@@ -1,6 +1,7 @@
 //! The phase-2 rules (`docs/ax.md` §1.3): what the door's phase-2 keys say
-//! about one node (AX-101, 102, 106, 108, 109, 111 … 114, 116 … 118), and
-//! where a node sits through `parent` (AX-105, 119).
+//! about one node (AX-101, 102, 106, 108, 109, 111 … 114, 116 … 118),
+//! where a node sits through `parent` (AX-105, 119), and whether the focus
+//! is in the dialog that shows (AX-103, 104).
 use super::*;
 use std::collections::HashMap;
 
@@ -35,6 +36,18 @@ impl<'a> Snapshot<'a> {
         };
         std::iter::successors(up(node), move |node| up(node))
     }
+
+    /// `node` is `ancestor` or sits inside it.
+    fn within(&self, node: &'a AxNode, ancestor: &str) -> bool {
+        node.id == ancestor || self.ancestors(node).any(|above| above.id == ancestor)
+    }
+}
+
+/// A focused node of `nodes` is `id` or sits inside it.
+fn focus_within(nodes: &[AxNode], snapshot: &Snapshot<'_>, id: &str) -> bool {
+    nodes
+        .iter()
+        .any(|node| has(node, "focused") && snapshot.within(node, id))
 }
 
 /// The container roles `role` belongs in (AX-105), when it has any.
@@ -178,5 +191,33 @@ pub(super) fn node_rules(
         tally.check("AX-119", node, host.is_none(), || {
             format!("pressable inside {}", host.map_or("", |host| &host.id))
         });
+    }
+}
+
+/// AX-103 and AX-104. A dialog that shows has the focus as the state
+/// opens (AX-104); a non-modal one may let the walk out. One the Tab walk
+/// never leaves is modal to the keyboard, and says so (AX-103).
+pub(super) fn walk_rules(reading: &Reading, tally: &mut Tally) {
+    let snapshots = &reading.snapshots;
+    let Some(first) = snapshots.first() else {
+        return;
+    };
+    let opened = Snapshot::of(first);
+    for dialog in first.iter().filter(|node| node.role == "Dialog") {
+        tally.check(
+            "AX-104",
+            dialog,
+            focus_within(first, &opened, &dialog.id),
+            || "the dialog shows and the focus is outside it".to_owned(),
+        );
+        let held = snapshots.len() > 1
+            && snapshots
+                .iter()
+                .all(|nodes| focus_within(nodes, &Snapshot::of(nodes), &dialog.id));
+        if held {
+            tally.check("AX-103", dialog, dialog.more.modal, || {
+                "Tab never leaves the dialog, and it is not modal".to_owned()
+            });
+        }
     }
 }

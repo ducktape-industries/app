@@ -158,6 +158,7 @@ pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
         screen_rules(nodes, reading, launcher, &mut tally);
     }
     walk_rules(reading, &mut tally);
+    phase_two::walk_rules(reading, &mut tally);
     let mut ids = BTreeSet::new();
     let mut actionable = BTreeSet::new();
     for node in reading.snapshots.iter().flatten() {

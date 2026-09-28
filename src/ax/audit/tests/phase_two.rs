@@ -43,6 +43,61 @@ fn ax_102_a_status_is_polite_an_alert_assertive_and_both_carry_a_value() {
 }
 
 #[test]
+fn ax_103_a_dialog_the_walk_never_leaves_is_modal() {
+    let dialog = |modal| {
+        let mut node = node("dlg", "Dialog", "Account");
+        node.more.modal = modal;
+        node
+    };
+    let a = || under(button("a", "Lock"), "dlg");
+    let b = || under(button("b", "Switch node"), "dlg");
+    let held = |modal| {
+        walk(vec![
+            vec![dialog(modal), focused(a()), b()],
+            vec![dialog(modal), a(), focused(b())],
+            vec![dialog(modal), focused(a()), b()],
+        ])
+    };
+    assert!(fails(&held(true), "AX-103").is_empty());
+    assert_eq!(fails(&held(false), "AX-103"), ["w:dlg"]);
+    // a walk that leaves it: not modal to the keyboard either
+    let left = walk(vec![
+        vec![dialog(false), focused(a())],
+        vec![dialog(false), a(), focused(button("bar", "Search"))],
+    ]);
+    assert!(!left.applicable.contains_key("AX-103"));
+    // no walk, no word on it
+    assert!(
+        !one(vec![dialog(false), focused(a())])
+            .applicable
+            .contains_key("AX-103")
+    );
+}
+
+#[test]
+fn ax_104_the_focus_is_inside_the_dialog_that_shows() {
+    let dialog = || node("dlg", "Dialog", "Account");
+    let inside = one(vec![dialog(), focused(under(button("a", "Lock"), "dlg"))]);
+    assert!(fails(&inside, "AX-104").is_empty());
+    let outside = one(vec![
+        dialog(),
+        under(button("a", "Lock"), "dlg"),
+        focused(button("bar", "Search")),
+    ]);
+    assert_eq!(fails(&outside, "AX-104"), ["w:dlg"]);
+    // a dialog that is not modal may let the walk out once it has the focus
+    let left = walk(vec![
+        vec![dialog(), focused(under(button("a", "Lock"), "dlg"))],
+        vec![
+            dialog(),
+            under(button("a", "Lock"), "dlg"),
+            focused(button("bar", "Search")),
+        ],
+    ]);
+    assert!(fails(&left, "AX-104").is_empty());
+}
+
+#[test]
 fn ax_105_a_row_is_in_its_container() {
     let item = |id, parent| under(node(id, "MenuItem", "Lock"), parent);
     let report = one(vec![
