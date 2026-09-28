@@ -484,7 +484,8 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
 - **Fuel.** `FUEL_PER_TICK` (`runtime.rs`, 250M instructions) is armed by
   `guest::arm` before every entry into a view: `init`, `tick`, `snapshot`,
   `restore`, and instantiate. There is no wall-clock or epoch budget.
-  `RUST_LOG=ducktape::fuel=debug` logs fuel used per tick.
+  `RUST_LOG=ducktape::perf=debug` logs fuel used per tick, and
+  `DUCKTAPE_PERF=1` keeps the counters `GET /perf` reads (docs/perf.md).
 - **Limits** (`runtime.rs`, `kernel.rs`), as of this writing: `MEMORY_LIMIT`
   64 MiB per store, `MAX_FRAME_BYTES` 8 MiB (a bigger frame ends the view),
   `MAX_REQUESTS_PER_TICK` 256, `MAX_PAYLOAD_BYTES` 1 MiB, `MAX_OP_BYTES`
@@ -704,7 +705,7 @@ House words, and where one word means several things.
   (`Refused`, `Wire`); did `init` or the first tick
   trap (`Trapped` — a panic message is in the sentence). To bypass the
   node, point `DUCKTAPE_VIEWS_DIR` at a directory of `<module>_view.wasm`.
-  `RUST_LOG=ducktape::fuel=debug` shows per-tick fuel.
+  `RUST_LOG=ducktape::perf=debug` shows per-tick fuel.
 - **Run against a node.** Start a node from `ducktape-industries/ducktape`
   (the branch README names), then `cargo run -p ducktape-app`;
   `DUCKTAPE_RPC=<url>` skips the connect screen. Keys go to the OS store;

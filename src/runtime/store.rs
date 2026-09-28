@@ -22,9 +22,17 @@ pub(super) fn answer(
     id: u64,
     payload: &[u8],
 ) -> bool {
+    // a whole-file read or a write and rename, inside a redraw on the
+    // window thread: timed so docs/perf.md's question 7 gets its answer
     let answer = match (capability, operation) {
-        (Capability::Store, "get") => file(guest).and_then(|path| get(&path, payload)),
-        (Capability::Store, "set") => file(guest).and_then(|path| set(&path, payload)),
+        (Capability::Store, "get") => {
+            let _timed = crate::perf::time(crate::perf::Key::Shell, "io.store.get");
+            file(guest).and_then(|path| get(&path, payload))
+        }
+        (Capability::Store, "set") => {
+            let _timed = crate::perf::time(crate::perf::Key::Shell, "io.store.set");
+            file(guest).and_then(|path| set(&path, payload))
+        }
         _ => return false,
     };
     guest.reply(id, answer);

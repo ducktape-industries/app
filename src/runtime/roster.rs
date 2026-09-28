@@ -99,6 +99,8 @@ pub struct RailRow {
 }
 
 pub fn rail() -> Vec<RailRow> {
+    let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
+    crate::perf::count(crate::perf::Key::Shell, "rail.calls", 1);
     let programs: Vec<&'static str> = listed()
         .lock()
         .expect("roster")

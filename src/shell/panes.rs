@@ -37,6 +37,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.switching = crate::perf::time(super::perf_key(self.key), "switch");
         let message = match message {
             // it opens where it sat on the desk
             PaneMessage::PopOut { index, at: None } => {

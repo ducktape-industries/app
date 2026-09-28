@@ -13,12 +13,15 @@ pub(crate) fn run() {
         let _ = url_sender.unbounded_send(urls);
     });
     application.run(move |cx| {
+        crate::perf::mark("gpui");
         gpui_kit::init(cx);
         keys::bind(cx);
         keys::menus(cx);
         initialize_rendering(cx);
+        crate::perf::mark("fonts");
         let mut commands = commands();
         let (state, initial) = Ducktape::boot();
+        crate::perf::mark("boot");
         let (mut tray, mut tray_events) = crate::tray::init(cx);
         tray.sync(&state);
         let desktop = cx.new(|_| Desktop::new(state, tray));
@@ -112,6 +115,8 @@ pub(crate) fn run() {
         let mut desktop = Some(desktop);
         cx.on_app_quit(move |_| {
             drop(desktop.take());
+            // the one hook every quit path reaches
+            crate::perf::summary();
             async {}
         })
         .detach();

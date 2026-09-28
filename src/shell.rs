@@ -78,6 +78,11 @@ use theme::configure_native_theme;
 
 pub(crate) use crate::runtime::WindowKey;
 
+/// A window's key in the perf registry.
+fn perf_key(key: WindowKey) -> crate::perf::Key {
+    crate::perf::Key::Window(key)
+}
+
 /// What an OS window is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum WindowKind {
@@ -329,6 +334,7 @@ impl Desktop {
     }
 
     fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
+        let _timed = crate::perf::time(crate::perf::Key::Shell, "dispatch");
         let runtime = crate::runtime::handle();
         let _runtime = runtime.enter();
         let task = self.state.handle(message);
@@ -537,6 +543,11 @@ impl Desktop {
     }
 
     fn raise_window(&mut self, key: WindowKey, cx: &mut Context<Self>) {
+        if let Some(view) = self.views.get(&key) {
+            let _ = view.update(cx, |view, _| {
+                view.switching = crate::perf::time(perf_key(key), "switch");
+            });
+        }
         if let Some(handle) = self.windows.get(&key) {
             let _ = handle.update(cx, |_, window, _| window.activate_window());
         }
@@ -628,6 +639,9 @@ pub(crate) struct DesktopWindow {
     bar_made: u64,
     /// The width the bar was last drawn at unfolded; `None` while folded.
     bar_drawn: Option<f32>,
+    /// A pane or window switch under way: started where it was asked for,
+    /// ended on the frame after the one that shows it (docs/perf.md).
+    switching: Option<crate::perf::Timer>,
     focus: gpui_kit::FocusHandle,
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
@@ -725,6 +739,13 @@ impl DesktopWindow {
 impl Render for DesktopWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
+        let _timed = crate::perf::time(perf_key(self.key), "frame.render");
+        crate::perf::count(perf_key(self.key), "renders", 1);
+        if let Some(switching) = self.switching.take() {
+            // next-frame callbacks run once the frame showing the switch
+            // was presented: an upper bound, high by one frame interval
+            window.on_next_frame(move |_, _| drop(switching));
+        }
         let content = match self.kind {
             WindowKind::View { .. } => self.desk_view(window, cx),
             WindowKind::Console => {
