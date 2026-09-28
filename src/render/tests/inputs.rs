@@ -257,7 +257,6 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
         options: Box::new(wire::EditorOptions {
             presentation: Some(Box::new(wire::editor_presentation::EditorPresentation {
                 style: div().p_0().style().clone(),
-                ..Default::default()
             })),
             ..Default::default()
         }),
