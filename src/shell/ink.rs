@@ -265,3 +265,82 @@ pub(super) fn field_box(field: AnyElement, border: Hsla, height: f32, ink: &Ink)
         .text_color(ink.ink)
         .child(div().flex_1().min_w_0().child(field))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Ink;
+    use gpui_kit::{Hsla, Rgba};
+
+    /// WCAG 2.2's contrast ratio of two opaque colors.
+    fn contrast(one: Hsla, other: Hsla) -> f32 {
+        let luminance = |color: Hsla| {
+            let Rgba { r, g, b, .. } = color.to_rgb();
+            let linear = |v: f32| match v <= 0.04045 {
+                true => v / 12.92,
+                false => ((v + 0.055) / 1.055).powf(2.4),
+            };
+            0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+        };
+        let (one, other) = (luminance(one), luminance(other));
+        (one.max(other) + 0.05) / (one.min(other) + 0.05)
+    }
+
+    /// Each pair, on the light theme and the dark, reads at `floor`:1.
+    fn reach(floor: f32, pairs: fn(&Ink) -> Vec<(&'static str, Hsla, Hsla)>) {
+        for (theme, dark) in [("light", false), ("dark", true)] {
+            for (what, fore, back) in pairs(&Ink::of(dark)) {
+                let ratio = contrast(fore, back);
+                assert!(
+                    ratio >= floor,
+                    "{what}, {theme}: {ratio:.2}:1, under {floor}:1"
+                );
+            }
+        }
+    }
+
+    /// AX-121: the words the shell draws, on each ground it draws them on.
+    #[test]
+    fn text_reads_at_four_and_a_half_to_one() {
+        reach(4.5, |ink| {
+            vec![
+                ("text", ink.ink, ink.bg),
+                ("text on a chosen row", ink.ink, ink.surface),
+                ("muted text", ink.muted, ink.bg),
+                ("muted text on a chosen row", ink.muted, ink.surface),
+                ("a filled button's words", ink.bg, ink.ink),
+                ("an error", ink.danger, ink.bg),
+                ("an unread notification", ink.figure, ink.bg),
+                ("the drawing in characters", ink.figure, ink.surface),
+            ]
+        });
+    }
+
+    /// AX-121: the focus ring over every fill it lands on, and the marks
+    /// that say a state.
+    #[test]
+    fn the_focus_ring_and_state_marks_read_at_three_to_one() {
+        reach(3., |ink| {
+            let ring = crate::a11y::ring().color;
+            vec![
+                ("the focus ring", ring, ink.bg),
+                ("the focus ring on a chosen row", ring, ink.surface),
+                ("the focus ring on a filled button", ring, ink.ink),
+                ("a chosen pane's frame, a switch on", ink.ink, ink.bg),
+                ("the node's dot, in sync", ink.ok, ink.bg),
+                (
+                    "the node's dot, not answering; a failed tab",
+                    ink.danger,
+                    ink.bg,
+                ),
+            ]
+        });
+    }
+
+    /// AX-121's control boundary: a field's border, a switch off, the
+    /// segmented row's frame.
+    #[test]
+    #[ignore = "a look change awaiting the owner (docs/ax.md §6 question 1): `strong` reads 1.56:1 light, 1.66:1 dark"]
+    fn a_field_border_reads_at_three_to_one() {
+        reach(3., |ink| vec![("a field's border", ink.strong, ink.bg)]);
+    }
+}
