@@ -30,6 +30,7 @@ pub mod route {
     pub const CHANGES: &str = "/v1/changes";
     pub const BLOCKS: &str = "/v1/blocks";
     pub const BLOCK: &str = "/v1/block";
+    pub const NETWORK: &str = "/v1/network";
 }
 
 /// `host::Layer`: which state a read sees.
@@ -108,6 +109,37 @@ pub struct Status {
     pub contract: u32,
     /// The genesis block's digest: with the network name, the chain's id.
     pub genesis: [u8; 32],
+}
+
+/// Every member of the current epoch as the node sees it (`/v1/network`):
+/// its tip and its clock (ms) when it answered, and the members in key
+/// order. The node's own row has no `said`: it never asks itself.
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Network {
+    pub height: u64,
+    pub at: u64,
+    pub members: Vec<PeerStatus>,
+}
+
+/// One member: the newest block it signed that the node applied (a fact),
+/// and its last answer to the node's status ask (a claim).
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct PeerStatus {
+    pub key: Vec<u8>,
+    pub signed: Option<u64>,
+    pub said: Option<Said>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub struct Said {
+    pub at: u64,
+    pub report: Report,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
+pub enum Report {
+    Height { height: u64, tip: [u8; 32] },
+    Withheld,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
@@ -235,6 +267,11 @@ impl Client {
 
     pub async fn status(&self) -> Result<Status> {
         self.fetch(route::STATUS).await
+    }
+
+    /// Every member's sync state as the node sees it.
+    pub async fn network(&self) -> Result<Network> {
+        self.fetch(route::NETWORK).await
     }
 
     /// A signed frame, as bytes; the node answers the receipt of its execute.
@@ -371,6 +408,52 @@ mod tests {
         assert_eq!(receipt.outcome, abi::Outcome::Applied { output: vec![7] });
         assert_eq!(receipt.nested.len(), 1);
         assert_eq!(receipt.nested[0].program, "b");
+    }
+
+    /// The bytes noded's own test pins `Network` to (noded/src/peers.rs,
+    /// `the_wire_shapes_are_borsh_in_declaration_order`).
+    #[test]
+    fn network_decodes_the_nodes_bytes() {
+        let tip = [8; 32];
+        let mut bytes = Vec::new();
+        bytes.extend(2u64.to_le_bytes());
+        bytes.extend(3u64.to_le_bytes());
+        bytes.extend(2u32.to_le_bytes());
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend([9, 1]);
+        bytes.extend(1u64.to_le_bytes());
+        bytes.push(1);
+        bytes.extend(4u64.to_le_bytes());
+        bytes.push(0);
+        bytes.extend(1u64.to_le_bytes());
+        bytes.extend(tip);
+        bytes.extend(1u32.to_le_bytes());
+        bytes.extend([7, 0, 1]);
+        bytes.extend(5u64.to_le_bytes());
+        bytes.push(1);
+        let network = Network {
+            height: 2,
+            at: 3,
+            members: vec![
+                PeerStatus {
+                    key: vec![9],
+                    signed: Some(1),
+                    said: Some(Said {
+                        at: 4,
+                        report: Report::Height { height: 1, tip },
+                    }),
+                },
+                PeerStatus {
+                    key: vec![7],
+                    signed: None,
+                    said: Some(Said {
+                        at: 5,
+                        report: Report::Withheld,
+                    }),
+                },
+            ],
+        };
+        assert_eq!(abi::decode::<Network>(&bytes).unwrap(), network);
     }
 
     #[test]

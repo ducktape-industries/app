@@ -98,7 +98,7 @@ mod replies;
 
 pub(super) use node::{NodeTask, spawn_device};
 use node::{
-    blob_get, block, blocks, heads, invite, live, query, spawn, spawn_once, status, submit,
+    blob_get, block, blocks, heads, invite, live, network, query, spawn, spawn_once, status, submit,
 };
 pub(super) use replies::Replies;
 
@@ -191,6 +191,7 @@ pub(super) fn answer(
         }
         (Capability::Module, "query") => spawn(guest, id, payload, query),
         (Capability::Chain, "status") => spawn(guest, id, payload, status),
+        (Capability::Chain, "network") => spawn(guest, id, payload, network),
         (Capability::Chain, "blocks") => spawn(guest, id, payload, blocks),
         (Capability::Chain, "block") => spawn(guest, id, payload, block),
         (Capability::Invite, "create") => spawn_once(guest, id, payload, invite),
