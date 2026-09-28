@@ -411,10 +411,10 @@ pub(super) fn status(node: Node, ask: Vec<u8>) -> Answered {
     })
 }
 
-/// `chain.network`: each member's signed height. A node from before
+/// `chain.network`: each member's newest finalize vote. A node from before
 /// `/v1/network` answers a bare 404: refused at once as a request it does
-/// not know, not retried as a node that is down would be, so the view
-/// falls back.
+/// not know, not retried as a node that is down would be, so the view says
+/// to update it.
 pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
     Box::pin(async move {
         if !ask.is_empty() {
@@ -423,7 +423,7 @@ pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
         let network = node.client.network().await.map_err(|error| match error {
             noded::Error::Failed { status: 404, .. } => wire::Error::new(
                 "unknown_request",
-                "This node doesn't report its validators' signatures.",
+                "This node doesn't report its validators' votes. Update the node.",
             ),
             error => refused(error),
         })?;

@@ -323,7 +323,7 @@ async fn a_node_without_the_network_route_is_refused_at_once() {
     assert_eq!(refused.code, "unknown_request");
     assert_eq!(
         refused.message,
-        "This node doesn't report its validators' signatures."
+        "This node doesn't report its validators' votes. Update the node."
     );
     assert!(super::unanswered(refused).is_err(), "not retried");
 }
