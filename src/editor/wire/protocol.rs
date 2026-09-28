@@ -73,7 +73,7 @@ impl Store {
         let Some(field) = self.fields.get(&front.key) else {
             return;
         };
-        let Some(binding) = field.options.binding.as_ref() else {
+        let Some(binding) = field.binding.as_ref() else {
             self.fault = Some("editor has no guest transaction binding".into());
             return;
         };
@@ -175,11 +175,7 @@ impl Store {
         let Some(front) = document.queue.front() else {
             return;
         };
-        let Some(binding) = self
-            .fields
-            .get(&front.key)
-            .and_then(|f| f.options.binding.as_ref())
-        else {
+        let Some(binding) = self.fields.get(&front.key).and_then(|f| f.binding.as_ref()) else {
             return;
         };
         let before = document.reference.clone();
@@ -289,11 +285,7 @@ impl Store {
         let Some(front) = document.queue.front() else {
             return;
         };
-        let Some(binding) = self
-            .fields
-            .get(&front.key)
-            .and_then(|f| f.options.binding.as_ref())
-        else {
+        let Some(binding) = self.fields.get(&front.key).and_then(|f| f.binding.as_ref()) else {
             return;
         };
         self.events.push(view_wire::Event::EditorTransaction {
