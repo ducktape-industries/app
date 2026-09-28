@@ -13,7 +13,9 @@
 //! (`console:chat/send`), widened with its ancestors' ids (`console:row.send`)
 //! only while another node in the window shares it, and `~2`, `~3` … when
 //! even the whole path is shared ([`tree::door_ids`]). A synthetic child with
-//! no element of its own ends in its role. Entity, focus-handle and the kit's
+//! no element of its own ends in its role, and after the first of its role
+//! under one node in its place among them (`Link2`: a RichText's second
+//! range). Entity, focus-handle and the kit's
 //! type-path segments never count: they change per run or say nothing. Never
 //! an AccessKit NodeId, never a position. A password field's value and a node
 //! marked [`crate::a11y::AX_PRIVATE`] (the recovery-phrase words) are masked

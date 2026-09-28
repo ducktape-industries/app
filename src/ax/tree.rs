@@ -151,11 +151,13 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
     );
     // each node's id prefix (`<window>:` or `<window>:<module>/`), scope
     // and path segments, and its parent's index in `out`; the ids
-    // themselves are resolved once all are known
+    // themselves are resolved once all are known. A synthetic child's own
+    // segment is its role, and after the first of that role under one
+    // node, its place among them: `Link`, `Link2`.
     let mut out: Vec<AxNode> = Vec::new();
     let mut paths: Vec<(String, Vec<String>)> = Vec::new();
     let mut parents: Vec<Option<usize>> = Vec::new();
-    type Frame = (NodeId, String, String, Vec<String>, Option<usize>);
+    type Frame = (NodeId, String, String, Vec<String>, Option<usize>, String);
     let mut stack: Vec<Frame> = Vec::new();
     let root = update.tree.as_ref().map_or(NodeId(0), |tree| tree.root);
     let push_children = |stack: &mut Vec<Frame>,
@@ -164,16 +166,34 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                          scope: &str,
                          path: &[String],
                          parent: Option<usize>| {
-        if let Some(node) = nodes.get(&id) {
-            for child in node.children().iter().rev() {
-                stack.push((
-                    *child,
-                    prefix.to_owned(),
-                    scope.to_owned(),
-                    path.to_vec(),
-                    parent,
-                ));
-            }
+        let Some(node) = nodes.get(&id) else { return };
+        let mut seen: HashMap<Role, usize> = HashMap::new();
+        let segments: Vec<String> = node
+            .children()
+            .iter()
+            .map(
+                |child| match (window.a11y_element_id(*child), nodes.get(child)) {
+                    (None, Some(child)) => {
+                        let nth = seen.entry(child.role()).or_default();
+                        *nth += 1;
+                        match *nth {
+                            1 => format!("{:?}", child.role()),
+                            nth => format!("{:?}{nth}", child.role()),
+                        }
+                    }
+                    _ => String::new(),
+                },
+            )
+            .collect();
+        for (child, segment) in node.children().iter().zip(segments).rev() {
+            stack.push((
+                *child,
+                prefix.to_owned(),
+                scope.to_owned(),
+                path.to_vec(),
+                parent,
+                segment,
+            ));
         }
     };
     // Children are pushed in reverse so this is a deterministic pre-order
@@ -181,10 +201,17 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
     // boundary, just as the last painted sibling is visually on top.
     let modal = topmost_modal(root, &nodes);
     match modal {
-        Some(id) => stack.push((id, format!("{name}:"), name.to_owned(), Vec::new(), None)),
+        Some(id) => stack.push((
+            id,
+            format!("{name}:"),
+            name.to_owned(),
+            Vec::new(),
+            None,
+            String::new(),
+        )),
         None => push_children(&mut stack, root, &format!("{name}:"), name, &[], None),
     }
-    while let Some((id, prefix, scope, mut path, parent)) = stack.pop() {
+    while let Some((id, prefix, scope, mut path, parent, segment)) = stack.pop() {
         let Some(node) = nodes.get(&id) else { continue };
         if node.is_hidden() {
             continue;
@@ -198,9 +225,9 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 ),
                 (None, path) => (format!("{name}:"), name.to_owned(), path),
             },
-            // a synthetic child: its element's path and its role
+            // a synthetic child: its element's path and its own segment
             None => {
-                path.push(format!("{:?}", node.role()));
+                path.push(segment);
                 (prefix, scope, path)
             }
         };
@@ -352,34 +379,6 @@ fn topmost_modal(
         stack.extend(node.children().iter().rev().copied());
     }
     modal
-}
-
-#[cfg(test)]
-mod modal_tests {
-    use super::*;
-
-    #[test]
-    fn a_modal_below_a_hidden_ancestor_does_not_replace_the_visible_modal() {
-        let (root_id, visible_id, hidden_id, hidden_modal_id) =
-            (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
-        let mut root = gpui_kit::accesskit::Node::new(Role::Window);
-        root.set_children([visible_id, hidden_id]);
-        let mut visible = gpui_kit::accesskit::Node::new(Role::Dialog);
-        visible.set_modal();
-        let mut hidden = gpui_kit::accesskit::Node::new(Role::GenericContainer);
-        hidden.set_hidden();
-        hidden.set_children([hidden_modal_id]);
-        let mut hidden_modal = gpui_kit::accesskit::Node::new(Role::Dialog);
-        hidden_modal.set_modal();
-        let nodes = HashMap::from([
-            (root_id, &root),
-            (visible_id, &visible),
-            (hidden_id, &hidden),
-            (hidden_modal_id, &hidden_modal),
-        ]);
-
-        assert_eq!(topmost_modal(root_id, &nodes), Some(visible_id));
-    }
 }
 
 /// Each `(prefix, path)`'s id: its last segment, widened by its ancestors'
@@ -578,5 +577,7 @@ pub(super) fn nearest(id: &str, nodes: &[AxNode]) -> Vec<String> {
 
 #[cfg(test)]
 mod key_tests;
+#[cfg(test)]
+mod modal_tests;
 #[cfg(test)]
 mod offer_tests;

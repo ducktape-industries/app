@@ -5,6 +5,8 @@
 use super::*;
 use crate::render::native_id;
 
+mod links;
+
 fn rich_tooltip_content(
     node: &wire::Node,
     request: u32,
@@ -400,6 +402,19 @@ impl ViewTree {
         )
         .absolute()
         .size_full();
+        // each clickable range a Link to assistive technology, its press
+        // the range's click
+        let interactive = match on_click {
+            Some(handler) if !clickable_ranges.is_empty() => links::Linked::new(
+                interactive,
+                text,
+                clickable_ranges,
+                *handler,
+                cx.entity().downgrade(),
+            )
+            .into_any_element(),
+            _ => interactive.into_any_element(),
+        };
         let mut content = div().relative().child(selection).child(interactive);
         *content.style() = style.clone();
         let handle = gpui_kit::base::TextSelectionHandle::new(text.clone(), cx);

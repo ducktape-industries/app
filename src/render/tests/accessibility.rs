@@ -252,3 +252,102 @@ fn a_fields_placeholder_reaches_the_door(cx: &mut gpui_kit::TestAppContext) {
     assert_eq!(field["name"], "Room name");
     assert_eq!(field["placeholder"], "Type here");
 }
+
+/// A RichText's clickable ranges are Links, each named by its words, and a
+/// press on one from assistive technology is that range's click (AX-117).
+#[gpui_kit::test]
+fn a_rich_texts_ranges_are_links_a_press_reaches(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
+    cx.update(gpui_kit::init);
+    let rich = wire::Node::RichText {
+        id: Some(named_id("rich")),
+        style: Default::default(),
+        text: "Read the docs or the code".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: vec![5..13, 17..25],
+        on_click: Some(72),
+        on_hover: None,
+        tooltip: None,
+    };
+    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(rich));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone());
+        })
+    });
+    let links: Vec<serde_json::Value> = native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("t", window, false)
+            .iter()
+            .map(|node| serde_json::to_value(node).unwrap())
+            .filter(|node| node["role"] == "Link")
+            .collect()
+    });
+    let said: Vec<_> = links
+        .iter()
+        .map(|link| {
+            (
+                link["name"].clone(),
+                link["actions"].clone(),
+                link["id"].clone(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (
+                "the docs".into(),
+                serde_json::json!(["press"]),
+                "t:Link".into()
+            ),
+            (
+                "the code".into(),
+                serde_json::json!(["press"]),
+                "t:Link2".into()
+            ),
+        ]
+    );
+    native.update(|window, cx| {
+        let target = window
+            .a11y_tree()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("the code"))
+            .map(|(id, _)| *id)
+            .unwrap();
+        window.dispatch_a11y_action(
+            ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: target,
+                data: None,
+            },
+            cx,
+        );
+    });
+    let events = events.borrow();
+    let event = events
+        .iter()
+        .find(|event| {
+            matches!(
+                event,
+                wire::Event::Select {
+                    handler: 72,
+                    index: 1
+                }
+            )
+        })
+        .expect("the link's press is its range's click");
+    tree.read_with(&native, |tree, _| {
+        assert!(tree.take_user_activation(event).is_none());
+    });
+}
