@@ -119,3 +119,55 @@ fn a_view_is_laid_out_from_its_own_minimum() {
     };
     assert_eq!(laid_out_from(guest), 560.);
 }
+
+/// The idle rule of docs/perf.md: a seated view at rest is drawn by the
+/// window every frame, but its tree renders again only for a tick that
+/// changed it — `renders ≤ ticks + 2`. Renders far above ticks is a notify
+/// loop, the class of bug #347 fixed (a cached tree that never stayed
+/// cached), and this is its regression gate on the cached path, with no
+/// a11y reader listening.
+#[gpui_kit::test]
+fn an_idle_view_renders_no_more_than_it_ticks(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{IntoElement, ParentElement as _, Render, Styled as _, px, size};
+
+    struct Seat(gpui_kit::Entity<NativeModuleView>);
+    impl Render for Seat {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            _: &mut gpui_kit::Context<Self>,
+        ) -> impl IntoElement {
+            gpui_kit::div().size_full().child(self.0.clone())
+        }
+    }
+
+    crate::runtime::seat_for_test("idle-renders-test", 320);
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+        Seat(cx.new(|_| NativeModuleView::new("idle-renders-test")))
+    });
+    let seat = window.root(cx).unwrap();
+    let view = seat.read_with(cx, |seat, _| seat.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    // the desk redraws its seats on every frame it draws
+    for _ in 0..8 {
+        native.update(|window, cx| {
+            seat.update(cx, |_, cx| cx.notify());
+            view.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear(cx);
+        });
+        native.run_until_parked();
+    }
+    let (ticks, renders) = view.read_with(&native, |view, cx| {
+        let Slot::Ready(guest) = &view.seat.lock().unwrap().slot else {
+            panic!("the view is seated");
+        };
+        let content = view.content.as_ref().expect("the tree is mounted");
+        (guest.ticks, content.read(cx).renders)
+    });
+    assert!(ticks >= 1, "the first frame ticks the view");
+    assert!(
+        renders <= ticks + 2,
+        "{renders} renders over {ticks} ticks: the tree is redrawn without a tick"
+    );
+}
