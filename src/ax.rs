@@ -644,10 +644,12 @@ mod tests {
         assert_eq!(bounded(2000), Duration::from_secs(2));
     }
 
-    fn served(name: &str, key: u64, a11y: bool) -> ServedPerf {
+    /// A served window under a key no window of a test running beside
+    /// this one can have.
+    fn served(name: &str, a11y: bool) -> ServedPerf {
         ServedPerf {
             name: name.to_owned(),
-            key: crate::runtime::WindowKey(key),
+            key: crate::runtime::WindowKey::unique(),
             a11y,
             gpui: serde_json::Value::Null,
         }
@@ -665,23 +667,18 @@ mod tests {
         assert!(off.body.contains("DUCKTAPE_PERF=1"));
 
         let _on = crate::perf::on_for_test();
-        crate::perf::count(
-            crate::perf::Key::Window(crate::runtime::WindowKey(41)),
-            "renders",
-            3,
-        );
-        let reply = perf_reply(
-            false,
-            &[served("console", 41, false), served("console2", 42, true)],
-        );
+        let (console, console2) = (served("console", false), served("console2", true));
+        let (first, second) = (console.key.0.to_string(), console2.key.0.to_string());
+        crate::perf::count(crate::perf::Key::Window(console.key), "renders", 3);
+        let reply = perf_reply(false, &[console, console2]);
         assert_eq!(reply.status, 200);
         let body: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
         assert_eq!(body["on"], true);
         assert_eq!(body["cache_on"], false, "one served window has a11y on");
-        assert_eq!(body["windows"]["41"]["name"], "console");
-        assert_eq!(body["windows"]["41"]["renders"], 3);
-        assert_eq!(body["windows"]["42"]["name"], "console2");
-        let cached = perf_reply(false, &[served("console", 41, false)]);
+        assert_eq!(body["windows"][&first]["name"], "console");
+        assert_eq!(body["windows"][&first]["renders"], 3);
+        assert_eq!(body["windows"][&second]["name"], "console2");
+        let cached = perf_reply(false, &[served("console", false)]);
         let body: serde_json::Value = serde_json::from_str(&cached.body).unwrap();
         assert_eq!(body["cache_on"], true);
     }
@@ -696,14 +693,17 @@ mod tests {
         assert_eq!(off.status, 409);
 
         let _on = crate::perf::on_for_test();
-        let window = crate::perf::Key::Window(crate::runtime::WindowKey(43));
-        crate::perf::count(window, "renders", 3);
+        let key = crate::runtime::WindowKey::unique();
+        crate::perf::count(crate::perf::Key::Window(key), "renders", 3);
         let reset = perf_reset_reply();
         assert_eq!(
             (reset.status, reset.body.as_str()),
             (200, r#"{"reset":true}"#)
         );
         let body: serde_json::Value = serde_json::from_str(&perf_reply(false, &[]).body).unwrap();
-        assert!(body["windows"]["43"].is_null(), "the count was cleared");
+        assert!(
+            body["windows"][&key.0.to_string()].is_null(),
+            "the count was cleared"
+        );
     }
 }

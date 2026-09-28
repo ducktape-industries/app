@@ -498,12 +498,15 @@ mod tests {
             module: "perf-test",
             instance: 8,
         };
+        // a key no window of a test running beside this one can have
+        let window = WindowKey::unique();
+        let name = window.0.to_string();
         count(VIEW, "renders", 2);
         count(other, "renders", 3);
         gauge(VIEW, "nodes", 10);
         gauge(other, "nodes", 4);
         drop(time(VIEW, "tick.call"));
-        count(Key::Window(WindowKey(99)), "renders", 1);
+        count(Key::Window(window), "renders", 1);
         count(Key::Shell, "rail.calls", 1);
         mark("desk");
 
@@ -513,7 +516,7 @@ mod tests {
         assert_eq!(view["renders"], 5);
         assert_eq!(view["nodes"]["max"], 10);
         assert_eq!(view["tick.call"]["n"], 1);
-        assert_eq!(by_module["windows"]["99"]["renders"], 1);
+        assert_eq!(by_module["windows"][&name]["renders"], 1);
         assert_eq!(by_module["shell"]["rail.calls"], 1);
         assert!(by_module["startup"]["desk"].is_number());
 
@@ -524,7 +527,7 @@ mod tests {
         reset();
         let cleared = snapshot(true);
         assert!(cleared["views"]["perf-test/7"].is_null());
-        assert!(cleared["windows"]["99"].is_null());
+        assert!(cleared["windows"][&name].is_null());
         assert!(cleared["startup"]["desk"].is_number());
     }
 }
