@@ -1,6 +1,7 @@
 //! Whatever opens over the desk takes the keys as it opens, and gives them
 //! back as it closes (docs/ax.md §4 gap 5): the dialogs on a scrim and the
-//! menus hanging from the bar alike, and one giving way to the next.
+//! menus hanging from the bar alike, and one giving way to the next. A menu
+//! the keys leave closes, and leaves them where they went.
 use super::*;
 use crate::{Overlay, Popover};
 use gpui_kit::Role;
@@ -114,6 +115,173 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
     native.update(|window, cx| {
         draw(window, cx);
         assert_eq!(window.focused(cx), before);
+    });
+}
+
+/// Every menu hanging from the bar.
+const MENUS: [(Overlay, Role, &str); 4] = [
+    (Overlay::Network, Role::Menu, "Networks"),
+    (Overlay::Menu(Popover::Node), Role::Dialog, "Node status"),
+    (Overlay::Menu(Popover::Account), Role::Dialog, "Account"),
+    (
+        Overlay::Menu(Popover::Notifications),
+        Role::Dialog,
+        "Notifications",
+    ),
+];
+
+fn open_now(view: &Entity<DesktopWindow>, native: &mut VisualTestContext) -> Option<Overlay> {
+    native.update(|_, cx| view.read(cx).model.read(cx).state.overlay)
+}
+
+/// A menu closes when the keys leave it, whichever way (the menu pattern;
+/// owner, 2026-09-28): Shift+Tab before its first control, Tab past its
+/// last. The keys stay where they went. It is no focus trap, also once a
+/// dialog on a scrim has been open in the window.
+#[gpui_kit::test]
+fn a_menu_closes_when_the_keys_leave_it(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    for (overlay, role, name) in MENUS {
+        for (out, presses) in [("shift-tab", 1), ("tab", 30)] {
+            let (view, mut native) = open(gate::desk(), cx);
+            native.update(draw);
+            show(&view, &mut native, Some(Overlay::Settings));
+            show(&view, &mut native, None);
+            show(&view, &mut native, Some(overlay));
+            native.update(|window, _| {
+                assert!(focus_inside(window, role, name), "{name} took no keys");
+            });
+            let mut left = 0;
+            while open_now(&view, &mut native).is_some() && left < presses {
+                native.simulate_keystrokes(out);
+                native.update(draw);
+                native.update(draw);
+                left += 1;
+            }
+            assert_eq!(open_now(&view, &mut native), None, "{out} out of {name}");
+            let (keys, root) = native.update(|window, cx| {
+                draw(window, cx);
+                (window.focused(cx), view.read(cx).focus.clone())
+            });
+            assert!(
+                keys.is_some() && keys != Some(root),
+                "{out} out of {name}: the keys went where {out} took them"
+            );
+        }
+    }
+}
+
+/// A click on the bar where nothing is (its end past the window's edge)
+/// takes the keys to the window, out of the menu: it closes.
+#[gpui_kit::test]
+fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    for (overlay, _, name) in MENUS {
+        let (view, mut native) = open(gate::desk(), cx);
+        native.update(draw);
+        show(&view, &mut native, Some(overlay));
+        let nodes = native.update(|window, cx| {
+            draw(window, cx);
+            serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+        });
+        let bar = find(&nodes, "MenuBar", "Ducktape");
+        let at = |n: usize| bar["bounds"][n].as_f64().unwrap() as f32;
+        native.simulate_click(
+            gpui_kit::point(px(at(0) + 3.), px((at(1) + at(3)) / 2.)),
+            gpui_kit::Modifiers::none(),
+        );
+        native.update(draw);
+        native.update(draw);
+        assert_eq!(open_now(&view, &mut native), None, "a click outside {name}");
+    }
+}
+
+/// The keys move inside a menu or from one menu to the next and the menu
+/// stays: one menu giving way to the next hands them on, and a control
+/// that goes (Mark all read, once all is read) leaves them in its menu.
+/// The bell's panel still hands off to Settings, the keys in it.
+#[gpui_kit::test]
+fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
+    use crate::runtime::notify::{CenterHandle, Permission, Settings};
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    // Account, then a click on the bell
+    let (view, mut native) = open(gate::desk(), cx);
+    native.update(draw);
+    show(&view, &mut native, Some(Overlay::Menu(Popover::Account)));
+    // a pointer's press at the bell's middle, in the frame that placed it:
+    // the bar refolds as other tests list programs
+    native.update(|window, cx| press("menubar", "rail-notifications", window, cx));
+    native.update(draw);
+    native.update(draw);
+    let bell = Some(Overlay::Menu(Popover::Notifications));
+    assert_eq!(open_now(&view, &mut native), bell);
+    native.update(|window, _| {
+        assert!(
+            focus_inside(window, Role::Dialog, "Notifications"),
+            "{:?}",
+            focused_node(window)
+        )
+    });
+
+    // the bell's panel, one notice unread: Mark all read goes as it works
+    let mut state = gate::desk();
+    let center = CenterHandle::default();
+    state.center = center.clone();
+    let silent = Settings {
+        banners: true,
+        in_front: false,
+        burst: 6,
+        views: [("chat".to_owned(), Permission::Silent)].into(),
+    };
+    center.lock().post(
+        &silent,
+        "chat",
+        "Chat",
+        view_wire::methods::Notification {
+            title: "Ada".into(),
+            body: "look".into(),
+            tag: String::new(),
+            link: String::new(),
+        },
+        std::time::Instant::now(),
+        crate::runtime::notify::wall(),
+    );
+    state.overlay = bell;
+    let (view, mut native) = open(state, cx);
+    native.update(draw);
+    native.update(draw);
+    native.update(|window, cx| press("notifications", "notif-mark-all", window, cx));
+    native.update(draw);
+    native.update(draw);
+    assert_eq!(open_now(&view, &mut native), bell);
+    native.update(|window, _| {
+        assert!(
+            focus_inside(window, Role::Dialog, "Notifications"),
+            "{:?}",
+            focused_node(window)
+        )
+    });
+
+    // and its Notification settings opens Settings, the keys in it
+    native.update(|window, cx| press("notifications", "notif-settings", window, cx));
+    native.update(draw);
+    native.update(draw);
+    assert_eq!(open_now(&view, &mut native), Some(Overlay::Settings));
+    native.update(|window, _| {
+        assert!(
+            focus_inside(window, Role::Dialog, "Settings"),
+            "{:?}",
+            focused_node(window)
+        )
     });
 }
 

@@ -54,6 +54,38 @@ fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::Ap
     );
 }
 
+/// An assistive technology's press (AccessKit's Click) on the node whose
+/// element is `id` inside the element `within`: the path the door's
+/// `/act press` takes.
+fn press(within: &str, id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
+    draw(window, cx);
+    let named = |element: &ElementId, want: &str| matches!(element, ElementId::Name(name) if name.as_ref() == want);
+    let target = window
+        .a11y_tree()
+        .unwrap()
+        .nodes
+        .iter()
+        .find_map(|(node, _)| {
+            window
+                .a11y_element_id(*node)
+                .is_some_and(|path| {
+                    path.last().is_some_and(|element| named(element, id))
+                        && path.iter().any(|element| named(element, within))
+                })
+                .then_some(*node)
+        })
+        .unwrap_or_else(|| panic!("missing AX control {id} in {within}"));
+    window.dispatch_a11y_action(
+        ActionRequest {
+            action: Action::Click,
+            target_tree: TreeId::ROOT,
+            target_node: target,
+            data: None,
+        },
+        cx,
+    );
+}
+
 fn find<'a>(nodes: &'a serde_json::Value, role: &str, name: &str) -> &'a serde_json::Value {
     nodes
         .as_array()
@@ -539,6 +571,21 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     find(&nodes, "MenuItem", "Unread. Lin: @grace look");
     find(&nodes, "Button", "Mark all read");
     assert!(!nodes.to_string().contains("all caught up"));
+    // the panel opened on them: its keys at its first control, as the bell
+    // gives them, and a Tab past its last closes it (a menu)
+    for overlay in [
+        None,
+        Some(crate::Overlay::Menu(crate::Popover::Notifications)),
+    ] {
+        view.update(&mut native, |view, cx| {
+            view.model.update(cx, |model, cx| {
+                model.state.overlay = overlay;
+                cx.notify();
+            })
+        });
+        native.update(draw);
+        native.update(draw);
+    }
     gate::passes(&mut native, "notifications-menu-unread", false);
 
     view.update(&mut native, |view, cx| {

@@ -595,12 +595,20 @@ pub(crate) struct DesktopWindow {
     /// What was open over the desk when it was last drawn.
     covered: Option<crate::Overlay>,
     /// What had the keys when something opened over the desk: they go back
-    /// to it when it closes, so typing carries on where it was.
+    /// to it when it closes, so typing carries on where it was. Not when
+    /// they left a menu, which closed it: they stay where they went.
     refocus: Option<gpui_kit::FocusHandle>,
-    /// Whatever is open over the desk: the keys go into it when it opens.
-    /// A dialog on a scrim (Spotlight, Settings, Approve) keeps Tab and
-    /// Shift+Tab in it; a menu lets them out to the bar.
+    /// A dialog on a scrim (Spotlight, Settings, Approve): the keys go into
+    /// it when it opens, and Tab and Shift+Tab stay in it.
     modal: gpui_kit::FocusHandle,
+    /// A menu hanging from the bar (Node, Account, the bell, Networks): the
+    /// keys go into it when it opens, and it closes when they leave it
+    /// ([`Self::menu_left`]). Not `modal`: gpui-base keeps a focus trap for
+    /// as long as its handle lives, so a menu on it would trap Tab once a
+    /// dialog had.
+    menu: gpui_kit::FocusHandle,
+    /// The open menu held the keys when the window was last drawn.
+    menu_held: bool,
     /// Each window's own focus (its view's box), by instance, and what in it
     /// last had the keys: a window that comes to the front gets them back.
     pane_keys: HashMap<u64, (gpui_kit::FocusHandle, Option<gpui_kit::FocusHandle>)>,
@@ -666,8 +674,40 @@ impl DesktopWindow {
     /// on the new screen's first control, instead of the window going
     /// silently blurred with no dispatch path for Tab, Enter or Escape to
     /// reach at all.
+    ///
+    /// What vanished sat in a menu that still shows (a row it cleared, one
+    /// menu giving way to the next): the keys stay in the menu, at its first
+    /// control, and it stays open.
     fn focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.focus_lost_restore_target(cx).as_ref() == Some(&self.menu) {
+            self.menu.focus(window, cx);
+            window.focus_next(cx);
+            // gpui draws no frame for a move made here: the ring shows now
+            cx.notify();
+            return;
+        }
         self.focus.focus(window, cx);
+    }
+
+    /// The keys left the menu hanging from the bar since the last draw: Tab
+    /// past its ends, a click elsewhere, anything else. It closes, as a menu
+    /// does, before this draw shows it, and the keys stay where they went
+    /// (owner, 2026-09-28). Read at the draw, not from gpui's focus events:
+    /// those say nothing while the OS window is in the background, and a
+    /// window driven there (the AX door under Xvfb) moves its keys too.
+    fn menu_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let menu = match self.model.read(cx).state.overlay {
+            Some(menu @ (crate::Overlay::Network | crate::Overlay::Menu(_))) => Some(menu),
+            _ => None,
+        };
+        let holds = menu.is_some() && self.menu.contains_focused(window, cx);
+        let left = std::mem::replace(&mut self.menu_held, holds) && !holds;
+        if let (true, Some(menu)) = (left, menu) {
+            self.refocus = None;
+            self.model.update(cx, |model, cx| {
+                model.dispatch(Message::CloseOverlay(menu), cx)
+            });
+        }
     }
 
     /// This window's panes, as the model has them.

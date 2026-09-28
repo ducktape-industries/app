@@ -44,7 +44,7 @@ struct Store {
 struct Field {
     reference: EditorDocumentRef,
     handler: u32,
-    options: view_wire::EditorOptions,
+    binding: Option<Box<view_wire::EditorBinding>>,
     placeholder: String,
     editable: bool,
 }
@@ -134,7 +134,7 @@ pub(crate) struct Projection {
     // `pub(crate)`: a regression test outside this module reads the text an
     // AX-driven edit committed, to check that it reached the guest's store.
     pub(crate) text: Option<Arc<str>>,
-    options: view_wire::EditorOptions,
+    binding: Option<Box<view_wire::EditorBinding>>,
     placeholder: String,
     editable: bool,
     pending: bool,
@@ -259,7 +259,7 @@ impl EditorStore {
         Some(Projection {
             reference: document.reference.clone(),
             text: document.text.clone(),
-            options: field.options.clone(),
+            binding: field.binding.clone(),
             placeholder: field.placeholder.clone(),
             editable: field.editable,
             pending: !document.queue.is_empty(),
@@ -274,7 +274,7 @@ impl EditorStore {
         self.request(
             key,
             view_wire::EditorRequestInput::Interaction {
-                action: view_wire::editor_presentation::EditorInteraction::Action { tag },
+                action: view_wire::EditorInteraction::Action { tag },
             },
         );
     }
@@ -329,7 +329,7 @@ fn collect(
         if let view_wire::Node::Editor {
             document,
             on_document,
-            options,
+            binding,
             placeholder,
             editable,
             ..
@@ -341,7 +341,7 @@ fn collect(
                     Field {
                         reference: document.clone(),
                         handler: *on_document,
-                        options: (**options).clone(),
+                        binding: binding.clone(),
                         placeholder: placeholder.clone(),
                         editable: *editable,
                     },

@@ -48,7 +48,7 @@ impl DesktopWindow {
                             self.field(
                                 "approve-code-label",
                                 "Code",
-                                field_box(code, ink.strong, 44., &ink)
+                                field_box(code, ink.field, 44., &ink)
                                     .font_family(super::theme::FAMILY_MONO)
                                     .into_any_element(),
                                 error,

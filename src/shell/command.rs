@@ -96,10 +96,13 @@ impl DesktopWindow {
         }
     }
 
-    /// An empty window's body: the field and its switch, the programs its
-    /// text matches, and the keys. Only the focused one holds the field.
+    /// An empty window's body (window `index`): the field and its switch,
+    /// the programs its text matches, and the keys. Only the focused one
+    /// holds the field; a press on another's rows or switch gives that
+    /// window the keys first, pointer and assistive technology alike.
     pub(super) fn command_view(
         &mut self,
+        index: usize,
         focused: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -139,7 +142,7 @@ impl DesktopWindow {
                         .into_any_element(),
                 }),
             )
-            .child(self.mode_switch(mode, focused, &ink, cx));
+            .child(self.mode_switch(index, mode, focused, &ink, cx));
         let modules: Vec<&'static str> = rows.iter().map(|row| row.module).collect();
         let list = rows.iter().enumerate().map(|(nth, row)| {
             let module = row.module;
@@ -151,15 +154,12 @@ impl DesktopWindow {
             };
             sans(400, 15.)
                 .id(SharedString::from(format!("empty/{module}")))
-                // an option only while its window has the keys: before, a
-                // press on it gives the window the keys first, and the
-                // keyboard reaches it by moving to the window
-                .when(focused, |row| {
-                    row.control(Role::ListBoxOption, SharedString::from(name.clone()))
-                        // the picked row is the one the field's ↑↓ move
-                        .aria_selected(picked)
-                        .when(picked, |row| row.aria_active_descendant())
-                })
+                // in a window without the keys too: the keyboard reaches it
+                // by the chord that moves to that window (`pane_stage`)
+                .control(Role::ListBoxOption, SharedString::from(name.clone()))
+                // the picked row is the one the field's ↑↓ move
+                .aria_selected(picked)
+                .when(picked, |row| row.aria_active_descendant())
                 .flex()
                 .items_baseline()
                 .gap(px(12.))
@@ -168,8 +168,18 @@ impl DesktopWindow {
                 .cursor_pointer()
                 .when(picked, |row| row.bg(ink.surface))
                 .on_click(cx.listener(move |this, _, window, cx| {
-                    this.open_view(module, window, cx);
+                    this.open_here(index, module, window, cx);
                 }))
+                // assistive technology's press lands on this window's row,
+                // not on whatever window covers its middle (gpui's own
+                // Click is a pointer press there)
+                .on_a11y_action(AccessibleAction::Click, {
+                    let this = cx.entity().downgrade();
+                    move |_, window, cx| {
+                        let _ =
+                            this.update(cx, |this, cx| this.open_here(index, module, window, cx));
+                    }
+                })
                 .child(div().text_color(ink.ink).child(name))
                 .child(
                     sans(400, 13.)
@@ -197,7 +207,7 @@ impl DesktopWindow {
         .map(|hint| div().whitespace_nowrap().child(hint));
         let rows = div()
             .id("empty-window/rows")
-            .when(focused, |rows| rows.control(Role::ListBox, "Programs"))
+            .control(Role::ListBox, "Programs")
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -327,9 +337,11 @@ impl DesktopWindow {
     }
 
     /// Module | Chat, Tab between them. Chat is blocked until agent chat
-    /// is built, and says so on hover.
+    /// is built, and says so on hover. A press gives window `index` the
+    /// keys first, as a row's does.
     fn mode_switch(
         &self,
+        index: usize,
         mode: Mode,
         focused: bool,
         ink: &super::ink::Ink,
@@ -337,14 +349,11 @@ impl DesktopWindow {
     ) -> gpui_kit::AnyElement {
         use super::ink::*;
         use gpui_kit::*;
-        // controls only while the window has the keys, as the rows are
         let side = |id: &'static str, name: &'static str, on: bool| {
             sans(500, 13.)
                 .id(id)
-                .when(focused, |side| {
-                    side.control(Role::Button, SharedString::from(name))
-                        .aria_toggled(on.into())
-                })
+                .control(Role::Button, SharedString::from(name))
+                .aria_toggled(on.into())
                 .h_full()
                 .px(px(10.))
                 .flex()
@@ -353,14 +362,22 @@ impl DesktopWindow {
                 .when(!on, |side| side.text_color(ink.ink))
                 .child(name)
         };
-        let module = side("empty-window/module", "Module", mode == Mode::Module).on_click(
-            cx.listener(|this, _, _, cx| {
-                if let Some(command) = this.command.as_mut() {
-                    command.mode = Mode::Module;
-                }
-                cx.notify();
-            }),
-        );
+        let pick = move |this: &mut Self, window: &mut Window, cx: &mut Context<Self>| {
+            if !focused {
+                this.pane_message(PaneMessage::Focus(index), window, cx);
+            }
+            if let Some(command) = this.command.as_mut() {
+                command.mode = Mode::Module;
+            }
+            cx.notify();
+        };
+        let this = cx.entity().downgrade();
+        let module = side("empty-window/module", "Module", mode == Mode::Module)
+            .on_click(cx.listener(move |this, _, window, cx| pick(this, window, cx)))
+            // on this window's switch, as a row's press is on its row
+            .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
+                let _ = this.update(cx, |this, cx| pick(this, window, cx));
+            });
         let chat = side("empty-window/chat", "Chat", mode == Mode::Chat)
             .opacity(0.3)
             .cursor_not_allowed()
@@ -374,7 +391,7 @@ impl DesktopWindow {
             .border_1()
             .border_color(ink.ink)
             .child(module)
-            .child(chat.when(focused, |chat| chat.aria_disabled(true)))
+            .child(chat.aria_disabled(true))
             .into_any_element()
     }
 }

@@ -32,14 +32,11 @@ fn store_with(
             handler: 1,
             editable: true,
             placeholder: placeholder.to_owned(),
-            options: wire::EditorOptions {
-                binding: Some(Box::new(wire::EditorBinding {
-                    on_request: 2,
-                    on_event: 3,
-                    claims,
-                })),
-                ..Default::default()
-            },
+            binding: Some(Box::new(wire::EditorBinding {
+                on_request: 2,
+                on_event: 3,
+                claims,
+            })),
         },
     );
     locked.documents.insert(
@@ -373,4 +370,122 @@ fn tab_indents_a_caret_a_block_and_gives_it_back() {
 
     assert_eq!(indent("one\ntwo", 0..7, true), None);
     assert_eq!(indent("\tone", 0..0, true), Some(("one".to_owned(), 0..0)));
+}
+
+/// Tab indents; Esc lets go of it, so the next Tab moves the focus on out
+/// of the editor; any other key after Esc takes it back (owner, 2026-09-28;
+/// AX-022, Help's keys). A guest that claimed Esc (to cancel an edit, say)
+/// still hears it.
+#[cfg(test)]
+#[gpui_kit::test]
+fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::test::TestWindowExt as _;
+
+    /// The editor with one Tab stop after it, under the kit's Root, whose
+    /// Tab moves the focus on.
+    struct Host {
+        editor: Entity<TextEditor>,
+        after: gpui_kit::FocusHandle,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(self.editor.clone())
+                .child(div().id("after").track_focus(&self.after).size(px(20.)))
+        }
+    }
+
+    cx.update(gpui_kit::init);
+    // Esc the field's (and the view's) own, and Esc a guest claimed
+    for claimed in [false, true] {
+        let claims = match claimed {
+            false => Vec::new(),
+            true => vec![wire::EditorKeyClaim {
+                key: wire::keyboard::Key::Named(wire::keyboard::Named::Escape),
+                modifiers: Default::default(),
+                command: false,
+            }],
+        };
+        let store = store_with("tabs", "one", claims, "");
+        let mut host = None;
+        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
+            let made = cx.new(|cx| Host {
+                editor: cx.new(|cx| TextEditor::new(editor_path(), store.clone(), window, cx)),
+                after: cx.focus_handle().tab_stop(true),
+            });
+            host = Some(made.clone());
+            gpui_kit::component::Root::new(made, window, cx)
+        });
+        let host = host.unwrap();
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let press = |native: &mut gpui_kit::VisualTestContext, keys: &[&str]| {
+            native.update(|window, cx| {
+                for key in keys {
+                    window.dispatch_keystroke(Keystroke::parse(key).unwrap(), cx);
+                    window.render_frame(cx);
+                }
+            });
+            native.run_until_parked();
+        };
+        // the editor's text, and whether it has the keys
+        let read = |native: &mut gpui_kit::VisualTestContext| {
+            native.update(|window, cx| {
+                window.render_frame(cx);
+                let editor = host.read(cx).editor.read(cx);
+                (
+                    editor.input.read(cx).value().to_string(),
+                    editor.is_focused(window, cx),
+                )
+            })
+        };
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let editor = host.read(cx).editor.read(cx);
+            editor.input.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+        });
+
+        press(&mut native, &["tab"]);
+        assert_eq!(read(&mut native), ("one  ".to_owned(), true), "Tab indents");
+
+        // the guest takes the indent, so the field is free to hear it again
+        settle(&store, "tabs");
+        store.drain();
+        press(&mut native, &["escape", "tab"]);
+        let heard = store.drain();
+        assert_eq!(
+            heard.iter().any(
+                |event| matches!(event, wire::Event::EditorRequest { request, .. }
+                if matches!(&request.input, wire::EditorRequestInput::Key { key, .. }
+                    if key.key == wire::keyboard::Key::Named(wire::keyboard::Named::Escape)))
+            ),
+            claimed,
+            "the guest hears Esc when it claimed it: {heard:?}"
+        );
+        assert_eq!(
+            read(&mut native),
+            ("one  ".to_owned(), false),
+            "Esc, then Tab moves on"
+        );
+        assert!(native.update(|window, cx| host.read(cx).after.is_focused(window)));
+
+        native.update(|window, cx| {
+            let editor = host.read(cx).editor.read(cx);
+            editor.input.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+        });
+        press(&mut native, &["escape", "a"]);
+        let (typed, _) = read(&mut native);
+        assert_eq!(typed, "one  a", "the letter is typed");
+        press(&mut native, &["tab"]);
+        assert_eq!(
+            read(&mut native),
+            ("one  a  ".to_owned(), true),
+            "a letter after Esc takes Tab back"
+        );
+        native.update(|window, cx| window.blur(cx));
+    }
 }
