@@ -4,30 +4,16 @@
 use gpui_base::StyledExt as _;
 use gpui_kit::MouseUpEvent;
 use gpui_kit::base::FocusTrapElement as _;
-use gpui_kit::component::radio::Radio;
-use gpui_kit::component::scroll::{Scrollbar, ScrollbarMode};
-use gpui_kit::component::slider::{Slider, SliderEvent, SliderState};
-use gpui_kit::component::{
-    Disableable, Selectable,
-    button::Button,
-    checkbox::Checkbox,
-    input::{Input, InputContentType, InputEvent, InputState},
-};
-use gpui_kit::component::{
-    IndexPath,
-    searchable_list::{SearchableListDelegate, SearchableListItem},
-    select::{SearchableVec, Select, SelectEvent, SelectState},
-};
+use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
 use gpui_kit::{
     AnyElement, App, AppContext as _, Bounds, Context, CursorStyle, Div, Element, ElementId,
-    Entity, EntityInputHandler as _, EventEmitter, FocusHandle, Focusable as _, FollowMode,
-    GlobalElementId, HitboxBehavior, Hsla, Image, ImageFormat, InspectorElementId,
-    InteractiveElement as _, InteractiveText, IntoElement, KeyDownEvent, LayoutId, ListAlignment,
-    ListSizingBehavior, ListState, MouseButton, MouseDownEvent, MouseMoveEvent, ObjectFit,
-    ParentElement as _, Pixels, Point, Render, RenderImage, ScrollDelta, ScrollHandle,
-    ScrollWheelEvent, SharedString, Size, Stateful, StatefulInteractiveElement as _, Styled,
-    StyledImage as _, StyledText, Subscription, Task, TextLayout, Transformation, Window, canvas,
-    div, fill, img, point, px, radians, relative, rgb, size, svg,
+    Entity, EventEmitter, FocusHandle, Focusable as _, FollowMode, GlobalElementId, HitboxBehavior,
+    Hsla, Image, ImageFormat, InspectorElementId, InteractiveElement as _, InteractiveText,
+    IntoElement, KeyDownEvent, LayoutId, ListAlignment, ListSizingBehavior, ListState, MouseButton,
+    MouseDownEvent, MouseMoveEvent, ObjectFit, ParentElement as _, Pixels, Point, Render,
+    RenderImage, ScrollHandle, SharedString, Size, Stateful, StatefulInteractiveElement as _,
+    Styled, StyledImage as _, StyledText, Subscription, TextLayout, Transformation, Window, canvas,
+    div, fill, img, point, px, radians, rgb, size, svg,
 };
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -46,10 +32,8 @@ mod deferred;
 mod inputs;
 mod interactivity;
 mod layout;
-mod pickers;
 mod picture_resources;
 mod pictures;
-mod scroll;
 mod sensors;
 mod style;
 mod surfaces;
@@ -67,13 +51,10 @@ pub(crate) use accessibility::{Accessible, accessible, announce, descendant_text
 use canvas::{append_arc, append_arc_to};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
-use inputs::{EditorMount, Field, RangeControl};
-use pickers::Picker;
+use inputs::{EditorMount, Field};
 #[cfg(test)]
 use picture_resources::decode_image;
-use pictures::ViewerState;
 pub(crate) use pictures::qr;
-use scroll::{ScrollRequest, VirtualScroll};
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
 use svg_limits::{SvgPaintSource, guarded_svg_paint, svg_data_allowed};
@@ -107,14 +88,6 @@ pub(crate) struct NativePresentation {
     focused_container: Option<(AuthoredPath, std::mem::Discriminant<wire::Node>)>,
     inputs: HashMap<AuthoredPath, InputPresentation>,
     editors: HashMap<AuthoredPath, wire::editor_document::EditorDocumentRef>,
-    scrolls: HashMap<AuthoredPath, ScrollPresentation>,
-}
-
-struct ScrollPresentation {
-    direction: wire::ScrollDirection,
-    anchors: (wire::ScrollAnchor, wire::ScrollAnchor),
-    offset: Point<Pixels>,
-    rows: Option<Vec<String>>,
 }
 
 struct InputPresentation {
@@ -133,21 +106,15 @@ pub struct ViewTree {
     fields: HashMap<AuthoredPath, Field>,
     authored_path: AuthoredPath,
     scrolls: HashMap<AuthoredPath, ScrollHandle>,
-    lists: HashMap<AuthoredPath, VirtualScroll>,
-    scroll_positions: HashMap<AuthoredPath, (Point<Pixels>, Point<Pixels>)>,
-    pickers: HashMap<AuthoredPath, Picker>,
     drags: HashMap<AuthoredPath, Point<Pixels>>,
     /// The overlays showing a dialog, and where focus enters each.
     dialogs: HashMap<AuthoredPath, FocusHandle>,
-    containers: HashMap<AuthoredPath, [f64; 2]>,
     bounds: HashMap<AuthoredPath, Bounds<Pixels>>,
     sensors: HashMap<AuthoredPath, SensorState>,
-    ranges: HashMap<AuthoredPath, RangeControl>,
     guest_focus_targets: HashMap<u64, FocusHandle>,
     uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
     variable_lists: HashMap<VariableListKey, VariableList>,
     images: HashMap<u64, Arc<RenderImage>>,
-    viewers: HashMap<AuthoredPath, ViewerState>,
     vectors: HashMap<u64, Arc<[u8]>>,
     editor_store: Option<crate::editor::wire::EditorStore>,
     editors: HashMap<AuthoredPath, EditorMount>,
@@ -173,19 +140,13 @@ impl ViewTree {
             fields: HashMap::new(),
             authored_path: Vec::new(),
             scrolls: HashMap::new(),
-            lists: HashMap::new(),
             uniform_lists: HashMap::new(),
             variable_lists: HashMap::new(),
-            scroll_positions: HashMap::new(),
-            pickers: HashMap::new(),
             drags: HashMap::new(),
             dialogs: HashMap::new(),
-            containers: HashMap::new(),
             bounds: HashMap::new(),
             sensors: HashMap::new(),
-            ranges: HashMap::new(),
             images: HashMap::new(),
-            viewers: HashMap::new(),
             vectors: HashMap::new(),
             editor_store: None,
             editors: HashMap::new(),
@@ -220,71 +181,15 @@ impl ViewTree {
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, cx),
             Node::Container(view_wire::ContainerNode { .. }) => self.container(node, window, cx),
-            Node::Scroll { .. } => self.scroll(node, window, cx),
-            Node::Button { .. } => self.button(node, window, cx),
             Node::Input { .. } => self.input(node, window, cx),
-            Node::PickList { .. } | Node::ComboBox { .. } => self.picker(node, window, cx),
-            Node::Toggle { .. } => self.toggle(node, cx),
-            Node::Radio {
-                id,
-                label,
-                selected,
-                on_select,
-                style,
-                ..
-            } => {
-                let message = *on_select;
-                let radio = Radio::new(native_id(id))
-                    .label(label.clone())
-                    .checked(*selected)
-                    .on_click(
-                        cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(message))),
-                    );
-                announce(div().refine_style(style).child(radio), accessible(node))
-                    .into_any_element()
-            }
-            Node::Rule {
-                id, axis, style, ..
-            } => {
-                let element = div().id(native_id(id)).refine_style(style);
-                match axis {
-                    wire::Axis::Column => element.h_full().into_any_element(),
-                    wire::Axis::Row => element.w_full().into_any_element(),
-                }
-            }
-            Node::Lazy { id, content, .. } => div()
-                .id(native_id(id))
-                .child(self.node(content, window, cx))
-                .into_any_element(),
             Node::Deferred { .. } => self.deferred(node, window, cx),
             Node::ResizeHandle { .. } => self.resize_handle(node, window, cx),
-            Node::Responsive { .. } => self.responsive(node, window, cx),
-            Node::When { .. } => self.when(node, window, cx),
             Node::Sensor { .. } => self.sensor(node, window, cx),
-            Node::MouseArea { .. } => self.mouse_area(node, window, cx),
-            Node::Slider { .. } => self.slider(node, window, cx),
             Node::RichText { .. } => self.rich_text(node, window, cx),
-            Node::Tooltip { .. } => self.tooltip(node, window, cx),
-            Node::Float { .. } => self.float(node, window, cx),
             Node::Image { .. } => self.picture(node, window, cx),
-            Node::ImageViewer { .. } => self.image_viewer(node, window, cx),
             Node::Svg { .. } => self.vector(node, window, cx),
             Node::Canvas { .. } => self.drawing(node, cx),
-            Node::Qr { id, code, style } => announce(
-                div().id(native_id(id)).refine_style(style).child(qr(code)),
-                accessible(node),
-            )
-            .into_any_element(),
-            // the host registers no surface: the slot says so where it would be
-            Node::Surface {
-                id, name, style, ..
-            } => div()
-                .id(native_id(id))
-                .refine_style(style)
-                .child(format!("Unavailable host surface: {name}"))
-                .into_any_element(),
             Node::Overlay { .. } => self.overlay(node, window, cx),
-            Node::Progress { .. } => self.progress(node, cx),
             Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::Editor { .. } => self.editor(node, window, cx),
         };

@@ -5,7 +5,7 @@
 use super::layout::{Layout, PaneMessage};
 use super::{AppMessage as Message, Ducktape};
 use crate::shell::{WindowKey, WindowKind};
-use view_wire::Task;
+use crate::ui::task::Task;
 
 impl Ducktape {
     /// One window's panes, moved.
@@ -36,7 +36,8 @@ impl Ducktape {
         layout.initialized = true;
         let desk = layout.desk();
         let mut task = Task::none();
-        let mut shows = true;
+        // filling or dragging a window does not change the active program
+        let mut sets_active = true;
         match message {
             PaneMessage::Select(module) => drop(layout.select(module)),
             PaneMessage::Open(module) => drop(layout.open(module)),
@@ -79,25 +80,23 @@ impl Ducktape {
             PaneMessage::Cycle { forward } => drop(layout.cycle(forward)),
             PaneMessage::Fill(index) => {
                 layout.toggle_fill(index, desk);
-                shows = false;
+                sets_active = false;
             }
             PaneMessage::Frame(index, frame) => {
                 layout.set_frame(index, frame, desk);
-                shows = false;
+                sets_active = false;
             }
         }
         if let Some(layout) = self.layouts.get_mut(&key) {
             layout.settle();
             // the window in front is the active program, however it got there
-            if shows && let Some(module) = layout.shown() {
+            if sets_active && let Some(module) = layout.shown() {
                 self.active = Some(module);
             }
         }
         task
     }
 
-    /// The console's desk, made if it has none yet; `None` before the
-    /// console window is opened.
     /// Help on the desk: into the focused window if it is empty, else
     /// where it already is, else a window of its own. A new account starts
     /// here, greeted (`welcome`).
@@ -109,6 +108,9 @@ impl Ducktape {
         }
     }
 
+    /// The console's desk, made if it has none yet; `None` before the
+    /// console window is opened. Marks it initialized: a desk something was
+    /// put on no longer opens the active program on its own.
     pub(super) fn desk_layout(&mut self) -> Option<&mut Layout> {
         let layout = self.layouts.entry(self.console_win?).or_default();
         layout.initialized = true;

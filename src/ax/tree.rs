@@ -1,3 +1,9 @@
+//! The door's view of one window: `Window::a11y_tree` turned into the node
+//! list every read serves. [`snapshot`] walks the tree in paint order under
+//! the topmost modal, drops what is hidden, zero-sized or off the viewport,
+//! masks what is secret, and words the states and actions; [`door_ids`]
+//! gives each node its stable id. The rest are the shapes of answers:
+//! [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
 
 /// The element id a module view's host draws around the view's tree
@@ -103,7 +109,8 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         let role = node.role();
         let private = node.class_name() == Some(crate::a11y::AX_PRIVATE);
         let secret = private || role == Role::PasswordInput;
-        let name = match (private, node.label()) {
+        // a private text field's name is its label; its value is the secret
+        let name = match (private && !is_text_input(role), node.label()) {
             (true, Some(_)) => MASK.to_owned(),
             (_, label) if node.class_name() == Some(crate::a11y::AX_WHOLE) => {
                 label.unwrap_or_default().to_owned()
@@ -183,6 +190,15 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         node.id = id;
     }
     out
+}
+
+/// A modal scopes `window`'s snapshot now.
+pub(super) fn modal_active(window: &Window) -> bool {
+    window.a11y_tree().is_some_and(|update| {
+        let nodes = update.nodes.iter().map(|(id, node)| (*id, node)).collect();
+        let root = update.tree.as_ref().map_or(NodeId(0), |tree| tree.root);
+        topmost_modal(root, &nodes).is_some()
+    })
 }
 
 /// The last painted modal that is actually reachable. A hidden ancestor hides

@@ -3,7 +3,10 @@
 use super::update::STATUS_EVERY;
 use super::{AppMessage as Message, Ducktape, Overlay, Stage, Unlock};
 use crate::backend;
-use view_wire::Task;
+use crate::ui::task::Task;
+
+/// How long a node has to answer the first status before it is not reached.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 impl Ducktape {
     /// The node: typed, reached, polled, switched, left.
@@ -35,9 +38,7 @@ impl Ducktape {
                 let generation = self.connect_generation;
                 let (task, handle) = Task::future(async move {
                     let client = backend::RpcClient::new(origin.clone());
-                    let status =
-                        tokio::time::timeout(std::time::Duration::from_secs(10), client.status())
-                            .await;
+                    let status = tokio::time::timeout(CONNECT_TIMEOUT, client.status()).await;
                     match status {
                         Ok(Ok(status)) => Message::Connected {
                             generation,
@@ -93,7 +94,8 @@ impl Ducktape {
                 self.recent_endpoints = backend::recent_endpoints();
                 self.connected_rpc = origin;
                 self.network = status.network.clone();
-                // the chain id links name: the network and its genesis salt
+                // the chain id `duck://` links name: the network and its
+                // genesis salt; the name alone when the genesis yields none
                 self.chain = ducklink::ChainId::of(&status.network, &status.genesis)
                     .map_or_else(|| status.network.clone(), |chain| chain.to_string());
                 crate::runtime::notify::center().set_network(&self.chain);

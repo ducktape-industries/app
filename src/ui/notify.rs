@@ -1,7 +1,7 @@
 //! The notification centre and its settings.
 
 use super::{AppMessage as Message, Ducktape};
-use view_wire::Task;
+use crate::ui::task::Task;
 
 impl Ducktape {
     /// The notification centre's rows, and the policy Settings sets.

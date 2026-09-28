@@ -143,9 +143,6 @@ impl NativeModuleView {
         let seat = seat.clone();
         let alive = guest.alive.clone();
         self.subscription = Some(cx.subscribe(&content, move |this, source, event, cx| {
-            if !this.focused && input::needs_focus(event) {
-                return;
-            }
             let activation = source.read(cx).take_user_activation(event);
             let mut locked = seat.lock().expect("module view lock");
             let Slot::Ready(guest) = &mut locked.slot else {
@@ -158,7 +155,7 @@ impl NativeModuleView {
                 return;
             }
             guest.user_activation = activation;
-            input::deliver(guest, event.clone());
+            guest.pending.push(event.clone());
             cx.notify();
         }));
         self.content = Some(content);

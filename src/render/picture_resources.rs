@@ -1,7 +1,13 @@
+//! Decoding a guest's raster into a gpui `RenderImage`, and the caps the
+//! picture caches in pictures.rs share: one picture's bytes, and a whole
+//! cache's bytes and entries.
 use super::*;
 use image::ImageDecoder;
 
+/// Both the one-picture ceiling (decoded size, decoder allocation) and a
+/// whole cache's byte ceiling.
 const MAX_PICTURE_BYTES: usize = 64 << 20;
+/// A whole cache's entry ceiling.
 const MAX_PICTURES: usize = 4096;
 
 fn rgba_fits(width: u32, height: u32) -> bool {
@@ -47,6 +53,7 @@ pub(super) fn decode_image(data: &wire::ImageData) -> Option<RenderImage> {
                 .into_rgba8()
         }
     };
+    // gpui RenderImage frames are BGRA.
     for pixel in pixels.pixels_mut() {
         pixel.0.swap(0, 2);
     }

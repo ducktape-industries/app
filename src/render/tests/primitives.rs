@@ -219,7 +219,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
     );
     let row = axis_container(
         "row",
-        wire::Axis::Row,
+        Axis::Row,
         [
             text("height", "17968".into(), None, true),
             text("hash", "0123456789abcdef".repeat(16), Some(fill()), false),
@@ -240,11 +240,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
     if let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut reference {
         *children = vec![text("reference", "Header".into(), None, true)];
     }
-    let mut root = axis_container(
-        "column",
-        wire::Axis::Column,
-        [paragraph, row, reference, header],
-    );
+    let mut root = axis_container("column", Axis::Column, [paragraph, row, reference, header]);
     if let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut root {
         let mut root_style = div()
             .flex()
@@ -256,18 +252,15 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
             .max_w(px(620.));
         *style = root_style.style().clone();
     }
-    let root = wire::Node::Button {
-        id: named_id("wrapping-parent"),
-        role: None,
-        selected: None,
-        content: wire::ButtonContent::Child(Box::new(root)),
-        label: None,
-        checked: None,
-        expanded: None,
-        description: None,
-        on_press: Some(1),
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(named_id("wrapping-parent")),
         style: div().w_full().style().clone(),
-    };
+        interactivity: wire::Interactivity {
+            on_click: Some(1),
+            ..Default::default()
+        },
+        children: vec![root],
+    });
     let window = cx.open_window(size(px(800.), px(500.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -290,7 +283,7 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
             .unwrap();
         assert!(
             button_bounds.bottom() >= hash.bottom(),
-            "auto-height button must show every wrapped line"
+            "an auto-height clickable must show every wrapped line"
         );
         let count = tree
             .measured_bounds(&[
@@ -358,189 +351,16 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
 }
 
 #[gpui_kit::test]
-fn horizontal_overflow_scrollbar_reveals_offscreen_columns(cx: &mut gpui_kit::TestAppContext) {
-    use gpui_kit::InputEvent as _;
-    cx.update(gpui_kit::init);
-    let columns = sized(
-        "columns-box",
-        axis_container(
-            "columns",
-            wire::Axis::Row,
-            (0..4).map(|index| {
-                sized(
-                    &format!("column-{index}"),
-                    container(
-                        &format!("column-content-{index}"),
-                        [text(&format!("name-{index}"), "Folder")],
-                    ),
-                    Some(fixed(230.)),
-                    Some(fill()),
-                )
-            }),
-        ),
-        Some(fixed(920.)),
-        Some(fill()),
-    );
-    let mut columns = columns;
-    if let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut columns
-        && let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut children[0]
-    {
-        *style = div()
-            .flex()
-            .flex_row()
-            .w_full()
-            .min_w_0()
-            .gap(px(0.))
-            .style()
-            .clone();
-    }
-    let root = wire::Node::Scroll {
-        id: wire::ElementIdWire::Name("folders".into()),
-        content: Box::new(columns),
-        direction: wire::ScrollDirection::Horizontal,
-        style: sized_style(Some(fill()), Some(fill())),
-        on_scroll: None,
-        virtual_rows: false,
-        bar_hidden: false,
-        bar_width: None,
-        bar_margin: None,
-        scroller_width: None,
-        bar_spacing: None,
-        anchor_x: Default::default(),
-        anchor_y: Default::default(),
-        auto_scroll: false,
-    };
-    let mut main = axis_container(
-        "main-column",
-        wire::Axis::Column,
-        [
-            sized(
-                "header",
-                container("header-content", [text("header-text", "Header")]),
-                None,
-                Some(fixed(24.)),
-            ),
-            root,
-            sized(
-                "footer",
-                container("footer-content", [text("footer-text", "Footer")]),
-                None,
-                Some(fixed(24.)),
-            ),
-        ],
-    );
-    if let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut main {
-        *style = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w_0()
-            .min_h_0()
-            .h_full()
-            .gap(px(8.))
-            .style()
-            .clone();
-    }
-    let root = sized("main", main, Some(fill()), Some(fill()));
-    let mut root = root;
-    if let wire::Node::Container(view_wire::ContainerNode { children, .. }) = &mut root
-        && let wire::Node::Container(view_wire::ContainerNode { style, .. }) = &mut children[0]
-    {
-        *style = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .min_w_0()
-            .min_h_0()
-            .h_full()
-            .gap(px(0.))
-            .style()
-            .clone();
-    }
-    let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
-    tree.read_with(&native, |tree, _| {
-        let folders = vec![
-            named_id("main"),
-            named_id("main-column"),
-            named_id("folders"),
-        ];
-        assert_eq!(tree.scrolls[&folders].max_offset().x, px(520.));
-        assert_eq!(tree.scrolls[&folders].bounds().size.height, px(152.));
-        assert_eq!(
-            tree.measured_bounds(&[
-                named_id("main"),
-                named_id("main-column"),
-                named_id("folders"),
-                named_id("columns-box"),
-                named_id("columns"),
-                named_id("column-0"),
-            ])
-            .unwrap()
-            .size
-            .width,
-            px(230.)
-        );
-    });
-    native.update(|window, cx| window.render_frame(cx));
-    let position = point(px(350.), px(168.));
-    native.update(|window, cx| {
-        window.dispatch_event(
-            MouseDownEvent {
-                position,
-                button: MouseButton::Left,
-                modifiers: Default::default(),
-                click_count: 1,
-                first_mouse: false,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.dispatch_event(
-            MouseUpEvent {
-                position,
-                button: MouseButton::Left,
-                modifiers: Default::default(),
-                click_count: 1,
-            }
-            .to_platform_input(),
-            cx,
-        );
-        window.render_frame(cx);
-    });
-    tree.read_with(&native, |tree, _| {
-        let folders = vec![
-            named_id("main"),
-            named_id("main-column"),
-            named_id("folders"),
-        ];
-        assert!(
-            tree.scrolls[&folders].offset().x < px(-200.),
-            "scrollbar track click reveals offscreen columns: bounds={:?}, offset={:?}",
-            tree.scrolls[&folders].bounds(),
-            tree.scrolls[&folders].offset()
-        );
-        assert_eq!(tree.scrolls[&folders].offset().y, px(0.));
-    });
-}
-
-#[gpui_kit::test]
 fn sensor_preserves_linear_fill_bounds(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let root = wire::Node::Sensor {
         id: named_id("viewport"),
-        reset: None,
         on_show: Some(1),
         on_resize: None,
-        on_hide: None,
-        anticipate: None,
-        delay: None,
         child: Box::new({
             let mut content = axis_container(
                 "content",
-                wire::Axis::Column,
+                Axis::Column,
                 [wire::Node::Space {
                     style: sized_style(Some(fixed(20.)), Some(fixed(5.))),
                 }],
