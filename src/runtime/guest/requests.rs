@@ -353,10 +353,12 @@ impl Guest {
             .tick(&mut self.store, &bytes)
             .map_err(|error| first_line(&error));
         drop(called);
-        let used = self.fuel_used();
-        perf::record(key, "fuel.tick", used);
+        if perf::on() {
+            perf::record(key, "fuel.tick", self.fuel_used());
+        }
         // `RUST_LOG=ducktape::perf=debug`: how much of the budget a tick took
-        tracing::debug!(target: "ducktape::perf", module = self.module, used, limit = FUEL_PER_TICK);
+        tracing::debug!(target: "ducktape::perf", module = self.module,
+            used = self.fuel_used(), limit = FUEL_PER_TICK);
         let outcome = answer.and_then(|frame| {
             perf::record(key, "frame_bytes", frame.len() as u64);
             let _decoded = perf::time(key, "tick.decode");

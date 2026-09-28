@@ -284,11 +284,12 @@ impl Guest {
         }
         let framed = Instant::now();
         let frame = fresh.first_frame(shown);
-        timing.first_frame = Some(framed.elapsed());
+        let first_frame = framed.elapsed();
+        timing.first_frame = Some(first_frame);
         crate::perf::record(
             fresh.perf_key(),
             "first_frame",
-            framed.elapsed().as_micros() as u64,
+            first_frame.as_micros() as u64,
         );
         frame.map_err(Failure::Trapped)?;
         Ok(fresh)

@@ -76,7 +76,7 @@ impl NativeModuleView {
         for intent in std::mem::take(&mut guest.intents) {
             cx.emit(intent);
         }
-        if ticks == 0 && guest.ticks == 1 {
+        if ticks == 0 && guest.ticks == 1 && crate::perf::on() {
             // a fresh view's first tree: from this frame's start, the first
             // to find it seated, to its tree mounted
             crate::perf::record(
