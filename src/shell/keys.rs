@@ -22,10 +22,6 @@ gpui_kit::actions!(
         NewWindow,
         /// ⌘W: the focused desk window, else this window.
         CloseWindow,
-        /// ⌘D: the focused window halved, left | right.
-        Halve,
-        /// ⌘⇧D: halved, top / bottom.
-        HalveBelow,
         /// ⌘` / ctrl-tab: the next window to the front.
         CycleForward,
         /// ⌘⇧` / ctrl-shift-tab: the previous one.
@@ -57,8 +53,6 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-n", NewWindow, DESK),
         KeyBinding::new("secondary-/", OpenHelp, DESK),
         KeyBinding::new("secondary-w", CloseWindow, Some(CONTEXT)),
-        KeyBinding::new("secondary-d", Halve, DESK),
-        KeyBinding::new("secondary-shift-d", HalveBelow, DESK),
         KeyBinding::new("secondary-`", CycleForward, DESK),
         KeyBinding::new("secondary-~", CycleForward, DESK),
         KeyBinding::new("secondary-shift-`", CycleBack, DESK),
@@ -90,9 +84,6 @@ pub(crate) fn menus(cx: &mut gpui_kit::App) {
         Menu::new("Window").items([
             MenuItem::action("New Window", NewWindow),
             MenuItem::action("Close", CloseWindow),
-            MenuItem::separator(),
-            MenuItem::action("Split", Halve),
-            MenuItem::action("Split Below", HalveBelow),
             MenuItem::separator(),
             MenuItem::action("Next Window", CycleForward),
             MenuItem::action("Previous Window", CycleBack),
@@ -140,12 +131,6 @@ impl DesktopWindow {
             ))
             .on_action(cx.listener(|this, _: &NewWindow, window, cx| {
                 this.pane_message(PaneMessage::Split(layout::EMPTY), window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &Halve, window, cx| {
-                this.pane_message(PaneMessage::Halve { below: false }, window, cx)
-            }))
-            .on_action(cx.listener(|this, _: &HalveBelow, window, cx| {
-                this.pane_message(PaneMessage::Halve { below: true }, window, cx)
             }))
             .on_action(cx.listener(|this, _: &CycleForward, window, cx| {
                 this.pane_message(PaneMessage::Cycle { forward: true }, window, cx)
@@ -212,26 +197,25 @@ mod tests {
         cx.update(bind);
         let desk = "Ducktape console on_desk desk";
         assert_eq!(
-            resolve("secondary-d", &[desk], cx).as_deref(),
-            Some("desk::Halve")
+            resolve("secondary-n", &[desk], cx).as_deref(),
+            Some("desk::NewWindow")
         );
         assert_eq!(
-            resolve("secondary-d", &["Ducktape console"], cx),
+            resolve("secondary-n", &["Ducktape console"], cx),
             None,
             "the launcher"
         );
         assert_eq!(
-            resolve("secondary-d", &["Ducktape console on_desk overlay"], cx),
+            resolve("secondary-n", &["Ducktape console on_desk overlay"], cx),
             None,
             "an overlay keeps its keys"
         );
+        // no key halves a window
+        assert_eq!(resolve("secondary-d", &[desk], cx), None);
+        assert_eq!(resolve("secondary-shift-d", &[desk], cx), None);
         assert_eq!(
             resolve("secondary-w", &["Ducktape console on_desk overlay"], cx).as_deref(),
             Some("desk::CloseWindow")
-        );
-        assert_eq!(
-            resolve("secondary-n", &[desk], cx).as_deref(),
-            Some("desk::NewWindow")
         );
         assert_eq!(resolve("3", &[desk], cx), None, "a pane with a view types");
         assert_eq!(

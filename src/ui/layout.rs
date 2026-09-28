@@ -140,10 +140,6 @@ pub(crate) enum PaneMessage {
     },
     /// This pop-out's pane back onto the console's desk.
     PopIn,
-    /// ⌘D / ⌘⇧D.
-    Halve {
-        below: bool,
-    },
     /// ⌘` / ⌘⇧` / ctrl-tab.
     Cycle {
         forward: bool,
@@ -179,7 +175,8 @@ impl Layout {
     /// The desk as the shell measured it. On a desk that changed size
     /// (the window resized, filled the screen or left it) every window
     /// keeps its share of it: its edges keep their place between the
-    /// desk's insets, so halves stay flush and a filled window stays filled.
+    /// desk's insets, so windows edge to edge stay flush and a filled
+    /// window stays filled.
     pub(crate) fn measure(&mut self, desk: (f32, f32)) {
         let Some(old) = self.desk.replace(desk).filter(|old| *old != desk) else {
             return;
@@ -271,46 +268,6 @@ impl Layout {
         }
     }
 
-    /// Halves the focused window, left|right (or top|bottom when
-    /// `below`): it keeps the first half, a new empty window takes the
-    /// other. With no window, an empty one fills the desk.
-    pub(crate) fn halve(&mut self, below: bool, desk: (f32, f32)) -> bool {
-        let Some(kept) = self.panes.get(self.focused) else {
-            return self.split(EMPTY);
-        };
-        let whole = kept.frame.unwrap_or_else(|| Frame::fill(desk));
-        // halves under their smallest window would be pushed apart, one past
-        // the other and off the desk: the kept half under its view's, the
-        // new empty one under the smallest
-        let fits = match below {
-            false => {
-                let first = (whole.w / 2.).floor();
-                first >= kept.min_width() && whole.w - first >= MIN_WIDTH
-            }
-            true => whole.h / 2. >= MIN_HEIGHT,
-        };
-        if !fits || !self.split(EMPTY) {
-            return false;
-        }
-        let (mut first, mut second) = (whole, whole);
-        match below {
-            false => {
-                first.w = (whole.w / 2.).floor();
-                second.x = whole.x + first.w;
-                second.w = whole.w - first.w;
-            }
-            true => {
-                first.h = (whole.h / 2.).floor();
-                second.y = whole.y + first.h;
-                second.h = whole.h - first.h;
-            }
-        }
-        let new = self.focused;
-        self.set_frame(new - 1, first, desk);
-        self.set_frame(new, second, desk);
-        true
-    }
-
     /// The next window up (`forward`: the one at the bottom comes to the
     /// top; back: the top one goes to the bottom), so repeating it visits
     /// every window in turn.
@@ -376,9 +333,8 @@ impl Layout {
     }
 
     /// The windows beside a closed one grow back over its frame: the one
-    /// that shared a whole edge with it (its other half, once halved), or
-    /// else the windows lined up along one side of it that together span
-    /// that side (the two quarters beside a closed half).
+    /// that shared a whole edge with it, or else the windows lined up
+    /// along one side of it that together span that side.
     fn reclaim(&mut self, gone: Frame) {
         // a frame along the axis it grows on, then across it
         let along = |frame: Frame, row: bool| match row {
@@ -387,8 +343,8 @@ impl Layout {
         };
         let near = |a: f32, b: f32| (a - b).abs() < 0.5;
         let frames: &Vec<Option<Frame>> = &self.panes.iter().map(|pane| pane.frame).collect();
-        // same span, touching or overlapping (a half clamped to the
-        // smallest window overlaps its sibling): the one on top
+        // same span, touching or overlapping (a window clamped to its
+        // floor can overlap its neighbour): the one on top
         let whole = [true, false]
             .into_iter()
             .flat_map(|row| {
@@ -477,7 +433,7 @@ impl Layout {
                 .filter(|pane| pane.frame.is_some())
                 .max_by_key(|pane| pane.z)
                 .and_then(|pane| pane.frame);
-            // whole pixels: a halved and rejoined frame must add back up
+            // whole pixels: frames laid edge to edge add back up
             let w = (desk.0 * 0.6).round().max(MIN_WIDTH);
             let h = (desk.1 * 0.7).round().max(MIN_HEIGHT);
             let frame = match beneath {
@@ -722,45 +678,6 @@ mod tests {
         assert_eq!(Pane::new("layout-narrow-view").min_width(), MIN_WIDTH);
     }
 
-    /// Left and right halves each keep their own minimum: a view laid out
-    /// from 680 in a 1000 px window is not halved into 500s.
-    #[test]
-    fn a_view_is_not_halved_under_its_minimum() {
-        crate::runtime::seat_for_test("layout-halved-view", 680);
-        let mut layout = Layout::default();
-        layout.split("layout-halved-view");
-        layout.place(DESK);
-        let whole = Frame {
-            x: 100.,
-            y: 100.,
-            w: 1000.,
-            h: 600.,
-        };
-        layout.set_frame(0, whole, DESK);
-        assert!(!layout.halve(false, DESK), "its half would be 500");
-        assert_eq!(layout.panes.len(), 1);
-        assert!(layout.halve(true, DESK), "top and bottom as before");
-        // 1364 halves into 682s: the view keeps its half, exactly its floor
-        crate::runtime::seat_for_test("layout-halving-view", 680);
-        let mut layout = Layout::default();
-        layout.split("layout-halving-view");
-        layout.place(DESK);
-        let whole = Frame {
-            x: 0.,
-            w: 1364.,
-            ..whole
-        };
-        layout.set_frame(0, whole, DESK);
-        assert!(layout.halve(false, DESK));
-        let (left, right) = (
-            layout.panes[0].frame.unwrap(),
-            layout.panes[1].frame.unwrap(),
-        );
-        assert_eq!(layout.panes[0].module, "layout-halving-view");
-        assert!(layout.panes[1].is_empty());
-        assert_eq!((left.x, left.w, right.x, right.w), (0., 682., 682., 682.));
-    }
-
     #[test]
     fn filling_a_window_and_filling_it_again_puts_it_back() {
         let mut layout = Layout::default();
@@ -779,59 +696,33 @@ mod tests {
         assert_eq!(layout.panes[0].frame, Some(small));
     }
 
-    #[test]
-    fn halving_splits_the_focused_frame_into_an_empty_window() {
+    /// A frame on the desk, for windows laid edge to edge by hand.
+    fn part(x: f32, y: f32, w: f32, h: f32) -> Option<Frame> {
+        Some(Frame { x, y, w, h })
+    }
+
+    /// `modules` in windows at `frames`, the last one focused.
+    fn tiled(frames: &[(&'static str, Option<Frame>)]) -> Layout {
         let mut layout = Layout::default();
-        assert!(layout.halve(false, DESK), "no window: an empty one");
-        layout.place(DESK);
-        layout.toggle_fill(0, DESK);
-        assert!(layout.panes[0].is_empty());
-        assert_eq!(layout.panes[0].frame, Some(Frame::fill(DESK)));
-        layout.load("chat");
-        assert_eq!(layout.panes[0].module, "chat");
-        let whole = layout.panes[0].frame.unwrap();
-        assert!(layout.halve(false, DESK));
-        let (left, right) = (
-            layout.panes[0].frame.unwrap(),
-            layout.panes[1].frame.unwrap(),
-        );
-        assert_eq!(layout.focused, 1);
-        assert!(layout.panes[1].is_empty());
-        assert_eq!(
-            (left.x, left.w + right.w, right.x),
-            (whole.x, whole.w, whole.x + left.w)
-        );
-        assert_eq!((left.h, right.h), (whole.h, whole.h));
-        assert!(layout.halve(true, DESK));
-        let (top, bottom) = (
-            layout.panes[1].frame.unwrap(),
-            layout.panes[2].frame.unwrap(),
-        );
-        assert_eq!((top.h + bottom.h, bottom.y), (right.h, right.y + top.h));
-        assert_eq!((top.x, bottom.x, bottom.w), (right.x, right.x, right.w));
-        // a half narrower (or lower) than the smallest window isn't made
-        assert!(layout.halve(false, DESK));
-        let count = layout.panes.len();
-        let narrow = layout.panes[layout.focused].frame.unwrap();
-        assert!(narrow.w / 2. < MIN_WIDTH, "{narrow:?}");
-        assert!(!layout.halve(false, DESK), "too narrow to halve");
-        assert_eq!(layout.panes.len(), count);
-        while layout.split("files") {}
-        assert!(!layout.halve(false, DESK), "no room for another");
+        for &(module, frame) in frames {
+            layout.split(module);
+            layout.panes[layout.focused].frame = frame;
+        }
+        layout
     }
 
     #[test]
-    fn closing_a_half_gives_its_sibling_the_whole_frame_back() {
-        let mut layout = Layout::default();
-        layout.split("chat");
-        layout.place(DESK);
-        let whole = layout.panes[0].frame.unwrap();
-        layout.halve(false, DESK);
-        let right = layout.panes[1].frame.unwrap();
-        layout.halve(true, DESK);
+    fn closing_a_window_gives_its_flush_neighbour_the_space_back() {
+        let whole = Frame::fill(DESK);
+        let right = part(700., 12., 688., 836.);
+        let mut layout = tiled(&[
+            ("chat", part(12., 12., 688., 836.)),
+            ("files", part(700., 12., 688., 418.)),
+            ("calendar", part(700., 430., 688., 418.)),
+        ]);
         // the lower right quarter goes: the upper one takes the right half
         layout.close(2);
-        assert_eq!(layout.panes[1].frame, Some(right));
+        assert_eq!(layout.panes[1].frame, right);
         // the right half goes: chat takes the whole desk again
         layout.close(1);
         assert_eq!(layout.panes[0].frame, Some(whole));
@@ -844,17 +735,27 @@ mod tests {
     }
 
     #[test]
-    fn closing_a_half_gives_the_quarters_beside_it_the_whole_width() {
-        let mut layout = Layout::default();
-        layout.split("chat");
-        layout.place(DESK);
-        let whole = layout.panes[0].frame.unwrap();
-        layout.halve(false, DESK);
-        layout.halve(true, DESK);
+    fn closing_a_window_gives_the_ones_lined_up_beside_it_its_width() {
+        let whole = Frame::fill(DESK);
         let (top, bottom) = (
-            layout.panes[1].frame.unwrap(),
-            layout.panes[2].frame.unwrap(),
+            Frame {
+                x: 700.,
+                y: 12.,
+                w: 688.,
+                h: 418.,
+            },
+            Frame {
+                x: 700.,
+                y: 430.,
+                w: 688.,
+                h: 418.,
+            },
         );
+        let mut layout = tiled(&[
+            ("chat", part(12., 12., 688., 836.)),
+            ("files", Some(top)),
+            ("calendar", Some(bottom)),
+        ]);
         // the left half goes: the right column's quarters take its width
         layout.close(0);
         assert_eq!(
@@ -873,12 +774,12 @@ mod tests {
                 ..bottom
             })
         );
-        // and in the other direction: a row of halves under a closed top
-        let mut layout = Layout::default();
-        layout.split("chat");
-        layout.place(DESK);
-        layout.halve(true, DESK);
-        layout.halve(false, DESK);
+        // and in the other direction: a row of two under a closed top
+        let mut layout = tiled(&[
+            ("chat", part(12., 12., 1376., 418.)),
+            ("files", part(12., 430., 688., 418.)),
+            ("calendar", part(700., 430., 688., 418.)),
+        ]);
         layout.close(0);
         let (left, right) = (
             layout.panes[0].frame.unwrap(),
@@ -889,25 +790,22 @@ mod tests {
             (whole.y, whole.h, whole.y, whole.h)
         );
         // a window that spans only part of the side is left alone
-        let mut layout = Layout::default();
-        layout.split("chat");
-        layout.place(DESK);
-        layout.halve(false, DESK);
-        layout.halve(true, DESK);
-        let top = layout.panes[1].frame;
-        layout.panes[2].frame = None;
+        let mut layout = tiled(&[
+            ("chat", part(12., 12., 688., 836.)),
+            ("files", Some(top)),
+            ("calendar", None),
+        ]);
         layout.close(0);
-        assert_eq!(layout.panes[0].frame, top);
+        assert_eq!(layout.panes[0].frame, Some(top));
     }
 
     #[test]
     fn a_resized_desk_scales_every_window_with_it() {
-        let mut layout = Layout::default();
-        layout.split("chat");
+        let mut layout = tiled(&[
+            ("chat", part(12., 12., 688., 836.)),
+            (EMPTY, part(700., 12., 688., 836.)),
+        ]);
         layout.measure(DESK);
-        layout.place(DESK);
-        layout.toggle_fill(0, DESK);
-        layout.halve(false, DESK);
         let small = Frame {
             x: 100.,
             y: 80.,
@@ -925,7 +823,7 @@ mod tests {
             layout.panes[1].frame.unwrap(),
         );
         assert_eq!((left.x, left.y), (INSET, INSET));
-        assert_eq!(left.x + left.w, right.x, "halves stay flush");
+        assert_eq!(left.x + left.w, right.x, "edge to edge stays flush");
         assert_eq!(right.x + right.w, big.0 - INSET);
         assert_eq!(left.h, big.1 - 2. * INSET);
         let floating = layout.panes[2].frame.unwrap();

@@ -250,7 +250,7 @@ fn panes(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> (usize
     })
 }
 
-/// The desk's own keys (⌘D, ⌘1, ⌘W) act on its windows only while no
+/// The desk's own keys (⌘N, ⌘1, ⌘W) act on its windows only while no
 /// overlay is open; an overlay keeps its keys, and ⌘W is then the app
 /// window's (checked through `command_w_pane`: on Linux that window
 /// minimizes, which the test platform can't).
@@ -261,8 +261,8 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
         draw(window, cx);
     });
     assert_eq!(panes(&mut native, &view), (1, 0));
-    key(&mut native, "secondary-d");
-    assert_eq!(panes(&mut native, &view), (2, 1), "⌘D halves the window");
+    key(&mut native, "secondary-n");
+    assert_eq!(panes(&mut native, &view), (2, 1), "⌘N opens a window");
     key(&mut native, "secondary-1");
     assert_eq!(panes(&mut native, &view), (2, 0), "⌘1 focuses the first");
 
@@ -273,7 +273,7 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
             None,
             "⌘W under {name:?} closes the window, not a pane"
         );
-        for stroke in ["secondary-d", "secondary-2"] {
+        for stroke in ["secondary-n", "secondary-2"] {
             key(&mut native, stroke);
             assert_eq!(
                 panes(&mut native, &view),
@@ -422,7 +422,7 @@ fn the_focused_window_is_the_active_program(cx: &mut TestAppContext) {
     assert_eq!(active(&mut native), Some("pane-ax-test"));
 }
 
-/// A window that comes to the front (⌘D, ⌘W, ⌘1…9, ⌃Tab) has the keys:
+/// A window that comes to the front (⌘N, ⌘W, ⌘1…9, ⌃Tab) has the keys:
 /// what had them in it before, else its first control, else the window
 /// itself — never the root, where typing goes nowhere.
 #[gpui_kit::test]
@@ -437,8 +437,8 @@ fn a_window_brought_to_the_front_has_the_keys(cx: &mut TestAppContext) {
             view.pane_keys[&instance].0.contains_focused(window, cx)
         })
     };
-    key(&mut native, "secondary-d");
-    assert!(in_front(&mut native), "⌘D: the new window");
+    key(&mut native, "secondary-n");
+    assert!(in_front(&mut native), "⌘N: the new window");
     key(&mut native, "secondary-1");
     assert!(in_front(&mut native), "⌘1");
     let first = focused(&mut native);

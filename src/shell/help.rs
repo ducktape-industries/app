@@ -5,15 +5,6 @@
 
 use super::*;
 
-/// How the platform writes a chord with Shift: "⌘⇧D" on a Mac, "Ctrl
-/// Shift D" elsewhere.
-fn shift_chord_label(key: &str) -> String {
-    match cfg!(target_os = "macos") {
-        true => format!("⌘⇧{key}"),
-        false => format!("Ctrl Shift {key}"),
-    }
-}
-
 impl DesktopWindow {
     pub(super) fn help_view(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         use super::ink::*;
@@ -40,12 +31,7 @@ impl DesktopWindow {
                  each one opens in a window on this desk.",
             ),
         };
-        let (n, k, w, d) = (
-            chord_label("N"),
-            chord_label("K"),
-            chord_label("W"),
-            chord_label("D"),
-        );
+        let (n, k, w) = (chord_label("N"), chord_label("K"), chord_label("W"));
         let open = [
             "Click a program's name in the bar. It opens in the window you are \
              in if that one is empty, brings its window to the front if it is \
@@ -66,11 +52,6 @@ impl DesktopWindow {
              arrow moves the window out into one of its own (its arrow brings it \
              back), and × closes it."
                 .to_owned(),
-            format!(
-                "{d} splits the window you are in, left and right; {} top and \
-                 bottom. The new half opens empty.",
-                shift_chord_label("D")
-            ),
         ];
         let bar = [
             "Left to right: the network's name, to switch networks; the programs; \
@@ -97,8 +78,6 @@ impl DesktopWindow {
             (n, "An empty window: type to find a program for it"),
             (k, "Search programs, networks and actions"),
             (w, "Close the window"),
-            (d, "Split the window, left and right"),
-            (shift_chord_label("D"), "Split the window, top and bottom"),
             (chord_label("`"), "The next window"),
             (chord_label("1–9"), "A window by its place"),
             (chord_label("/"), "This help"),
