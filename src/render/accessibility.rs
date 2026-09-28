@@ -339,11 +339,19 @@ impl ViewTree {
                 });
             });
         }
+        // gpui gives an element's tab stop and index only to a handle it
+        // makes itself; a view's own handle takes them here
         let focus_handle = interactivity.focus_handle.map(|id| {
             self.guest_focus_targets
                 .entry(id)
                 .or_insert_with(|| cx.focus_handle())
                 .clone()
+                .tab_stop(
+                    interactivity
+                        .tab_stop
+                        .unwrap_or(interactivity.tab_index.is_some()),
+                )
+                .tab_index(interactivity.tab_index.map_or(0, |index| index as isize))
         });
         element = super::interactivity::apply(element, interactivity, focus_handle, cx);
         if let Some(handler) = interactivity.on_click {

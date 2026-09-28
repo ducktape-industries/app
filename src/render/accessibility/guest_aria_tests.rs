@@ -444,4 +444,52 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
     }
 }
 
+/// A view's own focus handle is a Tab stop when the view says the element
+/// is one, as gpui makes the handle of an element it gives one; one the
+/// view left out of the Tab order stays out.
+#[gpui_kit::test]
+fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let button = |key_name: &str, focus: u64, tab_stop: Option<bool>| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(key(key_name)),
+            style: div().w(px(80.)).h(px(40.)).style().clone(),
+            interactivity: wire::Interactivity {
+                role: Some(Role::Button),
+                focusable: true,
+                focus_handle: Some(focus),
+                tab_stop,
+                aria: wire::Aria {
+                    author_id: Some(key_name.into()),
+                    label: Some(key_name.into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            children: Vec::new(),
+        })
+    };
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("row")),
+        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![button("skipped", 1, None), button("stop", 2, Some(true))],
+    });
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(sanitized(root))
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        // Tab is the app's binding to `focus_next`; a bare window has none
+        window.focus_next(cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let (stop, _) = heard(update, "stop").expect("the stop has a node");
+        assert_eq!(update.focus, stop, "Tab reaches the view's tab stop");
+    });
+}
+
 mod phase_two;
