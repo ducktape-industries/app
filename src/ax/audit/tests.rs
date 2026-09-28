@@ -1,5 +1,6 @@
 //! One passing and one failing case per rule, over hand-built nodes.
 use super::*;
+use Severity::Warn;
 use gpui_kit::accesskit::NodeId;
 
 fn node(id: &str, role: &str, name: &str) -> AxNode {
