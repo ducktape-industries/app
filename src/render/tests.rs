@@ -123,6 +123,7 @@ fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
             label: label.into(),
             description: Some("Shown to members".into()),
             disabled,
+            ..Default::default()
         },
         id: wire::ElementIdWire::Name("i".into()),
         placeholder: "Type here".into(),
