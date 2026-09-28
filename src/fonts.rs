@@ -1,9 +1,10 @@
 //! The app's faces and their fallback chains, for the shell's own
 //! screens and a guest view's text alike.
 
-/// The app's two faces, the design canvas's: they stand in for the
-/// `design` crate's everywhere the app draws, a guest view's text included
-/// (`refine_fallbacks` maps the crate's names onto these).
+/// The app draws with these two. The shared `design` crate still names
+/// Inter and JetBrains Mono, which are not bundled; [`app_family`] swaps
+/// those names for these everywhere the app draws, so a guest view asking
+/// for a design-crate face gets the app's.
 pub(crate) const FAMILY_UI: &str = "Instrument Sans";
 pub(crate) const FAMILY_MONO: &str = "IBM Plex Mono";
 
@@ -25,10 +26,14 @@ pub(crate) const BUNDLED_FACES: &[&[u8]] = &[
     include_bytes!("../assets/fonts/D2Coding-Bold.ttf"),
 ];
 
+/// Not on macOS: CoreGraphics cannot load Noto's CBDT color font, and macOS
+/// supplies its own emoji.
 #[cfg(not(target_os = "macos"))]
 pub(crate) const EMOJI_FACE: &[u8] = include_bytes!("../assets/fonts/NotoColorEmoji.ttf");
 
-pub(crate) const FALLBACK_FAMILIES: &[&str] = &[
+/// Tried after the Hangul face, in order: emoji (macOS, then Noto), the
+/// macOS CJK faces, then the Linux ones, then symbols.
+const FALLBACK_FAMILIES: &[&str] = &[
     "Apple Color Emoji",
     "Noto Color Emoji",
     "Apple SD Gothic Neo",
@@ -51,7 +56,7 @@ pub(crate) fn mono_fallback_chain() -> gpui_kit::FontFallbacks {
     CHAIN.clone()
 }
 
-pub(crate) fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
+fn chain_led_by(hangul: &str) -> gpui_kit::FontFallbacks {
     gpui_kit::FontFallbacks::from_fonts(
         std::iter::once(hangul.to_string())
             .chain(FALLBACK_FAMILIES.iter().map(|name| name.to_string()))
