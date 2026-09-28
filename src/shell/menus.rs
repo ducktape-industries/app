@@ -387,7 +387,7 @@ fn node_facts(
     if answering {
         let last = match block_age {
             ..=0 => "just now".to_owned(),
-            age => format!("{age} s ago"),
+            age => format!("{} ago", ago(age)),
         };
         facts.push(("Last block", last, false));
     }
@@ -425,14 +425,25 @@ fn epoch_share(node: &crate::backend::NodeStatus) -> f32 {
     }
 }
 
-/// The down popover's line: `Last heard at block 4,295, 38 s ago. The
+/// The down popover's line: `Last heard at block 4,295, 38s ago. The
 /// numbers below are what it said then.`
 fn last_heard(height: u64, block_age: i64) -> String {
     format!(
-        "Last heard at block {}, {} s ago. The numbers below are what it said then.",
+        "Last heard at block {}, {} ago. The numbers below are what it said then.",
         grouped(height),
-        block_age.max(0)
+        ago(block_age)
     )
+}
+
+/// An age in seconds as Nodes writes it (the view SDK's `design::ago`):
+/// `13s`, `3m`, `4h`, `5d`.
+fn ago(seconds: i64) -> String {
+    match seconds.max(0) {
+        seconds @ ..60 => format!("{seconds}s"),
+        seconds @ 60..3_600 => format!("{}m", seconds / 60),
+        seconds @ 3_600..86_400 => format!("{}h", seconds / 3_600),
+        seconds => format!("{}d", seconds / 86_400),
+    }
 }
 
 /// The chain's founding time as a day: `27 Sep 2026`. The node's clock
@@ -533,7 +544,11 @@ mod tests {
         assert!(!keys.contains(&"Last block"), "{keys:?}");
         assert_eq!(
             last_heard(4295, 38),
-            "Last heard at block 4,295, 38 s ago. The numbers below are what it said then."
+            "Last heard at block 4,295, 38s ago. The numbers below are what it said then."
         );
+        // the same age format as Nodes: `13s ago`, then minutes
+        assert_eq!(node_facts(&node(), 13, true)[1].1, "13s ago");
+        assert!(last_heard(4295, 150).starts_with("Last heard at block 4,295, 2m ago."));
+        assert_eq!(ago(-1), "0s");
     }
 }
