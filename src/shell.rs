@@ -38,6 +38,7 @@ mod approve;
 mod command;
 mod connect;
 mod desk;
+mod empty_desk;
 mod facts;
 mod figure;
 mod help;
@@ -47,7 +48,9 @@ mod launch;
 mod launcher;
 mod menubar;
 mod menus;
+mod mount;
 mod notifications;
+mod pane_drag;
 mod panes;
 #[cfg(test)]
 mod panes_tests;
@@ -302,7 +305,7 @@ struct Desktop {
     streams: HashMap<u64, gpui_kit::Task<()>>,
     /// Every pane's view, by its instance: a pane keeps its view whichever
     /// window the model puts it in.
-    mounted: BTreeMap<u64, panes::MountedPane>,
+    mounted: BTreeMap<u64, mount::MountedPane>,
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
     desk_bounds: Option<gpui_kit::WindowBounds>,
@@ -576,7 +579,7 @@ pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
-    drag: Option<panes::Drag>,
+    drag: Option<pane_drag::Drag>,
     /// The native text fields drawn in this window, by their element id.
     inputs: HashMap<&'static str, text_field::NativeInput>,
     /// ⌘K's field took focus when it opened; it is not taken again while
