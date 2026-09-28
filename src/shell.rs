@@ -313,17 +313,17 @@ struct Desktop {
 }
 
 impl Desktop {
-    fn ax_windows(&self) -> Vec<(String, gpui_kit::AnyWindowHandle)> {
+    fn ax_windows(&self) -> Vec<crate::ax::Served> {
         let mut nth = 0;
         self.windows
-            .values()
-            .map(|handle| {
+            .iter()
+            .map(|(key, handle)| {
                 nth += 1;
                 let name = match nth {
                     1 => "console".to_owned(),
                     nth => format!("console{nth}"),
                 };
-                (name, *handle)
+                (name, *key, *handle)
             })
             .collect()
     }

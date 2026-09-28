@@ -136,6 +136,7 @@ fn accept(
             403 => "Forbidden",
             404 => "Not Found",
             408 => "Request Timeout",
+            409 => "Conflict",
             _ => "Service Unavailable",
         };
         let revision = reply.revision.map_or(String::new(), |revision| {
@@ -228,6 +229,10 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
             walk: flag("walk"),
             launcher: flag("launcher"),
         }),
+        ("GET", "perf") => Ok(Request::Perf {
+            by_instance: params.get("by") == Some(&"instance"),
+        }),
+        ("POST", "perf/reset") => Ok(Request::PerfReset),
         _ => {
             let mut endpoints = vec![
                 "GET /tree",
@@ -238,6 +243,8 @@ fn route(method: &str, target: &str, body: &[u8], private: bool) -> Result<Reque
                 "GET /keys",
                 "POST /drag",
                 "GET /audit",
+                "GET /perf",
+                "POST /perf/reset",
             ];
             if private {
                 endpoints.push("POST /reveal");
@@ -283,6 +290,7 @@ const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--comp
        ducktape-app ax drag <x1,y1> <x2,y2> [--id ID] [--steps N] [--window W]   (px; local to ID's bounds when given)
        ducktape-app ax audit [--window W] [--view V] [--walk] [--launcher]   (docs/ax.md phase 1; --launcher: the shell screen is not the desk)
        ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]
+       ducktape-app ax perf [--by instance]   (docs/perf.md; the app launched with DUCKTAPE_PERF=1)
        ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)";
 
 /// `x,y` as the CLI takes a position.
@@ -294,6 +302,38 @@ fn point(word: &str) -> Option<[f32; 2]> {
 /// `ducktape-app ax …`: prints the door's JSON. Exit 0 answered, 1 not
 /// found, refused or timed out, 2 the door is not open.
 pub(crate) fn cli(args: &[String]) -> i32 {
+    let Some((method, target, body)) = request(args) else {
+        eprintln!("{USAGE}");
+        return 1;
+    };
+    let door = door_file().and_then(|path| {
+        let text = std::fs::read_to_string(&path)
+            .map_err(|error| format!("{}: {error}", path.display()))?;
+        serde_json::from_str::<DoorFile>(&text).map_err(|error| error.to_string())
+    });
+    let shut = "the door is not open: launch the app with DUCKTAPE_AX_DOOR=<port|0>";
+    let door = match door {
+        Ok(door) => door,
+        Err(error) => {
+            eprintln!("ax: {shut} ({error})");
+            return 2;
+        }
+    };
+    match call(&door, method, &target, &body) {
+        Ok((status, body)) => {
+            println!("{body}");
+            i32::from(status != 200)
+        }
+        Err(error) => {
+            eprintln!("ax: {shut} (127.0.0.1:{}: {error})", door.port);
+            2
+        }
+    }
+}
+
+/// The door call the CLI's words ask for: method, target and body; `None`
+/// for words the usage does not list.
+fn request(args: &[String]) -> Option<(&'static str, String, String)> {
     let mut flags: HashMap<&str, &str> = HashMap::new();
     let mut words = Vec::new();
     let mut rest = args.iter().skip(1);
@@ -360,32 +400,54 @@ pub(crate) fn cli(args: &[String]) -> i32 {
             })
             .to_string(),
         ),
-        _ => {
-            eprintln!("{USAGE}");
-            return 1;
-        }
+        (Some("perf"), []) => ("GET", format!("/perf?{}", query(&["by"])), String::new()),
+        _ => return None,
     };
-    let door = door_file().and_then(|path| {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))?;
-        serde_json::from_str::<DoorFile>(&text).map_err(|error| error.to_string())
-    });
-    let shut = "the door is not open: launch the app with DUCKTAPE_AX_DOOR=<port|0>";
-    let door = match door {
-        Ok(door) => door,
-        Err(error) => {
-            eprintln!("ax: {shut} ({error})");
-            return 2;
-        }
-    };
-    match call(&door, method, &target, &body) {
-        Ok((status, body)) => {
-            println!("{body}");
-            i32::from(status != 200)
-        }
-        Err(error) => {
-            eprintln!("ax: {shut} (127.0.0.1:{}: {error})", door.port);
-            2
-        }
+    Some((method, target, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn words(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
+    }
+
+    /// `/perf` reads, by module unless `?by=instance`; only a POST resets,
+    /// and both are in the 404 list a wrong path gets.
+    #[test]
+    fn perf_routes() {
+        assert_eq!(
+            route("GET", "/perf", b"", false),
+            Ok(Request::Perf { by_instance: false })
+        );
+        assert_eq!(
+            route("GET", "/perf?by=instance", b"", false),
+            Ok(Request::Perf { by_instance: true })
+        );
+        assert_eq!(
+            route("POST", "/perf/reset", b"", false),
+            Ok(Request::PerfReset)
+        );
+        let Err(refused) = route("GET", "/perf/reset", b"", false) else {
+            panic!("a GET never resets");
+        };
+        assert_eq!(refused.status, 404);
+        assert!(refused.body.contains("POST /perf/reset"));
+    }
+
+    /// `ax perf` is a GET of `/perf`, with `--by instance` carried as the query.
+    #[test]
+    fn perf_cli_words() {
+        assert_eq!(
+            request(&words("perf")),
+            Some(("GET", "/perf?".to_owned(), String::new()))
+        );
+        assert_eq!(
+            request(&words("perf --by instance")),
+            Some(("GET", "/perf?by=instance".to_owned(), String::new()))
+        );
+        assert_eq!(request(&words("perf extra")), None);
     }
 }

@@ -205,6 +205,13 @@ pub(crate) enum Request {
         walk: bool,
         launcher: bool,
     },
+    /// `GET /perf[?by=instance]`: the perf registry (docs/perf.md), by
+    /// module unless asked by instance. Answered without a window read.
+    Perf {
+        by_instance: bool,
+    },
+    /// `POST /perf/reset`: the registry's counters back to zero.
+    PerfReset,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -263,6 +270,10 @@ impl Seen {
 /// A request and where its answer goes.
 pub(crate) type Call = (Request, std::sync::mpsc::Sender<Reply>);
 
+/// One window the door serves: its door name (`console`, `console2`, …),
+/// the shell's key for it, and its handle.
+pub(crate) type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
+
 const POLL: Duration = Duration::from_millis(50);
 
 /// Longest a call may wait on the tree. The client picks its deadline, so
@@ -283,7 +294,7 @@ fn bounded(ms: u64) -> Duration {
 /// `windows` lists the windows it serves, by name.
 pub(crate) async fn serve(
     mut calls: futures::channel::mpsc::UnboundedReceiver<Call>,
-    windows: impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    windows: impl Fn(&App) -> Vec<Served>,
     cx: &mut AsyncApp,
 ) {
     let mut seen = Seen::default();
@@ -295,7 +306,7 @@ pub(crate) async fn serve(
 
 async fn answer(
     request: Request,
-    windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    windows: &impl Fn(&App) -> Vec<Served>,
     seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Reply {
@@ -338,7 +349,7 @@ async fn answer(
             let handle = cx
                 .update(|cx| windows(cx))
                 .into_iter()
-                .find_map(|(window, handle)| (window == name).then_some(handle));
+                .find_map(|(window, _, handle)| (window == name).then_some(handle));
             let value = act.value.unwrap_or_default();
             if let Some(handle) = handle {
                 let _ = handle.update(cx, |_, window, cx| {
@@ -392,7 +403,7 @@ async fn answer(
             let name = cx
                 .update(|cx| windows(cx))
                 .into_iter()
-                .find_map(|(name, other)| (other == handle).then_some(name))
+                .find_map(|(name, _, other)| (other == handle).then_some(name))
                 .unwrap_or_default();
             let sent = handle
                 .update(cx, |_, window, cx| drag_by_id(&name, window, cx, &drag))
@@ -426,7 +437,7 @@ async fn answer(
             let name = cx
                 .update(|cx| windows(cx))
                 .into_iter()
-                .find_map(|(name, other)| (other == handle).then_some(name))
+                .find_map(|(name, _, other)| (other == handle).then_some(name))
                 .unwrap_or_default();
             handle
                 .update(cx, |_, window, cx| {
@@ -452,13 +463,40 @@ async fn answer(
                 cx.background_executor().timer(POLL).await;
             }
         }
+        Request::Perf { by_instance } => {
+            let served = cx.update(|cx| windows(cx));
+            let mut windows = Vec::with_capacity(served.len());
+            for (name, key, handle) in served {
+                // a11y read, never a draw: the cached path must stay cached
+                let read = handle.update(cx, |_, window, _| {
+                    (window.is_a11y_active(), gpui_perf(window))
+                });
+                let Ok((a11y, gpui)) = read else {
+                    continue;
+                };
+                windows.push(ServedPerf {
+                    name,
+                    key,
+                    a11y,
+                    gpui,
+                });
+            }
+            perf_reply(by_instance, &windows)
+        }
+        Request::PerfReset => match crate::perf::on() {
+            true => {
+                crate::perf::reset();
+                Reply::ok(json!({ "reset": true }))
+            }
+            false => perf_off(),
+        },
         Request::Reveal(Reveal { id }) => {
             // a window's tree is switched on by the read
             let _ = read(windows, &all, false, seen, cx);
             let name = id.split_once(':').map_or("", |(name, _)| name).to_owned();
             cx.update(|cx| windows(cx))
                 .into_iter()
-                .find_map(|(window, handle)| (window == name).then_some(handle))
+                .find_map(|(window, _, handle)| (window == name).then_some(handle))
                 .and_then(|handle| {
                     handle
                         .update(cx, |_, window, _| reveal(&name, window, &id))
@@ -469,12 +507,83 @@ async fn answer(
     }
 }
 
+/// What `/perf` reads of one served window without drawing it.
+struct ServedPerf {
+    name: String,
+    key: crate::runtime::WindowKey,
+    /// The window's a11y tree is on: its guest views draw uncached.
+    a11y: bool,
+    /// gpui's own histograms, with the `perf-deep` feature; else `Null`.
+    gpui: serde_json::Value,
+}
+
+fn perf_off() -> Reply {
+    Reply::new(
+        409,
+        json!({ "error": "perf is off: launch with DUCKTAPE_PERF=1" }),
+    )
+}
+
+/// The registry as the door gives it: 409 while off, so a gate fails
+/// loudly instead of passing on empty data; `cache_on` says whether every
+/// served window still draws its guest views cached.
+fn perf_reply(by_instance: bool, windows: &[ServedPerf]) -> Reply {
+    if !crate::perf::on() {
+        return perf_off();
+    }
+    let mut snapshot = crate::perf::snapshot(by_instance);
+    snapshot["cache_on"] = json!(windows.iter().all(|window| !window.a11y));
+    for window in windows {
+        let entry = &mut snapshot["windows"][window.key.0.to_string()];
+        if entry.is_null() {
+            *entry = json!({});
+        }
+        entry["name"] = json!(window.name);
+        if !window.gpui.is_null() {
+            entry["gpui"] = window.gpui.clone();
+        }
+    }
+    Reply::ok(snapshot)
+}
+
+/// gpui's frame and input histograms for one window, `perf-deep` only: the
+/// end-to-end frame time (dirty to present) and input-to-frame latency the
+/// registry cannot see.
+#[cfg(feature = "perf-deep")]
+fn gpui_perf(window: &Window) -> serde_json::Value {
+    let stats = |histogram: &gpui_kit::hdrhistogram::Histogram<u64>| {
+        json!({
+            "n": histogram.len(),
+            "p50": histogram.value_at_quantile(0.5) / 1000,
+            "p95": histogram.value_at_quantile(0.95) / 1000,
+            "max": histogram.max() / 1000,
+        })
+    };
+    let frames = window.frame_duration_snapshot();
+    let input = window.input_latency_snapshot();
+    json!({
+        "us": {
+            "dirty_to_present": stats(&frames.dirty_to_present_histogram),
+            "draw": stats(&frames.draw_duration_histogram),
+            "present_interval": stats(&frames.present_interval_histogram),
+            "input_latency": stats(&input.latency_histogram),
+        },
+        "events_per_frame_max": input.events_per_frame_histogram.max(),
+        "mid_draw_events_dropped": input.mid_draw_events_dropped,
+    })
+}
+
+#[cfg(not(feature = "perf-deep"))]
+fn gpui_perf(_: &Window) -> serde_json::Value {
+    serde_json::Value::Null
+}
+
 /// The next settled frame after an input: the tree unchanged for three polls
 /// (or `deadline_ms`, 2 s unless given).
 async fn settle(
     before: &[AxNode],
     deadline_ms: Option<u64>,
-    windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    windows: &impl Fn(&App) -> Vec<Served>,
     seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Vec<AxNode> {
@@ -499,13 +608,13 @@ async fn settle(
 fn keyboard_window(
     named: Option<&str>,
     nodes: &[AxNode],
-    windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    windows: &impl Fn(&App) -> Vec<Served>,
     cx: &mut AsyncApp,
 ) -> Option<AnyWindowHandle> {
     let list = cx.update(|cx| windows(cx));
     let find = |want: &str| {
         list.iter()
-            .find_map(|(name, handle)| (name == want).then_some(*handle))
+            .find_map(|(name, _, handle)| (name == want).then_some(*handle))
     };
     match named {
         Some(named) => find(named),
@@ -513,7 +622,7 @@ fn keyboard_window(
             .iter()
             .find(|node| node.state.contains(&"focused"))
             .and_then(|node| find(node.scope.split('/').next().unwrap_or_default()))
-            .or_else(|| list.first().map(|(_, handle)| *handle)),
+            .or_else(|| list.first().map(|(_, _, handle)| *handle)),
     }
 }
 
@@ -527,5 +636,47 @@ mod tests {
     fn a_deadline_is_capped() {
         assert_eq!(bounded(u64::MAX), MAX_DEADLINE);
         assert_eq!(bounded(2000), Duration::from_secs(2));
+    }
+
+    fn served(name: &str, key: u64, a11y: bool) -> ServedPerf {
+        ServedPerf {
+            name: name.to_owned(),
+            key: crate::runtime::WindowKey(key),
+            a11y,
+            gpui: serde_json::Value::Null,
+        }
+    }
+
+    /// Off, `/perf` is a 409 rather than empty numbers; on, the registry as
+    /// JSON with each served window named and `cache_on` from the a11y state.
+    #[test]
+    fn perf_is_refused_off_and_json_on() {
+        let off = {
+            let _off = crate::perf::off_for_test();
+            perf_reply(false, &[])
+        };
+        assert_eq!(off.status, 409);
+        assert!(off.body.contains("DUCKTAPE_PERF=1"));
+
+        let _on = crate::perf::on_for_test();
+        crate::perf::count(
+            crate::perf::Key::Window(crate::runtime::WindowKey(41)),
+            "renders",
+            3,
+        );
+        let reply = perf_reply(
+            false,
+            &[served("console", 41, false), served("console2", 42, true)],
+        );
+        assert_eq!(reply.status, 200);
+        let body: serde_json::Value = serde_json::from_str(&reply.body).unwrap();
+        assert_eq!(body["on"], true);
+        assert_eq!(body["cache_on"], false, "one served window has a11y on");
+        assert_eq!(body["windows"]["41"]["name"], "console");
+        assert_eq!(body["windows"]["41"]["renders"], 3);
+        assert_eq!(body["windows"]["42"]["name"], "console2");
+        let cached = perf_reply(false, &[served("console", 41, false)]);
+        let body: serde_json::Value = serde_json::from_str(&cached.body).unwrap();
+        assert_eq!(body["cache_on"], true);
     }
 }
