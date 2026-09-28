@@ -64,7 +64,7 @@ impl DesktopWindow {
                 div().px(px(16.)).pb(px(10.)).child(
                     sans(400, 13.)
                         .text_color(ink.muted)
-                        .child(last_heard(node.height, state.block_age)),
+                        .child(last_heard(node.height, state.heard_age)),
                 ),
             ),
             _ => None,
@@ -426,12 +426,14 @@ fn epoch_share(node: &crate::backend::NodeStatus) -> f32 {
 }
 
 /// The down popover's line: `Last heard at block 4,295, 38s ago. The
-/// numbers below are what it said then.`
-fn last_heard(height: u64, block_age: i64) -> String {
+/// numbers below are what it said then.` The age counts from the node's
+/// last answer, not from the last block: a chain that stood still for
+/// minutes under a node that went quiet just now was heard just now.
+fn last_heard(height: u64, heard_age: i64) -> String {
     format!(
         "Last heard at block {}, {} ago. The numbers below are what it said then.",
         grouped(height),
-        ago(block_age)
+        ago(heard_age)
     )
 }
 
@@ -550,5 +552,29 @@ mod tests {
         assert_eq!(node_facts(&node(), 13, true)[1].1, "13s ago");
         assert!(last_heard(4295, 150).starts_with("Last heard at block 4,295, 2m ago."));
         assert_eq!(ago(-1), "0s");
+    }
+
+    /// Last heard counts from the node's last answer: a chain stalled for
+    /// five minutes, then a node gone quiet 4s ago, was heard 4s ago.
+    #[test]
+    fn last_heard_counts_from_the_last_answer() {
+        let (mut state, _) = crate::Ducktape::boot();
+        // the height stands still throughout: nothing else is asked for
+        (state.connected, state.height) = (true, 4295);
+        let _ = state.update(Message::StatusPushed(node()));
+        for _ in 0..300 {
+            let _ = state.update(Message::WallTick);
+            let _ = state.update(Message::StatusPushed(node()));
+        }
+        for _ in 0..4 {
+            let _ = state.update(Message::WallTick);
+            let _ = state.update(Message::StatusMissed);
+        }
+        let facts = state.clone_facts();
+        assert!(facts.reconnecting);
+        assert_eq!((facts.block_age, facts.heard_age), (304, 4));
+        assert!(
+            last_heard(4295, facts.heard_age).starts_with("Last heard at block 4,295, 4s ago.")
+        );
     }
 }

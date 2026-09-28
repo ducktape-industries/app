@@ -43,6 +43,8 @@ pub(crate) struct Facts {
     pub(crate) height: i64,
     /// Seconds since the height last moved.
     pub(crate) block_age: i64,
+    /// Seconds since the node last answered its status.
+    pub(crate) heard_age: i64,
     pub(crate) settings_page: crate::SettingsPage,
 }
 
@@ -86,6 +88,7 @@ impl Ducktape {
             node: self.node.clone(),
             height: self.height,
             block_age: self.block_age(),
+            heard_age: self.heard_age(),
             settings_page: self.settings_page,
         }
     }

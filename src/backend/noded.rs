@@ -112,16 +112,20 @@ pub struct Status {
 }
 
 /// Every member of the current epoch as the node sees it (`/v1/network`):
-/// its tip when it answered, and the members in key order.
+/// its applied tip when it answered, and the members in key order. No
+/// member's `signed` exceeds `height`.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct Network {
     pub height: u64,
     pub members: Vec<PeerStatus>,
 }
 
-/// One member: the newest block the node applied whose finalization
-/// carries this key's signature; `None` for a member that signs nothing (a
-/// resident) or signed nothing since the node started.
+/// One member: the newest block the node applied that this key sent a
+/// finalize vote for, as the node's consensus engine heard it. A vote for a
+/// block not applied yet counts once it is. `None` for a resident, for a
+/// validator not heard since the node started or began validating, and for
+/// every member while the node is not itself seated as a validator: it runs
+/// no engine, so it hears no votes.
 #[derive(Clone, Debug, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 pub struct PeerStatus {
     pub key: Vec<u8>,
@@ -397,7 +401,7 @@ mod tests {
     }
 
     /// The bytes noded's own test pins `Network` to (noded/src/network.rs,
-    /// `the_route_is_borsh_in_declaration_order`, core 3fd1ab5c5).
+    /// `the_route_is_borsh_in_declaration_order`, core 4c12e1eac).
     #[test]
     fn network_decodes_the_nodes_bytes() {
         let mut bytes = Vec::new();

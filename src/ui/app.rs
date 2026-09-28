@@ -240,8 +240,11 @@ pub struct Ducktape {
     pub(crate) status_misses: u32,
     /// The node's last answer, whole: the node status menu reads it.
     pub(crate) node: Option<backend::NodeStatus>,
-    /// `wall_now` when the height last moved: "last block 2 s ago".
+    /// `wall_now` when the height last moved: "Last block 2s ago".
     pub(crate) block_seen: i64,
+    /// `wall_now` when the node last answered its status: "Last heard at
+    /// block 4,295, 5s ago", however long the height stood still before.
+    pub(crate) heard: i64,
     /// What is open over the desk.
     pub(crate) overlay: Option<Overlay>,
     /// What ⌘K holds: the typed text, the picked row.
@@ -466,6 +469,7 @@ impl Ducktape {
             status_misses: 0,
             node: None,
             block_seen: 0,
+            heard: 0,
             overlay: None,
             spotlight_query: String::new(),
             spotlight_pick: 0,
@@ -528,6 +532,11 @@ impl Ducktape {
     /// Seconds since the height last moved.
     pub(crate) fn block_age(&self) -> i64 {
         self.wall_now - self.block_seen
+    }
+
+    /// Seconds since the node last answered its status.
+    pub(crate) fn heard_age(&self) -> i64 {
+        self.wall_now - self.heard
     }
 
     /// Connected, but the last [`LOST_AFTER`] status polls went unanswered.
