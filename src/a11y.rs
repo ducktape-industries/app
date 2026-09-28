@@ -1,11 +1,12 @@
 //! Accessibility helpers for the native screens and the tree presenter: role
 //! with name (`Control`), keyboard reach (`keyboard`, `focus_shown`), states
 //! set on the element's own node after a kit widget has built it (`aria`),
-//! what gpui has no setter for (`Patch`: `modal`, `live`, and the class
-//! names the AX test door masks, `private`, or leaves untruncated, `whole`),
-//! and one AT node for a kit text input (`text_field`).
+//! what gpui has no setter for (`Patch`: `modal`, `live`, the view's
+//! phase-2 aria, and the class names the AX test door masks, `private`, or
+//! leaves untruncated, `whole`), and one AT node for a kit text input
+//! (`text_field`).
 
-use gpui_kit::accesskit::Live;
+use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live};
 use gpui_kit::{
     AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement, Interactivity,
     IntoElement, MouseButton, ParentElement as _, Role, SharedString, Stateful,
@@ -60,14 +61,22 @@ pub fn aria<E: InteractiveElement>(mut element: E, set: impl FnOnce(Aria<'_>) ->
 /// own node from its one `a11y_synthetic_children` closure. An element has
 /// room for one closure — a second replaces the first — so everything one
 /// element needs goes into one `Patch`. gpui runs it only for an element
-/// with an id and a role. Phase 2 adds busy, has-popup, invalid and the
-/// rest here, beside these.
-#[derive(Clone, Copy, Default, PartialEq)]
+/// with an id and a role. The view's aria mapper (`guest_aria`) fills the
+/// fields a view sets directly.
+#[derive(Clone, Default, PartialEq)]
 pub struct Patch {
-    modal: bool,
-    live: Option<Live>,
-    class_name: Option<&'static str>,
-    fallback: bool,
+    pub(crate) modal: bool,
+    pub(crate) live: Option<Live>,
+    pub(crate) busy: bool,
+    pub(crate) required: bool,
+    pub(crate) read_only: bool,
+    pub(crate) invalid: Option<Invalid>,
+    pub(crate) has_popup: Option<HasPopup>,
+    pub(crate) current: Option<AriaCurrent>,
+    /// `(id, description)`, each requested as `Action::CustomAction`.
+    pub(crate) custom_actions: Vec<(i32, String)>,
+    pub(crate) class_name: Option<&'static str>,
+    pub(crate) fallback: bool,
 }
 
 impl Patch {
@@ -120,6 +129,35 @@ impl Patch {
                 }
                 if let Some(live) = self.live {
                     node.set_live(live);
+                }
+                if self.busy {
+                    node.set_busy();
+                }
+                if self.required {
+                    node.set_required();
+                }
+                if self.read_only {
+                    node.set_read_only();
+                }
+                if let Some(invalid) = self.invalid {
+                    node.set_invalid(invalid);
+                }
+                if let Some(popup) = self.has_popup {
+                    node.set_has_popup(popup);
+                }
+                if let Some(current) = self.current {
+                    node.set_aria_current(current);
+                }
+                if !self.custom_actions.is_empty() {
+                    node.set_custom_actions(
+                        self.custom_actions
+                            .into_iter()
+                            .map(|(id, description)| CustomAction {
+                                id,
+                                description: description.into(),
+                            })
+                            .collect::<Vec<_>>(),
+                    );
                 }
                 if let Some(class_name) = self.class_name {
                     node.set_class_name(class_name);

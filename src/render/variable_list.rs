@@ -44,7 +44,7 @@ impl ViewTree {
             scroll_handler,
             range_start,
             style,
-            interactivity: _,
+            interactivity,
             children,
         } = node
         else {
@@ -169,7 +169,18 @@ impl ViewTree {
                 });
             });
         }
-        native.into_any_element()
+        if *interactivity == wire::Interactivity::default() {
+            return native.into_any_element();
+        }
+        // gpui's list is no interactive element: a list the view roled,
+        // named or wired is a box in the list's place, holding it whole
+        let mut host = div();
+        *host.style() = std::mem::take(native.style());
+        let host = host
+            .id(ElementId::NamedInteger("guest-list".into(), *state_id))
+            .child(native.size_full());
+        self.guest_aria(host, node, interactivity, cx)
+            .into_any_element()
     }
 }
 

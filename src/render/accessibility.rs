@@ -1,8 +1,8 @@
 //! What a wire node is to assistive technology. `accessible` maps a node to
 //! an `Accessible` (role, name, value, states); `announce` writes one onto
 //! the element a renderer built; `guest_aria`, the one aria mapper, writes
-//! the guest's own `Interactivity.aria` for the nodes that carry it
-//! (Container, Image, Svg, UniformList). `ViewTree::presentation` also lives
+//! the guest's own `Interactivity` for the nodes that carry it (Container,
+//! Image, Svg, UniformList, List, ResizeHandle). `ViewTree::presentation` also lives
 //! here for now, though it is not accessibility: it is the native state
 //! carried across a guest generation (see its doc).
 use super::*;
@@ -55,8 +55,9 @@ fn descendant_text(node: &wire::Node) -> Option<String> {
 /// The mapping from a wire node to what assistive technology hears, for the
 /// nodes the presenter announces itself: a view never names those controls'
 /// roles, it says `label` and the role follows from the variant. Not every
-/// variant passes through here. Container, UniformList, Image and Svg carry
-/// the guest's own `Interactivity.aria` through `guest_aria` instead, which
+/// variant passes through here. Container, UniformList, List, ResizeHandle,
+/// Image and Svg carry the guest's own `Interactivity.aria` through
+/// `guest_aria` instead, which
 /// takes only a picture's default role and name from the Image/Svg arm
 /// below; RichText has none. The node's accessibility id is its wire key
 /// under the module's view, the element id each variant is already built
@@ -184,14 +185,15 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
 impl ViewTree {
     /// The one aria mapper: `node`'s `Interactivity` as assistive
     /// technology receives it, on the element a renderer built. Role,
-    /// focusable, the author id, every `aria.*` setter, then the guest focus
-    /// handle (made once per id, kept in `guest_focus_targets`) and the rest
-    /// of the interactivity through `interactivity::apply`. `on_click` stays
-    /// with the caller. A picture with no role takes `accessible`'s (a
-    /// labelled one is an Image); a roled node with no label is named by the
-    /// text it draws. Each setter is a field write gpui reads once at
-    /// prepaint, so where the caller puts this among its own setters does
-    /// not matter.
+    /// focusable, the author id, every `aria.*` gpui has a setter for, the
+    /// rest in one `a11y::Patch`, then the guest focus handle (made once per
+    /// id, kept in `guest_focus_targets`), the rest of the interactivity
+    /// through `interactivity::apply`, and `on_click`. A picture with no role
+    /// takes `accessible`'s (a labelled one is an Image); a roled node with
+    /// no label is named by the text it draws, and a Status or Alert with no
+    /// value speaks it as its value too (macOS reads the value). Each setter
+    /// is a field write gpui reads once at prepaint, so where the caller
+    /// puts this among its own setters does not matter.
     pub(super) fn guest_aria<E: gpui_kit::StatefulInteractiveElement>(
         &mut self,
         mut element: E,
@@ -211,13 +213,12 @@ impl ViewTree {
         if let Some(value) = &aria.author_id {
             element = element.accessibility_id(value.clone());
         }
+        let drawn = || role.and_then(|_| descendant_text(node));
         if let Some(value) = &aria.label {
             element = element.aria_label(value.clone());
         } else if let Some(name) = own.name {
             element = element.aria_label(name);
-        } else if role.is_some()
-            && let Some(text) = descendant_text(node)
-        {
+        } else if let Some(text) = drawn() {
             // A role with no explicit label: a view styling its own button
             // out of a container still gets a name, taken from the text it
             // drew inside — not left silent with its label one level down.
@@ -231,6 +232,10 @@ impl ViewTree {
         }
         if let Some(value) = &aria.value {
             element = element.aria_value(value.clone());
+        } else if matches!(role, Some(gpui_kit::Role::Status | gpui_kit::Role::Alert))
+            && let Some(text) = drawn()
+        {
+            element = element.aria_value(text);
         }
         if let Some(value) = &aria.placeholder {
             element = element.aria_placeholder(value.clone());
@@ -287,13 +292,37 @@ impl ViewTree {
         if aria.active_descendant && !interactivity.focusable {
             element = element.aria_active_descendant();
         }
+        element = crate::a11y::Patch {
+            live: aria.live,
+            busy: aria.busy,
+            required: aria.required,
+            read_only: aria.read_only,
+            invalid: aria.invalid,
+            has_popup: aria.has_popup,
+            current: aria.current,
+            custom_actions: aria.custom_actions.clone(),
+            ..Default::default()
+        }
+        .on(element);
         let focus_handle = interactivity.focus_handle.map(|id| {
             self.guest_focus_targets
                 .entry(id)
                 .or_insert_with(|| cx.focus_handle())
                 .clone()
         });
-        super::interactivity::apply(element, interactivity, focus_handle, cx)
+        element = super::interactivity::apply(element, interactivity, focus_handle, cx);
+        if let Some(handler) = interactivity.on_click {
+            element = element.on_click(cx.listener(
+                move |this, event: &gpui_kit::ClickEvent, _, cx| {
+                    this.user_activation.set(Some(handler));
+                    cx.emit(wire::Event::Click {
+                        handler,
+                        event: event.into(),
+                    });
+                },
+            ));
+        }
+        element
     }
 }
 

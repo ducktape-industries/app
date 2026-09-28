@@ -72,12 +72,15 @@ fn unfocusable(label: Option<&str>) -> wire::Interactivity {
 }
 
 /// Where the aria is put: on a Container, an Image, a UniformList itself,
-/// or the one row of a UniformList.
+/// the one row of a UniformList, a ResizeHandle or a (variable) List.
+#[derive(Debug)]
 enum Site {
     Container,
     Image,
     UniformList,
     UniformListRow,
+    ResizeHandle,
+    List,
 }
 
 fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
@@ -138,6 +141,33 @@ fn child(site: &Site, interactivity: wire::Interactivity) -> wire::Node {
             scroll_request: None,
             indices: vec![0],
             children: vec![child(&Site::Container, interactivity)],
+        },
+        Site::ResizeHandle => wire::Node::ResizeHandle {
+            id: key("child"),
+            style: boxed(),
+            interactivity,
+            on_press: None,
+            on_release: None,
+            on_drag: None,
+            cursor: None,
+            content: Box::new(text("child-text")),
+        },
+        Site::List => wire::Node::List {
+            state: 1,
+            path: vec![key("child")],
+            item_count: 1,
+            alignment: wire::ListAlignment::Top,
+            overdraw: 0.,
+            sizing: wire::ListSizingBehavior::Auto,
+            following_tail: false,
+            revision: 0,
+            commands: Vec::new(),
+            request_handler: 1,
+            scroll_handler: None,
+            range_start: 0,
+            style: boxed(),
+            interactivity,
+            children: vec![text("child-text")],
         },
     }
 }
@@ -393,3 +423,5 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
         }
     }
 }
+
+mod phase_two;

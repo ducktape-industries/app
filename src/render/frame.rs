@@ -68,7 +68,15 @@ impl ViewTree {
                     }
                     uniform_lists.insert(path.clone());
                 }
-                wire::Node::List { path, state, .. } => {
+                wire::Node::List {
+                    path,
+                    state,
+                    interactivity,
+                    ..
+                } => {
+                    if let Some(id) = interactivity.focus_handle {
+                        guest_focus_ids.insert(id);
+                    }
                     variable_lists.insert(VariableListKey {
                         path: path.clone(),
                         state: *state,
@@ -77,7 +85,10 @@ impl ViewTree {
                 wire::Node::Input { .. } => {
                     inputs.insert(path.clone());
                 }
-                wire::Node::ResizeHandle { .. } => {
+                wire::Node::ResizeHandle { interactivity, .. } => {
+                    if let Some(id) = interactivity.focus_handle {
+                        guest_focus_ids.insert(id);
+                    }
                     drags.insert(path.clone());
                 }
                 wire::Node::Overlay {

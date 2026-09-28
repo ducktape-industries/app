@@ -442,8 +442,11 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   value, numeric range, toggled/expanded/selected, heading level);
   `accessible(node)` builds it per node kind and `announce` writes it onto
   the element through `a11y::aria`. `ViewTree::guest_aria` is the one aria
-  mapper for the nodes that carry the guest's own `Interactivity.aria`
-  (Container, Image, Svg, UniformList). `ViewTree::presentation` and
+  mapper for the nodes that carry the guest's own `Interactivity`
+  (Container, Image, Svg, UniformList, List, ResizeHandle): gpui's setters,
+  one `a11y::Patch` for the aria gpui has none for, `on_click`. A List the
+  view roled or wired is a box in its place (gpui's list is not
+  interactive). `ViewTree::presentation` and
   `with_presentation` (the `NativePresentation` copy across guest
   instances) also live in this file for now; the struct itself is in
   `render.rs`.

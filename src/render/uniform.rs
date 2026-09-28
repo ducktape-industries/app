@@ -257,18 +257,7 @@ impl ViewTree {
             let style = group.style.clone();
             list = list.group_active(group.group.clone(), move |_| style);
         }
-        list = self.guest_aria(list, node, interactivity, cx);
-        if let Some(handler) = interactivity.on_click {
-            list = list.on_click(
-                cx.listener(move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                    this.user_activation.set(Some(handler));
-                    cx.emit(wire::Event::Click {
-                        handler,
-                        event: event.into(),
-                    })
-                }),
-            );
-        }
-        list.into_any_element()
+        self.guest_aria(list, node, interactivity, cx)
+            .into_any_element()
     }
 }
