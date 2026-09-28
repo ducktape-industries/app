@@ -197,13 +197,15 @@ impl ViewTree {
                         })
                         .unwrap_or_default();
                     let parent = std::mem::replace(&mut tree.authored_path, list_path.clone());
-                    let elements = rows
-                        .into_iter()
-                        .map(|row| {
-                            row.map(|row| tree.node(&row, window, cx))
-                                .unwrap_or_else(|| {
-                                    div().h(px(PLACEHOLDER_HEIGHT)).into_any_element()
-                                })
+                    let elements = range
+                        .clone()
+                        .zip(rows)
+                        .map(|(index, row)| {
+                            row.map(|row| {
+                                tree.next_row = Some((index + 1, count));
+                                tree.node(&row, window, cx)
+                            })
+                            .unwrap_or_else(|| div().h(px(PLACEHOLDER_HEIGHT)).into_any_element())
                         })
                         .collect();
                     tree.authored_path = parent;

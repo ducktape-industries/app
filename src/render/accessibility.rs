@@ -214,6 +214,8 @@ impl ViewTree {
         let aria = &interactivity.aria;
         let own = accessible(node);
         let role = interactivity.role.or(own.role);
+        // a list's row says where in the list it is, unless the view did
+        let row = self.row.take().filter(|_| role.is_some());
         if let Some(role) = role {
             element = element.role(role);
         }
@@ -274,10 +276,10 @@ impl ViewTree {
         if let Some(value) = aria.level {
             element = element.aria_level(value);
         }
-        if let Some(value) = aria.position_in_set {
+        if let Some(value) = aria.position_in_set.or(row.map(|(at, _)| at)) {
             element = element.aria_position_in_set(value);
         }
-        if let Some(value) = aria.size_of_set {
+        if let Some(value) = aria.size_of_set.or(row.map(|(_, of)| of)) {
             element = element.aria_size_of_set(value);
         }
         if let Some(value) = aria.row_index {

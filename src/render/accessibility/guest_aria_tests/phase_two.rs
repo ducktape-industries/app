@@ -197,3 +197,125 @@ fn a_guest_focus_handle_on_a_divider_or_a_list_survives_a_frame(cx: &mut gpui_ki
         });
     }
 }
+
+/// A roled row named `row-<n>`, maybe wrapping a roled child `inner-<n>`.
+fn row(n: usize, role: Option<Role>) -> wire::Node {
+    let named = |id: String| wire::Interactivity {
+        role: Some(Role::ListBoxOption),
+        aria: wire::Aria {
+            author_id: Some(id.clone().into()),
+            label: Some(id.into()),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let inner = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key(&format!("inner-{n}"))),
+        style: div().h(px(20.)).style().clone(),
+        interactivity: named(format!("inner-{n}")),
+        children: Vec::new(),
+    });
+    wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key(&format!("row-{n}"))),
+        style: div().h(px(20.)).style().clone(),
+        interactivity: wire::Interactivity {
+            role,
+            ..named(format!("row-{n}"))
+        },
+        children: vec![inner],
+    })
+}
+
+/// `(author id, position, size)` of every node the rows built.
+fn set_places(
+    cx: &mut gpui_kit::TestAppContext,
+    root: wire::Node,
+) -> Vec<(String, Option<usize>, Option<usize>)> {
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let mut places: Vec<_> = update
+            .nodes
+            .iter()
+            .filter_map(|(_, node)| {
+                let id = node.author_id()?;
+                (id.starts_with("row-") || id.starts_with("inner-"))
+                    .then(|| (id.to_owned(), node.position_in_set(), node.size_of_set()))
+            })
+            .collect();
+        places.sort();
+        places
+    })
+}
+
+/// Each row a virtualized list draws says where it is in the whole list,
+/// 1-based, unless the view said; what a row holds says nothing of it, and
+/// a row with no role has no node to say it on (AX-112).
+#[gpui_kit::test]
+fn a_list_row_says_where_it_is_in_the_list(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut told = row(2, Some(Role::ListBoxOption));
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut told {
+        interactivity.aria.position_in_set = Some(9);
+    }
+    let uniform = wire::Node::UniformList {
+        id: key("list"),
+        path: vec![key("list")],
+        route: 1,
+        style: boxed(),
+        interactivity: Default::default(),
+        count: 5,
+        measure_index: 0,
+        sizing: wire::list::UniformListSizing::Auto,
+        horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
+        y_flipped: false,
+        scroll_request: None,
+        indices: vec![0, 1, 2],
+        children: vec![row(0, Some(Role::ListBoxOption)), row(1, None), told],
+    };
+    let none = || (None, None);
+    let place = |id: &str, (at, of): (Option<usize>, Option<usize>)| (id.to_owned(), at, of);
+    assert_eq!(
+        set_places(cx, uniform),
+        [
+            place("inner-0", none()),
+            place("inner-1", none()),
+            place("inner-2", none()),
+            place("row-0", (Some(1), Some(5))),
+            place("row-2", (Some(9), Some(5))),
+        ]
+    );
+    let variable = wire::Node::List {
+        state: 1,
+        path: vec![key("list")],
+        item_count: 4,
+        alignment: wire::ListAlignment::Top,
+        overdraw: 0.,
+        sizing: wire::ListSizingBehavior::Auto,
+        following_tail: false,
+        revision: 0,
+        commands: Vec::new(),
+        request_handler: 1,
+        scroll_handler: None,
+        range_start: 0,
+        style: boxed(),
+        interactivity: Default::default(),
+        children: vec![
+            row(0, Some(Role::ListBoxOption)),
+            row(1, Some(Role::ListBoxOption)),
+        ],
+    };
+    assert_eq!(
+        set_places(cx, variable),
+        [
+            place("inner-0", none()),
+            place("inner-1", none()),
+            place("row-0", (Some(1), Some(4))),
+            place("row-1", (Some(2), Some(4))),
+        ]
+    );
+}

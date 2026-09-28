@@ -121,6 +121,12 @@ pub struct ViewTree {
     mounted: std::collections::HashSet<AuthoredPath>,
     /// Counts the anonymous elements of a render, for ids of their own.
     render_index: u64,
+    /// Where the row a virtualized list draws next sits in its set
+    /// (1-based position, set size); `node` hands it to that row alone.
+    next_row: Option<(usize, usize)>,
+    /// The drawn node's place in its list's set, for `guest_aria`: set on
+    /// entering a list's row, cleared on entering any other node.
+    row: Option<(usize, usize)>,
     /// The document order the next rich paragraph registers for selection.
     selection_order: std::rc::Rc<std::cell::Cell<u64>>,
 
@@ -194,6 +200,8 @@ impl ViewTree {
             mounted: Default::default(),
             presentation: NativePresentation::default(),
             render_index: 0,
+            next_row: None,
+            row: None,
             selection_order: Default::default(),
             #[cfg(test)]
             renders: 0,
@@ -216,6 +224,7 @@ impl ViewTree {
         if entered_scope {
             self.mounted.insert(self.authored_path.clone());
         }
+        self.row = self.next_row.take();
         use wire::Node;
         let element = match node {
             Node::Text(view_wire::TextNode { .. }) => self.text(node, cx),

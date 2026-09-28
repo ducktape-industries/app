@@ -109,6 +109,7 @@ impl ViewTree {
             weak.update(cx, |this, cx| {
                 let list = this.variable_lists.get(&render_key);
                 let row = list.and_then(|list| list.rows.get(&index)).cloned();
+                let count = list.map_or(0, |list| list.item_count);
                 // The first row the guest sent is on screen: ask for the one
                 // above it. Asking whenever rows were missing above walked a
                 // bottom-anchored list back one row a frame, off screen too,
@@ -123,6 +124,7 @@ impl ViewTree {
                 if let Some(row) = row {
                     let parent =
                         std::mem::replace(&mut this.authored_path, render_key.path.clone());
+                    this.next_row = Some((index + 1, count));
                     let element = this.node(&row, window, cx);
                     this.authored_path = parent;
                     return element;
