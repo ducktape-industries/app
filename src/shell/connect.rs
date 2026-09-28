@@ -46,11 +46,14 @@ impl DesktopWindow {
         let below = match (&note, state.connecting) {
             (Some(note), _) => Some(self.alert("connect-error", note.clone(), &ink)),
             (None, true) => Some(
-                ink::note(state.status.clone(), ink.muted)
-                    .id("connect-status")
-                    .role(Role::Status)
-                    .aria_label(state.status.clone())
-                    .into_any_element(),
+                crate::a11y::live(
+                    ink::note(state.status.clone(), ink.muted)
+                        .id("connect-status")
+                        .role(Role::Status),
+                    accesskit::Live::Polite,
+                    state.status.clone(),
+                )
+                .into_any_element(),
             ),
             (None, false) => None,
         };

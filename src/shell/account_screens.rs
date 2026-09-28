@@ -230,12 +230,13 @@ impl DesktopWindow {
                         .flex_col()
                         .items_start()
                         .gap(px(10.))
-                        .child(
+                        .child(crate::a11y::live(
                             tag("Waiting", &ink)
                                 .id("passkey-waiting-status")
-                                .role(Role::Status)
-                                .aria_label("Waiting"),
-                        )
+                                .role(Role::Status),
+                            accesskit::Live::Polite,
+                            "Waiting",
+                        ))
                         .child(sans(500, 16.).child("Your passkey, twice"))
                         .child(ink::note(
                             "A new code appears here for the second time.",
@@ -320,11 +321,14 @@ impl DesktopWindow {
                 .child(big("link-code", "Code", state.link_code.clone()))
                 .child(big("link-fingerprint", "This device", fingerprint))
                 .into_any_element(),
-            ink::note(LINK_WAITING, ink.muted)
-                .id("link-waiting-status")
-                .role(Role::Status)
-                .aria_label(LINK_WAITING)
-                .into_any_element(),
+            crate::a11y::live(
+                ink::note(LINK_WAITING, ink.muted)
+                    .id("link-waiting-status")
+                    .role(Role::Status),
+                accesskit::Live::Polite,
+                LINK_WAITING,
+            )
+            .into_any_element(),
             div()
                 .flex()
                 .flex_col()

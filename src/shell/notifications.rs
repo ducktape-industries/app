@@ -215,21 +215,22 @@ impl DesktopWindow {
         }
         if entries.is_empty() {
             list = list.child(
-                div()
-                    .id("notif-empty")
-                    .role(Role::Status)
-                    .aria_label("You\u{2019}re all caught up")
-                    .flex()
-                    .flex_col()
-                    .items_center()
-                    .gap(px(6.))
-                    .py(px(44.))
-                    .child(sans(500, 14.).child("You\u{2019}re all caught up"))
-                    .child(
-                        sans(400, 13.)
-                            .text_color(ink.muted)
-                            .child("Mentions and messages land here."),
-                    ),
+                crate::a11y::live(
+                    div().id("notif-empty").role(Role::Status),
+                    accesskit::Live::Polite,
+                    "You\u{2019}re all caught up",
+                )
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(6.))
+                .py(px(44.))
+                .child(sans(500, 14.).child("You\u{2019}re all caught up"))
+                .child(
+                    sans(400, 13.)
+                        .text_color(ink.muted)
+                        .child("Mentions and messages land here."),
+                ),
             );
         }
         let footer = div()

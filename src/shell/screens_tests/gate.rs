@@ -20,7 +20,7 @@ const EXCEPTIONS: &[(&str, &str, &str, &str)] = &[(
      whether they become a combobox with active_descendant (AX-107, phase 2).",
 )];
 
-type Build = Box<dyn Fn() -> Ducktape>;
+pub(super) type Build = Box<dyn Fn() -> Ducktape>;
 
 fn booted(stage: Stage, key: bool) -> Ducktape {
     let (mut state, _) = Ducktape::boot();
@@ -56,7 +56,7 @@ fn on_desk(overlay: crate::Overlay) -> Build {
 }
 
 /// Every screen state, with whether it is a launcher screen (AX-018).
-fn matrix() -> Vec<(&'static str, bool, Build)> {
+pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
     let words = || Secret::from(String::from("canoe pond forest"));
     let passkey = || crate::ui::task::Task::<()>::none().abortable().1;
     vec![
@@ -73,6 +73,17 @@ fn matrix() -> Vec<(&'static str, bool, Build)> {
                     network: "testkit".into(),
                     ..Default::default()
                 }];
+                state
+            }),
+        ),
+        (
+            "connect-connecting",
+            true,
+            Box::new(|| {
+                let mut state = booted(Stage::Connect, false);
+                state.endpoint = "127.0.0.1:9000".into();
+                state.connecting = true;
+                state.status = "Connecting to 127.0.0.1:9000…".into();
                 state
             }),
         ),

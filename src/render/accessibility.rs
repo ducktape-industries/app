@@ -164,12 +164,12 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         description,
         value,
         level,
-        // ponytail: the gpui-pre fork has no live-region setter; `live` is
-        // mapped and dropped here until it gains one
+        // no SDK view can set `TextNode.live`: phase 2 moves it to
+        // `Aria.live`, written through `a11y::Patch`
         live: _,
         disabled,
     } = accessible;
-    let element = crate::a11y::aria(element, |mut node| {
+    crate::a11y::aria(element, |mut node| {
         if let Some(role) = role {
             node = node.role(role);
         }
@@ -185,9 +185,11 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         if let Some(level) = level {
             node = node.aria_level(level);
         }
+        if disabled {
+            node = node.aria_disabled(true);
+        }
         node
-    });
-    crate::a11y::disabled(element, disabled)
+    })
 }
 
 impl ViewTree {

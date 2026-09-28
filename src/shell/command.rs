@@ -334,7 +334,7 @@ impl DesktopWindow {
             .border_1()
             .border_color(ink.ink)
             .child(module)
-            .child(crate::a11y::disabled(chat, true))
+            .child(chat.aria_disabled(true))
             .into_any_element()
     }
 }

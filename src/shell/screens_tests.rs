@@ -6,6 +6,7 @@ use super::*;
 
 mod gate;
 mod launcher;
+mod live;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};
@@ -493,6 +494,17 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     view.update(&mut native, |_, cx| cx.notify());
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications, 2 unread");
+    // the count on the bell is announced as notices land
+    let heard = native.update(|window, _| live::announced(window));
+    assert!(
+        heard.iter().any(|(role, name, value, live)| {
+            *role == gpui_kit::Role::Status
+                && name == "2 unread notifications"
+                && value.as_deref() == Some(name.as_str())
+                && *live == Some(gpui_kit::accesskit::Live::Polite)
+        }),
+        "{heard:?}"
+    );
     find(&nodes, "MenuItem", "Unread. Ada mentioned you: @grace look");
     find(&nodes, "MenuItem", "Unread. Lin: @grace look");
     find(&nodes, "Button", "Mark all read");

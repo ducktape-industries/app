@@ -82,42 +82,40 @@ impl DesktopWindow {
         // is a phrase a screen reader can announce on its own, not the bare
         // verb.
         let (id, name, glyph) = action.parts();
-        crate::a11y::disabled(
-            crate::a11y::keyboard(
-                div()
-                    .id(SharedString::from(format!("pane/{index}/{id}")))
-                    .control(Role::Button, name)
-                    .size(px(28.))
-                    .text_color(ink.muted)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .when(enabled, |button| {
-                        button.cursor_pointer().hover(move |style| style.bg(hover))
-                    })
-                    .opacity(if enabled { 1. } else { 0.35 })
-                    // a press on a control isn't a hold on the title bar
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        cx.stop_propagation();
-                        if !enabled {
-                            return;
-                        }
-                        let message = match action {
-                            PaneAction::Split => match this.layout(cx).panes.get(index) {
-                                Some(pane) => PaneMessage::Split(pane.module),
-                                None => return,
-                            },
-                            PaneAction::Close => PaneMessage::Close(index),
-                            PaneAction::PopOut => PaneMessage::PopOut { index, at: None },
-                            PaneAction::PopIn => PaneMessage::PopIn,
-                        };
-                        this.pane_message(message, window, cx);
-                    }))
-                    .child(gpui_kit::component::Icon::new(glyph).size(px(18.))),
-            ),
-            !enabled,
+        crate::a11y::keyboard(
+            div()
+                .id(SharedString::from(format!("pane/{index}/{id}")))
+                .control(Role::Button, name)
+                .size(px(28.))
+                .text_color(ink.muted)
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(enabled, |button| {
+                    button.cursor_pointer().hover(move |style| style.bg(hover))
+                })
+                .opacity(if enabled { 1. } else { 0.35 })
+                // a press on a control isn't a hold on the title bar
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    if !enabled {
+                        return;
+                    }
+                    let message = match action {
+                        PaneAction::Split => match this.layout(cx).panes.get(index) {
+                            Some(pane) => PaneMessage::Split(pane.module),
+                            None => return,
+                        },
+                        PaneAction::Close => PaneMessage::Close(index),
+                        PaneAction::PopOut => PaneMessage::PopOut { index, at: None },
+                        PaneAction::PopIn => PaneMessage::PopIn,
+                    };
+                    this.pane_message(message, window, cx);
+                }))
+                .child(gpui_kit::component::Icon::new(glyph).size(px(18.))),
         )
+        .aria_disabled(!enabled)
     }
 
     /// The desk windows sit on: the window below its bar.
@@ -465,58 +463,58 @@ impl DesktopWindow {
                     .child(text),
             )
         };
-        div()
-            .id(SharedString::from(format!("notify-ask/{module}")))
-            .role(Role::Group)
-            .aria_label(SharedString::from(format!(
-                "{name} wants to show desktop notifications"
-            )))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .gap(px(12.))
-            .px(px(14.))
-            .py(px(10.))
-            .bg(ink.surface)
-            .border_b_1()
-            .border_color(ink.line)
-            .child(
-                gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
-                    .size(px(14.))
-                    .text_color(ink.ink),
-            )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(1.))
-                    .child(
-                        sans(500, 14.)
-                            .text_color(ink.ink)
-                            .child(format!("{name} wants to show desktop notifications")),
-                    )
-                    .child(note(
-                        format!(
-                            "At most {burst} banners a minute; the rest wait in Notifications."
-                        ),
-                        ink.muted,
-                    )),
-            )
-            .child(button(
-                "allow",
-                "Allow",
-                true,
-                Message::NotifyPermission(module, Permission::Allow),
-            ))
-            .child(button(
-                "not-now",
-                "Not now",
-                false,
-                Message::NotifyNotNow(module),
-            ))
-            .into_any_element()
+        // announced as it appears: nothing else says a view is waiting
+        crate::a11y::live(
+            div()
+                .id(SharedString::from(format!("notify-ask/{module}")))
+                .role(Role::Group),
+            accesskit::Live::Polite,
+            format!("{name} wants to show desktop notifications"),
+        )
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .px(px(14.))
+        .py(px(10.))
+        .bg(ink.surface)
+        .border_b_1()
+        .border_color(ink.line)
+        .child(
+            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
+                .size(px(14.))
+                .text_color(ink.ink),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(
+                    sans(500, 14.)
+                        .text_color(ink.ink)
+                        .child(format!("{name} wants to show desktop notifications")),
+                )
+                .child(note(
+                    format!("At most {burst} banners a minute; the rest wait in Notifications."),
+                    ink.muted,
+                )),
+        )
+        .child(button(
+            "allow",
+            "Allow",
+            true,
+            Message::NotifyPermission(module, Permission::Allow),
+        ))
+        .child(button(
+            "not-now",
+            "Not now",
+            false,
+            Message::NotifyNotNow(module),
+        ))
+        .into_any_element()
     }
 }
 

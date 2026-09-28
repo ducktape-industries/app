@@ -183,7 +183,9 @@ impl DesktopWindow {
                 })
             })
             .child(text);
-        crate::a11y::disabled(crate::a11y::keyboard(button), disabled).into_any_element()
+        crate::a11y::keyboard(button)
+            .aria_disabled(disabled)
+            .into_any_element()
     }
 
     /// `<a>`: `400 15px`, underlined, in ink; `small` is the back link's
@@ -220,14 +222,15 @@ impl DesktopWindow {
         .into_any_element()
     }
 
-    /// `<span role=alert>`: `400 13px/1.5` in danger, read out as it shows.
+    /// `<span role=alert>`: `400 13px/1.5` in danger, read out at once as
+    /// it shows.
     pub(super) fn alert(&self, id: &'static str, said: String, ink: &Ink) -> AnyElement {
-        sans(400, 13.)
+        let alert = sans(400, 13.)
             .line_height(px(13. * 1.5))
             .id(id)
             .role(Role::Alert)
-            .aria_label(said.clone())
-            .text_color(ink.danger)
+            .text_color(ink.danger);
+        crate::a11y::live(alert, accesskit::Live::Assertive, said.clone())
             .child(said)
             .into_any_element()
     }

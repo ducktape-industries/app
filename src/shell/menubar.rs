@@ -167,25 +167,30 @@ impl DesktopWindow {
                         .size(px(16.))
                         .text_color(ink.muted),
                 )
+                // the count, announced as notices land
                 .when(unread > 0, |bell| {
                     bell.child(
-                        mono(500, 9.)
-                            .absolute()
-                            .top(px(-5.))
-                            .left(px(8.))
-                            .min_w(px(14.))
-                            .h(px(14.))
-                            .px(px(3.))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .rounded_full()
-                            .bg(ink.ink)
-                            .text_color(ink.bg)
-                            .child(match unread {
-                                ..=99 => unread.to_string(),
-                                _ => "99+".to_owned(),
-                            }),
+                        crate::a11y::live(
+                            mono(500, 9.).id("rail-unread").role(Role::Status),
+                            accesskit::Live::Polite,
+                            format!("{unread} unread notifications"),
+                        )
+                        .absolute()
+                        .top(px(-5.))
+                        .left(px(8.))
+                        .min_w(px(14.))
+                        .h(px(14.))
+                        .px(px(3.))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(ink.ink)
+                        .text_color(ink.bg)
+                        .child(match unread {
+                            ..=99 => unread.to_string(),
+                            _ => "99+".to_owned(),
+                        }),
                     )
                 }),
         );
