@@ -5,32 +5,16 @@ pub struct Loads {
     pub(super) _threads: Vec<std::thread::JoinHandle<()>>,
 }
 
-/// The node's deployments moved (a new block): every module-owned view
-/// whose module's active code is not the one it was drawn from is loaded
-/// again, under a new generation, and swapped in place when it is ready.
-/// One check in flight at a time; a block that lands during one is
-/// covered by the next. The loads it starts swap in place, so nobody waits
-/// on them but a test; the block stream drops them.
+/// One seat: the load state, props and retry hold-off of one view instance
+/// of one module (instance 0 is the preloaded seat no tab has claimed yet).
+/// Shared by the tab's widget on the window thread and the loader thread,
+/// which swaps a finished load in place; the tab polls it while loading.
 pub(super) struct Mounted {
-    pub(super) changes: tokio::sync::watch::Sender<()>,
     /// The connection this seat was last asked of.
     pub(super) rev: u64,
     pub(super) slot: Slot,
     pub(super) props: Option<Vec<u8>>,
     pub(super) generation: u64,
-    /// The deployment the slot answers for — the view drawn, or the empty
-    /// slot of a deployment without one — so a block moves it only when the
-    /// active code moved. A load that failed never seated anything, so it
-    /// leaves this alone and is held off by `retry` instead.
-    pub(super) hash: Option<[u8; 32]>,
-    /// A load is on its way for `generation`, and the deployment it is
-    /// after when a block named one: a block that names it again waits
-    /// for it instead of starting over.
-    pub(super) in_flight: bool,
-    /// The proposed frame this device tastes in place of the active one:
-    /// the seat's wanted hash is `tasting.or(active)`. Cleared, with a
-    /// notice, when the hash leaves the taste set — withdrawn, or
-    /// activated into the very hash the seat already draws.
     /// The candidate a load last failed on, and when the next block may try
     /// it again. Cleared by any load that comes back, so only a repeated
     /// failure on the same candidate widens the gap.
@@ -70,13 +54,10 @@ impl Mounted {
     /// asked, under generation 0, which no load answers for.
     pub(super) fn seat() -> Arc<Mutex<Self>> {
         Arc::new(Mutex::new(Self {
-            changes: tokio::sync::watch::channel(()).0,
             rev: 0,
             slot: Slot::Loading,
             props: None,
             generation: 0,
-            hash: None,
-            in_flight: false,
             retry: None,
             shown: None,
         }))
@@ -91,27 +72,34 @@ impl Mounted {
         }
     }
 
-    /// A retry is scheduled and not yet due.
-    pub(super) fn held_off_now(&self) -> bool {
-        self.retry
-            .as_ref()
-            .is_some_and(|retry| Instant::now() < retry.next)
+    /// Whether a roster read at `now` starts a load for this seat, given
+    /// that the program's `code` is the `same_code` the last roster listed
+    /// and the seat was `asked_of_this_node` already:
+    ///
+    /// | hold-off from a failed load | load when                              |
+    /// |-----------------------------|----------------------------------------|
+    /// | none, or its gap is up      | the code moved, or this node not asked |
+    /// | still running               | it is not for this very `code`         |
+    ///
+    /// The hold-off names the bytes the load failed on (`Unloaded.hash`),
+    /// `code` the blob a block names.
+    pub(super) fn reload_due(
+        &self,
+        same_code: bool,
+        asked_of_this_node: bool,
+        code: [u8; 32],
+        now: Instant,
+    ) -> bool {
+        match self.retry.as_ref().filter(|retry| now < retry.next) {
+            None => !(same_code && asked_of_this_node),
+            Some(held_off) => held_off.hash != Some(code),
+        }
     }
 
-    /// Whether a block naming `active` is still inside the hold-off a
-    /// failed load for that same candidate left behind.
-    pub(super) fn held_off(&self, active: Option<[u8; 32]>) -> bool {
-        self.retry
-            .as_ref()
-            .is_some_and(|retry| retry.hash == active && Instant::now() < retry.next)
-    }
-
-    /// Opens the next generation for a load after `wanted` (None: whatever
-    /// the node holds active), and names it.
+    /// Opens the next load generation, so an older load still on its way
+    /// lands nowhere, and names it.
     pub(super) fn start(&mut self) -> u64 {
-        self.changes.send_replace(());
         self.generation += 1;
-        self.in_flight = true;
         self.generation
     }
 }
@@ -247,7 +235,6 @@ pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
         locked.slot = Slot::Loading;
-        locked.hash = None;
     }
     locked.retry = None;
     let generation = locked.start();
@@ -276,7 +263,6 @@ pub(super) fn spawn_load(
         if locked.generation != generation {
             return;
         }
-        locked.in_flight = false;
         // the connection lock is a leaf: read under the seat's lock, never
         // across it. A connect bumps the revision before it reaches this
         // seat, so the revision read here is the one the seat installs
@@ -287,9 +273,7 @@ pub(super) fn spawn_load(
         if from_the_node && node_since_left {
             return;
         }
-        let Mounted {
-            slot, hash, retry, ..
-        } = &mut *locked;
+        let Mounted { slot, retry, .. } = &mut *locked;
         // a load that came back at all clears the hold-off; only the error
         // arm below puts one back, widened against the one taken here
         let held_off = retry.take();
@@ -297,7 +281,6 @@ pub(super) fn spawn_load(
             Ok(Loaded::Fresh(mut guest)) => {
                 guest.installed_generation = Some(generation);
                 guest.report_display_truncation();
-                *hash = guest.hash;
                 *slot = Slot::Ready(guest);
             }
             Ok(Loaded::Unchanged) => {
@@ -305,8 +288,7 @@ pub(super) fn spawn_load(
                     guest.reconnect(current_rev);
                 }
             }
-            Ok(Loaded::Empty(removed)) => {
-                *hash = Some(removed);
+            Ok(Loaded::Empty(_)) => {
                 *slot = Slot::Empty;
             }
             // the same tab, the same surface handle, the same host-side
@@ -362,7 +344,6 @@ pub(super) fn spawn_load(
                 fresh.installed_generation = Some(generation);
                 fresh.report_display_truncation();
                 log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
-                *hash = fresh.hash;
                 *slot = Slot::Ready(fresh);
             }
             Err(Unloaded {
@@ -388,7 +369,6 @@ pub(super) fn spawn_load(
                 }
             }
         }
-        locked.changes.send_replace(());
     })
 }
 
@@ -406,7 +386,9 @@ pub(super) enum Loaded {
         alive: Arc<()>,
         ticks: u64,
     },
-    /// The deployment (this hash) ships no view.
+    /// The deployment ships no view. Nothing reads the hash any more; it
+    /// goes when `Guest::load` (guest/lifecycle.rs) stops handing it over.
+    #[allow(dead_code)]
     Empty([u8; 32]),
 }
 
@@ -418,8 +400,8 @@ pub(super) struct Unloaded {
     pub(super) failure: Failure,
 }
 
-/// One `view_source` line per outcome, with the same fields every time —
-/// the canary greps them.
+/// One `view_source` line per outcome, with the same fields every time:
+/// stable keys for anyone reading loads out of app.log.
 pub(super) fn log_source(
     module: &str,
     hash: Option<&[u8; 32]>,
@@ -438,21 +420,18 @@ pub(super) fn log_source(
     );
 }
 
-/// How long each stage of one module-owned load took: `status` and
-/// `fetch` are the node's answers, `compile` is cranelift, `init` the
-/// instance and its `on mount` or restore, `first_frame` the tree a
-/// replacement proves (a fresh view draws its first on the window thread),
-/// `check` the second look at the registry before the seat. `path` is
-/// `first` for a load over an empty slot, `swap` over a view drawn.
+/// How long each stage of one module-owned load took: `fetch` is the
+/// node's answer, `compile` is cranelift, `init` the instance and its `on
+/// mount` or restore, `first_frame` the tree a replacement proves (a fresh
+/// view draws its first on the window thread). `path` is `first` for a load
+/// over an empty slot, `swap` over a view drawn.
 #[derive(Default)]
 pub(super) struct LoadTiming {
     pub(super) path: &'static str,
-    pub(super) status: Duration,
     pub(super) fetch: Duration,
     pub(super) compile: Duration,
     pub(super) init: Duration,
     pub(super) first_frame: Option<Duration>,
-    pub(super) check: Duration,
 }
 
 impl LoadTiming {
@@ -471,12 +450,10 @@ impl LoadTiming {
             hash = %hash,
             path = self.path,
             outcome = state,
-            status_ms = ms(self.status),
             fetch_ms = ms(self.fetch),
             compile_ms = ms(self.compile),
             init_ms = ms(self.init),
             first_frame_ms = %first_frame,
-            check_ms = ms(self.check),
             total_ms = total,
             "view_load"
         );
@@ -499,4 +476,47 @@ pub(super) fn view_override(module: &str) -> Option<PathBuf> {
     let dir = VIEW_OVERRIDE.lock().expect("view override").clone()?;
     let path = dir.join(format!("{module}_view.wasm"));
     path.is_file().then_some(path)
+}
+
+#[cfg(test)]
+mod reload_tests {
+    use super::*;
+
+    /// The table on [`Mounted::reload_due`], row by row.
+    #[test]
+    fn a_roster_read_reloads_by_code_node_and_hold_off() {
+        let now = Instant::now();
+        let code = [1; 32];
+        let held = |hash, next| Retry {
+            hash,
+            next,
+            gap: RETRY_FIRST,
+        };
+        let running = now + RETRY_FIRST;
+        let up = now - RETRY_FIRST;
+        // (retry, same_code, asked_of_this_node) -> load
+        let table = [
+            (None, false, false, true),
+            (None, true, false, true),
+            (None, false, true, true),
+            (None, true, true, false),
+            (Some(held(Some(code), up)), true, true, false),
+            (Some(held(Some(code), up)), false, true, true),
+            (Some(held(Some(code), running)), false, false, false),
+            (Some(held(Some(code), running)), true, true, false),
+            (Some(held(Some([2; 32]), running)), true, true, true),
+            (Some(held(None, running)), true, true, true),
+        ];
+        for (nth, (retry, same_code, asked_of_this_node, load)) in table.into_iter().enumerate() {
+            let seat = Mounted::seat();
+            seat.lock().unwrap().retry = retry;
+            assert_eq!(
+                seat.lock()
+                    .unwrap()
+                    .reload_due(same_code, asked_of_this_node, code, now),
+                load,
+                "row {nth}"
+            );
+        }
+    }
 }
