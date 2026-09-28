@@ -172,36 +172,7 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
     ]
 }
 
-/// Put a document's text into a store the honest way: the store asks for
-/// every document it has no text for, so answer the request it just made.
-fn seed_editor_text(store: &crate::editor::wire::EditorStore, text: &str) {
-    use wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
-    let asked = store.drain().into_iter().find_map(|event| match event {
-        wire::Event::EditorDocument {
-            message: Message::Request { id, target },
-            ..
-        } => Some((id, target)),
-        _ => None,
-    });
-    let (id, target) = asked.expect("the store asks for a document it has no text for");
-    store
-        .frame(&wire::Frame {
-            editor_documents: vec![
-                Message::Transfer(EditorTransfer::Begin {
-                    id: id.clone(),
-                    target,
-                }),
-                Message::Transfer(EditorTransfer::Chunk {
-                    id: id.clone(),
-                    index: 0,
-                    bytes: text.as_bytes().to_vec(),
-                }),
-                Message::Transfer(EditorTransfer::Complete { id }),
-            ],
-            ..Default::default()
-        })
-        .expect("the answer to the store's own request");
-}
+use crate::editor::wire::seed_editor_text;
 
 mod accessibility;
 mod gpui_activation;
