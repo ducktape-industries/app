@@ -81,7 +81,12 @@ impl DesktopWindow {
         // The element id is stable for the AX door and tests; the AX name
         // is a phrase a screen reader can announce on its own, not the bare
         // verb.
-        let (id, name, glyph) = action.parts();
+        let module = self
+            .layout(cx)
+            .panes
+            .get(index)
+            .map_or(layout::EMPTY, |pane| pane.module);
+        let (id, name, glyph) = action.parts(module);
         crate::a11y::keyboard(
             div()
                 .id(SharedString::from(format!("pane/{index}/{id}")))
@@ -525,18 +530,28 @@ enum PaneAction {
 }
 
 impl PaneAction {
-    /// Its element id, its accessible name, its glyph.
-    fn parts(self) -> (&'static str, &'static str, gpui_kit::assets::IconName) {
+    /// Its element id, its accessible name on the window of `module` (one
+    /// window's Close is not another's: "Close Chat window"), its glyph.
+    fn parts(self, module: &str) -> (&'static str, String, gpui_kit::assets::IconName) {
         use gpui_kit::assets::IconName;
+        let program = label(module);
+        let window = match module {
+            layout::EMPTY => "empty window".to_owned(),
+            _ => format!("{program} window"),
+        };
         match self {
-            Self::Split => ("split", "Open another window", IconName::Plus),
+            Self::Split => ("split", format!("Open another {window}"), IconName::Plus),
             Self::PopOut => (
                 "popout",
-                "Open in new window",
+                format!("Open {program} in a new window"),
                 IconName::SquareArrowOutUpRight,
             ),
-            Self::PopIn => ("popin", "Move to main window", IconName::ArrowDownLeft),
-            Self::Close => ("close", "Close pane", IconName::X),
+            Self::PopIn => (
+                "popin",
+                format!("Move {program} to the main window"),
+                IconName::ArrowDownLeft,
+            ),
+            Self::Close => ("close", format!("Close {window}"), IconName::X),
         }
     }
 }

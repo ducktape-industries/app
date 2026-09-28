@@ -7,6 +7,7 @@ use super::*;
 mod gate;
 mod launcher;
 mod live;
+mod names;
 mod overlays;
 mod text;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
@@ -518,7 +519,9 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         }),
         "{heard:?}"
     );
-    find(&nodes, "MenuItem", "Unread. Ada mentioned you: @grace look");
+    let row = find(&nodes, "MenuItem", "Unread. Ada mentioned you: @grace look");
+    // when and from where, after the name
+    assert_eq!(row["description"], "now · chat · #design");
     find(&nodes, "MenuItem", "Unread. Lin: @grace look");
     find(&nodes, "Button", "Mark all read");
     assert!(!nodes.to_string().contains("all caught up"));

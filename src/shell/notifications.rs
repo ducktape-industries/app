@@ -120,10 +120,13 @@ impl DesktopWindow {
                     .truncate()
                     .child(text)
             };
+            // when and from where, as the row shows them, after its name
+            let about = format!("{} · {source}", ago(entry.at, now));
             list = list.child(crate::a11y::keyboard(
                 div()
                     .id(SharedString::from(format!("notif/{id}")))
                     .control(Role::MenuItem, SharedString::from(said))
+                    .aria_description(about)
                     .flex()
                     .gap(px(10.))
                     .pl(px(8.))
