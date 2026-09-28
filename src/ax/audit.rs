@@ -1,16 +1,17 @@
-//! The phase-1 audit (`docs/ax.md` §1.2, §2): the rule table applied to what
+//! The audit (`docs/ax.md` §1.2, §1.3, §2): the rule table applied to what
 //! the door saw. Per-node rules run over every node of every snapshot; walk
 //! rules over the sequence a Tab walk yields. [`audit`] is pure: [`observe`]
 //! is the one function here that touches a window, and it only takes the
 //! snapshots and presses the keys. What the door cannot see it is told:
 //! whether a modal scopes the snapshot, whether `escape` was bound at each
 //! step, and — the caller's word, never a guess from the tree — whether the
-//! shell screen is a launcher screen (AX-018).
+//! shell screen is a launcher screen (AX-018), and which controls the
+//! app's Help lists with a chord (AX-114).
 use super::actions::{press_keys, shortcuts};
 use super::{AxNode, tree};
 use gpui_kit::{App, Window};
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 #[cfg(test)]
 mod tests;
@@ -40,7 +41,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 24] = [
+pub(crate) const RULES: [Rule; 43] = [
     rule(
         "AX-001",
         Error,
@@ -84,7 +85,11 @@ pub(crate) const RULES: [Rule; 24] = [
         "A ComboBox has exactly one of expanded, collapsed.",
     ),
     rule("AX-011", Error, "A control role without press is disabled."),
-    rule("AX-012", Error, "A node with press also offers focus."),
+    rule(
+        "AX-012",
+        Error,
+        "A node with press also offers focus, or sits in a composite that does.",
+    ),
     rule("AX-013", Error, "A Status or Alert is named."),
     rule("AX-014", Error, "A Heading or Label is named."),
     rule("AX-015", Error, "No id ends in ~ followed by digits."),
@@ -133,13 +138,101 @@ pub(crate) const RULES: [Rule; 24] = [
         Error,
         "While a Dialog shows, some node is focused.",
     ),
+    rule(
+        "AX-101",
+        Error,
+        "A Tab, TreeItem or ListBoxOption has exactly one of selected, unselected.",
+    ),
+    rule(
+        "AX-102",
+        Error,
+        "A Status is live polite, an Alert live assertive, and both have a value.",
+    ),
+    rule(
+        "AX-103",
+        Error,
+        "A Dialog the Tab walk never leaves is modal.",
+    ),
+    rule(
+        "AX-104",
+        Error,
+        "A Dialog the screen state shows holds the focus as it opens.",
+    ),
+    rule(
+        "AX-105",
+        Error,
+        "A menu item, tab, radio button, option, tree item, row or cell is in its container.",
+    ),
+    rule("AX-106", Error, "A Heading has a level in 1..=6."),
+    rule(
+        "AX-107",
+        Error,
+        "Focus in a composite is on a row, and each down or up press moves it.",
+    ),
+    rule(
+        "AX-108",
+        Error,
+        "An invalid text field has a description that says why.",
+    ),
+    rule(
+        "AX-109",
+        Warn,
+        "A text field refused empty (invalid, with no value) is required.",
+    ),
+    rule(
+        "AX-110",
+        Error,
+        "A control whose name says work is in flight is busy.",
+    ),
+    rule(
+        "AX-111",
+        Warn,
+        "A text field's name is not its placeholder.",
+    ),
+    rule(
+        "AX-112",
+        Error,
+        "A row of a view set that says where its rows are has position and size.",
+    ),
+    rule(
+        "AX-113",
+        Warn,
+        "A Button that is expanded or collapsed reports has_popup.",
+    ),
+    rule(
+        "AX-114",
+        Warn,
+        "A control Help lists with a chord reports it as keyboard_shortcut.",
+    ),
+    rule(
+        "AX-116",
+        Error,
+        "A step action comes with a value, a fold action with its state.",
+    ),
+    rule(
+        "AX-117",
+        Error,
+        "A Link offers press and is named by words.",
+    ),
+    rule("AX-118", Error, "A Splitter is named and offers focus."),
+    rule(
+        "AX-119",
+        Error,
+        "Nothing pressable sits inside a button, link, tab, menu item or toggle.",
+    ),
+    rule(
+        "AX-123",
+        Warn,
+        "A press node no element draws (a rich text's clickable range) offers focus.",
+    ),
 ];
 
 fn severity(rule: &str) -> Severity {
     RULES
         .iter()
         .find(|row| row.id == rule)
-        .map_or(Error, |row| row.severity)
+        .unwrap_or_else(|| panic!("{rule} is not in the rule table"))
+        .severity
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq)]
@@ -179,16 +272,30 @@ pub(crate) struct Report {
 }
 
 /// What one screen state showed the door: the first snapshot, then one per
-/// tab press; `escape`, one per snapshot, whether `escape` was bound then.
+/// tab press; `escape`, one per snapshot, whether `escape` was bound then;
+/// `arrows`, the arrow probe of the composite the focus started in; and,
+/// the caller's word, `chords`: `(control name, chord)` for each control
+/// the app's Help lists with a chord (AX-114).
 #[derive(Debug, Default)]
 pub(crate) struct Reading {
     pub(crate) snapshots: Vec<Vec<AxNode>>,
     pub(crate) escape: Vec<bool>,
     pub(crate) modal: bool,
+    pub(crate) arrows: Vec<Arrows>,
+    pub(crate) chords: Vec<(String, String)>,
 }
 
-const TEXT_INPUT: [&str; 8] = [
+/// An arrow probe (AX-107): the composite the focus sat in, and the
+/// focused id before, after `down`, and after `up`.
+#[derive(Debug)]
+pub(crate) struct Arrows {
+    pub(crate) composite: AxNode,
+    pub(crate) focused: [Option<String>; 3],
+}
+
+const TEXT_INPUT: [&str; 9] = [
     "TextInput",
+    "EditableComboBox",
     "MultilineTextInput",
     "SearchInput",
     "EmailInput",
@@ -233,6 +340,32 @@ const NAMED_CONTAINER: [&str; 14] = [
     "Document",
 ];
 
+/// A composite whose rows the arrows pick (AX-107).
+const ARROWED: [&str; 5] = ["Tree", "ListBox", "Menu", "Grid", "EditableComboBox"];
+/// A row of a composite.
+const ITEM: [&str; 8] = [
+    "ListBoxOption",
+    "MenuItem",
+    "MenuItemCheckBox",
+    "MenuItemRadio",
+    "TreeItem",
+    "Row",
+    "Cell",
+    "GridCell",
+];
+/// A node whose press is the whole of it: nothing pressable inside (AX-119).
+const PRESSED_WHOLE: [&str; 9] = [
+    "Button",
+    "Link",
+    "Tab",
+    "MenuItem",
+    "CheckBox",
+    "Switch",
+    "RadioButton",
+    "MenuItemCheckBox",
+    "MenuItemRadio",
+];
+
 fn named(node: &AxNode) -> bool {
     !node.name.trim().is_empty()
 }
@@ -256,6 +389,59 @@ fn focused(nodes: &[AxNode]) -> Vec<&str> {
         .filter(|node| has(node, "focused"))
         .map(|node| node.id.as_str())
         .collect()
+}
+
+/// One snapshot's nodes by door id, to follow `parent`.
+struct Snapshot<'a>(HashMap<&'a str, &'a AxNode>);
+
+impl<'a> Snapshot<'a> {
+    fn of(nodes: &'a [AxNode]) -> Self {
+        Self(nodes.iter().map(|node| (node.id.as_str(), node)).collect())
+    }
+
+    /// `node`'s ancestors the snapshot has, nearest first.
+    fn ancestors(&self, node: &'a AxNode) -> impl Iterator<Item = &'a AxNode> + '_ {
+        let up = |node: &AxNode| {
+            node.more
+                .parent
+                .as_deref()
+                .and_then(|id| self.0.get(id).copied())
+        };
+        std::iter::successors(up(node), move |node| up(node))
+    }
+
+    /// `node` is `ancestor` or sits inside it.
+    fn within(&self, node: &'a AxNode, ancestor: &str) -> bool {
+        node.id == ancestor || self.ancestors(node).any(|above| above.id == ancestor)
+    }
+}
+
+/// A focused node of `nodes` is `id` or sits inside it.
+fn focus_within(nodes: &[AxNode], snapshot: &Snapshot<'_>, id: &str) -> bool {
+    nodes
+        .iter()
+        .any(|node| has(node, "focused") && snapshot.within(node, id))
+}
+
+/// The container roles `role` belongs in (AX-105), when it has any.
+fn home(role: &str) -> Option<&'static [&'static str]> {
+    Some(match role {
+        "MenuItem" | "MenuItemCheckBox" | "MenuItemRadio" => &["Menu", "MenuBar"],
+        "Tab" => &["TabList"],
+        "RadioButton" => &["RadioGroup"],
+        "ListBoxOption" => &["ListBox"],
+        "TreeItem" => &["Tree"],
+        "Row" | "Cell" => &["Table", "Grid"],
+        _ => return None,
+    })
+}
+
+/// A label that says work is in flight: "Creating…", "Loading".
+fn in_flight(name: &str) -> bool {
+    let name = name.trim();
+    let first = name.split_whitespace().next().unwrap_or_default();
+    let first = first.trim_end_matches(['…', '.']);
+    name.starts_with("Loading") || (first.ends_with("ing") && name.ends_with(['…', '.']))
 }
 
 /// The applicable set and the failures, one entry per `(rule, id)` however
@@ -302,8 +488,19 @@ impl Tally {
     }
 }
 
-/// AX-001 … AX-017 on one node; AX-016 looks at its siblings in `nodes`.
-fn node_rules(node: &AxNode, nodes: &[AxNode], tally: &mut Tally) {
+/// Every per-node rule on one node: AX-001 … AX-017, and AX-123 in
+/// AX-012's place on a node no element draws; then what the door's
+/// phase-2 keys say about it (AX-101, 102, 106, 108 … 114, 116 … 118) and
+/// where it sits (AX-105, 119). AX-016 and AX-112 look at its siblings in
+/// `nodes`, AX-012, AX-105 and AX-119 at its ancestors through
+/// `snapshot`, AX-114 at the chords `reading` carries.
+fn node_rules(
+    node: &AxNode,
+    nodes: &[AxNode],
+    snapshot: &Snapshot<'_>,
+    reading: &Reading,
+    tally: &mut Tally,
+) {
     let (press, focus) = (offers(node, "press"), offers(node, "focus"));
     let role = node.role.as_str();
     let text_input = TEXT_INPUT.contains(&role);
@@ -376,8 +573,20 @@ fn node_rules(node: &AxNode, nodes: &[AxNode], tally: &mut Tally) {
             format!("{role} offers no press and is not disabled")
         });
     }
-    if press {
-        tally.check("AX-012", node, focus, || {
+    if press && node.synthetic {
+        // gpui gives a node no element draws no focus: the gap is the
+        // fork's to close, not the view's (docs/ax.md §5, item 8)
+        tally.check("AX-123", node, focus, || {
+            format!("a {role} the pointer presses and the keyboard cannot reach")
+        });
+    } else if press {
+        // a composite's rows are reached by the arrows, from the composite,
+        // once the keys are in it: one that takes focus (view_wire::audit's
+        // Unreachable also asks it to hear a key, which the door cannot see)
+        let composite = snapshot
+            .ancestors(node)
+            .any(|above| tree::COMPOSITES.contains(&above.role.as_str()) && offers(above, "focus"));
+        tally.check("AX-012", node, focus || composite, || {
             "press without focus: a keyboard never reaches it".to_owned()
         });
     }
@@ -415,6 +624,130 @@ fn node_rules(node: &AxNode, nodes: &[AxNode], tally: &mut Tally) {
             });
         }
     }
+    let more = &node.more;
+    if matches!(role, "Tab" | "TreeItem" | "ListBoxOption") {
+        let marks = ["selected", "unselected"]
+            .iter()
+            .filter(|state| has(node, state))
+            .count();
+        tally.check("AX-101", node, marks == 1, || {
+            format!("{role} has {marks} of selected/unselected")
+        });
+    }
+    if let Some(live) = match role {
+        "Status" => Some("polite"),
+        "Alert" => Some("assertive"),
+        _ => None,
+    } {
+        let pass = more.live == Some(live) && node.value.is_some();
+        tally.check("AX-102", node, pass, || {
+            format!(
+                "{role} is live {:?} with value {:?}; wants {live} and a value",
+                more.live, node.value
+            )
+        });
+    }
+    if let Some(homes) = home(role) {
+        let pass = snapshot
+            .ancestors(node)
+            .any(|above| homes.contains(&above.role.as_str()));
+        tally.check("AX-105", node, pass, || {
+            format!("{role} is in no {}", homes.join(" or "))
+        });
+    }
+    if role == "Heading" {
+        let pass = more.level.is_some_and(|level| (1..=6).contains(&level));
+        tally.check("AX-106", node, pass, || {
+            format!("Heading has level {:?}", more.level)
+        });
+    }
+    if TEXT_INPUT.contains(&role) {
+        if more.invalid.is_some() {
+            let described = node
+                .description
+                .as_deref()
+                .is_some_and(|text| !text.trim().is_empty());
+            tally.check("AX-108", node, described, || {
+                "an invalid field does not say why".to_owned()
+            });
+            if node.value.as_deref() == Some("") {
+                tally.check("AX-109", node, more.required, || {
+                    "refused empty, and not required".to_owned()
+                });
+            }
+        }
+        if let Some(placeholder) = &more.placeholder {
+            tally.check("AX-111", node, node.name != *placeholder, || {
+                "its name is its placeholder".to_owned()
+            });
+        }
+    }
+    if CONTROL.contains(&role) && in_flight(&node.name) {
+        tally.check("AX-110", node, has(node, "busy"), || {
+            format!("{:?} says work is in flight and is not busy", node.name)
+        });
+    }
+    let positioned = more.position_in_set.is_some() || more.size_of_set.is_some();
+    let siblings = || {
+        nodes.iter().filter(|other| {
+            other.scope == node.scope && other.more.parent == more.parent && other.role == node.role
+        })
+    };
+    if !shell(node) && (positioned || siblings().any(|other| other.more.size_of_set.is_some())) {
+        let pass = match (more.position_in_set, more.size_of_set) {
+            (Some(position), Some(size)) => (1..=size).contains(&position),
+            _ => false,
+        };
+        tally.check("AX-112", node, pass, || {
+            format!(
+                "row says {:?} of {:?} in its set",
+                more.position_in_set, more.size_of_set
+            )
+        });
+    }
+    if role == "Button" && (has(node, "expanded") || has(node, "collapsed")) {
+        tally.check("AX-113", node, more.has_popup.is_some(), || {
+            "opens something and has no has_popup".to_owned()
+        });
+    }
+    if press && let Some((_, chord)) = reading.chords.iter().find(|(name, _)| *name == node.name) {
+        let pass = more.keyboard_shortcut.as_deref() == Some(chord.as_str());
+        tally.check("AX-114", node, pass, || {
+            format!(
+                "Help lists {chord}; it reports {:?}",
+                more.keyboard_shortcut
+            )
+        });
+    }
+    let stepped = offers(node, "increment") || offers(node, "decrement");
+    let folds = offers(node, "expand") || offers(node, "collapse");
+    if stepped || folds {
+        let pass = (!stepped || node.value.is_some())
+            && (!folds || has(node, "expanded") || has(node, "collapsed"));
+        tally.check("AX-116", node, pass, || {
+            "offers a step without a value, or a fold without its state".to_owned()
+        });
+    }
+    if role == "Link" {
+        let pass = press && node.name.chars().any(char::is_alphanumeric);
+        tally.check("AX-117", node, pass, || {
+            "a link offers no press, or no words".to_owned()
+        });
+    }
+    if role == "Splitter" {
+        let pass = named(node) && offers(node, "focus");
+        tally.check("AX-118", node, pass, || {
+            "a splitter is unnamed or the keyboard never reaches it".to_owned()
+        });
+    }
+    if press {
+        let host = snapshot
+            .ancestors(node)
+            .find(|above| PRESSED_WHOLE.contains(&above.role.as_str()));
+        tally.check("AX-119", node, host.is_none(), || {
+            format!("pressable inside {}", host.map_or("", |host| &host.id))
+        });
+    }
 }
 
 /// AX-018 on one snapshot: `launcher` is the caller's word that the shell
@@ -435,8 +768,48 @@ fn screen_rules(nodes: &[AxNode], reading: &Reading, launcher: bool, tally: &mut
     });
 }
 
-/// AX-020 … AX-025 over the sequence; `step N` is the snapshot after N
-/// presses.
+/// AX-107's own half on one snapshot: focus on a composite that has rows
+/// is on one of them, not on the composite.
+fn snapshot_rules(nodes: &[AxNode], snapshot: &Snapshot<'_>, tally: &mut Tally) {
+    for node in nodes.iter().filter(|node| has(node, "focused")) {
+        let role = node.role.as_str();
+        if ARROWED.contains(&role) && rows(nodes, snapshot, node) > 0 {
+            tally.check("AX-107", node, false, || {
+                format!("the focus sits on the {role}, and no row is active")
+            });
+        }
+    }
+}
+
+/// How many rows of a composite `nodes` has inside `composite`.
+fn rows(nodes: &[AxNode], snapshot: &Snapshot<'_>, composite: &AxNode) -> usize {
+    nodes
+        .iter()
+        .filter(|node| ITEM.contains(&node.role.as_str()) && snapshot.within(node, &composite.id))
+        .count()
+}
+
+/// The composite an arrow press moves in `nodes` (AX-107): the nearest
+/// one at or above the focus with two rows or more.
+fn arrowed(nodes: &[AxNode]) -> Option<&AxNode> {
+    let snapshot = Snapshot::of(nodes);
+    let focus = nodes.iter().find(|node| has(node, "focused"))?;
+    std::iter::once(focus)
+        .chain(snapshot.ancestors(focus))
+        .find(|node| ARROWED.contains(&node.role.as_str()) && rows(nodes, &snapshot, node) > 1)
+}
+
+/// `node` has the keys: focused, or a composite whose active row is.
+fn holds(node: &AxNode) -> bool {
+    has(node, "focused") || node.more.active_descendant.is_some()
+}
+
+/// AX-020 … AX-025 over the sequence, `step N` the snapshot after N
+/// presses; then AX-103, AX-104 and AX-107's arrows. A dialog that shows
+/// has the focus as the state opens (AX-104); a non-modal one may let the
+/// walk out. One the Tab walk never leaves is modal to the keyboard, and
+/// says so (AX-103). Each arrow press of the probe moves the active row
+/// (AX-107).
 fn walk_rules(reading: &Reading, tally: &mut Tally) {
     let snapshots = &reading.snapshots;
     let Some(first) = snapshots.first() else {
@@ -455,10 +828,11 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
     }
     let walked = snapshots.len() > 1;
     for node in first.iter().filter(|node| walked && offers(node, "focus")) {
-        let reached = snapshots.iter().any(|nodes| {
+        // a Tab press reached it: where the state opened does not count
+        let reached = snapshots[1..].iter().any(|nodes| {
             nodes
                 .iter()
-                .any(|other| other.id == node.id && has(other, "focused"))
+                .any(|other| other.id == node.id && holds(other))
         });
         tally.check("AX-021", node, reached, || {
             "offers focus but the tab walk never reached it".to_owned()
@@ -483,6 +857,30 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             }
         }
     }
+    let opened = Snapshot::of(first);
+    for dialog in first.iter().filter(|node| node.role == "Dialog") {
+        tally.check(
+            "AX-104",
+            dialog,
+            focus_within(first, &opened, &dialog.id),
+            || "the dialog shows and the focus is outside it".to_owned(),
+        );
+        let held = snapshots.len() > 1
+            && snapshots
+                .iter()
+                .all(|nodes| focus_within(nodes, &Snapshot::of(nodes), &dialog.id));
+        if held {
+            tally.check("AX-103", dialog, dialog.more.modal, || {
+                "Tab never leaves the dialog, and it is not modal".to_owned()
+            });
+        }
+    }
+    for Arrows { composite, focused } in &reading.arrows {
+        let pass = focused[0] != focused[1] && focused[1] != focused[2];
+        tally.check("AX-107", composite, pass, || {
+            format!("down then up leaves the active row at {focused:?}")
+        });
+    }
 }
 
 /// The report of `docs/ax.md` §2 over `reading`. `launcher`: the shell screen
@@ -490,10 +888,12 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
 pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
     let mut tally = Tally::default();
     for nodes in &reading.snapshots {
+        let snapshot = Snapshot::of(nodes);
         for node in nodes {
-            node_rules(node, nodes, &mut tally);
+            node_rules(node, nodes, &snapshot, reading, &mut tally);
         }
         screen_rules(nodes, reading, launcher, &mut tally);
+        snapshot_rules(nodes, &snapshot, &mut tally);
     }
     walk_rules(reading, &mut tally);
     let mut ids = BTreeSet::new();
@@ -549,6 +949,14 @@ impl Report {
     }
 }
 
+impl Reading {
+    /// One more snapshot, with whether `escape` is bound now.
+    fn take(&mut self, nodes: Vec<AxNode>, window: &Window, cx: &App) {
+        self.escape.push(escape_bound(window, cx));
+        self.snapshots.push(nodes);
+    }
+}
+
 /// `escape` is bound where focus is now.
 fn escape_bound(window: &Window, cx: &App) -> bool {
     serde_json::to_value(shortcuts(window, cx))
@@ -566,8 +974,10 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// and on until focus has come back to where the first press put it. A
 /// stop the first snapshot does not show (scrolled away, drawn since) makes
 /// the Tab cycle longer than N + 1; the walk still goes all the way round,
-/// up to 4 (N + 1) presses. Focus goes back where it was — nowhere
-/// included.
+/// up to 4 (M + 1) presses, M the most stops a snapshot has shown so far.
+/// Before the walk, when the focus starts in a
+/// composite with two rows or more, `down` then `up`, `snap` after each
+/// ([`Arrows`]). Focus goes back where it was — nowhere included.
 pub(crate) fn observe(
     window: &mut Window,
     cx: &mut App,
@@ -577,24 +987,39 @@ pub(crate) fn observe(
 ) -> Reading {
     let before = window.focused(cx);
     let mut reading = Reading::default();
-    let mut take = |window: &mut Window, cx: &mut App, reading: &mut Reading| {
+    let mut read = |window: &mut Window, cx: &mut App| {
         let mut nodes = snap(window, cx);
         let stops = nodes.iter().filter(|node| offers(node, "focus")).count();
         nodes.retain(&keep);
-        reading.escape.push(escape_bound(window, cx));
-        reading.snapshots.push(nodes);
-        stops
+        (nodes, stops)
     };
-    let stops = take(window, cx, &mut reading);
+    let (nodes, stops) = read(window, cx);
+    reading.take(nodes, window, cx);
     // after the first snap: a read switches the tree on and draws it
     reading.modal = tree::modal_active(window);
+    if walk && let Some(composite) = arrowed(&reading.snapshots[0]).cloned() {
+        let at = |nodes: &[AxNode]| focused(nodes).first().map(|id| (*id).to_owned());
+        let mut seen = [at(&reading.snapshots[0]), None, None];
+        for (n, key) in [(1, "down"), (2, "up")] {
+            let _ = press_keys(window, cx, key, "");
+            seen[n] = at(&read(window, cx).0);
+        }
+        reading.arrows.push(Arrows {
+            composite,
+            focused: seen,
+        });
+    }
     if walk {
         // the handle, not the node: a stop off the viewport has no node
         let (mut first, mut round) = (None, false);
-        for press in 1..=4 * (stops + 1) {
+        let (mut press, mut most) = (0, stops);
+        while press < 4 * (most + 1) {
+            press += 1;
             let _ = press_keys(window, cx, "tab", "");
             let now = window.focused(cx);
-            take(window, cx, &mut reading);
+            let (nodes, seen) = read(window, cx);
+            most = most.max(seen);
+            reading.take(nodes, window, cx);
             match press {
                 1 => first = now,
                 _ => round |= now == first,

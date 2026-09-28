@@ -13,7 +13,9 @@
 //! (`console:chat/send`), widened with its ancestors' ids (`console:row.send`)
 //! only while another node in the window shares it, and `~2`, `~3` … when
 //! even the whole path is shared ([`tree::door_ids`]). A synthetic child with
-//! no element of its own ends in its role. Entity, focus-handle and the kit's
+//! no element of its own ends in its role, and after the first of its role
+//! under one node in its place among them (`Link2`: a RichText's second
+//! range). Entity, focus-handle and the kit's
 //! type-path segments never count: they change per run or say nothing. Never
 //! an AccessKit NodeId, never a position. A password field's value and a node
 //! marked [`crate::a11y::AX_PRIVATE`] (the recovery-phrase words) are masked
@@ -22,10 +24,11 @@
 //! A keyboard-only walk sends keys through the window's own key dispatch
 //! ([`press_keys`]) and reads the bindings it can reach ([`shortcuts`]); a
 //! pointer drag goes through its mouse dispatch ([`drag_by_id`]).
-//! `GET /audit?window&view&walk=1&launcher=1` runs the phase-1 rules of
+//! `GET /audit?window&view&walk=1&launcher=1` runs the rules of
 //! `docs/ax.md` ([`audit`]) over one window — the named one, else the one
 //! holding focus, else the first — with the Tab walk when `walk`; `launcher`
-//! is the caller's word that the shell screen is not the desk (AX-018).
+//! is the caller's word that the shell screen is not the desk (AX-018), and
+//! the shell says which controls its Help lists with a chord (AX-114).
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
 use futures::StreamExt as _;
@@ -427,13 +430,14 @@ async fn answer(
                 .unwrap_or_default();
             handle
                 .update(cx, |_, window, cx| {
-                    let reading = audit::observe(
+                    let mut reading = audit::observe(
                         window,
                         cx,
                         walk,
                         |node| filter.keeps(node),
                         |window, cx| current(&name, window, cx, true, seen),
                     );
+                    reading.chords = crate::shell::chords();
                     Reply::ok(json!(audit::audit(&reading, launcher)))
                 })
                 .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })))

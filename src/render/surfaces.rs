@@ -46,7 +46,11 @@ impl ViewTree {
             let entry = (named && !nested).then(|| {
                 self.dialogs
                     .entry(path.clone())
-                    .or_insert_with(|| cx.focus_handle())
+                    .or_insert_with(|| {
+                        let opener = window.focused(cx).map(|focus| focus.downgrade());
+                        (cx.focus_handle(), opener)
+                    })
+                    .0
                     .clone()
             });
             let mut layer = div()

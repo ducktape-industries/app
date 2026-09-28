@@ -35,6 +35,9 @@ pub(super) struct TextField {
     /// Sensitive without being masked (the recovery phrase): its value is
     /// read aloud, and the test door masks it (`a11y::AX_PRIVATE`).
     pub(super) private: bool,
+    /// The error the screen draws with it: the field reports it invalid,
+    /// and says the error as its description (AX-108).
+    pub(super) error: Option<String>,
     /// The text size, in the canvas's px (`ink::fit` scales it).
     pub(super) size: f32,
     /// The model's copy of the text, which the field mirrors.
@@ -78,16 +81,56 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
+        use gpui_kit::StatefulInteractiveElement as _;
+        let (label, placeholder) = (field.label.clone(), field.placeholder);
+        let (masked, private, error) = (field.masked, field.private, field.error.clone());
+        let (state, field) = self.bare_input(field, window, cx);
+        let field = field.aria_label(label.unwrap_or_else(|| placeholder.into()));
+        let field = match masked {
+            true => field,
+            false => field.aria_value(state.read(cx).value().to_string()),
+        };
+        // every form here refuses its fields empty (AX-109)
+        let mut patch = crate::a11y::Patch::default().required();
+        if private {
+            patch = patch.class_name(crate::a11y::AX_PRIVATE);
+        }
+        let field = match error {
+            Some(error) => {
+                patch = patch.invalid();
+                field.aria_description(error)
+            }
+            None => field,
+        };
+        patch
+            .on(match masked {
+                true => field.role(gpui_kit::Role::PasswordInput),
+                false => field.role(gpui_kit::Role::TextInput),
+            })
+            .into_any_element()
+    }
+
+    /// [`Self::input`]'s field with no node of its own, and its state: no
+    /// role, name or value. It takes Tab and wears the ring; a
+    /// [`crate::a11y::combo_box`] around it and its list speaks for it.
+    pub(super) fn bare_input(
+        &mut self,
+        field: TextField,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (
+        Entity<gpui_kit::component::input::InputState>,
+        gpui_kit::Stateful<gpui_kit::Div>,
+    ) {
         let TextField {
             key,
             placeholder,
-            label,
             masked,
-            private,
             size,
             value,
             on_change,
             on_enter,
+            ..
         } = field;
         use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
         if !self.inputs.contains_key(key) {
@@ -122,7 +165,7 @@ impl DesktopWindow {
                 },
             );
         }
-        use gpui_kit::{Focusable as _, StatefulInteractiveElement as _};
+        use gpui_kit::Focusable as _;
         let NativeInput {
             state, mirrored, ..
         } = &self.inputs[key];
@@ -159,20 +202,7 @@ impl DesktopWindow {
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
-        )
-        .aria_label(label.unwrap_or_else(|| placeholder.into()));
-        let field = match masked {
-            true => field,
-            false => field.aria_value(state.read(cx).value().to_string()),
-        };
-        let field = match private {
-            true => crate::a11y::private(field),
-            false => field,
-        };
-        match masked {
-            true => field.role(gpui_kit::Role::PasswordInput),
-            false => field.role(gpui_kit::Role::TextInput),
-        }
-        .into_any_element()
+        );
+        (state.clone(), field)
     }
 }

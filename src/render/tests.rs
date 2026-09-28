@@ -96,8 +96,6 @@ fn text(key: &str, content: impl Into<String>) -> wire::Node {
         id: Some(named_id(key)),
         style: gpui_kit::StyleRefinement::default(),
         content: content.into(),
-        heading: None,
-        live: None,
     })
 }
 
@@ -125,6 +123,7 @@ fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
             label: label.into(),
             description: Some("Shown to members".into()),
             disabled,
+            ..Default::default()
         },
         id: wire::ElementIdWire::Name("i".into()),
         placeholder: "Type here".into(),
@@ -175,6 +174,7 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
 use crate::editor::wire::seed_editor_text;
 
 mod accessibility;
+mod dialog_focus;
 mod gpui_activation;
 mod gpui_clip;
 mod grip;

@@ -5,6 +5,34 @@
 //! gives each node its stable id. The rest are the shapes of answers:
 //! [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
+use gpui_kit::accesskit::{HasPopup, Invalid, Live};
+
+/// The actions the door offers, each with its word: a node supporting one
+/// is offered it, and `/act` performs each word (`actions::perform`).
+pub(super) const ACTIONS: [(Action, &str); 9] = [
+    (Action::Click, "press"),
+    (Action::Focus, "focus"),
+    (Action::SetValue, "set_value"),
+    (Action::Increment, "increment"),
+    (Action::Decrement, "decrement"),
+    (Action::Expand, "expand"),
+    (Action::Collapse, "collapse"),
+    (Action::ShowContextMenu, "context_menu"),
+    (Action::ScrollIntoView, "scroll_into_view"),
+];
+
+/// A composite whose rows the arrows pick: the focused row inside one is
+/// its active descendant.
+pub(super) const COMPOSITES: [&str; 8] = [
+    "Tree",
+    "ListBox",
+    "Menu",
+    "MenuBar",
+    "Grid",
+    "EditableComboBox",
+    "RadioGroup",
+    "TabList",
+];
 
 /// The element id a module view's host draws around the view's tree
 /// (`runtime.rs`): what follows it in a path is that module's.
@@ -26,6 +54,8 @@ pub(crate) struct AxNode {
     pub(crate) value: Option<String>,
     pub(crate) state: Vec<&'static str>,
     pub(crate) actions: Vec<&'static str>,
+    #[serde(flatten)]
+    pub(crate) more: Properties,
     /// `<window>` or `<window>/<module>`.
     #[serde(rename = "in")]
     pub(super) scope: String,
@@ -33,6 +63,84 @@ pub(crate) struct AxNode {
     pub(super) bounds: Option<[i32; 4]>,
     #[serde(skip)]
     pub(super) node: NodeId,
+    /// A node no element draws: one an element's `a11y_synthetic_children`
+    /// pushed (a RichText's clickable range). gpui gives such a node no
+    /// focus.
+    #[serde(skip)]
+    pub(super) synthetic: bool,
+}
+
+/// What a node says beyond its role, name, value, states and actions: each
+/// key only when the node has it.
+#[derive(Clone, Debug, Default, Serialize)]
+pub(crate) struct Properties {
+    /// `polite` or `assertive`: how a change inside it is announced.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) live: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) modal: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) level: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) placeholder: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) keyboard_shortcut: Option<String>,
+    /// The door id of the focused node inside this composite: gpui moves
+    /// the tree's focus to the row that claims it, and never sets the
+    /// AccessKit property.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) active_descendant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) position_in_set: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) size_of_set: Option<usize>,
+    /// `true`, `grammar` or `spelling`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) invalid: Option<&'static str>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) required: bool,
+    /// A field whose text is read and selected, never changed.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) read_only: bool,
+    /// `menu`, `listbox`, `tree`, `grid` or `dialog`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) has_popup: Option<&'static str>,
+    /// The door id of the nearest ancestor the snapshot has; none at its root.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) parent: Option<String>,
+}
+
+impl Properties {
+    fn of(node: &gpui_kit::accesskit::Node) -> Self {
+        Self {
+            live: node.live().and_then(|live| match live {
+                Live::Off => None,
+                Live::Polite => Some("polite"),
+                Live::Assertive => Some("assertive"),
+            }),
+            modal: node.is_modal(),
+            level: node.level(),
+            placeholder: node.placeholder().map(truncate),
+            keyboard_shortcut: node.keyboard_shortcut().map(str::to_owned),
+            position_in_set: node.position_in_set(),
+            size_of_set: node.size_of_set(),
+            invalid: node.invalid().map(|invalid| match invalid {
+                Invalid::True => "true",
+                Invalid::Grammar => "grammar",
+                Invalid::Spelling => "spelling",
+            }),
+            required: node.is_required(),
+            read_only: node.is_read_only(),
+            has_popup: node.has_popup().map(|popup| match popup {
+                HasPopup::Menu => "menu",
+                HasPopup::Listbox => "listbox",
+                HasPopup::Tree => "tree",
+                HasPopup::Grid => "grid",
+                HasPopup::Dialog => "dialog",
+            }),
+            ..Default::default()
+        }
+    }
 }
 
 /// The visible nodes of `window`'s last tree, in tree order; empty before
@@ -51,33 +159,73 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         f64::from(viewport.height) * scale,
     );
     // each node's id prefix (`<window>:` or `<window>:<module>/`), scope
-    // and path segments; the id itself is resolved once all are known
-    let mut out = Vec::new();
+    // and path segments, and its parent's index in `out`; the ids
+    // themselves are resolved once all are known. A synthetic child's own
+    // segment is its role, and after the first of that role under one
+    // node, its place among them: `Link`, `Link2`.
+    let mut out: Vec<AxNode> = Vec::new();
     let mut paths: Vec<(String, Vec<String>)> = Vec::new();
-    type Frame = (NodeId, String, String, Vec<String>);
+    let mut parents: Vec<Option<usize>> = Vec::new();
+    type Frame = (NodeId, String, String, Vec<String>, Option<usize>, String);
     let mut stack: Vec<Frame> = Vec::new();
     let root = update.tree.as_ref().map_or(NodeId(0), |tree| tree.root);
-    let push_children =
-        |stack: &mut Vec<Frame>, id: NodeId, prefix: &str, scope: &str, path: &[String]| {
-            if let Some(node) = nodes.get(&id) {
-                for child in node.children().iter().rev() {
-                    stack.push((*child, prefix.to_owned(), scope.to_owned(), path.to_vec()));
-                }
-            }
-        };
+    let push_children = |stack: &mut Vec<Frame>,
+                         id: NodeId,
+                         prefix: &str,
+                         scope: &str,
+                         path: &[String],
+                         parent: Option<usize>| {
+        let Some(node) = nodes.get(&id) else { return };
+        let mut seen: HashMap<Role, usize> = HashMap::new();
+        let segments: Vec<String> = node
+            .children()
+            .iter()
+            .map(
+                |child| match (window.a11y_element_id(*child), nodes.get(child)) {
+                    (None, Some(child)) => {
+                        let nth = seen.entry(child.role()).or_default();
+                        *nth += 1;
+                        match *nth {
+                            1 => format!("{:?}", child.role()),
+                            nth => format!("{:?}{nth}", child.role()),
+                        }
+                    }
+                    _ => String::new(),
+                },
+            )
+            .collect();
+        for (child, segment) in node.children().iter().zip(segments).rev() {
+            stack.push((
+                *child,
+                prefix.to_owned(),
+                scope.to_owned(),
+                path.to_vec(),
+                parent,
+                segment,
+            ));
+        }
+    };
     // Children are pushed in reverse so this is a deterministic pre-order
     // walk in paint order; the last visible modal is the nested/tree-topmost
     // boundary, just as the last painted sibling is visually on top.
     let modal = topmost_modal(root, &nodes);
     match modal {
-        Some(id) => stack.push((id, format!("{name}:"), name.to_owned(), Vec::new())),
-        None => push_children(&mut stack, root, &format!("{name}:"), name, &[]),
+        Some(id) => stack.push((
+            id,
+            format!("{name}:"),
+            name.to_owned(),
+            Vec::new(),
+            None,
+            String::new(),
+        )),
+        None => push_children(&mut stack, root, &format!("{name}:"), name, &[], None),
     }
-    while let Some((id, prefix, scope, mut path)) = stack.pop() {
+    while let Some((id, prefix, scope, mut path, parent, segment)) = stack.pop() {
         let Some(node) = nodes.get(&id) else { continue };
         if node.is_hidden() {
             continue;
         }
+        let synthetic = window.a11y_element_id(id).is_none();
         let (prefix, scope, path) = match window.a11y_element_id(id) {
             Some(element) => match element_path(element.iter()) {
                 (Some(module), path) => (
@@ -87,13 +235,12 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 ),
                 (None, path) => (format!("{name}:"), name.to_owned(), path),
             },
-            // a synthetic child: its element's path and its role
+            // a synthetic child: its element's path and its own segment
             None => {
-                path.push(format!("{:?}", node.role()));
+                path.push(segment);
                 (prefix, scope, path)
             }
         };
-        push_children(&mut stack, id, &prefix, &scope, &path);
         let rect = node.bounds();
         let shown = rect.is_none_or(|r| {
             r.width() > 0.
@@ -103,6 +250,10 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 && r.x0 < width
                 && r.y0 < height
         });
+        // a node the snapshot drops is no one's parent: its children's is
+        // the nearest one it keeps
+        let ancestor = if shown { Some(out.len()) } else { parent };
+        push_children(&mut stack, id, &prefix, &scope, &path, ancestor);
         if !shown {
             continue;
         }
@@ -142,8 +293,10 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         if node.is_disabled() {
             state.push("disabled");
         }
-        if node.is_selected() == Some(true) {
-            state.push("selected");
+        match node.is_selected() {
+            Some(true) => state.push("selected"),
+            Some(false) => state.push("unselected"),
+            None => {}
         }
         match node.toggled() {
             Some(Toggled::True) => state.push("checked"),
@@ -161,20 +314,17 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         }
         let mut actions = Vec::new();
         if !node.is_disabled() {
-            for (action, word) in [
-                (Action::Click, "press"),
-                (Action::Focus, "focus"),
-                (Action::SetValue, "set_value"),
-            ] {
+            for (action, word) in ACTIONS {
                 if node.supports_action(action) {
                     actions.push(word);
                 }
             }
-            if node.supports_action(Action::Focus) && is_text_input(role) {
+            if node.supports_action(Action::Focus) && is_text_input(role) && !node.is_read_only() {
                 actions.push("type");
             }
         }
         paths.push((prefix, path));
+        parents.push(parent);
         out.push(AxNode {
             id: String::new(),
             role: format!("{role:?}"),
@@ -183,16 +333,31 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             value,
             state,
             actions,
+            more: Properties::of(node),
             scope,
             bounds: bounds
                 .then_some(())
                 .and(rect)
                 .map(|r| [r.x0, r.y0, r.x1, r.y1].map(|edge| (edge / scale).round() as i32)),
             node: id,
+            synthetic,
         });
     }
     for (node, id) in out.iter_mut().zip(door_ids(&paths)) {
         node.id = id;
+    }
+    for (index, parent) in parents.iter().enumerate() {
+        out[index].more.parent = parent.map(|parent| out[parent].id.clone());
+        if out[index].state.contains(&"focused") {
+            let focused = out[index].id.clone();
+            let mut above = *parent;
+            while let Some(at) = above {
+                if COMPOSITES.contains(&out[at].role.as_str()) {
+                    out[at].more.active_descendant = Some(focused.clone());
+                }
+                above = parents[at];
+            }
+        }
     }
     out
 }
@@ -225,78 +390,6 @@ fn topmost_modal(
         stack.extend(node.children().iter().rev().copied());
     }
     modal
-}
-
-#[cfg(test)]
-mod modal_tests {
-    use super::*;
-
-    #[test]
-    fn a_modal_below_a_hidden_ancestor_does_not_replace_the_visible_modal() {
-        let (root_id, visible_id, hidden_id, hidden_modal_id) =
-            (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
-        let mut root = gpui_kit::accesskit::Node::new(Role::Window);
-        root.set_children([visible_id, hidden_id]);
-        let mut visible = gpui_kit::accesskit::Node::new(Role::Dialog);
-        visible.set_modal();
-        let mut hidden = gpui_kit::accesskit::Node::new(Role::GenericContainer);
-        hidden.set_hidden();
-        hidden.set_children([hidden_modal_id]);
-        let mut hidden_modal = gpui_kit::accesskit::Node::new(Role::Dialog);
-        hidden_modal.set_modal();
-        let nodes = HashMap::from([
-            (root_id, &root),
-            (visible_id, &visible),
-            (hidden_id, &hidden),
-            (hidden_modal_id, &hidden_modal),
-        ]);
-
-        assert_eq!(topmost_modal(root_id, &nodes), Some(visible_id));
-    }
-}
-
-#[cfg(test)]
-mod offer_tests {
-    use super::*;
-    use gpui_kit::test::TestWindowExt as _;
-    use gpui_kit::{
-        AccessibleAction, Context, InteractiveElement as _, IntoElement, Render,
-        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
-    };
-
-    /// A node that advertises an action `/act` has no arm for.
-    struct Scroller;
-
-    impl Render for Scroller {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .id("scroller")
-                .size(px(100.))
-                .role(Role::ScrollView)
-                .aria_label("Rows")
-                .on_a11y_action(AccessibleAction::ScrollIntoView, |_, _, _| {})
-        }
-    }
-
-    /// The door offers only what `/act` performs: a node advertising
-    /// ScrollIntoView is offered nothing for it.
-    #[gpui_kit::test]
-    fn the_door_offers_no_action_it_cannot_perform(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Scroller);
-        let mut native = VisualTestContext::from_window(window.into(), cx);
-        let actions = native.update(|window, cx| {
-            window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
-            snapshot("t", window, false)
-                .into_iter()
-                .find(|node| node.role == "ScrollView")
-                .expect("the scroller is in the tree")
-                .actions
-        });
-        assert!(actions.is_empty(), "{actions:?}");
-    }
 }
 
 /// Each `(prefix, path)`'s id: its last segment, widened by its ancestors'
@@ -371,6 +464,7 @@ fn is_text_input(role: Role) -> bool {
     matches!(
         role,
         Role::TextInput
+            | Role::EditableComboBox
             | Role::MultilineTextInput
             | Role::SearchInput
             | Role::EmailInput
@@ -490,4 +584,238 @@ pub(super) fn nearest(id: &str, nodes: &[AxNode]) -> Vec<String> {
         .take(5)
         .map(|(_, node)| node.id.clone())
         .collect()
+}
+
+#[cfg(test)]
+mod key_tests {
+    //! The keys a node carries beyond role, name, value, states and actions.
+    use super::*;
+    use crate::a11y::Patch;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+    };
+
+    /// A modal dialog holding a list whose one row has every key.
+    struct Keys;
+
+    impl Render for Keys {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let row = Patch {
+                live: Some(Live::Polite),
+                invalid: Some(Invalid::True),
+                required: true,
+                read_only: true,
+                has_popup: Some(HasPopup::Listbox),
+                ..Default::default()
+            }
+            .on(div()
+                .id("row")
+                .size(px(20.))
+                .focusable()
+                .tab_stop(true)
+                .role(Role::ListBoxOption)
+                .aria_label("One")
+                .aria_selected(false)
+                .aria_level(2)
+                .aria_placeholder("hint")
+                .aria_keyshortcuts("Ctrl+1")
+                .aria_position_in_set(1)
+                .aria_size_of_set(3));
+            let list = div()
+                .id("list")
+                .size(px(100.))
+                .role(Role::ListBox)
+                .aria_label("Rows")
+                .child(row);
+            crate::a11y::modal(
+                div()
+                    .id("dialog")
+                    .size(px(200.))
+                    .role(Role::Dialog)
+                    .aria_label("Pick")
+                    .child(list),
+            )
+        }
+    }
+
+    /// Every key the door adds, each from what the node carries; the parent
+    /// from the walk; the composite's active descendant from where focus is.
+    #[gpui_kit::test]
+    fn the_door_says_what_else_a_node_carries(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(300.), px(300.)), |_, _| Keys);
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        let nodes = native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.focus_next(cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            snapshot("t", window, false)
+        });
+        let json = |id: &str| {
+            let node = nodes.iter().find(|node| node.id == id).expect(id);
+            serde_json::to_value(node).unwrap()
+        };
+        assert_eq!(
+            json("t:dialog"),
+            serde_json::json!({
+                "id": "t:dialog", "role": "Dialog", "name": "Pick", "state": [], "actions": [],
+                "modal": true, "in": "t",
+            })
+        );
+        assert_eq!(
+            json("t:list"),
+            serde_json::json!({
+                "id": "t:list", "role": "ListBox", "name": "Rows", "state": [], "actions": [],
+                "active_descendant": "t:row", "parent": "t:dialog", "in": "t",
+            })
+        );
+        assert_eq!(
+            json("t:row"),
+            serde_json::json!({
+                "id": "t:row", "role": "ListBoxOption", "name": "One",
+                "state": ["focused", "unselected"], "actions": ["focus"],
+                "live": "polite", "level": 2, "placeholder": "hint",
+                "keyboard_shortcut": "Ctrl+1", "position_in_set": 1, "size_of_set": 3,
+                "invalid": "true", "required": true, "read_only": true, "has_popup": "listbox",
+                "parent": "t:list", "in": "t",
+            })
+        );
+    }
+}
+#[cfg(test)]
+mod modal_tests {
+    use super::*;
+
+    #[test]
+    fn a_modal_below_a_hidden_ancestor_does_not_replace_the_visible_modal() {
+        let (root_id, visible_id, hidden_id, hidden_modal_id) =
+            (NodeId(1), NodeId(2), NodeId(3), NodeId(4));
+        let mut root = gpui_kit::accesskit::Node::new(Role::Window);
+        root.set_children([visible_id, hidden_id]);
+        let mut visible = gpui_kit::accesskit::Node::new(Role::Dialog);
+        visible.set_modal();
+        let mut hidden = gpui_kit::accesskit::Node::new(Role::GenericContainer);
+        hidden.set_hidden();
+        hidden.set_children([hidden_modal_id]);
+        let mut hidden_modal = gpui_kit::accesskit::Node::new(Role::Dialog);
+        hidden_modal.set_modal();
+        let nodes = HashMap::from([
+            (root_id, &root),
+            (visible_id, &visible),
+            (hidden_id, &hidden),
+            (hidden_modal_id, &hidden_modal),
+        ]);
+
+        assert_eq!(topmost_modal(root_id, &nodes), Some(visible_id));
+    }
+}
+#[cfg(test)]
+mod offer_tests {
+    //! What the door offers a node, and that `/act` performs each offer.
+    use super::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        AccessibleAction, Context, InteractiveElement as _, IntoElement, Render,
+        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+    };
+
+    /// A node that advertises an action `/act` has no arm for.
+    struct Scroller;
+
+    impl Render for Scroller {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("scroller")
+                .size(px(100.))
+                .role(Role::ScrollView)
+                .aria_label("Rows")
+                .on_a11y_action(AccessibleAction::ScrollDown, |_, _, _| {})
+        }
+    }
+
+    /// The door offers only what `/act` performs: a node advertising
+    /// ScrollDown is offered nothing for it.
+    #[gpui_kit::test]
+    fn the_door_offers_no_action_it_cannot_perform(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Scroller);
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        let actions = native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+            snapshot("t", window, false)
+                .into_iter()
+                .find(|node| node.role == "ScrollView")
+                .expect("the scroller is in the tree")
+                .actions
+        });
+        assert!(actions.is_empty(), "{actions:?}");
+    }
+
+    /// Every action the door has a word for beyond press, focus and
+    /// set_value, and what each performed.
+    const MORE: [(AccessibleAction, &str); 6] = [
+        (AccessibleAction::Increment, "increment"),
+        (AccessibleAction::Decrement, "decrement"),
+        (AccessibleAction::Expand, "expand"),
+        (AccessibleAction::Collapse, "collapse"),
+        (AccessibleAction::ShowContextMenu, "context_menu"),
+        (AccessibleAction::ScrollIntoView, "scroll_into_view"),
+    ];
+
+    /// A node that handles every action in [`MORE`], writing down each one.
+    struct Handles(std::rc::Rc<std::cell::RefCell<Vec<AccessibleAction>>>);
+
+    impl Render for Handles {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            MORE.iter().fold(
+                div()
+                    .id("stepper")
+                    .size(px(100.))
+                    .role(Role::SpinButton)
+                    .aria_label("Count"),
+                |element, (action, _)| {
+                    let done = self.0.clone();
+                    let action = *action;
+                    element.on_a11y_action(action, move |_, _, _| done.borrow_mut().push(action))
+                },
+            )
+        }
+    }
+
+    /// A node that handles increment, decrement, expand, collapse, a context
+    /// menu or scrolling into view is offered each, only while it does, and
+    /// `/act` performs each on it (AX-116).
+    #[gpui_kit::test]
+    fn the_door_offers_and_performs_each_action_a_node_handles(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let done = std::rc::Rc::default();
+        let seen = std::rc::Rc::clone(&done);
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, _| Handles(seen));
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let node = snapshot("t", window, false)
+                .into_iter()
+                .find(|node| node.role == "SpinButton")
+                .expect("the stepper is in the tree");
+            let words: Vec<_> = MORE.iter().map(|(_, word)| *word).collect();
+            assert_eq!(node.actions, words);
+            for word in &words {
+                assert!(super::super::actions::perform_by_id(
+                    "t", window, cx, &node.id, word, ""
+                ));
+                window.render_frame(cx);
+            }
+        });
+        let performed: Vec<_> = MORE.iter().map(|(action, _)| *action).collect();
+        assert_eq!(*done.borrow(), performed);
+    }
 }

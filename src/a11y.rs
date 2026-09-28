@@ -1,11 +1,12 @@
 //! Accessibility helpers for the native screens and the tree presenter: role
 //! with name (`Control`), keyboard reach (`keyboard`, `focus_shown`), states
 //! set on the element's own node after a kit widget has built it (`aria`),
-//! what gpui has no setter for (`Patch`: `modal`, `live`, and the class
-//! names the AX test door masks, `private`, or leaves untruncated, `whole`),
-//! and one AT node for a kit text input (`text_field`).
+//! what gpui has no setter for (`Patch`: `modal`, `live`, the view's
+//! phase-2 aria, and the class names the AX test door masks, `private`, or
+//! leaves untruncated, `whole`), and one AT node for a kit text input
+//! (`text_field`), or for it and the list it picks from (`combo_box`).
 
-use gpui_kit::accesskit::Live;
+use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live};
 use gpui_kit::{
     AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement, Interactivity,
     IntoElement, MouseButton, ParentElement as _, Role, SharedString, Stateful,
@@ -60,14 +61,22 @@ pub fn aria<E: InteractiveElement>(mut element: E, set: impl FnOnce(Aria<'_>) ->
 /// own node from its one `a11y_synthetic_children` closure. An element has
 /// room for one closure — a second replaces the first — so everything one
 /// element needs goes into one `Patch`. gpui runs it only for an element
-/// with an id and a role. Phase 2 adds busy, has-popup, invalid and the
-/// rest here, beside these.
-#[derive(Clone, Copy, Default, PartialEq)]
+/// with an id and a role. The view's aria mapper (`guest_aria`) fills the
+/// fields a view sets directly.
+#[derive(Clone, Default, PartialEq)]
 pub struct Patch {
-    modal: bool,
-    live: Option<Live>,
-    class_name: Option<&'static str>,
-    fallback: bool,
+    pub(crate) modal: bool,
+    pub(crate) live: Option<Live>,
+    pub(crate) busy: bool,
+    pub(crate) required: bool,
+    pub(crate) read_only: bool,
+    pub(crate) invalid: Option<Invalid>,
+    pub(crate) has_popup: Option<HasPopup>,
+    pub(crate) current: Option<AriaCurrent>,
+    /// `(id, description)`, each requested as `Action::CustomAction`.
+    pub(crate) custom_actions: Vec<(i32, String)>,
+    pub(crate) class_name: Option<&'static str>,
+    pub(crate) fallback: bool,
 }
 
 impl Patch {
@@ -86,6 +95,35 @@ impl Patch {
             live: Some(live),
             ..self
         }
+    }
+
+    /// Its form refuses it empty.
+    pub fn required(self) -> Self {
+        Self {
+            required: true,
+            ..self
+        }
+    }
+
+    /// A field drawn with an error; its description says which.
+    pub fn invalid(self) -> Self {
+        Self {
+            invalid: Some(Invalid::True),
+            ..self
+        }
+    }
+
+    /// What its press opens: a menu, a dialog.
+    pub fn has_popup(self, popup: HasPopup) -> Self {
+        Self {
+            has_popup: Some(popup),
+            ..self
+        }
+    }
+
+    /// Work it started is in flight ("Creating…").
+    pub fn busy(self) -> Self {
+        Self { busy: true, ..self }
     }
 
     /// One of the door's classes, [`AX_PRIVATE`] or [`AX_WHOLE`].
@@ -120,6 +158,37 @@ impl Patch {
                 }
                 if let Some(live) = self.live {
                     node.set_live(live);
+                }
+                if self.busy {
+                    node.set_busy();
+                }
+                if self.required {
+                    node.set_required();
+                }
+                if self.read_only {
+                    // its text is not changed, so it offers no change
+                    node.set_read_only();
+                    node.remove_action(gpui_kit::accesskit::Action::SetValue);
+                }
+                if let Some(invalid) = self.invalid {
+                    node.set_invalid(invalid);
+                }
+                if let Some(popup) = self.has_popup {
+                    node.set_has_popup(popup);
+                }
+                if let Some(current) = self.current {
+                    node.set_aria_current(current);
+                }
+                if !self.custom_actions.is_empty() {
+                    node.set_custom_actions(
+                        self.custom_actions
+                            .into_iter()
+                            .map(|(id, description)| CustomAction {
+                                id,
+                                description: description.into(),
+                            })
+                            .collect::<Vec<_>>(),
+                    );
                 }
                 if let Some(class_name) = self.class_name {
                     node.set_class_name(class_name);
@@ -176,17 +245,45 @@ pub fn text_field(
     set_value: impl Fn(String, &mut Window, &mut App) + 'static,
     field: impl IntoElement,
 ) -> Stateful<Div> {
-    div()
-        .id(id)
-        .w_full()
-        .track_focus(focus)
-        .focus(|style| style.shadow(vec![ring()]))
-        .on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
-            if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
-                set_value(value.to_string(), window, cx);
-            }
-        })
-        .child(field)
+    typed(
+        div()
+            .id(id)
+            .w_full()
+            .track_focus(focus)
+            .focus(|style| style.shadow(vec![ring()])),
+        set_value,
+    )
+    .child(field)
+}
+
+/// An editable combo box as assistive technology meets it (a field and the
+/// list it picks from): one node, `id`, around the field and its list, that
+/// holds the field's `focus`, so the list's picked row can claim to be its
+/// active descendant — gpui honours the claim only under the focused node.
+/// The field inside is a [`text_field`] with no role: it keeps the ring and
+/// Tab, and has no node of its own. The caller sets the name, the value and
+/// whether the list shows (`aria_expanded`).
+pub fn combo_box(
+    id: impl Into<ElementId>,
+    focus: &FocusHandle,
+    set_value: impl Fn(String, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    typed(
+        div().id(id).role(Role::EditableComboBox).track_focus(focus),
+        set_value,
+    )
+}
+
+/// `element` hands SetValue's text to `set_value`.
+fn typed(
+    element: Stateful<Div>,
+    set_value: impl Fn(String, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    element.on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
+        if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
+            set_value(value.to_string(), window, cx);
+        }
+    })
 }
 
 /// The class of a node whose value is private, and its name too unless it

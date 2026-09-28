@@ -42,6 +42,7 @@ impl DesktopWindow {
                 on_enter: || Message::RecoverSubmit,
                 label: Some("Recovery key".into()),
                 private: true,
+                error: (!state.unlock_error.is_empty()).then(|| state.unlock_error.clone()),
                 size: 15.,
             },
             window,
@@ -78,7 +79,7 @@ impl DesktopWindow {
                 },
                 Kind::Primary,
                 || Message::RecoverSubmit,
-                state.unlock_busy,
+                Press::busy(state.unlock_busy),
                 &ink,
             )]));
         self.launcher(
@@ -240,6 +241,7 @@ impl DesktopWindow {
                         on_enter: || Message::PhraseCheckSubmit,
                         label: Some(format!("Word {}", nth + 1).into()),
                         private: true,
+                        error: None,
                         size: 15.,
                     },
                     window,

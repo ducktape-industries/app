@@ -24,6 +24,7 @@ fn variable_list_node(
         scroll_handler: Some(42),
         range_start,
         style,
+        interactivity: Default::default(),
         children: rows,
     }
 }

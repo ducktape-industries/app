@@ -16,6 +16,7 @@ fn split() -> wire::Node {
             wire::Node::ResizeHandle {
                 id: named_id("divider"),
                 style: Default::default(),
+                interactivity: Default::default(),
                 on_press: None,
                 on_release: None,
                 on_drag: Some(5),

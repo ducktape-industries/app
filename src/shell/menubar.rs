@@ -100,10 +100,20 @@ impl DesktopWindow {
                 )
             })
         });
-        let item = |id: &'static str, name: SharedString, open: bool, message: fn() -> Message| {
+        // `popup`: what its press opens, which it says (AX-113)
+        let item = |id: &'static str,
+                    name: SharedString,
+                    open: bool,
+                    popup: Option<accesskit::HasPopup>,
+                    message: fn() -> Message| {
             let model = self.model.clone();
             let surface = ink.surface;
-            crate::a11y::keyboard(
+            let patch = crate::a11y::Patch::default();
+            let patch = match popup {
+                Some(popup) => patch.has_popup(popup),
+                None => patch,
+            };
+            patch.on(crate::a11y::keyboard(
                 sans(400, 13.)
                     .id(id)
                     .control(Role::Button, name)
@@ -121,12 +131,14 @@ impl DesktopWindow {
                         cx.stop_propagation();
                         model.update(cx, |model, cx| model.dispatch(message(), cx));
                     }),
-            )
+            ))
         };
+        use accesskit::HasPopup::{Dialog, Menu};
         let network = item(
             "network-switcher",
             SharedString::from(format!("Network: {}", state.network)),
             state.overlay == Some(Overlay::Network),
+            Some(Menu),
             || Message::ToggleNetworkMenu,
         )
         .aria_expanded(state.overlay == Some(Overlay::Network))
@@ -135,9 +147,10 @@ impl DesktopWindow {
         .child(sans(500, 13.).child(state.network.clone()))
         .child(div().text_color(ink.muted).child("⌄"));
         let chord = chord_label("K");
-        let search = item("rail-search", "Search".into(), false, || {
+        let search = item("rail-search", "Search".into(), false, Some(Dialog), || {
             Message::OpenSpotlight
         })
+        .aria_keyshortcuts(chord.clone())
         .when(!narrow, |item| {
             item.child(div().text_color(ink.muted).child("Search"))
         })
@@ -159,6 +172,7 @@ impl DesktopWindow {
                 count => format!("Notifications, {count} unread"),
             }),
             bell_open,
+            Some(Dialog),
             || Message::TogglePopover(Popover::Notifications),
         )
         .aria_expanded(bell_open)
@@ -207,9 +221,13 @@ impl DesktopWindow {
             (false, false) => (true, "Node: in sync"),
         };
         let node_open = state.overlay == Some(Overlay::Menu(Popover::Node));
-        let node = item("rail-connection", said.into(), node_open, || {
-            Message::TogglePopover(Popover::Node)
-        })
+        let node = item(
+            "rail-connection",
+            said.into(),
+            node_open,
+            Some(Dialog),
+            || Message::TogglePopover(Popover::Node),
+        )
         .aria_description(format!("Block {}", state.height))
         .aria_expanded(node_open)
         .relative()
@@ -219,13 +237,15 @@ impl DesktopWindow {
         let unlocked = !state.signer_key.is_empty();
         let account_open = state.overlay == Some(Overlay::Menu(Popover::Account));
         let who = match (&state.account, unlocked) {
-            (_, false) => item("sign-in", "Sign in".into(), false, || Message::SignIn)
+            (_, false) => item("sign-in", "Sign in".into(), false, None, || Message::SignIn)
                 .child(div().underline().child("Sign in")),
             // named by what it says
-            (Some(None), true) => item("rail-account", "Create account".into(), false, || {
-                Message::ShowCreateAccount
-            })
-            .child(div().underline().child("Create account")),
+            (Some(None), true) => {
+                item("rail-account", "Create account".into(), false, None, || {
+                    Message::ShowCreateAccount
+                })
+                .child(div().underline().child("Create account"))
+            }
             (account, true) => {
                 let name = match account {
                     Some(Some((_, name))) => name.clone(),
@@ -239,6 +259,7 @@ impl DesktopWindow {
                     "rail-account",
                     SharedString::from(format!("Account: {name}")),
                     account_open,
+                    Some(Dialog),
                     || Message::TogglePopover(Popover::Account),
                 )
                 .aria_expanded(account_open)
@@ -249,9 +270,13 @@ impl DesktopWindow {
         };
         // Settings are the app's, not the account's: their own spot at the
         // edge.
-        let gear = item("settings", "Ducktape settings".into(), false, || {
-            Message::OpenSettings
-        })
+        let gear = item(
+            "settings",
+            "Ducktape settings".into(),
+            false,
+            Some(Dialog),
+            || Message::OpenSettings,
+        )
         .px(px(8.))
         .child(
             gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Settings)
