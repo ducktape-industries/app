@@ -23,6 +23,7 @@ fn an_input_is_named_by_its_label_and_a_secure_one_never_reports_its_value() {
             role: Some(gpui_kit::Role::TextInput),
             name: Some("Room name".into()),
             description: Some("Shown to members".into()),
+            placeholder: Some("Type here".into()),
             value: Some("hunter2".into()),
             ..Default::default()
         }
@@ -59,6 +60,7 @@ fn an_editor_is_named_by_its_label_and_described_by_its_placeholder_without_one(
         Accessible {
             role: Some(gpui_kit::Role::MultilineTextInput),
             description: Some("Write something".into()),
+            placeholder: Some("Write something".into()),
             ..Default::default()
         }
     );
@@ -235,4 +237,18 @@ fn a_view_text_carries_its_words_as_its_value_through_the_door(cx: &mut gpui_kit
         .find(|node| node["role"] == "Label")
         .expect("the text is in the tree");
     assert_eq!(label["value"], "Members");
+}
+
+/// A field's placeholder is its placeholder, not its name: the door
+/// reads it back under its own key (AX-111).
+#[gpui_kit::test]
+fn a_fields_placeholder_reaches_the_door(cx: &mut gpui_kit::TestAppContext) {
+    let root = axis_container("root", Axis::Column, [input("Room name", false, false)]);
+    let nodes = door(cx, root);
+    let field = nodes
+        .iter()
+        .find(|node| node["role"] == "TextInput")
+        .expect("the field is in the tree");
+    assert_eq!(field["name"], "Room name");
+    assert_eq!(field["placeholder"], "Type here");
 }

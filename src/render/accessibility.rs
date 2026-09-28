@@ -14,6 +14,8 @@ pub(crate) struct Accessible {
     pub role: Option<gpui_kit::Role>,
     pub name: Option<String>,
     pub description: Option<String>,
+    /// What an empty field shows in place of its text.
+    pub placeholder: Option<String>,
     /// Text a field holds, or a text's own words. Never a secure field's.
     pub value: Option<String>,
     /// A heading's level, 1 to 6.
@@ -82,6 +84,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
         Node::Input {
             options,
             value,
+            placeholder,
             secure,
             ..
         } => Accessible {
@@ -91,6 +94,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             }),
             name: named(&options.label),
             description: options.description.as_deref().and_then(named),
+            placeholder: named(placeholder),
             value: (!secure).then(|| value.clone()),
             disabled: options.disabled,
             ..Default::default()
@@ -106,6 +110,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             let field = labelled(Role::MultilineTextInput, label);
             Accessible {
                 description: field.name.is_none().then(|| named(placeholder)).flatten(),
+                placeholder: named(placeholder),
                 disabled: !editable,
                 ..field
             }
@@ -153,6 +158,7 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         role,
         name,
         description,
+        placeholder,
         value,
         level,
         // a view says `Aria.live` on a roled container (`guest_aria`)
@@ -168,6 +174,9 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         }
         if let Some(description) = description {
             node = node.aria_description(description);
+        }
+        if let Some(placeholder) = placeholder {
+            node = node.aria_placeholder(placeholder);
         }
         if let Some(value) = value {
             node = node.aria_value(value);
