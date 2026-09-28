@@ -31,12 +31,13 @@ pub(super) fn native_root(root: wire::Node) -> wire::Node {
 
 impl NativeModuleView {
     /// One GPUI frame of the seat: the guest is stepped and its tree put
-    /// under this entity, or the standin to draw instead comes back.
+    /// under this entity, with the width it is laid out from; or the
+    /// standin to draw instead comes back.
     pub(super) fn frame(
         &mut self,
         window: &mut gpui_kit::Window,
         cx: &mut gpui_kit::Context<Self>,
-    ) -> Result<(), Standin> {
+    ) -> Result<f32, Standin> {
         let mounted = self.seat.clone();
         let mut locked = mounted.lock().expect("module view lock");
         locked.shown = Some(Instant::now());
@@ -73,7 +74,7 @@ impl NativeModuleView {
         for intent in std::mem::take(&mut guest.intents) {
             cx.emit(intent);
         }
-        Ok(())
+        Ok(laid_out_from(guest))
     }
 
     /// A timer for the guest's next `clock.ticks`, re-armed when it moves;
@@ -115,6 +116,9 @@ impl NativeModuleView {
             content.update(cx, |tree, cx| tree.replace(root, cx));
             return;
         }
+        // a first view here, or a new deployment's: its minimum may be
+        // new, so the desk fits its windows to it
+        cx.emit(Intent::Seated);
         self.generation = generation;
         self.alive = Some(guest.alive.clone());
         let mut changes = guest.replies.changes();

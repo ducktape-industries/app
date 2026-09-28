@@ -13,13 +13,8 @@ impl DesktopWindow {
         at: gpui_kit::Point<gpui_kit::Pixels>,
         cx: &gpui_kit::App,
     ) {
-        if let Some(start) = self.layout(cx).panes.get(index).and_then(|pane| pane.frame) {
-            self.drag = Some(Drag {
-                index,
-                sides,
-                from: (at.x.into(), at.y.into()),
-                start,
-            });
+        if let Some(drag) = Drag::of(&self.layout(cx), index, sides, (at.x.into(), at.y.into())) {
+            self.drag = Some(drag);
         }
     }
 
@@ -171,11 +166,30 @@ pub(super) struct Drag {
     sides: Sides,
     from: (f32, f32),
     start: layout::Frame,
+    /// The window's [`layout::Pane::min_width`].
+    min_w: f32,
 }
 
 impl Drag {
-    /// The frame with the pointer at `to`. A side held past the smallest
-    /// window stops; the side across from it stays put.
+    /// Window `index` of `layout` held at `from`, once it has a frame. Its
+    /// edges stop at the pane's floor, or at the desk's width where the
+    /// desk is narrower: the frame is capped there, and an edge held past
+    /// it would carry the whole window.
+    fn of(layout: &layout::Layout, index: usize, sides: Sides, from: (f32, f32)) -> Option<Self> {
+        let pane = layout.panes.get(index)?;
+        let desk = layout.desk().0.max(layout::MIN_WIDTH);
+        Some(Self {
+            index,
+            sides,
+            from,
+            start: pane.frame?,
+            min_w: pane.min_width().min(desk),
+        })
+    }
+
+    /// The frame with the pointer at `to`. A side held past the window's
+    /// narrowest (or the smallest window's height) stops; the side across
+    /// from it stays put.
     fn frame(&self, to: (f32, f32)) -> layout::Frame {
         let (dx, dy) = (to.0 - self.from.0, to.1 - self.from.1);
         let start = self.start;
@@ -191,13 +205,13 @@ impl Drag {
             frame.y += dy;
         }
         if right {
-            frame.w = (start.w + dx).max(layout::MIN_WIDTH);
+            frame.w = (start.w + dx).max(self.min_w);
         }
         if bottom {
             frame.h = (start.h + dy).max(layout::MIN_HEIGHT);
         }
         if left {
-            frame.w = (start.w - dx).max(layout::MIN_WIDTH);
+            frame.w = (start.w - dx).max(self.min_w);
             frame.x = start.x + start.w - frame.w;
         }
         if top {
@@ -299,6 +313,7 @@ mod drag_tests {
             sides,
             from: (0., 0.),
             start,
+            min_w: MIN_WIDTH,
         };
         let moved = drag(Sides::NONE).frame((30., -20.));
         assert_eq!(
@@ -336,5 +351,39 @@ mod drag_tests {
         })
         .frame((0., -60.));
         assert_eq!((top.y, top.h), (40., 460.));
+        // a window holding a view laid out from 680 stops at 682
+        let wide = Frame { w: 900., ..start };
+        let left = Drag {
+            start: wide,
+            min_w: 682.,
+            ..drag(Sides {
+                left: true,
+                ..Sides::NONE
+            })
+        }
+        .frame((1000., 0.));
+        assert_eq!((left.w, left.x + left.w), (682., 1000.));
+    }
+
+    /// On a desk narrower than the view the window is the desk: its left
+    /// edge held inwards stays put rather than carrying the window.
+    #[test]
+    fn an_edge_on_a_desk_narrower_than_the_view_stays_put() {
+        crate::runtime::seat_for_test("drag-cramped-view", 680);
+        let desk = (600., 400.);
+        let mut layout = Layout::default();
+        layout.split("drag-cramped-view");
+        layout.measure(desk);
+        layout.settle();
+        let start = layout.panes[0].frame.unwrap();
+        assert_eq!((start.x, start.w), (0., 600.));
+        let left = Sides {
+            left: true,
+            ..Sides::NONE
+        };
+        let drag = Drag::of(&layout, 0, left, (0., 0.)).unwrap();
+        let held = drag.frame((50., 0.));
+        assert!(layout.set_frame(0, held, desk));
+        assert_eq!(layout.panes[0].frame, Some(start));
     }
 }

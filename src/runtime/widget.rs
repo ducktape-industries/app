@@ -5,7 +5,6 @@ mod standin;
 #[cfg(test)]
 mod tests;
 
-use present::native_root;
 use standin::Standin;
 
 // ---------- the widget ----------
@@ -169,8 +168,11 @@ impl NativeModuleView {
     }
 }
 
-/// The narrowest a view is laid out: a window narrower scrolls it sideways.
-const MIN_WIDTH: f32 = 480.;
+/// The narrowest a view is laid out, its manifest's `MIN_WINDOW_WIDTH`: a
+/// window narrower scrolls it sideways.
+fn laid_out_from(guest: &Guest) -> f32 {
+    guest.min_width as f32
+}
 
 impl gpui_kit::Render for NativeModuleView {
     fn render(
@@ -185,7 +187,7 @@ impl gpui_kit::Render for NativeModuleView {
         self.bind_observers(window, cx);
         self.drawn = true;
         match self.frame(window, cx) {
-            Ok(()) => match &self.content {
+            Ok(min_width) => match &self.content {
                 Some(content) => {
                     let content = content.clone();
                     // GPUI rebuilds the accessibility tree from prepaint on
@@ -207,7 +209,7 @@ impl gpui_kit::Render for NativeModuleView {
                         format!("view{}", cx.entity().entity_id().as_u64()),
                     );
                     // A view owns its own inset: a split pane runs to the edges.
-                    // Narrower than `MIN_WIDTH`, it scrolls sideways rather
+                    // Narrower than its minimum, it scrolls sideways rather
                     // than being squeezed and cut at the window's edge. The
                     // layer occludes: a guest under another one is never
                     // hovered, as if each were its own window.
@@ -220,7 +222,7 @@ impl gpui_kit::Render for NativeModuleView {
                         .child(
                             gpui_kit::div()
                                 .size_full()
-                                .min_w(gpui_kit::px(MIN_WIDTH))
+                                .min_w(gpui_kit::px(min_width))
                                 .occlude()
                                 .child(guest),
                         )

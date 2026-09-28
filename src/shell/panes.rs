@@ -39,14 +39,21 @@ impl DesktopWindow {
     ) {
         let message = match message {
             // it opens where it sat on the desk
-            PaneMessage::PopOut { index, at: None } => PaneMessage::PopOut {
-                index,
-                at: Some(super::windows::unseated(
-                    window.bounds(),
-                    self.layout(cx).panes.get(index).and_then(|pane| pane.frame),
-                    window.display(cx).map(|display| display.bounds()),
-                )),
-            },
+            PaneMessage::PopOut { index, at: None } => {
+                let layout = self.layout(cx);
+                let pane = layout.panes.get(index);
+                PaneMessage::PopOut {
+                    index,
+                    at: Some(super::windows::unseated(
+                        window.bounds(),
+                        pane.and_then(|pane| pane.frame),
+                        window.display(cx).map(|display| display.bounds()),
+                        pane.map_or(super::windows::POPOUT_MIN, |pane| {
+                            super::windows::popout_min(pane.module)
+                        }),
+                    )),
+                }
+            }
             message => message,
         };
         let key = self.key;

@@ -83,7 +83,8 @@ fn an_empty_window_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut Te
     assert_eq!(combo["active_descendant"], "shell:empty/combotest-beta");
 }
 
-/// Two empty windows side by side: only the one with the keys is a combo
+/// Two empty windows, the second cascaded over the first (⌘N twice; the
+/// desk has no halving): only the one with the keys is a combo
 /// box whose rows are options; the other's rows and switch are drawn for
 /// the pointer, whose press gives that window the keys first, and offer
 /// assistive technology no press the keyboard cannot reach (AX-012).
@@ -102,7 +103,7 @@ fn an_empty_window_without_the_keys_passes_the_audit(cx: &mut TestAppContext) {
     });
     native.update(|window, cx| {
         draw(window, cx);
-        window.dispatch_action(Box::new(keys::Halve), cx);
+        window.dispatch_action(Box::new(keys::NewWindow), cx);
     });
     let nodes = native.update(draw);
     let lists: Vec<&serde_json::Value> = nodes
