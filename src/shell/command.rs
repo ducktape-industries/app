@@ -139,7 +139,7 @@ impl DesktopWindow {
                         .into_any_element(),
                 }),
             )
-            .child(self.mode_switch(mode, &ink, cx));
+            .child(self.mode_switch(mode, focused, &ink, cx));
         let modules: Vec<&'static str> = rows.iter().map(|row| row.module).collect();
         let list = rows.iter().enumerate().map(|(nth, row)| {
             let module = row.module;
@@ -151,10 +151,15 @@ impl DesktopWindow {
             };
             sans(400, 15.)
                 .id(SharedString::from(format!("empty/{module}")))
-                .control(Role::ListBoxOption, SharedString::from(name.clone()))
-                // the picked row is the one the field's ↑↓ move
-                .aria_selected(picked)
-                .when(picked, |row| row.aria_active_descendant())
+                // an option only while its window has the keys: before, a
+                // press on it gives the window the keys first, and the
+                // keyboard reaches it by moving to the window
+                .when(focused, |row| {
+                    row.control(Role::ListBoxOption, SharedString::from(name.clone()))
+                        // the picked row is the one the field's ↑↓ move
+                        .aria_selected(picked)
+                        .when(picked, |row| row.aria_active_descendant())
+                })
                 .flex()
                 .items_baseline()
                 .gap(px(12.))
@@ -192,7 +197,7 @@ impl DesktopWindow {
         .map(|hint| div().whitespace_nowrap().child(hint));
         let rows = div()
             .id("empty-window/rows")
-            .control(Role::ListBox, "Programs")
+            .when(focused, |rows| rows.control(Role::ListBox, "Programs"))
             .flex_1()
             .min_h_0()
             .overflow_y_scroll()
@@ -326,16 +331,20 @@ impl DesktopWindow {
     fn mode_switch(
         &self,
         mode: Mode,
+        focused: bool,
         ink: &super::ink::Ink,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use super::ink::*;
         use gpui_kit::*;
+        // controls only while the window has the keys, as the rows are
         let side = |id: &'static str, name: &'static str, on: bool| {
             sans(500, 13.)
                 .id(id)
-                .control(Role::Button, SharedString::from(name))
-                .aria_toggled(on.into())
+                .when(focused, |side| {
+                    side.control(Role::Button, SharedString::from(name))
+                        .aria_toggled(on.into())
+                })
                 .h_full()
                 .px(px(10.))
                 .flex()
@@ -365,7 +374,7 @@ impl DesktopWindow {
             .border_1()
             .border_color(ink.ink)
             .child(module)
-            .child(chat.aria_disabled(true))
+            .child(chat.when(focused, |chat| chat.aria_disabled(true)))
             .into_any_element()
     }
 }

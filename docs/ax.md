@@ -56,7 +56,7 @@ Per-node rules apply to every node of every snapshot of the screen state.
 | AX-009 | A node with a toggle role has exactly one of `checked`, `unchecked`, `mixed` in `state`. | error | both |
 | AX-010 | A node with `role == ComboBox` has exactly one of `expanded`, `collapsed` in `state`. | error | both |
 | AX-011 | A node with a control role whose `actions` lack `press` has `disabled` in `state`. | error | both |
-| AX-012 | A node whose `actions` contain `press` also offers `focus`, or its `parent` chain reaches a composite (`Tree`, `ListBox`, `Menu`, `MenuBar`, `Grid`, `EditableComboBox`, `RadioGroup`, `TabList`): a composite's rows are reached by the arrows. | error | both |
+| AX-012 | A node whose `actions` contain `press` also offers `focus`, or its `parent` chain reaches a composite (`Tree`, `ListBox`, `Menu`, `MenuBar`, `Grid`, `EditableComboBox`, `RadioGroup`, `TabList`) that offers `focus`: a composite's rows are reached by the arrows once the keys are in it. | error | both |
 | AX-013 | A node with `role` `Status` or `Alert` is named. | error | both |
 | AX-014 | A node with `role` `Heading` or `Label` is named. | error | both |
 | AX-015 | No `id` ends in `~` followed by digits (two elements resolved to one path; `src/ax/tree.rs` `door_ids` appends the suffix). | error | both |
@@ -74,7 +74,7 @@ Notes an implementer needs:
 
 - AX-014 is vacuous for view text until the door names a `Label` the way the OS adapters do (section 3.3). Land that door change in the same PR as the rule, or the rule passes while Orca and NVDA hear nothing.
 - AX-011 is the converse of what the door does: `snapshot` strips every action from a disabled node, so `disabled ⇒ no press` always holds; the rule catches `no press ∧ not disabled`.
-- AX-012's exemption reads `parent` only: any composite above excuses a press-only row, whether or not the composite holds focus (contract §5). Spotlight and the empty window are each an `EditableComboBox` (the field) holding a `ListBox` whose picked row is `selected` and the `active_descendant` (section 6, Q4, taken). A stricter reading — the composite must hold focus or name an active row — is a one-line change in `src/ax/audit/node.rs`; the SDK's `view_wire::audit` (`Unreachable`) asks for a *focusable* composite ancestor, so the two audits differ on a press-only row under an unfocusable composite.
+- AX-012's exemption is the SDK's: `view_wire::audit` (`Unreachable`) excuses a press-only row under a composite that takes focus and hears a key; the door sees the focus and cannot see the key (a binding is never linked to a node, §1.1), so it asks the composite to offer `focus`. Spotlight and the empty window are each an `EditableComboBox` (the field) holding a `ListBox` whose picked row is `selected` and the `active_descendant` (section 6, Q4, taken). An empty window without the keys draws its rows and mode switch for the pointer only (a press on a window gives it the keys first); they become options and controls when the window takes the keys, which the keyboard does by moving between windows.
 - AX-018 is shell-only because a view's "screen" is whatever a test or mission reached; per-view heading policy is the module's, and the SDK gate (phase 2) is where it belongs.
 - AX-022 is warn because the guest editor keeps Tab for indentation on purpose (`src/editor/text.rs`); WCAG allows a trap the user is told how to leave. The open question (section 6) is whether the shell wants that.
 - AX-024 is shell-only because a view dialog's close key is the view's own binding; the shell binds `escape` → `CloseOverlay` in `src/shell/keys.rs` under the overlay context.
@@ -321,7 +321,7 @@ The whole table, phase 2 included, is `src/ax/audit/table.rs` `RULES`; `GET /aud
   {"id":"AX-009","predicate":"A node with a toggle role has exactly one of `checked`, `unchecked`, `mixed` in `state`.","severity":"error","scope":"both"},
   {"id":"AX-010","predicate":"A node with `role == ComboBox` has exactly one of `expanded`, `collapsed` in `state`.","severity":"error","scope":"both"},
   {"id":"AX-011","predicate":"A node with a control role whose `actions` lack `press` has `disabled` in `state`.","severity":"error","scope":"both"},
-  {"id":"AX-012","predicate":"A node whose `actions` contain `press` also offers `focus`, or its `parent` chain reaches a composite role.","severity":"error","scope":"both"},
+  {"id":"AX-012","predicate":"A node whose `actions` contain `press` also offers `focus`, or its `parent` chain reaches a composite role that offers `focus`.","severity":"error","scope":"both"},
   {"id":"AX-013","predicate":"A node with `role` `Status` or `Alert` is named.","severity":"error","scope":"both"},
   {"id":"AX-014","predicate":"A node with `role` `Heading` or `Label` is named.","severity":"error","scope":"both"},
   {"id":"AX-015","predicate":"No `id` ends in `~` followed by digits (two elements resolved to one path; `src/ax/tree.rs` `door_ids` appends the suffix).","severity":"error","scope":"both"},

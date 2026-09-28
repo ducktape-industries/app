@@ -71,7 +71,11 @@ pub(crate) const RULES: [Rule; 42] = [
         "A ComboBox has exactly one of expanded, collapsed.",
     ),
     rule("AX-011", Error, "A control role without press is disabled."),
-    rule("AX-012", Error, "A node with press also offers focus."),
+    rule(
+        "AX-012",
+        Error,
+        "A node with press also offers focus, or sits in a composite that does.",
+    ),
     rule("AX-013", Error, "A Status or Alert is named."),
     rule("AX-014", Error, "A Heading or Label is named."),
     rule("AX-015", Error, "No id ends in ~ followed by digits."),

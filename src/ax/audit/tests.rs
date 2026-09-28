@@ -173,7 +173,8 @@ fn ax_012_press_comes_with_focus() {
 }
 
 /// A composite's rows are reached by the arrows from the composite: a row
-/// with a press and no focus passes under one the keys can be in.
+/// with a press and no focus passes under one that takes focus, as
+/// view_wire::audit's Unreachable reads it, and not under one that does not.
 #[test]
 fn ax_012_a_composites_rows_are_reached_through_it() {
     let row = |id, parent: &str| {
@@ -196,7 +197,7 @@ fn ax_012_a_composites_rows_are_reached_through_it() {
         node("group", "Group", "Results"),
         row("c", "group"),
     ]);
-    assert_eq!(fails(&report, "AX-012"), ["w:c"]);
+    assert_eq!(fails(&report, "AX-012"), ["w:b", "w:c"]);
 }
 
 #[test]

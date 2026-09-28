@@ -64,16 +64,18 @@ pub fn listed_view(module: &str) -> bool {
     listed_code(module).is_some()
 }
 
+/// Lists `module` once, however many tests ask: two rows of one module
+/// would be one element id twice.
 #[cfg(test)]
 pub(crate) fn list_for_test(module: &str) {
-    listed()
-        .lock()
-        .unwrap()
-        .push(crate::backend::views::Program {
+    let mut listed = listed().lock().unwrap();
+    if listed.iter().all(|program| program.name != module) {
+        listed.push(crate::backend::views::Program {
             name: module.into(),
             code: abi::BlobId::Sha256([0; 32]),
             bare: false,
         });
+    }
 }
 
 /// A code id as the 32-byte hash a seat records: sha256 as is, sha1 padded.

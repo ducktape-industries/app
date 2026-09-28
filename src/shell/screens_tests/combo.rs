@@ -82,3 +82,37 @@ fn an_empty_window_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut Te
     let combo = find(&nodes, "EditableComboBox", "Open a program");
     assert_eq!(combo["active_descendant"], "shell:empty/combotest-beta");
 }
+
+/// Two empty windows side by side: only the one with the keys is a combo
+/// box whose rows are options; the other's rows and switch are drawn for
+/// the pointer, whose press gives that window the keys first, and offer
+/// assistive technology no press the keyboard cannot reach (AX-012).
+#[gpui_kit::test]
+fn an_empty_window_without_the_keys_passes_the_audit(cx: &mut TestAppContext) {
+    crate::runtime::list_for_test("combotest-alpha");
+    crate::runtime::list_for_test("combotest-beta");
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let (_view, mut native) = open(gate::desk(), cx);
+    native.update(|window, cx| {
+        draw(window, cx);
+        window.dispatch_action(Box::new(keys::NewWindow), cx);
+    });
+    native.update(|window, cx| {
+        draw(window, cx);
+        window.dispatch_action(Box::new(keys::Halve), cx);
+    });
+    let nodes = native.update(draw);
+    let lists: Vec<&serde_json::Value> = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["role"] == "ListBox")
+        .collect();
+    let combo = find(&nodes, "EditableComboBox", "Open a program");
+    assert_eq!(lists.len(), 1, "one window's rows are options: {lists:?}");
+    assert_eq!(lists[0]["parent"], combo["id"]);
+    gate::passes(&mut native, "empty-window-unfocused", false);
+}
