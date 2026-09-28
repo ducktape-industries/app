@@ -340,7 +340,7 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   recipes the shell diffs.
 - **Geometry.** `ui/layout.rs` is pure: `Layout` per window holds `Pane`s
   (frame, `instance`, `module`, z), focus and the desk size; operations
-  (`halve`, `split`, `cycle`, fill/restore, place, reclaim, measure) are
+  (`split`, `cycle`, fill/restore, place, measure) are
   driven by `PaneMessage` through `ui/panes.rs`. Sentinel modules: `EMPTY`
   (an empty pane shows the program finder) and `HELP`.
 - **Shell.** `Desktop` (`shell.rs`) owns `Ducktape`, the tray, the OS
@@ -618,9 +618,8 @@ House words, and where one word means several things.
   (`Focused`, `CloseRequested`, `Closed`, …) a guest receives.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
   `Desktop.mounted`; `NativeModuleView.instance` is its own counter.
-- **split / halve / cycle / fill / reclaim / measure** — pane geometry
-  operations in `ui/layout.rs`. Note: `split` adds a pane, `halve` cuts the
-  focused one in two.
+- **split / cycle / fill / measure** — pane geometry operations in
+  `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows
   as tabs (`runtime::rail`). The name is from an older side rail and
   survives in AX ids (`rail/<module>`, `rail-search`) that qa depends on.
