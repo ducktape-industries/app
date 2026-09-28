@@ -319,6 +319,9 @@ pub struct Ducktape {
     /// Seconds since launch, one `WallTick` each; `block_seen` is read
     /// against it.
     pub(crate) wall_now: i64,
+    /// The notification centre the bell draws: the app's one, which its
+    /// views post into.
+    pub(crate) center: crate::runtime::notify::CenterHandle,
 }
 
 /// What the sign-in screens share: this device's key (opening, locked),
@@ -533,6 +536,7 @@ impl Ducktape {
             connect_generation: 0,
             connect_task: None,
             wall_now: 0,
+            center: crate::runtime::notify::center().clone(),
         };
         let first = match std::env::var("DUCKTAPE_RPC")
             .ok()

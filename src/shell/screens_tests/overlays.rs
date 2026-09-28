@@ -50,7 +50,6 @@ fn show(view: &Entity<DesktopWindow>, native: &mut VisualTestContext, overlay: O
 
 #[gpui_kit::test]
 fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestAppContext) {
-    let _turn = notices();
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
@@ -124,7 +123,6 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
 /// leaves the keys where they were.
 #[gpui_kit::test]
 fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) {
-    let _turn = notices();
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);

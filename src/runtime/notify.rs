@@ -37,7 +37,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use center::{Notice, center, wall};
+pub(crate) use center::{CenterHandle, Notice, center, wall};
 pub(crate) use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };
@@ -100,7 +100,7 @@ pub(super) fn answer(
         }
     };
     let (posted, banner, entry) = {
-        let mut center = center();
+        let mut center = center().lock();
         let (posted, banner) = center.post(
             &Settings::load(),
             guest.module,
@@ -149,7 +149,7 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
             return;
         }
     };
-    if center().read_tag(guest.module, &tag) {
+    if center().lock().read_tag(guest.module, &tag) {
         // the bell and the centre redraw
         guest.intents.push(Intent::Notified);
     }
@@ -197,7 +197,7 @@ pub(crate) fn on_open_link(open: fn(String)) {
 /// A banner clicked: its row opens as if picked in the centre — read now,
 /// and its `duck://` link opened (the view's seat, when it carried none).
 fn clicked(entry: u64) {
-    let Some(entry) = center().open(entry) else {
+    let Some(entry) = center().lock().open(entry) else {
         return;
     };
     let link = match entry.link.is_empty() {

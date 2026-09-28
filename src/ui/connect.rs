@@ -98,7 +98,7 @@ impl Ducktape {
                 // genesis salt; the name alone when the genesis yields none
                 self.chain = ducklink::ChainId::of(&status.network, &status.genesis)
                     .map_or_else(|| status.network.clone(), |chain| chain.to_string());
-                crate::runtime::notify::center().set_network(&self.chain);
+                self.center.lock().set_network(&self.chain);
                 self.connected = true;
                 self.status_misses = 0;
                 self.apply_status(&status);
