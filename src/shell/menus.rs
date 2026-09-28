@@ -576,7 +576,7 @@ mod tests {
             let _ = state.update(Message::WallTick);
             let _ = state.update(Message::StatusMissed);
         }
-        let facts = state.clone_facts();
+        let facts = state.facts();
         assert!(facts.reconnecting);
         assert_eq!((facts.block_age, facts.heard_age), (304, 4));
         assert!(

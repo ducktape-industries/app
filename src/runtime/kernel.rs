@@ -108,8 +108,8 @@ mod replies;
 
 pub(super) use node::{NodeTask, spawn_reply};
 use node::{
-    blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry, spawn_retrying,
-    spawn_retrying_unsent, status, submit,
+    blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
+    spawn_retrying, spawn_retrying_unsent, status, submit,
 };
 pub(super) use replies::Replies;
 
