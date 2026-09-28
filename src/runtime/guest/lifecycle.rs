@@ -366,9 +366,7 @@ impl Guest {
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
             Failure::Refused(format!("{shown}: the view's manifest cannot be read"))
         })?;
-        wire_epoch(manifest.wire_epoch)
-            .and_then(|()| methods_revision(manifest.methods))
-            .map_err(|error| Failure::WireEpoch(format!("{shown}: {error}")))?;
+        wire_id(&manifest.wire_id).map_err(|error| Failure::Wire(format!("{shown}: {error}")))?;
         compiled_view(bytes).map_err(|error| Failure::Refused(format!("{shown}: {error}")))
     }
 

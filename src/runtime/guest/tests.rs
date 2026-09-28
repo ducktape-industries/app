@@ -400,12 +400,13 @@ fn a_ticked_view_survives_a_swap_with_its_state() {
 }
 
 #[test]
-fn a_view_built_against_newer_methods_is_refused_at_load() {
-    let now = wire::methods::METHODS_REVISION;
-    assert!(methods_revision(0).is_ok(), "a v1 manifest names none");
-    assert!(methods_revision(now).is_ok());
-    let refused = methods_revision(now + 1).unwrap_err();
-    assert!(refused.contains(&format!("{}", now + 1)), "{refused}");
+fn a_view_built_against_another_wire_is_refused_at_load() {
+    assert!(wire_id(wire::WIRE_ID).is_ok());
+    let refused = wire_id("0").unwrap_err();
+    assert!(
+        refused.contains("wire 0;") && refused.contains(wire::WIRE_ID),
+        "{refused}"
+    );
 }
 
 /// Pages a view's memory holds for the swap tests: a full snapshot budget

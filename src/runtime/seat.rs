@@ -160,8 +160,8 @@ pub(crate) enum Failure {
     Trapped(String),
     /// Bytes this build does not run as a view, or a load overtaken.
     Refused(String),
-    /// The view speaks a wire epoch this app does not.
-    WireEpoch(String),
+    /// The view was built against another wire than this app's.
+    Wire(String),
 }
 
 /// What a view and the screen hear when the node did not answer — a load that
@@ -177,7 +177,7 @@ impl Failure {
             Failure::NotListed(_) => "This network does not list this view",
             Failure::Trapped(_) => "This view stopped",
             Failure::Refused(_) => "This view could not be loaded",
-            Failure::WireEpoch(_) => "This view speaks a wire this app does not",
+            Failure::Wire(_) => "This view speaks a wire this app does not",
         }
     }
 }
@@ -201,7 +201,7 @@ impl fmt::Display for Failure {
         | Failure::NotListed(reason)
         | Failure::Trapped(reason)
         | Failure::Refused(reason)
-        | Failure::WireEpoch(reason)) = self;
+        | Failure::Wire(reason)) = self;
         formatter.write_str(reason)
     }
 }

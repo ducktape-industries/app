@@ -447,28 +447,15 @@ pub(super) fn first_line(error: &wasmtime::Error) -> String {
         .to_string()
 }
 
-/// The manifest epoch a view must speak, or the plain refusal sentence for
-/// every unsupported epoch.
-pub(super) fn wire_epoch(epoch: u32) -> Result<(), String> {
-    (epoch == wire::WIRE_EPOCH).then_some(()).ok_or_else(|| {
+/// A view built against another wire than this app's, as the plain refusal
+/// sentence.
+pub(super) fn wire_id(id: &str) -> Result<(), String> {
+    (id == wire::WIRE_ID).then_some(()).ok_or_else(|| {
         format!(
-            "this view speaks wire epoch {epoch}; this app speaks {}",
-            wire::WIRE_EPOCH
+            "this view was built against wire {id}; this app speaks {}",
+            wire::WIRE_ID
         )
     })
-}
-
-/// The methods a view was built against, refused at load when this app has
-/// fewer: the view would otherwise run until it asks for one.
-pub(super) fn methods_revision(needed: u32) -> Result<(), String> {
-    (needed <= wire::methods::METHODS_REVISION)
-        .then_some(())
-        .ok_or_else(|| {
-            format!(
-                "this view needs methods revision {needed}; this app has {}",
-                wire::methods::METHODS_REVISION
-            )
-        })
 }
 
 #[cfg(test)]
