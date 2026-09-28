@@ -5,6 +5,7 @@
 use super::*;
 
 mod combo;
+mod fields;
 mod gate;
 mod launcher;
 mod live;

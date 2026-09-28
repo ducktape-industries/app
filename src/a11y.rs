@@ -97,6 +97,22 @@ impl Patch {
         }
     }
 
+    /// Its form refuses it empty.
+    pub fn required(self) -> Self {
+        Self {
+            required: true,
+            ..self
+        }
+    }
+
+    /// A field drawn with an error; its description says which.
+    pub fn invalid(self) -> Self {
+        Self {
+            invalid: Some(Invalid::True),
+            ..self
+        }
+    }
+
     /// Work it started is in flight ("Creating…").
     pub fn busy(self) -> Self {
         Self { busy: true, ..self }

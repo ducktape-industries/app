@@ -29,6 +29,7 @@ impl DesktopWindow {
                 on_enter: || Message::SpotlightSubmit,
                 label: None,
                 private: false,
+                error: None,
                 size: 20.,
             },
             window,

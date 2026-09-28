@@ -32,6 +32,7 @@ impl DesktopWindow {
                         on_enter: || Message::ApproveFind,
                         label: Some("Code".into()),
                         private: false,
+                        error: (!state.unlock_error.is_empty()).then(|| state.unlock_error.clone()),
                         size: 15.,
                     },
                     window,

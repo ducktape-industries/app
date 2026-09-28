@@ -44,6 +44,7 @@ impl DesktopWindow {
                 on_enter: || Message::CreateAccountSubmit,
                 label: Some("Account name".into()),
                 private: false,
+                error: (!state.unlock_error.is_empty()).then(|| state.unlock_error.clone()),
                 size: 22.,
             },
             window,
