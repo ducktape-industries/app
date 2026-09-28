@@ -20,6 +20,11 @@ pub(super) fn screen_rules(nodes: &[AxNode], reading: &Reading, launcher: bool, 
     });
 }
 
+/// `node` has the keys: focused, or a composite whose active row is.
+fn holds(node: &AxNode) -> bool {
+    has(node, "focused") || node.more.active_descendant.is_some()
+}
+
 /// AX-020 … AX-025 over the sequence; `step N` is the snapshot after N
 /// presses.
 pub(super) fn walk_rules(reading: &Reading, tally: &mut Tally) {
@@ -43,7 +48,7 @@ pub(super) fn walk_rules(reading: &Reading, tally: &mut Tally) {
         let reached = snapshots.iter().any(|nodes| {
             nodes
                 .iter()
-                .any(|other| other.id == node.id && has(other, "focused"))
+                .any(|other| other.id == node.id && holds(other))
         });
         tally.check("AX-021", node, reached, || {
             "offers focus but the tab walk never reached it".to_owned()

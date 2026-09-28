@@ -23,7 +23,7 @@ pub(super) const ACTIONS: [(Action, &str); 9] = [
 
 /// A composite whose rows the arrows pick: the focused row inside one is
 /// its active descendant.
-const COMPOSITES: [&str; 8] = [
+pub(super) const COMPOSITES: [&str; 8] = [
     "Tree",
     "ListBox",
     "Menu",
@@ -454,6 +454,7 @@ fn is_text_input(role: Role) -> bool {
     matches!(
         role,
         Role::TextInput
+            | Role::EditableComboBox
             | Role::MultilineTextInput
             | Role::SearchInput
             | Role::EmailInput

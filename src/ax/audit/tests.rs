@@ -172,6 +172,31 @@ fn ax_012_press_comes_with_focus() {
     assert_eq!(fails(&report, "AX-012"), ["w:row"]);
 }
 
+/// A composite's rows are reached by the arrows from the composite: a row
+/// with a press and no focus passes under one the keys can be in.
+#[test]
+fn ax_012_a_composites_rows_are_reached_through_it() {
+    let row = |id, parent: &str| {
+        let mut row = node(id, "ListBoxOption", id);
+        row.actions = vec!["press"];
+        row.more.parent = Some(format!("w:{parent}"));
+        row
+    };
+    let mut combo = node("combo", "EditableComboBox", "Search");
+    combo.actions = vec!["focus", "set_value", "type"];
+    let mut active = node("list", "ListBox", "Results");
+    active.more.parent = Some("w:combo".into());
+    active.more.active_descendant = Some("w:a".into());
+    let report = one(vec![
+        combo,
+        active,
+        row("a", "list"),
+        node("menu", "Menu", "Results"),
+        row("b", "menu"),
+    ]);
+    assert_eq!(fails(&report, "AX-012"), ["w:b"]);
+}
+
 #[test]
 fn ax_013_status_and_alert_are_named() {
     let report = one(vec![
@@ -287,6 +312,30 @@ fn ax_021_every_focus_stop_is_reached() {
         vec![focused(a()), b()],
     ]);
     assert_eq!(fails(&skipped, "AX-021"), ["w:b"]);
+}
+
+/// A combo box never shows as focused: gpui moves the tree's focus to its
+/// active row. It holds the keys while it names one.
+#[test]
+fn ax_021_a_combo_box_holds_the_keys_while_its_row_is_active() {
+    let combo = |row: Option<&str>| {
+        let mut combo = node("combo", "EditableComboBox", "Search");
+        combo.actions = vec!["focus", "set_value", "type"];
+        combo.more.active_descendant = row.map(str::to_owned);
+        combo
+    };
+    let a = || button("a", "A");
+    let held = walk(vec![
+        vec![combo(None), a()],
+        vec![combo(Some("w:row")), a()],
+        vec![combo(None), focused(a())],
+    ]);
+    assert!(fails(&held, "AX-021").is_empty());
+    let skipped = walk(vec![
+        vec![combo(None), a()],
+        vec![combo(None), focused(a())],
+    ]);
+    assert_eq!(fails(&skipped, "AX-021"), ["w:combo"]);
 }
 
 #[test]

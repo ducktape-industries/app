@@ -4,6 +4,7 @@
 //! state passes the phase-1 audit ([`gate`]).
 use super::*;
 
+mod combo;
 mod gate;
 mod launcher;
 mod live;
@@ -21,8 +22,8 @@ fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     serde_json::to_value(crate::ax::snapshot("shell", window, false)).unwrap()
 }
 
-/// Sends the door's own SetValue action to the field named `"{key}/field"`,
-/// the way a real AX client types into it.
+/// Sends the door's own SetValue action to the node whose element is
+/// `field` (`"{key}/field"`), the way a real AX client types into it.
 fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::App) {
     draw(window, cx);
     let target = window
@@ -34,7 +35,7 @@ fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::Ap
             window
                 .a11y_element_id(*node)
                 .is_some_and(|path| {
-                    path.iter().any(|element| {
+                    path.last().is_some_and(|element| {
                         matches!(element, ElementId::Name(name) if name.as_ref() == field)
                     })
                 })

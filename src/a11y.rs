@@ -4,7 +4,7 @@
 //! what gpui has no setter for (`Patch`: `modal`, `live`, the view's
 //! phase-2 aria, and the class names the AX test door masks, `private`, or
 //! leaves untruncated, `whole`), and one AT node for a kit text input
-//! (`text_field`).
+//! (`text_field`), or for it and the list it picks from (`combo_box`).
 
 use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live};
 use gpui_kit::{
@@ -214,17 +214,45 @@ pub fn text_field(
     set_value: impl Fn(String, &mut Window, &mut App) + 'static,
     field: impl IntoElement,
 ) -> Stateful<Div> {
-    div()
-        .id(id)
-        .w_full()
-        .track_focus(focus)
-        .focus(|style| style.shadow(vec![ring()]))
-        .on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
-            if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
-                set_value(value.to_string(), window, cx);
-            }
-        })
-        .child(field)
+    typed(
+        div()
+            .id(id)
+            .w_full()
+            .track_focus(focus)
+            .focus(|style| style.shadow(vec![ring()])),
+        set_value,
+    )
+    .child(field)
+}
+
+/// An editable combo box as assistive technology meets it (a field and the
+/// list it picks from): one node, `id`, around the field and its list, that
+/// holds the field's `focus`, so the list's picked row can claim to be its
+/// active descendant — gpui honours the claim only under the focused node.
+/// The field inside is a [`text_field`] with no role: it keeps the ring and
+/// Tab, and has no node of its own. The caller sets the name, the value and
+/// whether the list shows (`aria_expanded`).
+pub fn combo_box(
+    id: impl Into<ElementId>,
+    focus: &FocusHandle,
+    set_value: impl Fn(String, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    typed(
+        div().id(id).role(Role::EditableComboBox).track_focus(focus),
+        set_value,
+    )
+}
+
+/// `element` hands SetValue's text to `set_value`.
+fn typed(
+    element: Stateful<Div>,
+    set_value: impl Fn(String, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    element.on_a11y_action(AccessibleAction::SetValue, move |data, window, cx| {
+        if let Some(gpui_kit::accesskit::ActionData::Value(value)) = data {
+            set_value(value.to_string(), window, cx);
+        }
+    })
 }
 
 /// The class of a node whose value is private, and its name too unless it

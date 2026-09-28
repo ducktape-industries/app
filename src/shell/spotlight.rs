@@ -7,7 +7,9 @@ use facts::Facts;
 
 impl DesktopWindow {
     /// ⌘K: one field, and what it finds among the programs, the networks
-    /// and the things to do. ↑↓ pick, Enter runs, Escape closes.
+    /// and the things to do. ↑↓ pick, Enter runs, Escape closes. To
+    /// assistive technology the field and its rows are one combo box whose
+    /// active row is the picked one.
     pub(super) fn spotlight(
         &mut self,
         state: &Facts,
@@ -17,7 +19,7 @@ impl DesktopWindow {
         use super::ink::*;
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
-        let field = self.input(
+        let (input, field) = self.bare_input(
             TextField {
                 key: "spotlight",
                 placeholder: "Search programs, networks, actions",
@@ -25,7 +27,7 @@ impl DesktopWindow {
                 value: |state| &state.spotlight_query,
                 on_change: Message::SpotlightTyped,
                 on_enter: || Message::SpotlightSubmit,
-                label: Some("Search".into()),
+                label: None,
                 private: false,
                 size: 20.,
             },
@@ -46,7 +48,7 @@ impl DesktopWindow {
         let pick = state.spotlight_pick.min(count.saturating_sub(1));
         let mut list = div()
             .id("spotlight-rows")
-            .control(Role::Menu, "Results")
+            .control(Role::ListBox, "Results")
             .max_h(px(380.))
             .min_h_0()
             .overflow_y_scroll()
@@ -88,7 +90,10 @@ impl DesktopWindow {
             list = list.child(
                 sans(400, 13.)
                     .id(SharedString::from(format!("spotlight/{nth}")))
-                    .control(Role::MenuItem, SharedString::from(row.title.clone()))
+                    .control(Role::ListBoxOption, SharedString::from(row.title.clone()))
+                    // the picked row is the one the field's ↑↓ move
+                    .aria_selected(picked)
+                    .when(picked, |row| row.aria_active_descendant())
                     .flex()
                     .items_baseline()
                     .gap(px(12.))
@@ -125,6 +130,20 @@ impl DesktopWindow {
                     .child("Nothing here by that name."),
             );
         }
+        // the field and its rows, one combo box: the field holds the keys,
+        // the picked row is what they pick
+        let combo = crate::a11y::combo_box("spotlight/search", &input.read(cx).focus_handle(cx), {
+            let input = input.clone();
+            move |value, window, cx| {
+                input.update(cx, |input, cx| input.replace_all(value, window, cx))
+            }
+        })
+        .aria_label("Search")
+        .aria_value(input.read(cx).value().to_string())
+        .aria_expanded(count > 0)
+        .flex()
+        .flex_col()
+        .min_h_0();
         let keys = self.model.clone();
         let scroll = self.spotlight_rows.clone();
         // the field, the longest list and the key hints
@@ -167,19 +186,22 @@ impl DesktopWindow {
                         keys.update(cx, |model, cx| model.dispatch(message, cx));
                     })
                     .child(
-                        div()
-                            .h(px(super::ink::tall(56.)))
-                            .flex_shrink_0()
-                            .px(px(16.))
-                            .flex()
-                            .items_center()
-                            .border_b_1()
-                            .border_color(ink.line)
-                            .gap(px(12.))
-                            .child(div().flex_1().child(field))
-                            .child(mono(400, 12.).text_color(ink.muted).child("esc")),
+                        combo
+                            .child(
+                                div()
+                                    .h(px(super::ink::tall(56.)))
+                                    .flex_shrink_0()
+                                    .px(px(16.))
+                                    .flex()
+                                    .items_center()
+                                    .border_b_1()
+                                    .border_color(ink.line)
+                                    .gap(px(12.))
+                                    .child(div().flex_1().child(field))
+                                    .child(mono(400, 12.).text_color(ink.muted).child("esc")),
+                            )
+                            .child(list),
                     )
-                    .child(list)
                     .child(
                         mono(400, 12.)
                             .flex_shrink_0()

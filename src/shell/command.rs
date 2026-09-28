@@ -132,7 +132,7 @@ impl DesktopWindow {
             })
             .child(
                 div().flex_1().min_w_0().child(match focused {
-                    true => self.command_field(&field, &query, cx),
+                    true => self.command_field(&field, cx),
                     false => sans(400, 17.)
                         .text_color(ink.muted)
                         .child("Open a program")
@@ -151,7 +151,10 @@ impl DesktopWindow {
             };
             sans(400, 15.)
                 .id(SharedString::from(format!("empty/{module}")))
-                .control(Role::MenuItem, SharedString::from(name.clone()))
+                .control(Role::ListBoxOption, SharedString::from(name.clone()))
+                // the picked row is the one the field's ↑↓ move
+                .aria_selected(picked)
+                .when(picked, |row| row.aria_active_descendant())
                 .flex()
                 .items_baseline()
                 .gap(px(12.))
@@ -187,9 +190,45 @@ impl DesktopWindow {
         .into_iter()
         .filter(|hint| CHAT_READY || hint != "tab switch")
         .map(|hint| div().whitespace_nowrap().child(hint));
+        let rows = div()
+            .id("empty-window/rows")
+            .control(Role::ListBox, "Programs")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .border_1()
+            .border_t_0()
+            .border_color(ink.line)
+            .children(list)
+            .when(!found, |rows| {
+                rows.child(
+                    sans(400, 13.)
+                        .px(px(16.))
+                        .py(px(12.))
+                        .text_color(ink.muted)
+                        .child("Nothing here by that name."),
+                )
+            });
+        // focused, the field and its rows are one combo box: the field holds
+        // the keys, the picked row is what they pick
+        let search = match focused {
+            true => {
+                use gpui_kit::Focusable as _;
+                crate::a11y::combo_box("empty-window/search", &field.read(cx).focus_handle(cx), {
+                    let field = field.clone();
+                    move |value, window, cx| {
+                        field.update(cx, |field, cx| field.replace_all(value, window, cx))
+                    }
+                })
+                .aria_label("Open a program")
+                .aria_value(query)
+                .aria_expanded(found)
+            }
+            false => div().id("empty-window/search"),
+        };
         div()
             .id("empty-window")
-            .role(Role::Menu)
+            .role(Role::Group)
             .aria_label("Open in this window")
             .size_full()
             .flex()
@@ -230,26 +269,14 @@ impl DesktopWindow {
                     .min_h_0()
                     .flex()
                     .flex_col()
-                    .child(bar)
                     .child(
-                        div()
-                            .id("empty-window/rows")
+                        search
                             .flex_1()
                             .min_h_0()
-                            .overflow_y_scroll()
-                            .border_1()
-                            .border_t_0()
-                            .border_color(ink.line)
-                            .children(list)
-                            .when(!found, |rows| {
-                                rows.child(
-                                    sans(400, 13.)
-                                        .px(px(16.))
-                                        .py(px(12.))
-                                        .text_color(ink.muted)
-                                        .child("Nothing here by that name."),
-                                )
-                            }),
+                            .flex()
+                            .flex_col()
+                            .child(bar)
+                            .child(rows),
                     )
                     .child(
                         mono(400, 12.)
@@ -269,16 +296,17 @@ impl DesktopWindow {
     fn command_field(
         &self,
         field: &Entity<InputState>,
-        query: &str,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use gpui_kit::{Focusable as _, StatefulInteractiveElement as _};
+        use gpui_kit::Focusable as _;
         let input = Input::new(field)
             .appearance(false)
             .text_size(gpui_kit::px(super::ink::fit(17.)))
             .line_height(gpui_kit::relative(1.4))
             .py_0()
             .px_0();
+        // no node of its own: the combo box around it and its rows speaks
+        // for it
         crate::a11y::text_field(
             "empty-window/field",
             &field.read(cx).focus_handle(cx),
@@ -290,9 +318,6 @@ impl DesktopWindow {
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
         )
-        .aria_label("Open a program")
-        .aria_value(query.to_owned())
-        .role(gpui_kit::Role::TextInput)
         .into_any_element()
     }
 

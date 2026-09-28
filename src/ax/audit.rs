@@ -162,7 +162,7 @@ pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
     for nodes in &reading.snapshots {
         let snapshot = Snapshot::of(nodes);
         for node in nodes {
-            node_rules(node, nodes, &mut tally);
+            node_rules(node, nodes, &snapshot, &mut tally);
             phase_two::node_rules(node, nodes, &snapshot, reading, &mut tally);
         }
         screen_rules(nodes, reading, launcher, &mut tally);

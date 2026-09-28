@@ -1,9 +1,10 @@
 //! The per-node rules of phase 1 (AX-001 … AX-017): what one node, and
-//! its siblings for AX-016, must be.
+//! its siblings for AX-016 and its ancestors for AX-012, must be.
 use super::*;
 
-pub(super) const TEXT_INPUT: [&str; 8] = [
+pub(super) const TEXT_INPUT: [&str; 9] = [
     "TextInput",
+    "EditableComboBox",
     "MultilineTextInput",
     "SearchInput",
     "EmailInput",
@@ -49,7 +50,12 @@ const NAMED_CONTAINER: [&str; 14] = [
 ];
 
 /// AX-001 … AX-017 on one node; AX-016 looks at its siblings in `nodes`.
-pub(super) fn node_rules(node: &AxNode, nodes: &[AxNode], tally: &mut Tally) {
+pub(super) fn node_rules(
+    node: &AxNode,
+    nodes: &[AxNode],
+    snapshot: &Snapshot<'_>,
+    tally: &mut Tally,
+) {
     let (press, focus) = (offers(node, "press"), offers(node, "focus"));
     let role = node.role.as_str();
     let text_input = TEXT_INPUT.contains(&role);
@@ -123,7 +129,12 @@ pub(super) fn node_rules(node: &AxNode, nodes: &[AxNode], tally: &mut Tally) {
         });
     }
     if press {
-        tally.check("AX-012", node, focus, || {
+        // a composite's rows are reached by the arrows, from the composite
+        let composite = snapshot.ancestors(node).any(|above| {
+            tree::COMPOSITES.contains(&above.role.as_str())
+                && (offers(above, "focus") || above.more.active_descendant.is_some())
+        });
+        tally.check("AX-012", node, focus || composite, || {
             "press without focus: a keyboard never reaches it".to_owned()
         });
     }
