@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::SettingsPage;
-use ink::{Ink, mono, sans};
+use ink::{Ink, mono, sans, words};
 
 impl DesktopWindow {
     /// The dialog: `760 × 680; border: 1.5px solid ink` (the board's 540,
@@ -239,7 +239,11 @@ impl DesktopWindow {
                 }),
                 &ink,
             ))
-            .child(mono(400, 12.).text_color(ink.muted).child("a minute"));
+            .child(
+                mono(400, 12.)
+                    .text_color(ink.muted)
+                    .child(words("burst-unit", "a minute")),
+            );
         let now = notify::wall();
         let views = crate::runtime::rail()
             .into_iter()
@@ -280,8 +284,14 @@ impl DesktopWindow {
                             .flex()
                             .items_baseline()
                             .gap(px(12.))
-                            .child(sans(500, 14.).child(name))
-                            .child(sans(400, 13.).text_color(ink.muted).child(hint)),
+                            .child(sans(500, 14.).child(words(
+                                SharedString::from(format!("notify/view/{module}/name")),
+                                name,
+                            )))
+                            .child(sans(400, 13.).text_color(ink.muted).child(words(
+                                SharedString::from(format!("notify/view/{module}/week")),
+                                hint,
+                            ))),
                     )
                     .child(div().flex_shrink_0().child(control))
             });
@@ -291,6 +301,7 @@ impl DesktopWindow {
             .child(heading("Notifications", &ink))
             .child(
                 ink::note(
+                    "notifications-intro",
                     "On this device. Views ask; Ducktape decides what reaches the screen.",
                     ink.muted,
                 )
@@ -323,7 +334,7 @@ impl DesktopWindow {
                     .pb(px(8.))
                     .border_b_1()
                     .border_color(ink.line)
-                    .child("Views"),
+                    .child(words("views", "Views")),
             )
             .children(views)
             .into_any_element()
@@ -475,7 +486,7 @@ impl DesktopWindow {
             .flex_col()
             .child(heading("Networks", &ink))
             .child(
-                ink::note("Nodes this device reached. Forgetting one takes it off the list; its key stays on this device.", muted)
+                ink::note("networks-intro", "Nodes this device reached. Forgetting one takes it off the list; its key stays on this device.", muted)
                     .pb(px(12.)),
             )
             .children(rows)
@@ -483,16 +494,21 @@ impl DesktopWindow {
     }
 }
 
+/// A page's title, `400 12px MONO` muted; its words are its id.
 fn heading(text: &'static str, ink: &Ink) -> gpui_kit::Div {
     use gpui_kit::*;
-    mono(400, 12.).text_color(ink.muted).pb(px(6.)).child(text)
+    mono(400, 12.)
+        .text_color(ink.muted)
+        .pb(px(6.))
+        .child(words(text, text))
 }
 
 /// One row of a settings page: what it is, a line about it, its control
-/// (`gap: 24px; padding: 16px 0`, a hairline under it).
+/// (`gap: 24px; padding: 16px 0`, a hairline under it). The label names
+/// its two lines of text: `<label>` and `<label>/hint`.
 fn setting(
-    label: impl Into<gpui_kit::SharedString>,
-    hint: impl Into<gpui_kit::SharedString>,
+    label: &'static str,
+    hint: &'static str,
     control: impl gpui_kit::IntoElement,
     ink: &Ink,
 ) -> gpui_kit::Div {
@@ -511,12 +527,12 @@ fn setting(
                 .flex()
                 .flex_col()
                 .gap(px(4.))
-                .child(sans(500, 14.).child(label.into()))
+                .child(sans(500, 14.).child(words(label, label)))
                 .child(
                     sans(400, 13.)
                         .line_height(px(13. * 1.5))
                         .text_color(ink.muted)
-                        .child(hint.into()),
+                        .child(words(SharedString::from(format!("{label}/hint")), hint)),
                 ),
         )
         .child(div().flex_shrink_0().child(control))
@@ -528,25 +544,35 @@ fn about_page(ink: &Ink) -> gpui_kit::AnyElement {
         .map(|path| path.display().to_string())
         .unwrap_or_default();
     let muted = ink.muted;
+    // the key and its value, each a Label: `Version`, `0.1.0`
     let line = |key: &'static str, value: String| {
         div()
             .flex()
             .gap(px(16.))
             .py(px(8.))
-            .child(sans(400, 14.).w(px(120.)).text_color(muted).child(key))
+            .child(
+                sans(400, 14.)
+                    .w(px(120.))
+                    .text_color(muted)
+                    .child(words(key, key)),
+            )
             .child(
                 mono(400, 13.)
                     .text_color(muted)
                     .flex_1()
                     .min_w_0()
-                    .child(value),
+                    .child(words(SharedString::from(format!("{key}/value")), value)),
             )
     };
     div()
         .flex()
         .flex_col()
         .child(heading("About", ink))
-        .child(sans(400, 22.).pb(px(12.)).child("Ducktape"))
+        .child(
+            sans(400, 22.)
+                .pb(px(12.))
+                .child(words("product", "Ducktape")),
+        )
         .child(line("Version", env!("CARGO_PKG_VERSION").into()))
         .child(line(
             "Node contract",

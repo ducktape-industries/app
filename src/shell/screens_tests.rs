@@ -7,6 +7,7 @@ use super::*;
 mod gate;
 mod launcher;
 mod live;
+mod text;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};

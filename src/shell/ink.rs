@@ -93,43 +93,57 @@ pub(super) fn mono(weight: u16, size: f32) -> Div {
         .text_size(px(fit(size)))
 }
 
-/// `<h1>`: `400 32px/1.18`; a `Heading` named by its words, its id the
-/// words too (Help maps it over its sections).
-pub(super) fn h1(text: impl Into<SharedString>, ink: &Ink) -> Stateful<Div> {
+/// Words assistive technology reads: a `Label` whose value is `text`, as
+/// gpui's own `Text` has it. `id` is explicit: the `text!` macro derives
+/// one from its call site, and text mapped over a list would share it.
+pub(super) fn words(id: impl Into<ElementId>, text: impl Into<SharedString>) -> Text {
+    Text::new(id.into(), text.into())
+}
+
+/// `<h1>`: `400 32px/1.18`; the screen's one `Heading`, level 1, its words
+/// its name and its value, as the presenter's headings carry them. One
+/// node: a `Text` inside would be a second one reading the same words.
+pub(super) fn h1(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    ink: &Ink,
+) -> Stateful<Div> {
     let text = text.into();
     sans(400, 32.)
-        .id(text.clone())
+        .id(id)
         .role(Role::Heading)
         .aria_label(text.clone())
+        .aria_value(text.clone())
+        .aria_level(1)
         .line_height(px(fit(32.) * 1.18))
         .text_color(ink.ink)
         .child(text)
 }
 
 /// The lead under a headline: `400 16px/1.65`, in ink.
-pub(super) fn lead(text: impl Into<SharedString>, ink: &Ink) -> Div {
+pub(super) fn lead(id: impl Into<ElementId>, text: impl Into<SharedString>, ink: &Ink) -> Div {
     sans(400, 16.)
         .line_height(px(fit(16.) * 1.65))
         .text_color(ink.ink)
-        .child(text.into())
+        .child(words(id, text))
 }
 
 /// A small muted note: `400 13px/1.55`.
-pub(super) fn note(text: impl Into<SharedString>, color: Hsla) -> Div {
+pub(super) fn note(id: impl Into<ElementId>, text: impl Into<SharedString>, color: Hsla) -> Div {
     sans(400, 13.)
         .line_height(px(13. * 1.55))
         .text_color(color)
-        .child(text.into())
+        .child(words(id, text))
 }
 
 /// A step label or caption: `400 12px MONO`, muted.
-pub(super) fn tag(text: impl Into<SharedString>, ink: &Ink) -> Div {
-    mono(400, 12.).text_color(ink.muted).child(text.into())
+pub(super) fn tag(id: impl Into<ElementId>, text: impl Into<SharedString>, ink: &Ink) -> Div {
+    mono(400, 12.).text_color(ink.muted).child(words(id, text))
 }
 
 /// A field's `<label>`: `500 14px`.
-pub(super) fn label(text: impl Into<SharedString>, ink: &Ink) -> Div {
-    sans(500, 14.).text_color(ink.ink).child(text.into())
+pub(super) fn label(id: impl Into<ElementId>, text: impl Into<SharedString>, ink: &Ink) -> Div {
+    sans(500, 14.).text_color(ink.ink).child(words(id, text))
 }
 
 /// The canvas's button kinds: a filled ink block, an ink outline.

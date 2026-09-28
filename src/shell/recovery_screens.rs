@@ -54,6 +54,7 @@ impl DesktopWindow {
             .gap(px(16.))
             .child(
                 self.field(
+                    "restore-phrase-label",
                     "Recovery key",
                     field_box(
                         phrase,
@@ -132,7 +133,14 @@ impl DesktopWindow {
                         .py(px(6.))
                         .border_b_1()
                         .border_color(ink.line)
-                        .child(tag(format!("{}", column * per_column + row + 1), &ink).w(px(18.)))
+                        // the sheet's name reads the words; the numbers
+                        // stay out of the tree
+                        .child(
+                            mono(400, 12.)
+                                .text_color(ink.muted)
+                                .w(px(18.))
+                                .child(format!("{}", column * per_column + row + 1)),
+                        )
                         .child(sans(400, 15.).child(word.to_string()))
                 }))
         });
@@ -157,7 +165,11 @@ impl DesktopWindow {
                 false,
                 &ink,
             ))
-            .child(ink::note("Nobody can recover them for you.", ink.muted))
+            .child(ink::note(
+                "phrase-warning",
+                "Nobody can recover them for you.",
+                ink.muted,
+            ))
             .child(self.link(
                 "phrase-cancel",
                 "Not now",
@@ -234,6 +246,7 @@ impl DesktopWindow {
                     cx,
                 );
                 self.field(
+                    SharedString::from(format!("{key}-label")),
                     format!("Word {}", nth + 1),
                     field_box(field, ink.strong, 44., &ink).into_any_element(),
                     None,

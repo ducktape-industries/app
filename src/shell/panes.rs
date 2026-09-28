@@ -498,6 +498,7 @@ impl DesktopWindow {
                         .child(format!("{name} wants to show desktop notifications")),
                 )
                 .child(note(
+                    "burst",
                     format!("At most {burst} banners a minute; the rest wait in Notifications."),
                     ink.muted,
                 )),

@@ -131,7 +131,7 @@ impl DesktopWindow {
                         cx,
                     )),
             )
-            .child(tag(caption, &ink));
+            .child(tag("caption", caption, &ink));
         let reading =
             div()
                 .id(id)
@@ -152,9 +152,9 @@ impl DesktopWindow {
                         .flex()
                         .flex_col()
                         .gap(px(18.))
-                        .child(tag(label, &ink))
-                        .child(h1(headline, &ink))
-                        .children(lead.map(|text| ink::lead(text, &ink))),
+                        .child(tag("step", label, &ink))
+                        .child(h1("headline", headline, &ink))
+                        .children(lead.map(|text| ink::lead("lead", text, &ink))),
                 )
                 .children(body);
         div()
@@ -180,9 +180,11 @@ impl DesktopWindow {
             .into_any_element()
     }
 
-    /// `<label>` over its control, `gap: 8px`, and a line under it.
+    /// `<label>` over its control, `gap: 8px`, and a line under it; `id`
+    /// is the label's.
     pub(super) fn field(
         &self,
+        id: impl Into<gpui_kit::ElementId>,
         text: impl Into<gpui_kit::SharedString>,
         control: gpui_kit::AnyElement,
         below: Option<gpui_kit::AnyElement>,
@@ -193,7 +195,7 @@ impl DesktopWindow {
             .flex()
             .flex_col()
             .gap(px(8.))
-            .child(label(text, ink))
+            .child(label(id, text, ink))
             .child(control)
             .children(below)
     }

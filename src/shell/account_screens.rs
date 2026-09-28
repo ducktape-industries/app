@@ -51,6 +51,7 @@ impl DesktopWindow {
         );
         let below = match state.unlock_error.is_empty() {
             true => ink::note(
+                "account-name-note",
                 "The account number is given when it's created. Change the name later in Account.",
                 ink.muted,
             )
@@ -64,6 +65,7 @@ impl DesktopWindow {
             .gap(px(16.))
             .child(
                 self.field(
+                    "account-name-label",
                     "Name",
                     sans(400, 22.)
                         .child(
@@ -110,7 +112,10 @@ impl DesktopWindow {
         let join = closing(
             [
                 sans(500, 14.)
-                    .child(format!("Already have an account on {}?", state.network))
+                    .child(words(
+                        "join-question",
+                        format!("Already have an account on {}?", state.network),
+                    ))
                     .into_any_element(),
                 self.link(
                     "link-device",
@@ -124,7 +129,7 @@ impl DesktopWindow {
                     .flex_wrap()
                     .items_baseline()
                     .gap(px(5.))
-                    .child(ink::note("Or use", ink.muted))
+                    .child(ink::note("join-or-use", "Or use", ink.muted))
                     .child(self.link(
                         "passkey-sign-in",
                         "a passkey",
@@ -132,7 +137,7 @@ impl DesktopWindow {
                         true,
                         &ink,
                     ))
-                    .child(ink::note("or", ink.muted))
+                    .child(ink::note("join-or", "or", ink.muted))
                     .child(self.link(
                         "recover",
                         "a recovery key",
@@ -230,15 +235,21 @@ impl DesktopWindow {
                         .flex_col()
                         .items_start()
                         .gap(px(10.))
-                        .child(crate::a11y::live(
-                            tag("Waiting", &ink)
-                                .id("passkey-waiting-status")
-                                .role(Role::Status),
-                            accesskit::Live::Polite,
-                            "Waiting",
-                        ))
-                        .child(sans(500, 16.).child("Your passkey, twice"))
+                        // a tag's look; its word is the live region's own
+                        .child(
+                            crate::a11y::live(
+                                mono(400, 12.)
+                                    .text_color(ink.muted)
+                                    .id("passkey-waiting-status")
+                                    .role(Role::Status),
+                                accesskit::Live::Polite,
+                                "Waiting",
+                            )
+                            .child("Waiting"),
+                        )
+                        .child(sans(500, 16.).child(words("passkey-twice", "Your passkey, twice")))
                         .child(ink::note(
+                            "passkey-second",
                             "A new code appears here for the second time.",
                             ink.muted,
                         ))
@@ -305,7 +316,7 @@ impl DesktopWindow {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
-                .child(tag(name, &ink))
+                .child(tag(SharedString::from(format!("{id}-tag")), name, &ink))
                 .child(crate::a11y::whole(
                     mono(400, 28.)
                         .id(id)
@@ -321,13 +332,17 @@ impl DesktopWindow {
                 .child(big("link-code", "Code", state.link_code.clone()))
                 .child(big("link-fingerprint", "This device", fingerprint))
                 .into_any_element(),
+            // a note's look; its words are the live region's own
             crate::a11y::live(
-                ink::note(LINK_WAITING, ink.muted)
+                sans(400, 13.)
+                    .line_height(px(13. * 1.55))
+                    .text_color(ink.muted)
                     .id("link-waiting-status")
                     .role(Role::Status),
                 accesskit::Live::Polite,
                 LINK_WAITING,
             )
+            .child(LINK_WAITING)
             .into_any_element(),
             div()
                 .flex()
