@@ -265,7 +265,7 @@ Exit: `cargo test` fails on any error-severity violation on any declared shell s
 
 ### Phase 2 — modules (view-wire, view-guest), with ducktape-a3
 
-All proposals; a3 owns the branch. A flag day is fine under the no-backcompat rule: bump `WIRE_EPOCH` (`view-wire/src/lib.rs`), regenerate goldens.
+All proposals; a3 owns the branch. A flag day is fine under the no-backcompat rule: change the shape and regenerate the goldens (the wire has no epoch or revision number; owner, 2026-09-28).
 
 1. **`Aria` gains** (all `skip_serializing_if`, so unused fields cost no bytes): `live: Option<accesskit::Live>`, `busy: bool`, `required: bool`, `read_only: bool`, `invalid: Option<accesskit::Invalid>`, `has_popup: Option<accesskit::HasPopup>`, `current: Option<accesskit::AriaCurrent>`, `labelled_by`, `described_by`, `controls: Vec<ElementIdWire>`, `error_message: Option<ElementIdWire>`, `actions: Vec<(accesskit::Action, u32)>`, `custom_actions: Vec<(i32, String)>`. `Event` gains `A11yAction { handler, data }`. `List` and `ResizeHandle` gain `interactivity`. Delete `TextNode.heading`/`live` and `wire::Live` (unreachable from the SDK; the a3 variant purge is the moment).
 2. **Sanitizer** (`frame_sanitize/interactivity.rs`): strip `GenericContainer` and window-level roles, clamp `level` to 1..=6, drop `active_descendant` when `focusable`, cap relation and action lists.
