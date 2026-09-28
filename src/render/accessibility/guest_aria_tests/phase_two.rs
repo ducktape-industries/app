@@ -171,6 +171,134 @@ fn a_resize_handle_takes_focus_and_keys(cx: &mut gpui_kit::TestAppContext) {
     );
 }
 
+/// A divider's arrows move it, end to end: Tab reaches it, each arrow
+/// reaches the view's key route as the keystroke the SDK's divider reads,
+/// and the view, stepping as `design::divider` does (8 px, 32 with
+/// shift), draws its pane that much wider or narrower. No built view
+/// wasm is loadable here, so the view is this test, re-rendering from
+/// its key route.
+#[gpui_kit::test]
+fn a_dividers_arrows_move_its_pane_by_eight_or_thirty_two(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    const ROUTE: u32 = 9;
+    let panes = |width: f32| {
+        let named = |role: Role, label: &str| wire::Interactivity {
+            role: Some(role),
+            aria: wire::Aria {
+                label: Some(label.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let pane = wire::Node::Container(view_wire::ContainerNode {
+            id: Some(key("list-pane")),
+            style: div().w(px(width)).h_full().flex_shrink_0().style().clone(),
+            interactivity: named(Role::Group, "List"),
+            children: Vec::new(),
+        });
+        let divider = wire::Node::ResizeHandle {
+            id: key("list-resize"),
+            style: div().w(px(1.)).h_full().style().clone(),
+            interactivity: wire::Interactivity {
+                focusable: true,
+                tab_stop: Some(true),
+                on_key_down: Some(ROUTE),
+                aria: wire::Aria {
+                    orientation: Some(accesskit::Orientation::Vertical),
+                    ..named(Role::Splitter, "Resize the list").aria
+                },
+                ..named(Role::Splitter, "Resize the list")
+            },
+            on_press: None,
+            on_release: None,
+            on_drag: None,
+            cursor: None,
+            content: Box::new(wire::Node::Container(view_wire::ContainerNode {
+                id: Some(key("list-rule")),
+                style: div().w(px(1.)).h_full().style().clone(),
+                interactivity: Default::default(),
+                children: Vec::new(),
+            })),
+        };
+        sanitized(wire::Node::Container(view_wire::ContainerNode {
+            id: Some(key("panes")),
+            style: div().flex().w(px(600.)).h(px(200.)).style().clone(),
+            interactivity: Default::default(),
+            children: vec![pane, divider],
+        }))
+    };
+    let window = cx.open_window(size(px(640.), px(240.)), |_, _| ViewTree::new(panes(200.)));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            seen.borrow_mut().push(event.clone())
+        })
+    });
+    let wide = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let nodes = serde_json::to_value(crate::ax::snapshot("t", window, true)).unwrap();
+            let nodes = nodes.as_array().unwrap();
+            let pane = nodes
+                .iter()
+                .find(|node| node["name"] == "List")
+                .expect("the pane is in the tree");
+            let bounds = &pane["bounds"];
+            let focus = nodes.iter().find(|node| {
+                node["state"]
+                    .as_array()
+                    .unwrap()
+                    .contains(&"focused".into())
+            });
+            (
+                bounds[2].as_i64().unwrap() - bounds[0].as_i64().unwrap(),
+                focus.map(|node| node["role"].as_str().unwrap().to_owned()),
+            )
+        })
+    };
+    // Tab is the app's binding to `focus_next`; a bare window has none
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.focus_next(cx);
+    });
+    let mut width = 200.;
+    assert_eq!(wide(&mut native), (200, Some("Splitter".into())));
+    for (keystroke, moved) in [("right", 208), ("shift-right", 240), ("left", 232)] {
+        native.simulate_keystrokes(keystroke);
+        for event in events.borrow_mut().drain(..) {
+            // the view: design::divider's step, on the event it is handed
+            let wire::Event::KeyDown {
+                handler: ROUTE,
+                event,
+                ..
+            } = event
+            else {
+                continue;
+            };
+            let event = event.into_gpui();
+            let step = match event.keystroke.modifiers.shift {
+                true => 32.,
+                false => 8.,
+            };
+            width += match event.keystroke.key.as_str() {
+                "left" => -step,
+                "right" => step,
+                _ => 0.,
+            };
+            native.update(|_, cx| tree.update(cx, |tree, cx| tree.replace(panes(width), cx)));
+        }
+        assert_eq!(
+            wide(&mut native),
+            (moved, Some("Splitter".into())),
+            "after {keystroke}"
+        );
+    }
+}
+
 /// A handle a view names on a divider or a list outlives the frame that
 /// made it: a new frame keeps focus where it was.
 #[gpui_kit::test]
