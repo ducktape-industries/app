@@ -1,116 +1,12 @@
 use super::*;
 
+mod abi;
 mod lifecycle;
 mod requests;
 
+use abi::{Exports, HostState, first_line, panic_message};
+
 // ---------- the guest ----------
-
-/// What a view's store holds: its limits, and the message its panic hook
-/// handed over before the trap that follows.
-pub(super) struct HostState {
-    limits: StoreLimits,
-    panic: Option<String>,
-}
-
-/// The guest's exports and the memory their bytes cross in (`wire::abi`).
-pub(super) struct Exports {
-    memory: Memory,
-    alloc: TypedFunc<u32, u32>,
-    init: TypedFunc<(), ()>,
-    tick: TypedFunc<(u32, u32), u64>,
-    snapshot: TypedFunc<(), u64>,
-    restore: TypedFunc<(u32, u32), u64>,
-}
-
-impl Exports {
-    pub(super) fn bind(
-        store: &mut Store<HostState>,
-        instance: &wasmtime::Instance,
-    ) -> wasmtime::Result<Self> {
-        Ok(Self {
-            memory: instance
-                .get_memory(&mut *store, "memory")
-                .ok_or_else(|| wasmtime::Error::msg("the view exports no memory"))?,
-            alloc: instance.get_typed_func(&mut *store, "alloc")?,
-            init: instance.get_typed_func(&mut *store, "init")?,
-            tick: instance.get_typed_func(&mut *store, "tick")?,
-            snapshot: instance.get_typed_func(&mut *store, "snapshot")?,
-            restore: instance.get_typed_func(&mut *store, "restore")?,
-        })
-    }
-
-    /// `bytes` in a buffer the guest allocated and owns from the next call on.
-    fn give(&self, store: &mut Store<HostState>, bytes: &[u8]) -> wasmtime::Result<(u32, u32)> {
-        let len = u32::try_from(bytes.len())?;
-        let ptr = self.alloc.call(&mut *store, len)?;
-        self.memory.write(&mut *store, ptr as usize, bytes)?;
-        Ok((ptr, len))
-    }
-
-    /// The bytes an answer names, copied out before the guest is entered
-    /// again; nothing about the pair is trusted.
-    fn answer(&self, store: &Store<HostState>, packed: u64) -> wasmtime::Result<Vec<u8>> {
-        let (ptr, len) = wire::abi::unpack(packed);
-        let start = ptr as usize;
-        self.memory
-            .data(store)
-            .get(start..start.saturating_add(len as usize))
-            .map(<[u8]>::to_vec)
-            .ok_or_else(|| wasmtime::Error::msg("the view answered outside its memory"))
-    }
-
-    fn result(
-        &self,
-        store: &Store<HostState>,
-        packed: u64,
-    ) -> wasmtime::Result<Result<Vec<u8>, String>> {
-        wire::abi::decode_result(&self.answer(store, packed)?)
-            .ok_or_else(|| wasmtime::Error::msg("the view's answer is not a result"))
-    }
-
-    pub(super) fn init(&self, store: &mut Store<HostState>) -> wasmtime::Result<()> {
-        self.init.call(store, ())
-    }
-
-    pub(super) fn tick(
-        &self,
-        store: &mut Store<HostState>,
-        events: &[u8],
-    ) -> wasmtime::Result<Vec<u8>> {
-        let (ptr, len) = self.give(store, events)?;
-        let packed = self.tick.call(&mut *store, (ptr, len))?;
-        if wire::abi::unpack(packed).1 as usize > MAX_FRAME_BYTES {
-            return Err(wasmtime::Error::msg("frame too large"));
-        }
-        self.answer(store, packed)
-    }
-
-    /// The view's state, held to `MAX_SNAPSHOT_BYTES` on the length the
-    /// guest names, before the host copies a byte of it.
-    pub(super) fn snapshot(
-        &self,
-        store: &mut Store<HostState>,
-    ) -> wasmtime::Result<Result<Vec<u8>, String>> {
-        let packed = self.snapshot.call(&mut *store, ())?;
-        // the answer's first byte is its result tag
-        if wire::abi::unpack(packed).1 as usize > wire::MAX_SNAPSHOT_BYTES + 1 {
-            return Ok(Err(
-                "the view's state is past the snapshot byte budget".into()
-            ));
-        }
-        self.result(store, packed)
-    }
-
-    pub(super) fn restore(
-        &self,
-        store: &mut Store<HostState>,
-        state: &[u8],
-    ) -> wasmtime::Result<Result<(), String>> {
-        let (ptr, len) = self.give(store, state)?;
-        let packed = self.restore.call(&mut *store, (ptr, len))?;
-        Ok(self.result(store, packed)?.map(|_| ()))
-    }
-}
 
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
@@ -121,6 +17,14 @@ pub(super) enum Restored {
     Refused(String),
 }
 
+/// One instantiated view: its wasm store and exports, the last frame it
+/// sent, and everything the host keeps on its behalf between ticks — the
+/// events owed to it, the live text of its inputs, its pictures, and the
+/// subscriptions it opened. Every subscription here (`props`,
+/// `visibility`, `offset`, `route`, `live`, `tasks`, `clocks`) has one
+/// lifecycle: opened by a request, retired by its cancel in `redraw`, and
+/// gone with the instance. A replacement prepared by `load` is a second
+/// `Guest` seated over this one (`alive`, `staged`).
 pub(super) struct Guest {
     /// Node requests belong to the network selected when this instance starts.
     pub(crate) connection_rev: u64,
@@ -133,8 +37,8 @@ pub(super) struct Guest {
     pub(crate) capabilities: Vec<Capability>,
     /// The undeclared capabilities already logged, so each is logged once.
     pub(crate) undeclared_logged: Vec<Capability>,
-    pub(crate) store: Store<HostState>,
-    pub(crate) exports: Exports,
+    store: Store<HostState>,
+    exports: Exports,
     /// The guest's events for its next tick.
     pub(crate) pending: Vec<wire::Event>,
     pub(crate) theme_dark: Option<bool>,
@@ -171,8 +75,8 @@ pub(super) struct Guest {
     pub(crate) intents: Vec<Intent>,
     /// The kernel's answers to this guest's node calls, on their way in.
     pub(crate) replies: Arc<kernel::Replies>,
-    /// The guest's `module.changes` subscriptions, each with the plane it named:
-    /// told on every block that moves that plane.
+    /// The guest's `module.changes` subscriptions and the program each one
+    /// watches: told on every block that wrote to that program.
     pub(crate) live_subscriptions: Vec<(u64, String)>,
     /// Pending host requests and subscriptions, each owned by this guest
     /// the kernel opened for it: retired with the cancel, and with the guest.
@@ -185,11 +89,8 @@ pub(super) struct Guest {
     pub(crate) clocks: Vec<kernel::Clock>,
     /// The trap that ended the view, if one did. A faulted guest never ticks again.
     pub(crate) fault: Option<String>,
-    /// The assets the deployment shipped beside this view, for the host
-    /// surfaces that paint them by canonical relative path; swapped with the
-    /// instance as one unit. Empty for a view the developer's override supplies.
-    /// The deployment this instance came from; none for a file the
-    /// developer's override supplies.
+    /// sha256 of the view bytes this instance was built from; none for a
+    /// file the developer's override supplies.
     pub(crate) hash: Option<[u8; 32]>,
     /// This instance's identity: a replacement prepared against it is
     /// installed only over it.
@@ -199,11 +100,14 @@ pub(super) struct Guest {
     pub(crate) staged: bool,
 }
 
-/// The asset at `path` in a deployment's map: the canonical relative path,
-/// exactly — no normalisation, no file, no network.
+/// The first six bytes of a hash as hex: how a view is named in logs and
+/// errors.
 pub(super) fn hex_short(hash: &[u8; 32]) -> String {
     hash[..6].iter().map(|byte| format!("{byte:02x}")).collect()
 }
+
+/// A tick may cancel up to twice what it may request.
+pub(super) const MAX_CANCELS_PER_TICK: usize = 2 * MAX_REQUESTS_PER_TICK;
 
 pub(super) const COMPILED_VIEW_LIMIT: usize = 16;
 pub(super) const COMPILED_VIEW_SOURCE_BYTES: usize = 32 * 1024 * 1024;
@@ -303,13 +207,40 @@ pub(super) fn engine() -> &'static Engine {
 }
 
 /// Reset the instruction allowance before entering the guest.
-pub(super) fn arm(store: &mut Store<HostState>) {
+fn arm(store: &mut Store<HostState>) {
     let _ = store.set_fuel(FUEL_PER_TICK);
+}
+
+/// The tooltip in a node that route `request` builds, if it has one. A
+/// plain tooltip caches the content alone; a rich text's caches the
+/// character index it was built for too.
+enum TooltipRoute<'a> {
+    Plain(&'a mut wire::Tooltip),
+    Rich(&'a mut wire::TooltipResponse),
+}
+
+fn tooltip_route(node: &mut wire::Node, request: u32) -> Option<TooltipRoute<'_>> {
+    match node {
+        wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
+        | wire::Node::UniformList { interactivity, .. }
+        | wire::Node::Image { interactivity, .. }
+        | wire::Node::Svg { interactivity, .. } => interactivity
+            .tooltip
+            .as_mut()
+            .filter(|tooltip| tooltip.request == request)
+            .map(TooltipRoute::Plain),
+        wire::Node::RichText {
+            tooltip: Some(tooltip),
+            ..
+        } if tooltip.request == request => Some(TooltipRoute::Rich(tooltip)),
+        _ => None,
+    }
 }
 
 /// Brings the tree the host holds into `frame`: an `unchanged` frame takes
 /// it as is, a frame without a tree patches it, a frame with one replaces
-/// it. `Ok(true)` is a tree the widget has to rebuild for.
+/// it. The flag is a tree the widget has to rebuild for; the report is what
+/// sanitizing the result cut.
 pub(super) fn merge(
     held: &mut Option<wire::Node>,
     frame: &mut wire::Frame,
@@ -324,28 +255,16 @@ pub(super) fn merge(
             }
             let mut matches = 0usize;
             let mut index_matches = true;
-            root.for_each_mut(&mut |node| match node {
-                wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
-                | wire::Node::UniformList { interactivity, .. }
-                | wire::Node::Image { interactivity, .. }
-                | wire::Node::Svg { interactivity, .. } => {
-                    if interactivity
-                        .tooltip
-                        .as_ref()
-                        .is_some_and(|tooltip| tooltip.request == response.request)
-                    {
-                        matches += 1;
-                        index_matches &= response.character_index.is_none();
-                    }
+            root.for_each_mut(&mut |node| match tooltip_route(node, response.request) {
+                Some(TooltipRoute::Plain(_)) => {
+                    matches += 1;
+                    index_matches &= response.character_index.is_none();
                 }
-                wire::Node::RichText {
-                    tooltip: Some(tooltip),
-                    ..
-                } if tooltip.request == response.request => {
+                Some(TooltipRoute::Rich(_)) => {
                     matches += 1;
                     index_matches &= response.character_index.is_some();
                 }
-                _ => {}
+                None => {}
             });
             if matches > 1 {
                 return Err("duplicate tooltip request route");
@@ -361,28 +280,16 @@ pub(super) fn merge(
                 if response.is_none() {
                     return;
                 }
-                match node {
-                    wire::Node::Container(view_wire::ContainerNode { interactivity, .. })
-                    | wire::Node::UniformList { interactivity, .. }
-                    | wire::Node::Image { interactivity, .. }
-                    | wire::Node::Svg { interactivity, .. }
-                        if interactivity
-                            .tooltip
-                            .as_ref()
-                            .is_some_and(|tooltip| tooltip.request == request) =>
-                    {
-                        interactivity.tooltip.as_mut().unwrap().content =
-                            response.take().unwrap().content;
+                match tooltip_route(node, request) {
+                    Some(TooltipRoute::Plain(tooltip)) => {
+                        tooltip.content = response.take().unwrap().content;
                     }
-                    wire::Node::RichText {
-                        tooltip: Some(tooltip),
-                        ..
-                    } if tooltip.request == request => {
+                    Some(TooltipRoute::Rich(tooltip)) => {
                         let value = response.take().unwrap();
                         tooltip.character_index = value.character_index;
                         tooltip.content = value.content;
                     }
-                    _ => {}
+                    None => {}
                 }
             });
             if response.is_none() {
@@ -414,7 +321,7 @@ pub(super) fn shape(
 ) -> Result<(wire::Frame, display_diagnostics::FrameReports), String> {
     let mut frame: wire::Frame = wire::decode(bytes)?;
     let requests_exceed_budget = frame.requests.len() > MAX_REQUESTS_PER_TICK;
-    let cancels_exceed_budget = frame.cancels.len() > 2 * MAX_REQUESTS_PER_TICK;
+    let cancels_exceed_budget = frame.cancels.len() > MAX_CANCELS_PER_TICK;
     if requests_exceed_budget || cancels_exceed_budget {
         return Err("frame request or cancellation budget exceeded".into());
     }
@@ -428,23 +335,6 @@ pub(super) fn shape(
     let local = wire::sanitize(&mut frame).map_err(str::to_owned)?;
     frame.upstream_sanitization = upstream;
     Ok((frame, display_diagnostics::FrameReports { local, upstream }))
-}
-
-pub(super) fn panic_message(store: &mut Store<HostState>) -> Option<String> {
-    let text = store.data_mut().panic.take()?;
-    (!text.is_empty()).then_some(text)
-}
-
-/// Why a call failed: the trap itself, not the wrapper and backtrace
-/// wasmtime prints around it.
-pub(super) fn first_line(error: &wasmtime::Error) -> String {
-    error
-        .root_cause()
-        .to_string()
-        .lines()
-        .next()
-        .unwrap_or("trap")
-        .to_string()
 }
 
 /// A view built against another wire than this app's, as the plain refusal

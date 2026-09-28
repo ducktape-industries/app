@@ -1,21 +1,7 @@
 use super::*;
 
 fn tooltip_route(request: u32) -> wire::Node {
-    let interactivity = wire::Interactivity {
-        tooltip: Some(wire::Tooltip {
-            request,
-            content: None,
-            hoverable: false,
-            delay_ms: 250,
-        }),
-        ..Default::default()
-    };
-    wire::Node::Container(view_wire::ContainerNode {
-        id: None,
-        style: Default::default(),
-        interactivity,
-        children: Vec::new(),
-    })
+    primitive_tooltip_route("container", request)
 }
 
 fn primitive_tooltip_route(kind: &str, request: u32) -> wire::Node {
