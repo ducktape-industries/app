@@ -97,6 +97,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
             "In a title bar, +",
             "Lock puts this device's key away",
             "This help",
+            "In a text editor, move on (Tab alone indents)",
         ],
     );
     // no word of a Tab that only moves focus (AX-022)
