@@ -18,10 +18,6 @@ pub(crate) struct Accessible {
     pub placeholder: Option<String>,
     /// Text a field holds, or a text's own words. Never a secure field's.
     pub value: Option<String>,
-    /// A heading's level, 1 to 6.
-    pub level: Option<usize>,
-    /// How a change to text that is not focused is announced.
-    pub live: Option<gpui_kit::accesskit::Live>,
     /// A control with no handler: it is drawn, and does nothing.
     pub disabled: bool,
 }
@@ -97,7 +93,6 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
             placeholder: named(placeholder),
             value: (!secure).then(|| value.clone()),
             disabled: options.disabled,
-            ..Default::default()
         },
         // the document is not on the node: the editor mount adds its text as
         // the value (`TextEditor::render`)
@@ -152,7 +147,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
 
 /// Puts `accessible` on an element the presenter built. A kit widget draws
 /// its own role, name and value over these; the states it does not report
-/// itself (disabled, a description, a level) are the ones this adds.
+/// itself (disabled, a description, a placeholder) are the ones this adds.
 pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: Accessible) -> E {
     let Accessible {
         role,
@@ -160,9 +155,6 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         description,
         placeholder,
         value,
-        level,
-        // a view says `Aria.live` on a roled container (`guest_aria`)
-        live: _,
         disabled,
     } = accessible;
     crate::a11y::aria(element, |mut node| {
@@ -180,9 +172,6 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         }
         if let Some(value) = value {
             node = node.aria_value(value);
-        }
-        if let Some(level) = level {
-            node = node.aria_level(level);
         }
         if disabled {
             node = node.aria_disabled(true);

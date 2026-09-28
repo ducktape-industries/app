@@ -439,7 +439,7 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   door masks it) and `AX_WHOLE` (`whole`: the door does not truncate it).
 - **Renderer mapping** (`src/render/accessibility.rs`): `Accessible` is what
   one wire node is to assistive technology (role, name, description,
-  value, numeric range, toggled/expanded/selected, heading level);
+  placeholder, value, disabled);
   `accessible(node)` builds it per node kind and `announce` writes it onto
   the element through `a11y::aria`. `ViewTree::guest_aria` is the one aria
   mapper for the nodes that carry the guest's own `Interactivity`
