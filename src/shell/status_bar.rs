@@ -42,37 +42,37 @@ impl DesktopWindow {
                 "{} isn't answering. What you write stays here.",
                 state.network
             );
-            bar("reconnecting")
-                .control(Role::Status, SharedString::from(said.clone()))
-                .child(pulse(false, state.motion, &ink))
-                .child(text(said))
-                .child(self.button(
-                    "reconnect",
-                    "Retry now",
-                    Kind::Small,
-                    || Message::Tick,
-                    false,
-                    &ink,
-                ))
+            crate::a11y::live(
+                bar("reconnecting").role(Role::Status),
+                accesskit::Live::Polite,
+                said.clone(),
+            )
+            .child(pulse(false, state.motion, &ink))
+            .child(text(said))
+            .child(self.button(
+                "reconnect",
+                "Retry now",
+                Kind::Small,
+                || Message::Tick,
+                false,
+                &ink,
+            ))
         });
         let toast = (!toast.is_empty()).then(|| {
-            bar("toast")
-                .control(Role::Status, SharedString::from(toast.clone()))
-                // `Text` hands its words to the AX value, leaving the
-                // node's name empty; a reader announces the name.
-                .child(
-                    text(toast.clone())
-                        .id("toast-message")
-                        .control(Role::Label, SharedString::from(toast)),
-                )
-                .child(self.button(
-                    "toast-dismiss",
-                    "Dismiss",
-                    Kind::Small,
-                    || Message::DismissToast,
-                    false,
-                    &ink,
-                ))
+            crate::a11y::live(
+                bar("toast").role(Role::Status),
+                accesskit::Live::Polite,
+                toast.clone(),
+            )
+            .child(text(toast))
+            .child(self.button(
+                "toast-dismiss",
+                "Dismiss",
+                Kind::Small,
+                || Message::DismissToast,
+                false,
+                &ink,
+            ))
         });
         Some(
             div()

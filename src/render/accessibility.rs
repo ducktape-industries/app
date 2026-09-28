@@ -1,10 +1,10 @@
 //! What a wire node is to assistive technology. `accessible` maps a node to
 //! an `Accessible` (role, name, value, states); `announce` writes one onto
-//! the element a renderer built; `guest_aria` writes the guest's own
-//! `Interactivity.aria` for the nodes that carry it (Container, Image, Svg,
-//! UniformList). `ViewTree::presentation` also lives here
-//! for now, though it is not accessibility: it is the native state carried
-//! across a guest generation (see its doc).
+//! the element a renderer built; `guest_aria`, the one aria mapper, writes
+//! the guest's own `Interactivity.aria` for the nodes that carry it
+//! (Container, Image, Svg, UniformList). `ViewTree::presentation` also lives
+//! here for now, though it is not accessibility: it is the native state
+//! carried across a guest generation (see its doc).
 use super::*;
 
 /// What one wire node is to assistive technology: the role it plays, the
@@ -14,7 +14,7 @@ pub(crate) struct Accessible {
     pub role: Option<gpui_kit::Role>,
     pub name: Option<String>,
     pub description: Option<String>,
-    /// Text a field holds. Never a secure field's.
+    /// Text a field holds, or a text's own words. Never a secure field's.
     pub value: Option<String>,
     /// A heading's level, 1 to 6.
     pub level: Option<usize>,
@@ -32,7 +32,7 @@ fn named(text: &str) -> Option<String> {
 /// clickable drawn with text children but no explicit label is named by
 /// them (`#` + `general` is "# general", not "#"), so nothing in the
 /// tree is announced with an empty or truncated name.
-pub(crate) fn descendant_text(node: &wire::Node) -> Option<String> {
+fn descendant_text(node: &wire::Node) -> Option<String> {
     fn gather<'a>(node: &'a wire::Node, words: &mut Vec<&'a str>) {
         match node {
             wire::Node::Text(view_wire::TextNode { content, .. }) => {
@@ -56,9 +56,9 @@ pub(crate) fn descendant_text(node: &wire::Node) -> Option<String> {
 /// nodes the presenter announces itself: a view never names those controls'
 /// roles, it says `label` and the role follows from the variant. Not every
 /// variant passes through here. Container, UniformList, Image and Svg carry
-/// the guest's own `Interactivity.aria` through `guest_aria` instead (their
-/// renderers never call this; the Image/Svg arm below is reached by tests
-/// only), and RichText has none. The node's accessibility id is its wire key
+/// the guest's own `Interactivity.aria` through `guest_aria` instead, which
+/// takes only a picture's default role and name from the Image/Svg arm
+/// below; RichText has none. The node's accessibility id is its wire key
 /// under the module's view, the element id each variant is already built
 /// with.
 pub(crate) fn accessible(node: &wire::Node) -> Accessible {
@@ -70,6 +70,8 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
         ..Default::default()
     };
     match node {
+        // the words are the value too, as gpui's own `Text` has them: the
+        // adapters name a Label by its value
         Node::Text(view_wire::TextNode {
             content,
             heading,
@@ -81,6 +83,7 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
                 None => Role::Label,
             }),
             name: named(content),
+            value: named(content),
             level: heading.map(usize::from),
             live: *live,
             ..Default::default()
@@ -161,12 +164,12 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         description,
         value,
         level,
-        // ponytail: the gpui-pre fork has no live-region setter; `live` is
-        // mapped and dropped here until it gains one
+        // no SDK view can set `TextNode.live`: phase 2 moves it to
+        // `Aria.live`, written through `a11y::Patch`
         live: _,
         disabled,
     } = accessible;
-    let element = crate::a11y::aria(element, |mut node| {
+    crate::a11y::aria(element, |mut node| {
         if let Some(role) = role {
             node = node.role(role);
         }
@@ -182,42 +185,35 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
         if let Some(level) = level {
             node = node.aria_level(level);
         }
+        if disabled {
+            node = node.aria_disabled(true);
+        }
         node
-    });
-    crate::a11y::disabled(element, disabled)
-}
-
-/// Where the renderers that carry the guest's own `Interactivity.aria`
-/// differ. The setter chain was copied into Container, Image/Svg and
-/// UniformList and the copies drifted; `guest_aria` keeps each call site's
-/// behaviour through these until the owner picks one for all.
-pub(super) struct Drift<'a> {
-    /// A roled element with no `aria.label` is named by this node's
-    /// descendant text. Container only; Image, Svg and UniformList stay
-    /// unnamed.
-    pub(super) name_from: Option<&'a wire::Node>,
-    /// `aria.active_descendant` reaches the element. Container only; the
-    /// other copies dropped it.
-    pub(super) active_descendant: bool,
+    })
 }
 
 impl ViewTree {
-    /// The guest's `Interactivity` as assistive technology receives it, on
-    /// the element a renderer built: role, focusable, the author id, every
-    /// `aria.*` setter, then the guest focus handle (made once per id, kept
-    /// in `guest_focus_targets`) and the rest of the interactivity through
-    /// `interactivity::apply`. `on_click` stays with the caller. Each setter
-    /// is a field write gpui reads once at prepaint, so where the caller
-    /// puts this among its own setters does not matter.
+    /// The one aria mapper: `node`'s `Interactivity` as assistive
+    /// technology receives it, on the element a renderer built. Role,
+    /// focusable, the author id, every `aria.*` setter, then the guest focus
+    /// handle (made once per id, kept in `guest_focus_targets`) and the rest
+    /// of the interactivity through `interactivity::apply`. `on_click` stays
+    /// with the caller. A picture with no role takes `accessible`'s (a
+    /// labelled one is an Image); a roled node with no label is named by the
+    /// text it draws. Each setter is a field write gpui reads once at
+    /// prepaint, so where the caller puts this among its own setters does
+    /// not matter.
     pub(super) fn guest_aria<E: gpui_kit::StatefulInteractiveElement>(
         &mut self,
         mut element: E,
+        node: &wire::Node,
         interactivity: &wire::Interactivity,
-        drift: Drift<'_>,
         cx: &mut Context<Self>,
     ) -> E {
         let aria = &interactivity.aria;
-        if let Some(role) = interactivity.role {
+        let own = accessible(node);
+        let role = interactivity.role.or(own.role);
+        if let Some(role) = role {
             element = element.role(role);
         }
         if interactivity.focusable {
@@ -228,8 +224,10 @@ impl ViewTree {
         }
         if let Some(value) = &aria.label {
             element = element.aria_label(value.clone());
-        } else if interactivity.role.is_some()
-            && let Some(text) = drift.name_from.and_then(super::descendant_text)
+        } else if let Some(name) = own.name {
+            element = element.aria_label(name);
+        } else if role.is_some()
+            && let Some(text) = descendant_text(node)
         {
             // A role with no explicit label: a view styling its own button
             // out of a container still gets a name, taken from the text it
@@ -296,7 +294,8 @@ impl ViewTree {
         if let Some(value) = aria.orientation {
             element = element.aria_orientation(value);
         }
-        if drift.active_descendant && aria.active_descendant {
+        // gpui panics (debug) when the node claiming it is the focused one
+        if aria.active_descendant && !interactivity.focusable {
             element = element.aria_active_descendant();
         }
         let focus_handle = interactivity.focus_handle.map(|id| {

@@ -76,7 +76,7 @@ impl DesktopWindow {
             .child(match empty_panes_message(&crate::runtime::rail()) {
                 Some(message) => super::ink::mono(400, 12.)
                     .text_color(ink.muted)
-                    .child(message)
+                    .child(super::ink::words("empty-desk/message", message))
                     .into_any_element(),
                 None => div()
                     .flex()

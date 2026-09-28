@@ -48,8 +48,8 @@ mod variable_list;
 #[cfg(test)]
 mod tests;
 
+use accessibility::accessible;
 pub(crate) use accessibility::{Accessible, announce};
-use accessibility::{accessible, descendant_text};
 use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
 use editor_mount::EditorMount;

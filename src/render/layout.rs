@@ -2,7 +2,6 @@
 //! `measure` records an element's bounds under its authored path,
 //! `over_padding` floats a bar or a measure over a scroller without counting
 //! as its content, `vertical_bar` is a scroller's bar.
-use super::accessibility::Drift;
 use super::*;
 use crate::render::native_id;
 
@@ -50,15 +49,7 @@ impl ViewTree {
             let style = group.style.clone();
             element = element.group_active(group.group.clone(), move |_| style);
         }
-        element = self.guest_aria(
-            element,
-            interactivity,
-            Drift {
-                name_from: Some(node),
-                active_descendant: true,
-            },
-            cx,
-        );
+        element = self.guest_aria(element, node, interactivity, cx);
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {

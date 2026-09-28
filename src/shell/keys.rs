@@ -9,9 +9,10 @@
 //! nothing open over it), and whether something is open over it
 //! (`overlay`). A guest editor (`GuestEditor`) sits deeper, so its own keys
 //! come first. An empty window's ↑↓ and Enter are its field's (`command.rs`
-//! takes them); Tab there is `SwitchMode`, under the empty window's own
-//! context (`command::CONTEXT`). A desk window is a pane; an OS window is a
-//! `DesktopWindow`.
+//! takes them); Tab there is `SwitchMode` once agent chat is built
+//! (`command::CHAT_READY`), under the empty window's own context
+//! (`command::CONTEXT`), and until then moves focus. A desk window is a
+//! pane; an OS window is a `DesktopWindow`.
 
 use super::*;
 use gpui_kit::{Action, KeyBinding, KeyContext, Menu, MenuItem};
@@ -70,8 +71,14 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-shift-tab", CycleBack, DESK),
         KeyBinding::new("secondary-k", ToggleSpotlight, Some("Ducktape && on_desk")),
         KeyBinding::new("escape", CloseOverlay, Some("Ducktape && overlay")),
-        KeyBinding::new("tab", SwitchMode, Some(super::command::CONTEXT)),
     ];
+    if super::command::CHAT_READY {
+        bindings.push(KeyBinding::new(
+            "tab",
+            SwitchMode,
+            Some(super::command::CONTEXT),
+        ));
+    }
     for nth in 1..=9 {
         bindings.push(KeyBinding::new(
             &format!("secondary-{nth}"),
@@ -242,5 +249,20 @@ mod tests {
             Some("desk::CloseOverlay")
         );
         assert_eq!(resolve("escape", &[desk], cx), None);
+    }
+
+    /// Tab in an empty window switches to agent chat only once chat is
+    /// built; until then it moves focus, as everywhere (AX-022).
+    #[gpui_kit::test]
+    fn tab_in_an_empty_window_moves_focus_until_chat_is_built(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(bind);
+        let empty = [
+            "Ducktape console on_desk desk",
+            super::super::command::CONTEXT,
+        ];
+        assert_eq!(
+            resolve("tab", &empty, cx).is_some(),
+            super::super::command::CHAT_READY
+        );
     }
 }

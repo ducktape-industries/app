@@ -246,9 +246,6 @@ fn perform(window: &mut Window, cx: &mut App, node: NodeId, action: &str, value:
     match action {
         "press" => window.dispatch_a11y_action(request(Action::Click, None), cx),
         "focus" => window.dispatch_a11y_action(request(Action::Focus, None), cx),
-        "scroll_into_view" => {
-            window.dispatch_a11y_action(request(Action::ScrollIntoView, None), cx)
-        }
         "set_value" => {
             // Focus first, as `type` does: `TextEditor::observed`
             // (editor/text.rs) forwards an edit to the guest only while its

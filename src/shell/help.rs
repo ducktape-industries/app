@@ -20,14 +20,20 @@ impl DesktopWindow {
         use gpui_kit::*;
         let welcome = self.model.read(cx).state.welcome;
         let ink = Ink::of(self.model.read(cx).state.dark());
-        let section = |title: &'static str| {
+        let section = |id: &'static str, title: &'static str| {
             mono(400, 12.)
                 .text_color(ink.muted)
                 .pt(px(28.))
                 .pb(px(8.))
-                .child(title)
+                .child(words(id, title))
         };
-        let line = |text: String| div().pb(px(6.)).child(note(text, ink.ink));
+        // each paragraph its own id: `<section>/<n>`
+        let lines = |section: &'static str, texts: Vec<String>| {
+            texts.into_iter().enumerate().map(move |(n, text)| {
+                let id = SharedString::from(format!("{section}/{n}"));
+                div().pb(px(6.)).child(note(id, text, ink.ink))
+            })
+        };
         let (heading, lead_text) = match welcome {
             true => (
                 "Welcome to Ducktape",
@@ -53,8 +59,11 @@ impl DesktopWindow {
                 .to_owned(),
             format!(
                 "{n} opens an empty window: type part of a program's name, pick it \
-                 with ↑↓ and open it with ↵. Tab switches what the field searches, \
-                 Module or Chat; Chat, for talking to an agent, is coming soon."
+                 with ↑↓ and open it with ↵.{}",
+                match super::command::CHAT_READY {
+                    true => " Tab switches what the field searches, Module or Chat.",
+                    false => "",
+                }
             ),
             format!("{k} searches programs, networks and actions from anywhere."),
         ];
@@ -105,7 +114,9 @@ impl DesktopWindow {
             ("Esc".to_owned(), "Close search, a menu or settings"),
             (chord_label("Q"), "Quit"),
         ]
-        .map(|(chord, what)| {
+        .into_iter()
+        .enumerate()
+        .map(|(n, (chord, what))| {
             div()
                 .flex()
                 .items_baseline()
@@ -118,9 +129,13 @@ impl DesktopWindow {
                         .w(px(104.))
                         .flex_shrink_0()
                         .text_color(ink.ink)
-                        .child(chord),
+                        .child(words(SharedString::from(format!("keys/{n}/chord")), chord)),
                 )
-                .child(sans(400, 13.).text_color(ink.ink).child(what))
+                .child(
+                    sans(400, 13.)
+                        .text_color(ink.ink)
+                        .child(words(SharedString::from(format!("keys/{n}")), what)),
+                )
         });
         div()
             .id("help")
@@ -144,17 +159,17 @@ impl DesktopWindow {
                     .py(px(32.))
                     .flex()
                     .flex_col()
-                    .child(h1(heading, &ink))
-                    .child(div().pt(px(12.)).child(lead(lead_text, &ink)))
-                    .child(section("OPEN A PROGRAM"))
-                    .children(open.map(line))
-                    .child(section("WINDOWS"))
-                    .children(windows.map(line))
-                    .child(section("THE BAR"))
-                    .children(bar.map(line))
-                    .child(section("YOUR ACCOUNT"))
-                    .children(account.map(line))
-                    .child(section("KEYS"))
+                    .child(h1("heading", heading, &ink))
+                    .child(div().pt(px(12.)).child(lead("lead", lead_text, &ink)))
+                    .child(section("open", "OPEN A PROGRAM"))
+                    .children(lines("open", open.into()))
+                    .child(section("windows", "WINDOWS"))
+                    .children(lines("windows", windows.into()))
+                    .child(section("bar", "THE BAR"))
+                    .children(lines("bar", bar.into()))
+                    .child(section("account", "YOUR ACCOUNT"))
+                    .children(lines("account", account.into()))
+                    .child(section("keys", "KEYS"))
                     .children(keys),
             )
             .into_any_element()

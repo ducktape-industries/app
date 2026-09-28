@@ -13,7 +13,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
-        use super::ink::{self, *};
+        use super::ink::*;
         use gpui_kit::*;
         let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
@@ -46,15 +46,23 @@ impl DesktopWindow {
         let below = match (&note, state.connecting) {
             (Some(note), _) => Some(self.alert("connect-error", note.clone(), &ink)),
             (None, true) => Some(
-                ink::note(state.status.clone(), ink.muted)
-                    .id("connect-status")
-                    .role(Role::Status)
-                    .aria_label(state.status.clone())
-                    .into_any_element(),
+                // a note's look; its words are the live region's own
+                crate::a11y::live(
+                    sans(400, 13.)
+                        .line_height(px(13. * 1.55))
+                        .text_color(ink.muted)
+                        .id("connect-status")
+                        .role(Role::Status),
+                    accesskit::Live::Polite,
+                    state.status.clone(),
+                )
+                .child(state.status.clone())
+                .into_any_element(),
             ),
             (None, false) => None,
         };
         let form = self.field(
+            "endpoint-label",
             "Node address",
             div()
                 .flex()
@@ -157,7 +165,7 @@ impl DesktopWindow {
                 .flex()
                 .flex_col()
                 .child(
-                    tag("Recent", &ink)
+                    tag("recent-title", "Recent", &ink)
                         .pb(px(8.))
                         .border_b_1()
                         .border_color(ink.line),

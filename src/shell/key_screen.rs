@@ -49,6 +49,7 @@ impl DesktopWindow {
         };
         let other_chain = state.other_chain.then(|| {
             ink::note(
+                "words",
                 format!(
                     "This is a different network also called {}. It gets its own key on this device.",
                     state.network
@@ -83,6 +84,7 @@ impl DesktopWindow {
                 false => ink.strong,
             };
             self.field(
+                "password-label",
                 "Password for this device's key",
                 field_box(field, border, 44., &ink).into_any_element(),
                 failed.then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink)),

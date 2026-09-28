@@ -395,3 +395,79 @@ fn a_node_seen_in_every_snapshot_counts_once() {
     assert_eq!(report.applicable["AX-002"], 1);
     assert_eq!(report.nodes, 1);
 }
+
+/// Six buttons, Tab order as painted: three below the window's edge, then
+/// three on it; the box around them holds the keys first.
+struct Stops(gpui_kit::FocusHandle);
+
+impl gpui_kit::Render for Stops {
+    fn render(
+        &mut self,
+        _: &mut Window,
+        _: &mut gpui_kit::Context<Self>,
+    ) -> impl gpui_kit::IntoElement {
+        use gpui_kit::*;
+        let button = |id: &'static str, top: f32| {
+            div()
+                .id(id)
+                .role(Role::Button)
+                .aria_label(id)
+                .focusable()
+                .tab_stop(true)
+                .on_click(|_, _, _| {})
+                .absolute()
+                .left(px(0.))
+                .top(px(top))
+                .size(px(40.))
+        };
+        div()
+            .id("stops")
+            .track_focus(&self.0)
+            .relative()
+            .size_full()
+            .child(button("hidden-1", 1000.))
+            .child(button("hidden-2", 1100.))
+            .child(button("hidden-3", 1200.))
+            .child(button("shown-1", 0.))
+            .child(button("shown-2", 50.))
+            .child(button("shown-3", 100.))
+    }
+}
+
+/// The first snapshot shows three stops of a Tab cycle of six: N + 1
+/// presses end on the first shown one, and the walk goes on round.
+#[gpui_kit::test]
+fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::AppContext as _;
+    use gpui_kit::test::TestWindowExt as _;
+    cx.update(gpui_kit::init);
+    // the kit's root is what answers Tab
+    let window = cx.open_window(
+        gpui_kit::size(gpui_kit::px(200.), gpui_kit::px(200.)),
+        |window, cx| {
+            let stops = cx.new(|cx| Stops(cx.focus_handle()));
+            gpui_kit::component::Root::new(stops, window, cx)
+        },
+    );
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let snap = |window: &mut Window, cx: &mut App| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("w", window, true)
+    };
+    let report = native.update(|window, cx| {
+        let stops = window
+            .root::<gpui_kit::component::Root>()
+            .flatten()
+            .unwrap();
+        let held = stops.read(cx).view().clone().downcast::<Stops>().unwrap();
+        held.read(cx).0.clone().focus(window, cx);
+        let reading = observe(window, cx, true, |_| true, snap);
+        audit(&reading, false)
+    });
+    assert!(fails(&report, "AX-021").is_empty(), "{report:?}");
+    assert_eq!(report.presses, 7);
+}

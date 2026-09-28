@@ -6,6 +6,10 @@ use super::*;
 
 mod gate;
 mod launcher;
+mod live;
+mod names;
+mod overlays;
+mod text;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};
@@ -46,6 +50,16 @@ fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::Ap
         },
         cx,
     );
+}
+
+/// The notification centre is one per process: the test that posts to it
+/// and the tests that draw it and move the keys through it take turns, or
+/// a row appears or goes under a walk.
+pub(super) fn notices() -> std::sync::MutexGuard<'static, ()> {
+    static NOTICES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    NOTICES
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn find<'a>(nodes: &'a serde_json::Value, role: &str, name: &str) -> &'a serde_json::Value {
@@ -157,6 +171,26 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     assert_eq!(
         phrase["value"], "•••",
         "recovery phrase leaked into the AX tree: {phrase}"
+    );
+    // a Label is named by its value now: no node anywhere in the tree may
+    // carry the words, not the field's own text either
+    assert!(
+        !nodes.to_string().contains("abandon"),
+        "recovery phrase leaked somewhere in the AX tree: {nodes}"
+    );
+
+    // The new key's sheet: its words are the sheet's name, masked; no other
+    // node carries them.
+    model.update(cx, |model, _| {
+        model.state.stage = Stage::Phrase(crate::ui::Phrase {
+            words: crate::Secret::from(String::from("canoe pond forest")),
+            ..Default::default()
+        });
+    });
+    let nodes = native.update(draw);
+    assert!(
+        !nodes.to_string().contains("canoe"),
+        "new recovery phrase leaked into the AX tree: {nodes}"
     );
 }
 
@@ -433,6 +467,7 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
 #[gpui_kit::test]
 fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     use crate::runtime::notify::{Permission, Settings, center};
+    let _turn = notices();
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
@@ -493,7 +528,20 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     view.update(&mut native, |_, cx| cx.notify());
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications, 2 unread");
-    find(&nodes, "MenuItem", "Unread. Ada mentioned you: @grace look");
+    // the count on the bell is announced as notices land
+    let heard = native.update(|window, _| live::announced(window));
+    assert!(
+        heard.iter().any(|(role, name, value, live)| {
+            *role == gpui_kit::Role::Status
+                && name == "2 unread notifications"
+                && value.as_deref() == Some(name.as_str())
+                && *live == Some(gpui_kit::accesskit::Live::Polite)
+        }),
+        "{heard:?}"
+    );
+    let row = find(&nodes, "MenuItem", "Unread. Ada mentioned you: @grace look");
+    // when and from where, after the name
+    assert_eq!(row["description"], "now · chat · #design");
     find(&nodes, "MenuItem", "Unread. Lin: @grace look");
     find(&nodes, "Button", "Mark all read");
     assert!(!nodes.to_string().contains("all caught up"));

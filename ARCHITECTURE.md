@@ -440,7 +440,9 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   one wire node is to assistive technology (role, name, description,
   value, numeric range, toggled/expanded/selected, heading level);
   `accessible(node)` builds it per node kind and `announce` writes it onto
-  the element through `a11y::aria`. `ViewTree::presentation` and
+  the element through `a11y::aria`. `ViewTree::guest_aria` is the one aria
+  mapper for the nodes that carry the guest's own `Interactivity.aria`
+  (Container, Image, Svg, UniformList). `ViewTree::presentation` and
   `with_presentation` (the `NativePresentation` copy across guest
   instances) also live in this file for now; the struct itself is in
   `render.rs`.

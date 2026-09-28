@@ -45,6 +45,7 @@ impl DesktopWindow {
                         .gap(px(16.))
                         .child(
                             self.field(
+                                "approve-code-label",
                                 "Code",
                                 field_box(code, ink.strong, 44., &ink)
                                     .font_family(super::theme::FAMILY_MONO)
@@ -108,8 +109,8 @@ impl DesktopWindow {
                     .self_start()
                     .gap(px(18.))
                     .p(px(24.))
-                    .child(tag("Add a device", &ink))
-                    .child(ink::note(said, ink.muted))
+                    .child(tag("approve-title", "Add a device", &ink))
+                    .child(ink::note("approve-instruction", said, ink.muted))
                     .child(fields)
                     .child(cancel)
                     .into_any_element()
