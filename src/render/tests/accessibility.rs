@@ -288,13 +288,13 @@ fn a_field_says_it_is_invalid_required_and_read_only(cx: &mut gpui_kit::TestAppC
     );
 }
 
-/// A view whose rich text has clickable ranges is not red on the door: each
-/// range is a link the pointer presses and the keyboard cannot reach,
-/// which only the fork can change, so the audit warns (AX-123) and does
-/// not fail it (AX-012).
+/// A view whose rich text has clickable ranges is clean on the door, with
+/// the keys elsewhere and with them on the text: the links are reached
+/// from the box around the text, whose picked link the door reports
+/// focused, a Link under the text's box.
 #[gpui_kit::test]
-fn a_rich_texts_ranges_are_a_warning_not_an_error(cx: &mut gpui_kit::TestAppContext) {
-    use crate::ax::audit::{Reading, Severity, audit};
+fn a_rich_texts_links_are_clean_on_the_door(cx: &mut gpui_kit::TestAppContext) {
+    use crate::ax::audit::{Reading, audit};
     let rich = wire::Node::RichText {
         id: Some(named_id("rich")),
         style: Default::default(),
@@ -309,31 +309,41 @@ fn a_rich_texts_ranges_are_a_warning_not_an_error(cx: &mut gpui_kit::TestAppCont
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(rich));
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let nodes = native.update(|window, cx| {
+    let away = native.update(|window, cx| {
         window.activate_a11y();
         window.render_frame(cx);
         window.render_frame(cx);
         crate::ax::snapshot("t", window, false)
     });
+    let held = native.update(|window, cx| {
+        window.focus_next(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("t", window, false)
+    });
+    let seen: Vec<serde_json::Value> = held
+        .iter()
+        .map(|node| serde_json::to_value(node).unwrap())
+        .collect();
+    let focused = seen
+        .iter()
+        .find(|node| node["state"] == serde_json::json!(["focused"]))
+        .expect("the keys are on a node");
+    assert_eq!(focused["role"], "Link");
+    assert_eq!(focused["name"], "the docs");
+    let text = seen
+        .iter()
+        .find(|node| node["id"] == focused["parent"])
+        .expect("the picked link sits under the text");
+    assert_eq!(text["role"], "Group");
+    assert_eq!(text["actions"], serde_json::json!(["focus"]));
     let report = audit(
         &Reading {
-            snapshots: vec![nodes],
+            snapshots: vec![away, held],
             ..Default::default()
         },
         false,
     );
-    let found: Vec<_> = report
-        .violations
-        .iter()
-        .map(|violation| (violation.rule, violation.severity, violation.id.as_str()))
-        .collect();
-    assert_eq!(
-        found,
-        [
-            ("AX-123", Severity::Warn, "t:Link"),
-            ("AX-123", Severity::Warn, "t:Link2"),
-        ]
-    );
+    assert_eq!(report.violations, []);
 }
 
 /// A rich text carries no aria of its own (the wire gives it no
