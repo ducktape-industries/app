@@ -299,13 +299,17 @@ Continuously: the app CI gate over the shell matrix (phase 1), the modules CI ga
 2. **Editor Tab.** The guest editor keeps Tab for indentation; AX-022 is `warn` for that reason. Do you want Escape-then-Tab as the documented exit (and said so in Help), or Tab always leaves and indentation moves to a chord?
    **Answered (owner, 2026-09-28): Esc, then Tab.** Tab indents; Esc makes the editor let go of the next Tab, which moves the focus on; any other key takes Tab back. Help's keys table has the line. Done (`TextEditor::key_down`, `esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back`).
 3. **Motion switch shape.** Tri-state System/On/Off (honours the OS preference, reachable from the tray and app menu), or a plain OR of "OS says reduce" and "switch off"?
+   **Answered (owner, 2026-09-28): keep the OR.** The OS reduce-motion preference, or the Settings "Moving figures" switch off, holds the figures (`shell::spin` `moving`); no tri-state, and no tray or launcher item.
 4. **Spotlight and the empty window** as a combobox: focused `EditableComboBox` wrapping a `ListBox` with `aria_active_descendant` on rows. It changes how those two are built. Go, or wait for the VoiceOver smoke to show whether the current shape reads at all?
    **Done (phase 2):** both are that combo box (§1.2, AX-012 note).
 5. **Node button name.** "Node: in sync, block N" changes every block; macOS raises a title-changed event each time. Keep the height out of the name?
    **Done (phase 2):** the name holds still ("Node: in sync"); the height is its description ("Block N").
 6. **Fork asks (phase 2 item 8).** Which of live/busy/invalid/has-popup setters, relations, `ScrollIntoView`, text runs, cache bypass, X11 bounds, OS contrast/text-size do you want raised against gpui-pre now, and which stay app-side via the synthetic-children patch?
+   **Answered (owner, 2026-09-28): one fix in the fork, the rest app-side.** Shift+Tab is fixed at the root in gpui-pre: `TabStopMap` keeps one entry per focus handle. Rich-text links go app-side, Spotlight-style: the text is one Tab stop, the arrows pick a link, Enter presses it. Every other ask stays app-side through the synthetic-children patch.
 7. **Pane keyboard operations** (Fill, move, resize, show-in-focused-window): which chords? These land in `src/shell/panes.rs` after ducktape-70.
+   **Answered (owner, 2026-09-28): a proposal comes first.** Proposal pending; no chord is chosen yet.
 8. **Debug archives for qa**: the census wants a debug build so duplicate-id panics gate. Acceptable rig cost?
+   **Answered (owner, 2026-09-28): a door rule first; the door cannot see a duplicate, so the fallback stands.** The fallback is a debug archive for the census (§5 phase 3 item 4), qa-repo work. gpui-pre drops the second node while it builds the frame's tree (`A11yNodeBuilder::can_push` in `src/window/a11y.rs`: a `debug_assert!`, then `false`), and `Drawable::prepaint` (`src/element.rs`) then records neither its element (`a11y_element_id`) nor its synthetic children. `Window::a11y_tree` is the tree after the drop, and everything else that remembers the second element (`seen_ids`, `node_bounds`, `focus_ids`, `action_listeners`) is crate-private, so neither the door nor any other app code sees it in a release build. The one trace the fork hands back is `A11ySubtreeBuilder::push_child`'s `false` for a synthetic child the app pushes itself (`src/render/text/links.rs` skips a refused link). `cargo test` builds gpui-pre with debug assertions, so a duplicate on any screen a test draws panics in app CI; views on real data, which only the census reaches, are the gap.
 
 ### Owner calls, 2026-09-28
 
@@ -314,9 +318,9 @@ Made after phase 2 landed; settled, not to be asked again.
 - **An empty window without the keys** keeps its program rows (`ListBoxOption` in a `ListBox`) and its Module switch. A press on one, from the pointer or from assistive technology, gives that window the keys, then opens the program there. The keyboard reaches that window by its chord (⌘1…⌘9, Ctrl elsewhere) or by cycling to it; the window's box reports the chord, and AX-012 takes it for a shell node in a window without the keys (§1.2 note). No Tab stop per unfocused window.
 - **Menus hanging from the bar** (Account, Node status, the bell, Networks) close when the keys leave them: Tab or Shift+Tab past their ends, a click elsewhere, anything else. The keys stay where they went. Not modal, no focus trap. AX-104 reads every snapshot again; AX-021 counts a menu's opening control as reached when the walk closed the menu (§1.2, §1.3).
 - **Every native shell field stays `required`** (AX-109).
-- **Rich-text links stay an AX-123 warning** until the fork lets a synthetic node take focus (§5, item 8); a press reaches them today, the keyboard does not.
+- **Rich-text links go app-side, Spotlight-style** (Q6): the text is one Tab stop, the arrows pick a link, Enter presses it. The fork is not asked to let a synthetic node take focus.
 - **The node dot's `ok_soft` breath stays** as drawn.
-- **Text field borders** (Q1) and **the editor's Tab** (Q2): above.
+- **Text field borders** (Q1), **the editor's Tab** (Q2), **the motion switch** (Q3), **the fork asks** (Q6) and **duplicate node ids** (Q8): above.
 
 ---
 
