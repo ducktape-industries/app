@@ -39,7 +39,7 @@ fn an_input_is_named_by_its_label_and_a_secure_one_never_reports_its_value() {
 #[test]
 fn an_editor_is_named_by_its_label_and_described_by_its_placeholder_without_one() {
     let mut editor = wire::Node::Editor {
-        options: Box::default(),
+        binding: None,
         id: named_id("e"),
         style: gpui_kit::StyleRefinement::default(),
         label: None,
@@ -86,7 +86,7 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
             id: named_id("composer"),
             style: gpui_kit::StyleRefinement::default(),
             label: Some("Message".into()),
-            options: Box::default(),
+            binding: None,
             placeholder: String::new(),
             document: wire::editor_document::EditorDocumentRef {
                 document: "composer".into(),

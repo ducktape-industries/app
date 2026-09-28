@@ -203,7 +203,7 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
             id: named_id("document"),
             style: authored.style().clone(),
             label: None,
-            options: Box::default(),
+            binding: None,
             placeholder: String::new(),
             document: wire::editor_document::EditorDocumentRef {
                 document: "sizing".into(),
@@ -254,7 +254,7 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
         id: named_id("document"),
         style: authored.style().clone(),
         label: None,
-        options: Box::default(),
+        binding: None,
         placeholder: String::new(),
         document: wire::editor_document::EditorDocumentRef {
             document: "sizing".into(),

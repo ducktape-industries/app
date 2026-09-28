@@ -306,7 +306,7 @@ impl TextEditor {
         let claimed = self
             .projection
             .as_ref()
-            .and_then(|projection| projection.options.binding.as_ref())
+            .and_then(|projection| projection.binding.as_ref())
             .is_some_and(|binding| {
                 binding
                     .claims

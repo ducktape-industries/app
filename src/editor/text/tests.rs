@@ -32,13 +32,11 @@ fn store_with(
             handler: 1,
             editable: true,
             placeholder: placeholder.to_owned(),
-            options: wire::EditorOptions {
-                binding: Some(Box::new(wire::EditorBinding {
-                    on_request: 2,
-                    on_event: 3,
-                    claims,
-                })),
-            },
+            binding: Some(Box::new(wire::EditorBinding {
+                on_request: 2,
+                on_event: 3,
+                claims,
+            })),
         },
     );
     locked.documents.insert(
