@@ -304,16 +304,21 @@ impl TextEditor {
     /// that claimed it still hears it, and the field and the view still see
     /// it pass (owner, 2026-09-28; AX-022).
     fn key_down(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
+        // A lone modifier's release reaches interceptors since gpui-pre 0.3.7
+        // (zed ba42ab9d9). It is no key here: it neither spends Esc's leave nor
+        // takes it back, and no claim takes it, which would also keep the
+        // release from the window's modifier listeners.
+        if matches!(
+            keystroke.key.as_str(),
+            "shift" | "control" | "alt" | "platform" | "function"
+        ) {
+            return;
+        }
         if !self.is_focused(window, cx) || self.composing(window, cx) {
             self.tab_released = false;
             return;
         }
-        // A lone modifier's release is a keystroke too (gpui-pre 0.3.7, zed
-        // ba42ab9d9): it neither spends Esc's leave nor takes it back.
-        let released = match keystroke.key.as_str() {
-            "shift" | "control" | "alt" | "platform" | "function" => self.tab_released,
-            _ => std::mem::replace(&mut self.tab_released, keystroke.key == "escape"),
-        };
+        let released = std::mem::replace(&mut self.tab_released, keystroke.key == "escape");
         let key = wire::keyboard::KeyState::from(keystroke);
         let claimed = self
             .projection

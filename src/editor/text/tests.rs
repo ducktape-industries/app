@@ -213,11 +213,18 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
     let store = store_with(
         "claims",
         "text",
-        vec![wire::EditorKeyClaim {
-            key: wire::keyboard::Key::Character("z".into()),
-            modifiers: Default::default(),
-            command: true,
-        }],
+        vec![
+            wire::EditorKeyClaim {
+                key: wire::keyboard::Key::Character("z".into()),
+                modifiers: Default::default(),
+                command: true,
+            },
+            wire::EditorKeyClaim {
+                key: wire::keyboard::Key::Named(wire::keyboard::Named::Shift),
+                modifiers: Default::default(),
+                command: false,
+            },
+        ],
         "",
     );
     let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
@@ -233,6 +240,18 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
         window.render_frame(cx);
     });
     store.drain();
+    // A lone Shift tap reaches keystroke interceptors since gpui-pre 0.3.7
+    // (zed ba42ab9d9). It is no key to claim: taking it would also keep its
+    // release from the window's modifier listeners.
+    native.simulate_modifiers_change(gpui_kit::Modifiers::shift());
+    native.simulate_modifiers_change(gpui_kit::Modifiers::none());
+    let tapped = store.drain();
+    assert!(
+        !tapped
+            .iter()
+            .any(|event| matches!(event, wire::Event::EditorRequest { .. })),
+        "a bare modifier is never the guest's: {tapped:?}"
+    );
     let undo = if cfg!(target_os = "macos") {
         "cmd-z"
     } else {
