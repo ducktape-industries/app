@@ -133,15 +133,16 @@ impl ViewTree {
         // The field's one node is `ui::text_field`, carrying the mapping: an
         // empty label is no name, left unset so it reads as missing; a secure
         // field is a password, which keeps its value out of the tree.
+        // The wrapper wears the view's id; the kit's input inside takes a
+        // host name nested under it, where no view child can be.
         let accessible = accessible(node);
         let native_id = native_id(id);
-        let field_id = ElementId::NamedChild(Arc::new(native_id.clone()), "field".into());
         // the kit fixes the line at 20px inside `8px` padding: a face over
         // ~16px is clipped top and bottom. The line follows the face and the
         // kit's height centres it; a view's own style still wins.
         // read-only as disabled is: the kit refuses what the user types
         let mut input = Input::new(&field.state)
-            .id(native_id)
+            .id(host_id("input"))
             .disabled(options.disabled)
             .readonly(options.read_only)
             .line_height(gpui_kit::relative(1.4))
@@ -151,7 +152,7 @@ impl ViewTree {
             input = input.content_type(InputContentType::Password);
         }
         let field = crate::a11y::text_field(
-            field_id,
+            native_id,
             &field.state.read(cx).focus_handle(cx),
             {
                 let state = field.state.clone();

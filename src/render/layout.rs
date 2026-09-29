@@ -27,7 +27,7 @@ impl ViewTree {
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;
-            ElementId::NamedInteger("guest-container".into(), index)
+            host_id(format!("container-{index}"))
         });
         let mut element = element.id(native_id);
         if let Some(group) = &interactivity.group {
@@ -165,6 +165,6 @@ pub(super) fn over_padding(
 /// A scroller's vertical bar, always shown while it scrolls.
 pub(super) fn vertical_bar(handle: &ScrollHandle) -> impl IntoElement {
     gpui_kit::component::scroll::Scrollbar::vertical(handle)
-        .id("scrollbar")
+        .id(host_id("scrollbar"))
         .mode(gpui_kit::component::scroll::ScrollbarMode::Always)
 }

@@ -178,6 +178,7 @@ mod dialog_focus;
 mod gpui_activation;
 mod gpui_clip;
 mod grip;
+mod host_ids;
 mod inputs;
 mod layout;
 mod links;
