@@ -734,6 +734,62 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
     assert_eq!(width(&mut native), 1002.);
 }
 
+/// The clock ticks once a second and the desk answers with a redraw. With
+/// nothing changed that redraw must not render a seated view's tree again:
+/// the counts of `GET /perf`, on the cached path (no a11y reader, so no
+/// `draw` helper here). Times are flaky under the test scheduler; counts are not.
+#[gpui_kit::test]
+fn a_wall_tick_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    use view_wire as wire;
+    const MODULE: &str = "pane-wall-tick-view";
+    let _on = crate::perf::on_for_test();
+    let (model, key, _, mut native) = console(cx);
+    let frame = |native: &mut VisualTestContext| {
+        native.update(|window, cx| window.draw(cx).clear(cx));
+        native.run_until_parked();
+    };
+    frame(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    let line = wire::Node::RichText {
+        id: Some(wire::ElementIdWire::Name("line".into())),
+        style: gpui_kit::div().h(px(20.)).style().clone(),
+        text: "a line".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: Vec::new(),
+        on_click: None,
+        on_hover: None,
+        tooltip: None,
+    };
+    crate::runtime::seat_drawing_for_test(MODULE, 400, line);
+    for _ in 0..8 {
+        frame(&mut native);
+    }
+    let renders = || {
+        crate::perf::snapshot(false)["views"][MODULE]["renders"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("the seated view counts its renders"))
+    };
+    let settled = renders();
+    assert!(settled > 0, "the view drew its tree once");
+    for _ in 0..3 {
+        model.update(&mut native, |model, cx| {
+            model.dispatch(Message::WallTick, cx)
+        });
+        for _ in 0..3 {
+            frame(&mut native);
+        }
+    }
+    assert_eq!(
+        renders(),
+        settled,
+        "a WallTick rendered the view's tree again"
+    );
+}
+
 /// A Help window brought to the front keeps the keys in its own box: it
 /// draws no finder field, so nothing off-screen may take them.
 #[gpui_kit::test]

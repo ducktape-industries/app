@@ -134,6 +134,13 @@ impl Wait {
 /// `POST /key`: what a keyboard sends to one window — `keys`, keystrokes as
 /// GPUI parses them (`tab`, `shift-tab`, `enter`, `ctrl-k`, space-separated),
 /// then `text`, one key per character, to whatever holds focus.
+///
+/// With `"delta": false` the press reads nothing (docs/perf.md §4.3): no
+/// window's tree before or after, so it neither switches a11y on nor draws,
+/// and the answer is `{}` instead of the delta (`deadline_ms`, which bounds
+/// the settle, goes unused). `window` then resolves from the door's window
+/// list alone, without a tree to find the focused node in: the named
+/// window, else the first one served.
 #[derive(Debug, Deserialize, PartialEq)]
 pub(crate) struct Key {
     #[serde(default)]
@@ -145,6 +152,13 @@ pub(crate) struct Key {
     window: Option<String>,
     #[serde(default)]
     deadline_ms: Option<u64>,
+    /// answer with the tree's delta, as ever; false presses without reading
+    #[serde(default = "yes")]
+    delta: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// `POST /drag`: what a mouse sends to one window — a left press at `from`,
@@ -361,7 +375,11 @@ async fn answer(
             Reply::ok(json!(delta(&before, &after)))
         }
         Request::Key(key) => {
-            let before = read(windows, &all, false, seen, cx);
+            // no tree to read: the window comes from the list alone
+            let before = match key.delta {
+                true => read(windows, &all, false, seen, cx),
+                false => Vec::new(),
+            };
             let Some(handle) = keyboard_window(key.window.as_deref(), &before, windows, cx) else {
                 return Reply::new(404, json!({ "error": "no such window" }));
             };
@@ -372,6 +390,9 @@ async fn answer(
                 .unwrap_or_else(|_| Err("the window is gone".into()));
             if let Err(error) = pressed {
                 return Reply::new(400, json!({ "error": error }));
+            }
+            if !key.delta {
+                return Reply::ok(json!({}));
             }
             let after = settle(&before, key.deadline_ms, windows, seen, cx).await;
             Reply::ok(json!(delta(&before, &after)))
@@ -611,7 +632,9 @@ async fn settle(
 }
 
 /// The window a keyboard types into: `named`, else the one whose tree
-/// holds focus, else the first served.
+/// holds focus, else the first served. With no `nodes` (a press that reads
+/// no tree, `POST /key` with `"delta": false`) there is no focus to find,
+/// so the unnamed window is the first served.
 fn keyboard_window(
     named: Option<&str>,
     nodes: &[AxNode],
@@ -706,5 +729,84 @@ mod tests {
             body["windows"][&key.0.to_string()].is_null(),
             "the count was cleared"
         );
+    }
+
+    /// The door's answer to `request`, from a fresh window it serves as
+    /// `console`, and whether that window's a11y is on afterwards.
+    async fn served_answer(
+        request: impl FnOnce() -> Request + 'static,
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (Reply, Reply, bool) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(
+            gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
+            |_, _| crate::render::ViewTree::new(view_wire::Node::empty()),
+        );
+        let handle: AnyWindowHandle = window.into();
+        let key = crate::runtime::WindowKey::unique();
+        let served = move |_: &App| vec![("console".to_owned(), key, handle)];
+        let (answered, perf) = cx
+            .spawn(async move |mut cx| {
+                let mut seen = Seen::default();
+                let answered = answer(request(), &served, &mut seen, &mut cx).await;
+                let perf = answer(
+                    Request::Perf { by_instance: false },
+                    &served,
+                    &mut seen,
+                    &mut cx,
+                )
+                .await;
+                (answered, perf)
+            })
+            .await;
+        let active = window
+            .update(cx, |_, window, _| window.is_a11y_active())
+            .unwrap();
+        (answered, perf, active)
+    }
+
+    /// A key press asked to read nothing still reaches the window, and
+    /// leaves its a11y off, so its guest views stay cached and `/perf` says
+    /// `cache_on`; the answer is `{}`, and an unnamed window is the first
+    /// served. Any read (here a tree) switches a11y on and `cache_on` off:
+    /// the check can tell them apart.
+    #[gpui_kit::test]
+    async fn a_press_without_a_read_keeps_the_cache_on(cx: &mut gpui_kit::TestAppContext) {
+        let _on = crate::perf::on_for_test();
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _heard = cx.update(|cx| {
+            let heard = heard.clone();
+            cx.observe_keystrokes(move |event, _, _| {
+                heard.borrow_mut().push(event.keystroke.key.clone())
+            })
+        });
+        let press = || {
+            Request::Key(Key {
+                keys: "tab".into(),
+                text: String::new(),
+                window: None,
+                deadline_ms: None,
+                delta: false,
+            })
+        };
+        let (answered, perf, active) = served_answer(press, cx).await;
+        assert_eq!((answered.status, answered.body.as_str()), (200, "{}"));
+        assert_eq!(*heard.borrow(), ["tab"], "the press reached the window");
+        assert!(
+            !active,
+            "a press that reads nothing does not switch a11y on"
+        );
+        let perf: serde_json::Value = serde_json::from_str(&perf.body).unwrap();
+        assert_eq!(perf["cache_on"], true);
+
+        let read = || Request::Tree {
+            filter: Filter::default(),
+            compact: true,
+            bounds: false,
+        };
+        let (_, perf, active) = served_answer(read, cx).await;
+        assert!(active, "a tree read switches a11y on");
+        let perf: serde_json::Value = serde_json::from_str(&perf.body).unwrap();
+        assert_eq!(perf["cache_on"], false);
     }
 }
