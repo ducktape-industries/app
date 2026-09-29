@@ -375,7 +375,7 @@ fn the_hold_is_told_in_words_once_while_it_lasts(cx: &mut TestAppContext) {
 
 #[test]
 fn the_announcement_is_worded_for_the_platform() {
-    let words = pane_hold::hold_words("");
+    let words = pane_hold::hold_words(&Default::default(), "");
     assert!(words.starts_with("Moving Empty window. Arrows move, Shift further, "));
     let (size, keep) = match cfg!(target_os = "macos") {
         true => ("Option", "Return"),
@@ -401,9 +401,10 @@ fn chords_with_shift_are_written_for_the_platform() {
 /// as Shift-click does; a plain Return opens it, as a click does.
 #[gpui_kit::test]
 fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
-    crate::runtime::list_for_test("hold-tab-a");
-    crate::runtime::list_for_test("hold-tab-b");
-    let (_, _, view, mut native) = console(cx);
+    let (model, _, view, mut native) = console(cx);
+    model.update(&mut native, |model, _| {
+        model.state.roster = crate::runtime::Roster::listing(&["hold-tab-a", "hold-tab-b"]);
+    });
     native.update(|window, cx| {
         view.update(cx, |view, cx| {
             view.pane_message(PaneMessage::Open("hold-tab-a"), window, cx);

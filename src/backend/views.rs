@@ -93,27 +93,31 @@ async fn ask(
 
 /// The view inside `code`'s blob, or `None` when the program ships none; a
 /// `bare` blob is the view itself. A blob read once is kept in the cache
-/// directory under its id.
+/// directory under its id; the word beside the bytes says where they came
+/// from, `disk` or `node`.
 pub async fn view_of(
     client: &RpcClient,
     code: &BlobId,
     bare: bool,
-) -> Result<Option<Vec<u8>>, Fetch> {
-    let bytes = program_bytes(client, code).await?;
+) -> Result<Option<(Vec<u8>, &'static str)>, Fetch> {
+    let (bytes, source) = program_bytes(client, code).await?;
     Ok(if bare {
-        Some(bytes)
+        Some((bytes, source))
     } else {
-        view_section(&bytes)
+        view_section(&bytes).map(|view| (view, source))
     })
 }
 
-pub async fn program_bytes(client: &RpcClient, code: &BlobId) -> Result<Vec<u8>, Fetch> {
+pub async fn program_bytes(
+    client: &RpcClient,
+    code: &BlobId,
+) -> Result<(Vec<u8>, &'static str), Fetch> {
     let cached = cache_path(code);
     if let Some(path) = &cached
         && let Ok(bytes) = tokio::fs::read(path).await
         && hashes_to(&bytes, code)
     {
-        return Ok(bytes);
+        return Ok((bytes, "disk"));
     }
     let framed = client
         .blob(*code)
@@ -132,7 +136,7 @@ pub async fn program_bytes(client: &RpcClient, code: &BlobId) -> Result<Vec<u8>,
         }
         let _ = tokio::fs::write(path, &body).await;
     }
-    Ok(body)
+    Ok((body, "node"))
 }
 
 fn cache_path(code: &BlobId) -> Option<PathBuf> {

@@ -14,9 +14,10 @@ fn booted(stage: Stage, key: bool) -> Ducktape {
     let (mut state, _) = Ducktape::boot();
     // boot reads this machine's recent nodes; the screen states set their own
     state.recent_endpoints.clear();
-    // and hands over the app's notification centre, which every test
-    // shares: a screen state gets its own
+    // and hands over the app's notification centre and roster, which every
+    // test shares: a screen state gets its own
     state.center = Default::default();
+    state.roster = Default::default();
     state.stage = stage;
     if key {
         state.signer_key = "ab".into();
@@ -218,6 +219,15 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             }),
         ),
         ("desk-empty", false, Box::new(desk)),
+        (
+            "desk-empty-a-program",
+            false,
+            Box::new(|| {
+                let mut state = desk();
+                state.roster = crate::runtime::Roster::listing(&["gate-program"]);
+                state
+            }),
+        ),
         (
             "desk-toast",
             false,

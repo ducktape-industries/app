@@ -59,9 +59,12 @@ impl Guest {
             self.fault = Some(error);
             return false;
         }
-        if let Err(error) = self.replies.drain_into(&mut self.pending) {
-            self.fault = Some(error);
-            return false;
+        match self.replies.drain_into(&mut self.pending) {
+            Ok(backlog) => crate::perf::record(self.perf_key(), "backlog", backlog as u64),
+            Err(error) => {
+                self.fault = Some(error);
+                return false;
+            }
         }
         self.pending
             .extend(kernel::ticked(&mut self.clocks, std::time::Instant::now()));
@@ -87,6 +90,10 @@ impl Guest {
             }
             self.tick();
             self.ticks += 1;
+            crate::perf::count(self.perf_key(), "ticks", 1);
+            if self.frame.busy {
+                crate::perf::count(self.perf_key(), "busy_ticks", 1);
+            }
         }
         for (nth, request) in std::mem::take(&mut self.frame.requests)
             .into_iter()
@@ -323,6 +330,7 @@ impl Guest {
             .into_iter()
             .flatten()
         {
+            crate::perf::count(self.perf_key(), "truncations", 1);
             tracing::warn!(target: "ducktape::app", module = self.module, generation,
                 reason = "display_text_truncated", origin, "module view display text truncated");
         }
@@ -330,23 +338,46 @@ impl Guest {
 
     /// One call into the module with the pending events, inside the budget.
     /// A trap ends the view; the widget shows the message in its place.
+    /// Each stage is a perf sample under the seat's key: the call, the
+    /// decode, the merge, the fuel and bytes each way, the frame's kind.
     pub(crate) fn tick(&mut self) {
+        use crate::perf;
+        let key = self.perf_key();
         let events = std::mem::take(&mut self.pending);
         let bytes = wire::encode(&events);
+        perf::record(key, "events_bytes", bytes.len() as u64);
         arm(&mut self.store);
-        let outcome = self
+        let called = perf::time(key, "tick.call");
+        let answer = self
             .exports
             .tick(&mut self.store, &bytes)
-            .map_err(|error| first_line(&error))
-            .and_then(|frame| shape(&frame));
-        // `RUST_LOG=ducktape::fuel=debug`: how much of the budget a tick took
-        tracing::debug!(target: "ducktape::fuel", module = self.module,
-            used = FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0), limit = FUEL_PER_TICK);
+            .map_err(|error| first_line(&error));
+        drop(called);
+        if perf::on() {
+            perf::record(key, "fuel.tick", self.fuel_used());
+        }
+        // `RUST_LOG=ducktape::perf=debug`: how much of the budget a tick took
+        tracing::debug!(target: "ducktape::perf", module = self.module,
+            used = self.fuel_used(), limit = FUEL_PER_TICK);
+        let outcome = answer.and_then(|frame| {
+            perf::record(key, "frame_bytes", frame.len() as u64);
+            let _decoded = perf::time(key, "tick.decode");
+            shape(&frame)
+        });
         match outcome {
             Ok((mut frame, mut reports)) => {
+                let kind = match (frame.root.is_some(), frame.unchanged) {
+                    (true, _) => "frame.full",
+                    (false, true) => "frame.unchanged",
+                    (false, false) => "frame.patch",
+                };
+                perf::count(key, kind, 1);
+                perf::record(key, "requests", frame.requests.len() as u64);
+                perf::record(key, "cancels", frame.cancels.len() as u64);
                 let inherits = frame.root.is_none();
                 let mut previous = self.frame.root.take();
                 let mut accepted = true;
+                let merging = perf::time(key, "merge");
                 let merged = merge(&mut previous, &mut frame)
                     .map_err(str::to_owned)
                     .and_then(|changed| {
@@ -357,6 +388,7 @@ impl Guest {
                         }
                         Ok(changed)
                     });
+                drop(merging);
                 match merged {
                     Ok((false, _)) => {}
                     Ok((true, report)) => {
@@ -378,6 +410,14 @@ impl Guest {
                                 wire::Node::Image { data, .. } => *data = None,
                                 _ => {}
                             });
+                            // O(n) over the tree: only with perf on, and
+                            // only on a tick that changed it
+                            if perf::on() {
+                                let mut nodes = 0;
+                                root.for_each_mut(&mut |_| nodes += 1);
+                                perf::gauge(key, "nodes", nodes);
+                                perf::gauge(key, "picture_bytes", self.pictures.bytes());
+                            }
                         }
                     }
                     // Preserve accepted document state while requesting a full tree.
@@ -407,8 +447,16 @@ impl Guest {
                     self.pending.extend(self.inputs.drain());
                 }
                 self.frame = frame;
+                if perf::on() {
+                    perf::gauge(
+                        key,
+                        "memory",
+                        self.exports.memory.data_size(&self.store) as u64,
+                    );
+                }
             }
             Err(trap) => {
+                perf::count(key, "faults", 1);
                 let reason = panic_message(&mut self.store).unwrap_or(trap);
                 tracing::warn!(
                     target: "ducktape::app",

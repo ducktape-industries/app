@@ -66,9 +66,9 @@ impl Ducktape {
                 // handed the route. The window coming forward is the answer;
                 // a notice only says what there is nothing to see of.
                 use crate::runtime::Link;
-                match crate::runtime::parse_link(&link) {
+                match self.roster.parse_link(&link) {
                     Link::View { module, route } => self.open_seat(module, route),
-                    Link::Chain(parsed) if !crate::runtime::listed_view(&parsed.program) => {
+                    Link::Chain(parsed) if !self.roster.lists(&parsed.program) => {
                         self.notice(format!("No view here opens {} links.", parsed.program));
                     }
                     Link::Chain(parsed) => {

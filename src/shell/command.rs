@@ -117,7 +117,7 @@ impl DesktopWindow {
             true => field.read(cx).value().to_string(),
             false => String::new(),
         };
-        let rows = matching(super::panes::openable(), &query);
+        let rows = matching(super::panes::openable(&state.roster), &query);
         let pick = command.pick.min(rows.len().saturating_sub(1));
         command.pick = pick;
         let bar = div()

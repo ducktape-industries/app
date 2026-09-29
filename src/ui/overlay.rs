@@ -128,7 +128,9 @@ impl Ducktape {
             meta,
             spot,
         };
-        let mut rows: Vec<SpotRow> = crate::runtime::rail()
+        let mut rows: Vec<SpotRow> = self
+            .roster
+            .rail()
             .into_iter()
             .filter(|program| !program.empty)
             .map(|program| {

@@ -41,7 +41,7 @@ const fn rule(id: &'static str, severity: Severity, predicate: &'static str) -> 
 
 use Severity::{Error, Warn};
 
-pub(crate) const RULES: [Rule; 42] = [
+pub(crate) const RULES: [Rule; 43] = [
     rule(
         "AX-001",
         Error,
@@ -216,6 +216,11 @@ pub(crate) const RULES: [Rule; 42] = [
         Error,
         "Nothing pressable sits inside a button, link, tab, menu item or toggle.",
     ),
+    rule(
+        "AX-123",
+        Error,
+        "No element is refused for sharing its accessibility id with an earlier one.",
+    ),
 ];
 
 fn severity(rule: &str) -> Severity {
@@ -230,7 +235,8 @@ fn severity(rule: &str) -> Severity {
 pub(crate) struct Violation {
     pub(crate) rule: &'static str,
     pub(crate) severity: Severity,
-    /// the node's door id; a walk step's `step N` (N presses in)
+    /// the node's door id; a walk step's `step N` (N presses in); a refused
+    /// element's `<kept door id> <- <its GlobalElementId>` (AX-123)
     pub(crate) id: String,
     pub(crate) role: String,
     pub(crate) name: String,
@@ -266,7 +272,8 @@ pub(crate) struct Report {
 /// tab press; `escape`, one per snapshot, whether `escape` was bound then;
 /// `arrows`, the arrow probe of the composite the focus started in; and,
 /// the caller's word, `chords`: `(control name, chord)` for each control
-/// the app's Help lists with a chord (AX-114).
+/// the app's Help lists with a chord (AX-114); and `refused`, what the fork
+/// dropped from the tree on the frame of each snapshot (AX-123).
 #[derive(Debug, Default)]
 pub(crate) struct Reading {
     pub(crate) snapshots: Vec<Vec<AxNode>>,
@@ -274,6 +281,43 @@ pub(crate) struct Reading {
     pub(crate) modal: bool,
     pub(crate) arrows: Vec<Arrows>,
     pub(crate) chords: Vec<(String, String)>,
+    pub(crate) refused: Vec<Refused>,
+}
+
+/// An element the fork left out of the tree because an earlier one had its
+/// accessibility id (AX-123), as one snapshot's frame refused it: the door
+/// id of the node that kept it (its `GlobalElementId`, else its `NodeId`,
+/// where the snapshot does not show it), the refused element's
+/// `GlobalElementId`, and which of the identical refusals on that frame
+/// this is (two siblings given one element id refuse twice with one path).
+#[derive(Debug)]
+pub(crate) struct Refused {
+    pub(crate) kept: String,
+    pub(crate) element: String,
+    pub(crate) nth: usize,
+}
+
+/// Add what `window`'s last frame refused to `into`, the kept node named
+/// by its door id in `nodes` (the snapshot before any filter), or through
+/// the element-id map where `nodes` does not show it.
+fn note_refused(into: &mut Vec<Refused>, window: &Window, nodes: &[AxNode]) {
+    let list = window.a11y_refused_elements();
+    for (n, (id, element)) in list.iter().enumerate() {
+        let kept = match nodes.iter().find(|node| node.node == *id) {
+            Some(node) => node.id.clone(),
+            None => window
+                .a11y_element_id(*id)
+                .map_or_else(|| format!("{id:?}"), |kept| format!("{kept:?}")),
+        };
+        into.push(Refused {
+            kept,
+            element: format!("{element:?}"),
+            nth: list[..n]
+                .iter()
+                .filter(|before| **before == list[n])
+                .count(),
+        });
+    }
 }
 
 /// An arrow probe (AX-107): the composite the focus sat in, and the
@@ -755,6 +799,29 @@ fn node_rules(
     }
 }
 
+/// AX-123: one violation per refused element, however many snapshots saw
+/// it, named by the first: the kept node's door id can change from one
+/// snapshot to the next. A refused element has no node to count, so the
+/// rule is applicable only where it fails. The fork panics on a duplicate
+/// in a debug build, so only a release build gets here.
+fn refused_rules(reading: &Reading, tally: &mut Tally) {
+    let mut seen = BTreeSet::new();
+    for Refused { kept, element, nth } in &reading.refused {
+        if !seen.insert((element, nth)) {
+            continue;
+        }
+        let id = match nth {
+            0 => format!("{kept} <- {element}"),
+            nth => format!("{kept} <- {element} #{}", nth + 1),
+        };
+        tally.step("AX-123", &id, "", "", false, || {
+            format!(
+                "{element} was refused: it has the same element id as {kept}, which the tree kept. Give one of the two its own id, or the refused one is invisible to a screen reader"
+            )
+        });
+    }
+}
+
 /// AX-018 on one snapshot: `launcher` is the caller's word that the shell
 /// screen is not the desk; under a modal the rule does not apply.
 fn screen_rules(nodes: &[AxNode], reading: &Reading, launcher: bool, tally: &mut Tally) {
@@ -938,6 +1005,7 @@ pub(crate) fn audit(reading: &Reading, launcher: bool) -> Report {
         snapshot_rules(nodes, &snapshot, &mut tally);
     }
     walk_rules(reading, &mut tally);
+    refused_rules(reading, &mut tally);
     let mut ids = BTreeSet::new();
     let mut actionable = BTreeSet::new();
     for node in reading.snapshots.iter().flatten() {
@@ -1029,8 +1097,10 @@ pub(crate) fn observe(
 ) -> Reading {
     let before = window.focused(cx);
     let mut reading = Reading::default();
+    let mut refused = Vec::new();
     let mut read = |window: &mut Window, cx: &mut App| {
         let mut nodes = snap(window, cx);
+        note_refused(&mut refused, window, &nodes);
         let stops = nodes.iter().filter(|node| offers(node, "focus")).count();
         nodes.retain(&keep);
         (nodes, stops)
@@ -1075,5 +1145,6 @@ pub(crate) fn observe(
             None => window.blur(cx),
         }
     }
+    reading.refused = refused;
     reading
 }

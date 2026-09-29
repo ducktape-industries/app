@@ -41,12 +41,15 @@ impl Guest {
     /// view's snapshot, its first tree verified, and handed to the seat to
     /// swap in. Overridden, Missing, Ready and Failed each log one
     /// `view_source` line here (the seat logs `Swapped`); every load that
-    /// got past the roster logs one `view_load` timing line.
+    /// got past the roster fills `timing`, which the seat logs as one
+    /// `view_load` line once the load is installed. Each stage is also a
+    /// sample under the seat's perf key.
     pub(crate) fn load(
         module: &'static str,
         asked_of: &Connection,
         generation: u64,
         mounted: &Arc<Mutex<Mounted>>,
+        timing: &mut LoadTiming,
     ) -> Result<Loaded, Unloaded> {
         let before_any_candidate = |failure: Failure| Unloaded {
             hash: None,
@@ -69,17 +72,16 @@ impl Guest {
                 reason.to_owned(),
             )));
         };
-        let Some((code, bare)) = listed_code(module) else {
+        let Some((code, bare)) = roster().code(module) else {
             let reason = format!("this network's roster does not list {module}");
             logged(None, "Failed", &reason);
             return Err(before_any_candidate(Failure::NotListed(reason)));
         };
         let runtime = handle();
-        let started = Instant::now();
-        let mut timing = LoadTiming {
-            path: "first",
-            ..LoadTiming::default()
-        };
+        timing.started = Some(Instant::now());
+        timing.path = "first";
+        let instance = mounted.lock().expect("module view lock").instance;
+        let key = crate::perf::Key::View { module, instance };
         let show = |stage: Slot| {
             mounted
                 .lock()
@@ -93,21 +95,33 @@ impl Guest {
         let fetched = Instant::now();
         let bytes = runtime.block_on(crate::backend::views::view_of(client, &code, bare));
         timing.fetch = fetched.elapsed();
+        crate::perf::record(key, "fetch", timing.fetch.as_micros() as u64);
         let bytes = match bytes {
             Ok(bytes) => bytes,
             Err(error) => {
                 let failure = Failure::of(error);
                 logged(None, "Failed", &failure.to_string());
-                timing.log(module, None, started, "Failed");
+                timing.outcome = "Failed";
                 return Err(before_any_candidate(failure));
             }
         };
-        let Some(view_bytes) = bytes else {
+        let Some((view_bytes, blob)) = bytes else {
             let hash = code_digest(&code);
             logged(Some(&hash), "Missing", "");
-            timing.log(module, Some(&hash), started, "Missing");
+            timing.hash = Some(hash);
+            timing.outcome = "Missing";
             return Ok(Loaded::Empty(hash));
         };
+        timing.blob = blob;
+        crate::perf::count(
+            key,
+            match blob {
+                "disk" => "fetch.disk",
+                _ => "fetch.node",
+            },
+            1,
+        );
+        crate::perf::gauge(key, "view_bytes", view_bytes.len() as u64);
         let hash: [u8; 32] = {
             use sha2::Digest as _;
             sha2::Sha256::digest(&view_bytes).into()
@@ -130,32 +144,40 @@ impl Guest {
             }
             show(Slot::Compiling);
             let compiled = Instant::now();
-            let code = Self::compile(&view_bytes, &shown);
+            let code = Self::compile_sourced(&view_bytes, &shown);
             timing.compile = compiled.elapsed();
-            let code = code?;
-            let seated = Instant::now();
+            crate::perf::record(key, "compile", timing.compile.as_micros() as u64);
+            let (code, source) = code?;
+            timing.code = source;
+            crate::perf::count(
+                key,
+                match source {
+                    "memory" => "compile.memory",
+                    "disk" => "compile.disk",
+                    _ => "compile.cold",
+                },
+                1,
+            );
             let (name, capabilities, min_width) = manifest_of(&view_bytes);
-            let prepared = (|| -> Result<Self, Failure> {
-                let mut fresh =
-                    Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
-                fresh.name = name.clone();
-                fresh.capabilities = capabilities.clone();
-                fresh.min_width = min_width;
-                fresh.deployed(hash);
-                match &mut against {
-                    Some((alive, ticks)) => {
-                        Self::replacement(fresh, alive, ticks, mounted, &shown, &mut timing)
-                    }
-                    None => {
-                        fresh.init(&shown).map_err(Failure::Trapped)?;
-                        Ok(fresh)
-                    }
+            let instantiated = Instant::now();
+            let mut fresh = Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
+            timing.instantiate = instantiated.elapsed();
+            fresh.instance = instance;
+            crate::perf::record(key, "instantiate", timing.instantiate.as_micros() as u64);
+            crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
+            fresh.name = name;
+            fresh.capabilities = capabilities;
+            fresh.min_width = min_width;
+            fresh.deployed(hash);
+            let fresh = match &mut against {
+                Some((alive, ticks)) => {
+                    Self::replacement(fresh, alive, ticks, mounted, &shown, timing)?
                 }
-            })();
-            timing.init = seated
-                .elapsed()
-                .saturating_sub(timing.first_frame.unwrap_or_default());
-            let fresh = prepared?;
+                None => {
+                    fresh.timed_init(&shown, timing)?;
+                    fresh
+                }
+            };
             Ok(match against {
                 Some((alive, ticks)) => Loaded::Swap {
                     fresh: Box::new(fresh),
@@ -165,7 +187,8 @@ impl Guest {
                 None => Loaded::Fresh(Box::new(fresh)),
             })
         })();
-        let state = match &outcome {
+        timing.hash = Some(hash);
+        timing.outcome = match &outcome {
             Ok(Loaded::Fresh(_)) => {
                 logged(Some(&hash), "Ready", "");
                 "Ready"
@@ -177,7 +200,6 @@ impl Guest {
                 "Failed"
             }
         };
-        timing.log(module, Some(&hash), started, state);
         outcome.map_err(|failure| Unloaded {
             hash: Some(hash),
             failure,
@@ -219,37 +241,68 @@ impl Guest {
                 ));
             }
             if preserve {
-                Some(
-                    old.snapshot()
-                        .map_err(Failure::Trapped)?
-                        .map_err(Failure::Refused)?,
-                )
+                let taken = Instant::now();
+                let snapshot = old.snapshot();
+                timing.snapshot = taken.elapsed();
+                let key = fresh.perf_key();
+                crate::perf::record(key, "snapshot", timing.snapshot.as_micros() as u64);
+                crate::perf::record(key, "fuel.snapshot", old.fuel_used());
+                let snapshot = snapshot
+                    .map_err(Failure::Trapped)?
+                    .map_err(Failure::Refused)?;
+                timing.snapshot_bytes = snapshot.len();
+                crate::perf::gauge(key, "snapshot_bytes", snapshot.len() as u64);
+                Some(snapshot)
             } else {
                 None
             }
         };
         match snapshot {
-            Some(snapshot) => match fresh.restore(&snapshot, shown).map_err(Failure::Trapped)? {
-                Restored::Carried => {}
-                Restored::Refused(refusal) => {
-                    tracing::warn!(
-                        target: "ducktape::app",
-                        module = fresh.module,
-                        hash = %crate::backend::hex_encode(fresh.hash.as_ref().map_or(&[][..], |hash| hash)),
-                        reason = "snapshot_refused",
-                        refusal = %refusal,
-                        "view_state_dropped"
-                    );
-                    fresh.init(shown).map_err(Failure::Trapped)?;
+            Some(snapshot) => {
+                let restored = Instant::now();
+                let answered = fresh.restore(&snapshot, shown);
+                timing.restore = restored.elapsed();
+                let key = fresh.perf_key();
+                crate::perf::record(key, "restore", timing.restore.as_micros() as u64);
+                crate::perf::record(key, "fuel.restore", fresh.fuel_used());
+                match answered.map_err(Failure::Trapped)? {
+                    Restored::Carried => {}
+                    Restored::Refused(refusal) => {
+                        tracing::warn!(
+                            target: "ducktape::app",
+                            module = fresh.module,
+                            hash = %crate::backend::hex_encode(fresh.hash.as_ref().map_or(&[][..], |hash| hash)),
+                            reason = "snapshot_refused",
+                            refusal = %refusal,
+                            "view_state_dropped"
+                        );
+                        fresh.timed_init(shown, timing)?;
+                    }
                 }
-            },
-            None => fresh.init(shown).map_err(Failure::Trapped)?,
+            }
+            None => fresh.timed_init(shown, timing)?,
         }
         let framed = Instant::now();
         let frame = fresh.first_frame(shown);
-        timing.first_frame = Some(framed.elapsed());
+        let first_frame = framed.elapsed();
+        timing.first_frame = Some(first_frame);
+        crate::perf::record(
+            fresh.perf_key(),
+            "first_frame",
+            first_frame.as_micros() as u64,
+        );
         frame.map_err(Failure::Trapped)?;
         Ok(fresh)
+    }
+
+    /// `init`, timed into `timing` and the registry, as a load runs it.
+    fn timed_init(&mut self, shown: &str, timing: &mut LoadTiming) -> Result<(), Failure> {
+        let started = Instant::now();
+        let ran = self.init(shown);
+        timing.init = started.elapsed();
+        crate::perf::record(self.perf_key(), "init", timing.init.as_micros() as u64);
+        crate::perf::record(self.perf_key(), "fuel.init", self.fuel_used());
+        ran.map_err(Failure::Trapped)
     }
 
     pub(crate) fn deployed(&mut self, hash: [u8; 32]) {
@@ -378,6 +431,11 @@ impl Guest {
     /// The view's bytes checked and compiled — the cranelift stage of
     /// a load, measured on its own.
     pub(crate) fn compile(bytes: &[u8], shown: &str) -> Result<Arc<Module>, Failure> {
+        Self::compile_sourced(bytes, shown).map(|(code, _)| code)
+    }
+
+    /// [`Self::compile`], with where the code came from (`compiled_view`).
+    fn compile_sourced(bytes: &[u8], shown: &str) -> Result<(Arc<Module>, &'static str), Failure> {
         // refused here, a manifest `manifest_of` would read as empty never
         // reaches a seat
         let manifest = view_wire::manifest::read_manifest(bytes).ok_or_else(|| {
@@ -449,6 +507,7 @@ impl Guest {
             connection_rev: connection().lock().expect("views rpc").rev,
             user_activation: None,
             module,
+            instance: 0,
             name: String::new(),
             capabilities: Vec::new(),
             min_width: 0,

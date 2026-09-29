@@ -15,6 +15,9 @@ impl Ducktape {
     pub(crate) fn handle(&mut self, message: Message) -> Task<Message> {
         let launcher = self.in_launcher();
         let task = self.update(message);
+        if launcher && !self.in_launcher() {
+            crate::perf::mark("desk");
+        }
         // a window the keyboard held is let go of where an overlay opens
         if self.overlay.is_some() {
             self.let_go_of_holds();
@@ -25,8 +28,13 @@ impl Ducktape {
         }
     }
 
+    /// Each domain's arm is timed as `reducer.<domain>` (docs/perf.md) and
+    /// never keyed by the message: `AppMessage`'s `Debug` prints payloads,
+    /// and the typed passwords, codes and phrase words are among them.
     pub(crate) fn update(&mut self, message: Message) -> Task<Message> {
+        use crate::perf::{Key, time};
         use Message as M;
+        let timed = |domain: &'static str| time(Key::Shell, domain);
         match message {
             m @ (M::EndpointTyped(_)
             | M::ConnectSubmit
@@ -39,7 +47,10 @@ impl Ducktape {
             | M::Disconnect
             | M::SwitchNetwork(_)
             | M::ForgetEndpoint(_)
-            | M::Tick) => self.on_connect(m),
+            | M::Tick) => {
+                let _timed = timed("reducer.connect");
+                self.on_connect(m)
+            }
             m @ (M::ToggleNetworkMenu
             | M::TogglePopover(_)
             | M::CloseOverlay(_)
@@ -49,7 +60,10 @@ impl Ducktape {
             | M::SpotlightSubmit
             | M::Spot(_)
             | M::OpenSettings
-            | M::ShowSettingsPage(_)) => self.on_overlay(m),
+            | M::ShowSettingsPage(_)) => {
+                let _timed = timed("reducer.overlay");
+                self.on_overlay(m)
+            }
             m @ (M::NotifyOpen(_)
             | M::NotifyMarkAllRead
             | M::NotifyClearRead
@@ -58,7 +72,10 @@ impl Ducktape {
             | M::NotifyNotNow(_)
             | M::SetNotifyBanners(_)
             | M::SetNotifyInFront(_)
-            | M::SetNotifyBurst(_)) => self.on_notify(m),
+            | M::SetNotifyBurst(_)) => {
+                let _timed = timed("reducer.notify");
+                self.on_notify(m)
+            }
             m @ (M::PasswordTyped(_)
             | M::UnlockSubmit
             | M::DeviceKey(_)
@@ -98,7 +115,10 @@ impl Ducktape {
             | M::ShowCreateAccount
             | M::CreateAccountLater
             | M::CreateAccountSubmit
-            | M::AccountCreated(_)) => self.on_sign_in(m),
+            | M::AccountCreated(_)) => {
+                let _timed = timed("reducer.sign_in");
+                self.on_sign_in(m)
+            }
             m @ (M::SetAppearance(_)
             | M::SetMotion(_)
             | M::SelectView(_)
@@ -115,8 +135,14 @@ impl Ducktape {
             | M::WindowUnfocused(_)
             | M::ModifierStateChanged(_)
             | M::TrayOpen
-            | M::TrayQuit) => self.on_desk(m),
-            m @ (M::Pane(..) | M::DeskShown { .. }) => self.on_pane(m),
+            | M::TrayQuit) => {
+                let _timed = timed("reducer.desk");
+                self.on_desk(m)
+            }
+            m @ (M::Pane(..) | M::DeskShown { .. }) => {
+                let _timed = timed("reducer.pane");
+                self.on_pane(m)
+            }
         }
     }
 

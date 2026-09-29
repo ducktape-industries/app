@@ -55,6 +55,8 @@ pub(super) fn console(
     });
     let model = cx.new(|cx| {
         let (mut state, _) = Ducktape::boot();
+        // its own roster, not the app's one every test shares
+        state.roster = Default::default();
         state.stage = crate::Stage::Desk;
         state.active = Some("pane-ax-test");
         Desktop::new(state, crate::tray::init(cx).0)
@@ -593,9 +595,10 @@ fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
 /// is typed narrows the programs, ↓ picks the next, Enter opens it there.
 #[gpui_kit::test]
 fn an_empty_window_opens_what_its_field_finds(cx: &mut TestAppContext) {
-    crate::runtime::list_for_test("cmdtest-alpha");
-    crate::runtime::list_for_test("cmdtest-beta");
-    let (_, _, view, mut native) = console(cx);
+    let (model, _, view, mut native) = console(cx);
+    model.update(&mut native, |model, _| {
+        model.state.roster = crate::runtime::Roster::listing(&["cmdtest-alpha", "cmdtest-beta"]);
+    });
     native.update(|window, cx| {
         draw(window, cx);
         window.dispatch_action(Box::new(keys::NewWindow), cx);
