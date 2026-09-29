@@ -469,43 +469,56 @@ async fn answer(
                 .unwrap_or_default();
             let gone = || Reply::new(404, json!({ "error": "no such window" }));
             let opened = handle.update(cx, |_, window, cx| {
-                audit::Observer::open(
+                // the probe's arrows pick Settings' choices, and a pick
+                // saves: what they change goes back once the walk ends,
+                // however it ends
+                let kept = walk.then(|| crate::shell::Kept::of(window, cx)).flatten();
+                let observer = audit::Observer::open(
                     window,
                     cx,
                     &name,
                     walk,
                     |scope| filter.keeps(scope),
                     |window, cx| current(&name, window, cx, true, seen),
-                )
+                );
+                (kept, observer)
             });
-            let Ok(mut observer) = opened else {
+            let Ok((kept, mut observer)) = opened else {
                 return gone();
             };
-            // a key per update, as `POST /key` presses it: a view hears a
-            // key once the update that pressed it ends, and answers on the
-            // draw a read makes; the probe's arrows wait for that answer
-            loop {
-                match handle.update(cx, |_, window, cx| observer.press(window, cx)) {
-                    Ok(true) => {}
-                    Ok(false) => break,
-                    Err(_) => return gone(),
+            let reply = async {
+                // a key per update, as `POST /key` presses it: a view hears
+                // a key once the update that pressed it ends, and answers
+                // on the draw a read makes; the probe's arrows wait for
+                // that answer
+                loop {
+                    match handle.update(cx, |_, window, cx| observer.press(window, cx)) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        Err(_) => return gone(),
+                    }
+                    let deadline = Instant::now() + ARROW_WAIT;
+                    while !handle
+                        .update(cx, |_, window, cx| observer.read(window, cx))
+                        .unwrap_or(true)
+                        && Instant::now() < deadline
+                    {
+                        cx.background_executor().timer(POLL).await;
+                    }
                 }
-                let deadline = Instant::now() + ARROW_WAIT;
-                while !handle
-                    .update(cx, |_, window, cx| observer.read(window, cx))
-                    .unwrap_or(true)
-                    && Instant::now() < deadline
-                {
-                    cx.background_executor().timer(POLL).await;
-                }
+                handle
+                    .update(cx, |_, window, cx| {
+                        let mut reading = observer.finish(window, cx);
+                        reading.chords = crate::shell::chords();
+                        Reply::ok(json!(audit::audit(&reading, launcher)))
+                    })
+                    .unwrap_or_else(|_| gone())
             }
-            handle
-                .update(cx, |_, window, cx| {
-                    let mut reading = observer.finish(window, cx);
-                    reading.chords = crate::shell::chords();
-                    Reply::ok(json!(audit::audit(&reading, launcher)))
-                })
-                .unwrap_or_else(|_| gone())
+            .await;
+            if let Some(kept) = kept {
+                cx.update(|cx| kept.restore(cx));
+            }
+            reply
         }
         Request::Wait(wait) => {
             let deadline = deadline(wait.deadline_ms);

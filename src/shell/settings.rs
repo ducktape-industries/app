@@ -16,6 +16,52 @@ pub(super) struct Page {
     held: Option<usize>,
 }
 
+/// What Settings' picks change, as it stood: the prefs, and what they
+/// drive in memory (the theme, which views are asking). The door's walk
+/// keeps it before its arrows pick a radio group's choices, and a pick
+/// saves, and puts it back after (docs/ax.md §1.1).
+pub(crate) struct Kept {
+    desktop: gpui_kit::WeakEntity<Desktop>,
+    prefs: serde_json::Value,
+    appearance: crate::Appearance,
+    motion: bool,
+    asking: std::collections::BTreeSet<String>,
+}
+
+impl Kept {
+    /// The app behind `window` as it stands; none for a window that is not
+    /// the shell's.
+    pub(crate) fn of(window: &Window, cx: &gpui_kit::App) -> Option<Self> {
+        let root = window.root::<gpui_kit::component::Root>().flatten()?;
+        let view = root.read(cx).view().clone().downcast::<DesktopWindow>();
+        let desktop = view.ok()?.read(cx).model.clone();
+        let state = &desktop.read(cx).state;
+        Some(Self {
+            prefs: crate::backend::read_prefs(),
+            appearance: state.appearance,
+            motion: state.motion,
+            asking: state.center.lock().asking.clone(),
+            desktop: desktop.downgrade(),
+        })
+    }
+
+    /// Back as it stood: the file written only where it differs.
+    pub(crate) fn restore(self, cx: &mut gpui_kit::App) {
+        if crate::backend::read_prefs() != self.prefs {
+            crate::backend::write_prefs(&self.prefs);
+        }
+        let _ = self.desktop.update(cx, |desktop, cx| {
+            desktop.state.center.lock().asking = self.asking;
+            desktop.state.motion = self.motion;
+            if desktop.state.appearance != self.appearance {
+                desktop.state.appearance = self.appearance;
+                desktop.sync_appearance(cx);
+            }
+            cx.notify();
+        });
+    }
+}
+
 impl DesktopWindow {
     /// The dialog: `760 × 680; border: 1.5px solid ink` (the board's 540,
     /// taller so every view's row fits), a 34px title strip with its close, on a scrim below the bar. A click on the scrim, or

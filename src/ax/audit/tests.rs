@@ -733,7 +733,7 @@ fn stops_window(
 
 /// What `GET /audit?walk=1` answers over `window`, served as `w`, with
 /// `view=` when given.
-async fn door_audit(
+pub(crate) async fn door_audit(
     window: gpui_kit::AnyWindowHandle,
     view: Option<&str>,
     cx: &mut gpui_kit::TestAppContext,

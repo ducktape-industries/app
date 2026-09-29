@@ -443,6 +443,40 @@ fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppC
     }
 }
 
+/// The walk's arrows pick Settings' choices, and a pick saves; the door
+/// puts back what they changed. From no prefs, after a walk of the
+/// Notifications page no view is answered, the one asking still asks, and
+/// the prefs are still none.
+#[gpui_kit::test]
+async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let matrix = matrix();
+    let (_, _, build) = matrix
+        .iter()
+        .find(|(name, ..)| *name == "settings-notifications")
+        .unwrap();
+    let state = build();
+    state.center.lock().ask_for_test("gate-a");
+    let center = state.center.clone();
+    let prefs = crate::backend::read_prefs();
+    assert_eq!(prefs, serde_json::json!({}));
+    let (_view, native) = open(state, cx);
+    let window = gpui_kit::VisualContext::window_handle(&native);
+    let report = crate::ax::audit::tests::door_audit(window, None, cx).await;
+    // the four radio groups and the page tabs were probed
+    assert!(
+        report["applicable"]["AX-107"].as_u64() >= Some(5),
+        "{}",
+        report["applicable"]
+    );
+    assert_eq!(crate::backend::read_prefs(), prefs);
+    assert!(crate::runtime::notify::Settings::load().views.is_empty());
+    assert!(center.lock().asking("gate-a"));
+}
+
 /// Search over a window offers Fill and Move or size for it, each saying
 /// the chord Help lists (AX-114), and the audit told the chords passes.
 #[gpui_kit::test]

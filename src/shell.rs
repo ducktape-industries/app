@@ -43,6 +43,7 @@ mod facts;
 mod figure;
 mod help;
 pub(crate) use help::chords;
+pub(crate) use settings::Kept;
 mod ink;
 mod keys;
 mod launch;
