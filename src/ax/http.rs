@@ -290,7 +290,7 @@ const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--comp
        ducktape-app ax drag <x1,y1> <x2,y2> [--id ID] [--steps N] [--window W]   (px; local to ID's bounds when given)
        ducktape-app ax audit [--window W] [--view V] [--walk] [--launcher]   (docs/ax.md phase 1; --launcher: the shell screen is not the desk)
        ducktape-app ax wait [--role R] [--name N] [--state S] [--in W[/V]] [--gone] [--deadline-ms MS]
-       ducktape-app ax perf [--by instance]   (docs/perf.md; the app launched with DUCKTAPE_PERF=1)
+       ducktape-app ax perf [--by instance | --reset]   (docs/perf.md; the app launched with DUCKTAPE_PERF=1; --reset zeroes the counters)
        ducktape-app ax reveal <id>   (only with DUCKTAPE_AX_DOOR_PRIVATE=1)";
 
 /// `x,y` as the CLI takes a position.
@@ -339,7 +339,7 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
     let mut rest = args.iter().skip(1);
     while let Some(arg) = rest.next() {
         match arg.strip_prefix("--") {
-            Some(name @ ("compact" | "bounds" | "gone" | "walk" | "launcher")) => {
+            Some(name @ ("compact" | "bounds" | "gone" | "walk" | "launcher" | "reset")) => {
                 flags.insert(name, "1");
             }
             Some(name) => {
@@ -400,7 +400,10 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
             })
             .to_string(),
         ),
-        (Some("perf"), []) => ("GET", format!("/perf?{}", query(&["by"])), String::new()),
+        (Some("perf"), []) if !flags.contains_key("reset") => {
+            ("GET", format!("/perf?{}", query(&["by"])), String::new())
+        }
+        (Some("perf"), []) if !flags.contains_key("by") => ("POST", "/perf/reset".to_owned(), String::new()),
         _ => return None,
     };
     Some((method, target, body))
@@ -437,7 +440,8 @@ mod tests {
         assert!(refused.body.contains("POST /perf/reset"));
     }
 
-    /// `ax perf` is a GET of `/perf`, with `--by instance` carried as the query.
+    /// `ax perf` is a GET of `/perf`, with `--by instance` carried as the
+    /// query; `ax perf --reset` is the POST that zeroes it, and takes no `--by`.
     #[test]
     fn perf_cli_words() {
         assert_eq!(
@@ -449,5 +453,10 @@ mod tests {
             Some(("GET", "/perf?by=instance".to_owned(), String::new()))
         );
         assert_eq!(request(&words("perf extra")), None);
+        assert_eq!(
+            request(&words("perf --reset")),
+            Some(("POST", "/perf/reset".to_owned(), String::new()))
+        );
+        assert_eq!(request(&words("perf --reset --by instance")), None);
     }
 }
