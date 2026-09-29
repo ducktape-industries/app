@@ -32,14 +32,15 @@ fn named(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// Every text a node's descendants carry, depth first, joined by spaces: a
-/// clickable drawn with text children but no explicit label is named by
-/// them (`#` + `general` is "# general", not "#"), so nothing in the
-/// tree is announced with an empty or truncated name.
+/// Every text or rich text a node's descendants carry, depth first, joined
+/// by spaces: a clickable drawn with text children but no explicit label
+/// is named by them (`#` + `general` is "# general", not "#"), so nothing
+/// in the tree is announced with an empty or truncated name.
 fn descendant_text(node: &wire::Node) -> Option<String> {
     fn gather<'a>(node: &'a wire::Node, words: &mut Vec<&'a str>) {
         match node {
-            wire::Node::Text(view_wire::TextNode { content, .. }) => {
+            wire::Node::Text(view_wire::TextNode { content, .. })
+            | wire::Node::RichText { text: content, .. } => {
                 let content = content.trim();
                 if !content.is_empty() {
                     words.push(content);
@@ -75,6 +76,11 @@ pub(crate) fn accessible(node: &wire::Node) -> Accessible {
         ..Default::default()
     };
     match node {
+        // a blank text says nothing: no Label for assistive technology to
+        // land on, as an unlabelled picture is none
+        Node::Text(view_wire::TextNode { content, .. }) if content.trim().is_empty() => {
+            Accessible::default()
+        }
         // the words are the value too, as gpui's own `Text` has them: the
         // adapters name a Label by its value
         Node::Text(view_wire::TextNode { content, .. }) => Accessible {

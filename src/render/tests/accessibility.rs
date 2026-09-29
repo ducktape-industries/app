@@ -12,7 +12,9 @@ fn text_is_a_label_its_content_names() {
             ..Default::default()
         }
     );
-    assert_eq!(accessible(&text("")).name, None);
+    for blank in ["", " ", "\n\t"] {
+        assert_eq!(accessible(&text(blank)), Accessible::default(), "{blank:?}");
+    }
 }
 
 #[test]
@@ -225,6 +227,60 @@ fn a_view_text_reads_its_words_as_its_name_through_the_door(cx: &mut gpui_kit::T
         .map(|node| node["name"].clone())
         .collect();
     assert_eq!(labels, ["Members", "Three online"]);
+}
+
+/// AX-014 through the door: a blank text is no Label (forge's file-row glyph,
+/// explorer's empty stat note), and a Heading whose only child is a RichText
+/// (forge's README heading) is named by its words.
+#[gpui_kit::test]
+fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let rich = wire::Node::RichText {
+        id: Some(named_id("words")),
+        style: Default::default(),
+        text: "sandbox".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: Vec::new(),
+        on_click: None,
+        on_hover: None,
+        tooltip: None,
+    };
+    let mut heading = axis_container("heading", Axis::Column, [rich]);
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut heading {
+        interactivity.role = Some(gpui_kit::Role::Heading);
+        interactivity.aria.level = Some(1);
+    }
+    let root = axis_container(
+        "root",
+        Axis::Column,
+        [
+            heading,
+            text("empty", ""),
+            // as the SDK sends every text: no id, so the host numbers it
+            wire::Node::Text(view_wire::TextNode {
+                id: None,
+                style: Default::default(),
+                content: " ".into(),
+            }),
+            text("kept", "kept"),
+        ],
+    );
+    let nodes = door(cx, root);
+    // neither blank text is a node, whether the view named it or the host
+    // numbered it
+    let ids: Vec<_> = nodes.iter().map(|node| node["id"].clone()).collect();
+    assert_eq!(ids, ["t:heading", "t:rich-text", "t:kept"]);
+    let of = |role: &str| -> Vec<_> {
+        nodes
+            .iter()
+            .filter(|node| node["role"] == role)
+            .map(|node| node["name"].clone())
+            .collect()
+    };
+    assert_eq!(of("Heading"), ["sandbox"]);
+    assert_eq!(of("Label"), ["sandbox", "kept"]);
 }
 
 /// A view Text carries its words as its value, as gpui's own `Text` does:
