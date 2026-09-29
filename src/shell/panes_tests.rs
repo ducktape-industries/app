@@ -830,3 +830,62 @@ fn a_help_window_in_front_keeps_the_keys_in_its_box(cx: &mut TestAppContext) {
         );
     });
 }
+
+/// A window held by its title bar follows the moves that come before the
+/// next frame: a quick hand's, or the AX door's drag, which presses, moves
+/// and lets go in one go.
+#[gpui_kit::test]
+fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
+    use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
+    let (model, _, view, mut native) = console(cx);
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::OpenHelp, cx)
+    });
+    settle(&mut native);
+    let (index, start) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        (layout.focused, layout.panes[layout.focused].frame.unwrap())
+    });
+    let title = gpui_kit::point(px(start.x + 100.), px(desk::BAR + start.y + 15.));
+    let to = gpui_kit::point(title.x + px(40.), title.y + px(30.));
+    // one update: no frame is drawn between the press and the move
+    native.update(|window, cx| {
+        for event in [
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: title,
+                button: MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: to,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            PlatformInput::MouseUp(MouseUpEvent {
+                position: to,
+                button: MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+            }),
+        ] {
+            window.dispatch_event(event, cx);
+        }
+    });
+    let frame = native.update(|_, cx| view.read(cx).layout(cx).panes[index].frame.unwrap());
+    assert_eq!(
+        frame,
+        layout::Frame {
+            x: start.x + 40.,
+            y: start.y + 30.,
+            ..start
+        },
+        "Help stayed where the press found it"
+    );
+    assert!(
+        native.update(|_, cx| view.read(cx).drag.is_none()),
+        "the release did not let go"
+    );
+}

@@ -276,8 +276,9 @@ pub(super) fn raise(
     });
 }
 
-/// The pointer, window-wide, while a window is held: a move carries it, a
-/// release lets it go.
+/// The pointer, window-wide, so a fast one can't slip off the window it
+/// holds: while a window is held, a move carries it and a release lets it
+/// go, a release that comes before the next frame too.
 pub(super) fn follow(this: gpui_kit::Entity<DesktopWindow>, window: &mut Window) {
     use gpui_kit::*;
     let held = this.clone();
