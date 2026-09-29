@@ -486,6 +486,18 @@ fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
             ("one  a  ".to_owned(), true),
             "a letter after Esc takes Tab back"
         );
+
+        // A lone Shift tap is a keystroke since gpui-pre 0.3.7 (zed
+        // ba42ab9d9); it is not a key the writer typed, so Esc's leave holds.
+        press(&mut native, &["escape"]);
+        native.simulate_modifiers_change(gpui_kit::Modifiers::shift());
+        native.simulate_modifiers_change(gpui_kit::Modifiers::none());
+        press(&mut native, &["tab"]);
+        assert_eq!(
+            read(&mut native),
+            ("one  a  ".to_owned(), false),
+            "Esc, a Shift tap, then Tab still moves on"
+        );
         native.update(|window, cx| window.blur(cx));
     }
 }

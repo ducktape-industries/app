@@ -308,7 +308,12 @@ impl TextEditor {
             self.tab_released = false;
             return;
         }
-        let released = std::mem::replace(&mut self.tab_released, keystroke.key == "escape");
+        // A lone modifier's release is a keystroke too (gpui-pre 0.3.7, zed
+        // ba42ab9d9): it neither spends Esc's leave nor takes it back.
+        let released = match keystroke.key.as_str() {
+            "shift" | "control" | "alt" | "platform" | "function" => self.tab_released,
+            _ => std::mem::replace(&mut self.tab_released, keystroke.key == "escape"),
+        };
         let key = wire::keyboard::KeyState::from(keystroke);
         let claimed = self
             .projection
