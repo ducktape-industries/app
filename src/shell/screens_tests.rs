@@ -348,6 +348,42 @@ fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &m
     );
 }
 
+/// Shift+Tab leaves a text field for the stop before it, and Tab comes
+/// back. The node that names the field (`a11y::text_field`) and the kit's
+/// input inside it track one focus handle; gpui's tab order must hold it
+/// once, or Shift+Tab lands on the handle's other entry, the field itself.
+#[gpui_kit::test]
+fn shift_tab_leaves_a_text_field_and_tab_comes_back(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let (mut state, _) = Ducktape::boot();
+    state.stage = Stage::Connect;
+    let (_view, mut native) = open(state, cx);
+    native.update(draw);
+    let mut press = |keys: &str| {
+        native.simulate_keystrokes(keys);
+        native.update(|window, cx| {
+            let nodes = draw(window, cx);
+            let field = &find(&nodes, "TextInput", "Node address")["state"];
+            (window.focused(cx), *field == serde_json::json!(["focused"]))
+        })
+    };
+    let (field, on_field) = press("tab");
+    assert!(on_field, "sanity: tab reaches the endpoint field");
+    let (keys, on_field) = press("shift-tab");
+    assert!(
+        keys.is_some() && keys != field && !on_field,
+        "shift-tab stays on the endpoint field"
+    );
+    let (keys, on_field) = press("tab");
+    assert!(
+        keys == field && on_field,
+        "tab comes back to the endpoint field"
+    );
+}
+
 #[test]
 fn initials_take_the_first_letter_of_two_words() {
     use super::screens::initials;
