@@ -41,6 +41,7 @@ impl DesktopWindow {
                         cx.stop_propagation();
                         model.update(cx, |model, cx| model.dispatch(message(), cx))
                     }),
+                ink.ink,
             )
         };
         let header = div()
@@ -214,6 +215,7 @@ impl DesktopWindow {
                             })
                             .child(mono(400, 11.).text_color(ink.muted).child(source)),
                     ),
+                ink.ink,
             ));
         }
         if entries.is_empty() {

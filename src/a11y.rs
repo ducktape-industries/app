@@ -8,7 +8,7 @@
 
 use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live};
 use gpui_kit::{
-    AccessibleAction, App, Div, ElementId, FocusHandle, InteractiveElement, Interactivity,
+    AccessibleAction, App, Div, ElementId, FocusHandle, Hsla, InteractiveElement, Interactivity,
     IntoElement, MouseButton, ParentElement as _, Role, SharedString, Stateful,
     StatefulInteractiveElement, Styled as _, Window, div,
 };
@@ -25,18 +25,19 @@ impl<E: StatefulInteractiveElement> Control for E {}
 
 /// A control a keyboard reaches with Tab and presses with Enter or Space, as
 /// a pointer presses it. A pointer's press does not move focus to it, so
-/// pressing it leaves the caret where it was. Reached by Tab, it shows it.
-pub fn keyboard<E: StatefulInteractiveElement>(element: E) -> E {
-    focus_shown(element.focusable().tab_stop(true))
+/// pressing it leaves the caret where it was. Reached by Tab, it shows it
+/// in `color` (see [`focus_shown`]).
+pub fn keyboard<E: StatefulInteractiveElement>(element: E, color: Hsla) -> E {
+    focus_shown(element.focusable().tab_stop(true), color)
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
 }
 
-/// The focus ring: grey, 2px inside the edge, which reads on the light
-/// theme and the dark one alike, over a filled button as over a bare word,
-/// and moves nothing.
-pub fn ring() -> gpui_kit::BoxShadow {
+/// The focus ring: 2px inside the edge, in `color` — the palette's ink, or
+/// on an ink fill the ink's opposite (`Ink::ring` in the shell) — which reads
+/// over a filled button as over a bare word, and moves nothing.
+pub fn ring(color: Hsla) -> gpui_kit::BoxShadow {
     gpui_kit::BoxShadow {
-        color: gpui_kit::hsla(0., 0., 0.5, 1.),
+        color,
         offset: gpui_kit::point(gpui_kit::px(0.), gpui_kit::px(0.)),
         blur_radius: gpui_kit::px(0.),
         spread_radius: gpui_kit::px(2.),
@@ -44,9 +45,17 @@ pub fn ring() -> gpui_kit::BoxShadow {
     }
 }
 
-/// The mark a control reached by the keyboard wears: the [`ring`].
-pub fn focus_shown<E: InteractiveElement>(element: E) -> E {
-    element.focus_visible(|style| style.shadow(vec![ring()]))
+/// The ink of the kit theme: the ring's colour where no shell palette is in
+/// hand (a view's text field, a link).
+pub fn ink(cx: &App) -> Hsla {
+    gpui_kit::base::Theme::global(cx).tokens.colors.ring
+}
+
+/// The mark a control reached by the keyboard wears: the [`ring`] in
+/// `color`, and the border in `color` too — gpui paints a border after an
+/// inset shadow, so a 1px border in another colour would leave 1px of ring.
+pub fn focus_shown<E: InteractiveElement>(element: E, color: Hsla) -> E {
+    element.focus_visible(move |style| style.shadow(vec![ring(color)]).border_color(color))
 }
 
 /// The accessibility setters of any interactive element, kit widgets that
@@ -238,19 +247,20 @@ impl StatefulInteractiveElement for Aria<'_> {}
 /// `focus` handle and hands SetValue to `set_value`. The caller draws `field`
 /// with no node of its own and sets the role, the name and the states here.
 /// Focused, it wears the [`ring`] however it got there: a caret alone is too
-/// faint a mark for where typing goes.
+/// faint a mark for where typing goes. The ring is `color`.
 pub fn text_field(
     id: impl Into<ElementId>,
     focus: &FocusHandle,
     set_value: impl Fn(String, &mut Window, &mut App) + 'static,
     field: impl IntoElement,
+    color: Hsla,
 ) -> Stateful<Div> {
     typed(
         div()
             .id(id)
             .w_full()
             .track_focus(focus)
-            .focus(|style| style.shadow(vec![ring()])),
+            .focus(move |style| style.shadow(vec![ring(color)])),
         set_value,
     )
     .child(field)
@@ -312,6 +322,8 @@ mod tests {
     use gpui_kit::test::TestWindowExt as _;
     use gpui_kit::{Context, Render, TestAppContext, VisualTestContext, px, size};
 
+    const INK: Hsla = gpui_kit::red();
+
     struct Patched(FocusHandle);
 
     impl Render for Patched {
@@ -364,7 +376,7 @@ mod tests {
             let (focus, seen) = (self.0.clone(), self.1.clone());
             gpui_kit::canvas(
                 move |_, window, cx| {
-                    let mut field = text_field("field", &focus, |_, _, _| {}, div());
+                    let mut field = text_field("field", &focus, |_, _, _| {}, div(), INK);
                     *seen.borrow_mut() = field
                         .interactivity()
                         .compute_style(None, None, window, cx)
@@ -393,6 +405,6 @@ mod tests {
             focus.focus(window, cx);
             window.render_frame(cx);
         });
-        assert_eq!(*seen.borrow(), vec![ring()]);
+        assert_eq!(*seen.borrow(), vec![ring(INK)]);
     }
 }

@@ -205,6 +205,7 @@ impl DesktopWindow {
                             cx.write_to_clipboard(ClipboardItem::new_string(url.clone()));
                         })
                         .child("Copy the link instead"),
+                    ink.ink,
                 )
             };
             div()

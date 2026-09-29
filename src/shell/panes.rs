@@ -139,6 +139,7 @@ impl DesktopWindow {
                     this.pane_message(message, window, cx);
                 }))
                 .child(gpui_kit::component::Icon::new(glyph).size(px(18.))),
+            ink.ink,
         )
         .aria_disabled(!enabled)
     }
@@ -489,7 +490,7 @@ impl DesktopWindow {
                             div()
                                 .absolute()
                                 .size_full()
-                                .shadow(vec![crate::a11y::ring()]),
+                                .shadow(vec![crate::a11y::ring(ink.ink)]),
                         )
                     });
                 div()
@@ -539,6 +540,7 @@ impl DesktopWindow {
                         }
                     })
                     .child(text),
+                ink.ring(filled),
             )
         };
         // announced as it appears: nothing else says a view is waiting

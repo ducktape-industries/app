@@ -60,6 +60,7 @@ impl DesktopWindow {
                     .id(SharedString::from(format!("rail/{module}")))
                     .focusable()
                     .tab_stop(true),
+                ink.ink,
             )
             .control(Role::Tab, SharedString::from(name))
             .aria_selected(selected)
@@ -145,6 +146,7 @@ impl DesktopWindow {
                         cx.stop_propagation();
                         model.update(cx, |model, cx| model.dispatch(message(), cx));
                     }),
+                ink.ink,
             ))
         };
         use accesskit::HasPopup::{Dialog, Menu};

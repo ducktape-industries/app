@@ -434,6 +434,7 @@ impl Render for TextEditor {
                     },
                     // the base Textarea draws no node of its own
                     Textarea::new(&self.input),
+                    crate::a11y::ink(cx),
                 )
                 .when(self.fills, |field| field.h_full()),
                 accessible,
