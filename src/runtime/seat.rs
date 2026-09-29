@@ -322,6 +322,7 @@ pub(super) fn spawn_load(
             asked_for,
             loaded,
         );
+        roster().changed();
         timing.install = installed.elapsed();
         if timing.started.is_some() {
             crate::perf::record(

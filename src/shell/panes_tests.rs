@@ -734,19 +734,24 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
     assert_eq!(width(&mut native), 1002.);
 }
 
-/// The clock ticks once a second and the desk answers with a redraw. With
-/// nothing changed that redraw must not render a seated view's tree again:
-/// the counts of `GET /perf`, on the cached path (no a11y reader, so no
-/// `draw` helper here). Times are flaky under the test scheduler; counts are not.
+/// Every dispatch that moves something ends in the model's notify, and
+/// every window answers with a redraw. With nothing in the pane changed
+/// that redraw must not render a seated view's tree again: the counts of
+/// `GET /perf`, on the cached path (no a11y reader, so no `draw` helper
+/// here). Times are flaky under the test scheduler; counts are not.
 #[gpui_kit::test]
-fn a_wall_tick_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppContext) {
+fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
     use view_wire as wire;
-    const MODULE: &str = "pane-wall-tick-view";
+    const MODULE: &str = "pane-desk-redraw-view";
     let _on = crate::perf::on_for_test();
     let (model, key, _, mut native) = console(cx);
+    // a frame as the platform delivers one: what asked for it runs, then
+    // whatever that dirtied draws
     let frame = |native: &mut VisualTestContext| {
-        native.update(|window, cx| window.draw(cx).clear(cx));
+        native.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
         native.run_until_parked();
     };
     frame(&mut native);
@@ -775,18 +780,101 @@ fn a_wall_tick_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppContext
     };
     let settled = renders();
     assert!(settled > 0, "the view drew its tree once");
+    let desk = window_count(key, "renders");
     for _ in 0..3 {
-        model.update(&mut native, |model, cx| {
-            model.dispatch(Message::WallTick, cx)
-        });
+        model.update(&mut native, |_, cx| cx.notify());
         for _ in 0..3 {
             frame(&mut native);
         }
     }
+    assert!(
+        window_count(key, "renders") >= desk + 3,
+        "the desk drew again"
+    );
     assert_eq!(
         renders(),
         settled,
-        "a WallTick rendered the view's tree again"
+        "a redraw of the desk rendered the view's tree again"
+    );
+}
+
+/// A window's count under `stage` in the perf registry.
+fn window_count(key: WindowKey, stage: &str) -> u64 {
+    crate::perf::snapshot(false)["windows"][key.0.to_string()][stage]
+        .as_u64()
+        .unwrap_or(0)
+}
+
+/// The clocks beat whatever happens. A beat that moves nothing on screen
+/// draws no frame, and one that moves something draws it: a roster that
+/// changed on its own thread, the ages an open node menu counts, a toast
+/// running out (docs/perf.md).
+#[gpui_kit::test]
+fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
+    use crate::ui::test_support::status;
+    const MODULE: &str = "pane-beat-view";
+    let _on = crate::perf::on_for_test();
+    let (model, key, _, mut native) = console(cx);
+    let send = |message: Message, native: &mut VisualTestContext| {
+        model.update(native, |model, cx| model.dispatch(message, cx));
+        native.run_until_parked();
+    };
+    crate::runtime::seat_for_test(MODULE, 400);
+    model.update(&mut native, |model, _| {
+        // the breath stands still: its frames are not the beats'
+        model.state.motion = false;
+        model.state.height = 7;
+    });
+    send(Message::Pane(key, PaneMessage::Select(MODULE)), &mut native);
+    send(Message::StatusPushed(status(7)), &mut native);
+    let still = window_count(key, "renders");
+    for message in [
+        Message::WallTick,
+        Message::ToastTick,
+        Message::Tick,
+        Message::StatusMissed,
+        Message::StatusPushed(status(7)),
+    ] {
+        send(message, &mut native);
+    }
+    assert_eq!(
+        window_count(key, "renders"),
+        still,
+        "a beat that moved nothing drew the window"
+    );
+
+    // a roster read or a seat load landed on its own thread
+    model.read_with(&native, |model, _| model.state.roster.changed());
+    send(Message::WallTick, &mut native);
+    assert!(
+        window_count(key, "renders") > still,
+        "the roster moved under the beat and the rail still said the last"
+    );
+
+    // the node menu counts the seconds since the last block
+    send(Message::TogglePopover(crate::Popover::Node), &mut native);
+    let open = window_count(key, "renders");
+    send(Message::WallTick, &mut native);
+    assert!(
+        window_count(key, "renders") > open,
+        "a second passed under an open node menu and it still said the last"
+    );
+    send(
+        Message::CloseOverlay(crate::Overlay::Menu(crate::Popover::Node)),
+        &mut native,
+    );
+
+    // a toast shows for twelve beats, and goes on the thirteenth
+    send(Message::ShowToast("Saved.".into()), &mut native);
+    let shown = window_count(key, "renders");
+    for _ in 0..12 {
+        send(Message::ToastTick, &mut native);
+    }
+    assert_eq!(window_count(key, "renders"), shown, "a toast's count drew");
+    send(Message::ToastTick, &mut native);
+    assert!(
+        window_count(key, "renders") > shown,
+        "the toast ran out and stayed on screen"
     );
 }
 
