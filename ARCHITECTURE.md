@@ -362,7 +362,7 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   driven by `PaneMessage` through `ui/panes.rs`. Sentinel modules: `EMPTY`
   (an empty pane shows the program finder) and `HELP`.
 - **Shell.** `Desktop` (`shell.rs`) owns `Ducktape`, the tray, the OS
-  window handles, the per-pane `MountedPane`s and the running task streams.
+  window handles, the `Seats` entity and the running task streams.
   `DesktopWindow::render` copies the fields a draw needs into `Facts`
   (`shell/screens.rs`) and picks by `Stage`: the launcher screens
   (`shell/launcher.rs` frame with a `spin` figure on the left; `screens.rs`
@@ -623,7 +623,7 @@ House words, and where one word means several things.
 - **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
 - **standin / stage words** — the native placeholder drawn where a view is
-  not (`widget::Standin`, `stage_words`). **Stage** (`ui/app.rs`) is which
+  not (`seat/standin.rs`, `stage_words`). **Stage** (`ui/app.rs`) is which
   screen the console shows; `pane_stage` (`shell/panes.rs`) draws the pane
   area. Unrelated.
 - **override** — `DUCKTAPE_VIEWS_DIR`: a developer's `<module>_view.wasm`

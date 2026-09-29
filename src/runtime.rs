@@ -124,12 +124,23 @@ fn pending_routes() -> &'static Mutex<std::collections::BTreeMap<&'static str, S
     ROUTES.get_or_init(Mutex::default)
 }
 
-/// Hold `route` for `module`'s view until it asks.
+/// Hold `route` for `module`'s view until it asks, and wake the seats
+/// already open on it: a view that is up reads the route in its next
+/// turn, and nothing else about it moves.
 pub(crate) fn route_to(module: &'static str, route: String) {
     pending_routes()
         .lock()
         .expect("pending routes")
         .insert(module, route);
+    // registry, then seat: the order `retry` takes them in
+    let registry = registry().lock().expect("module views");
+    for seat in registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .map(|(_, seat)| seat)
+    {
+        seat.lock().expect("module view lock").wake.send_replace(());
+    }
 }
 
 /// The route waiting for `module`, handed out once.
@@ -283,7 +294,7 @@ pub(crate) fn fault_for_test(module: &str, instance: u64) {
 }
 
 #[cfg(test)]
-fn seat_code_for_test(module: &'static str, min_width: u32, code: Module) {
+pub(crate) fn seat_code_for_test(module: &'static str, min_width: u32, code: Module) {
     let ready = || {
         let mut guest = Guest::instantiate(module, &code, module).unwrap();
         guest.min_width = min_width;

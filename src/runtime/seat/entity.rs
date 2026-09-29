@@ -245,6 +245,9 @@ impl Seat {
         guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
         clipboard::mount(guest, cx);
+        // a clipboard answer lands after `redraw` judged the frame: it is
+        // still a reason to turn again
+        let again = again || !guest.pending.is_empty();
         let next_tick = kernel::next_tick(&guest.clocks);
         if let Some(fault) = &guest.fault {
             let standin = Standin::from(&Failure::Trapped(fault.clone()));
@@ -289,15 +292,19 @@ impl Seat {
             let _replacing = crate::perf::time(key, "replace");
             self.revision = rev;
             match (&self.tree, adopt) {
+                // the tree's own notify dirties its window; nothing the
+                // pane reads off the seat moved
                 (Some(tree), None) => tree.update(cx, |tree, cx| tree.replace(root, cx)),
-                (_, adopt) => self.mount(root, generation, key, adopt, cx),
+                (_, adopt) => {
+                    self.mount(root, generation, key, adopt, cx);
+                    cx.notify();
+                }
             }
             if first_tree && crate::perf::on() {
                 // a fresh view's first tree: from this turn's start, the
                 // first to find it seated, to its tree mounted
                 crate::perf::record(key, "first_tree", shown.elapsed().as_micros() as u64);
             }
-            cx.notify();
         } else if ticked && let Some(tree) = &self.tree {
             tree.update(cx, |_, cx| cx.notify());
         }

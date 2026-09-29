@@ -145,6 +145,14 @@ impl Mounted {
         self.generation += 1;
         self.generation
     }
+
+    /// The program left the roster: the seat is emptied, and the `Seat`
+    /// woken to draw that, since nothing else about it moves.
+    pub(super) fn retire(&mut self) {
+        self.generation += 1;
+        self.slot = Slot::Empty;
+        self.wake.send_replace(());
+    }
 }
 
 /// What a seat holds, and so what its tab draws: the view on its way —

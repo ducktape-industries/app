@@ -543,7 +543,34 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     crate::runtime::seat_drawing_for_test(MODULE, 320, field);
     // queued before the first turn: that turn's frame mounts the input
     focus_it(0);
-    let (seat, _, mut native) = open(cx, MODULE, false);
+    // the turn and the frame's first callbacks in one App update, before
+    // the harness's flush-time draw: only a callback nested in the first
+    // waits for the draw that mounts the input. A single callback answers
+    // the Focus `Ok` and loses the focus silently, so the assertion is on
+    // the focus itself, not the reply.
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+        let seat = cx.new(|cx| Seat::new(MODULE, cx));
+        Root {
+            seat: seat.clone(),
+            selection_layer: false,
+            _watch: cx.observe(&seat, |_, _, cx| cx.notify()),
+        }
+    });
+    let root = window.root(cx).unwrap();
+    let seat = root.read_with(cx, |root, _| root.seat.clone());
+    let handle: gpui_kit::AnyWindowHandle = window.into();
+    cx.update(|cx| {
+        seat.update(cx, |seat, cx| {
+            seat.place(handle, cx);
+            seat.turn(cx);
+        });
+        handle
+            .update(cx, |_, window, cx| window.simulate_next_frame(cx))
+            .unwrap();
+    });
+    let mut native = VisualTestContext::from_window(handle, cx);
+    native.run_until_parked();
     let input_focused = |native: &mut VisualTestContext| {
         native.update(|window, cx| {
             let tree = seat.read(cx).tree().expect("mounted");
@@ -551,23 +578,22 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
             gpui_kit::Focusable::focus_handle(input.read(cx), cx).is_focused(window)
         })
     };
-    // frame one: the outer callback runs before the draw that mounts the
-    // input; frame two: the inner one focuses it
+    // each frame's callbacks and its draw in their own updates
     let two_frames = |native: &mut VisualTestContext| {
-        native.update(|window, cx| {
-            window.simulate_next_frame(cx);
-            window.draw(cx).clear(cx);
-        });
-        native.update(|window, cx| {
-            window.simulate_next_frame(cx);
-            window.draw(cx).clear(cx);
-        });
-        native.run_until_parked();
+        for _ in 0..2 {
+            native.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            native.update(|window, cx| {
+                window.draw(cx).clear(cx);
+            });
+            native.run_until_parked();
+        }
     };
     two_frames(&mut native);
     assert!(
         input_focused(&mut native),
-        "the mounted input took the keys"
+        "the Focus ran before the draw that mounts its input"
     );
 
     native.update(|window, cx| window.blur(cx));
@@ -589,5 +615,109 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     assert!(
         input_focused(&mut native),
         "a turn woken from a window callback still runs its commands"
+    );
+}
+
+/// A program that leaves the roster gives up its seat: the pane shows the
+/// "no view" standin, not its frozen tree. On the draw path the beat's
+/// redraw picked this up; now the retire itself has to wake the seat.
+#[gpui_kit::test]
+fn a_retired_program_shows_no_view(cx: &mut TestAppContext) {
+    const MODULE: &str = "retired-test";
+    crate::runtime::seat_for_test(MODULE, 320);
+    let (seat, _, native) = open(cx, MODULE, false);
+    assert!(seat.read_with(&native, |s, _| s.tree().is_some() && s.standin().is_none()));
+    mounted_of(&seat, &native).lock().unwrap().retire();
+    native.run_until_parked();
+    let words = seat.read_with(&native, |s, _| s.standin().map(|s| s.words.clone()));
+    assert!(
+        words.as_deref().is_some_and(|w| w.contains("has no")),
+        "the retired seat still shows its tree: {words:?}"
+    );
+}
+
+/// A link's route to a view that is already open (`Layout::open` only
+/// focuses it): the seat is woken, so the route does not wait for an
+/// unrelated turn.
+#[gpui_kit::test]
+fn a_route_reaches_an_open_view(cx: &mut TestAppContext) {
+    const MODULE: &str = "route-test";
+    crate::runtime::seat_for_test(MODULE, 320);
+    let (seat, _, native) = open(cx, MODULE, false);
+    let before = ticks_of(&seat, &native);
+    {
+        let mounted = mounted_of(&seat, &native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        guest.route_subscriptions.push(99);
+    }
+    crate::runtime::route_to(MODULE, "somewhere".into());
+    native.run_until_parked();
+    assert_eq!(
+        ticks_of(&seat, &native),
+        before + 1,
+        "the route was not delivered to the open view"
+    );
+}
+
+/// A clipboard answer is pushed by `clipboard::mount` after `redraw` has
+/// decided whether the guest wants another frame: the answer still counts.
+#[gpui_kit::test]
+fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
+    const MODULE: &str = "clipboard-test";
+    let encode = |requests: Vec<wire::Request>| {
+        let frame = wire::encode(&wire::Frame {
+            root: Some(wire::Node::empty()),
+            requests,
+            ..Default::default()
+        });
+        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+        (bytes, frame.len() as u32)
+    };
+    let (ask, ask_len) = encode(vec![wire::Request {
+        id: 5,
+        kind: "clipboard.read".into(),
+        payload: Vec::new(),
+    }]);
+    let (quiet, quiet_len) = encode(Vec::new());
+    let ask_tick = wire::abi::pack(65536, ask_len);
+    let quiet_tick = wire::abi::pack(69632, quiet_len);
+    let code = Module::new(
+        guest::engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (global $n (mut i32) (i32.const 0))
+            (data (i32.const 65536) "{ask}")
+            (data (i32.const 69632) "{quiet}")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64)
+                global.get $n i32.const 1 i32.add global.set $n
+                global.get $n i32.const 1 i32.le_u
+                if (result i64) i64.const {ask_tick} else i64.const {quiet_tick} end)
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
+    )
+    .unwrap();
+    crate::runtime::seat_code_for_test(MODULE, 320, code);
+    {
+        let registry = registry().lock().unwrap();
+        let Slot::Ready(guest) = &mut registry[&(MODULE, 0)].lock().unwrap().slot else {
+            panic!("seated")
+        };
+        guest.capabilities.push(Capability::Clipboard);
+    }
+    let (seat, _, native) = open(cx, MODULE, false);
+    native.run_until_parked();
+    native.executor().advance_clock(Duration::from_millis(100));
+    native.run_until_parked();
+    assert_eq!(
+        ticks_of(&seat, &native),
+        2,
+        "the clipboard answer was delivered in a second tick"
     );
 }

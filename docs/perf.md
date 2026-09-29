@@ -602,7 +602,7 @@ Phase 1, as listed:
   and `render` under the seat's key (`render.rs`, `ViewTree::with_perf_key`).
 - `door_draws` in `ax::actions::current`, for the process.
 - The idle rule as an app test:
-  `runtime::widget::tests::an_idle_view_renders_no_more_than_it_ticks`
+  `runtime::seat::entity_tests::an_idle_view_renders_no_more_than_it_ticks`
   (`renders ≤ ticks + 2` on the registry's counters over eight cached
   frames of #347's tree shape; a notify loop on the tree or #347's
   selection refresh fails it).
