@@ -108,6 +108,7 @@ Shipped on `ax/phase2` (`src/ax/audit.rs`, with the table of severities, `RULES`
 | AX-120 | After a `Dialog` closes, the node that was `focused` before it opened is `focused` again, unless the view moved focus itself. | error | both | not a door rule: the shell's `DesktopWindow::refocus` (`src/shell/desk.rs`); a view dialog's opener is kept in `src/render/surfaces.rs` and refocused by `commands::dialog_exit` (`render::tests::dialog_focus`) |
 | AX-121 | Text pairs in `Ink::of` (`src/shell/ink.rs`) reach 4.5:1; control boundaries, state marks and the focus ring 3:1. | error | shell | not tree data: a unit test over the palette |
 | AX-122 | With the OS reduce-motion preference on, or the app's motion switch off, no figure asks for a frame. | error | shell | not tree data: a `TestAppContext` test over `src/shell/spin.rs` `Spin` and `src/shell/screens.rs` `pulse` |
+| AX-123 | No element is refused for sharing its accessibility id with an earlier one: one violation per refused element however many snapshots see it, its `id` `<kept door id> <- <the element's GlobalElementId>` (`#N` on the N-th identical refusal of one frame; the first snapshot that saw it names the kept node), its message naming both and telling the developer to give one of the two its own id. | error | both | fork: `Window::a11y_refused_elements`, the `(NodeId, GlobalElementId)` pairs of the last active frame (empty in a debug build, which panics first); door: `audit::observe` reads it after each snapshot of the window the audit walks and names the kept node through the snapshot's `NodeId`, and the rule reads `Reading::refused`. Synthetic children the app pushes itself are not covered: `push_child` returns `false` to its caller |
 
 ---
 
@@ -281,7 +282,7 @@ All proposals; a3 owns the branch. A flag day is fine under the no-backcompat ru
 1. **Fix the oracle now**: `Checkbox` → `CheckBox`; add `Switch`, `RadioButton`, `ComboBox`, `TreeItem`, `PasswordInput`, `SearchInput`, `MenuItemRadio`, `MenuItemCheckBox`; a description is not a name; report every hit, not the first. Retire it once `/audit` exists.
 2. **Step kinds** `audit` (fail on any error violation; record coverage) and `focus_order` (the walk), plus a model-free `press`. Run `audit` after every mission action.
 3. **Mission `a11y-census`**: open every view tab on the localnet (settings, node, members, chat, forge, explorer), visit each view's declared screens, `GET /audit?view=<module>&walk=1`, fail on any error; write per-view `A`, `C` and screens-visited into `result.json`. Schedule it from `kit`.
-4. **Rigs**: stop forcing `DBUS_SESSION_BUS_ADDRESS=no-bus` for one rig kind; install a debug archive for the census so duplicate-id panics gate.
+4. **Rigs**: stop forcing `DBUS_SESSION_BUS_ADDRESS=no-bus` for one rig kind. The census needs no debug archive for duplicate ids: AX-123 reports each one the release build refused, so `audit` fails on it (§1.3).
 5. **Linux Orca smoke** (dev box has `at-spi-bus-launcher`, `dbus-run-session`, gi `Atspi`; Orca and `pyatspi` are not installed): launch through `kit app` under `dbus-run-session`, start `/usr/libexec/at-spi-bus-launcher --launch-immediately`, set `org.a11y.Status IsEnabled=true`; dump the AT-SPI tree with `gi.repository.Atspi` and diff role, name, states and extents against `GET /tree?bounds=1` over the same screen states; expect X11 extents to be off until root bounds are pushed. A manual Orca pass needs a desktop machine.
 6. **macOS VoiceOver smoke** (the real mac: `frostornge@mac-byeongsu`), per release: launch with `kit app` (bundles and signs); VO on; walk Connect and Unlock with VO-Right and check the secure field; rotor Headings and Form Controls; send a chat message and confirm an announcement (none today); open a dialog and try to leave; caret reading in the composer (none today); Accessibility Inspector's Audit. Record the checklist result next to the census output.
 
@@ -298,13 +299,17 @@ Continuously: the app CI gate over the shell matrix (phase 1), the modules CI ga
 2. **Editor Tab.** The guest editor keeps Tab for indentation; AX-022 is `warn` for that reason. Do you want Escape-then-Tab as the documented exit (and said so in Help), or Tab always leaves and indentation moves to a chord?
    **Answered (owner, 2026-09-28): Esc, then Tab.** Tab indents; Esc makes the editor let go of the next Tab, which moves the focus on; any other key takes Tab back. Help's keys table has the line. Done (`TextEditor::key_down`, `esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back`).
 3. **Motion switch shape.** Tri-state System/On/Off (honours the OS preference, reachable from the tray and app menu), or a plain OR of "OS says reduce" and "switch off"?
+   **Answered (owner, 2026-09-28): keep the OR.** The OS reduce-motion preference, or the Settings "Moving figures" switch off, holds the figures (`shell::spin` `moving`); no tri-state, and no tray or launcher item.
 4. **Spotlight and the empty window** as a combobox: focused `EditableComboBox` wrapping a `ListBox` with `aria_active_descendant` on rows. It changes how those two are built. Go, or wait for the VoiceOver smoke to show whether the current shape reads at all?
    **Done (phase 2):** both are that combo box (§1.2, AX-012 note).
 5. **Node button name.** "Node: in sync, block N" changes every block; macOS raises a title-changed event each time. Keep the height out of the name?
    **Done (phase 2):** the name holds still ("Node: in sync"); the height is its description ("Block N").
 6. **Fork asks (phase 2 item 8).** Which of live/busy/invalid/has-popup setters, relations, `ScrollIntoView`, text runs, cache bypass, X11 bounds, OS contrast/text-size do you want raised against gpui-pre now, and which stay app-side via the synthetic-children patch?
+   **Answered (owner, 2026-09-28): one fix in the fork, the rest app-side.** Shift+Tab is fixed at the root in gpui-pre: `TabStopMap` keeps one entry per focus handle. Rich-text links go app-side, Spotlight-style: the text is one Tab stop, the arrows pick a link, Enter presses it. Every other ask stays app-side through the synthetic-children patch.
 7. **Pane keyboard operations** (Fill, move, resize, show-in-focused-window): which chords? These land in `src/shell/panes.rs` after ducktape-70.
+   **Answered (owner, 2026-09-28): a proposal comes first.** Proposal pending; no chord is chosen yet.
 8. **Debug archives for qa**: the census wants a debug build so duplicate-id panics gate. Acceptable rig cost?
+   **Answered (owner, 2026-09-28): a door rule, with the fork exposing refused duplicates.** AX-123 (§1.3). gpui-pre drops the second node while it builds the frame's tree (`A11yNodeBuilder::can_push` in `src/window/a11y.rs`: a `debug_assert!`, then `false`), and now keeps what it dropped: `Window::a11y_refused_elements` lists, in paint order, each refused element's `GlobalElementId` with the `NodeId` it shared, and `a11y_element_id` names the element that won. The door reads the list for the window it audits, so a release build the census drives reports every duplicate as an error, with no debug archive (§5 phase 3 item 4). `cargo test` builds gpui-pre with debug assertions, so a duplicate on a screen a test draws still panics in app CI; the rule's fail case is a test over a hand-built `Reading`, since no test can draw a real one. Not covered: a synthetic child the app pushes itself, which has no `GlobalElementId` (`src/render/text/links.rs` skips a refused link).
 
 ### Owner calls, 2026-09-28
 
@@ -313,9 +318,9 @@ Made after phase 2 landed; settled, not to be asked again.
 - **An empty window without the keys** keeps its program rows (`ListBoxOption` in a `ListBox`) and its Module switch. A press on one, from the pointer or from assistive technology, gives that window the keys, then opens the program there. The keyboard reaches that window by its chord (⌘1…⌘9, Ctrl elsewhere) or by cycling to it; the window's box reports the chord, and AX-012 takes it for a shell node in a window without the keys (§1.2 note). No Tab stop per unfocused window.
 - **Menus hanging from the bar** (Account, Node status, the bell, Networks) close when the keys leave them: Tab or Shift+Tab past their ends, a click elsewhere, anything else. The keys stay where they went. Not modal, no focus trap. AX-104 reads every snapshot again; AX-021 counts a menu's opening control as reached when the walk closed the menu (§1.2, §1.3).
 - **Every native shell field stays `required`** (AX-109).
-- **Rich-text links stay an AX-123 warning** until the fork lets a synthetic node take focus (§5, item 8); a press reaches them today, the keyboard does not.
+- **Rich-text links go app-side, Spotlight-style** (Q6): the text is one Tab stop, the arrows pick a link, Enter presses it. The fork is not asked to let a synthetic node take focus.
 - **The node dot's `ok_soft` breath stays** as drawn.
-- **Text field borders** (Q1) and **the editor's Tab** (Q2): above.
+- **Text field borders** (Q1), **the editor's Tab** (Q2), **the motion switch** (Q3), **the fork asks** (Q6) and **duplicate node ids** (Q8): above.
 
 ---
 
