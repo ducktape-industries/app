@@ -494,15 +494,16 @@ Design:
   **Landed (`perf/key-no-read`).** `Key` in `src/ax.rs` has `delta`, true
   unless the body says `"delta": false`. With it false, `answer` presses
   through `press_keys` and answers `{}`: it calls neither `read` nor
-  `settle`, so a11y stays off and the window is not drawn. `keyboard_window`
-  gets no nodes, so `window` names the window, and an unnamed press goes to
-  the first window served (no focused node to look for); `window` is not
-  made required, since the first window is what a rig with one console
-  wants. `ducktape-app ax key <keys> --no-read` sends it. Tests:
-  `ax::tests::a_press_without_a_read_keeps_the_cache_on` (a11y off after
-  the press, `/perf` `cache_on: true`; a tree read flips both),
-  `ax::http::tests::key_route_parses_the_no_delta_flag` and `key_cli_words`.
-  `/keys` and `/drag` still read.
+  `settle`, so a11y stays off and the door draws nothing (`door_draws`
+  stays put; `deadline_ms` goes unused). `keyboard_window` gets no nodes,
+  so `window` names the window, and an unnamed press goes to the first
+  window served (no focused node to look for); `window` is not made
+  required, since the first window is what a rig with one console wants.
+  `ducktape-app ax key <keys> --no-read` sends it. Tests:
+  `ax::tests::a_press_without_a_read_keeps_the_cache_on` (the key reaches
+  the window, a11y off after the press, `/perf` `cache_on: true`; a tree
+  read flips both), `ax::http::tests::key_route_parses_the_no_delta_flag`
+  and `key_cli_words`. `/keys` and `/drag` still read.
 - The gate refuses to judge a cache metric from a `cache_on: false` reply
   and says so, instead of passing.
 - Recommended default for the owner (§7): the extra scenario plus the

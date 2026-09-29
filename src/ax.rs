@@ -136,9 +136,10 @@ impl Wait {
 ///
 /// With `"delta": false` the press reads nothing (docs/perf.md §4.3): no
 /// window's tree before or after, so it neither switches a11y on nor draws,
-/// and the answer is `{}` instead of the delta. `window` then resolves from
-/// the door's window list alone, without a tree to find the focused node in:
-/// the named window, else the first one served.
+/// and the answer is `{}` instead of the delta (`deadline_ms`, which bounds
+/// the settle, goes unused). `window` then resolves from the door's window
+/// list alone, without a tree to find the focused node in: the named
+/// window, else the first one served.
 #[derive(Debug, Deserialize, PartialEq)]
 pub(crate) struct Key {
     #[serde(default)]
@@ -762,13 +763,21 @@ mod tests {
         (answered, perf, active)
     }
 
-    /// A key press asked to read nothing leaves the window's a11y off, so
-    /// its guest views stay cached and `/perf` says `cache_on`; the answer
-    /// is `{}`, and an unnamed window is the first served. Any read (here a
-    /// tree) switches a11y on and `cache_on` off: the check can tell them apart.
+    /// A key press asked to read nothing still reaches the window, and
+    /// leaves its a11y off, so its guest views stay cached and `/perf` says
+    /// `cache_on`; the answer is `{}`, and an unnamed window is the first
+    /// served. Any read (here a tree) switches a11y on and `cache_on` off:
+    /// the check can tell them apart.
     #[gpui_kit::test]
     async fn a_press_without_a_read_keeps_the_cache_on(cx: &mut gpui_kit::TestAppContext) {
         let _on = crate::perf::on_for_test();
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _heard = cx.update(|cx| {
+            let heard = heard.clone();
+            cx.observe_keystrokes(move |event, _, _| {
+                heard.borrow_mut().push(event.keystroke.key.clone())
+            })
+        });
         let press = || {
             Request::Key(Key {
                 keys: "tab".into(),
@@ -780,6 +789,7 @@ mod tests {
         };
         let (answered, perf, active) = served_answer(press, cx).await;
         assert_eq!((answered.status, answered.body.as_str()), (200, "{}"));
+        assert_eq!(*heard.borrow(), ["tab"], "the press reached the window");
         assert!(
             !active,
             "a press that reads nothing does not switch a11y on"
