@@ -131,9 +131,8 @@ impl Ducktape {
             | M::WallTick
             | M::ConsoleOpened(_)
             | M::WindowWasClosed(_)
-            | M::WindowFocused(_)
+            | M::WindowFocused
             | M::WindowUnfocused(_)
-            | M::ModifierStateChanged(_)
             | M::TrayOpen
             | M::TrayQuit) => {
                 let _timed = timed("reducer.desk");

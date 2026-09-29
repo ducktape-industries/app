@@ -120,27 +120,16 @@ impl Ducktape {
                 if self.console_win == Some(key) {
                     self.console_win = None;
                 }
-                if self.focused_win == Some(key) {
-                    self.focused_win = None;
-                }
                 Task::none()
             }
-            Message::WindowFocused(key) => {
-                self.focused_win = Some(key);
-                Task::none()
-            }
+            // changes no state: its frame is the one a window switch is
+            // timed to (`DesktopWindow::start_switch`)
+            Message::WindowFocused => Task::none(),
             Message::WindowUnfocused(key) => {
-                if self.focused_win == Some(key) {
-                    self.focused_win = None;
-                }
                 // the keys left the window: a hold on one of its panes ends
                 if let Some(layout) = self.layouts.get_mut(&key) {
                     layout.held = None;
                 }
-                Task::none()
-            }
-            Message::ModifierStateChanged(modifiers) => {
-                self.cmd_held = crate::runtime::command_held(modifiers);
                 Task::none()
             }
             Message::TrayOpen => self.raise_console(),

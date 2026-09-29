@@ -309,12 +309,6 @@ pub struct Ducktape {
     /// The main native window, once opened; the launcher and the desk both
     /// live in it.
     pub(crate) console_win: Option<WindowKey>,
-    /// The native window with focus, if one of ours has it. Nothing reads
-    /// it yet.
-    pub(crate) focused_win: Option<WindowKey>,
-    /// ⌘ (ctrl off macOS) is down, kept on every modifier change. Nothing
-    /// reads it yet.
-    pub(crate) cmd_held: bool,
     /// Bumped by every connect attempt and by Disconnect: a `Connected` or
     /// `ConnectFailed` stamped with an older one is not this attempt's.
     pub(crate) connect_generation: u64,
@@ -488,9 +482,8 @@ pub(crate) enum AppMessage {
     WallTick,
     ConsoleOpened(WindowKey),
     WindowWasClosed(WindowKey),
-    WindowFocused(WindowKey),
+    WindowFocused,
     WindowUnfocused(WindowKey),
-    ModifierStateChanged(gpui_kit::Modifiers),
     TrayOpen,
     TrayQuit,
 }
@@ -541,8 +534,6 @@ impl Ducktape {
             toast: String::new(),
             toast_age: 0,
             console_win: None,
-            focused_win: None,
-            cmd_held: false,
             connect_generation: 0,
             connect_task: None,
             wall_now: 0,

@@ -322,15 +322,6 @@ pub(super) struct Clock {
     due: std::time::Instant,
 }
 
-/// Whether `modifiers` hold the platform command key (⌘ on a Mac, Ctrl
-/// elsewhere).
-pub(crate) fn command_held(modifiers: gpui_kit::Modifiers) -> bool {
-    match cfg!(target_os = "macos") {
-        true => modifiers.platform,
-        false => modifiers.control,
-    }
-}
-
 /// The shortest and longest period a view may ask the clock for. Below the
 /// floor a tick is a spin the window thread pays for every frame; above the
 /// ceiling it is not a period but a date, which a view has no business

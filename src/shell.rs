@@ -822,13 +822,6 @@ impl Render for DesktopWindow {
             .bg(ink.bg)
             .text_color(ink.ink)
             .track_focus(&self.focus)
-            .on_modifiers_changed(cx.listener(
-                |this, event: &gpui_kit::ModifiersChangedEvent, _, cx| {
-                    this.model.update(cx, |model, cx| {
-                        model.dispatch(Message::ModifierStateChanged(event.modifiers), cx)
-                    });
-                },
-            ))
             .child(content)
     }
 }

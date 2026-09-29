@@ -878,6 +878,26 @@ fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
     );
 }
 
+/// A modifier key going down or up changes nothing on screen, so it draws
+/// no frame.
+#[gpui_kit::test]
+fn a_modifier_press_draws_no_frame(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (_, key, _, mut native) = console(cx);
+    native.run_until_parked();
+    let still = window_count(key, "renders");
+    assert!(still > 0, "the window never drew");
+    for modifiers in [gpui_kit::Modifiers::control(), gpui_kit::Modifiers::none()] {
+        native.simulate_modifiers_change(modifiers);
+        native.run_until_parked();
+    }
+    assert_eq!(
+        window_count(key, "renders"),
+        still,
+        "a modifier key drew the window"
+    );
+}
+
 /// A Help window brought to the front keeps the keys in its own box: it
 /// draws no finder field, so nothing off-screen may take them.
 #[gpui_kit::test]
