@@ -47,6 +47,15 @@ fn on_desk(overlay: crate::Overlay) -> Build {
     })
 }
 
+/// A desk that lists two programs: the bar's rail is a tab list the
+/// arrows move along, and Settings' Notifications page has a radio group
+/// for each.
+fn two_programs() -> Ducktape {
+    let mut state = desk();
+    state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
+    state
+}
+
 /// Search open over a desk with a window on it: its rows for the window
 /// (Fill, Move or size) are there, each reporting its chord (AX-114).
 pub(super) fn spotlight_over_window() -> Ducktape {
@@ -228,6 +237,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
                 state
             }),
         ),
+        ("desk-two-programs", false, Box::new(two_programs)),
         (
             "desk-toast",
             false,
@@ -275,7 +285,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             "settings-notifications",
             false,
             Box::new(|| {
-                let mut state = desk();
+                let mut state = two_programs();
                 state.overlay = Some(crate::Overlay::Settings);
                 state.settings_page = crate::ui::SettingsPage::Notifications;
                 state
@@ -379,6 +389,58 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
         failures.extend(errors(&mut native, screen, launcher));
     }
     assert!(failures.is_empty(), "\n{}\n", failures.join("\n"));
+}
+
+/// The walk probes the shell's tab lists and radio groups as a view's
+/// (AX-107): the bar's rail, Settings' pages and each of its radio groups,
+/// once each, and each passes.
+#[gpui_kit::test]
+fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let wanted: [(&str, &[&str]); 3] = [
+        ("desk-two-programs", &["shell:rail-rows"]),
+        (
+            "settings-appearance",
+            &["shell:settings-nav", "shell:theme"],
+        ),
+        (
+            "settings-notifications",
+            &[
+                "shell:settings-nav",
+                "shell:notify/front",
+                "shell:notify/burst",
+                "shell:notify/view/gate-a",
+                "shell:notify/view/gate-b",
+            ],
+        ),
+    ];
+    let matrix = matrix();
+    for (screen, composites) in wanted {
+        let (_, _, build) = matrix.iter().find(|(name, ..)| *name == screen).unwrap();
+        let (_view, mut native) = open(build(), cx);
+        native.update(snap);
+        let reading =
+            native.update(|window, cx| audit::observe(window, cx, "shell", true, |_| true, snap));
+        let mut probed: Vec<_> = reading
+            .arrows
+            .iter()
+            .map(|arrows| arrows.composite.id.as_str())
+            .collect();
+        probed.sort_unstable();
+        let mut composites = composites.to_vec();
+        composites.sort_unstable();
+        assert_eq!(probed, composites, "{screen}");
+        let report = audit::audit(&reading, false);
+        assert_eq!(report.applicable["AX-107"], composites.len(), "{screen}");
+        assert!(
+            report.violations.iter().all(|v| v.rule != "AX-107"),
+            "{screen}: {:#?}",
+            report.violations
+        );
+    }
 }
 
 /// Search over a window offers Fill and Move or size for it, each saying

@@ -12,7 +12,7 @@ impl DesktopWindow {
     /// border-bottom: 1px solid line`; every item `height: 36px; padding: 0
     /// 10px; gap: 8px; font: 400 13px`, on `surface` while its menu is open.
     pub(super) fn menubar(
-        &self,
+        &mut self,
         state: &Facts,
         rail: &[crate::runtime::RailRow],
         narrow: bool,
@@ -25,7 +25,21 @@ impl DesktopWindow {
         let layout = self.layout(cx);
         let open: Vec<&'static str> = layout.panes.iter().map(|pane| pane.module).collect();
         let focused = layout.panes.get(layout.focused).map(|pane| pane.module);
-        let tabs = rail.iter().filter(|row| !row.empty).map(|row| {
+        // one Tab stop: the tab the arrows moved to while the rail has the
+        // keys, else the focused window's program, else the first
+        let stop = self.stop("rail-rows", cx);
+        if !stop.is_focused(window) {
+            self.rail_cursor = None;
+        }
+        let rows = rail.iter().filter(|row| !row.empty);
+        let listed: Vec<&'static str> = rows.clone().map(|row| row.module).collect();
+        let active = self
+            .rail_cursor
+            .into_iter()
+            .chain(focused)
+            .find_map(|module| listed.iter().position(|it| *it == module))
+            .unwrap_or_default();
+        let tabs = rows.enumerate().map(|(n, row)| {
             let module = row.module;
             let selected = focused == Some(module);
             let badge = state.badges.get(module).copied().unwrap_or(0);
@@ -55,11 +69,9 @@ impl DesktopWindow {
             };
             let tip = narrow.then(|| SharedString::from(name.clone()));
             let hover = ink.ink;
-            crate::a11y::focus_shown(
-                sans(400, 13.)
-                    .id(SharedString::from(format!("rail/{module}")))
-                    .focusable()
-                    .tab_stop(true),
+            crate::a11y::roving_item(
+                sans(400, 13.).id(SharedString::from(format!("rail/{module}"))),
+                (n == active).then_some(&stop),
                 ink.ink,
             )
             .control(Role::Tab, SharedString::from(name))
@@ -315,6 +327,7 @@ impl DesktopWindow {
                     }
                 })
             });
+        let moved = cx.entity().downgrade();
         div()
             .id("menubar")
             .role(Role::MenuBar)
@@ -332,23 +345,34 @@ impl DesktopWindow {
             .child(network)
             .child(div().w(px(1.)).h(px(16.)).mx(px(6.)).bg(ink.line))
             .child(
-                div()
-                    .id("rail-rows")
-                    .control(Role::TabList, "Programs")
-                    .min_w_0()
-                    .flex()
-                    // folded and still too many: they scroll
-                    .overflow_x_scroll()
-                    .track_scroll(&self.rail)
-                    .children(tabs)
-                    .when(rail.is_empty(), |list| {
-                        list.child(
-                            sans(400, 13.)
-                                .px(px(10.))
-                                .text_color(ink.muted)
-                                .child("No programs listed yet"),
-                        )
-                    }),
+                crate::a11y::roving(
+                    div().id("rail-rows").control(Role::TabList, "Programs"),
+                    &stop,
+                    accesskit::Orientation::Horizontal,
+                    [active, listed.len()],
+                    // the arrows move the keys; Return opens the program
+                    move |to, _, cx| {
+                        let module = listed[to];
+                        let _ = moved.update(cx, |this, cx| {
+                            this.rail_cursor = Some(module);
+                            cx.notify();
+                        });
+                    },
+                )
+                .min_w_0()
+                .flex()
+                // folded and still too many: they scroll
+                .overflow_x_scroll()
+                .track_scroll(&self.rail)
+                .children(tabs)
+                .when(rail.is_empty(), |list| {
+                    list.child(
+                        sans(400, 13.)
+                            .px(px(10.))
+                            .text_color(ink.muted)
+                            .child("No programs listed yet"),
+                    )
+                }),
             )
             .child(handle)
             .child(search)

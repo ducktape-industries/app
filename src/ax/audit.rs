@@ -931,12 +931,11 @@ fn cells<'a>(
 /// The composite an arrow press moves in `nodes` (AX-107): the nearest
 /// one at or above the focus with two rows or more (a grid, two cells:
 /// its arrows move among them), when it has the keys: between the focus
-/// and it, nothing takes focus of its own but a row of a list, tree, menu
-/// or grid (whose rows the arrows may move the focus among). A separate
+/// and it, nothing takes focus of its own but a row (a tab, a radio, an
+/// option, a menu item, a tree item, a grid's row or cell), whose rows the
+/// arrows may move the focus among. A separate
 /// Tab stop inside it (a rich text's links in a message) keeps its arrows,
-/// and the composite is probed when Tab lands on it. A shell tab list or
-/// radio group whose focused item takes focus of its own (each item a Tab
-/// stop, or a roving one) is not probed; a view's is, whatever its shape.
+/// and the composite is probed when Tab lands on it.
 fn arrowed(nodes: &[AxNode]) -> Option<&AxNode> {
     let snapshot = Snapshot::of(nodes);
     let focus = nodes.iter().find(|node| has(node, "focused"))?;
@@ -946,10 +945,9 @@ fn arrowed(nodes: &[AxNode]) -> Option<&AxNode> {
     let at = up.iter().position(|node| {
         ARROWED.contains(&node.role.as_str()) && items(nodes, &snapshot, node) > 1
     })?;
-    let roving = !matches!(up[at].role.as_str(), "TabList" | "RadioGroup") || !shell(up[at]);
     up[..at]
         .iter()
-        .all(|node| !offers(node, "focus") || roving && ITEM.contains(&node.role.as_str()))
+        .all(|node| !offers(node, "focus") || ITEM.contains(&node.role.as_str()))
         .then_some(up[at])
 }
 

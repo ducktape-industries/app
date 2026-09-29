@@ -30,7 +30,7 @@ impl DesktopWindow {
         // the Settings board: nav `padding: 12px 8px; gap: 2px`, each
         // entry `padding: 8px 14px; font: 400 14px`; the page `24px 32px`
         let ink = Ink::of(state.dark);
-        let nav = [
+        let pages = [
             (
                 "settings/appearance",
                 "Appearance",
@@ -43,11 +43,16 @@ impl DesktopWindow {
             ),
             ("settings/networks", "Networks", SettingsPage::Networks),
             ("settings/about", "About", SettingsPage::About),
-        ]
-        .map(|(id, label, page)| {
+        ];
+        let shown = pages
+            .iter()
+            .position(|(_, _, page)| *page == state.settings_page)
+            .unwrap_or_default();
+        let stop = self.stop("settings-nav", cx);
+        let nav = pages.map(|(id, label, page)| {
             let model = self.model.clone();
             let on = state.settings_page == page;
-            crate::a11y::keyboard(
+            crate::a11y::roving_item(
                 sans(400, 14.)
                     .id(id)
                     .control(Role::Tab, label)
@@ -60,18 +65,21 @@ impl DesktopWindow {
                         false => ink.muted,
                     })
                     .when(on, |row| row.bg(ink.surface))
+                    // a press leaves the keys where they were
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(move |_, _, cx| {
                         model.update(cx, |model, cx| {
                             model.dispatch(Message::ShowSettingsPage(page), cx)
                         })
                     })
                     .child(label),
+                on.then_some(&stop),
                 ink.ink,
             )
         });
         let rows = match state.settings_page {
-            SettingsPage::Appearance => self.appearance_page(state),
-            SettingsPage::Notifications => self.notifications_page(state),
+            SettingsPage::Appearance => self.appearance_page(state, cx),
+            SettingsPage::Notifications => self.notifications_page(state, cx),
             SettingsPage::Networks => self.networks_page(state),
             SettingsPage::About => about_page(&ink),
         };
@@ -94,6 +102,7 @@ impl DesktopWindow {
                 .track_focus(handle)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         });
+        let picked = self.model.clone();
         let body = div()
             .id("settings-body")
             .flex_1()
@@ -101,20 +110,32 @@ impl DesktopWindow {
             .flex()
             .text_size(px(ink::fit(14.)))
             .child(
-                div()
-                    .id("settings-nav")
-                    .control(Role::TabList, "Settings pages")
-                    .w(px(180.))
-                    .h_full()
-                    .flex_shrink_0()
-                    .px(px(8.))
-                    .py(px(12.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .border_r_1()
-                    .border_color(ink.line)
-                    .children(nav),
+                crate::a11y::roving(
+                    div()
+                        .id("settings-nav")
+                        .control(Role::TabList, "Settings pages"),
+                    &stop,
+                    accesskit::Orientation::Vertical,
+                    [shown, pages.len()],
+                    // the arrows open the page, as a view's settings do
+                    move |to, _, cx| {
+                        let page = pages[to].2;
+                        picked.update(cx, |model, cx| {
+                            model.dispatch(Message::ShowSettingsPage(page), cx)
+                        })
+                    },
+                )
+                .w(px(180.))
+                .h_full()
+                .flex_shrink_0()
+                .px(px(8.))
+                .py(px(12.))
+                .flex()
+                .flex_col()
+                .gap(px(2.))
+                .border_r_1()
+                .border_color(ink.line)
+                .children(nav),
             )
             .child(
                 div()
@@ -188,7 +209,7 @@ impl DesktopWindow {
         )
     }
 
-    fn appearance_page(&self, state: &facts::Facts) -> Vec<gpui_kit::Div> {
+    fn appearance_page(&mut self, state: &facts::Facts, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use crate::Appearance;
         let ink = Ink::of(state.dark);
         // one look for every choice in Settings: the segmented row
@@ -206,6 +227,7 @@ impl DesktopWindow {
                 })
             }),
             &ink,
+            cx,
         );
         let motion = self.switch(
             "motion",
@@ -233,7 +255,11 @@ impl DesktopWindow {
 
     /// The NotifSettings board: the device's say over banners, then each
     /// view's.
-    fn notifications_page(&self, state: &facts::Facts) -> Vec<gpui_kit::Div> {
+    fn notifications_page(
+        &mut self,
+        state: &facts::Facts,
+        cx: &gpui_kit::App,
+    ) -> Vec<gpui_kit::Div> {
         use crate::runtime::notify::{self, Permission};
         use gpui_kit::*;
         let ink = Ink::of(state.dark);
@@ -254,6 +280,7 @@ impl DesktopWindow {
                 })
             }),
             &ink,
+            cx,
         );
         let burst = div()
             .flex()
@@ -270,6 +297,7 @@ impl DesktopWindow {
                     )
                 }),
                 &ink,
+                cx,
             ))
             .child(
                 mono(400, 12.)
@@ -302,6 +330,7 @@ impl DesktopWindow {
                         )
                     }),
                     &ink,
+                    cx,
                 );
                 // one line a view, so the whole roster fits under the fold
                 div()
@@ -414,53 +443,73 @@ impl DesktopWindow {
     }
 
     /// A row of choices, the chosen one on `surface` (the NotifSettings
-    /// board's segmented controls).
+    /// board's segmented controls): a radio group, one Tab stop, whose
+    /// arrows pick the next choice, as a view's do (`a11y::roving`).
     fn segmented<const N: usize>(
-        &self,
+        &mut self,
         id: &str,
         name: &str,
         choices: [(gpui_kit::SharedString, bool, impl Fn() -> Message + 'static); N],
         ink: &Ink,
+        cx: &gpui_kit::App,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
         use gpui_kit::*;
         let line = ink.strong;
-        div()
-            .id(SharedString::from(id.to_owned()))
-            .role(Role::RadioGroup)
-            .aria_label(SharedString::from(name.to_owned()))
-            .flex()
-            .border_1()
-            .border_color(line)
-            .children(
-                choices
-                    .into_iter()
-                    .enumerate()
-                    .map(|(nth, (label, on, message))| {
-                        let model = self.model.clone();
-                        crate::a11y::keyboard(
-                            sans(if on { 500 } else { 400 }, 13.)
-                                .id(SharedString::from(format!("{id}/{label}")))
-                                .control(Role::RadioButton, label.clone())
-                                .aria_toggled(on.into())
-                                .h(px(ink::tall(26.)))
-                                .px(px(10.))
-                                .flex()
-                                .items_center()
-                                .cursor_pointer()
-                                .text_color(match on {
-                                    true => ink.ink,
-                                    false => ink.muted,
-                                })
-                                .when(nth > 0, |cell| cell.border_l_1().border_color(line))
-                                .when(on, |cell| cell.bg(ink.surface))
-                                .on_click(move |_, _, cx| {
-                                    model.update(cx, |model, cx| model.dispatch(message(), cx))
-                                })
-                                .child(label),
-                            ink.ink,
-                        )
-                    }),
+        let stop = self.stop(id, cx);
+        // the chosen one is the stop; with none chosen yet, the first
+        let chosen = choices
+            .iter()
+            .position(|(_, on, _)| *on)
+            .unwrap_or_default();
+        let mut messages = Vec::with_capacity(N);
+        let choices = choices.map(|(label, on, message)| {
+            messages.push(message);
+            (label, on)
+        });
+        let messages = std::rc::Rc::new(messages);
+        let (model, picks) = (self.model.clone(), messages.clone());
+        crate::a11y::roving(
+            div()
+                .id(SharedString::from(id.to_owned()))
+                .role(Role::RadioGroup)
+                .aria_label(SharedString::from(name.to_owned())),
+            &stop,
+            accesskit::Orientation::Horizontal,
+            [chosen, N],
+            move |to, _, cx| model.update(cx, |model, cx| model.dispatch(picks[to](), cx)),
+        )
+        .flex()
+        .border_1()
+        .border_color(line)
+        .children(choices.into_iter().enumerate().map(|(nth, (label, on))| {
+            let model = self.model.clone();
+            let messages = messages.clone();
+            crate::a11y::roving_item(
+                sans(if on { 500 } else { 400 }, 13.)
+                    .id(SharedString::from(format!("{id}/{label}")))
+                    .control(Role::RadioButton, label.clone())
+                    .aria_toggled(on.into())
+                    .h(px(ink::tall(26.)))
+                    .px(px(10.))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .text_color(match on {
+                        true => ink.ink,
+                        false => ink.muted,
+                    })
+                    .when(nth > 0, |cell| cell.border_l_1().border_color(line))
+                    .when(on, |cell| cell.bg(ink.surface))
+                    // a press leaves the keys where they were
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(move |_, _, cx| {
+                        model.update(cx, |model, cx| model.dispatch(messages[nth](), cx))
+                    })
+                    .child(label),
+                (nth == chosen).then_some(&stop),
+                ink.ink,
             )
+        }))
     }
 
     fn networks_page(&self, state: &facts::Facts) -> Vec<gpui_kit::Div> {

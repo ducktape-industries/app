@@ -108,6 +108,8 @@ impl DesktopWindow {
             spotlight_focused: false,
             spotlight_rows: Default::default(),
             settings_rows: Default::default(),
+            stops: HashMap::new(),
+            rail_cursor: None,
             command: None,
             covered: None,
             refocus: None,

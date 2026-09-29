@@ -1697,11 +1697,11 @@ mod phase_two {
                 fails(&one(vec![held, tab("a", false)]), "AX-107"),
                 ["w:tabs"]
             );
-            // each item a Tab stop: in the shell, Tab reaches them and the
-            // arrows are not asked; in a view, the arrows are asked still
+            // its focused item takes focus of its own (the shell's roving
+            // stop): the arrows are asked, in the shell as in a view
             list.actions = Vec::new();
-            let stops = [list, focused(tab("a", true)), tab("b", true)];
-            assert_eq!(arrowed(&stops), None, "{role}");
+            let stops = [list, focused(tab("a", true)), tab("b", false)];
+            assert_eq!(arrowed(&stops), Some("w:tabs".into()), "{role}");
             let viewed = stops.map(|mut node| {
                 node.scope = "w/chat".to_owned();
                 node

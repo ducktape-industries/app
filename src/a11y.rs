@@ -1,12 +1,13 @@
 //! Accessibility helpers for the native screens and the tree presenter: role
-//! with name (`Control`), keyboard reach (`keyboard`, `focus_shown`), states
+//! with name (`Control`), keyboard reach (`keyboard`, `focus_shown`, and a
+//! tab list or radio group as one Tab stop, `roving`), states
 //! set on the element's own node after a kit widget has built it (`aria`),
 //! what gpui has no setter for (`Patch`: `modal`, `live`, the view's
 //! phase-2 aria, and the class names the AX test door masks, `private`, or
 //! leaves untruncated, `whole`), and one AT node for a kit text input
 //! (`text_field`), or for it and the list it picks from (`combo_box`).
 
-use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live};
+use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live, Orientation};
 use gpui_kit::{
     AccessibleAction, App, Div, ElementId, FocusHandle, Hsla, InteractiveElement, Interactivity,
     IntoElement, MouseButton, ParentElement as _, Role, SharedString, Stateful,
@@ -56,6 +57,68 @@ pub fn ink(cx: &App) -> Hsla {
 /// inset shadow, so a 1px border in another colour would leave 1px of ring.
 pub fn focus_shown<E: InteractiveElement>(element: E, color: Hsla) -> E {
     element.focus_visible(move |style| style.shadow(vec![ring(color)]).border_color(color))
+}
+
+/// A composite the keyboard meets as one Tab stop, WAI-ARIA APG's roving
+/// tabindex (the shell's tab lists and radio groups): the item `active` of
+/// `count` tracks `stop` ([`roving_item`]); the arrows along
+/// `orientation`, wrapping at the ends, and Home and End tell `pick` the
+/// item they make active, and the next draw hands `stop` to it, so the
+/// keys follow. Unmodified keys only. Assistive technology's Focus on the
+/// composite puts the keys on its active item. With no item there is
+/// nothing to hand the keys to, and the composite takes none.
+pub fn roving<E: StatefulInteractiveElement>(
+    element: E,
+    stop: &FocusHandle,
+    orientation: Orientation,
+    [active, count]: [usize; 2],
+    pick: impl Fn(usize, &mut Window, &mut App) + 'static,
+) -> E {
+    let element = element.aria_orientation(orientation);
+    if count == 0 {
+        return element;
+    }
+    let stop = stop.clone();
+    // the active item as of the last key, ahead of the draw that shows it
+    let at = std::cell::Cell::new(active);
+    let (back, next) = match orientation {
+        Orientation::Horizontal => ("left", "right"),
+        Orientation::Vertical => ("up", "down"),
+    };
+    element
+        .on_a11y_action(AccessibleAction::Focus, move |_, window, cx| {
+            stop.focus(window, cx)
+        })
+        .on_key_down(move |event, window, cx| {
+            let from = at.get();
+            let to = match event.keystroke.key.as_str() {
+                _ if event.keystroke.modifiers.modified() => return,
+                key if key == next => (from + 1) % count,
+                key if key == back => (from + count - 1) % count,
+                "home" => 0,
+                "end" => count - 1,
+                _ => return,
+            };
+            cx.stop_propagation();
+            if to != from {
+                at.set(to);
+                pick(to, window, cx);
+            }
+        })
+}
+
+/// An item of a [`roving`] composite: the active one tracks `stop`, the
+/// composite's one Tab stop, and shows it in `color` ([`focus_shown`]);
+/// the others take no focus.
+pub fn roving_item<E: InteractiveElement>(
+    element: E,
+    stop: Option<&FocusHandle>,
+    color: Hsla,
+) -> E {
+    match stop {
+        Some(stop) => focus_shown(element.track_focus(stop), color),
+        None => element,
+    }
 }
 
 /// The accessibility setters of any interactive element, kit widgets that

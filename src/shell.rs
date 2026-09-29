@@ -610,6 +610,13 @@ pub(crate) struct DesktopWindow {
     spotlight_rows: gpui_kit::ScrollHandle,
     /// Settings' page: the row holding the keys scrolls into view.
     settings_rows: settings::Page,
+    /// The one Tab stop of each tab list and radio group drawn here, by
+    /// the composite's id: its active item tracks it (`a11y::roving`).
+    stops: HashMap<gpui_kit::SharedString, gpui_kit::FocusHandle>,
+    /// The program tab the arrows moved to while the Programs rail has the
+    /// keys: Return opens it, as a view's tab list does where opening costs
+    /// a load. Tab back into the rail finds the chosen tab again.
+    rail_cursor: Option<&'static str>,
     /// An empty window's field, made the first time one shows.
     command: Option<command::CommandLine>,
     /// What was open over the desk when it was last drawn.
@@ -666,6 +673,15 @@ impl DesktopWindow {
         if self.switching.is_none() {
             self.switching = crate::perf::time(perf_key(self.key), "switch");
         }
+    }
+
+    /// The one Tab stop of the tab list or radio group `id`
+    /// (`a11y::roving`), made the first time it is drawn.
+    fn stop(&mut self, id: &str, cx: &gpui_kit::App) -> gpui_kit::FocusHandle {
+        self.stops
+            .entry(id.to_owned().into())
+            .or_insert_with(|| cx.focus_handle().tab_stop(true))
+            .clone()
     }
 
     /// On the desk: connected, and past the key and account steps.
