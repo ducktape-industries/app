@@ -1129,7 +1129,7 @@ mod phase_two {
     }
 
     #[test]
-    fn ax_123_an_element_the_fork_refused_is_reported_with_the_node_that_kept_the_id() {
+    fn ax_124_an_element_the_fork_refused_is_reported_with_the_node_that_kept_the_id() {
         let mut clean = reading(vec![vec![button("ok", "Save")]]);
         let report = audit(&clean, false);
         assert_eq!(fails(&report, "AX-124"), Vec::<String>::new());
@@ -1160,7 +1160,7 @@ mod phase_two {
     }
 
     #[test]
-    fn ax_123_a_refusal_every_snapshot_sees_is_one_violation_named_by_the_first() {
+    fn ax_124_a_refusal_every_snapshot_sees_is_one_violation_named_by_the_first() {
         let mut walk = reading(vec![vec![button("ok", "Save")]]);
         let element = "GlobalElementId([Name(\"save\")])";
         // the second snapshot widened the kept node's door id; the third
