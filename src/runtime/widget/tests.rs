@@ -17,7 +17,7 @@ use super::*;
 #[test]
 fn native_root_does_not_shift_the_authored_path_editor_store_indexes_by() {
     let editor = wire::Node::Editor {
-        options: Box::new(wire::EditorOptions::default()),
+        binding: None,
         id: wire::ElementIdWire::Name("editor".into()),
         style: Default::default(),
         placeholder: String::new(),
@@ -118,4 +118,85 @@ fn a_view_is_laid_out_from_its_own_minimum() {
         panic!("seated");
     };
     assert_eq!(laid_out_from(guest), 560.);
+}
+
+/// The idle rule of docs/perf.md, on the counters `GET /perf` serves: a
+/// seated view at rest is drawn by the window every frame, but its tree
+/// renders again only for a tick that changed it, so `renders ≤ ticks + 2`.
+/// The view draws #347's tree — a paragraph in id-less boxes in a named
+/// one — under the selection layer whose sweep of a cached frame's
+/// paragraphs refreshed the window on every frame before #347: renders far
+/// above ticks is that loop, or any other that keeps a cached tree dirty.
+/// On the cached path, no a11y reader.
+#[gpui_kit::test]
+fn an_idle_view_renders_no_more_than_it_ticks(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{IntoElement, ParentElement as _, Render, Styled as _, div, px, size};
+
+    struct Seat(gpui_kit::Entity<NativeModuleView>);
+    impl Render for Seat {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            _: &mut gpui_kit::Context<Self>,
+        ) -> impl IntoElement {
+            // it sweeps the paragraphs a cached frame did not register
+            div()
+                .size_full()
+                .child(gpui_kit::base::TextSelectionLayer)
+                .child(self.0.clone())
+        }
+    }
+
+    let bare = |children: Vec<wire::Node>| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: div().p_2().style().clone(),
+            interactivity: Default::default(),
+            children,
+        })
+    };
+    let paragraph = wire::Node::RichText {
+        id: Some(wire::ElementIdWire::Name("line".into())),
+        style: div().h(px(20.)).style().clone(),
+        text: "a line".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: Vec::new(),
+        on_click: None,
+        on_hover: None,
+        tooltip: None,
+    };
+    let card = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("card".into())),
+        style: div().w(px(200.)).h(px(100.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![bare(vec![bare(vec![paragraph])])],
+    });
+    let _on = crate::perf::on_for_test();
+    crate::runtime::seat_drawing_for_test("idle-renders-test", 320, card);
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+        Seat(cx.new(|_| NativeModuleView::new("idle-renders-test")))
+    });
+    let seat = window.root(cx).unwrap();
+    let view = seat.read_with(cx, |seat, _| seat.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    // the desk redraws its seats on every frame it draws
+    for _ in 0..8 {
+        native.update(|window, cx| {
+            seat.update(cx, |_, cx| cx.notify());
+            view.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear(cx);
+        });
+        native.run_until_parked();
+    }
+    let counted = &crate::perf::snapshot(false)["views"]["idle-renders-test"];
+    let (ticks, renders) = (counted["ticks"].as_u64(), counted["renders"].as_u64());
+    let (Some(ticks), Some(renders)) = (ticks, renders) else {
+        panic!("the seat counts its ticks and its tree's renders: {counted}");
+    };
+    assert!(
+        renders <= ticks + 2,
+        "{renders} renders over {ticks} ticks: the tree is redrawn without a tick"
+    );
 }

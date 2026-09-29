@@ -252,6 +252,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(base: impl Into<String>) -> Client {
+        let _timed = crate::perf::time(crate::perf::Key::Shell, "io.rpc_client");
         let base = base.into().trim_end_matches('/').to_owned();
         Client {
             http: reqwest::Client::new(),

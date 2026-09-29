@@ -61,6 +61,7 @@ impl DesktopWindow {
             self.focus.focus(window, cx);
         }
         let moving = self.model.read(cx).state.motion;
+        let rail = self.model.read(cx).state.roster.rail();
         div()
             .size_full()
             .flex()
@@ -76,7 +77,7 @@ impl DesktopWindow {
                 window,
                 cx,
             ))
-            .child(match empty_panes_message(&crate::runtime::rail()) {
+            .child(match empty_panes_message(&rail) {
                 Some(message) => super::ink::mono(400, 12.)
                     .text_color(ink.muted)
                     .child(super::ink::words("empty-desk/message", message))

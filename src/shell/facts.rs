@@ -50,6 +50,7 @@ pub(crate) struct Facts {
     pub(crate) heard_age: i64,
     pub(crate) settings_page: crate::SettingsPage,
     pub(crate) center: crate::runtime::notify::CenterHandle,
+    pub(crate) roster: crate::runtime::Roster,
 }
 
 impl Ducktape {
@@ -95,6 +96,7 @@ impl Ducktape {
             heard_age: self.heard_age(),
             settings_page: self.settings_page,
             center: self.center.clone(),
+            roster: self.roster.clone(),
         }
     }
 }

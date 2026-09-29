@@ -6,14 +6,15 @@
 //! pointer's hold on them `pane_drag.rs`'s, a desk with none `empty_desk.rs`'s.
 use super::*;
 
-pub(super) fn label(module: &str) -> String {
+pub(super) fn label(roster: &crate::runtime::Roster, module: &str) -> String {
     if module == layout::EMPTY {
         return "Empty".to_owned();
     }
     if module == layout::HELP {
         return "Help".to_owned();
     }
-    crate::runtime::rail()
+    roster
+        .rail()
         .into_iter()
         .find(|row| row.module == module)
         .map(|row| row.label)
@@ -21,11 +22,8 @@ pub(super) fn label(module: &str) -> String {
 }
 
 /// What an empty window lists: the rail's programs, as the menu bar shows them.
-pub(super) fn openable() -> Vec<crate::runtime::RailRow> {
-    crate::runtime::rail()
-        .into_iter()
-        .filter(|row| !row.empty)
-        .collect()
+pub(super) fn openable(roster: &crate::runtime::Roster) -> Vec<crate::runtime::RailRow> {
+    roster.rail().into_iter().filter(|row| !row.empty).collect()
 }
 
 impl DesktopWindow {
@@ -37,6 +35,7 @@ impl DesktopWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.start_switch();
         let message = match message {
             // it opens where it sat on the desk
             PaneMessage::PopOut { index, at: None } => {
@@ -107,7 +106,7 @@ impl DesktopWindow {
             .panes
             .get(index)
             .map_or(layout::EMPTY, |pane| pane.module);
-        let (id, name, glyph) = action.parts(module);
+        let (id, name, glyph) = action.parts(&self.model.read(cx).state.roster, module);
         crate::a11y::keyboard(
             div()
                 .id(SharedString::from(format!("pane/{index}/{id}")))
@@ -167,6 +166,7 @@ impl DesktopWindow {
         }
         let props = self.model.read(cx).state.view_props();
         let center = self.model.read(cx).state.center.clone();
+        let roster = self.model.read(cx).state.roster.clone();
         let this = cx.entity();
         let mut stage = div().id("panes").relative().size_full().child(
             canvas(
@@ -204,7 +204,7 @@ impl DesktopWindow {
                 .on(div()
                     .id(SharedString::from(format!("pane/{index}/view")))
                     .role(gpui_kit::Role::Group)
-                    .aria_label(label(pane.module))
+                    .aria_label(label(&roster, pane.module))
                     .when(self.kind == crate::shell::WindowKind::Console, |view| {
                         view.aria_keyshortcuts(super::chord_label(&(index + 1).to_string()))
                     })
@@ -393,7 +393,7 @@ impl DesktopWindow {
                     super::ink::mono(500, 12.)
                         .flex_shrink_0()
                         .text_color(ink.ink)
-                        .child(label(pane.module)),
+                        .child(label(&self.model.read(cx).state.roster, pane.module)),
                 )
             })
             // pushes the controls to the bar's right end
@@ -469,7 +469,7 @@ impl DesktopWindow {
         use crate::runtime::notify::{self, Permission};
         use gpui_kit::*;
         let ink = Ink::of(self.model.read(cx).state.dark());
-        let name = super::panes::label(module);
+        let name = super::panes::label(&self.model.read(cx).state.roster, module);
         let burst = notify::Settings::load().burst;
         let button = |id: &'static str, text: &'static str, filled: bool, message: Message| {
             let model = self.model.clone();
@@ -565,9 +565,13 @@ enum PaneAction {
 impl PaneAction {
     /// Its element id, its accessible name on the window of `module` (one
     /// window's Close is not another's: "Close Chat window"), its glyph.
-    fn parts(self, module: &str) -> (&'static str, String, gpui_kit::assets::IconName) {
+    fn parts(
+        self,
+        roster: &crate::runtime::Roster,
+        module: &str,
+    ) -> (&'static str, String, gpui_kit::assets::IconName) {
         use gpui_kit::assets::IconName;
-        let program = label(module);
+        let program = label(roster, module);
         let window = match module {
             layout::EMPTY => "empty window".to_owned(),
             _ => format!("{program} window"),

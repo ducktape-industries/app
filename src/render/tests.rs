@@ -180,6 +180,7 @@ mod gpui_clip;
 mod grip;
 mod inputs;
 mod layout;
+mod links;
 mod picture_presentation;
 mod primitives;
 mod rich_tooltip;

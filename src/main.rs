@@ -6,12 +6,14 @@ mod ax;
 mod backend;
 mod editor;
 mod fonts;
+mod perf;
 mod render;
 mod runtime;
 mod shell;
 mod tray;
 
 fn main() {
+    perf::start();
     #[cfg(debug_assertions)]
     if std::env::args().nth(1).as_deref() == Some("--render-tree") {
         shell::render_tree_fixture();
@@ -37,6 +39,7 @@ fn main() {
         _ => {}
     }
     install_log();
+    perf::mark("log");
     raise_open_file_limit();
     // no view ships with the app: every one comes off the connected node.
     // A view developer's DUCKTAPE_VIEWS_DIR supplies files in their place,

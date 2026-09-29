@@ -186,6 +186,16 @@ impl gpui_kit::Render for NativeModuleView {
         };
         self.bind_observers(window, cx);
         self.drawn = true;
+        // every draw of the seat; the tree's own `renders` are the cache
+        // misses among them
+        crate::perf::count(
+            crate::perf::Key::View {
+                module: self.module,
+                instance: self.instance,
+            },
+            "draws",
+            1,
+        );
         match self.frame(window, cx) {
             Ok(min_width) => match &self.content {
                 Some(content) => {
