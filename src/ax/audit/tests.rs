@@ -1053,4 +1053,45 @@ mod phase_two {
         assert_eq!(fails(&report, "AX-119"), ["w:close"]);
         assert_eq!(report.applicable["AX-119"], 3);
     }
+
+    /// The fork panics on a duplicate in a debug build, so a test cannot draw
+    /// one: it hands the rule the list `observe` would have read.
+    fn refused(kept: &str, element: &str, nth: usize) -> Refused {
+        Refused {
+            kept: kept.to_owned(),
+            element: element.to_owned(),
+            nth,
+        }
+    }
+
+    #[test]
+    fn ax_123_an_element_the_fork_refused_is_reported_with_the_node_that_kept_the_id() {
+        let mut clean = reading(vec![vec![button("ok", "Save")]]);
+        let report = audit(&clean, false);
+        assert_eq!(fails(&report, "AX-123"), Vec::<String>::new());
+        assert!(!report.applicable.contains_key("AX-123"));
+
+        clean.refused = vec![
+            refused("w:ok", "GlobalElementId([Name(\"save\")])", 0),
+            refused("w:ok", "GlobalElementId([Name(\"save\")])", 1),
+        ];
+        let report = audit(&clean, false);
+        let ids = fails(&report, "AX-123");
+        assert_eq!(
+            ids,
+            [
+                "w:ok <- GlobalElementId([Name(\"save\")])",
+                "w:ok <- GlobalElementId([Name(\"save\")]) #2"
+            ]
+        );
+        let violation = &report.violations[0];
+        assert_eq!(violation.severity, Error);
+        assert!(violation.message.contains("w:ok"), "{}", violation.message);
+        assert!(
+            violation.message.contains("GlobalElementId"),
+            "{}",
+            violation.message
+        );
+        assert_eq!(report.errors().count(), 2);
+    }
 }
