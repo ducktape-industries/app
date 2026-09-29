@@ -74,7 +74,7 @@ pub(super) struct RichSelection {
 // Layout and hit-testing stay native. One participant receives every span's
 // measured glyph run so copying concatenates source text, never visual padding.
 pub(super) struct RichParagraph {
-    pub(super) id: Option<ElementId>,
+    pub(super) id: ElementId,
     pub(super) content: AnyElement,
     pub(super) text: SharedString,
     pub(super) layout: TextLayout,
@@ -99,7 +99,7 @@ impl Element for RichParagraph {
     type RequestLayoutState = ();
     type PrepaintState = (gpui_kit::Hitbox, Bounds<Pixels>);
     fn id(&self) -> Option<ElementId> {
-        self.id.clone()
+        Some(self.id.clone())
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -279,7 +279,7 @@ impl ViewTree {
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;
-            ElementId::NamedInteger("guest-text".into(), index)
+            host_id(format!("text-{index}"))
         });
         let mut element = div();
         *element.style() = style.clone();
@@ -321,7 +321,13 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let native_id = id.as_ref().map(native_id);
+        // an id-less paragraph is numbered, as an id-less text is, so the
+        // constant `rich-text` inside never lands twice under one parent
+        let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
+            let index = self.render_index;
+            self.render_index += 1;
+            host_id(format!("rich-{index}"))
+        });
         let shared: SharedString = text.clone().into();
         let mut styled = StyledText::new(shared.clone());
         styled = match runs {
@@ -356,7 +362,7 @@ impl ViewTree {
         let linked = match on_click {
             Some(handler) if !clickable_ranges.is_empty() => {
                 let (element, linking) =
-                    self.linked_box(id.as_ref(), text, clickable_ranges, *handler, window, cx);
+                    self.linked_box(&native_id, text, clickable_ranges, *handler, window, cx);
                 let press = linking.press.clone();
                 // a click that ended a drag selected words; it pressed nothing
                 interactive =

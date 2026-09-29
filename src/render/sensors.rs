@@ -20,7 +20,7 @@ pub(super) struct SensorState {
 pub(super) fn grip(cursor: CursorStyle) -> gpui_kit::Stateful<Div> {
     let (x, y) = grip_reach(cursor);
     div()
-        .id("grip")
+        .id(host_id("grip"))
         .absolute()
         .left(px(-x))
         .right(px(-x))

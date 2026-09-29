@@ -36,7 +36,7 @@ impl ViewTree {
             let anchored = matches!(modal, wire::Node::Anchored { .. });
             let shade = shades(anchored, style).then(|| {
                 div()
-                    .id("backdrop")
+                    .id(host_id("backdrop"))
                     .absolute()
                     .inset_0()
                     .bg(rgb(0x000000))
@@ -54,7 +54,7 @@ impl ViewTree {
                     .clone()
             });
             let mut layer = div()
-                .id("layer")
+                .id(host_id("layer"))
                 .absolute()
                 .inset_0()
                 .refine_style(style)
@@ -98,7 +98,7 @@ impl ViewTree {
                     (false, Some(entry)) => div()
                         .absolute()
                         .inset_0()
-                        .focus_trap("focus-trap-container", entry)
+                        .focus_trap(host_id("focus-trap-container"), entry)
                         .child(layer)
                         .into_any_element(),
                     _ => layer.into_any_element(),
