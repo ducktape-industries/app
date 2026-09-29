@@ -39,6 +39,7 @@ mod command;
 mod connect;
 mod desk;
 mod empty_desk;
+mod entities;
 mod facts;
 mod figure;
 mod help;
