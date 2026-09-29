@@ -250,7 +250,8 @@ only when on and only when the tree changed.
 - Route: `("GET", "perf")` and `("POST", "perf/reset")` in
   `ax::http::route`, listed in its 404 endpoint list; `Request::Perf` and
   `Request::PerfReset` in `src/ax.rs`; the CLI verb `ducktape-app ax perf
-  [--by instance]` in `ax::http::request`. `POST /perf/reset` clears the
+  [--by instance | --reset]` in `ax::http::request` (`--reset` sends the
+  POST). `POST /perf/reset` clears the
   counters and samples (the startup marks stay); `GET` never mutates.
 - **It must not draw.** `ax::actions::current` turns a11y on at the first
   read and calls `window.draw(cx)` on every read; a11y on switches
