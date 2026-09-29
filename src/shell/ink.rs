@@ -402,32 +402,48 @@ mod tests {
         });
     }
 
-    /// What a keyboard-focused button shows, and a mouse-moved one does not:
-    /// ink on a plain fill, the page's colour on an ink fill (the ring and
-    /// the border both), and nothing once the last input was the mouse.
+    /// What a keyboard-focused shell button (`DesktopWindow::button`'s own)
+    /// shows, and a mouse-moved one does not: a 2px ink ring and border on
+    /// the outline button, the page's colour on the ink-filled Primary, and
+    /// nothing once the last input was the mouse.
     #[gpui_kit::test]
     fn a_keyboard_focused_button_wears_an_ink_ring_that_inverts_on_ink(
         cx: &mut gpui_kit::TestAppContext,
     ) {
+        use super::{DesktopWindow, Kind, Message, Press};
         use gpui_kit::test::TestWindowExt as _;
         use gpui_kit::{
-            BoxShadow, Context, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
-            Render, Styled as _, VisualTestContext, Window, div, point, px, size,
+            BoxShadow, Context, Div, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+            Modifiers, Render, Stateful, Styled as _, VisualTestContext, Window, div, point, px,
+            size,
         };
         use std::{cell::RefCell, rc::Rc};
         type Seen = Rc<RefCell<Vec<(Vec<BoxShadow>, Option<Hsla>)>>>;
-        struct Buttons(Ink, [FocusHandle; 2], Seen);
+        struct Buttons(Entity<DesktopWindow>, Ink, [FocusHandle; 2], Seen);
         impl Render for Buttons {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let (ink, focus, seen) = (self.0, self.1.clone(), self.2.clone());
+                let (desktop, ink) = (self.0.clone(), self.1);
+                let (focus, seen) = (self.2.clone(), self.3.clone());
                 gpui_kit::canvas(
                     move |_, window, cx| {
                         let mut both = Vec::new();
-                        for (nth, filled) in [false, true].into_iter().enumerate() {
-                            let mut button = crate::a11y::keyboard(
-                                div().id(nth).track_focus(&focus[nth]),
-                                ink.ring(filled),
+                        for (nth, kind) in [Kind::Secondary, Kind::Primary].into_iter().enumerate()
+                        {
+                            let message = || Message::ToggleNetworkMenu;
+                            let mut button = desktop.read(cx).button(
+                                nth,
+                                "Go",
+                                kind,
+                                message,
+                                Press::Ready,
+                                &ink,
                             );
+                            let button = button
+                                .downcast_mut::<Stateful<Div>>()
+                                .expect("a shell button is a Stateful<Div>");
+                            // the handle a frame would give it
+                            let mut button = std::mem::replace(button, div().id("taken"))
+                                .track_focus(&focus[nth]);
                             let style =
                                 button.interactivity().compute_style(None, None, window, cx);
                             both.push((style.box_shadow, style.border_color));
@@ -440,27 +456,38 @@ mod tests {
             }
         }
         cx.update(gpui_kit::init);
+        let (desktop, _) = crate::shell::screens_tests::open(crate::Ducktape::boot().0, cx);
         for dark in [false, true] {
             let ink = Ink::of(dark);
             let seen = Seen::default();
             let focus = cx.update(|cx| [cx.focus_handle(), cx.focus_handle()]);
             let window = cx.open_window(size(px(200.), px(200.)), {
-                let (focus, seen) = (focus.clone(), seen.clone());
-                move |_, _| Buttons(ink, focus, seen)
+                let (desktop, focus, seen) = (desktop.clone(), focus.clone(), seen.clone());
+                move |_, _| Buttons(desktop, ink, focus, seen)
             });
             let mut native = VisualTestContext::from_window(window.into(), cx);
             let shown = |native: &mut VisualTestContext| {
                 native.update(|window, cx| window.render_frame(cx));
                 seen.borrow().clone()
             };
-            let bare = (vec![], None);
+            // both are drawn with an ink border
+            let bare = (vec![], Some(ink.ink));
             assert_eq!(shown(&mut native), vec![bare.clone(), bare.clone()]);
-            let ring = |color| (vec![crate::a11y::ring(color)], Some(color));
-            // Tab lands on the plain button: ink, over the border too
+            let ring = |color| {
+                let ring = BoxShadow {
+                    color,
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(2.),
+                    inset: true,
+                };
+                (vec![ring], Some(color))
+            };
+            // Tab lands on the outline button: ink
             native.update(|window, cx| focus[0].focus(window, cx));
             native.simulate_keystrokes("shift");
             assert_eq!(shown(&mut native), vec![ring(ink.ink), bare.clone()]);
-            // and on the ink-filled one: the page's colour
+            // and on the ink-filled one: the page's colour, over its border too
             native.update(|window, cx| focus[1].focus(window, cx));
             assert_eq!(shown(&mut native), vec![bare.clone(), ring(ink.bg)]);
             // a click moves the mouse: the focus stays, the ring goes

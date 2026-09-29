@@ -95,7 +95,10 @@ fn find<'a>(nodes: &'a serde_json::Value, role: &str, name: &str) -> &'a serde_j
         .unwrap_or_else(|| panic!("missing {role} {name:?} in {nodes}"))
 }
 
-fn open(state: Ducktape, cx: &mut TestAppContext) -> (Entity<DesktopWindow>, VisualTestContext) {
+pub(super) fn open(
+    state: Ducktape,
+    cx: &mut TestAppContext,
+) -> (Entity<DesktopWindow>, VisualTestContext) {
     // a state that has a console window (with a desk laid out for it) is drawn in it
     let key = state.console_win.unwrap_or_else(WindowKey::unique);
     let model = cx.new(|cx| Desktop::new(state, crate::tray::init(cx).0));
