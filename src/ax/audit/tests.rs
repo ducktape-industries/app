@@ -1263,6 +1263,85 @@ async fn the_probe_skips_a_link_box_inside_a_grid(cx: &mut gpui_kit::TestAppCont
     assert_eq!(heard, [["down", "up"]]);
 }
 
+/// A grid of `rows` rows of `columns` cells, under a header row of column
+/// headers when `header`, the claim on row 0's cell `active`.
+fn grid(rows: usize, columns: usize, header: bool, active: usize) -> view_wire::Node {
+    use gpui_kit::Role;
+    let header = header.then(|| {
+        let names = (0..columns)
+            .map(|c| item(format!("column-{c}"), Role::ColumnHeader, false, Vec::new()));
+        item("header".into(), Role::Row, false, names.collect())
+    });
+    let rows = (0..rows).map(|r| {
+        let cells = (0..columns).map(|c| {
+            item(
+                format!("cell-{r}-{c}"),
+                Role::GridCell,
+                r == 0 && c == active,
+                Vec::new(),
+            )
+        });
+        item(format!("row-{r}"), Role::Row, false, cells.collect())
+    });
+    one_stop(
+        "grid",
+        Role::Grid,
+        gpui_kit::accesskit::Orientation::Vertical,
+        ROUTE,
+        header.into_iter().chain(rows).collect(),
+    )
+}
+
+/// A room of one message with nothing to press in it.
+fn one_message(active: &[usize]) -> view_wire::Node {
+    grid(1, 1, false, active[0])
+}
+
+/// One row of eight under a header row.
+fn one_row(active: &[usize]) -> view_wire::Node {
+    grid(1, 8, true, active[0])
+}
+
+/// Three rows of three.
+fn three_by_three(active: &[usize]) -> view_wire::Node {
+    grid(3, 3, false, active[0])
+}
+
+/// Tab lands on a room of one message with nothing to press in it (a
+/// thread opened on a message with no replies): the grid has one cell,
+/// nothing its arrows could move to, and is not probed.
+#[gpui_kit::test]
+async fn a_grid_of_one_cell_is_not_probed(cx: &mut gpui_kit::TestAppContext) {
+    let steps = vec![(["down", "up"], 1)];
+    let (report, heard) = composites_audit(cx, one_message, vec![0], steps, 1).await;
+    assert!(report["applicable"].get("AX-107").is_none(), "{report}");
+    // no arrow; the walk's way out of the one Tab stop Tab stays on
+    assert_eq!(heard, [["escape"]]);
+}
+
+/// A grid whose one row holds all its cells, under a header row of column
+/// headers (the frequent emoji, a list of one repository): the probe
+/// moves along the row, and it passes.
+#[gpui_kit::test]
+async fn the_probe_moves_a_grid_of_one_row_along_it(cx: &mut gpui_kit::TestAppContext) {
+    let steps = vec![(["right", "left"], 8)];
+    let (report, heard) = composites_audit(cx, one_row, vec![0], steps, 1).await;
+    assert_eq!(report["applicable"]["AX-107"], 1, "{report}");
+    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
+    assert_eq!(heard, [["right", "left", "escape"]]);
+}
+
+/// A grid of three rows whose up and down do nothing fails, though its
+/// left and right move the active cell: the probe asks a grid of rows
+/// for its rows.
+#[gpui_kit::test]
+async fn a_grid_whose_rows_do_not_move_fails(cx: &mut gpui_kit::TestAppContext) {
+    let steps = vec![(["right", "left"], 3)];
+    let (report, heard) = composites_audit(cx, three_by_three, vec![0], steps, 1).await;
+    assert_eq!(door_fails(&report, "AX-107").len(), 1, "{report}");
+    assert_eq!(heard, [["down", "up", "down", "escape"]]);
+}
+
 /// The refused elements `Filter` keeps: a view's audit reports the ones under
 /// its `view/<module>` element, the shell's are in the whole window's alone.
 mod refused_scope {
@@ -1486,17 +1565,24 @@ mod phase_two {
         held.state = vec!["focused"];
         assert_eq!(fails(&one(vec![held, row("a")]), "AX-107"), ["w:menu"]);
         // the probe: each press moves the active row, or it does not
-        let probe = |focused: [&str; 3]| {
+        let probe = |keys: Vec<[&'static str; 2]>, focused: [&str; 3]| {
             let mut told = reading(vec![vec![menu()]]);
             told.arrows = vec![Arrows {
                 composite: menu(),
-                keys: ["down", "up"],
+                keys,
                 focused: focused.map(|id| Some(format!("w:{id}"))),
             }];
             audit(&told, false)
         };
-        assert!(fails(&probe(["a", "b", "a"]), "AX-107").is_empty());
-        assert_eq!(fails(&probe(["a", "a", "a"]), "AX-107"), ["w:menu"]);
+        let down = || vec![["down", "up"]];
+        assert!(fails(&probe(down(), ["a", "b", "a"]), "AX-107").is_empty());
+        assert_eq!(fails(&probe(down(), ["a", "a", "a"]), "AX-107"), ["w:menu"]);
+        // a failed probe names every pair it tried
+        let both = probe(vec![["down", "up"], ["up", "down"]], ["a", "a", "a"]);
+        assert_eq!(
+            both.violations[0].message,
+            r#"down moved nothing; up then down leaves the active row at [Some("w:a"), Some("w:a"), Some("w:a")]"#
+        );
     }
 
     #[test]
@@ -1524,11 +1610,8 @@ mod phase_two {
             );
             // each item a Tab stop: Tab reaches them, the arrows are not asked
             list.actions = Vec::new();
-            assert_eq!(
-                arrowed(&[list, focused(tab("a", true)), tab("b", true)]),
-                None,
-                "{role}"
-            );
+            let stops = [list, focused(tab("a", true)), tab("b", true)];
+            assert_eq!(arrowed(&stops), None, "{role}");
         }
         // a separate Tab stop inside a grid keeps the arrows; the grid's
         // own claimed cell does not
@@ -1566,7 +1649,7 @@ mod phase_two {
         let oriented = |role: &str, way: Option<&'static str>| {
             let mut node = node("c", role, "C");
             node.more.orientation = way;
-            crate::ax::audit::arrow_pairs(&node)
+            crate::ax::audit::arrow_pairs(std::slice::from_ref(&node), &node)
         };
         let (rows, cells) = (
             [["down", "up"], ["up", "down"]],
@@ -1576,7 +1659,26 @@ mod phase_two {
         assert_eq!(oriented("TabList", Some("vertical")), rows);
         assert_eq!(oriented("RadioGroup", Some("horizontal")), cells);
         assert_eq!(oriented("ListBox", None), rows);
-        assert_eq!(oriented("Grid", Some("vertical")), [rows, cells].concat());
+        // a grid: its rows, or its cells when one row holds them all; a
+        // header row of column headers holds none
+        let grid = |held: &[&str]| {
+            let mut nodes = vec![
+                node("c", "Grid", "C"),
+                under(node("head", "Row", ""), "c"),
+                under(node("name", "ColumnHeader", "Name"), "head"),
+            ];
+            for n in held {
+                nodes.push(under(node(&format!("row-{n}"), "Row", n), "c"));
+                nodes.push(under(node(n, "GridCell", n), &format!("row-{n}")));
+                nodes.push(under(
+                    node(&format!("{n}-copy"), "GridCell", n),
+                    &format!("row-{n}"),
+                ));
+            }
+            crate::ax::audit::arrow_pairs(&nodes, &nodes[0])
+        };
+        assert_eq!(grid(&["a"]), cells);
+        assert_eq!(grid(&["a", "b"]), rows);
     }
 
     #[test]

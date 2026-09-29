@@ -105,7 +105,8 @@ pub(crate) struct Properties {
     /// `menu`, `listbox`, `tree`, `grid` or `dialog`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) has_popup: Option<&'static str>,
-    /// `horizontal` or `vertical`: which arrows step a composite's items.
+    /// `horizontal` or `vertical`, on any node that has one; AX-107's probe
+    /// presses a composite's arrows by it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) orientation: Option<&'static str>,
     /// The door id of the nearest ancestor the snapshot has; none at its root.
