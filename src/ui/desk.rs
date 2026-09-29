@@ -31,11 +31,9 @@ impl Ducktape {
                 if matches!(self.overlay, Some(super::Overlay::Menu(_))) {
                     self.overlay = None;
                 }
-                self.active = Some(module);
-                if let Some(desk) = self.desk_layout() {
-                    desk.select(module);
-                    desk.settle();
-                }
+                // a pick (⌘K's, a menu's) opens as the bar's click does, not
+                // in place of what the focused window shows
+                self.open_seat(module, None);
                 Task::none()
             }
             Message::ViewEvent(module, intent) => match intent {
@@ -156,7 +154,8 @@ impl Ducktape {
             crate::runtime::route_to(module, route);
         }
         self.active = Some(module);
-        // a link opens beside the view it was in, not in place of it
+        // a link, a notice or a pick opens beside the view in front, not in
+        // place of it
         if let Some(desk) = self.desk_layout() {
             desk.open(module);
             desk.settle();
