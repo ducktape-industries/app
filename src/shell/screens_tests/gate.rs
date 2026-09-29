@@ -413,3 +413,27 @@ fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppCo
     );
     assert!(report.applicable["AX-114"] >= 2, "{:?}", report.applicable);
 }
+
+/// The walk leaves a stop Tab did not move off by Esc, Tab only outside a
+/// modal (docs/ax.md §1.1): Search, whose one Tab stop Tab comes back to,
+/// stays open the whole walk instead of closing on the Esc.
+#[gpui_kit::test]
+fn the_walk_presses_no_escape_under_a_modal(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let (_view, mut native) = open(on_desk(crate::Overlay::Spotlight)(), cx);
+    native.update(snap);
+    let reading =
+        native.update(|window, cx| audit::observe(window, cx, "shell", true, |_| true, snap));
+    assert!(reading.modal && reading.snapshots.len() > 2);
+    for (n, nodes) in reading.snapshots.iter().enumerate() {
+        assert!(
+            nodes
+                .iter()
+                .any(|node| node.role == "Dialog" && node.name == "Search"),
+            "step {n}: Search is gone"
+        );
+    }
+}

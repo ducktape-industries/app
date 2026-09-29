@@ -1,8 +1,9 @@
 //! The audit (`docs/ax.md` §1.2, §1.3, §2): the rule table applied to what
 //! the door saw. Per-node rules run over every node of every snapshot; walk
-//! rules over the sequence a Tab walk yields. [`audit`] is pure: [`observe`]
-//! is the one function here that touches a window, and it only takes the
-//! snapshots and presses the keys. What the door cannot see it is told:
+//! rules over the sequence a Tab walk yields. [`audit`] is pure: the
+//! [`Observer`] is the one thing here that touches a window, and it only
+//! takes the snapshots and presses the keys. What the door cannot see it
+//! is told:
 //! whether a modal scopes the snapshot, whether `escape` was bound at each
 //! step, and — the caller's word, never a guess from the tree — whether the
 //! shell screen is a launcher screen (AX-018), and which controls the
@@ -10,7 +11,7 @@
 use super::actions::{press_keys, shortcuts};
 use super::{AxNode, tree};
 use gpui_kit::accesskit::NodeId;
-use gpui_kit::{App, GlobalElementId, Window};
+use gpui_kit::{App, FocusHandle, GlobalElementId, Window};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -259,7 +260,8 @@ pub(crate) struct Report {
     pub(crate) nodes: usize,
     pub(crate) actionable: usize,
     pub(crate) modal: bool,
-    /// tab presses taken; 0 when the walk was not asked for
+    /// walk presses taken (`tab`, or `escape tab` after a stay); 0 when
+    /// the walk was not asked for
     pub(crate) presses: usize,
     /// AX-018 was evaluated: the caller said the screen is a launcher screen
     pub(crate) launcher: bool,
@@ -271,6 +273,7 @@ pub(crate) struct Report {
 
 /// What one screen state showed the door: the first snapshot, then one per
 /// tab press; `escape`, one per snapshot, whether `escape` was bound then;
+/// `outside`, one per snapshot, whether its focus was outside `keep`;
 /// `arrows`, the arrow probe of the composite the focus started in; and,
 /// the caller's word, `chords`: `(control name, chord)` for each control
 /// the app's Help lists with a chord (AX-114); and `refused`, what the fork
@@ -283,6 +286,10 @@ pub(crate) struct Reading {
     pub(crate) arrows: Vec<Arrows>,
     pub(crate) chords: Vec<(String, String)>,
     pub(crate) refused: Vec<Refused>,
+    /// one per snapshot: the focus is on a node `keep` dropped, and on no
+    /// node it kept (a `view=` audit's walk on a shell stop), so the step
+    /// is not the view's to judge
+    pub(crate) outside: Vec<bool>,
 }
 
 /// An element the fork left out of the tree because an earlier one had its
@@ -881,24 +888,30 @@ fn holds(node: &AxNode) -> bool {
 }
 
 /// AX-020 … AX-025 over the sequence, `step N` the snapshot after N
-/// presses; then AX-103, AX-104 and AX-107's arrows. A dialog that shows
-/// has the focus, in every snapshot (AX-104): a menu the walk leaves has
-/// closed (owner, 2026-09-28). One the Tab walk never leaves is modal to
-/// the keyboard, and says so (AX-103). Each arrow press of the probe moves
-/// the active row (AX-107).
+/// presses, a step whose focus is outside the audited scope left to the
+/// scope it is in; then AX-103, AX-104 and AX-107's arrows. A dialog that
+/// shows has the focus, in every snapshot (AX-104): a menu the walk leaves
+/// has closed (owner, 2026-09-28). One the Tab walk never leaves is modal
+/// to the keyboard, and says so (AX-103). Each arrow press of the probe
+/// moves the active row (AX-107).
 fn walk_rules(reading: &Reading, tally: &mut Tally) {
     let snapshots = &reading.snapshots;
     let Some(first) = snapshots.first() else {
         return;
     };
     let step = |n: usize| format!("step {n}");
+    let outside = |n: usize| reading.outside.get(n).copied().unwrap_or(false);
     for (n, nodes) in snapshots.iter().enumerate().skip(1) {
+        if outside(n) {
+            continue;
+        }
         let now = focused(nodes);
         tally.step("AX-020", &step(n), "", "", now.len() == 1, || {
             format!("{} nodes focused after tab: {now:?}", now.len())
         });
-        let was = focused(&snapshots[n - 1]);
-        tally.step("AX-022", &step(n), "", "", now != was, || {
+        // off a node `keep` dropped, the focus has moved
+        let moved = now != focused(&snapshots[n - 1]) || outside(n - 1);
+        tally.step("AX-022", &step(n), "", "", moved, || {
             format!("tab left focus on {now:?}")
         });
     }
@@ -948,8 +961,9 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
         });
     }
     for (n, nodes) in snapshots.iter().enumerate() {
-        let some = !focused(nodes).is_empty();
-        if reading.modal && walked {
+        // focus on a node `keep` dropped is still focus
+        let some = !focused(nodes).is_empty() || outside(n);
+        if reading.modal && walked && !outside(n) {
             tally.step("AX-023", &step(n), "", "", some, || {
                 "focus left the modal's subtree".to_owned()
             });
@@ -1064,9 +1078,11 @@ impl Report {
 }
 
 impl Reading {
-    /// One more snapshot, with whether `escape` is bound now.
-    fn take(&mut self, nodes: Vec<AxNode>, window: &Window, cx: &App) {
+    /// One more snapshot, with whether its focus is outside what the
+    /// audit keeps and whether `escape` is bound now.
+    fn take(&mut self, nodes: Vec<AxNode>, outside: bool, window: &Window, cx: &App) {
         self.escape.push(escape_bound(window, cx));
+        self.outside.push(outside);
         self.snapshots.push(nodes);
     }
 }
@@ -1090,22 +1106,183 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// stop the first snapshot does not show (scrolled away, drawn since) makes
 /// the Tab cycle longer than N + 1; the walk still goes all the way round,
 /// up to 4 (M + 1) presses, M the most stops a snapshot has shown so far.
-/// Before the walk, when the focus starts in a
-/// composite with two rows or more, `down` then `up`, `snap` after each
-/// ([`Arrows`]). Focus goes back where it was — nowhere included.
+/// A Tab that leaves the focus where it was (a guest editor keeps Tab for
+/// its indent) is followed by `escape tab`, the way out Help gives (owner,
+/// 2026-09-28), once until the focus moves, and never under a modal:
+/// there `escape` closes the modal (Spotlight, whose one Tab stop Tab
+/// comes back to, would close mid-walk). A stay the walk leaves so is not
+/// the focus coming back round. Before the walk, when the focus
+/// starts in a composite with two rows or more, `down` then `up`, `snap`
+/// after each ([`Arrows`]). Focus goes back where it was — nowhere
+/// included.
+///
+/// All in the caller's one update: a key a view hears as an event the
+/// tree emits reaches it only once that update ends, so this is for tests
+/// of native windows. `GET /audit` drives the [`Observer`] a key per
+/// update.
+#[cfg(test)]
 pub(crate) fn observe(
     window: &mut Window,
     cx: &mut App,
     name: &str,
     walk: bool,
     keep: impl Fn(&str) -> bool,
-    mut snap: impl FnMut(&mut Window, &mut App) -> Vec<AxNode>,
+    snap: impl FnMut(&mut Window, &mut App) -> Vec<AxNode>,
 ) -> Reading {
-    let before = window.focused(cx);
-    let mut reading = Reading::default();
-    let mut refused = Vec::new();
-    let mut read = |window: &mut Window, cx: &mut App| {
-        let mut nodes = snap(window, cx);
+    let mut observer = Observer::open(window, cx, name, walk, keep, snap);
+    while observer.press(window, cx) {
+        observer.read(window, cx);
+    }
+    observer.finish(window, cx)
+}
+
+/// The reading of one window (`observe` above), a key at a time:
+/// [`Observer::open`], then [`Observer::press`] and [`Observer::read`]
+/// until `press` says the walk is done, then [`Observer::finish`], each in
+/// any update the caller likes.
+pub(crate) struct Observer<K, S> {
+    name: String,
+    walk: bool,
+    keep: K,
+    snap: S,
+    reading: Reading,
+    refused: Vec<Refused>,
+    /// the focus before the first press, given back by `finish`
+    before: Option<FocusHandle>,
+    /// the arrow probe, and how many of its two keys were pressed
+    arrows: Option<Arrows>,
+    arrowed: usize,
+    /// the focus the last key was pressed from
+    from: Option<FocusHandle>,
+    /// the Tab walk: presses taken, N and M, the handle the first press
+    /// gave the focus (the handle, not the node: a stop off the viewport
+    /// has no node), whether the focus has come back to it, the next key,
+    /// and whether `escape` was pressed since the focus last moved
+    presses: usize,
+    stops: usize,
+    most: usize,
+    first: Option<FocusHandle>,
+    round: bool,
+    next: &'static str,
+    escaped: bool,
+}
+
+impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observer<K, S> {
+    /// The first snapshot, and whether a modal scopes it.
+    pub(crate) fn open(
+        window: &mut Window,
+        cx: &mut App,
+        name: &str,
+        walk: bool,
+        keep: K,
+        snap: S,
+    ) -> Self {
+        let mut observer = Self {
+            name: name.to_owned(),
+            walk,
+            keep,
+            snap,
+            reading: Reading::default(),
+            refused: Vec::new(),
+            before: window.focused(cx),
+            arrows: None,
+            arrowed: 0,
+            from: None,
+            presses: 0,
+            stops: 0,
+            most: 0,
+            first: None,
+            round: false,
+            next: "tab",
+            escaped: false,
+        };
+        let (nodes, outside, stops) = observer.look(window, cx);
+        observer.reading.take(nodes, outside, window, cx);
+        (observer.stops, observer.most) = (stops, stops);
+        // after the first snap: a read switches the tree on and draws it
+        observer.reading.modal = tree::modal_active(window);
+        observer.arrows = arrowed(&observer.reading.snapshots[0])
+            .filter(|_| walk)
+            .map(|composite| Arrows {
+                composite: composite.clone(),
+                focused: [focused_id(&observer.reading.snapshots[0]), None, None],
+            });
+        observer
+    }
+
+    /// Presses the next key: the probe's `down` and `up`, then the walk's.
+    /// False, pressing nothing, once the walk is done.
+    pub(crate) fn press(&mut self, window: &mut Window, cx: &mut App) -> bool {
+        self.from = window.focused(cx);
+        if self.arrows.is_some() && self.arrowed < 2 {
+            let _ = press_keys(window, cx, ["down", "up"][self.arrowed], "");
+            self.arrowed += 1;
+            return true;
+        }
+        let done = self.presses > self.stops && (self.round || self.first.is_none());
+        if !self.walk || done || self.presses >= 4 * (self.most + 1) {
+            return false;
+        }
+        self.presses += 1;
+        if self.next != "tab" {
+            self.escaped = true;
+        }
+        let _ = press_keys(window, cx, self.next, "");
+        true
+    }
+
+    /// Reads the window after the key `press` sent. For the probe, whether
+    /// the focus has moved off where the key was pressed yet: a view moves
+    /// it once it has heard the key, and a caller that pressed the key in
+    /// an update of its own reads again until it has, or a deadline passes
+    /// (the last read counts). A walk step is read once: Tab moves the
+    /// focus natively.
+    pub(crate) fn read(&mut self, window: &mut Window, cx: &mut App) -> bool {
+        let now = window.focused(cx);
+        let (nodes, outside, seen) = self.look(window, cx);
+        if self.presses == 0 {
+            let n = self.arrowed;
+            let Some(arrows) = &mut self.arrows else {
+                return true;
+            };
+            arrows.focused[n] = focused_id(&nodes);
+            return arrows.focused[n] != arrows.focused[n - 1];
+        }
+        self.most = self.most.max(seen);
+        self.reading.take(nodes, outside, window, cx);
+        let stayed = now.is_some() && now == self.from;
+        self.escaped &= stayed;
+        let leave = stayed && !self.escaped && !self.reading.modal;
+        match self.presses {
+            1 => self.first = now.clone(),
+            // a stay the walk is about to leave has not come back round
+            _ => self.round |= now == self.first && !leave,
+        }
+        self.next = match leave {
+            true => "escape tab",
+            false => "tab",
+        };
+        true
+    }
+
+    /// The reading, the focus given back where it was.
+    pub(crate) fn finish(mut self, window: &mut Window, cx: &mut App) -> Reading {
+        if self.walk {
+            match self.before {
+                Some(handle) => handle.focus(window, cx),
+                None => window.blur(cx),
+            }
+        }
+        self.reading.arrows.extend(self.arrows);
+        self.reading.refused = self.refused;
+        self.reading
+    }
+
+    /// One snapshot, what the fork refused on its frame noted: the nodes
+    /// `keep` takes, whether the focus is outside them, and how many
+    /// nodes offer focus before the filter.
+    fn look(&mut self, window: &mut Window, cx: &mut App) -> (Vec<AxNode>, bool, usize) {
+        let mut nodes = (self.snap)(window, cx);
         // the kept node by its door id in `nodes` (before any filter), or
         // through the element-id map where `nodes` does not show it
         let kept_name = |id: NodeId| match nodes.iter().find(|node| node.node == id) {
@@ -1115,56 +1292,23 @@ pub(crate) fn observe(
                 .map_or_else(|| format!("{id:?}"), |kept| format!("{kept:?}")),
         };
         note_refused(
-            &mut refused,
+            &mut self.refused,
             window.a11y_refused_elements(),
-            name,
-            &keep,
+            &self.name,
+            &self.keep,
             kept_name,
         );
         let stops = nodes.iter().filter(|node| offers(node, "focus")).count();
-        nodes.retain(|node| keep(&node.scope));
-        (nodes, stops)
-    };
-    let (nodes, stops) = read(window, cx);
-    reading.take(nodes, window, cx);
-    // after the first snap: a read switches the tree on and draws it
-    reading.modal = tree::modal_active(window);
-    if walk && let Some(composite) = arrowed(&reading.snapshots[0]).cloned() {
-        let at = |nodes: &[AxNode]| focused(nodes).first().map(|id| (*id).to_owned());
-        let mut seen = [at(&reading.snapshots[0]), None, None];
-        for (n, key) in [(1, "down"), (2, "up")] {
-            let _ = press_keys(window, cx, key, "");
-            seen[n] = at(&read(window, cx).0);
-        }
-        reading.arrows.push(Arrows {
-            composite,
-            focused: seen,
-        });
+        let dropped = nodes
+            .iter()
+            .any(|node| has(node, "focused") && !(self.keep)(&node.scope));
+        nodes.retain(|node| (self.keep)(&node.scope));
+        let outside = dropped && focused(&nodes).is_empty();
+        (nodes, outside, stops)
     }
-    if walk {
-        // the handle, not the node: a stop off the viewport has no node
-        let (mut first, mut round) = (None, false);
-        let (mut press, mut most) = (0, stops);
-        while press < 4 * (most + 1) {
-            press += 1;
-            let _ = press_keys(window, cx, "tab", "");
-            let now = window.focused(cx);
-            let (nodes, seen) = read(window, cx);
-            most = most.max(seen);
-            reading.take(nodes, window, cx);
-            match press {
-                1 => first = now,
-                _ => round |= now == first,
-            }
-            if press > stops && (round || first.is_none()) {
-                break;
-            }
-        }
-        match before {
-            Some(handle) => handle.focus(window, cx),
-            None => window.blur(cx),
-        }
-    }
-    reading.refused = refused;
-    reading
+}
+
+/// The first focused id of `nodes`.
+fn focused_id(nodes: &[AxNode]) -> Option<String> {
+    focused(nodes).first().map(|id| (*id).to_owned())
 }
