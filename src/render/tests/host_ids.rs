@@ -125,6 +125,38 @@ fn a_view_text_spelled_like_a_host_text_id_is_its_own_node(cx: &mut gpui_kit::Te
     assert_eq!(first.id, "t:text-0");
 }
 
+/// An id-less rich text with links, beside a text spelled the way the host
+/// used to name the links' box: the box and the text keep their nodes.
+#[gpui_kit::test]
+fn a_view_text_spelled_like_a_linked_box_is_its_own_node(cx: &mut gpui_kit::TestAppContext) {
+    let mut linked = rich(None, "Read the docs or the code");
+    if let wire::Node::RichText {
+        clickable_ranges,
+        on_click,
+        ..
+    } = &mut linked
+    {
+        *clickable_ranges = vec![5..13, 17..25];
+        *on_click = Some(7);
+    }
+    let nodes = draw(
+        cx,
+        axis_container(
+            "root",
+            Axis::Column,
+            [
+                linked,
+                plain_text(
+                    Some(wire::ElementIdWire::NamedInteger("guest-rich".into(), 0)),
+                    "beside",
+                ),
+            ],
+        ),
+    );
+    assert_eq!(names(&nodes, "Group"), ["Read the docs or the code"]);
+    assert!(names(&nodes, "Label").contains(&"beside".to_owned()));
+}
+
 /// An input `i` beside a text spelled the way the host used to name the
 /// input's wrapper; the input's door id is the view's own.
 #[gpui_kit::test]

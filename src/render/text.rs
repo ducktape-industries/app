@@ -42,9 +42,8 @@ pub(super) fn joins_drag(drag: Option<Bounds<Pixels>>, clip: Bounds<Pixels>) -> 
 
 /// Redraws `window` when the selection `handle` shows really changes.
 /// gpui-base's sweep clears every participant a frame did not register — a
-/// cached view's paragraphs register none, a stand-in handle is new each
-/// render — and its clear says `SelectionChanged(None)` even when nothing
-/// was selected. Refreshing on that re-rendered every cached view, every
+/// cached view's paragraphs register none — and its clear says
+/// `SelectionChanged(None)` even when nothing was selected. Refreshing on that re-rendered every cached view, every
 /// frame: a desk of heavy views drew all of them in full on each switch.
 fn refresh_on_change(
     handle: &gpui_kit::base::TextSelectionHandle,
@@ -78,7 +77,6 @@ pub(super) struct RichParagraph {
     pub(super) content: AnyElement,
     pub(super) text: SharedString,
     pub(super) layout: TextLayout,
-    pub(super) fallback: RichSelection,
     pub(super) active_handle:
         std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
     pub(super) selection: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
@@ -138,30 +136,22 @@ impl Element for RichParagraph {
                 .with_text_bounds(vec![layout_bounds])
                 .with_document_order(order)
         };
-        window.with_optional_element_state::<RichSelection, _>(id, |state, window| {
-            let state = match state {
-                Some(state) => state.unwrap_or_else(|| {
-                    let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
-                    let refresh = refresh_on_change(&handle, window, cx);
-                    RichSelection {
-                        handle,
-                        _refresh: refresh,
-                    }
-                }),
-                None => {
-                    *active.borrow_mut() = Some(self.fallback.handle.clone());
-                    if joins {
-                        self.fallback.handle.register(registration(), window, cx);
-                    }
-                    return ((), None);
+        let id = id.expect("a paragraph always has an id");
+        window.with_element_state::<RichSelection, _>(id, |state, window| {
+            let state = state.unwrap_or_else(|| {
+                let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
+                let refresh = refresh_on_change(&handle, window, cx);
+                RichSelection {
+                    handle,
+                    _refresh: refresh,
                 }
-            };
+            });
             state.handle.set_fallback_copy_text(text.to_string(), cx);
             *active.borrow_mut() = Some(state.handle.clone());
             if joins {
                 state.handle.register(registration(), window, cx);
             }
-            ((), Some(state))
+            ((), state)
         });
         (hitbox, clip)
     }
@@ -456,17 +446,11 @@ impl ViewTree {
                 content.into_any_element()
             }
         };
-        let handle = gpui_kit::base::TextSelectionHandle::new(text.clone(), cx);
-        let refresh = refresh_on_change(&handle, window, cx);
         RichParagraph {
             id: native_id,
             content,
             text: shared,
             layout,
-            fallback: RichSelection {
-                handle,
-                _refresh: refresh,
-            },
             active_handle: Default::default(),
             selection: selection_range,
             order: self.selection_order.clone(),
