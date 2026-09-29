@@ -102,7 +102,7 @@ pub(super) fn open(
 ) -> (Entity<DesktopWindow>, VisualTestContext) {
     // a state that has a console window (with a desk laid out for it) is drawn in it
     let key = state.console_win.unwrap_or_else(WindowKey::unique);
-    let model = cx.new(|cx| Desktop::new(state, crate::tray::init(cx).0));
+    let model = cx.new(|cx| Desktop::new(state, crate::tray::init(cx).0, cx));
     let mut view = None;
     let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
         let desktop =

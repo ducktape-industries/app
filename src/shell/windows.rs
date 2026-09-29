@@ -85,6 +85,9 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let observer = cx.observe(&model, |_, _, cx| cx.notify());
+        // s5 deletes this: `PaneView` observes its own `Seat`
+        let seats = model.read(cx).seats.clone();
+        let seats = cx.observe(&seats, |_, _, cx| cx.notify());
         let activation =
             cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
                 let message = match window.is_window_active() {
@@ -129,13 +132,18 @@ impl DesktopWindow {
             focus,
             _activation: activation,
             _observer: observer,
+            _seats: seats,
             _focus_lost: cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
         }
     }
 }
 
 impl Desktop {
-    pub(super) fn new(state: Ducktape, tray: crate::tray::Tray) -> Self {
+    pub(super) fn new(state: Ducktape, tray: crate::tray::Tray, cx: &mut Context<Self>) -> Self {
+        let seats = cx.new(|_| entities::Seats::new());
+        let seat_intents = cx.subscribe(&seats, |desktop, _, (module, intent), cx| {
+            desktop.dispatch(Message::ViewEvent(module, intent.clone()), cx)
+        });
         Self {
             drawn: state.beat_face(),
             state,
@@ -143,7 +151,8 @@ impl Desktop {
             windows: BTreeMap::new(),
             views: BTreeMap::new(),
             streams: HashMap::new(),
-            mounted: BTreeMap::new(),
+            seats,
+            _seat_intents: seat_intents,
             desk_bounds: None,
         }
     }

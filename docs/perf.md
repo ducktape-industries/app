@@ -83,8 +83,8 @@ and is reported only under Xvfb.
 ### 2.1 One view's life
 
 Threads: a load runs on its own OS thread (`seat::spawn_load`); the tick
-loop runs on the window thread inside `NativeModuleView::frame`
-(`src/runtime/widget.rs`), which holds the seat mutex while it runs.
+loop runs on the window thread inside `Seat::turn`
+(`src/runtime/seat/entity.rs`), off the draw path, which holds the seat mutex while it runs.
 
 | Stage | Measured today | Hook point | Metric | Held |
 |---|---|---|---|---|
@@ -96,8 +96,8 @@ loop runs on the window thread inside `NativeModuleView::frame`
 | Restore | lumped into `init_ms` | `Guest::restore` → `Exports::restore` | H `restore` (W), H `fuel.restore` (D) | a3 |
 | Init | `init_ms` = instantiate + snapshot + restore + init together | `Guest::init` → `Exports::init` | H `init` (W), H `fuel.init` (D) | a3 |
 | First frame of a swap | `first_frame_ms` | `Guest::first_frame` | H `first_frame` (W) | a3 |
-| Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `spawn_load` | `seat::spawn_load`, the closure after `Guest::load` returns: lock wait, then the match on `Loaded` through `locked.changes.send_replace(())`; a swap also drops the old `Guest` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
-| First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. Seats are preloaded by `spawn_roster_read` before any tab shows them, so "from load start" is not what a user feels | end of the first `Guest::tick` (`Guest.ticks == 0` in `Guest::redraw`), measured from `Mounted.shown` (set in `NativeModuleView::frame`) or from install end if later | H `first_tree` (W, ms) | a3 / 70 |
+| Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `spawn_load` | `seat::spawn_load`, the closure after `Guest::load` returns: lock wait, then the match on `Loaded` through `locked.wake.send_replace(())`; a swap also drops the old `Guest` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
+| First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. Seats are preloaded by `spawn_roster_read` before any tab shows them, so "from load start" is not what a user feels | end of the first `Guest::tick` (`Guest.ticks == 0` in `Guest::redraw`), measured from `Mounted.shown` (set in `Seat::turn`) or from install end if later | H `first_tree` (W, ms) | a3 / 70 |
 | Tick: fuel | `tracing::debug!(target: "ducktape::perf", used, limit)` in `Guest::tick` (`guest/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
 | Tick: wall | nothing | `Guest::tick`: the `arm` → `Exports::tick` → `shape` chain is one expression today and has to be split to time the call and the decode apart | H `tick.call`, H `tick.decode` (W) | a3 |
 | Requests per tick | nothing (only the `MAX_REQUESTS_PER_TICK` refusal) | `Guest::redraw`, the loop over `frame.requests` and `frame.cancels` | H `requests`, H `cancels` (D) | a3 |
@@ -106,12 +106,12 @@ loop runs on the window thread inside `NativeModuleView::frame`
 | Frame bytes | nothing (the `MAX_FRAME_BYTES` refusal in `guest::shape`) | `Exports::tick` answer length; `wire::encode(&events)` length in `Guest::tick` | H `frame_bytes`, H `events_bytes` (D) | a3 |
 | Frame kind, busy, node count | nothing | after `guest::shape` in `Guest::tick`: `frame.root.is_some()`, `frame.patches.len()`, `frame.unchanged`, `frame.busy`; the node count from a `root.for_each_mut` walk (view-wire has no `count`), only when `frame_rev` bumps (O(n), so only when on) | C `frame.{full,patch,unchanged}`, C `busy_ticks`, G `nodes` (D) | a3 |
 | Sanitize truncations | a `display_text_truncated` warn (`Guest::report_display_truncation`) | `reports.local` after `guest::shape` | C `truncations` (D) | a3 |
-| Tree merge and replace | nothing | `guest::merge` (patch frames clone the held tree before applying); `NativeModuleView::frame`, the `changed` branch: root clone, `Pictures::hydrate`, `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
+| Tree merge and replace | nothing | `guest::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone, `Pictures::hydrate`, `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
 | ViewTree render | `ViewTree.renders`, `#[cfg(test)]` only (`src/render.rs`) | `ViewTree::render` (`Render` impl); promote the counter out of `cfg(test)` | C `renders` (D), H `render` (W) | 70 |
-| Cache hit / miss per view | nothing | On the cached path (`NativeModuleView::render`, the `.cached(..)` branch) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `NativeModuleView::render` calls, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
+| Cache hit / miss per view | nothing | On the cached path (`panes::pane_body`, `layers::cached_unless_a11y`) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `pane_body` draws of the seat, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
 | Full redraws per interaction | nothing (#347 measured it with temporary spans: 57–67 per window switch before, 11–14 after) | the `misses` delta between two door reads around the interaction | derived (D) | 70 |
 | Refresh causes | nothing | every `window.refresh()` caller in `src` is a cache-buster for all cached views in that window (`gpui:src/view.rs`, `!window.refreshing`). Today there are two, both in `src/render/text.rs`: the selection path (post-#347 `refresh_on_change`, only when the shown selection changes; before it, gpui-base's `refresh_window_on_change`) and the drag mouse-up handler (`MouseUpEvent` while `DRAG_CLIP` is set). `Window::activate_a11y` also refreshes. Count per site | C `refresh.<site>` (D) | free (`text.rs`) |
-| gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `input::Observe` (`src/runtime/input.rs`) wraps the guest element: `Observe::prepaint` runs render + layout + prepaint for a cached `AnyView`, `Observe::paint` the paint. Per view only on the cached path; with a11y active `NativeModuleView::render` renders the tree uncached and taffy layout is window-wide | H `layout`, H `paint` (W) | a3 |
+| gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `input::Observe` (`src/runtime/input.rs`) wraps the guest element: `Observe::prepaint` runs render + layout + prepaint for a cached `AnyView`, `Observe::paint` the paint. Per view only on the cached path; with a11y active `pane_body` renders the tree uncached and taffy layout is window-wide | H `layout`, H `paint` (W) | a3 |
 | Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) is insert-only, never evicts; sum `raster`/`vector` byte lengths when on | G `picture_bytes` (D) | free |
 | Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `Guest::tick` | G `memory` max (D) | a3 |
 | Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
@@ -139,7 +139,7 @@ so response bodies are decoded there.
 
 | Stage | Measured today | Hook point | Metric | Held |
 |---|---|---|---|---|
-| Startup milestones | nothing | t0 at the top of `main` (`src/main.rs`); `log` after `install_log`; `gpui` at the top of the `application.run` closure in `shell::launch::run`; `fonts` after `initialize_rendering`; `boot` after `Ducktape::boot`; `window` at `Ok(handle)` in `Desktop::open_window` (`shell/windows.rs`); `connected` in the `Connected` arm (`ui/connect.rs`); `desk` where `Ducktape::handle` (`ui/update.rs`) sees the launcher→desk crossing; `first_seated.<module>` in the new-content branch of `NativeModuleView::frame`. No first-present mark without the gpui profiler | G `startup.<mark>` ms since t0 (W) | free, except `frame` (70) |
+| Startup milestones | nothing | t0 at the top of `main` (`src/main.rs`); `log` after `install_log`; `gpui` at the top of the `application.run` closure in `shell::launch::run`; `fonts` after `initialize_rendering`; `boot` after `Ducktape::boot`; `window` at `Ok(handle)` in `Desktop::open_window` (`shell/windows.rs`); `connected` in the `Connected` arm (`ui/connect.rs`); `desk` where `Ducktape::handle` (`ui/update.rs`) sees the launcher→desk crossing; `first_seated.<module>` in `Seat::mount`. No first-present mark without the gpui profiler | G `startup.<mark>` ms since t0 (W) | free, except `frame` (70) |
 | Frame time per window | nothing (`ZED_MEASUREMENTS=1` — `gpui_util::measure` in the fork's frame callback — prints `frame duration` to stderr for callback-driven frames only, no rebuild) | `DesktopWindow::render` (`shell.rs`) for the app's render phase; end-to-end draw+present needs the fork's `WindowProfiler` (§1, §7) | H `frame.render` per `WindowKey` (W) | free |
 | Long frames > 16 ms with a cause | nothing | with only the app's spans: a ring of the last N spans over 1 ms, timestamped; a `frame.render` over budget is written to the ring with the spans that overlapped it (reducer domain, view module and stage, `turn`/`hide`/close). Draw/present/input causes need `HangDetector` over `cx.foreground_journal()` (fork, `profiler` feature) | C `long_frames`, ring `slow` (W) | free |
 | Reducer update per message | nothing | `Desktop::dispatch` (`shell.rs`) whole; each routing arm of `Ducktape::update` (`ui/update.rs`) keyed by domain (`connect`, `overlay`, `notify`, `sign_in`, `desk`, `pane`). **Never key by `{:?}` of the message**: `AppMessage`'s derived `Debug` prints payloads, and `PasswordTyped`, `ApproveCodeTyped`, `PhraseWordTyped` and `RestorePhraseTyped` carry secrets. Messages arrive three ways — the spawn site in `Desktop::start`, synchronously from input listeners (`pane_message`, keys, screens), and from inside render (`DeskShown` in `DesktopWindow::console`, `shell/desk.rs`) — and `dispatch` sees all three | H `reducer.<domain>` (W) | free |
@@ -154,7 +154,7 @@ so response bodies are decoded there.
 Where the shell's biggest window-thread costs sit, for the record, all
 verified: wasm ticks and frame decode (`Guest::tick`, `guest::shape`);
 deep tree clones on every patch (`guest::merge`), change
-(`NativeModuleView::frame`) and render (`ViewTree::render` clones `root`);
+(`Seat::turn`) and render (`ViewTree::render` clones `root`);
 `rail()` 1 + 2×panes times per desk render (plus one more `label()` per
 permission bar); `read_prefs` in render paths through
 `notify::Settings::load` (the permission bar in `pane_stage`, Settings ›
@@ -209,7 +209,7 @@ pub(crate) fn retire(module: &'static str, instance: u64) // one `view_perf` lin
 - Keys are `&'static str`: module names are interned already
   (`runtime::intern`), stage names are literals.
 - Keyed by **(module, instance)**, not module: the seat registry is
-  `(module, instance)` (`seat::mounted`, `NativeModuleView::new`), and two
+  `(module, instance)` (`seat::mounted`, `Seat::new`), and two
   windows can show the same view. The seat carries its instance
   (`Mounted.instance`, `Guest.instance`), so the loader thread and the
   window thread write under one key; a preloaded seat's load stages land
@@ -257,7 +257,7 @@ only when on and only when the tree changed.
   (§4.3), so it leaves `cache_on` as it found it.
 - **It must not draw.** `ax::actions::current` turns a11y on at the first
   read and calls `window.draw(cx)` on every read; a11y on switches
-  `NativeModuleView::render` to the uncached tree. `/perf` is answered in
+  `pane_body` to the uncached tree. `/perf` is answered in
   `ax::answer` from `perf::snapshot()`; its one window access reads
   `is_a11y_active` (and, with `perf-deep`, the profiler's histograms) and
   never draws.
@@ -423,7 +423,7 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      at block_time/2 clamped to 100 ms–2 s and delivers one item per block
      (`kernel::node::live`, `heads`);
    - `renders ≤ ticks + 2` per view, because every tick notifies the
-     ViewTree in `NativeModuleView::frame`. Renders far above ticks is a
+     ViewTree in `Seat::turn`. Renders far above ticks is a
      notify loop: the #347 class of bug, and this is its regression gate
      (only meaningful with `cache_on: true`, §4.3);
    - shell `renders.<window>` ≤ seconds / 2 + 2 with motion off (a beat
@@ -450,7 +450,7 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
 
 **Caveat on every qa number.** The door turns a11y on at its first read and
 draws on every read (`ax::actions::current`), and a `wait` polls every
-50 ms (`ax::answer`, `POLL`). With a11y on, `NativeModuleView::render`
+50 ms (`ax::answer`, `POLL`). With a11y on, `pane_body`
 takes the uncached path. So qa's render/layout numbers are for the uncached
 path and are not user numbers; the idle window must contain no door reads;
 `door_draws` is reported so a reviewer can see how much of a window's
@@ -541,7 +541,7 @@ Design:
   `ViewTree.renders`). A seated view drawing #347's tree shape renders no
   more than it ticks, read off the registry's `renders` and `ticks` as
   `/perf` serves them (`an_idle_view_renders_no_more_than_it_ticks`,
-  `src/runtime/widget/tests.rs`): undoing #347's selection fix fails it.
+  `src/runtime/seat/entity_tests.rs`): undoing #347's selection fix fails it.
   Undoing its layout fix does not — under the test scheduler a notify from
   inside a draw is cleared with that frame — so the bounds assertion in
   #347's own test guards that one. Also counts: a redraw of the desk with
@@ -571,7 +571,7 @@ Phase 0, as listed:
   without a draw.
 - Shell hooks: startup marks (`main.rs`, `shell/launch.rs`,
   `shell/windows.rs`, `ui/connect.rs`, `ui/update.rs`, `first_seated` in
-  `widget/present.rs`); `Desktop::dispatch` whole and the `Ducktape::update`
+  `seat/entity.rs`); `Desktop::dispatch` whole and the `Ducktape::update`
   domains; `DesktopWindow::render` `frame.render` and `renders` per window;
   the `switch` timer from `pane_message`, `raise_window` and the activation
   observer to the next frame; `Spin::render` `figure.frame` and
@@ -597,8 +597,8 @@ Phase 1, as listed:
   `snapshot_bytes` (`guest/lifecycle.rs`); `compile.{memory,disk,cold}`
   from the in-process cache and wasmtime's hit counter (`guest.rs`,
   approximate under concurrent loads, said so in code).
-- `NativeModuleView`: `replace`, `first_tree`, `first_seated.<module>`,
-  `draws` (`widget.rs`, `widget/present.rs`); `ViewTree::render` `renders`
+- `Seat`: `replace`, `first_tree`, `first_seated.<module>` (`seat/entity.rs`);
+  `draws` (`shell/panes.rs`, `pane_body`); `ViewTree::render` `renders`
   and `render` under the seat's key (`render.rs`, `ViewTree::with_perf_key`).
 - `door_draws` in `ax::actions::current`, for the process.
 - The idle rule as an app test:

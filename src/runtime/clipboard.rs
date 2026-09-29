@@ -1,6 +1,6 @@
 //! The clipboard, read and written on the window thread for one guest.
 use super::wire::methods::{self, Capability};
-use super::{Guest, NativeModuleView};
+use super::{Guest, Seat};
 use gpui_kit::{ClipboardEntry, Context};
 
 /// Requests a guest may have waiting for the window thread between two
@@ -48,7 +48,7 @@ fn queue(guest: &mut Guest, id: u64, request: Request) {
     guest.clipboard.pending.push((id, request));
 }
 
-pub(super) fn mount(guest: &mut Guest, cx: &mut Context<NativeModuleView>) {
+pub(super) fn mount(guest: &mut Guest, cx: &mut Context<Seat>) {
     for (id, request) in std::mem::take(&mut guest.clipboard.pending) {
         match request {
             Request::Read => {

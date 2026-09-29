@@ -30,7 +30,7 @@ pub(super) struct Guest {
     pub(crate) connection_rev: u64,
     pub(crate) user_activation: Option<()>,
     pub(crate) module: &'static str,
-    /// The widget instance showing this seat (`NativeModuleView.instance`;
+    /// The seat entity showing this seat (`Seat.instance`;
     /// 0 for a preloaded seat no tab has claimed): with `module`, the key
     /// this instance's perf samples land under.
     pub(crate) instance: u64,

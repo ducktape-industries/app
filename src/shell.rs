@@ -49,10 +49,9 @@ mod ink;
 mod keys;
 mod launch;
 mod launcher;
-pub(crate) mod layers;
+mod layers;
 mod menubar;
 mod menus;
-mod mount;
 mod notifications;
 mod pane_drag;
 mod pane_hold;
@@ -323,9 +322,11 @@ struct Desktop {
     /// The model's subscriptions (`Ducktape::subscriptions`), by recipe
     /// key: each a task feeding its stream's messages into `dispatch`.
     streams: HashMap<u64, gpui_kit::Task<()>>,
-    /// Every pane's view, by its instance: a pane keeps its view whichever
-    /// window the model puts it in.
-    mounted: BTreeMap<u64, mount::MountedPane>,
+    /// Every pane's seat, by the pane's instance: a pane keeps its seat
+    /// whichever window the model puts it in.
+    seats: Entity<entities::Seats>,
+    /// The seats' intents, into `dispatch` as `Message::ViewEvent`.
+    _seat_intents: gpui_kit::Subscription,
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
     desk_bounds: Option<gpui_kit::WindowBounds>,
@@ -356,7 +357,17 @@ impl Desktop {
         let _runtime = runtime.enter();
         let beat = message.is_beat();
         let task = self.state.handle(message);
-        self.mount(cx);
+        // both bridges: s11 moves reconcile onto `Windows.desks` observers,
+        // s10 has `Seats` encode the props from `Session` and `Account`
+        let hidden = self.seats.update(cx, |seats, cx| {
+            seats.reconcile(&self.state.layouts, &self.windows, cx)
+        });
+        for (module, intent) in hidden {
+            self.dispatch(Message::ViewEvent(module, intent), cx);
+        }
+        let props = self.state.view_props();
+        self.seats
+            .update(cx, |seats, cx| seats.set_props(props, cx));
         self.tray.sync(&self.state);
         self.start(task, cx).detach();
         self.subscriptions(cx);
@@ -676,6 +687,8 @@ pub(crate) struct DesktopWindow {
     focus: gpui_kit::FocusHandle,
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
+    /// Any seat that moved (s5 deletes this: `PaneView` observes its `Seat`).
+    _seats: gpui_kit::Subscription,
     _focus_lost: gpui_kit::Subscription,
 }
 

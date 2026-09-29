@@ -50,8 +50,8 @@ impl Default for Replies {
 }
 
 impl Replies {
-    /// Fires on every answer, coalesced; each `NativeModuleView` widget
-    /// (`widget.rs`) awaits its own receiver and asks for a redraw. The
+    /// Fires on every answer, coalesced; each `Seat` (`seat/entity.rs`)
+    /// awaits its own receiver and turns. The
     /// answer stays in the queue while no window presents the view.
     pub(in crate::runtime) fn changes(&self) -> tokio::sync::watch::Receiver<()> {
         self.changed.subscribe()

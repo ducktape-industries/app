@@ -25,6 +25,10 @@ pub(super) struct Mounted {
     /// When a tab last drew this seat: a load for a seat on screen does not
     /// queue for the link.
     pub(super) shown: Option<Instant>,
+    /// The seat's load wake: signalled by an install, a stage shown and a
+    /// retry, so the `Seat` turns once for each instead of asking for a
+    /// frame per frame while a load is on its way.
+    pub(super) wake: tokio::sync::watch::Sender<()>,
 }
 
 /// A failed load's hold-off: the code (the roster's blob id, as
@@ -65,6 +69,7 @@ impl Mounted {
             generation: 0,
             retry: None,
             shown: None,
+            wake: tokio::sync::watch::Sender::new(()),
         }))
     }
 
@@ -74,6 +79,7 @@ impl Mounted {
     pub(super) fn show(&mut self, generation: u64, stage: Slot) {
         if self.generation == generation && self.slot.loading() {
             self.slot = stage;
+            self.wake.send_replace(());
         }
     }
 
@@ -279,6 +285,7 @@ pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     }
     locked.retry = None;
     let generation = locked.start();
+    locked.wake.send_replace(());
     drop(locked);
     Loads {
         _threads: vec![spawn_load(module, seat, generation, snapshot)],
@@ -323,6 +330,7 @@ pub(super) fn spawn_load(
             loaded,
         );
         roster().changed();
+        locked.wake.send_replace(());
         timing.install = installed.elapsed();
         if timing.started.is_some() {
             crate::perf::record(
@@ -573,5 +581,12 @@ pub(super) fn view_override(module: &str) -> Option<PathBuf> {
     path.is_file().then_some(path)
 }
 
+mod entity;
+mod standin;
+
+pub(crate) use entity::Seat;
+
+#[cfg(test)]
+mod entity_tests;
 #[cfg(test)]
 mod tests;

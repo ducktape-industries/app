@@ -68,7 +68,7 @@ view's tree lowers onto GPUI elements one to one.
 | `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), `app.log` + panic hook, fd limit, `DUCKTAPE_VIEWS_DIR`, then `shell::run` | process start |
 | `shell.rs`, `shell/` | the native chrome: `Desktop` (the one model entity), `DesktopWindow` (one per OS window), `Command` effects, launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
 | `ui.rs`, `ui/` | `Ducktape` state, `AppMessage`, the reducer (`Ducktape::handle` → sub-reducers), the pure pane geometry (`ui/layout.rs`) | window thread (called from `Desktop::dispatch`) |
-| `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `NativeModuleView` | ticks on the window thread; loads on loader threads; node calls on `views-kernel` |
+| `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
 | `editor.rs`, `editor/` | `EditorStore` (guest-owned documents projected natively) and `TextEditor` (the one multi-line native field; `editor/text.rs` is mounted as `editor::wire::text` by a `#[path]`) | window thread |
 | `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
@@ -83,7 +83,7 @@ main
  └─ shell ──────────► ui (state + reducer)
      │  │              └──► backend (connect, keys, prefs)
      │  │              └──► runtime (Roster, connected, notify)
-     │  └─► runtime::NativeModuleView ──► render::ViewTree ──► a11y
+     │  └─► runtime::Seat ──► render::ViewTree ──► a11y
      │          │                              └──► editor (TextEditor)
      │          ├─► runtime::guest (wasmtime) ──► editor::wire (EditorStore)
      │          └─► runtime::kernel ──► backend::noded / session / views
@@ -100,7 +100,7 @@ node. `backend/` never names a user program.
 
 | Thread | What runs there | Where it is made |
 |---|---|---|
-| **window / main** (GPUI foreground) | `Desktop::dispatch` and the whole reducer; every `DesktopWindow` render; `NativeModuleView::frame`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the app's own `Task` futures (connect, status poll, sign-in) — `Desktop::start` polls them on the GPUI foreground inside `runtime.enter()`, so their HTTP bodies are decoded here | `shell/launch.rs` |
+| **window / main** (GPUI foreground) | `Desktop::dispatch` and the whole reducer; every `DesktopWindow` render; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the app's own `Task` futures (connect, status poll, sign-in) — `Desktop::start` polls them on the GPUI foreground inside `runtime.enter()`, so their HTTP bodies are decoded here | `shell/launch.rs` |
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn`, `live`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
 | **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
@@ -146,36 +146,49 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    (16 modules, 32 MiB of source).
 4. **Seat / mount.** A **seat** is `seat::Mounted`, one per
    `(module, instance)` in `seat::registry`, holding a `Slot`:
-   `Loading → Fetching → Compiling → Ready(Guest) | Empty | Failed(Failure)`.
-   A tab is `runtime::NativeModuleView` (`widget.rs`), created by
-   `Desktop::mount` (`shell/panes.rs`) for every view pane the model holds
-   and keyed by the pane's `instance`; `NativeModuleView::new` claims seat
-   `(module, 0)` or makes a new one. `Guest::instantiate` builds a store
-   with `StoreLimits` (`MEMORY_LIMIT`) and binds `Exports` (`memory`,
-   `alloc`, `init`, `tick`, `snapshot`, `restore`); `Guest::load` then runs
-   `init` on a fresh view, or `restore` on a replacement.
-5. **Tick.** Every GPUI render of `NativeModuleView` calls
-   `NativeModuleView::frame` → `Guest::redraw`: it merges pending inputs,
-   drains kernel `Replies`, fires due `clock.ticks`, syncs visibility,
-   offset and route subscriptions, and — only if something is pending, the
-   frame said `busy`, or there was never a first tree — calls
-   `Guest::tick`: `arm` refills `FUEL_PER_TICK`, `Exports::tick` runs the
-   wasm with the encoded events, `shape` decodes and bound-checks the
-   returned `Frame` (`MAX_FRAME_BYTES`, request and cancel counts,
-   sanitize), `merge` applies tooltip replies and patches onto the held
-   root. A changed root bumps `frame_rev`. A frame carrying more than
-   `MAX_REQUESTS_PER_TICK` requests (or twice that in cancels) is refused
-   whole by `shape`, which faults the view; the `tick_limit` refusal in
-   `redraw` is a second guard behind it. A patch `merge` refuses does not
-   fault: the held root stays, `frame_rev` bumps and `Event::Resync` asks
-   the guest for a full tree.
-6. **Frame → render.** When `frame_rev` moved, `frame` hydrates picture
+   `Loading → Fetching → Compiling → Ready(Guest) | Empty | Failed(Failure)`,
+   and a `wake` (`watch::Sender<()>`) the loader signals when a load
+   installs, a stage shows or a retry is asked. A pane's entity is
+   `runtime::Seat` (`seat/entity.rs`), made by `Seats::reconcile`
+   (`shell/entities/seats.rs`, called from `Desktop::dispatch`) for every
+   view pane the model holds and keyed by the pane's `instance`; it is
+   `place`d in the window whose layout holds the pane. `Seat::new` claims
+   seat `(module, 0)` or makes a new one and subscribes to its `wake`.
+   `Guest::instantiate` builds a store with `StoreLimits` (`MEMORY_LIMIT`)
+   and binds `Exports` (`memory`, `alloc`, `init`, `tick`, `snapshot`,
+   `restore`); `Guest::load` then runs `init` on a fresh view, or `restore`
+   on a replacement.
+5. **Turn / tick.** A seat is never stepped by a draw. Every wake ends in
+   one `Seat::turn`: a kernel reply (`Replies::changes`), a due
+   `clock.ticks` item (a timer the turn re-arms), a `ViewTree` event, moved
+   props (`Seats::set_props`, compared), the theme, the seat's `wake`
+   (install, stage, retry) or a busy frame (`frame.busy` arms one
+   `BUSY_FRAME` timer, never back to back). `turn` is entered at app level
+   only: anything reachable from a window callback or `Desktop::dispatch`
+   goes through `Seat::wake` = `cx.defer(turn)`, because `turn` updates the
+   window itself. `turn` → `Guest::redraw`: it merges pending inputs, drains
+   kernel `Replies`, fires due `clock.ticks`, syncs visibility, offset and
+   route subscriptions, and — only if something is pending, the frame said
+   `busy`, or there was never a first tree — calls `Guest::tick`: `arm`
+   refills `FUEL_PER_TICK`, `Exports::tick` runs the wasm with the encoded
+   events, `shape` decodes and bound-checks the returned `Frame`
+   (`MAX_FRAME_BYTES`, request and cancel counts, sanitize), `merge`
+   applies tooltip replies and patches onto the held root. A changed root
+   bumps `frame_rev`. A frame carrying more than `MAX_REQUESTS_PER_TICK`
+   requests (or twice that in cancels) is refused whole by `shape`, which
+   faults the view; the `tick_limit` refusal in `redraw` is a second guard
+   behind it. A patch `merge` refuses does not fault: the held root stays,
+   `frame_rev` bumps and `Event::Resync` asks the guest for a full tree.
+6. **Frame → render.** When `frame_rev` moved, `turn` hydrates picture
    hashes back to bytes (`Pictures::hydrate`), wraps the root in
    `native_root` (an id-less full-size container: giving it an id would
    shift every `AuthoredPath`) and either `ViewTree::replace`s the existing
    tree or, for a new guest instance, builds `ViewTree::new(root)
    .with_presentation(old.presentation())` and hands it the guest's
-   `EditorStore`. `ViewTree::node` (`render.rs`) is the dispatcher: one
+   `EditorStore`; the seat notifies, and the pane (`panes::pane_body`)
+   draws `seat.tree()` cached (`layers::cached_unless_a11y`) inside the
+   `view/<module>` mark, laid out from `seat.min_width()`, or the seat's
+   `Standin` when it has no tree. `ViewTree::node` (`render.rs`) is the dispatcher: one
    method per `Node` variant, each building GPUI / gpui-kit elements.
    Native state that must outlive one frame (focus handles, field text,
    scroll offsets, list state, decoded images) lives in maps on `ViewTree`
@@ -185,7 +198,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    paths it still mounts.
 7. **Input back.** Element listeners (`render/interactivity.rs`,
    `render/inputs.rs`, …) `cx.emit(wire::Event)` with the guest's handler
-   ids; `NativeModuleView` subscribes, drops focus-needing events when the
+   ids; `Seat` subscribes, drops focus-needing events when the
    pane is unfocused, takes the one-shot **user activation**
    (`ViewTree::take_user_activation`) onto `guest.user_activation` and calls
    `runtime::input::deliver` into `guest.pending`. Raw window input (pointer, wheel, keys, IME, file
@@ -200,9 +213,11 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    guest shows now (`invalid_widget_command`); admitted ones queue in
    `guest.widget_commands` until native editor work has drained
    (`runnable_widget_commands`: a plain `Focus` does not wait, a rich
-   editor's does), then run deferred after this frame's child tree mounts,
-   through `ViewTree::execute_widget_command`, re-checked for mount
-   (`widget_unmounted`).
+   editor's does), then run in the pane's window one frame after the draw
+   that mounts the tree (`Seat::run_widget_commands`: an `on_next_frame`
+   inside an `on_next_frame`, since a next-frame callback runs before the
+   draw), through `ViewTree::execute_widget_command`, re-checked for mount
+   (`widget_unmounted`); the turn that carries the answers back is deferred.
 
 **Hot swap.** When a block moves a program's active code, the load thread
 prepares the new view as a replacement: instantiate without `init`, take
@@ -219,13 +234,14 @@ count and still settled. The new guest is `staged`: its first tree is
 already in `frame`, so the next redraw routes its requests without a tick.
 Pictures and editor projections move over (`EditorStore::
 retain_restored_projections`). A new instance means a new `generation` on
-`NativeModuleView`: handler ids are fresh, and only `NativePresentation`
+`Seat`: handler ids are fresh, and only `NativePresentation`
 (field text, selection, focus, scroll offsets, picture caches) carries
 across into the new `ViewTree`. A snapshot the new code refuses falls back
 to `init`.
 
-**What fails how.** A seat that has no view shows a `Standin`
-(`widget.rs`): the load's stage words while loading; the network's word
+**What fails how.** A seat that has no view holds a `Standin`
+(`seat/standin.rs`, compared: it notifies only when the words move) that
+the pane draws: the load's stage words while loading; the network's word
 for `Slot::Empty` ("This network has no `<module>` view. An admin can
 activate a deployment that ships one."); or a `Failure` with a
 title and Retry — `Unreachable` (node or blob), `HashMismatch`,
@@ -282,8 +298,8 @@ view ◄─ Event::Response{id, done} ◄── Replies (drained at next redraw)
    key the request is refused `session_locked`.
 5. **Reply.** The handler pushes into `kernel::Replies`, a per-view queue
    bounded by `MAX_REPLY_EVENTS` / `MAX_REPLY_BYTES`; overflow latches a
-   fault that ends the view. `NativeModuleView` awaits `Replies::changes`
-   and requests a redraw; `Guest::redraw` drains the queue into
+   fault that ends the view. `Seat` awaits `Replies::changes`
+   and turns; `Guest::redraw` drains the queue into
    `guest.pending` as `Event::Response` values, so the answer reaches the
    view on its next tick. Nothing wakes the wasm from another thread.
 6. **Subscriptions.** `module.changes <program>` (`live`: one WebSocket
@@ -351,18 +367,20 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   (`shell/launcher.rs` frame with a `spin` figure on the left; `screens.rs`
   Connect; `sign_in.rs` key, phrase, recover, account) or the desk
   (`shell/desk.rs`): `menubar.rs` across the top, `panes.rs` drawing each
-  pane's `NativeModuleView`, `help.rs` or `command.rs` body, and one overlay
+  pane's seat (its tree or standin), `help.rs` or `command.rs` body, and one overlay
   at a time (`spotlight.rs`, `settings.rs`, `approve.rs`, `menus.rs`,
   `notifications.rs`). Native effects the reducer asks for travel as
   `shell::Command` through `commands()`'s channel to the pump in
   `shell/launch.rs` and `Desktop::execute`; `shell/windows.rs` decides where
   windows open. Keyboard shortcuts are GPUI actions bound in
   `shell/keys.rs` under key contexts the windows set.
-- **Views in panes.** After every dispatch `Desktop::mount` reconciles
-  `mounted` against `layouts`: a new view pane gets a `NativeModuleView`
-  whose `Intent`s route back as `Message::ViewEvent`; a gone pane's view is
-  told `hide` and dropped. A pane keeps its view when it pops out to its own
-  OS window (`WindowKind::View`) and back.
+- **Views in panes.** After every dispatch `Seats::reconcile`
+  (`shell/entities/seats.rs`) reconciles the seats against `layouts`: a new
+  view pane gets a `Seat`, placed in its window, whose `Intent`s route back
+  as `Message::ViewEvent`; a gone pane's seat is told `hide`, its last
+  intents routed the same way, and dropped. A pane keeps its seat when it
+  pops out to its own OS window (`WindowKind::View`) and back; the
+  `DesktopWindow` observes `Seats` to redraw when a seat moves.
 
 ## 6. Sign-in and keys
 
@@ -466,7 +484,7 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   over `Window::a11y_tree`); every act goes through GPUI's own a11y action,
   key or mouse dispatch (`ax::actions`). Ids are `<window>:<element id>`;
   windows are `console`, `console2`, … (`Desktop::ax_windows`); a view's
-  nodes sit under the `view/<module>` mark `NativeModuleView::ax_mark`
+  nodes sit under the `view/<module>` mark `Seat::ax_mark`
   wraps around each view (`tree::VIEW_MARK`). Answers carry
   `X-Ax-Revision`, which moves when a tree changed. `ducktape-app ax …`
   (`ax::cli`) is the command-line client.
@@ -496,9 +514,9 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   budget (`render/svg_limits.rs`); picture decode size limits
   (`render/picture_resources.rs`).
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`
-  and `ViewTree::replace` run on the window thread inside
-  `NativeModuleView::frame`, while holding the seat mutex; GPUI layout and
-  paint follow on the same thread once `render` returns, lock released. The
+  and `ViewTree::replace` run on the window thread inside `Seat::turn`,
+  while holding the seat mutex, between draws and never inside one; GPUI
+  layout and paint follow in the next frame, lock released. The
   loader thread takes that mutex for `snapshot` and for the install (not
   for compile, `restore` or `first_frame`), so a swap stalls the window for
   those two steps. The reducer's own `Task`s are
@@ -551,16 +569,16 @@ House words, and where one word means several things.
   Also the **slot mask** in `render/`: the pane box a view is clipped to,
   applied to tooltips (`tooltip_containment::SlotMask`).
 - **generation** — the seat's load counter; a finished load installs only
-  if it is still current, and `NativeModuleView.generation` names the
+  if it is still current, and `Seat.generation` names the
   guest instance it drew. Unrelated: the `generation` the identity program
   answers for a key (`passkey::generation`, `Reply::Generation`), which an
   `AddKey` names.
 - **tick / redraw / turn** — `Guest::tick` is one wasm call; `Guest::redraw`
   is one host step (deliver, maybe tick, route requests); a **turn**
-  (`NativeModuleView::turn`) is a step for a seat nothing painted this frame.
+  (`Seat::turn`) is the seat's step, run on a wake and never by a draw.
 - **frame** — three meanings. (1) `wire::Frame`: what a tick returns.
   (2) the signed node **frame** (`noded::Frame`, `seated_frame`,
-  `query_frame`). (3) a GPUI frame / `NativeModuleView::frame`.
+  `query_frame`). (3) a GPUI frame.
 - **snapshot** — three meanings. (1) the wasm `snapshot`/`restore` export
   pair a swap uses. (2) `ax::snapshot`: a read of a window's AccessKit
   tree. (3) `tray`'s rendered-menu snapshot.
@@ -623,7 +641,7 @@ House words, and where one word means several things.
   `WindowKind`), a pane, and the view-wire `events::Window` events
   (`Focused`, `CloseRequested`, `Closed`, …) a guest receives.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
-  `Desktop.mounted`; `NativeModuleView.instance` is its own counter.
+  `Seats`; `Seat.instance` is its own counter.
 - **split / cycle / fill / measure** — pane geometry operations in
   `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows

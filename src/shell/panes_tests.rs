@@ -59,7 +59,7 @@ pub(super) fn console(
         state.roster = Default::default();
         state.stage = crate::Stage::Desk;
         state.active = Some("pane-ax-test");
-        Desktop::new(state, crate::tray::init(cx).0)
+        Desktop::new(state, crate::tray::init(cx).0, cx)
     });
     let key = WindowKey::unique();
     let mut view = None;
@@ -636,7 +636,7 @@ fn help_opens_in_a_window_the_app_draws(cx: &mut TestAppContext) {
             .position(|pane| pane.module == layout::HELP)
             .expect("help opened");
         let instance = layout.panes[index].instance;
-        assert!(!model.read(cx).mounted.contains_key(&instance));
+        assert!(model.read(cx).seats.read(cx).seat(instance).is_none());
         let ids: Vec<&str> = nodes
             .as_array()
             .unwrap()
@@ -710,9 +710,9 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
     };
     assert_eq!(width(&mut native), 768., "60% of the desk, no view yet");
     let tab = native.update(|_, cx| {
-        let mounted = &model.read(cx).mounted;
-        let pane = mounted.values().find(|pane| pane.module == MODULE);
-        pane.expect("a tab for the pane").view.clone()
+        let instance = view.read(cx).layout(cx).panes[0].instance;
+        let seats = model.read(cx).seats.read(cx);
+        seats.seat(instance).expect("a seat for the pane")
     });
     let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let _heard = native.update(|_, cx| {
@@ -995,5 +995,46 @@ fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
     assert!(
         native.update(|_, cx| view.read(cx).drag.is_none()),
         "the release did not let go"
+    );
+}
+
+/// A pane that leaves the desk with an intent still to hand over (a badge
+/// its last update set) gets it to the model: `hide` returns them and the
+/// reconcile routes them, since the seat's own route is dropped in the
+/// same update.
+#[gpui_kit::test]
+fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-hidden-intent-view";
+    let (model, key, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    native.run_until_parked();
+    let (index, instance) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let index = layout
+            .panes
+            .iter()
+            .position(|pane| pane.module == MODULE)
+            .expect("the pane opened");
+        let instance = layout.panes[index].instance;
+        let seat = model
+            .read(cx)
+            .seats
+            .read(cx)
+            .seat(instance)
+            .expect("seated");
+        (index, seat.read(cx).instance())
+    });
+    crate::runtime::intent_for_test(MODULE, instance, crate::runtime::Intent::Badge(3));
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Close(index)), cx)
+    });
+    native.run_until_parked();
+    assert_eq!(
+        native.update(|_, cx| model.read(cx).state.badges.get(MODULE).copied()),
+        Some(3),
+        "the badge the hidden seat handed over reached the model"
     );
 }
