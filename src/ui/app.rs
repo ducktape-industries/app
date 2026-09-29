@@ -402,7 +402,9 @@ pub(crate) enum AppMessage {
     /// Another node from the switcher: reached first, and only once it
     /// answers does the console leave the network in hand.
     SwitchNetwork(String),
-    /// Show a program on the desk (Spotlight, a menu).
+    /// Show a program on the desk (Spotlight, a menu), as the bar's click
+    /// does: into an empty focused window, else the window it is in, else
+    /// one of its own.
     SelectView(&'static str),
     /// The app's help, in a window on the desk.
     OpenHelp,
