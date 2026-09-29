@@ -49,6 +49,7 @@ mod ink;
 mod keys;
 mod launch;
 mod launcher;
+pub(crate) mod layers;
 mod menubar;
 mod menus;
 mod mount;
