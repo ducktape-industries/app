@@ -334,12 +334,28 @@ fn note_refused(
 /// An arrow probe (AX-107): the composite the focus sat in, the pairs it
 /// tried (an arrow and the arrow back; an arrow of each but the last moved
 /// nothing), and the focused id before, after the last pair's arrow, and
-/// after its arrow back.
+/// after its arrow back, with the row of a grid each sat in (else the id
+/// again).
 #[derive(Debug)]
 pub(crate) struct Arrows {
     pub(crate) composite: AxNode,
     pub(crate) keys: Vec<[&'static str; 2]>,
     pub(crate) focused: [Option<String>; 3],
+    pub(crate) rows: [Option<String>; 3],
+}
+
+impl Arrows {
+    /// Where the last pair found the active item before, there and back:
+    /// a grid's row for up and down, since a grid whose rows have cells of
+    /// their own puts the row an arrow reaches on its first cell; else the
+    /// focused id.
+    fn spots(&self) -> &[Option<String>; 3] {
+        match self.composite.role == "Grid" && matches!(self.keys.last(), Some(["down" | "up", _]))
+        {
+            true => &self.rows,
+            false => &self.focused,
+        }
+    }
 }
 
 const TEXT_INPUT: [&str; 9] = [
@@ -869,7 +885,7 @@ fn screen_rules(nodes: &[AxNode], reading: &Reading, launcher: bool, tally: &mut
 fn snapshot_rules(nodes: &[AxNode], snapshot: &Snapshot<'_>, tally: &mut Tally) {
     for node in nodes.iter().filter(|node| has(node, "focused")) {
         let role = node.role.as_str();
-        if ARROWED.contains(&role) && rows(nodes, snapshot, node) > 0 {
+        if ARROWED.contains(&role) && items(nodes, snapshot, node) > 0 {
             tally.check("AX-107", node, false, || {
                 format!("the focus sits on the {role}, and no row is active")
             });
@@ -877,22 +893,38 @@ fn snapshot_rules(nodes: &[AxNode], snapshot: &Snapshot<'_>, tally: &mut Tally) 
     }
 }
 
-/// How many rows of a composite `nodes` has inside `composite`.
+/// How many items the arrows may pick in `composite`: a grid's cells, any
+/// other composite's rows.
+fn items(nodes: &[AxNode], snapshot: &Snapshot<'_>, composite: &AxNode) -> usize {
+    match composite.role.as_str() {
+        "Grid" => cells(nodes, snapshot, composite).count(),
+        _ => rows(nodes, snapshot, composite),
+    }
+}
+
+/// How many rows of a composite `nodes` has inside `composite`, a disabled
+/// one not counted.
 fn rows(nodes: &[AxNode], snapshot: &Snapshot<'_>, composite: &AxNode) -> usize {
     nodes
         .iter()
-        .filter(|node| ITEM.contains(&node.role.as_str()) && snapshot.within(node, &composite.id))
+        .filter(|node| {
+            ITEM.contains(&node.role.as_str())
+                && !has(node, "disabled")
+                && snapshot.within(node, &composite.id)
+        })
         .count()
 }
 
-/// The cells of a grid `nodes` has inside `grid`.
+/// The cells of a grid `nodes` has inside `grid`, a disabled one left out.
 fn cells<'a>(
     nodes: &'a [AxNode],
     snapshot: &Snapshot<'a>,
     grid: &AxNode,
 ) -> impl Iterator<Item = &'a AxNode> {
     nodes.iter().filter(move |node| {
-        matches!(node.role.as_str(), "Cell" | "GridCell") && snapshot.within(node, &grid.id)
+        matches!(node.role.as_str(), "Cell" | "GridCell")
+            && !has(node, "disabled")
+            && snapshot.within(node, &grid.id)
     })
 }
 
@@ -912,11 +944,7 @@ fn arrowed(nodes: &[AxNode]) -> Option<&AxNode> {
         .chain(snapshot.ancestors(focus))
         .collect();
     let at = up.iter().position(|node| {
-        let items = match node.role.as_str() {
-            "Grid" => cells(nodes, &snapshot, node).count(),
-            _ => rows(nodes, &snapshot, node),
-        };
-        ARROWED.contains(&node.role.as_str()) && items > 1
+        ARROWED.contains(&node.role.as_str()) && items(nodes, &snapshot, node) > 1
     })?;
     let roving = !matches!(up[at].role.as_str(), "TabList" | "RadioGroup") || !shell(up[at]);
     up[..at]
@@ -930,28 +958,72 @@ fn arrowed(nodes: &[AxNode]) -> Option<&AxNode> {
 /// end the first key does not pass: its orientation's (a tab list's is
 /// horizontal unless it says, anything else's vertical); a grid's rows,
 /// or its cells when one row holds them all (a header row of column
-/// headers holds none).
+/// headers holds none). A grid's rows are followed by its cells where the
+/// focused cell has no cell above it or below it at its place in its row
+/// (the first row of an emoji grid over a shorter last one): there up and
+/// down move nothing.
 fn arrow_pairs(nodes: &[AxNode], composite: &AxNode) -> Vec<[&'static str; 2]> {
     const ROWS: [[&str; 2]; 2] = [["down", "up"], ["up", "down"]];
     const CELLS: [[&str; 2]; 2] = [["right", "left"], ["left", "right"]];
-    let horizontal = match composite.role.as_str() {
-        "Grid" => {
-            let snapshot = Snapshot::of(nodes);
-            let rows: std::collections::HashSet<_> = cells(nodes, &snapshot, composite)
-                .filter_map(|cell| snapshot.ancestors(cell).find(|row| row.role == "Row"))
-                .map(|row| &row.id)
-                .collect();
-            rows.len() == 1
-        }
-        role => composite
+    if composite.role != "Grid" {
+        let horizontal = composite
             .more
             .orientation
-            .map_or(role == "TabList", |way| way == "horizontal"),
-    };
-    match horizontal {
-        true => CELLS.to_vec(),
+            .map_or(composite.role == "TabList", |way| way == "horizontal");
+        return match horizontal {
+            true => CELLS.to_vec(),
+            false => ROWS.to_vec(),
+        };
+    }
+    let snapshot = Snapshot::of(nodes);
+    // the rows that hold cells, in order, each with its cells
+    let mut rows: Vec<(&str, Vec<&str>)> = Vec::new();
+    for cell in cells(nodes, &snapshot, composite) {
+        let row = snapshot
+            .ancestors(cell)
+            .find(|row| row.role == "Row")
+            .map_or("", |row| row.id.as_str());
+        match rows.iter_mut().find(|(id, _)| *id == row) {
+            Some((_, cells)) => cells.push(&cell.id),
+            None => rows.push((row, vec![&cell.id])),
+        }
+    }
+    if rows.len() == 1 {
+        return CELLS.to_vec();
+    }
+    let focus = nodes.iter().find(|node| has(node, "focused"));
+    let at = rows.iter().enumerate().find_map(|(r, (_, cells))| {
+        cells
+            .iter()
+            .position(|id| focus.is_some_and(|focus| snapshot.within(focus, id)))
+            .map(|i| (r, i))
+    });
+    let alone = at.is_some_and(|(r, i)| {
+        let holds = |row: Option<usize>| {
+            row.and_then(|row| rows.get(row))
+                .is_some_and(|(_, cells)| cells.len() > i)
+        };
+        !holds(r.checked_sub(1)) && !holds(Some(r + 1))
+    });
+    match alone {
+        true => [ROWS, CELLS].concat(),
         false => ROWS.to_vec(),
     }
+}
+
+/// Where the focus of `nodes` is, for the probe of `composite`: the id
+/// it is on, and in a grid, the row it sits in (or is), else its id.
+fn spot(nodes: &[AxNode], composite: &AxNode) -> [Option<String>; 2] {
+    let snapshot = Snapshot::of(nodes);
+    let Some(focus) = nodes.iter().find(|node| has(node, "focused")) else {
+        return [None, None];
+    };
+    let row = std::iter::once(focus)
+        .chain(snapshot.ancestors(focus))
+        .take_while(|node| node.id != composite.id)
+        .find(|node| composite.role == "Grid" && node.role == "Row")
+        .unwrap_or(focus);
+    [Some(focus.id.clone()), Some(row.id.clone())]
 }
 
 /// `node` has the keys: focused, or a composite whose active row is.
@@ -1074,20 +1146,18 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             });
         }
     }
-    for Arrows {
-        composite,
-        keys,
-        focused,
-    } in &reading.arrows
-    {
-        let pass = focused[0] != focused[1] && focused[1] != focused[2];
-        tally.check("AX-107", composite, pass, || {
+    for arrows in &reading.arrows {
+        // there, and back where it began
+        let spots = arrows.spots();
+        let pass = spots[1] != spots[0] && spots[2] == spots[0];
+        tally.check("AX-107", &arrows.composite, pass, || {
+            let keys = &arrows.keys;
             let stuck: String = keys[..keys.len() - 1]
                 .iter()
                 .map(|[there, _]| format!("{there} moved nothing; "))
                 .collect();
             let [there, back] = keys[keys.len() - 1];
-            format!("{stuck}{there} then {back} leaves the active row at {focused:?}")
+            format!("{stuck}{there} then {back} leaves the active row at {spots:?}")
         });
     }
 }
@@ -1299,11 +1369,13 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         };
         if self.probed.insert(composite.id.clone()) {
             let mut left = arrow_pairs(nodes, composite);
+            let [id, row] = spot(nodes, composite);
             self.probe = Some(Probe {
                 arrows: Arrows {
                     composite: composite.clone(),
                     keys: vec![left.remove(0)],
-                    focused: [focused_id(nodes), None, None],
+                    focused: [id, None, None],
+                    rows: [row, None, None],
                 },
                 left,
                 pressed: 0,
@@ -1317,7 +1389,8 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         self.from = window.focused(cx);
         if let Some(probe) = &mut self.probe {
             // an arrow that moved nothing: the next pair, from where it began
-            let stuck = probe.pressed == 1 && probe.arrows.focused[1] == probe.arrows.focused[0];
+            let spots = probe.arrows.spots();
+            let stuck = probe.pressed == 1 && spots[1] == spots[0];
             if stuck && !probe.left.is_empty() {
                 probe.arrows.keys.push(probe.left.remove(0));
                 probe.pressed = 0;
@@ -1355,7 +1428,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         let (nodes, outside, seen) = self.look(window, cx);
         if let Some(probe) = self.probe.as_mut().filter(|probe| probe.pressed > 0) {
             let n = probe.pressed;
-            probe.arrows.focused[n] = focused_id(&nodes);
+            [probe.arrows.focused[n], probe.arrows.rows[n]] = spot(&nodes, &probe.arrows.composite);
             return probe.arrows.focused[n] != probe.arrows.focused[n - 1];
         }
         self.most = self.most.max(seen);
@@ -1427,9 +1500,4 @@ struct Probe {
     arrows: Arrows,
     left: Vec<[&'static str; 2]>,
     pressed: usize,
-}
-
-/// The first focused id of `nodes`.
-fn focused_id(nodes: &[AxNode]) -> Option<String> {
-    focused(nodes).first().map(|id| (*id).to_owned())
 }

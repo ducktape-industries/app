@@ -1263,16 +1263,16 @@ async fn the_probe_skips_a_link_box_inside_a_grid(cx: &mut gpui_kit::TestAppCont
     assert_eq!(heard, [["down", "up"]]);
 }
 
-/// A grid of `rows` rows of `columns` cells, under a header row of column
+/// A grid of rows of `widths` cells each, under a header row of column
 /// headers when `header`, the claim on row 0's cell `active`.
-fn grid(rows: usize, columns: usize, header: bool, active: usize) -> view_wire::Node {
+fn grid(widths: &[usize], header: bool, active: usize) -> view_wire::Node {
     use gpui_kit::Role;
     let header = header.then(|| {
-        let names = (0..columns)
+        let names = (0..widths[0])
             .map(|c| item(format!("column-{c}"), Role::ColumnHeader, false, Vec::new()));
         item("header".into(), Role::Row, false, names.collect())
     });
-    let rows = (0..rows).map(|r| {
+    let rows = widths.iter().enumerate().map(|(r, &columns)| {
         let cells = (0..columns).map(|c| {
             item(
                 format!("cell-{r}-{c}"),
@@ -1294,17 +1294,22 @@ fn grid(rows: usize, columns: usize, header: bool, active: usize) -> view_wire::
 
 /// A room of one message with nothing to press in it.
 fn one_message(active: &[usize]) -> view_wire::Node {
-    grid(1, 1, false, active[0])
+    grid(&[1], false, active[0])
 }
 
 /// One row of eight under a header row.
 fn one_row(active: &[usize]) -> view_wire::Node {
-    grid(1, 8, true, active[0])
+    grid(&[8], true, active[0])
 }
 
 /// Three rows of three.
 fn three_by_three(active: &[usize]) -> view_wire::Node {
-    grid(3, 3, false, active[0])
+    grid(&[3, 3, 3], false, active[0])
+}
+
+/// Eleven emoji eight to a row: a row of eight over a row of three.
+fn eleven_emoji(active: &[usize]) -> view_wire::Node {
+    grid(&[8, 3], false, active[0])
 }
 
 /// Tab lands on a room of one message with nothing to press in it (a
@@ -1340,6 +1345,20 @@ async fn a_grid_whose_rows_do_not_move_fails(cx: &mut gpui_kit::TestAppContext) 
     let (report, heard) = composites_audit(cx, three_by_three, vec![0], steps, 1).await;
     assert_eq!(door_fails(&report, "AX-107").len(), 1, "{report}");
     assert_eq!(heard, [["down", "up", "down", "escape"]]);
+}
+
+/// An emoji grid of a row of eight over a row of three, the claim on the
+/// first row's sixth: nothing is below it, nothing above, so down and up
+/// move nothing, and the probe moves along the row instead.
+#[gpui_kit::test]
+async fn the_probe_moves_along_a_row_with_nothing_above_or_below(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let steps = vec![(["right", "left"], 8)];
+    let (report, heard) = composites_audit(cx, eleven_emoji, vec![5], steps, 1).await;
+    assert_eq!(report["applicable"]["AX-107"], 1, "{report}");
+    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
+    assert_eq!(heard, [["down", "up", "right", "left", "escape"]]);
 }
 
 /// The refused elements `Filter` keeps: a view's audit reports the ones under
@@ -1564,24 +1583,94 @@ mod phase_two {
         let mut held = menu();
         held.state = vec!["focused"];
         assert_eq!(fails(&one(vec![held, row("a")]), "AX-107"), ["w:menu"]);
-        // the probe: each press moves the active row, or it does not
-        let probe = |keys: Vec<[&'static str; 2]>, focused: [&str; 3]| {
-            let mut told = reading(vec![vec![menu()]]);
+        // the probe: the arrow moves the active row and the arrow back
+        // brings it back, or it does not
+        let probe = |composite: AxNode, keys: Vec<[&'static str; 2]>, spots: [[&str; 2]; 3]| {
+            let mut told = reading(vec![vec![composite.clone()]]);
+            let at = |n: usize| spots.map(|spot| Some(format!("w:{}", spot[n])));
             told.arrows = vec![Arrows {
-                composite: menu(),
+                composite,
                 keys,
-                focused: focused.map(|id| Some(format!("w:{id}"))),
+                focused: at(0),
+                rows: at(1),
             }];
             audit(&told, false)
         };
         let down = || vec![["down", "up"]];
-        assert!(fails(&probe(down(), ["a", "b", "a"]), "AX-107").is_empty());
-        assert_eq!(fails(&probe(down(), ["a", "a", "a"]), "AX-107"), ["w:menu"]);
+        let on = |id| [id, id];
+        let menu_probe = |spots| probe(menu(), down(), spots);
+        assert!(fails(&menu_probe([on("a"), on("b"), on("a")]), "AX-107").is_empty());
+        assert_eq!(
+            fails(&menu_probe([on("a"), on("a"), on("a")]), "AX-107"),
+            ["w:menu"]
+        );
+        // one whose arrow back moves it on, not back, fails
+        assert_eq!(
+            fails(&menu_probe([on("a"), on("b"), on("c")]), "AX-107"),
+            ["w:menu"]
+        );
         // a failed probe names every pair it tried
-        let both = probe(vec![["down", "up"], ["up", "down"]], ["a", "a", "a"]);
+        let both = probe(
+            menu(),
+            vec![["down", "up"], ["up", "down"]],
+            [on("a"), on("a"), on("a")],
+        );
         assert_eq!(
             both.violations[0].message,
             r#"down moved nothing; up then down leaves the active row at [Some("w:a"), Some("w:a"), Some("w:a")]"#
+        );
+        // a grid whose rows have cells of their own is back in its row on
+        // the row's first cell; a row further on is not back
+        let grid = || node("grid", "Grid", "Messages");
+        let cell = |row, cell| [cell, row];
+        let back = [cell("r0", "c03"), cell("r1", "c10"), cell("r0", "c00")];
+        assert!(fails(&probe(grid(), down(), back), "AX-107").is_empty());
+        let on_down = [cell("r0", "c03"), cell("r1", "c10"), cell("r1", "c11")];
+        assert_eq!(fails(&probe(grid(), down(), on_down), "AX-107"), ["w:grid"]);
+        // along a row, a grid's cells are its items
+        let right = vec![["right", "left"]];
+        let along = [cell("r0", "c00"), cell("r0", "c01"), cell("r0", "c00")];
+        assert!(fails(&probe(grid(), right.clone(), along), "AX-107").is_empty());
+        let off = [cell("r0", "c00"), cell("r0", "c01"), cell("r0", "c02")];
+        assert_eq!(fails(&probe(grid(), right, off), "AX-107"), ["w:grid"]);
+    }
+
+    #[test]
+    fn ax_107_a_disabled_row_is_not_one_the_arrows_pick() {
+        // a read-only verdict: every radio disabled, the picked one claimed
+        let radio = |id: &str| {
+            let mut radio = under(node(id, "RadioButton", id), "verdict");
+            radio.state = vec!["disabled", "unchecked"];
+            radio
+        };
+        let mut group = node("verdict", "RadioGroup", "Verdict");
+        group.actions = vec!["focus"];
+        let claimed = [group.clone(), focused(radio("a")), radio("b"), radio("c")];
+        assert!(crate::ax::audit::arrowed(&claimed).is_none());
+        // the group itself focused, its rows all disabled: none is active to be on
+        group.state = vec!["focused"];
+        assert!(fails(&one(vec![group, radio("a"), radio("b")]), "AX-107").is_empty());
+    }
+
+    #[test]
+    fn ax_107_a_grid_of_a_header_row_alone_has_no_row_to_be_on() {
+        let mut grid = node("grid", "Grid", "Repositories");
+        grid.state = vec!["focused"];
+        let header = under(node("head", "Row", ""), "grid");
+        let name = under(node("name", "ColumnHeader", "Name"), "head");
+        assert!(
+            fails(
+                &one(vec![grid.clone(), header.clone(), name.clone()]),
+                "AX-107"
+            )
+            .is_empty()
+        );
+        // with a row of cells under it, the focus belongs on a cell
+        let row = under(node("row", "Row", ""), "grid");
+        let cell = under(node("cell", "GridCell", "ducktape"), "row");
+        assert_eq!(
+            fails(&one(vec![grid, header, name, row, cell]), "AX-107"),
+            ["w:grid"]
         );
     }
 
@@ -1685,6 +1774,27 @@ mod phase_two {
         };
         assert_eq!(grid(&["a"]), cells);
         assert_eq!(grid(&["a", "b"]), rows);
+        // an emoji grid, eight over three: from the first row's sixth,
+        // nothing is below; from its second, the second row's is
+        let emoji = |at: usize| {
+            let mut nodes = vec![node("c", "Grid", "C")];
+            for (r, width) in [8, 3].into_iter().enumerate() {
+                nodes.push(under(node(&format!("row-{r}"), "Row", ""), "c"));
+                for n in 0..width {
+                    let cell = under(
+                        node(&format!("{r}-{n}"), "GridCell", "e"),
+                        &format!("row-{r}"),
+                    );
+                    nodes.push(match (r, n) {
+                        (0, n) if n == at => focused(cell),
+                        _ => cell,
+                    });
+                }
+            }
+            crate::ax::audit::arrow_pairs(&nodes, &nodes[0])
+        };
+        assert_eq!(emoji(5), [rows, cells].concat());
+        assert_eq!(emoji(1), rows);
     }
 
     #[test]
