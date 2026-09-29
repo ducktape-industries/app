@@ -170,26 +170,19 @@ impl DesktopWindow {
         let center = self.model.read(cx).state.center.clone();
         let roster = self.model.read(cx).state.roster.clone();
         let this = cx.entity();
+        // `follow` listens on every frame, not only once a hold is drawn:
+        // the moves after a press may come before the next frame does
         let mut stage = div().id("panes").relative().size_full().child(
             canvas(
                 |_, _, _| {},
-                move |bounds, _, window, _| pane_drag::raise(this, bounds, window),
+                move |bounds, _, window, _| {
+                    pane_drag::raise(this.clone(), bounds, window);
+                    pane_drag::follow(this, window);
+                },
             )
             .absolute()
             .size_full(),
         );
-        if self.drag.is_some() {
-            // window-wide, so a fast pointer can't slip off the window it holds
-            let this = cx.entity();
-            stage = stage.child(
-                canvas(
-                    |_, _, _| {},
-                    move |_, _, window, _| pane_drag::follow(this, window),
-                )
-                .absolute()
-                .size_full(),
-            );
-        }
         self.pane_keys
             .retain(|instance, _| layout.panes.iter().any(|pane| pane.instance == *instance));
         // before the windows are seated, so a window coming to the front
