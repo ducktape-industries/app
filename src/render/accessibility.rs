@@ -32,10 +32,10 @@ fn named(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
-/// Every text or rich text a node's descendants carry, depth first, joined by spaces: a
-/// clickable drawn with text children but no explicit label is named by
-/// them (`#` + `general` is "# general", not "#"), so nothing in the
-/// tree is announced with an empty or truncated name.
+/// Every text or rich text a node's descendants carry, depth first, joined
+/// by spaces: a clickable drawn with text children but no explicit label
+/// is named by them (`#` + `general` is "# general", not "#"), so nothing
+/// in the tree is announced with an empty or truncated name.
 fn descendant_text(node: &wire::Node) -> Option<String> {
     fn gather<'a>(node: &'a wire::Node, words: &mut Vec<&'a str>) {
         match node {

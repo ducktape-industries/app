@@ -258,11 +258,20 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
         [
             heading,
             text("empty", ""),
-            text("space", " "),
+            // as the SDK sends every text: no id, so the host numbers it
+            wire::Node::Text(view_wire::TextNode {
+                id: None,
+                style: Default::default(),
+                content: " ".into(),
+            }),
             text("kept", "kept"),
         ],
     );
     let nodes = door(cx, root);
+    // neither blank text is a node, whether the view named it or the host
+    // numbered it
+    let ids: Vec<_> = nodes.iter().map(|node| node["id"].clone()).collect();
+    assert_eq!(ids, ["t:heading", "t:rich-text", "t:kept"]);
     let of = |role: &str| -> Vec<_> {
         nodes
             .iter()
@@ -272,14 +281,6 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
     };
     assert_eq!(of("Heading"), ["sandbox"]);
     assert_eq!(of("Label"), ["sandbox", "kept"]);
-    let ids: Vec<_> = nodes
-        .iter()
-        .map(|node| node["id"].as_str().unwrap())
-        .collect();
-    assert!(
-        !ids.contains(&"t:empty") && !ids.contains(&"t:space"),
-        "{ids:?}"
-    );
 }
 
 /// A view Text carries its words as its value, as gpui's own `Text` does:
