@@ -243,6 +243,12 @@ impl ViewTree {
         self
     }
 
+    /// The first one-line field this tree mounted, for a test to focus and blur.
+    #[cfg(test)]
+    pub(crate) fn first_input_for_test(&self) -> Option<Entity<InputState>> {
+        self.fields.values().next().map(|field| field.state.clone())
+    }
+
     fn node(
         &mut self,
         node: &wire::Node,

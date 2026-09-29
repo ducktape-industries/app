@@ -213,11 +213,18 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
     let store = store_with(
         "claims",
         "text",
-        vec![wire::EditorKeyClaim {
-            key: wire::keyboard::Key::Character("z".into()),
-            modifiers: Default::default(),
-            command: true,
-        }],
+        vec![
+            wire::EditorKeyClaim {
+                key: wire::keyboard::Key::Character("z".into()),
+                modifiers: Default::default(),
+                command: true,
+            },
+            wire::EditorKeyClaim {
+                key: wire::keyboard::Key::Named(wire::keyboard::Named::Shift),
+                modifiers: Default::default(),
+                command: false,
+            },
+        ],
         "",
     );
     let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
@@ -233,6 +240,18 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
         window.render_frame(cx);
     });
     store.drain();
+    // A lone Shift tap reaches keystroke interceptors since gpui-pre 0.3.7
+    // (zed ba42ab9d9). It is no key to claim: taking it would also keep its
+    // release from the window's modifier listeners.
+    native.simulate_modifiers_change(gpui_kit::Modifiers::shift());
+    native.simulate_modifiers_change(gpui_kit::Modifiers::none());
+    let tapped = store.drain();
+    assert!(
+        !tapped
+            .iter()
+            .any(|event| matches!(event, wire::Event::EditorRequest { .. })),
+        "a bare modifier is never the guest's: {tapped:?}"
+    );
     let undo = if cfg!(target_os = "macos") {
         "cmd-z"
     } else {
@@ -256,6 +275,41 @@ fn the_guest_hears_the_chords_it_claimed_and_no_others(cx: &mut gpui_kit::TestAp
             .any(|event| matches!(event, wire::Event::EditorRequest { .. })),
         "an arrow is the field's to answer: {unclaimed:?}"
     );
+}
+
+/// A guest cursor whose caret is the earlier end still selects its words;
+/// gpui-base 0.7.0 read that backward range as empty and selected nothing.
+#[cfg(test)]
+#[gpui_kit::test]
+fn a_backward_guest_selection_stays_selected(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let text = "hello world";
+    let store = store_with("backward", text, Vec::new(), "");
+    let backward = wire::EditorCursor {
+        position: position(text, 0),
+        selection: Some(position(text, 5)),
+    };
+    {
+        let mut locked = store.lock();
+        locked
+            .fields
+            .get_mut(&editor_path())
+            .unwrap()
+            .reference
+            .cursor = backward;
+        locked
+            .documents
+            .get_mut("backward")
+            .unwrap()
+            .reference
+            .cursor = backward;
+    }
+    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
+        TextEditor::new(editor_path(), store.clone(), window, cx)
+    });
+    let editor = window.root(cx).unwrap();
+    let selected = editor.read_with(cx, |editor, cx| editor.input.read(cx).selected_range());
+    assert_eq!(selected, 0..5);
 }
 
 /// A field the guest will not let anyone write in reports nothing, and keeps
@@ -485,6 +539,18 @@ fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
             read(&mut native),
             ("one  a  ".to_owned(), true),
             "a letter after Esc takes Tab back"
+        );
+
+        // A lone Shift tap is a keystroke since gpui-pre 0.3.7 (zed
+        // ba42ab9d9); it is not a key the writer typed, so Esc's leave holds.
+        press(&mut native, &["escape"]);
+        native.simulate_modifiers_change(gpui_kit::Modifiers::shift());
+        native.simulate_modifiers_change(gpui_kit::Modifiers::none());
+        press(&mut native, &["tab"]);
+        assert_eq!(
+            read(&mut native),
+            ("one  a  ".to_owned(), false),
+            "Esc, a Shift tap, then Tab still moves on"
         );
         native.update(|window, cx| window.blur(cx));
     }

@@ -572,3 +572,42 @@ fn geometry_and_pixels_keep_the_wire_meaning() {
     assert_eq!(image.as_bytes(0), Some([20, 10, 255, 255].as_slice()));
     assert!(decode_image(&wire::ImageData::Encoded(vec![1, 2, 3])).is_none());
 }
+
+/// A field's selection crosses a new generation of its guest, a backward one
+/// included: its words stay selected. Its caret comes back at the far end,
+/// since gpui-base 0.7.0 reads a backward range as empty (0.6.4 kept it at 2).
+#[gpui_kit::test]
+fn a_backward_selection_crosses_a_new_generation(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = || container("form", [input("Room name", false, false)]);
+    let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root()));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    // "hunter2", the caret at 5, then Shift+Left three times: 2..5, caret at 2
+    let saved = native.update(|window, cx| {
+        window.render_frame(cx);
+        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        state.update(cx, |state, cx| {
+            state.focus(window, cx);
+            state.set_selected_range(5..5, cx);
+        });
+        window.render_frame(cx);
+        for _ in 0..3 {
+            window.dispatch_keystroke(Keystroke::parse("shift-left").unwrap(), cx);
+        }
+        let selected = state.read_with(cx, |state, _| (state.selected_range(), state.cursor()));
+        assert_eq!(selected, (2..5, 2));
+        tree.read(cx).presentation(window, cx)
+    });
+    let window = cx.open_window(size(px(400.), px(200.)), |_, _| {
+        ViewTree::new(root()).with_presentation(saved)
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let restored = native.update(|window, cx| {
+        window.render_frame(cx);
+        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        state.read_with(cx, |state, _| (state.selected_range(), state.cursor()))
+    });
+    assert_eq!(restored, (2..5, 5));
+}

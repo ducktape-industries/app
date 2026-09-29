@@ -200,3 +200,109 @@ fn an_idle_view_renders_no_more_than_it_ticks(cx: &mut gpui_kit::TestAppContext)
         "{renders} renders over {ticks} ticks: the tree is redrawn without a tick"
     );
 }
+
+/// A one-line field's caret blinks only while the field has the keys. gpui-base
+/// 0.6.4 started the blink on the programmatic `set_value` a mount does and
+/// never stopped it on a field nothing focused, so every view with a field
+/// re-rendered twice a second at rest (the perf-breaches report's §1; upstream
+/// gpui-kit #3138, fixed in 0.7.0 by #3139/#3140). With the window active: an
+/// unfocused field renders its view 0 times over an idle 2 s, a focused one
+/// renders once per caret toggle, and blurring it stops that again.
+#[gpui_kit::test]
+fn a_one_line_field_blinks_only_while_focused(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::{IntoElement, ParentElement as _, Render, Styled as _, div, px, size};
+    use std::time::Duration;
+
+    struct Seat(gpui_kit::Entity<NativeModuleView>);
+    impl Render for Seat {
+        fn render(
+            &mut self,
+            _: &mut gpui_kit::Window,
+            _: &mut gpui_kit::Context<Self>,
+        ) -> impl IntoElement {
+            div().size_full().child(self.0.clone())
+        }
+    }
+
+    let field = wire::Node::Input {
+        options: wire::InputOptions {
+            label: "Filter members".into(),
+            ..Default::default()
+        },
+        id: wire::ElementIdWire::Name("filter".into()),
+        placeholder: "Filter by name".into(),
+        value: "a value the mount sets".into(),
+        on_input: Some(1),
+        on_submit: None,
+        secure: false,
+        style: div().w(px(200.)).h(px(24.)).style().clone(),
+    };
+    let card = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("card".into())),
+        style: div().w(px(240.)).h(px(100.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![field],
+    });
+    let _on = crate::perf::on_for_test();
+    crate::runtime::seat_drawing_for_test("blink-renders-test", 320, card);
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+        Seat(cx.new(|_| NativeModuleView::new("blink-renders-test")))
+    });
+    let seat = window.root(cx).unwrap();
+    let view = seat.read_with(cx, |seat, _| seat.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let frame = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            seat.update(cx, |_, cx| cx.notify());
+            view.update(cx, |_, cx| cx.notify());
+            window.draw(cx).clear(cx);
+        });
+        native.run_until_parked();
+    };
+    let renders = || {
+        crate::perf::snapshot(false)["views"]["blink-renders-test"]["renders"]
+            .as_u64()
+            .unwrap_or(0)
+    };
+    // two seconds at rest, drawn every 100 ms as the desk draws its seats
+    let idle = |native: &mut gpui_kit::VisualTestContext| {
+        let before = renders();
+        for _ in 0..20 {
+            native.executor().advance_clock(Duration::from_millis(100));
+            frame(native);
+        }
+        renders() - before
+    };
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    // the caret only shows in an active window
+    native.update(|window, _| window.activate_window());
+    frame(&mut native);
+    assert!(native.update(|window, _| window.is_window_active()));
+    let unfocused = idle(&mut native);
+
+    native.update(|window, cx| window.focus_next(cx));
+    frame(&mut native);
+    let input = native.update(|_, cx| {
+        let content = view.read(cx).content.clone().expect("mounted");
+        content.read(cx).first_input_for_test().expect("a field")
+    });
+    assert!(native.update(|window, cx| {
+        gpui_kit::Focusable::focus_handle(input.read(cx), cx).is_focused(window)
+    }));
+    let focused = idle(&mut native);
+
+    native.update(|window, cx| window.blur(cx));
+    frame(&mut native);
+    let blurred = idle(&mut native);
+
+    eprintln!("idle 2 s renders: unfocused {unfocused}, focused {focused}, blurred {blurred}");
+    assert_eq!(unfocused, 0, "an unfocused field keeps an idle view still");
+    assert!(
+        focused >= 2,
+        "a focused field's caret toggles: {focused} renders"
+    );
+    assert_eq!(blurred, 0, "blurring stops the blink");
+}

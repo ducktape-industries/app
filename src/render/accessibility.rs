@@ -388,18 +388,16 @@ impl ViewTree {
             .iter()
             .map(|(key, field)| {
                 let input = field.state.read(cx);
-                let range = input.selected_range();
-                let selection = if input.cursor() == range.start {
-                    range.end..range.start
-                } else {
-                    range
-                };
                 (
                     key.clone(),
                     InputPresentation {
                         value: input.value().to_string(),
                         secure: field.secure,
-                        selection,
+                        // ponytail: forward only; gpui-base 0.7.0 reads a
+                        // backward range as empty (`normalize_token_range`), so
+                        // a backward selection comes back with its caret at the
+                        // far end. Save `cursor()` too once upstream takes one.
+                        selection: input.selected_range(),
                         focused: input.focus_handle(cx).is_focused(window),
                     },
                 )
