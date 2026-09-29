@@ -441,9 +441,9 @@ impl Render for TextEditor {
                             state.update(cx, |state, cx| state.replace_all(value, window, cx))
                         }
                     },
-                    // the base Textarea draws no node of its own
+                    // the base Textarea draws no node of its own, nor a box:
+                    // the view's box around it wears the ring (`editor_mount`)
                     Textarea::new(&self.input),
-                    Some(crate::a11y::ink(cx)),
                 )
                 .when(self.fills, |field| field.h_full()),
                 accessible,

@@ -133,27 +133,36 @@ impl ViewTree {
         // The field's one node is `ui::text_field`, carrying the mapping: an
         // empty label is no name, left unset so it reads as missing; a secure
         // field is a password, which keeps its value out of the tree.
-        // The wrapper wears the view's id; the kit's input inside takes a
-        // host name nested under it, where no view child can be.
+        // The wrapper wears the view's id and is the box the view's parent
+        // lays out (`placed`); the kit's input inside takes a host name
+        // nested under it, where no view child can be.
         let accessible = accessible(node);
         let native_id = native_id(id);
+        let focus = field.state.read(cx).focus_handle(cx);
+        let (placed, drawn) = placed(style);
         // the kit fixes the line at 20px inside `8px` padding: a face over
         // ~16px is clipped top and bottom. The line follows the face and the
         // kit's height centres it; a view's own style still wins.
-        // read-only as disabled is: the kit refuses what the user types
+        // read-only as disabled is: the kit refuses what the user types.
+        // Focused, the kit's box wears the ring on itself (`around_field`);
+        // the kit's own focus look is off: a second ring painted round the
+        // outside, and a border colour laid over any style given here
         let mut input = Input::new(&field.state)
             .id(host_id("input"))
             .disabled(options.disabled)
             .readonly(options.read_only)
+            .focus_bordered(false)
             .line_height(gpui_kit::relative(1.4))
             .py_0()
-            .refine_style(style);
+            .refine_style(&drawn);
         if accessible.role == Some(gpui_kit::Role::PasswordInput) {
             input = input.content_type(InputContentType::Password);
         }
+        let input =
+            crate::a11y::around_field(input, focus.is_focused(window), crate::a11y::ink(cx));
         let field = crate::a11y::text_field(
             native_id,
-            &field.state.read(cx).focus_handle(cx),
+            &focus,
             {
                 let state = field.state.clone();
                 // and what assistive technology sets, which the kit takes
@@ -167,8 +176,35 @@ impl ViewTree {
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
-            Some(crate::a11y::ink(cx)),
-        );
+        )
+        .refine_style(&placed);
         announce(field, accessible).into_any_element()
     }
+}
+
+/// A view's `style` for its input, split between the wrapper, the box the
+/// parent lays out, and the kit's box drawn inside it. Where the field sits
+/// (its margin, its place, its share of a flex line) is the wrapper's; its
+/// size is both's, so the kit's box fills the wrapper; the rest is the kit's
+/// box. A wrapper left the full width would take a flex line's room from a
+/// spacer and its siblings, and a press there would focus the field.
+fn placed(
+    style: &gpui_kit::StyleRefinement,
+) -> (gpui_kit::StyleRefinement, gpui_kit::StyleRefinement) {
+    let mut drawn = style.clone();
+    let placed = gpui_kit::StyleRefinement {
+        position: drawn.position.take(),
+        inset: std::mem::take(&mut drawn.inset),
+        margin: std::mem::take(&mut drawn.margin),
+        align_self: drawn.align_self.take(),
+        flex_grow: drawn.flex_grow.take(),
+        flex_shrink: drawn.flex_shrink.take(),
+        flex_basis: drawn.flex_basis.take(),
+        grid_location: drawn.grid_location.take(),
+        size: drawn.size.clone(),
+        min_size: drawn.min_size.clone(),
+        max_size: drawn.max_size.clone(),
+        ..Default::default()
+    };
+    (placed, drawn)
 }
