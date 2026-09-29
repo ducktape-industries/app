@@ -9,7 +9,8 @@
 //! app's Help lists with a chord (AX-114).
 use super::actions::{press_keys, shortcuts};
 use super::{AxNode, tree};
-use gpui_kit::{App, Window};
+use gpui_kit::accesskit::NodeId;
+use gpui_kit::{App, GlobalElementId, Window};
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -217,7 +218,7 @@ pub(crate) const RULES: [Rule; 43] = [
         "Nothing pressable sits inside a button, link, tab, menu item or toggle.",
     ),
     rule(
-        "AX-123",
+        "AX-124",
         Error,
         "No element is refused for sharing its accessibility id with an earlier one.",
     ),
@@ -236,7 +237,7 @@ pub(crate) struct Violation {
     pub(crate) rule: &'static str,
     pub(crate) severity: Severity,
     /// the node's door id; a walk step's `step N` (N presses in); a refused
-    /// element's `<kept door id> <- <its GlobalElementId>` (AX-123)
+    /// element's `<kept door id> <- <its GlobalElementId>` (AX-124)
     pub(crate) id: String,
     pub(crate) role: String,
     pub(crate) name: String,
@@ -273,7 +274,7 @@ pub(crate) struct Report {
 /// `arrows`, the arrow probe of the composite the focus started in; and,
 /// the caller's word, `chords`: `(control name, chord)` for each control
 /// the app's Help lists with a chord (AX-114); and `refused`, what the fork
-/// dropped from the tree on the frame of each snapshot (AX-123).
+/// dropped from the tree on the frame of each snapshot (AX-124).
 #[derive(Debug, Default)]
 pub(crate) struct Reading {
     pub(crate) snapshots: Vec<Vec<AxNode>>,
@@ -285,7 +286,7 @@ pub(crate) struct Reading {
 }
 
 /// An element the fork left out of the tree because an earlier one had its
-/// accessibility id (AX-123), as one snapshot's frame refused it: the door
+/// accessibility id (AX-124), as one snapshot's frame refused it: the door
 /// id of the node that kept it (its `GlobalElementId`, else its `NodeId`,
 /// where the snapshot does not show it), the refused element's
 /// `GlobalElementId`, and which of the identical refusals on that frame
@@ -297,20 +298,23 @@ pub(crate) struct Refused {
     pub(crate) nth: usize,
 }
 
-/// Add what `window`'s last frame refused to `into`, the kept node named
-/// by its door id in `nodes` (the snapshot before any filter), or through
-/// the element-id map where `nodes` does not show it.
-fn note_refused(into: &mut Vec<Refused>, window: &Window, nodes: &[AxNode]) {
-    let list = window.a11y_refused_elements();
+/// Add what one frame refused, `list` (`Window::a11y_refused_elements`), to
+/// `into`, the kept node named by `kept_name`. Only the elements whose scope
+/// `keep` takes: the scope a snapshot named `name` gives a node the element
+/// draws.
+fn note_refused(
+    into: &mut Vec<Refused>,
+    list: &[(NodeId, GlobalElementId)],
+    name: &str,
+    keep: impl Fn(&str) -> bool,
+    kept_name: impl Fn(NodeId) -> String,
+) {
     for (n, (id, element)) in list.iter().enumerate() {
-        let kept = match nodes.iter().find(|node| node.node == *id) {
-            Some(node) => node.id.clone(),
-            None => window
-                .a11y_element_id(*id)
-                .map_or_else(|| format!("{id:?}"), |kept| format!("{kept:?}")),
-        };
+        if !keep(&tree::scope_of(name, element)) {
+            continue;
+        }
         into.push(Refused {
-            kept,
+            kept: kept_name(*id),
             element: format!("{element:?}"),
             nth: list[..n]
                 .iter()
@@ -799,7 +803,7 @@ fn node_rules(
     }
 }
 
-/// AX-123: one violation per refused element, however many snapshots saw
+/// AX-124: one violation per refused element, however many snapshots saw
 /// it, named by the first: the kept node's door id can change from one
 /// snapshot to the next. A refused element has no node to count, so the
 /// rule is applicable only where it fails. The fork panics on a duplicate
@@ -814,7 +818,7 @@ fn refused_rules(reading: &Reading, tally: &mut Tally) {
             0 => format!("{kept} <- {element}"),
             nth => format!("{kept} <- {element} #{}", nth + 1),
         };
-        tally.step("AX-123", &id, "", "", false, || {
+        tally.step("AX-124", &id, "", "", false, || {
             format!(
                 "{element} was refused: it has the same element id as {kept}, which the tree kept. Give one of the two its own id, or the refused one is invisible to a screen reader"
             )
@@ -1078,7 +1082,8 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
         .unwrap_or(false)
 }
 
-/// The reading of one window: `snap` once, and with `walk`, `tab` through the
+/// The reading of one window, `name` as its snapshots name it, `keep` the
+/// scopes it is asked about: `snap` once, and with `walk`, `tab` through the
 /// window's own key dispatch, `snap` after each: N + 1 times (N: nodes
 /// offering focus in the first snapshot, counted before `keep` filters),
 /// and on until focus has come back to where the first press put it. A
@@ -1091,8 +1096,9 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 pub(crate) fn observe(
     window: &mut Window,
     cx: &mut App,
+    name: &str,
     walk: bool,
-    keep: impl Fn(&AxNode) -> bool,
+    keep: impl Fn(&str) -> bool,
     mut snap: impl FnMut(&mut Window, &mut App) -> Vec<AxNode>,
 ) -> Reading {
     let before = window.focused(cx);
@@ -1100,9 +1106,23 @@ pub(crate) fn observe(
     let mut refused = Vec::new();
     let mut read = |window: &mut Window, cx: &mut App| {
         let mut nodes = snap(window, cx);
-        note_refused(&mut refused, window, &nodes);
+        // the kept node by its door id in `nodes` (before any filter), or
+        // through the element-id map where `nodes` does not show it
+        let kept_name = |id: NodeId| match nodes.iter().find(|node| node.node == id) {
+            Some(node) => node.id.clone(),
+            None => window
+                .a11y_element_id(id)
+                .map_or_else(|| format!("{id:?}"), |kept| format!("{kept:?}")),
+        };
+        note_refused(
+            &mut refused,
+            window.a11y_refused_elements(),
+            name,
+            &keep,
+            kept_name,
+        );
         let stops = nodes.iter().filter(|node| offers(node, "focus")).count();
-        nodes.retain(&keep);
+        nodes.retain(|node| keep(&node.scope));
         (nodes, stops)
     };
     let (nodes, stops) = read(window, cx);

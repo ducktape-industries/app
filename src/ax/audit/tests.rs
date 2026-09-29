@@ -676,11 +676,75 @@ fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
             .unwrap();
         let held = stops.read(cx).view().clone().downcast::<Stops>().unwrap();
         held.read(cx).0.clone().focus(window, cx);
-        let reading = observe(window, cx, true, |_| true, snap);
+        let reading = observe(window, cx, "w", true, |_| true, snap);
         audit(&reading, false)
     });
     assert!(fails(&report, "AX-021").is_empty(), "{report:?}");
     assert_eq!(report.presses, 7);
+}
+
+/// The refused elements `Filter` keeps: a view's audit reports the ones under
+/// its `view/<module>` element, the shell's are in the whole window's alone.
+mod refused_scope {
+    use super::*;
+    use crate::ax::Filter;
+    use gpui_kit::{ElementId, GlobalElementId};
+
+    /// A `GlobalElementId` is made by the window, one `with_global_id` per
+    /// segment.
+    fn path(window: &mut gpui_kit::Window, segments: &[&str]) -> GlobalElementId {
+        match segments.split_first() {
+            None => GlobalElementId::default(),
+            Some((first, [])) => window
+                .with_global_id(ElementId::Name((*first).to_owned().into()), |id, _| {
+                    id.clone()
+                }),
+            Some((first, rest)) => window
+                .with_global_id(ElementId::Name((*first).to_owned().into()), |_, window| {
+                    path(window, rest)
+                }),
+        }
+    }
+
+    /// What `note_refused` keeps of one frame refusing `paths`, under the
+    /// filter `view=`.
+    fn kept(view: Option<&str>, paths: &[&[&str]]) -> Vec<String> {
+        let mut cx = gpui_kit::TestAppContext::single();
+        let window = cx.add_empty_window();
+        let filter = Filter {
+            window: None,
+            view: view.map(str::to_owned),
+        };
+        window.update(|window, _| {
+            let list: Vec<_> = paths.iter().map(|p| (NodeId(1), path(window, p))).collect();
+            let mut into = Vec::new();
+            note_refused(
+                &mut into,
+                &list,
+                "w",
+                |scope| filter.keeps_scope(scope),
+                |id| format!("{id:?}"),
+            );
+            into.into_iter().map(|refused| refused.element).collect()
+        })
+    }
+
+    const A: &[&str] = &["view/a", "save"];
+    const B: &[&str] = &["view/b", "save"];
+    const SHELL: &[&str] = &["menu", "save"];
+
+    #[test]
+    fn a_refusal_in_view_a_is_reported_by_view_a_and_not_by_view_b() {
+        assert_eq!(kept(Some("a"), &[A, B]).len(), 1);
+        assert!(kept(Some("a"), &[A, B])[0].contains("view/a"));
+        assert!(kept(Some("b"), &[A]).is_empty());
+    }
+
+    #[test]
+    fn a_refusal_in_the_shell_is_reported_by_the_whole_window_audit_alone() {
+        assert!(kept(Some("a"), &[SHELL]).is_empty());
+        assert_eq!(kept(None, &[A, B, SHELL]).len(), 3);
+    }
 }
 
 mod phase_two {
@@ -1068,15 +1132,15 @@ mod phase_two {
     fn ax_123_an_element_the_fork_refused_is_reported_with_the_node_that_kept_the_id() {
         let mut clean = reading(vec![vec![button("ok", "Save")]]);
         let report = audit(&clean, false);
-        assert_eq!(fails(&report, "AX-123"), Vec::<String>::new());
-        assert!(!report.applicable.contains_key("AX-123"));
+        assert_eq!(fails(&report, "AX-124"), Vec::<String>::new());
+        assert!(!report.applicable.contains_key("AX-124"));
 
         clean.refused = vec![
             refused("w:ok", "GlobalElementId([Name(\"save\")])", 0),
             refused("w:ok", "GlobalElementId([Name(\"save\")])", 1),
         ];
         let report = audit(&clean, false);
-        let ids = fails(&report, "AX-123");
+        let ids = fails(&report, "AX-124");
         assert_eq!(
             ids,
             [
@@ -1108,7 +1172,7 @@ mod phase_two {
         ];
         let report = audit(&walk, false);
         assert_eq!(
-            fails(&report, "AX-123"),
+            fails(&report, "AX-124"),
             ["w:ok <- GlobalElementId([Name(\"save\")])"]
         );
     }
