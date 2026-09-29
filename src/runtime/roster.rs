@@ -264,6 +264,9 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                 }
             }
             let previous = std::mem::replace(&mut *roster().lock(), programs.clone());
+            if previous != programs {
+                roster().changed();
+            }
             let mut loads = Vec::new();
             for module in &names {
                 if !registry.keys().any(|(name, _)| name == module) {
@@ -290,7 +293,6 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
             }
             loads
         };
-        roster().changed();
         for load in loads {
             let _ = load.join();
         }
