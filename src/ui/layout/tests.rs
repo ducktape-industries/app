@@ -312,3 +312,85 @@ fn cycling_visits_every_window_and_back_returns() {
     layout.close(0);
     assert!(!layout.cycle(true), "one window has nowhere to go");
 }
+
+fn held_pair() -> Layout {
+    let mut layout = Layout::default();
+    layout.split("chat");
+    layout.split("files");
+    layout.place(DESK);
+    layout
+}
+
+#[test]
+fn the_keyboard_holds_a_window_once_it_has_a_frame() {
+    let mut layout = Layout::default();
+    layout.split("chat");
+    layout.hold(0);
+    assert_eq!(layout.held, None, "no frame yet: nothing to move");
+    layout.place(DESK);
+    layout.hold(5);
+    assert_eq!(layout.held, None, "no such window");
+    layout.hold(0);
+    assert_eq!(
+        layout.held.map(|held| held.instance),
+        Some(layout.panes[0].instance)
+    );
+    layout.hold(0);
+    assert_eq!(layout.held, None, "holding it again lets it go");
+}
+
+#[test]
+fn letting_go_keeps_the_window_or_puts_it_back_as_it_was() {
+    let mut layout = held_pair();
+    let before = layout.panes[1].frame.unwrap();
+    layout.hold(1);
+    let moved = Frame {
+        x: before.x + 40.,
+        ..before
+    };
+    layout.set_frame(1, moved, DESK);
+    layout.release(true, DESK);
+    assert_eq!(layout.held, None);
+    assert_eq!(layout.panes[1].frame, Some(moved), "kept");
+
+    layout.hold(1);
+    layout.set_frame(1, Frame { w: 500., ..moved }, DESK);
+    layout.release(false, DESK);
+    assert_eq!(layout.panes[1].frame, Some(moved), "put back");
+}
+
+#[test]
+fn escape_puts_back_a_fill_the_hold_undid_and_its_restore() {
+    let mut layout = held_pair();
+    layout.toggle_fill(1, DESK);
+    let (filled, restore) = (layout.panes[1].frame, layout.panes[1].restore);
+    assert!(restore.is_some());
+    layout.hold(1);
+    // moving a filled window is a drag: it is no longer filled
+    let now = layout.panes[1].frame.unwrap();
+    layout.set_frame(
+        1,
+        Frame {
+            x: now.x + 20.,
+            ..now
+        },
+        DESK,
+    );
+    assert_eq!(layout.panes[1].restore, None);
+    layout.release(false, DESK);
+    assert_eq!(
+        (layout.panes[1].frame, layout.panes[1].restore),
+        (filled, restore)
+    );
+}
+
+#[test]
+fn a_hold_ends_when_another_window_comes_to_the_front() {
+    let mut layout = held_pair();
+    layout.hold(1);
+    layout.settle();
+    assert!(layout.held.is_some());
+    layout.focus(0);
+    layout.settle();
+    assert_eq!(layout.held, None);
+}

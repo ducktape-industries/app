@@ -10,7 +10,7 @@ pub(crate) const MAX_PANES: usize = 8;
 pub(crate) const MIN_WIDTH: f32 = 320.;
 pub(crate) const MIN_HEIGHT: f32 = 220.;
 /// What of a window must stay on the desk: enough of its title bar to grab.
-const KEEP: f32 = 96.;
+pub(crate) const KEEP: f32 = 96.;
 /// A new window opens this far down and right of the one before it.
 const CASCADE: f32 = 28.;
 /// A new window's share of the desk, wide and high.
@@ -124,6 +124,17 @@ pub(crate) struct Layout {
     /// Something was shown here: the desk no longer opens the active
     /// program on its own.
     pub(crate) initialized: bool,
+    /// A window the keyboard holds (⌘⇧M): the arrows move and size it.
+    pub(crate) held: Option<Held>,
+}
+
+/// A window the keyboard holds, and how it sat when the hold began: Escape
+/// puts it back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Held {
+    pub(crate) instance: u64,
+    frame: Frame,
+    restore: Option<Frame>,
 }
 
 /// What is done to one window's panes: the bar, a title bar's buttons,
@@ -150,8 +161,15 @@ pub(crate) enum PaneMessage {
     Cycle {
         forward: bool,
     },
-    /// A title bar's double press.
+    /// A title bar's double press, or ⌘⇧↩.
     Fill(usize),
+    /// ⌘⇧M: the keyboard holds the window (again, and it lets go).
+    Hold(usize),
+    /// The keyboard lets go of the window it holds: `keep` where it is, or
+    /// else back where it was.
+    Release {
+        keep: bool,
+    },
     /// A drag moved or sized a window.
     Frame(usize, Frame),
 }
@@ -216,11 +234,14 @@ impl Layout {
         }
     }
 
-    /// Frames for the windows without one, once the desk is measured.
+    /// Frames for the windows without one, once the desk is measured. A
+    /// hold ends with the window in front that it was on.
     pub(crate) fn settle(&mut self) {
         if let Some(desk) = self.desk {
             self.place(desk);
         }
+        let front = self.panes.get(self.focused).map(|pane| pane.instance);
+        self.held = self.held.filter(|held| front == Some(held.instance));
     }
 
     fn raise(&mut self, index: usize) {
@@ -423,6 +444,38 @@ impl Layout {
                 pane.restore = pane.frame;
                 pane.frame = Some(Frame::fill(desk));
             }
+        }
+    }
+
+    /// The keyboard takes hold of window `index`, once it has a frame; holding
+    /// the window it already holds lets it go.
+    pub(crate) fn hold(&mut self, index: usize) {
+        let held = self.panes.get(index).and_then(|pane| {
+            pane.frame.map(|frame| Held {
+                instance: pane.instance,
+                frame,
+                restore: pane.restore,
+            })
+        });
+        self.held = match self.held {
+            Some(_) => None,
+            None => held,
+        };
+    }
+
+    /// The keyboard lets go: `keep` the window where it is, or else put it
+    /// back as it was, filled or not.
+    pub(crate) fn release(&mut self, keep: bool, desk: (f32, f32)) {
+        let Some(held) = self.held.take().filter(|_| !keep) else {
+            return;
+        };
+        if let Some(pane) = self
+            .panes
+            .iter_mut()
+            .find(|pane| pane.instance == held.instance)
+        {
+            pane.frame = Some(held.frame.clamped(desk, pane.min_width()));
+            pane.restore = held.restore;
         }
     }
 

@@ -4,7 +4,7 @@ use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, TestAppContext, VisualTestContext, px, size};
 
-fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
+pub(super) fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     window.activate_a11y();
     window.render_frame(cx);
     window.render_frame(cx);
@@ -41,7 +41,7 @@ fn press(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
 }
 
 /// A console window on a desk with a program to show, as the AX door sees it.
-fn console(
+pub(super) fn console(
     cx: &mut TestAppContext,
 ) -> (
     Entity<Desktop>,
@@ -255,7 +255,7 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     );
 }
 
-fn key(native: &mut VisualTestContext, stroke: &str) {
+pub(super) fn key(native: &mut VisualTestContext, stroke: &str) {
     native.update(|window, cx| {
         draw(window, cx);
         window.dispatch_keystroke(gpui_kit::Keystroke::parse(stroke).unwrap(), cx);
@@ -263,7 +263,10 @@ fn key(native: &mut VisualTestContext, stroke: &str) {
     });
 }
 
-fn panes(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> (usize, usize) {
+pub(super) fn panes(
+    native: &mut VisualTestContext,
+    view: &Entity<DesktopWindow>,
+) -> (usize, usize) {
     native.update(|_, cx| {
         let layout = view.read(cx).layout(cx);
         (layout.panes.len(), layout.focused)
@@ -463,7 +466,7 @@ fn a_window_brought_to_the_front_has_the_keys(cx: &mut TestAppContext) {
 }
 
 /// The window in front has the keys, somewhere in its own box.
-fn in_front(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> bool {
+pub(super) fn in_front(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> bool {
     native.update(|window, cx| {
         let view = view.read(cx);
         let layout = view.layout(cx);
@@ -473,7 +476,7 @@ fn in_front(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> boo
 }
 
 /// Draws until the deferred focus moves have landed.
-fn settle(native: &mut VisualTestContext) {
+pub(super) fn settle(native: &mut VisualTestContext) {
     for _ in 0..3 {
         native.update(|window, cx| {
             draw(window, cx);

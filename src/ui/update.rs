@@ -18,6 +18,10 @@ impl Ducktape {
         if launcher && !self.in_launcher() {
             crate::perf::mark("desk");
         }
+        // a window the keyboard held is let go of where an overlay opens
+        if self.overlay.is_some() {
+            self.let_go_of_holds();
+        }
         match launcher == self.in_launcher() {
             true => task,
             false => Task::batch([task, crate::shell::swap_console()]),

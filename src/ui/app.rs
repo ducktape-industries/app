@@ -67,6 +67,10 @@ pub(crate) enum Spot {
     Appearance(Appearance),
     OtherNetwork,
     Help,
+    /// The focused window fills the desk (⌘⇧↩).
+    FillWindow,
+    /// The arrows move and size the focused window (⌘⇧M).
+    HoldWindow,
 }
 
 /// One Spotlight row, under its group's heading.

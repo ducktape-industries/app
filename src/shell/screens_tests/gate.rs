@@ -47,6 +47,22 @@ fn on_desk(overlay: crate::Overlay) -> Build {
     })
 }
 
+/// Search open over a desk with a window on it: its rows for the window
+/// (Fill, Move or size) are there, each reporting its chord (AX-114).
+pub(super) fn spotlight_over_window() -> Ducktape {
+    let mut state = desk();
+    let key = WindowKey::unique();
+    let mut layout = crate::ui::layout::Layout::default();
+    layout.split(crate::ui::layout::EMPTY);
+    layout.measure((1280., 764.));
+    layout.settle();
+    layout.initialized = true;
+    state.console_win = Some(key);
+    state.layouts.insert(key, layout);
+    state.overlay = Some(crate::Overlay::Spotlight);
+    state
+}
+
 /// Every screen state, with whether it is a launcher screen (AX-018).
 pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
     let words = || Secret::from(String::from("canoe pond forest"));
@@ -231,6 +247,11 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             }),
         ),
         ("spotlight", false, on_desk(crate::Overlay::Spotlight)),
+        (
+            "spotlight-over-window",
+            false,
+            Box::new(spotlight_over_window),
+        ),
         ("approve-code", false, on_desk(crate::Overlay::Approve)),
         (
             "approve-confirm",
@@ -358,4 +379,37 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
         failures.extend(errors(&mut native, screen, launcher));
     }
     assert!(failures.is_empty(), "\n{}\n", failures.join("\n"));
+}
+
+/// Search over a window offers Fill and Move or size for it, each saying
+/// the chord Help lists (AX-114), and the audit told the chords passes.
+#[gpui_kit::test]
+fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    // narrowed to the window rows: programs other tests list share the list
+    let mut state = spotlight_over_window();
+    state.spotlight_query = "window".into();
+    let (_view, mut native) = open(state, cx);
+    let nodes = native.update(draw);
+    for (name, key) in [("Fill window", "⇧↩"), ("Move or size window", "⇧M")] {
+        assert_eq!(
+            find(&nodes, "ListBoxOption", name)["keyboard_shortcut"],
+            chord_label(key),
+            "{name}"
+        );
+    }
+    let report = native.update(|window, cx| {
+        let mut reading = audit::observe(window, cx, true, |_| true, snap);
+        reading.chords = crate::shell::chords();
+        audit::audit(&reading, false)
+    });
+    assert!(
+        report.errors().next().is_none() && report.violations.iter().all(|v| v.rule != "AX-114"),
+        "{:#?}",
+        report.violations
+    );
+    assert!(report.applicable["AX-114"] >= 2, "{:?}", report.applicable);
 }
