@@ -145,7 +145,10 @@ impl ViewTree {
         let view = editor.view.element();
         let mut element = div().relative().id(native_id(id));
         *element.style() = style.clone();
-        element
+        // the view's box is the field's, border and padding: it wears the
+        // ring, not the text inside the padding
+        let focused = editor.view.is_focused(window, cx);
+        crate::a11y::around_field(element, focused, crate::a11y::ink(cx))
             .child(view)
             .child(self.measure(&path, cx))
             .into_any_element()
