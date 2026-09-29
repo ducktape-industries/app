@@ -1094,4 +1094,22 @@ mod phase_two {
         );
         assert_eq!(report.errors().count(), 2);
     }
+
+    #[test]
+    fn ax_123_a_refusal_every_snapshot_sees_is_one_violation_named_by_the_first() {
+        let mut walk = reading(vec![vec![button("ok", "Save")]]);
+        let element = "GlobalElementId([Name(\"save\")])";
+        // the second snapshot widened the kept node's door id; the third
+        // does not show it
+        walk.refused = vec![
+            refused("w:ok", element, 0),
+            refused("w:form.ok", element, 0),
+            refused(element, element, 0),
+        ];
+        let report = audit(&walk, false);
+        assert_eq!(
+            fails(&report, "AX-123"),
+            ["w:ok <- GlobalElementId([Name(\"save\")])"]
+        );
+    }
 }

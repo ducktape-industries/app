@@ -273,7 +273,7 @@ pub(crate) struct Report {
 /// `arrows`, the arrow probe of the composite the focus started in; and,
 /// the caller's word, `chords`: `(control name, chord)` for each control
 /// the app's Help lists with a chord (AX-114); and `refused`, what the fork
-/// dropped from the tree on the frames those snapshots came from (AX-123).
+/// dropped from the tree on the frame of each snapshot (AX-123).
 #[derive(Debug, Default)]
 pub(crate) struct Reading {
     pub(crate) snapshots: Vec<Vec<AxNode>>,
@@ -285,11 +285,12 @@ pub(crate) struct Reading {
 }
 
 /// An element the fork left out of the tree because an earlier one had its
-/// accessibility id (AX-123): the door id of the node that kept it, the
-/// refused element's `GlobalElementId`, and which of the identical refusals
-/// on one frame this is (two siblings given one element id refuse twice
-/// with one path).
-#[derive(Clone, Debug, PartialEq)]
+/// accessibility id (AX-123), as one snapshot's frame refused it: the door
+/// id of the node that kept it (its `GlobalElementId` where the snapshot
+/// does not show it), the refused element's `GlobalElementId`, and which of
+/// the identical refusals on that frame this is (two siblings given one
+/// element id refuse twice with one path).
+#[derive(Debug)]
 pub(crate) struct Refused {
     pub(crate) kept: String,
     pub(crate) element: String,
@@ -297,28 +298,25 @@ pub(crate) struct Refused {
 }
 
 /// Add what `window`'s last frame refused to `into`, the kept node named
-/// by its door id in `nodes` (the snapshot before any filter). A frame the
-/// walk drew again adds only what it did not show before.
+/// by its door id in `nodes` (the snapshot before any filter), or through
+/// the element-id map where `nodes` does not show it.
 fn note_refused(into: &mut Vec<Refused>, window: &Window, nodes: &[AxNode]) {
-    let list: Vec<_> = window
-        .a11y_refused_elements()
-        .iter()
-        .map(|(id, element)| (*id, format!("{element:?}")))
-        .collect();
-    for (n, entry) in list.iter().enumerate() {
-        let (id, element) = entry;
-        let kept = nodes.iter().find(|node| node.node == *id).map_or_else(
-            || format!("{:?}", window.a11y_element_id(*id)),
-            |node| node.id.clone(),
-        );
-        let refused = Refused {
-            kept,
-            element: element.clone(),
-            nth: list[..n].iter().filter(|before| *before == entry).count(),
+    let list = window.a11y_refused_elements();
+    for (n, (id, element)) in list.iter().enumerate() {
+        let kept = match nodes.iter().find(|node| node.node == *id) {
+            Some(node) => node.id.clone(),
+            None => window
+                .a11y_element_id(*id)
+                .map_or_else(|| format!("{id:?}"), |kept| format!("{kept:?}")),
         };
-        if !into.contains(&refused) {
-            into.push(refused);
-        }
+        into.push(Refused {
+            kept,
+            element: format!("{element:?}"),
+            nth: list[..n]
+                .iter()
+                .filter(|before| **before == list[n])
+                .count(),
+        });
     }
 }
 
@@ -801,11 +799,17 @@ fn node_rules(
     }
 }
 
-/// AX-123: one violation per refused element. A refused element has no
-/// node to count, so the rule is applicable only where it fails. The fork
-/// panics on a duplicate in a debug build, so only a release build gets here.
+/// AX-123: one violation per refused element, however many snapshots saw
+/// it, named by the first: the kept node's door id can change from one
+/// snapshot to the next. A refused element has no node to count, so the
+/// rule is applicable only where it fails. The fork panics on a duplicate
+/// in a debug build, so only a release build gets here.
 fn refused_rules(reading: &Reading, tally: &mut Tally) {
+    let mut seen = BTreeSet::new();
     for Refused { kept, element, nth } in &reading.refused {
+        if !seen.insert((element, nth)) {
+            continue;
+        }
         let id = match nth {
             0 => format!("{kept} <- {element}"),
             nth => format!("{kept} <- {element} #{}", nth + 1),
