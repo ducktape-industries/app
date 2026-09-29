@@ -158,8 +158,9 @@ impl ViewTree {
         if accessible.role == Some(gpui_kit::Role::PasswordInput) {
             input = input.content_type(InputContentType::Password);
         }
-        let input =
-            crate::a11y::around_field(input, focus.is_focused(window), crate::a11y::ink(cx));
+        // a disabled field wears no ring, as the kit's own look would not
+        let focused = focus.is_focused(window) && !options.disabled;
+        let input = crate::a11y::around_field(input, focused, crate::a11y::ink(cx));
         let field = crate::a11y::text_field(
             native_id,
             &focus,
@@ -185,9 +186,11 @@ impl ViewTree {
 /// A view's `style` for its input, split between the wrapper, the box the
 /// parent lays out, and the kit's box drawn inside it. Where the field sits
 /// (its margin, its place, its share of a flex line) is the wrapper's; its
-/// size is both's, so the kit's box fills the wrapper; the rest is the kit's
-/// box. A wrapper left the full width would take a flex line's room from a
-/// spacer and its siblings, and a press there would focus the field.
+/// size is both's, so the kit's box fills the wrapper: a fraction of the
+/// parent is the wrapper's to take, and the kit's box takes the whole of the
+/// wrapper, not that fraction of it again. The rest is the kit's box. A
+/// wrapper left the full width would take a flex line's room from a spacer
+/// and its siblings, and a press there would focus the field.
 fn placed(
     style: &gpui_kit::StyleRefinement,
 ) -> (gpui_kit::StyleRefinement, gpui_kit::StyleRefinement) {
@@ -206,5 +209,14 @@ fn placed(
         max_size: drawn.max_size.clone(),
         ..Default::default()
     };
+    for size in [&mut drawn.size, &mut drawn.min_size, &mut drawn.max_size] {
+        for length in [&mut size.width, &mut size.height] {
+            if let Some(gpui_kit::Length::Definite(gpui_kit::DefiniteLength::Fraction(fraction))) =
+                length
+            {
+                *fraction = 1.;
+            }
+        }
+    }
     (placed, drawn)
 }

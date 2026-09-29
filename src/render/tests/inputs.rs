@@ -276,6 +276,53 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
     );
 }
 
+/// A view's input a fraction of its row wide takes that fraction once: the
+/// wrapper takes it of the row, and the kit's box the whole of the wrapper.
+#[gpui_kit::test]
+fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    let mut field = input("Filter", false, false);
+    let wire::Node::Input { style, .. } = &mut field else {
+        unreachable!()
+    };
+    *style = div()
+        .ml(px(16.))
+        .w(gpui_kit::relative(0.5))
+        .h(px(32.))
+        .px_2()
+        .border_1()
+        .border_color(grey)
+        .style()
+        .clone();
+    let root = container_with_style(
+        "row",
+        div().flex().items_center().w(px(600.)).style().clone(),
+        [
+            field,
+            container_with_style("spacer", div().flex_1().style().clone(), []),
+            container_with_style("end", div().w(px(100.)).h(px(32.)).style().clone(), []),
+        ],
+    );
+    let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let width = native.update(|window, cx| {
+        window.render_frame(cx);
+        let scale = window.scale_factor();
+        window
+            .painted_quads()
+            .iter()
+            .find(|quad| quad.border_widths.left.as_f32() > 0. && quad.border_color == grey)
+            .expect("the field's box is drawn")
+            .bounds
+            .size
+            .width
+            .as_f32()
+            / scale
+    });
+    assert_eq!(width, 300.);
+}
+
 /// An editor's box is the view's, border and padding round the text: that
 /// box, not the text inside the padding, wears the ring and its colour.
 #[gpui_kit::test]
