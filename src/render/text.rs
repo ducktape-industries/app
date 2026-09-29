@@ -42,9 +42,8 @@ pub(super) fn joins_drag(drag: Option<Bounds<Pixels>>, clip: Bounds<Pixels>) -> 
 
 /// Redraws `window` when the selection `handle` shows really changes.
 /// gpui-base's sweep clears every participant a frame did not register — a
-/// cached view's paragraphs register none, a stand-in handle is new each
-/// render — and its clear says `SelectionChanged(None)` even when nothing
-/// was selected. Refreshing on that re-rendered every cached view, every
+/// cached view's paragraphs register none — and its clear says
+/// `SelectionChanged(None)` even when nothing was selected. Refreshing on that re-rendered every cached view, every
 /// frame: a desk of heavy views drew all of them in full on each switch.
 fn refresh_on_change(
     handle: &gpui_kit::base::TextSelectionHandle,
@@ -74,11 +73,10 @@ pub(super) struct RichSelection {
 // Layout and hit-testing stay native. One participant receives every span's
 // measured glyph run so copying concatenates source text, never visual padding.
 pub(super) struct RichParagraph {
-    pub(super) id: Option<ElementId>,
+    pub(super) id: ElementId,
     pub(super) content: AnyElement,
     pub(super) text: SharedString,
     pub(super) layout: TextLayout,
-    pub(super) fallback: RichSelection,
     pub(super) active_handle:
         std::rc::Rc<std::cell::RefCell<Option<gpui_kit::base::TextSelectionHandle>>>,
     pub(super) selection: std::rc::Rc<std::cell::RefCell<Option<std::ops::Range<usize>>>>,
@@ -99,7 +97,7 @@ impl Element for RichParagraph {
     type RequestLayoutState = ();
     type PrepaintState = (gpui_kit::Hitbox, Bounds<Pixels>);
     fn id(&self) -> Option<ElementId> {
-        self.id.clone()
+        Some(self.id.clone())
     }
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
         None
@@ -138,30 +136,22 @@ impl Element for RichParagraph {
                 .with_text_bounds(vec![layout_bounds])
                 .with_document_order(order)
         };
-        window.with_optional_element_state::<RichSelection, _>(id, |state, window| {
-            let state = match state {
-                Some(state) => state.unwrap_or_else(|| {
-                    let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
-                    let refresh = refresh_on_change(&handle, window, cx);
-                    RichSelection {
-                        handle,
-                        _refresh: refresh,
-                    }
-                }),
-                None => {
-                    *active.borrow_mut() = Some(self.fallback.handle.clone());
-                    if joins {
-                        self.fallback.handle.register(registration(), window, cx);
-                    }
-                    return ((), None);
+        let id = id.expect("a paragraph always has an id");
+        window.with_element_state::<RichSelection, _>(id, |state, window| {
+            let state = state.unwrap_or_else(|| {
+                let handle = gpui_kit::base::TextSelectionHandle::new(text.to_string(), cx);
+                let refresh = refresh_on_change(&handle, window, cx);
+                RichSelection {
+                    handle,
+                    _refresh: refresh,
                 }
-            };
+            });
             state.handle.set_fallback_copy_text(text.to_string(), cx);
             *active.borrow_mut() = Some(state.handle.clone());
             if joins {
                 state.handle.register(registration(), window, cx);
             }
-            ((), Some(state))
+            ((), state)
         });
         (hitbox, clip)
     }
@@ -279,7 +269,7 @@ impl ViewTree {
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;
-            ElementId::NamedInteger("guest-text".into(), index)
+            host_id(format!("text-{index}"))
         });
         let mut element = div();
         *element.style() = style.clone();
@@ -321,7 +311,13 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let native_id = id.as_ref().map(native_id);
+        // an id-less paragraph is numbered, as an id-less text is, so the
+        // constant `rich-text` inside never lands twice under one parent
+        let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
+            let index = self.render_index;
+            self.render_index += 1;
+            host_id(format!("rich-{index}"))
+        });
         let shared: SharedString = text.clone().into();
         let mut styled = StyledText::new(shared.clone());
         styled = match runs {
@@ -356,7 +352,7 @@ impl ViewTree {
         let linked = match on_click {
             Some(handler) if !clickable_ranges.is_empty() => {
                 let (element, linking) =
-                    self.linked_box(id.as_ref(), text, clickable_ranges, *handler, window, cx);
+                    self.linked_box(&native_id, text, clickable_ranges, *handler, window, cx);
                 let press = linking.press.clone();
                 // a click that ended a drag selected words; it pressed nothing
                 interactive =
@@ -450,17 +446,11 @@ impl ViewTree {
                 content.into_any_element()
             }
         };
-        let handle = gpui_kit::base::TextSelectionHandle::new(text.clone(), cx);
-        let refresh = refresh_on_change(&handle, window, cx);
         RichParagraph {
             id: native_id,
             content,
             text: shared,
             layout,
-            fallback: RichSelection {
-                handle,
-                _refresh: refresh,
-            },
             active_handle: Default::default(),
             selection: selection_range,
             order: self.selection_order.clone(),

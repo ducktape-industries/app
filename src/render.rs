@@ -74,6 +74,23 @@ pub(crate) fn native_id(id: &wire::ElementIdWire) -> ElementId {
     id.to_gpui().expect("sanitized element ids lower to gpui")
 }
 
+/// The gpui id of an element the host draws beside a view's children, or
+/// gives a node the view left id-less. Its base is a code location, which
+/// `validate_host` refuses from a view, so no id a view can send equals it,
+/// by construction; the name is what tells one host element from another,
+/// and what the /tree door prints for it.
+pub(crate) fn host_id(name: impl Into<SharedString>) -> ElementId {
+    static BASE: std::sync::LazyLock<Arc<ElementId>> = std::sync::LazyLock::new(|| {
+        Arc::new(ElementId::CodeLocation(*std::panic::Location::caller()))
+    });
+    ElementId::NamedChild(BASE.clone(), name.into())
+}
+
+/// Whether `id` is one [`host_id`] made: the shape no view id has.
+pub(crate) fn is_host_id(id: &ElementId) -> bool {
+    matches!(id, ElementId::NamedChild(base, _) if matches!(**base, ElementId::CodeLocation(_)))
+}
+
 /// Pushes the node's identity onto `path` when it has one; the caller pops
 /// on the way out when this answers `true`.
 pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {

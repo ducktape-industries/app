@@ -10,7 +10,6 @@
 //! with the window at paint, the first moment their ids and the window
 //! meet.
 use super::*;
-use crate::render::native_id;
 use gpui_kit::accesskit::{Action, Node, NodeId, Role};
 use gpui_kit::{A11ySubtreeBuilder, AccessibleAction, WeakEntity};
 use std::cell::{Cell, RefCell};
@@ -43,30 +42,26 @@ pub(super) struct Linking {
 impl ViewTree {
     /// The box around a text with clickable ranges: one Tab stop, wearing
     /// the shell ring, whose arrows pick a link and whose Enter presses
-    /// it. `id` is the text's; without one the box is named by its place
-    /// in the render, as an unnamed text is.
+    /// it. `id` is the paragraph's, the view's own or the host's number
+    /// for an id-less text, and the box wears it too, one level down. The
+    /// view's is already on `authored_path`; the host's is added to it in
+    /// its wire form, which no view can send.
     pub(super) fn linked_box(
         &mut self,
-        id: Option<&wire::ElementIdWire>,
+        id: &ElementId,
         text: &str,
         ranges: &[std::ops::Range<usize>],
         handler: u32,
         window: &Window,
         cx: &mut Context<Self>,
     ) -> (Stateful<Div>, Linking) {
-        let (key, id) = match id {
-            Some(id) => (self.authored_path.clone(), native_id(id)),
-            None => {
-                let index = self.render_index;
-                self.render_index += 1;
-                let mut key = self.authored_path.clone();
-                key.push(wire::ElementIdWire::NamedInteger(
-                    "guest-rich".into(),
-                    index,
-                ));
-                (key, ElementId::NamedInteger("guest-rich".into(), index))
-            }
-        };
+        let mut key = self.authored_path.clone();
+        if is_host_id(id) {
+            key.push(
+                wire::ElementIdWire::from_gpui(id.clone())
+                    .expect("a host id is one name over a code location"),
+            );
+        }
         let words: Vec<String> = ranges
             .iter()
             .map(|range| text.get(range.clone()).unwrap_or_default().to_owned())
@@ -102,7 +97,7 @@ impl ViewTree {
         let pick = links.picked.clone();
         let mut element = crate::a11y::keyboard(
             div()
-                .id(id)
+                .id(id.clone())
                 .track_focus(&links.focus)
                 .role(Role::Group)
                 .aria_label(text.to_owned())

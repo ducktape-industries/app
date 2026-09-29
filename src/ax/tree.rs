@@ -43,9 +43,9 @@ const TEXT_MAX: usize = 120;
 /// One visible node, as the door reports it.
 #[derive(Clone, Debug, Serialize)]
 pub(crate) struct AxNode {
-    pub(super) id: String,
+    pub(crate) id: String,
     pub(crate) role: String,
-    pub(super) name: String,
+    pub(crate) name: String,
     /// what a screen reader reads after the name: why a control is
     /// disabled, a field's placeholder
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -436,6 +436,16 @@ pub(super) fn door_ids(paths: &[(String, Vec<String>)]) -> Vec<String> {
     ids
 }
 
+/// The scope (`<window>` or `<window>/<module>`) a snapshot gives the node
+/// an element draws, and so the scope [`Filter`] judges a refused element
+/// by.
+pub(super) fn scope_of(name: &str, element: &gpui_kit::GlobalElementId) -> String {
+    match element_path(element.iter()).0 {
+        Some(module) => format!("{name}/{module}"),
+        None => name.to_owned(),
+    }
+}
+
 /// A path's module (after [`VIEW_MARK`]) and its stable segments: the
 /// names call sites pass, not entities, focus handles or the kit's own
 /// type-path ids (`gpui_component::button::button::Button`).
@@ -454,6 +464,10 @@ fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>
             | ElementId::CodeLocation(_)
             | ElementId::OpaqueId(_) => {}
             ElementId::Name(name) if name.contains("::") => {}
+            // a host id (`render::host_id`): its name, not its code location
+            ElementId::NamedChild(_, name) if crate::render::is_host_id(id) => {
+                path.push(name.to_string())
+            }
             id => path.push(id.to_string()),
         }
     }

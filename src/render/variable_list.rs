@@ -179,7 +179,7 @@ impl ViewTree {
         let mut host = div();
         *host.style() = std::mem::take(native.style());
         let host = host
-            .id(ElementId::NamedInteger("guest-list".into(), *state_id))
+            .id(host_id(format!("list-{state_id}")))
             .child(native.size_full());
         self.guest_aria(host, node, interactivity, cx)
             .into_any_element()

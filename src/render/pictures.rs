@@ -321,7 +321,7 @@ impl ViewTree {
         let native_id = id.as_ref().map(native_id).unwrap_or_else(|| {
             let index = self.render_index;
             self.render_index += 1;
-            ElementId::NamedInteger("guest-primitive".into(), index)
+            host_id(format!("primitive-{index}"))
         });
         let mut element = element.id(native_id);
         if let Some(style) = &interactivity.active {

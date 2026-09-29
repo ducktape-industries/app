@@ -54,7 +54,7 @@ pub(crate) fn dialog_entry(
             }
         });
     }
-    div().id("dialog-entry").track_focus(entry)
+    div().id(host_id("dialog-entry")).track_focus(entry)
 }
 
 /// Where focus goes when a dialog closes: back to `opener`, what held it as
