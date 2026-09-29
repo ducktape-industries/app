@@ -330,9 +330,14 @@ impl ViewTree {
             element = element.aria_orientation(value);
         }
         // gpui panics (debug) on a claim by the focused node or on a second
-        // claim in a frame: the sanitizer keeps neither
+        // claim under the one it counts claims under (the claimant's nearest
+        // focusable ancestor, when focused): the sanitizer keeps neither
         if aria.active_descendant {
             element = element.aria_active_descendant();
+            // its bounds are measured, and its scroller brought to it, by path
+            if node.identity().is_some() {
+                self.claiming.insert(self.authored_path.clone());
+            }
         }
         element = crate::a11y::Patch {
             live: aria.live,

@@ -161,6 +161,11 @@ pub struct ViewTree {
     // Scrolling.
     /// Identified containers with `overflow.y: scroll`; the scroll widget commands' targets.
     scrolls: HashMap<AuthoredPath, ScrollHandle>,
+    /// The identified nodes this render claims as a composite's active
+    /// descendant, and those already scrolled into view: a claim that moves
+    /// onto a node scrolls the plain scroller around it to it, once.
+    claiming: std::collections::HashSet<AuthoredPath>,
+    revealed: std::collections::HashSet<AuthoredPath>,
     uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
     variable_lists: HashMap<VariableListKey, VariableList>,
 
@@ -214,6 +219,8 @@ impl ViewTree {
             links: HashMap::new(),
             authored_path: Vec::new(),
             scrolls: HashMap::new(),
+            claiming: Default::default(),
+            revealed: Default::default(),
             uniform_lists: HashMap::new(),
             variable_lists: HashMap::new(),
             drags: HashMap::new(),
@@ -308,6 +315,9 @@ impl Render for ViewTree {
         // a linked text the last render did not draw is gone
         self.links
             .retain(|_, links| std::mem::take(&mut links.drawn));
+        // a claim the last render did not make is revealed again if it comes back
+        let claimed = std::mem::take(&mut self.claiming);
+        self.revealed.retain(|path| claimed.contains(path));
         // Paragraph selection order starts at a base unique to this view (its
         // entity id in the high 32 bits) and restarts there every render, so
         // paragraphs keep stable numbers and two views never interleave.

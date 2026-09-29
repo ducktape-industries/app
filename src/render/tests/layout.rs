@@ -392,3 +392,94 @@ fn an_unchanged_guest_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext)
     let card = tree.read_with(&native, |tree, _| tree.measured_bounds(&[named_id("card")]));
     assert_eq!(card.map(|card| card.size), Some(size(px(200.), px(100.))));
 }
+
+/// A list box in a plain scroller whose `claim`ed row is its active
+/// descendant: ten rows of 40 px in 100 px.
+fn claiming_list(claim: usize) -> wire::Node {
+    let rows = (0..10).map(|n| {
+        let mut row = container_with_style(
+            &format!("row-{n}"),
+            div().h(px(40.)).flex_shrink_0().style().clone(),
+            [],
+        );
+        if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut row {
+            interactivity.role = Some(gpui_kit::Role::ListBoxOption);
+            interactivity.aria.label = Some(format!("Row {n}").into());
+            interactivity.aria.selected = Some(false);
+            interactivity.aria.active_descendant = n == claim;
+        }
+        row
+    });
+    let mut style = div()
+        .flex()
+        .flex_col()
+        .w(px(200.))
+        .h(px(100.))
+        .style()
+        .clone();
+    style.overflow.y = Some(gpui_kit::Overflow::Scroll);
+    let mut list = container_with_style("list", style, rows);
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut list {
+        interactivity.role = Some(gpui_kit::Role::ListBox);
+        interactivity.aria.label = Some("Rows".into());
+        interactivity.focusable = true;
+        interactivity.tab_stop = Some(true);
+    }
+    list
+}
+
+/// A view's arrows move a composite's claim; the host scrolls the plain
+/// scroller around it by the least that shows the claimed row, down to a
+/// row below the fold and back up to one above it, and leaves the offset
+/// alone while the claim stays (the wheel may move it).
+#[gpui_kit::test]
+fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(claiming_list(0))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    // the scroller's offset, and the claimed row's top and bottom inside it
+    let shown = |native: &mut gpui_kit::VisualTestContext, claim: usize| {
+        native.update(|window, cx| {
+            for _ in 0..3 {
+                window.render_frame(cx);
+            }
+            tree.read_with(cx, |tree, _| {
+                let list = vec![named_id("list")];
+                let row = vec![named_id("list"), named_id(&format!("row-{claim}"))];
+                // the scroller's own measure scrolls with its content: its
+                // handle has where it sits
+                let (view, row) = (tree.scrolls[&list].bounds(), tree.bounds[&row]);
+                let offset = f32::from(tree.scrolls[&list].offset().y);
+                let (top, bottom) = (row.top() - view.top(), row.bottom() - view.top());
+                (offset, f32::from(top), f32::from(bottom))
+            })
+        })
+    };
+    assert_eq!(shown(&mut native, 0), (0., 0., 40.));
+    let claim = |native: &mut gpui_kit::VisualTestContext, row: usize| {
+        tree.update(native, |tree, cx| tree.replace(claiming_list(row), cx));
+    };
+    claim(&mut native, 7);
+    assert_eq!(
+        shown(&mut native, 7),
+        (-220., 60., 100.),
+        "row 7 (280..320) sits on the bottom edge"
+    );
+    claim(&mut native, 3);
+    assert_eq!(
+        shown(&mut native, 3),
+        (-120., 0., 40.),
+        "row 3 (120..160) sits on the top edge"
+    );
+    tree.read_with(&native, |tree, _| {
+        tree.scrolls[&vec![named_id("list")]].set_offset(gpui_kit::point(px(0.), px(-300.)))
+    });
+    assert_eq!(
+        shown(&mut native, 3).0,
+        -300.,
+        "a claim that stays does not pull the scroller back"
+    );
+}
