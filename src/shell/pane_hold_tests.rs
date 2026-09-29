@@ -76,6 +76,17 @@ fn stroke(native: &mut VisualTestContext, stroke: &str) {
     settle(native);
 }
 
+/// The control with `id` has the keys, as the AX door reports it.
+fn has_keys(native: &mut VisualTestContext, id: &str) -> bool {
+    native.update(draw).as_array().unwrap().iter().any(|node| {
+        node["id"] == id
+            && node["state"]
+                .as_array()
+                .unwrap()
+                .contains(&"focused".into())
+    })
+}
+
 #[gpui_kit::test]
 fn the_fill_chord_fills_the_window_in_front_and_again_puts_it_back(cx: &mut TestAppContext) {
     let (_, _, view, mut native) = desk_of_two(cx);
@@ -210,6 +221,7 @@ fn space_keeps_and_any_other_key_ends_the_hold_keeping_the_window(cx: &mut TestA
         stroke(&mut native, ending);
         assert!(!held(&mut native, &view), "{ending} left the hold on");
         assert_eq!(frame(&mut native, &view, 1), kept, "{ending} kept it");
+        // Tab's own move stands (`keys_moved_elsewhere_end_the_hold_and_stay_there`)
         if ending != "tab" {
             assert_eq!(
                 focused(&mut native),
@@ -218,6 +230,63 @@ fn space_keeps_and_any_other_key_ends_the_hold_keeping_the_window(cx: &mut TestA
             );
         }
     }
+}
+
+/// Keys a press, Tab or assistive technology moves during a hold end it
+/// and stay where they went; they are not taken back to what had them.
+#[gpui_kit::test]
+fn keys_moved_elsewhere_end_the_hold_and_stay_there(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = desk_of_two(cx);
+    // assistive technology moves them from the window to the bar
+    stroke(&mut native, "secondary-shift-m");
+    native.update(|window, cx| focus_control("rail-connection", window, cx));
+    settle(&mut native);
+    assert!(!held(&mut native, &view));
+    assert!(has_keys(&mut native, "console:rail-connection"));
+    // held from the bar, Tab moves them on from the window's box, into it
+    stroke(&mut native, "secondary-shift-m");
+    assert!(held(&mut native, &view));
+    stroke(&mut native, "tab");
+    assert!(!held(&mut native, &view));
+    assert!(in_front(&mut native, &view), "Tab left them in the window");
+}
+
+/// Something opening over the desk ends the hold; when it closes, the keys
+/// go back to what had them before the hold, not to the window's box.
+#[gpui_kit::test]
+fn after_an_overlay_the_keys_go_back_to_what_had_them_before_the_hold(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = desk_of_two(cx);
+    native.update(|window, cx| focus_control("rail-connection", window, cx));
+    settle(&mut native);
+    let previous = focused(&mut native);
+    stroke(&mut native, "secondary-shift-m");
+    assert!(held(&mut native, &view));
+    stroke(&mut native, "secondary-k");
+    assert!(!held(&mut native, &view));
+    stroke(&mut native, "escape");
+    assert_eq!(focused(&mut native), previous);
+    assert!(has_keys(&mut native, "console:rail-connection"));
+}
+
+/// A window let go of as another comes forward still remembers what had
+/// the keys in it before the hold, not its own box.
+#[gpui_kit::test]
+fn a_held_window_sent_back_remembers_what_had_its_keys(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = desk_of_two(cx);
+    let previous = focused(&mut native);
+    let remembered = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            let view = view.read(cx);
+            let instance = view.layout(cx).panes[1].instance;
+            view.pane_keys[&instance].1.clone()
+        })
+    };
+    stroke(&mut native, "secondary-shift-m");
+    stroke(&mut native, "secondary-1");
+    assert!(!held(&mut native, &view));
+    assert_eq!(remembered(&mut native), previous);
+    stroke(&mut native, "secondary-2");
+    assert_eq!(focused(&mut native), previous);
 }
 
 #[gpui_kit::test]
