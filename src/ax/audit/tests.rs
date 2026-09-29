@@ -1608,10 +1608,16 @@ mod phase_two {
                 fails(&one(vec![held, tab("a", false)]), "AX-107"),
                 ["w:tabs"]
             );
-            // each item a Tab stop: Tab reaches them, the arrows are not asked
+            // each item a Tab stop: in the shell, Tab reaches them and the
+            // arrows are not asked; in a view, the arrows are asked still
             list.actions = Vec::new();
             let stops = [list, focused(tab("a", true)), tab("b", true)];
             assert_eq!(arrowed(&stops), None, "{role}");
+            let viewed = stops.map(|mut node| {
+                node.scope = "w/chat".to_owned();
+                node
+            });
+            assert_eq!(arrowed(&viewed), Some("w:tabs".into()), "{role}");
         }
         // a separate Tab stop inside a grid keeps the arrows; the grid's
         // own claimed cell does not
