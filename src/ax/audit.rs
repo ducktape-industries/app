@@ -909,8 +909,9 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
         tally.step("AX-020", &step(n), "", "", now.len() == 1, || {
             format!("{} nodes focused after tab: {now:?}", now.len())
         });
-        let was = focused(&snapshots[n - 1]);
-        tally.step("AX-022", &step(n), "", "", now != was, || {
+        // off a node `keep` dropped, the focus has moved
+        let moved = now != focused(&snapshots[n - 1]) || outside(n - 1);
+        tally.step("AX-022", &step(n), "", "", moved, || {
             format!("tab left focus on {now:?}")
         });
     }

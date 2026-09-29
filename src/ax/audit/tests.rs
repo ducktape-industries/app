@@ -597,6 +597,29 @@ fn a_step_whose_focus_is_outside_the_scope_is_left_to_that_scope() {
     }
 }
 
+/// After a step whose focus was outside the scope, a step with no focus
+/// anywhere fails AX-020 and passes AX-022 as the whole window's walk
+/// does: the focus moved off the other scope's node.
+#[test]
+fn a_step_that_loses_the_focus_from_outside_the_scope_moved_it() {
+    let (a, s) = (|| button("a", "A"), || button("s", "S"));
+    let mut view = reading(vec![vec![focused(a())], vec![a()], vec![a()]]);
+    view.outside = vec![false, true, false];
+    let view = audit(&view, false);
+    let whole = audit(
+        &reading(vec![
+            vec![focused(a()), s()],
+            vec![a(), focused(s())],
+            vec![a(), s()],
+        ]),
+        false,
+    );
+    for (report, what) in [(&view, "view"), (&whole, "whole")] {
+        assert_eq!(fails(report, "AX-020"), ["step 2"], "{what}");
+        assert!(fails(report, "AX-022").is_empty(), "{what}: {report:?}");
+    }
+}
+
 #[test]
 fn coverage_counts_actionable_nodes_clean_of_errors_and_rules_failed_over_applicable() {
     let mut warned = button("thin", "Go");
