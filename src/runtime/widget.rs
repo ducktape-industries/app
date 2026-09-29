@@ -199,20 +199,11 @@ impl gpui_kit::Render for NativeModuleView {
         match self.frame(window, cx) {
             Ok(min_width) => match &self.content {
                 Some(content) => {
-                    let content = content.clone();
-                    // GPUI rebuilds the accessibility tree from prepaint on
-                    // every frame and a cached view replays paint without
-                    // it, so a cached guest tree has no nodes and no
-                    // focus for a screen reader. While one is listening,
-                    // render the tree in full each frame as before.
-                    let guest = if window.is_a11y_active() {
-                        content.clone().into_any_element()
-                    } else {
-                        content
-                            .clone()
-                            .cached(gpui_kit::StyleRefinement::default().size_full())
-                            .into_any_element()
-                    };
+                    let guest = crate::shell::layers::cached_unless_a11y(
+                        content.clone().into(),
+                        gpui_kit::StyleRefinement::default().size_full(),
+                        window,
+                    );
                     let mut context = gpui_kit::KeyContext::default();
                     context.set(
                         "ducktape_guest",

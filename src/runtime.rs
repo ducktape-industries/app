@@ -28,7 +28,7 @@ mod seat;
 mod store;
 mod widget;
 
-pub(crate) use kernel::{command_held, local_offset};
+pub(crate) use kernel::local_offset;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, roster};
 pub(crate) use seat::{Failure, NODE_UNREACHABLE, retry};

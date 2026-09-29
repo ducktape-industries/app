@@ -90,7 +90,7 @@ impl DesktopWindow {
                 let message = match window.is_window_active() {
                     true => {
                         this.start_switch();
-                        Message::WindowFocused(key)
+                        Message::WindowFocused
                     }
                     false => Message::WindowUnfocused(key),
                 };

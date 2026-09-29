@@ -39,6 +39,7 @@ mod command;
 mod connect;
 mod desk;
 mod empty_desk;
+mod entities;
 mod facts;
 mod figure;
 mod help;
@@ -48,6 +49,7 @@ mod ink;
 mod keys;
 mod launch;
 mod launcher;
+pub(crate) mod layers;
 mod menubar;
 mod menus;
 mod mount;
@@ -822,13 +824,6 @@ impl Render for DesktopWindow {
             .bg(ink.bg)
             .text_color(ink.ink)
             .track_focus(&self.focus)
-            .on_modifiers_changed(cx.listener(
-                |this, event: &gpui_kit::ModifiersChangedEvent, _, cx| {
-                    this.model.update(cx, |model, cx| {
-                        model.dispatch(Message::ModifierStateChanged(event.modifiers), cx)
-                    });
-                },
-            ))
             .child(content)
     }
 }
