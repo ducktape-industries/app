@@ -188,7 +188,7 @@ pub(super) fn read(
         let nodes = handle.update(cx, |_, window, cx| current(name, window, cx, bounds, seen));
         out.extend(nodes.unwrap_or_default());
     }
-    out.retain(|node| filter.keeps(node));
+    out.retain(|node| filter.keeps(&node.scope));
     out
 }
 
