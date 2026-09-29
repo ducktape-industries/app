@@ -167,7 +167,7 @@ impl ViewTree {
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
-            crate::a11y::ink(cx),
+            Some(crate::a11y::ink(cx)),
         );
         announce(field, accessible).into_any_element()
     }

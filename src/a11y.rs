@@ -10,7 +10,7 @@ use gpui_kit::accesskit::{AriaCurrent, CustomAction, HasPopup, Invalid, Live};
 use gpui_kit::{
     AccessibleAction, App, Div, ElementId, FocusHandle, Hsla, InteractiveElement, Interactivity,
     IntoElement, MouseButton, ParentElement as _, Role, SharedString, Stateful,
-    StatefulInteractiveElement, Styled as _, Window, div,
+    StatefulInteractiveElement, Styled, Window, div,
 };
 
 /// A clickable element as assistive technology meets it: in the tree as
@@ -247,31 +247,41 @@ impl StatefulInteractiveElement for Aria<'_> {}
 /// `focus` handle and hands SetValue to `set_value`. The caller draws `field`
 /// with no node of its own and sets the role, the name and the states here.
 /// Focused, it wears the [`ring`] however it got there: a caret alone is too
-/// faint a mark for where typing goes. The ring is `color`.
+/// faint a mark for where typing goes. The ring is `color`, and the border
+/// too (see [`focus_shown`]); `None` for a bare field, the text alone, whose
+/// ring would sit on the letters: the box drawn around it wears the ring.
 pub fn text_field(
     id: impl Into<ElementId>,
     focus: &FocusHandle,
     set_value: impl Fn(String, &mut Window, &mut App) + 'static,
     field: impl IntoElement,
-    color: Hsla,
+    color: Option<Hsla>,
 ) -> Stateful<Div> {
-    typed(
-        div()
-            .id(id)
-            .w_full()
-            .track_focus(focus)
-            .focus(move |style| style.shadow(vec![ring(color)])),
-        set_value,
-    )
-    .child(field)
+    let element = div().id(id).w_full().track_focus(focus);
+    let element = match color {
+        Some(color) => {
+            element.focus(move |style| style.shadow(vec![ring(color)]).border_color(color))
+        }
+        None => element,
+    };
+    typed(element, set_value).child(field)
+}
+
+/// The box drawn around a bare [`text_field`] while the field is focused
+/// (`focused`): it wears the [`ring`] in `color`, and the border too.
+pub fn around_field<E: Styled>(element: E, focused: bool, color: Hsla) -> E {
+    match focused {
+        true => element.shadow(vec![ring(color)]).border_color(color),
+        false => element,
+    }
 }
 
 /// An editable combo box as assistive technology meets it (a field and the
 /// list it picks from): one node, `id`, around the field and its list, that
 /// holds the field's `focus`, so the list's picked row can claim to be its
 /// active descendant — gpui honours the claim only under the focused node.
-/// The field inside is a [`text_field`] with no role: it keeps the ring and
-/// Tab, and has no node of its own. The caller sets the name, the value and
+/// The field inside is a [`text_field`] with no role: it keeps Tab, and has
+/// no node of its own. The caller sets the name, the value and
 /// whether the list shows (`aria_expanded`).
 pub fn combo_box(
     id: impl Into<ElementId>,
@@ -365,18 +375,20 @@ mod tests {
         });
     }
 
-    /// Draws a text field and keeps the shadow it computed.
+    /// Draws a text field with the ring it is given and keeps the shadow
+    /// it computed.
     struct Probe(
         FocusHandle,
+        Option<Hsla>,
         std::rc::Rc<std::cell::RefCell<Vec<gpui_kit::BoxShadow>>>,
     );
 
     impl Render for Probe {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            let (focus, seen) = (self.0.clone(), self.1.clone());
+            let (focus, ring, seen) = (self.0.clone(), self.1, self.2.clone());
             gpui_kit::canvas(
                 move |_, window, cx| {
-                    let mut field = text_field("field", &focus, |_, _, _| {}, div(), INK);
+                    let mut field = text_field("field", &focus, |_, _, _| {}, div(), ring);
                     *seen.borrow_mut() = field
                         .interactivity()
                         .compute_style(None, None, window, cx)
@@ -388,23 +400,45 @@ mod tests {
         }
     }
 
-    /// A focused field wears the buttons' ring, pointer-focused too; an
-    /// unfocused one wears nothing.
-    #[gpui_kit::test]
-    fn a_focused_text_field_wears_the_ring(cx: &mut TestAppContext) {
+    /// The shadow a text field given `ring` computes unfocused, then
+    /// focused.
+    fn worn(cx: &mut TestAppContext, ring: Option<Hsla>) -> [Vec<gpui_kit::BoxShadow>; 2] {
         cx.update(gpui_kit::init);
         let seen = std::rc::Rc::default();
         let kept = std::rc::Rc::clone(&seen);
         let focus = cx.update(|cx| cx.focus_handle());
         let handle = focus.clone();
-        let window = cx.open_window(size(px(200.), px(200.)), move |_, _| Probe(handle, kept));
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, _| {
+            Probe(handle, ring, kept)
+        });
         let mut native = VisualTestContext::from_window(window.into(), cx);
         native.update(|window, cx| window.render_frame(cx));
-        assert!(seen.borrow().is_empty());
+        let unfocused = seen.borrow().clone();
         native.update(|window, cx| {
             focus.focus(window, cx);
             window.render_frame(cx);
         });
-        assert_eq!(*seen.borrow(), vec![ring(INK)]);
+        [unfocused, seen.take()]
+    }
+
+    /// A focused field wears the buttons' ring, pointer-focused too; an
+    /// unfocused one wears nothing.
+    #[gpui_kit::test]
+    fn a_focused_text_field_wears_the_ring(cx: &mut TestAppContext) {
+        assert_eq!(worn(cx, Some(INK)), [vec![], vec![ring(INK)]]);
+    }
+
+    /// A bare field's ring would sit on its letters: focused, it wears
+    /// nothing, and the box drawn around it wears the ring, its border in
+    /// the ring's colour (gpui paints a border over an inset shadow).
+    #[gpui_kit::test]
+    fn a_bare_fields_ring_is_on_the_box_around_it(cx: &mut TestAppContext) {
+        assert_eq!(worn(cx, None), [vec![], vec![]]);
+        let mut around = around_field(div(), true, INK);
+        assert_eq!(around.style().box_shadow, Some(vec![ring(INK)]));
+        assert_eq!(around.style().border_color, Some(INK));
+        let mut around = around_field(div(), false, INK);
+        assert_eq!(around.style().box_shadow, None);
+        assert_eq!(around.style().border_color, None);
     }
 }

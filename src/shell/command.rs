@@ -120,6 +120,8 @@ impl DesktopWindow {
         let rows = matching(super::panes::openable(&state.roster), &query);
         let pick = command.pick.min(rows.len().saturating_sub(1));
         command.pick = pick;
+        // the bar is the field's box: it wears the field's ring
+        let typing = focused && field.read(cx).focus_handle(cx).is_focused(window);
         let bar = div()
             .h(px(tall(52.)))
             .flex_shrink_0()
@@ -143,6 +145,7 @@ impl DesktopWindow {
                 }),
             )
             .child(self.mode_switch(index, mode, focused, &ink, cx));
+        let bar = crate::a11y::around_field(bar, typing, ink.ring(false));
         let modules: Vec<&'static str> = rows.iter().map(|row| row.module).collect();
         let list = rows.iter().enumerate().map(|(nth, row)| {
             let module = row.module;
@@ -332,7 +335,7 @@ impl DesktopWindow {
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
-            crate::a11y::ink(cx),
+            None,
         )
         .into_any_element()
     }

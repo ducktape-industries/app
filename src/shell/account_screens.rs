@@ -50,6 +50,7 @@ impl DesktopWindow {
             window,
             cx,
         );
+        let focused = self.field_focused("create-account-name", window, cx);
         let below = match state.unlock_error.is_empty() {
             true => ink::note(
                 "account-name-note",
@@ -70,7 +71,7 @@ impl DesktopWindow {
                     "Name",
                     sans(400, 22.)
                         .child(
-                            field_box(name, ink.field, 56., &ink)
+                            field_box(name, focused, ink.field, 56., &ink)
                                 .text_size(px(super::ink::fit(22.))),
                         )
                         .into_any_element(),
