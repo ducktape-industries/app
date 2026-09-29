@@ -302,7 +302,7 @@ impl DesktopWindow {
 
 /// `<input>`'s box around a bare field: `height 44px; padding 0 12px;
 /// border 1px solid field; font 400 15px`. `border` recolors it (an
-/// error's danger, a match's green). While the field is `focused` the box
+/// error's danger). While the field is `focused` the box
 /// wears its ring, and the ring's ink hides that colour: the note under the
 /// field still says it.
 pub(super) fn field_box(
@@ -328,7 +328,24 @@ pub(super) fn field_box(
 #[cfg(test)]
 mod tests {
     use super::Ink;
-    use gpui_kit::{Hsla, Rgba};
+    use gpui_kit::{Hsla, IntoElement as _, Rgba, Styled as _};
+
+    /// A focused field's box wears the ring, its border in the ring's ink
+    /// over an error's danger; unfocused, the box keeps its border colour.
+    #[test]
+    fn a_focused_fields_box_wears_the_ring() {
+        let ink = Ink::of(false);
+        let field = || gpui_kit::div().into_any_element();
+        let mut on = super::field_box(field(), true, ink.danger, 44., &ink);
+        assert_eq!(
+            on.style().box_shadow,
+            Some(vec![crate::a11y::ring(ink.ring(false))])
+        );
+        assert_eq!(on.style().border_color, Some(ink.ring(false)));
+        let mut off = super::field_box(field(), false, ink.danger, 44., &ink);
+        assert_eq!(off.style().box_shadow, None);
+        assert_eq!(off.style().border_color, Some(ink.danger));
+    }
 
     /// WCAG 2.2's contrast ratio of two opaque colors.
     fn contrast(one: Hsla, other: Hsla) -> f32 {

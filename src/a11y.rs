@@ -247,7 +247,7 @@ impl StatefulInteractiveElement for Aria<'_> {}
 /// `focus` handle and hands SetValue to `set_value`. The caller draws `field`
 /// with no node of its own and sets the role, the name and the states here.
 /// Focused, it wears the [`ring`] however it got there: a caret alone is too
-/// faint a mark for where typing goes. The ring is `ring`, and the border
+/// faint a mark for where typing goes. The ring is `color`, and the border
 /// too (see [`focus_shown`]); `None` for a bare field, the text alone, whose
 /// ring would sit on the letters: the box drawn around it wears the ring.
 pub fn text_field(
@@ -255,12 +255,12 @@ pub fn text_field(
     focus: &FocusHandle,
     set_value: impl Fn(String, &mut Window, &mut App) + 'static,
     field: impl IntoElement,
-    ring: Option<Hsla>,
+    color: Option<Hsla>,
 ) -> Stateful<Div> {
     let element = div().id(id).w_full().track_focus(focus);
-    let element = match ring {
+    let element = match color {
         Some(color) => {
-            element.focus(move |style| style.shadow(vec![self::ring(color)]).border_color(color))
+            element.focus(move |style| style.shadow(vec![ring(color)]).border_color(color))
         }
         None => element,
     };
