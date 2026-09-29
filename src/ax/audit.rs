@@ -1109,7 +1109,8 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// its indent) is followed by `escape tab`, the way out Help gives (owner,
 /// 2026-09-28), once until the focus moves, and never under a modal:
 /// there `escape` closes the modal (Spotlight, whose one Tab stop Tab
-/// comes back to, would close mid-walk). Before the walk, when the focus
+/// comes back to, would close mid-walk). A stay the walk leaves so is not
+/// the focus coming back round. Before the walk, when the focus
 /// starts in a composite with two rows or more, `down` then `up`, `snap`
 /// after each ([`Arrows`]). Focus goes back where it was — nowhere
 /// included.
@@ -1248,13 +1249,15 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         }
         self.most = self.most.max(seen);
         self.reading.take(nodes, outside, window, cx);
-        match self.presses {
-            1 => self.first = now.clone(),
-            _ => self.round |= now == self.first,
-        }
         let stayed = now.is_some() && now == self.from;
         self.escaped &= stayed;
-        self.next = match stayed && !self.escaped && !self.reading.modal {
+        let leave = stayed && !self.escaped && !self.reading.modal;
+        match self.presses {
+            1 => self.first = now.clone(),
+            // a stay the walk is about to leave has not come back round
+            _ => self.round |= now == self.first && !leave,
+        }
+        self.next = match leave {
             true => "escape tab",
             false => "tab",
         };

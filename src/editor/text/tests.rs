@@ -490,40 +490,52 @@ fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
     }
 }
 
-/// The door's Tab walk from inside the editor (docs/ax.md §1.1): Tab
-/// indents and the focus stays, which the audit still reports (AX-022);
-/// then the walk leaves by Esc, Tab, the way out Help gives, and reaches
-/// the stop painted after the editor instead of indenting until it gives
-/// up.
-#[cfg(test)]
-#[gpui_kit::test]
-fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppContext) {
-    use gpui_kit::test::TestWindowExt as _;
+/// The editor, a field as a view mounts it, then one button, under the
+/// kit's Root; when `late`, one more stop below the window's edge, which
+/// no snapshot shows. The box around them holds the keys.
+struct WalkHost {
+    held: gpui_kit::FocusHandle,
+    editor: Entity<TextEditor>,
+    after: gpui_kit::FocusHandle,
+    late: Option<gpui_kit::FocusHandle>,
+}
 
-    /// The editor, a field as a view mounts it, then one button, under the
-    /// kit's Root.
-    struct Host {
-        editor: Entity<TextEditor>,
-        after: gpui_kit::FocusHandle,
-    }
-    impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            use gpui_kit::StatefulInteractiveElement as _;
+impl Render for WalkHost {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::StatefulInteractiveElement as _;
+        let button = |id: &'static str, label: &'static str, handle: &gpui_kit::FocusHandle| {
             div()
-                .size_full()
-                .child(div().h(px(100.)).child(self.editor.clone()))
-                .child(
-                    div()
-                        .id("after")
-                        .role(gpui_kit::Role::Button)
-                        .aria_label("After")
-                        .track_focus(&self.after)
-                        .on_click(|_, _, _| {})
-                        .size(px(40.)),
-                )
-        }
+                .id(id)
+                .role(gpui_kit::Role::Button)
+                .aria_label(label)
+                .track_focus(handle)
+                .on_click(|_, _, _| {})
+                .size(px(40.))
+        };
+        div()
+            .id("host")
+            .track_focus(&self.held)
+            .relative()
+            .size_full()
+            .child(div().h(px(100.)).child(self.editor.clone()))
+            .child(button("after", "After", &self.after))
+            .children(
+                self.late
+                    .as_ref()
+                    .map(|late| button("late", "Late", late).absolute().top(px(1000.))),
+            )
     }
+}
 
+/// The door's Tab walk over a [`WalkHost`] holding "one", from the editor
+/// when `in_editor`, else from the box: the report, the focused ids of
+/// each snapshot, and the text the walk left.
+fn door_walk(
+    cx: &mut gpui_kit::TestAppContext,
+    in_editor: bool,
+    late: bool,
+) -> (crate::ax::audit::Report, Vec<Vec<String>>, String) {
+    use gpui_kit::test::TestWindowExt as _;
     cx.update(gpui_kit::init);
     let store = store_with("walk", "one", Vec::new(), "");
     let mut host = None;
@@ -538,9 +550,11 @@ fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppCon
             editor.set_accessible(field, cx);
             editor
         });
-        let made = cx.new(|cx| Host {
+        let made = cx.new(|cx| WalkHost {
+            held: cx.focus_handle(),
             editor,
             after: cx.focus_handle().tab_stop(true),
+            late: late.then(|| cx.focus_handle().tab_stop(true)),
         });
         host = Some(made.clone());
         gpui_kit::component::Root::new(made, window, cx)
@@ -555,8 +569,12 @@ fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppCon
     };
     let (report, focus) = native.update(|window, cx| {
         window.render_frame(cx);
-        let editor = host.read(cx).editor.read(cx);
-        editor.input.read(cx).focus_handle(cx).focus(window, cx);
+        let host = host.read(cx);
+        match in_editor {
+            true => host.editor.read(cx).input.read(cx).focus_handle(cx),
+            false => host.held.clone(),
+        }
+        .focus(window, cx);
         let reading = crate::ax::audit::observe(window, cx, "w", true, |_| true, snap);
         let focus: Vec<Vec<String>> = reading
             .snapshots
@@ -571,6 +589,19 @@ fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppCon
             .collect();
         (crate::ax::audit::audit(&reading, false), focus)
     });
+    let text = native.update(|_, cx| host.read(cx).editor.read(cx).input.read(cx).value());
+    (report, focus, text.to_string())
+}
+
+/// The door's Tab walk from inside the editor (docs/ax.md §1.1): Tab
+/// indents and the focus stays, which the audit still reports (AX-022);
+/// then the walk leaves by Esc, Tab, the way out Help gives, and reaches
+/// the stop painted after the editor instead of indenting until it gives
+/// up.
+#[cfg(test)]
+#[gpui_kit::test]
+fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppContext) {
+    let (report, focus, text) = door_walk(cx, true, false);
     let at = |step: usize| focus[step].join(",");
     assert_eq!(at(0), "w:editor-field", "the walk starts in the editor");
     assert!(
@@ -585,6 +616,25 @@ fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppCon
         .collect();
     assert_eq!(stays, ["step 1"], "the Tab the editor kept: {focus:?}");
     assert_eq!(report.presses, 3, "{focus:?}");
-    let text = native.update(|_, cx| host.read(cx).editor.read(cx).input.read(cx).value());
-    assert_eq!(text.as_ref(), "one  ", "one Tab indented");
+    assert_eq!(text, "one  ", "one Tab indented");
+}
+
+/// The first Tab lands on the editor and the next stays there: that stay
+/// is not the walk coming back round, so once Esc, Tab has left the editor
+/// the walk goes on past the stops the first snapshot shows (the stop below
+/// the window's edge) until Tab brings it back to the editor.
+#[cfg(test)]
+#[gpui_kit::test]
+fn the_door_walk_goes_round_after_leaving_the_editor_it_first_reached(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (report, focus, text) = door_walk(cx, false, true);
+    let at = |step: usize| focus[step].join(",");
+    assert_eq!(at(1), "w:editor-field", "the first Tab reaches the editor");
+    assert_eq!(at(2), "w:editor-field", "the editor keeps the next");
+    assert_eq!(at(3), "w:after", "Esc, Tab leaves it: {focus:?}");
+    // on to the stop below the edge, which has no node, then round
+    assert_eq!(report.presses, 5, "{focus:?}");
+    assert_eq!(at(5), "w:editor-field", "back round: {focus:?}");
+    assert_eq!(text, "one  ", "one Tab indented");
 }
