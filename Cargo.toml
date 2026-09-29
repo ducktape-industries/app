@@ -28,13 +28,13 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules deps/gpui-pre-0.3.7 @ cf781af7 (gpui-pre 0.3.7 at fork f9a526f, over dev e12ef2f9 #219; #217 goldens WIRE_ID ee4ff454 unchanged), crates/sdk (abi, view-wire, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "cf781af7ddbd7661cf7a8ea6437a2ba86b0a398f", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "cf781af7ddbd7661cf7a8ea6437a2ba86b0a398f", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "cf781af7ddbd7661cf7a8ea6437a2ba86b0a398f", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "cf781af7ddbd7661cf7a8ea6437a2ba86b0a398f", package = "design" }
+# --- sdk-line: modules deps/gpui-pre-0.3.7 @ 4fe5ec74 (gpui-pre 0.3.7 at fork f9a526f, merged with dev 43e92f38; #217 goldens WIRE_ID ee4ff454 unchanged), crates/sdk (abi, view-wire, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "4fe5ec74cda8c7c013ab57d50d5b7e10b863b60b", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "4fe5ec74cda8c7c013ab57d50d5b7e10b863b60b", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "4fe5ec74cda8c7c013ab57d50d5b7e10b863b60b", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "4fe5ec74cda8c7c013ab57d50d5b7e10b863b60b", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "cf781af7ddbd7661cf7a8ea6437a2ba86b0a398f", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "4fe5ec74cda8c7c013ab57d50d5b7e10b863b60b", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -83,9 +83,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "cf781af7ddbd7661cf7a8ea6437a2ba86b0a398f", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "4fe5ec74cda8c7c013ab57d50d5b7e10b863b60b", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "cf781af7ddbd7661cf7a8ea6437a2ba86b0a398f", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "4fe5ec74cda8c7c013ab57d50d5b7e10b863b60b", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
