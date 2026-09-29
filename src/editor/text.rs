@@ -302,7 +302,9 @@ impl TextEditor {
     ///
     /// Esc lets go of Tab for the next key, whatever else it does: the guest
     /// that claimed it still hears it, and the field and the view still see
-    /// it pass (owner, 2026-09-28; AX-022).
+    /// it pass (owner, 2026-09-28; AX-022). A plain Tab right after Esc is
+    /// not the guest's even when it claimed Tab, as the SDK composer does:
+    /// the claim would swallow the very key that leaves.
     fn key_down(&mut self, keystroke: &Keystroke, window: &mut Window, cx: &mut Context<Self>) {
         if !self.is_focused(window, cx) || self.composing(window, cx) {
             self.tab_released = false;
@@ -310,16 +312,23 @@ impl TextEditor {
         }
         let released = std::mem::replace(&mut self.tab_released, keystroke.key == "escape");
         let key = wire::keyboard::KeyState::from(keystroke);
-        let claimed = self
-            .projection
-            .as_ref()
-            .and_then(|projection| projection.binding.as_ref())
-            .is_some_and(|binding| {
-                binding
-                    .claims
-                    .iter()
-                    .any(|claim| claim.matches(&key, cfg!(target_os = "macos")))
-            });
+        let leaving = released
+            && keystroke.key == "tab"
+            && !keystroke.modifiers.control
+            && !keystroke.modifiers.alt
+            && !keystroke.modifiers.platform
+            && !keystroke.modifiers.function;
+        let claimed = !leaving
+            && self
+                .projection
+                .as_ref()
+                .and_then(|projection| projection.binding.as_ref())
+                .is_some_and(|binding| {
+                    binding
+                        .claims
+                        .iter()
+                        .any(|claim| claim.matches(&key, cfg!(target_os = "macos")))
+                });
         if claimed {
             self.store.request(
                 &self.key,
