@@ -236,7 +236,10 @@ impl TextEditor {
             let standing = selection.start.min(selection.end)..selection.start.max(selection.end);
             let moved = input.selected_range() != standing || input.cursor() != selection.end;
             if moved {
-                input.set_selected_range(selection, cx);
+                // ponytail: forward only; gpui-base 0.7.0 reads a backward
+                // range as empty (`normalize_token_range`), so a backward
+                // selection keeps its words with the caret at the far end.
+                input.set_selected_range(standing, cx);
             }
         });
     }
@@ -533,8 +536,7 @@ fn outdent(line: &str) -> usize {
 }
 
 /// The field's selection for a guest cursor, ANCHOR first: the range runs
-/// backwards when the caret is the earlier end, which is how the engine is
-/// told which end a shift-arrow extends from.
+/// backwards when the caret is the earlier end, and its `end` is the caret.
 fn selected_range(text: &str, cursor: wire::EditorCursor) -> Range<usize> {
     let caret = offset(text, cursor.position);
     let anchor = cursor.selection.map_or(caret, |at| offset(text, at));
