@@ -293,7 +293,8 @@ pub(crate) type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
 const POLL: Duration = Duration::from_millis(50);
 
 /// Longest the audit's arrow probe waits for a view to move its active
-/// row after one key: a list whose arrows do nothing costs it twice.
+/// row after one key: a list whose arrows do nothing costs it three
+/// times, a grid five (`audit::arrow_pairs`).
 const ARROW_WAIT: Duration = Duration::from_millis(500);
 
 /// Longest a call may wait on the tree. The client picks its deadline, so

@@ -165,7 +165,7 @@ pub(crate) const RULES: [Rule; 43] = [
     rule(
         "AX-107",
         Error,
-        "Focus in a composite is on a row, and each down or up press moves it.",
+        "Focus in a composite is on a row, and its arrows move it, there and back.",
     ),
     rule(
         "AX-108",
@@ -274,7 +274,7 @@ pub(crate) struct Report {
 /// What one screen state showed the door: the first snapshot, then one per
 /// tab press; `escape`, one per snapshot, whether `escape` was bound then;
 /// `outside`, one per snapshot, whether its focus was outside `keep`;
-/// `arrows`, the arrow probe of the composite the focus started in; and,
+/// `arrows`, the arrow probe of each composite the focus sat in; and,
 /// the caller's word, `chords`: `(control name, chord)` for each control
 /// the app's Help lists with a chord (AX-114); and `refused`, what the fork
 /// dropped from the tree on the frame of each snapshot (AX-124).
@@ -331,11 +331,13 @@ fn note_refused(
     }
 }
 
-/// An arrow probe (AX-107): the composite the focus sat in, and the
-/// focused id before, after `down`, and after `up`.
+/// An arrow probe (AX-107): the composite the focus sat in, the arrow and
+/// the arrow back it pressed, and the focused id before, after the arrow,
+/// and after the arrow back.
 #[derive(Debug)]
 pub(crate) struct Arrows {
     pub(crate) composite: AxNode,
+    pub(crate) keys: [&'static str; 2],
     pub(crate) focused: [Option<String>; 3],
 }
 
@@ -387,9 +389,19 @@ const NAMED_CONTAINER: [&str; 14] = [
 ];
 
 /// A composite whose rows the arrows pick (AX-107).
-const ARROWED: [&str; 5] = ["Tree", "ListBox", "Menu", "Grid", "EditableComboBox"];
+const ARROWED: [&str; 7] = [
+    "Tree",
+    "ListBox",
+    "Menu",
+    "Grid",
+    "EditableComboBox",
+    "TabList",
+    "RadioGroup",
+];
 /// A row of a composite.
-const ITEM: [&str; 8] = [
+const ITEM: [&str; 10] = [
+    "Tab",
+    "RadioButton",
     "ListBoxOption",
     "MenuItem",
     "MenuItemCheckBox",
@@ -873,13 +885,46 @@ fn rows(nodes: &[AxNode], snapshot: &Snapshot<'_>, composite: &AxNode) -> usize 
 }
 
 /// The composite an arrow press moves in `nodes` (AX-107): the nearest
-/// one at or above the focus with two rows or more.
+/// one at or above the focus with two rows or more, when it has the keys:
+/// between the focus and it, nothing takes focus of its own but a row of a
+/// list, tree, menu or grid (whose rows the arrows may move the focus
+/// among). A separate Tab stop inside it (a rich text's links in a
+/// message) keeps its arrows, and the composite is probed when Tab lands
+/// on it; a tab list or radio group whose items are each a Tab stop is
+/// reached by Tab, and only the one-stop shape is probed.
 fn arrowed(nodes: &[AxNode]) -> Option<&AxNode> {
     let snapshot = Snapshot::of(nodes);
     let focus = nodes.iter().find(|node| has(node, "focused"))?;
-    std::iter::once(focus)
+    let up: Vec<_> = std::iter::once(focus)
         .chain(snapshot.ancestors(focus))
-        .find(|node| ARROWED.contains(&node.role.as_str()) && rows(nodes, &snapshot, node) > 1)
+        .collect();
+    let at = up.iter().position(|node| {
+        ARROWED.contains(&node.role.as_str()) && rows(nodes, &snapshot, node) > 1
+    })?;
+    let roving = !matches!(up[at].role.as_str(), "TabList" | "RadioGroup");
+    up[..at]
+        .iter()
+        .all(|node| !offers(node, "focus") || roving && ITEM.contains(&node.role.as_str()))
+        .then_some(up[at])
+}
+
+/// The arrow pairs the probe of `composite` tries, each a key and the key
+/// back: its orientation's (a tab list's is horizontal unless it says,
+/// anything else's vertical), each way round, since the active item may
+/// sit at an end the first key does not pass; a grid's rows, then its
+/// cells (a grid of one row moves only along it).
+fn arrow_pairs(composite: &AxNode) -> Vec<[&'static str; 2]> {
+    const ROWS: [[&str; 2]; 2] = [["down", "up"], ["up", "down"]];
+    const CELLS: [[&str; 2]; 2] = [["right", "left"], ["left", "right"]];
+    let horizontal = composite
+        .more
+        .orientation
+        .map_or(composite.role == "TabList", |way| way == "horizontal");
+    match (composite.role.as_str(), horizontal) {
+        ("Grid", _) => [ROWS, CELLS].concat(),
+        (_, true) => CELLS.to_vec(),
+        (_, false) => ROWS.to_vec(),
+    }
 }
 
 /// `node` has the keys: focused, or a composite whose active row is.
@@ -1002,10 +1047,15 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             });
         }
     }
-    for Arrows { composite, focused } in &reading.arrows {
+    for Arrows {
+        composite,
+        keys: [there, back],
+        focused,
+    } in &reading.arrows
+    {
         let pass = focused[0] != focused[1] && focused[1] != focused[2];
         tally.check("AX-107", composite, pass, || {
-            format!("down then up leaves the active row at {focused:?}")
+            format!("{there} then {back} leaves the active row at {focused:?}")
         });
     }
 }
@@ -1111,10 +1161,12 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// 2026-09-28), once until the focus moves, and never under a modal:
 /// there `escape` closes the modal (Spotlight, whose one Tab stop Tab
 /// comes back to, would close mid-walk). A stay the walk leaves so is not
-/// the focus coming back round. Before the walk, when the focus
-/// starts in a composite with two rows or more, `down` then `up`, `snap`
-/// after each ([`Arrows`]). Focus goes back where it was — nowhere
-/// included.
+/// the focus coming back round. Where the focus starts, and after each
+/// press, when it sits in a composite with two rows or more that has the
+/// keys and was not probed yet, the arrow probe: an arrow and the arrow
+/// back, `snap` after each ([`Arrows`], [`arrow_pairs`]); an arrow that
+/// moved nothing is followed by the next pair's instead. Focus goes back
+/// where it was — nowhere included.
 ///
 /// All in the caller's one update: a key a view hears as an event the
 /// tree emits reaches it only once that update ends, so this is for tests
@@ -1149,9 +1201,9 @@ pub(crate) struct Observer<K, S> {
     refused: Vec<Refused>,
     /// the focus before the first press, given back by `finish`
     before: Option<FocusHandle>,
-    /// the arrow probe, and how many of its two keys were pressed
-    arrows: Option<Arrows>,
-    arrowed: usize,
+    /// the arrow probe under way, and the composites probed so far
+    probe: Option<Probe>,
+    probed: std::collections::HashSet<String>,
     /// the focus the last key was pressed from
     from: Option<FocusHandle>,
     /// the Tab walk: presses taken, N and M, the handle the first press
@@ -1185,8 +1237,8 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
             reading: Reading::default(),
             refused: Vec::new(),
             before: window.focused(cx),
-            arrows: None,
-            arrowed: 0,
+            probe: None,
+            probed: Default::default(),
             from: None,
             presses: 0,
             stops: 0,
@@ -1201,23 +1253,52 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         (observer.stops, observer.most) = (stops, stops);
         // after the first snap: a read switches the tree on and draws it
         observer.reading.modal = tree::modal_active(window);
-        observer.arrows = arrowed(&observer.reading.snapshots[0])
-            .filter(|_| walk)
-            .map(|composite| Arrows {
-                composite: composite.clone(),
-                focused: [focused_id(&observer.reading.snapshots[0]), None, None],
-            });
+        let first = std::mem::take(&mut observer.reading.snapshots[0]);
+        observer.start_probe(&first);
+        observer.reading.snapshots[0] = first;
         observer
     }
 
-    /// Presses the next key: the probe's `down` and `up`, then the walk's.
-    /// False, pressing nothing, once the walk is done.
+    /// The arrow probe of the composite the focus sits in, when it has
+    /// the keys and was not probed yet (a walk probes; a look does not).
+    fn start_probe(&mut self, nodes: &[AxNode]) {
+        let Some(composite) = arrowed(nodes).filter(|_| self.walk) else {
+            return;
+        };
+        if self.probed.insert(composite.id.clone()) {
+            let pairs = arrow_pairs(composite);
+            self.probe = Some(Probe {
+                arrows: Arrows {
+                    composite: composite.clone(),
+                    keys: pairs[0],
+                    focused: [focused_id(nodes), None, None],
+                },
+                pairs,
+                pressed: 0,
+            });
+        }
+    }
+
+    /// Presses the next key: the probe's, then the walk's. False, pressing
+    /// nothing, once the walk is done.
     pub(crate) fn press(&mut self, window: &mut Window, cx: &mut App) -> bool {
         self.from = window.focused(cx);
-        if self.arrows.is_some() && self.arrowed < 2 {
-            let _ = press_keys(window, cx, ["down", "up"][self.arrowed], "");
-            self.arrowed += 1;
-            return true;
+        if let Some(probe) = &mut self.probe {
+            // an arrow that moved nothing: the next pair, from where it began
+            let stuck = probe.pressed == 1 && probe.arrows.focused[1] == probe.arrows.focused[0];
+            if stuck && probe.pairs.len() > 1 {
+                probe.pairs.remove(0);
+                probe.arrows.keys = probe.pairs[0];
+                probe.pressed = 0;
+            }
+            if probe.pressed < 2 {
+                let _ = press_keys(window, cx, probe.arrows.keys[probe.pressed], "");
+                probe.pressed += 1;
+                return true;
+            }
+            self.reading
+                .arrows
+                .extend(self.probe.take().map(|probe| probe.arrows));
         }
         let done = self.presses > self.stops && (self.round || self.first.is_none());
         if !self.walk || done || self.presses >= 4 * (self.most + 1) {
@@ -1240,15 +1321,13 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
     pub(crate) fn read(&mut self, window: &mut Window, cx: &mut App) -> bool {
         let now = window.focused(cx);
         let (nodes, outside, seen) = self.look(window, cx);
-        if self.presses == 0 {
-            let n = self.arrowed;
-            let Some(arrows) = &mut self.arrows else {
-                return true;
-            };
-            arrows.focused[n] = focused_id(&nodes);
-            return arrows.focused[n] != arrows.focused[n - 1];
+        if let Some(probe) = self.probe.as_mut().filter(|probe| probe.pressed > 0) {
+            let n = probe.pressed;
+            probe.arrows.focused[n] = focused_id(&nodes);
+            return probe.arrows.focused[n] != probe.arrows.focused[n - 1];
         }
         self.most = self.most.max(seen);
+        self.start_probe(&nodes);
         self.reading.take(nodes, outside, window, cx);
         let stayed = now.is_some() && now == self.from;
         self.escaped &= stayed;
@@ -1273,7 +1352,9 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
                 None => window.blur(cx),
             }
         }
-        self.reading.arrows.extend(self.arrows);
+        self.reading
+            .arrows
+            .extend(self.probe.map(|probe| probe.arrows));
         self.reading.refused = self.refused;
         self.reading
     }
@@ -1306,6 +1387,14 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         let outside = dropped && focused(&nodes).is_empty();
         (nodes, outside, stops)
     }
+}
+
+/// An arrow probe under way: the arrow pairs left to try, the first the
+/// one being pressed (also `arrows.keys`), and how many of its keys were.
+struct Probe {
+    arrows: Arrows,
+    pairs: Vec<[&'static str; 2]>,
+    pressed: usize,
 }
 
 /// The first focused id of `nodes`.

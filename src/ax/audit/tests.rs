@@ -1019,6 +1019,250 @@ async fn the_arrow_probe_waits_for_a_view_that_answers_late(cx: &mut gpui_kit::T
     assert_eq!(heard[..2], ["down", "up"]);
 }
 
+/// The first key route of [`composites_audit`]'s composites.
+const ROUTE: u32 = 40;
+
+/// An item `id` of `role`, the active descendant of its composite when
+/// `active`.
+fn item(
+    id: String,
+    role: gpui_kit::Role,
+    active: bool,
+    children: Vec<view_wire::Node>,
+) -> view_wire::Node {
+    use gpui_kit::Styled as _;
+    view_wire::Node::Container(view_wire::ContainerNode {
+        id: Some(view_wire::ElementIdWire::Name(id.clone().into())),
+        style: gpui_kit::div()
+            .flex()
+            .w(gpui_kit::px(80.))
+            .h(gpui_kit::px(24.))
+            .style()
+            .clone(),
+        interactivity: view_wire::Interactivity {
+            role: Some(role),
+            aria: view_wire::Aria {
+                label: Some(id.into()),
+                selected: matches!(role, gpui_kit::Role::Tab | gpui_kit::Role::ListBoxOption)
+                    .then_some(active),
+                active_descendant: active,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        children,
+    })
+}
+
+/// A composite as the SDK builds one: one Tab stop, `role`, named and
+/// oriented, its keys to `route`, holding `items`.
+fn one_stop(
+    id: &str,
+    role: gpui_kit::Role,
+    orientation: gpui_kit::accesskit::Orientation,
+    route: u32,
+    items: Vec<view_wire::Node>,
+) -> view_wire::Node {
+    use gpui_kit::Styled as _;
+    view_wire::Node::Container(view_wire::ContainerNode {
+        id: Some(view_wire::ElementIdWire::Name(id.to_owned().into())),
+        style: gpui_kit::div().flex().flex_col().style().clone(),
+        interactivity: view_wire::Interactivity {
+            role: Some(role),
+            focusable: true,
+            tab_stop: Some(true),
+            on_key_down: Some(route),
+            aria: view_wire::Aria {
+                label: Some(id.to_owned().into()),
+                orientation: Some(orientation),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        children: items,
+    })
+}
+
+/// A horizontal tab list of three pages over a list box of four rows,
+/// `active` their active items.
+fn pages_over_rows(active: &[usize]) -> view_wire::Node {
+    use gpui_kit::Role;
+    use gpui_kit::accesskit::Orientation;
+    let tabs = (0..3).map(|n| item(format!("page-{n}"), Role::Tab, n == active[0], Vec::new()));
+    let rows = (0..4).map(|n| {
+        item(
+            format!("row-{n}"),
+            Role::ListBoxOption,
+            n == active[1],
+            Vec::new(),
+        )
+    });
+    view_wire::Node::Container(view_wire::ContainerNode {
+        id: Some(view_wire::ElementIdWire::Name("screen".into())),
+        style: Default::default(),
+        interactivity: Default::default(),
+        children: vec![
+            one_stop(
+                "pages",
+                Role::TabList,
+                Orientation::Horizontal,
+                ROUTE,
+                tabs.collect(),
+            ),
+            one_stop(
+                "rows",
+                Role::ListBox,
+                Orientation::Vertical,
+                ROUTE + 1,
+                rows.collect(),
+            ),
+        ],
+    })
+}
+
+/// A grid of three messages, `active[0]` the active one, whose first body
+/// is a rich text with one link: a Tab stop of its own inside the grid.
+fn messages(active: &[usize]) -> view_wire::Node {
+    use gpui_kit::Role;
+    let rows = (0..3).map(|n| {
+        let body = (n == 0).then(|| view_wire::Node::RichText {
+            id: Some(view_wire::ElementIdWire::Name("body".into())),
+            style: Default::default(),
+            text: "See the docs".into(),
+            runs: view_wire::RichTextRuns::Highlights(Vec::new()),
+            font_family_overrides: Vec::new(),
+            clickable_ranges: std::iter::once(4..12).collect(),
+            on_click: Some(72),
+            on_hover: None,
+            tooltip: None,
+        });
+        let cell = item(
+            format!("message-{n}"),
+            Role::GridCell,
+            n == active[0],
+            body.into_iter().collect(),
+        );
+        item(format!("message-{n}-row"), Role::Row, false, vec![cell])
+    });
+    one_stop(
+        "messages",
+        Role::Grid,
+        gpui_kit::accesskit::Orientation::Vertical,
+        ROUTE,
+        rows.collect(),
+    )
+}
+
+/// `GET /audit?walk=1` over what `screen` draws from its composites'
+/// active items (`active`, as it opens), in a window under the kit's root
+/// (what answers Tab), after `tabs` Tab presses. Composite `n` hears its
+/// keys on `ROUTE + n` and, as a view does, moves its active item on
+/// `steps[n]`'s pair (next, previous) among its `count`: the answer, and
+/// the keys each composite heard.
+async fn composites_audit(
+    cx: &mut gpui_kit::TestAppContext,
+    screen: fn(&[usize]) -> view_wire::Node,
+    active: Vec<usize>,
+    steps: Vec<([&'static str; 2], usize)>,
+    tabs: usize,
+) -> (serde_json::Value, Vec<Vec<String>>) {
+    use gpui_kit::AppContext as _;
+    use gpui_kit::test::TestWindowExt as _;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(
+        gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
+        |window, cx| {
+            let tree = cx.new(|_| crate::render::ViewTree::new(screen(&active)));
+            gpui_kit::component::Root::new(tree, window, cx)
+        },
+    );
+    let tree = window
+        .read_with(cx, |root, _| root.view().clone())
+        .unwrap()
+        .downcast::<crate::render::ViewTree>()
+        .unwrap();
+    let heard = Rc::new(RefCell::new(vec![Vec::<String>::new(); steps.len()]));
+    let _view = cx.update(|cx| {
+        let (active, heard) = (RefCell::new(active), heard.clone());
+        cx.subscribe(&tree, move |tree, event: &view_wire::Event, cx| {
+            let view_wire::Event::KeyDown { handler, event, .. } = event else {
+                return;
+            };
+            let Some((n, &([next, previous], count))) = handler
+                .checked_sub(ROUTE)
+                .and_then(|n| steps.get(n as usize).map(|step| (n as usize, step)))
+            else {
+                return;
+            };
+            let key = event.clone().into_gpui().keystroke.key;
+            heard.borrow_mut()[n].push(key.clone());
+            let mut active = active.borrow_mut();
+            active[n] = match key.as_str() {
+                key if key == next => (active[n] + 1).min(count - 1),
+                key if key == previous => active[n].saturating_sub(1),
+                _ => return,
+            };
+            tree.update(cx, |tree, cx| tree.replace(screen(&active), cx));
+        })
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        for _ in 0..tabs {
+            window.focus_next(cx);
+            window.render_frame(cx);
+        }
+    });
+    let report = door_audit(window.into(), None, cx).await;
+    let heard = heard.borrow().clone();
+    (report, heard)
+}
+
+/// The state opens with the keys on a tab list, and Tab lands on a list
+/// box: the audit probes each with its own arrows, the tab list with
+/// right and left, the list box with down and up, and both pass.
+#[gpui_kit::test]
+async fn the_walk_probes_each_composite_tab_lands_in_by_its_own_arrows(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let steps = vec![(["right", "left"], 3), (["down", "up"], 4)];
+    let (report, heard) = composites_audit(cx, pages_over_rows, vec![0, 0], steps, 1).await;
+    assert_eq!(report["applicable"]["AX-107"], 2, "both probed: {report}");
+    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
+    assert_eq!(heard, [["right", "left"], ["down", "up"]]);
+}
+
+/// A list box that opens on its last row (a room list on the last room)
+/// does not move on down: the probe presses up, then down back, and the
+/// list passes.
+#[gpui_kit::test]
+async fn the_probe_comes_back_from_a_row_at_the_end(cx: &mut gpui_kit::TestAppContext) {
+    let steps = vec![(["right", "left"], 3), (["down", "up"], 4)];
+    let (report, heard) = composites_audit(cx, pages_over_rows, vec![0, 3], steps, 1).await;
+    assert_eq!(report["applicable"]["AX-107"], 2, "both probed: {report}");
+    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
+    assert_eq!(heard[1], ["down", "up", "down"]);
+}
+
+/// The state opens with the keys on a message's links, a Tab stop inside
+/// the grid that keeps its arrows: the grid is not probed from there (its
+/// links would not move, and the grid would fail for them), but when Tab
+/// lands on the grid itself.
+#[gpui_kit::test]
+async fn the_probe_skips_a_link_box_inside_a_grid(cx: &mut gpui_kit::TestAppContext) {
+    let steps = vec![(["down", "up"], 3)];
+    let (report, heard) = composites_audit(cx, messages, vec![0], steps, 2).await;
+    assert_eq!(
+        report["applicable"]["AX-107"], 1,
+        "the grid probed once: {report}"
+    );
+    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
+    assert_eq!(heard, [["down", "up"]]);
+}
+
 /// The refused elements `Filter` keeps: a view's audit reports the ones under
 /// its `view/<module>` element, the shell's are in the whole window's alone.
 mod refused_scope {
@@ -1246,12 +1490,93 @@ mod phase_two {
             let mut told = reading(vec![vec![menu()]]);
             told.arrows = vec![Arrows {
                 composite: menu(),
+                keys: ["down", "up"],
                 focused: focused.map(|id| Some(format!("w:{id}"))),
             }];
             audit(&told, false)
         };
         assert!(fails(&probe(["a", "b", "a"]), "AX-107").is_empty());
         assert_eq!(fails(&probe(["a", "a", "a"]), "AX-107"), ["w:menu"]);
+    }
+
+    #[test]
+    fn ax_107_a_tab_list_or_radio_group_is_probed_as_one_tab_stop() {
+        let arrowed =
+            |nodes: &[AxNode]| crate::ax::audit::arrowed(nodes).map(|node| node.id.clone());
+        let tab = |id: &str, stop: bool| {
+            let mut tab = under(node(id, "Tab", id), "tabs");
+            if stop {
+                tab.actions = vec!["press", "focus"];
+            }
+            tab
+        };
+        for role in ["TabList", "RadioGroup"] {
+            let mut list = node("tabs", role, "Pages");
+            list.actions = vec!["focus"];
+            // one stop: the list has the keys, its active item is claimed
+            let claimed = [list.clone(), focused(tab("a", false)), tab("b", false)];
+            assert_eq!(arrowed(&claimed), Some("w:tabs".into()), "{role}");
+            let mut held = list.clone();
+            held.state = vec!["focused"];
+            assert_eq!(
+                fails(&one(vec![held, tab("a", false)]), "AX-107"),
+                ["w:tabs"]
+            );
+            // each item a Tab stop: Tab reaches them, the arrows are not asked
+            list.actions = Vec::new();
+            assert_eq!(
+                arrowed(&[list, focused(tab("a", true)), tab("b", true)]),
+                None,
+                "{role}"
+            );
+        }
+        // a separate Tab stop inside a grid keeps the arrows; the grid's
+        // own claimed cell does not
+        let grid = || {
+            let mut grid = node("grid", "Grid", "Messages");
+            grid.actions = vec!["focus"];
+            grid
+        };
+        let row = |n: &str| under(node(&format!("row-{n}"), "Row", n), "grid");
+        let cell = |n: &str| {
+            under(
+                node(&format!("cell-{n}"), "GridCell", n),
+                &format!("row-{n}"),
+            )
+        };
+        let mut links = under(node("links", "Group", "See the docs"), "cell-a");
+        links.actions = vec!["focus"];
+        let link = focused(under(node("link", "Link", "the docs"), "links"));
+        let inside = [
+            grid(),
+            row("a"),
+            cell("a"),
+            links,
+            link,
+            row("b"),
+            cell("b"),
+        ];
+        assert_eq!(arrowed(&inside), None);
+        let on_cell = [grid(), row("a"), focused(cell("a")), row("b"), cell("b")];
+        assert_eq!(arrowed(&on_cell), Some("w:grid".into()));
+    }
+
+    #[test]
+    fn ax_107_the_probe_presses_a_composites_own_arrows() {
+        let oriented = |role: &str, way: Option<&'static str>| {
+            let mut node = node("c", role, "C");
+            node.more.orientation = way;
+            crate::ax::audit::arrow_pairs(&node)
+        };
+        let (rows, cells) = (
+            [["down", "up"], ["up", "down"]],
+            [["right", "left"], ["left", "right"]],
+        );
+        assert_eq!(oriented("TabList", None), cells);
+        assert_eq!(oriented("TabList", Some("vertical")), rows);
+        assert_eq!(oriented("RadioGroup", Some("horizontal")), cells);
+        assert_eq!(oriented("ListBox", None), rows);
+        assert_eq!(oriented("Grid", Some("vertical")), [rows, cells].concat());
     }
 
     #[test]
