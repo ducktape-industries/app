@@ -428,15 +428,16 @@ fn claiming_list(claim: usize) -> wire::Node {
     list
 }
 
-/// A view's arrows move a composite's claim; the host scrolls the plain
-/// scroller around it by the least that shows the claimed row, down to a
-/// row below the fold and back up to one above it, and leaves the offset
-/// alone while the claim stays (the wheel may move it).
+/// A view opens on a claimed row below the fold (the open room), and its
+/// arrows move the claim; the host scrolls the plain scroller around it by
+/// the least that shows the claimed row, as it opens, up to a row above the
+/// fold and back down to one below it, and leaves the offset alone while
+/// the claim stays (the wheel may move it).
 #[gpui_kit::test]
 fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
-        ViewTree::new(claiming_list(0))
+        ViewTree::new(claiming_list(7))
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -458,28 +459,32 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
             })
         })
     };
-    assert_eq!(shown(&mut native, 0), (0., 0., 40.));
-    let claim = |native: &mut gpui_kit::VisualTestContext, row: usize| {
-        tree.update(native, |tree, cx| tree.replace(claiming_list(row), cx));
-    };
-    claim(&mut native, 7);
     assert_eq!(
         shown(&mut native, 7),
         (-220., 60., 100.),
-        "row 7 (280..320) sits on the bottom edge"
+        "opened on row 7 (280..320), it sits on the bottom edge"
     );
+    let claim = |native: &mut gpui_kit::VisualTestContext, row: usize| {
+        tree.update(native, |tree, cx| tree.replace(claiming_list(row), cx));
+    };
     claim(&mut native, 3);
     assert_eq!(
         shown(&mut native, 3),
         (-120., 0., 40.),
         "row 3 (120..160) sits on the top edge"
     );
+    claim(&mut native, 8);
+    assert_eq!(
+        shown(&mut native, 8),
+        (-260., 60., 100.),
+        "row 8 (320..360) sits on the bottom edge"
+    );
     tree.read_with(&native, |tree, _| {
-        tree.scrolls[&vec![named_id("list")]].set_offset(gpui_kit::point(px(0.), px(-300.)))
+        tree.scrolls[&vec![named_id("list")]].set_offset(gpui_kit::point(px(0.), px(-100.)))
     });
     assert_eq!(
-        shown(&mut native, 3).0,
-        -300.,
+        shown(&mut native, 8).0,
+        -100.,
         "a claim that stays does not pull the scroller back"
     );
 }
