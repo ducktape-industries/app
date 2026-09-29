@@ -292,26 +292,36 @@ fn a_held_window_sent_back_remembers_what_had_its_keys(cx: &mut TestAppContext) 
 #[gpui_kit::test]
 fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = desk_of_two(cx);
-    // a press on the desk
+    let previous = focused(&mut native);
+    // a press on the held window's title bar, which takes no keys itself
+    let title = frame(&mut native, &view, 1);
     stroke(&mut native, "secondary-shift-m");
+    assert!(held(&mut native, &view));
     native.simulate_click(
-        gpui_kit::point(gpui_kit::px(640.), gpui_kit::px(400.)),
+        gpui_kit::point(
+            gpui_kit::px(title.x + 100.),
+            gpui_kit::px(title.y + desk::BAR + 12.),
+        ),
         gpui_kit::Modifiers::none(),
     );
     settle(&mut native);
     assert!(!held(&mut native, &view), "a press");
+    assert_eq!(focused(&mut native), previous, "the keys came back");
     // Search opening
     stroke(&mut native, "secondary-shift-m");
+    assert!(held(&mut native, &view));
     stroke(&mut native, "secondary-k");
     assert!(!held(&mut native, &view), "Search opened");
     stroke(&mut native, "escape");
     // another window in front
     stroke(&mut native, "secondary-shift-m");
+    assert!(held(&mut native, &view));
     stroke(&mut native, "secondary-1");
     assert!(!held(&mut native, &view), "another window came forward");
     assert!(in_front(&mut native, &view), "and it has the keys");
     // the OS window losing the keys
     stroke(&mut native, "secondary-shift-m");
+    assert!(held(&mut native, &view));
     let key = view.read_with(&native, |view, _| view.key);
     model.update(&mut native, |model, cx| {
         model.dispatch(Message::WindowUnfocused(key), cx)
@@ -320,8 +330,10 @@ fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppCon
     assert!(!held(&mut native, &view), "the window lost the keys");
 }
 
+/// Nor does the Window menu, whose items reach the actions past the key
+/// context (macOS).
 #[gpui_kit::test]
-fn the_chords_do_nothing_under_an_overlay_or_off_the_desk(cx: &mut TestAppContext) {
+fn the_chords_and_the_menu_do_nothing_under_an_overlay(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = desk_of_two(cx);
     let before = frame(&mut native, &view, 1);
     model.update(&mut native, |model, _| {
@@ -329,6 +341,11 @@ fn the_chords_do_nothing_under_an_overlay_or_off_the_desk(cx: &mut TestAppContex
     });
     stroke(&mut native, "secondary-shift-m");
     stroke(&mut native, "secondary-shift-enter");
+    native.update(|window, cx| {
+        window.dispatch_action(Box::new(keys::HoldPane), cx);
+        window.dispatch_action(Box::new(keys::FillPane), cx);
+    });
+    settle(&mut native);
     assert!(!held(&mut native, &view));
     assert_eq!(frame(&mut native, &view, 1), before);
 }
