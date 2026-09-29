@@ -615,7 +615,8 @@ pub(crate) struct DesktopWindow {
     stops: HashMap<gpui_kit::SharedString, gpui_kit::FocusHandle>,
     /// The program tab the arrows moved to while the Programs rail has the
     /// keys: Return opens it, as a view's tab list does where opening costs
-    /// a load. Tab back into the rail finds the chosen tab again.
+    /// a load. Tab back into the rail lands on the front window's program
+    /// again.
     rail_cursor: Option<&'static str>,
     /// An empty window's field, made the first time one shows.
     command: Option<command::CommandLine>,

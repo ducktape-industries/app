@@ -1034,8 +1034,9 @@ fn holds(node: &AxNode) -> bool {
 /// scope it is in; then AX-103, AX-104 and AX-107's arrows. A dialog that
 /// shows has the focus, in every snapshot (AX-104): a menu the walk leaves
 /// has closed (owner, 2026-09-28). One the Tab walk never leaves is modal
-/// to the keyboard, and says so (AX-103). Each arrow press of the probe
-/// moves the active row (AX-107).
+/// to the keyboard, and says so (AX-103). The probe's arrow moves the
+/// active row and the arrow back returns it (a grid's up and down compare
+/// its row) (AX-107).
 fn walk_rules(reading: &Reading, tally: &mut Tally) {
     let snapshots = &reading.snapshots;
     let Some(first) = snapshots.first() else {
