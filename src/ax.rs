@@ -61,12 +61,8 @@ pub(crate) struct Filter {
 }
 
 impl Filter {
-    fn keeps(&self, node: &AxNode) -> bool {
-        self.keeps_scope(&node.scope)
-    }
-
     /// A node's `in`, or the scope of the element the fork refused.
-    fn keeps_scope(&self, scope: &str) -> bool {
+    fn keeps(&self, scope: &str) -> bool {
         let (window, view) = match scope.split_once('/') {
             Some((window, view)) => (window, Some(view)),
             None => (scope, None),
@@ -451,7 +447,7 @@ async fn answer(
                         cx,
                         &name,
                         walk,
-                        |scope| filter.keeps_scope(scope),
+                        |scope| filter.keeps(scope),
                         |window, cx| current(&name, window, cx, true, seen),
                     );
                     reading.chords = crate::shell::chords();

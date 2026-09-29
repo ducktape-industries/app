@@ -690,19 +690,14 @@ mod refused_scope {
     use crate::ax::Filter;
     use gpui_kit::{ElementId, GlobalElementId};
 
-    /// A `GlobalElementId` is made by the window, one `with_global_id` per
-    /// segment.
+    /// A `GlobalElementId` is made by the window: every segment on its
+    /// element-id stack, the last one's id read off it.
     fn path(window: &mut gpui_kit::Window, segments: &[&str]) -> GlobalElementId {
-        match segments.split_first() {
-            None => GlobalElementId::default(),
-            Some((first, [])) => window
-                .with_global_id(ElementId::Name((*first).to_owned().into()), |id, _| {
-                    id.clone()
-                }),
-            Some((first, rest)) => window
-                .with_global_id(ElementId::Name((*first).to_owned().into()), |_, window| {
-                    path(window, rest)
-                }),
+        let name = |segment: &str| ElementId::Name(segment.to_owned().into());
+        match segments {
+            [] => GlobalElementId::default(),
+            [last] => window.with_global_id(name(last), |id, _| id.clone()),
+            [first, rest @ ..] => window.with_id(name(first), |window| path(window, rest)),
         }
     }
 
@@ -722,7 +717,7 @@ mod refused_scope {
                 &mut into,
                 &list,
                 "w",
-                |scope| filter.keeps_scope(scope),
+                |scope| filter.keeps(scope),
                 |id| format!("{id:?}"),
             );
             into.into_iter().map(|refused| refused.element).collect()
