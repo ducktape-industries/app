@@ -426,9 +426,10 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      ViewTree in `NativeModuleView::frame`. Renders far above ticks is a
      notify loop: the #347 class of bug, and this is its regression gate
      (only meaningful with `cache_on: true`, §4.3);
-   - shell `renders.<window>` ≤ 5 × seconds + 2 with motion off (the 1 s,
-     300 ms and 2 s ticks: 1 + 1000/300 + 0.5 ≈ 4.8/s); ≤ 25 × seconds with
-     motion on (the pulse's 30 fps cap); `door_draws == 0`. Preconditions,
+   - shell `renders.<window>` ≤ seconds / 2 + 2 with motion off (a beat
+     draws only what it moved: at most a new height per 2 s status poll, and
+     the account read it starts); ≤ 25 × seconds with motion on (the pulse's
+     30 fps cap); `door_draws == 0`. Preconditions,
      or a healthy app fails: no rail row saying `Loading`
      (`DesktopWindow::console` requests an animation frame per render while
      one does) and no empty pane in any served window (`pane_stage` draws the
