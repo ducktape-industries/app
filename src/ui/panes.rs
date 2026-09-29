@@ -144,7 +144,7 @@ impl Ducktape {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::layout::{EMPTY, Frame};
+    use crate::ui::layout::{EMPTY, Frame, MAX_PANES};
 
     const DESK: (f32, f32) = (1400., 860.);
 
@@ -219,8 +219,19 @@ mod tests {
         assert_eq!(modules(&state, console), ["chat", "files"]);
         assert_eq!(state.active, Some("files"));
         let _ = state.update(Message::SelectView("chat"));
-        assert_eq!(modules(&state, console), ["chat", "files"], "its own");
+        assert_eq!(
+            modules(&state, console),
+            ["chat", "files"],
+            "the window it is in"
+        );
         assert_eq!(state.active, Some("chat"));
+        // a full desk has no room for one of its own: the focused window's
+        // place, not nothing
+        while state.layouts[&console].panes.len() < MAX_PANES {
+            pane(&mut state, console, PaneMessage::Split("files"));
+        }
+        let _ = state.update(Message::SelectView("calendar"));
+        assert_eq!(state.layouts[&console].shown(), Some("calendar"));
     }
 
     /// ⌘N opens an empty window, ⌘1–9 focus, ⌘` cycles, ⌘W closes.

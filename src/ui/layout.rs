@@ -269,7 +269,8 @@ impl Layout {
     }
 
     /// A menu bar click: into the focused window if it is empty, else to
-    /// the window it is already open in, else in a window of its own.
+    /// the window it is already open in, else in a window of its own; on a
+    /// full desk, in the focused window's place (as [`Self::popin`]).
     pub(crate) fn open(&mut self, module: &'static str) -> bool {
         if self.panes.get(self.focused).is_some_and(Pane::is_empty) {
             self.load(module);
@@ -278,7 +279,10 @@ impl Layout {
         if let Some(index) = self.panes.iter().position(|pane| pane.module == module) {
             return self.focus(index);
         }
-        self.split(module)
+        if !self.split(module) {
+            self.load(module);
+        }
+        true
     }
 
     /// `module` in the focused window, in place of what it showed.

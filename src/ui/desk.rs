@@ -154,7 +154,8 @@ impl Ducktape {
             crate::runtime::route_to(module, route);
         }
         self.active = Some(module);
-        // a link opens beside the view it was in, not in place of it
+        // a link, a notice or a pick opens beside the view in front, not in
+        // place of it
         if let Some(desk) = self.desk_layout() {
             desk.open(module);
             desk.settle();
