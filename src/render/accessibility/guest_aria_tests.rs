@@ -492,6 +492,71 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
     });
 }
 
+/// A container the view focuses by id (a menu frame it opens) stays in the
+/// Tab order: the handle the host makes for it takes the wire's Tab stop,
+/// as the handle gpui makes for an element does.
+#[gpui_kit::test]
+fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let stop = |key_name: &str, role: Role| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(key(key_name)),
+            style: div().w(px(80.)).h(px(40.)).style().clone(),
+            interactivity: wire::Interactivity {
+                role: Some(role),
+                focusable: true,
+                tab_stop: Some(true),
+                aria: wire::Aria {
+                    author_id: Some(key_name.into()),
+                    label: Some(key_name.into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            children: Vec::new(),
+        })
+    };
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("row")),
+        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![stop("menu", Role::Menu), stop("next", Role::Button)],
+    });
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(sanitized(root))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let focused = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let update = window.a11y_tree().expect("an a11y tree once activated");
+            ["menu", "next"]
+                .into_iter()
+                .find(|name| heard(update, name).is_some_and(|(id, _)| id == update.focus))
+        })
+    };
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        tree.update(cx, |tree, cx| {
+            let target = vec![key("menu")];
+            tree.execute_widget_command(wire::WidgetCommand::Focus { target }, window, cx)
+                .unwrap();
+        });
+    });
+    assert_eq!(focused(&mut native), Some("menu"), "the view focused it");
+    // Tab is the app's binding to `focus_next`; a bare window has none
+    native.update(|window, cx| window.focus_next(cx));
+    assert_eq!(focused(&mut native), Some("next"));
+    native.update(|window, cx| window.focus_next(cx));
+    assert_eq!(
+        focused(&mut native),
+        Some("menu"),
+        "Tab comes back round to the container it focused"
+    );
+}
+
 mod phase_two {
     //! What phase 2 added to the one mapper: the aria gpui has no setter for,
     //! through one `a11y::Patch`; a Status's words as its value; a List and a

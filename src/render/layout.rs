@@ -71,7 +71,8 @@ impl ViewTree {
                 handle.focus(window, cx);
             }
             if let Some((_, handle)) = self.focus_targets.get(&path) {
-                element = element.track_focus(handle);
+                let handle = super::accessibility::tabbed(handle.clone(), interactivity);
+                element = element.track_focus(&handle);
             }
             element = match style.overflow.y == Some(gpui_kit::Overflow::Scroll) {
                 true => element.child(over_padding(&style.padding, self.measure(&path, cx))),
