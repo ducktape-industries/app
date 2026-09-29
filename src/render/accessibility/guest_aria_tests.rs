@@ -623,6 +623,125 @@ fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAp
     );
 }
 
+/// A focusable composite `id` of three `item` rows whose second is its
+/// active descendant, as the SDK builds one.
+fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
+    let rows = (0..3)
+        .map(|n| {
+            let row = format!("{id}-{n}");
+            wire::Node::Container(view_wire::ContainerNode {
+                id: Some(key(&row)),
+                style: div().w(px(60.)).h(px(20.)).style().clone(),
+                interactivity: wire::Interactivity {
+                    role: Some(item),
+                    aria: wire::Aria {
+                        author_id: Some(row.clone().into()),
+                        label: Some(row.into()),
+                        selected: Some(n == 1),
+                        active_descendant: n == 1,
+                        ..Default::default()
+                    },
+                    on_click: Some(20 + n),
+                    ..Default::default()
+                },
+                children: Vec::new(),
+            })
+        })
+        .collect();
+    wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key(id)),
+        style: div().flex().w(px(200.)).h(px(20.)).style().clone(),
+        interactivity: wire::Interactivity {
+            role: Some(role),
+            focusable: true,
+            tab_stop: Some(true),
+            on_key_down: Some(9),
+            aria: wire::Aria {
+                author_id: Some(id.into()),
+                label: Some(id.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        children: rows,
+    })
+}
+
+/// During a hold (⌘⇧M) the shell's pane box has the keys and is an
+/// ancestor of every claim its view makes. With two composites on the
+/// screen each claiming its active row (Forge's Code: a tab list and the
+/// tree), neither has the keys, so neither claim counts: the pane box is
+/// what assistive technology hears focused, not a row, and no build
+/// panics on two claims under one focused box.
+#[gpui_kit::test]
+fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    struct Pane {
+        view: Entity<ViewTree>,
+        own: gpui_kit::FocusHandle,
+    }
+    impl Render for Pane {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("pane")
+                .role(Role::Group)
+                .aria_label("Held window")
+                .track_focus(&self.own)
+                .size_full()
+                .child(self.view.clone())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("screen")),
+        style: div()
+            .flex()
+            .flex_col()
+            .w(px(280.))
+            .h(px(80.))
+            .style()
+            .clone(),
+        interactivity: Default::default(),
+        children: vec![
+            claiming_composite("tabs", Role::TabList, Role::Tab),
+            claiming_composite("files", Role::ListBox, Role::ListBoxOption),
+        ],
+    });
+    let root = sanitized(root);
+    let claims = |node: &wire::Node| {
+        let mut claims = 0;
+        super::super::commands::walk_authored_paths(node, &mut Vec::new(), &mut |node, _| {
+            if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = node {
+                claims += usize::from(interactivity.aria.active_descendant);
+            }
+        });
+        claims
+    };
+    let kept = claims(&root);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, cx| Pane {
+        view: cx.new(|_| ViewTree::new(root)),
+        own: cx.focus_handle(),
+    });
+    let pane = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        let own = pane.read(cx).own.clone();
+        own.focus(window, cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let focused = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == update.focus)
+            .map(|(_, node)| (node.role(), node.label().map(str::to_owned)));
+        assert_eq!(focused, Some((Role::Group, Some("Held window".into()))));
+    });
+    assert_eq!(kept, 2, "the sanitizer keeps a claim per composite");
+}
+
 mod phase_two {
     //! What phase 2 added to the one mapper: the aria gpui has no setter for,
     //! through one `a11y::Patch`; a Status's words as its value; a List and a
