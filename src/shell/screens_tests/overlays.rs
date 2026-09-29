@@ -217,8 +217,7 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     let (view, mut native) = open(gate::desk(), cx);
     native.update(draw);
     show(&view, &mut native, Some(Overlay::Menu(Popover::Account)));
-    // a pointer's press at the bell's middle, in the frame that placed it:
-    // the bar refolds as other tests list programs
+    // a press on the bell, in the frame that placed it
     native.update(|window, cx| press("menubar", "rail-notifications", window, cx));
     native.update(draw);
     native.update(draw);

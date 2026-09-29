@@ -134,10 +134,11 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     use commonware_cryptography::Signer as _;
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
-    let answer = until_answered(NODE_RETRY_BUDGET, unsent, || {
+    let (answer, attempts) = until_answered(NODE_RETRY_BUDGET, unsent, || {
         submit(node.clone(), call_registry())
     })
     .await;
+    assert_eq!(attempts, 1);
     assert_eq!(
         answer.unwrap_err().code,
         "node_failed",
@@ -164,7 +165,7 @@ async fn a_submit_whose_sequence_read_was_lost_is_asked_again() {
     use commonware_cryptography::Signer as _;
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::GET);
-    let answer = until_answered(NODE_RETRY_BUDGET, unsent, || {
+    let (answer, attempts) = until_answered(NODE_RETRY_BUDGET, unsent, || {
         submit(node.clone(), call_registry())
     })
     .await;
@@ -173,5 +174,6 @@ async fn a_submit_whose_sequence_read_was_lost_is_asked_again() {
         Ok(Vec::new()),
         "nothing was sent: the read is retried"
     );
+    assert_eq!(attempts, 2, "the lost read, then the one that went through");
     assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }

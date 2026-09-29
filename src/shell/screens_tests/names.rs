@@ -19,8 +19,8 @@ fn names_say_which_one(cx: &mut TestAppContext) {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    crate::runtime::list_for_test("names-test");
     let mut state = gate::desk();
+    state.roster = crate::runtime::Roster::listing(&["names-test"]);
     state.active = Some(crate::runtime::intern("names-test"));
     state.badges.insert(crate::runtime::intern("names-test"), 3);
     state.height = 6230;
@@ -64,8 +64,9 @@ fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
         keys::bind(cx);
     });
     // a program to open, so the empty desk offers its buttons
-    crate::runtime::list_for_test("chords-test");
-    let (_view, mut native) = open(gate::desk(), cx);
+    let mut state = gate::desk();
+    state.roster = crate::runtime::Roster::listing(&["chords-test"]);
+    let (_view, mut native) = open(state, cx);
     let nodes = native.update(draw);
     for (id, popup) in [
         ("shell:network-switcher", "menu"),

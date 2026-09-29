@@ -14,6 +14,21 @@ fn paragraph(key: &str, text: &str) -> wire::Node {
     }
 }
 
+/// `paragraph`, every word of it a link.
+fn linked(key: &str, text: &str) -> wire::Node {
+    let mut node = paragraph(key, text);
+    if let wire::Node::RichText {
+        clickable_ranges,
+        on_click,
+        ..
+    } = &mut node
+    {
+        clickable_ranges.push(0..text.len());
+        *on_click = Some(9);
+    }
+    node
+}
+
 /// Two clipped panes side by side, as chat's room and thread: the room's
 /// lines at y 0 and 60, the thread's between them at y 30.
 fn panes() -> wire::Node {
@@ -78,8 +93,17 @@ fn drag(
     through: &[Point<Pixels>],
     cx: &mut gpui_kit::TestAppContext,
 ) -> String {
+    drag_over(panes(), from, through, cx)
+}
+
+fn drag_over(
+    root: wire::Node,
+    from: Point<Pixels>,
+    through: &[Point<Pixels>],
+    cx: &mut gpui_kit::TestAppContext,
+) -> String {
     let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
-        tree: cx.new(|_| ViewTree::new(panes())),
+        tree: cx.new(|_| ViewTree::new(root)),
     });
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
@@ -96,6 +120,77 @@ fn drag(
         window.render_frame(cx);
         gpui_kit::base::TextSelection::selected_text(window, cx)
     })
+}
+
+/// A paragraph with links is a Tab stop, and still a drag selects its
+/// words: the box takes no pointer press for itself.
+#[gpui_kit::test]
+fn a_drag_across_a_linked_paragraph_selects_its_words(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [linked("alpha", "alpha beta"), paragraph("gamma", "gamma")],
+    );
+    let copied = drag_over(
+        root,
+        point(px(1.), px(10.)),
+        &[point(px(140.), px(30.))],
+        cx,
+    );
+    assert!(
+        copied.contains("alpha") && copied.contains("gamma"),
+        "{copied:?}"
+    );
+}
+
+/// Enter on a picked link is its click while words stay selected elsewhere:
+/// a selection tells a click that ended a drag from a click, and a key
+/// ends no drag.
+#[gpui_kit::test]
+fn enter_presses_the_picked_link_while_words_are_selected(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = container_with_style(
+        "pane",
+        div().w(px(150.)).h_full().flex().flex_col().style().clone(),
+        [paragraph("gamma", "gamma"), linked("alpha", "alpha beta")],
+    );
+    let window = cx.open_window(size(px(300.), px(100.)), |_, cx| Window2 {
+        tree: cx.new(|_| ViewTree::new(root)),
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |window, _| window.tree.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone());
+        })
+    });
+    native.update(|window, cx| window.render_frame(cx));
+    let (from, to) = (point(px(1.), px(10.)), point(px(40.), px(10.)));
+    native.simulate_mouse_move(from, None, Default::default());
+    native.simulate_mouse_down(from, MouseButton::Left, Default::default());
+    native.simulate_mouse_move(to, Some(MouseButton::Left), Default::default());
+    native.update(|window, cx| window.render_frame(cx));
+    native.simulate_mouse_up(to, MouseButton::Left, Default::default());
+    native.update(|window, cx| {
+        window.render_frame(cx);
+        assert!(gpui_kit::base::TextSelection::has_selection(window, cx));
+        window.focus_next(cx);
+        window.render_frame(cx);
+        window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+    });
+    assert_eq!(
+        events.borrow().as_slice(),
+        [wire::Event::Select {
+            handler: 9,
+            index: 0
+        }]
+    );
 }
 
 #[gpui_kit::test]

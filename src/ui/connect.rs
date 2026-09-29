@@ -67,6 +67,7 @@ impl Ducktape {
                 if generation != self.connect_generation {
                     return Task::none();
                 }
+                crate::perf::mark("connected");
                 self.connect_task = None;
                 self.connecting = false;
                 // refused like a node that never answered — a switch keeps

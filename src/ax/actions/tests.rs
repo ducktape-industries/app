@@ -34,14 +34,11 @@ fn container(key: &str, children: Vec<wire::Node>) -> wire::Node {
 /// a different file, none of which the editor's own key threads through.
 fn chat_shaped_editor() -> (wire::Node, crate::render::AuthoredPath) {
     let editor = wire::Node::Editor {
-        options: Box::new(wire::EditorOptions {
-            binding: Some(Box::new(wire::EditorBinding {
-                claims: Vec::new(),
-                on_request: 1,
-                on_event: 2,
-            })),
-            ..Default::default()
-        }),
+        binding: Some(Box::new(wire::EditorBinding {
+            claims: Vec::new(),
+            on_request: 1,
+            on_event: 2,
+        })),
         id: named_id("draft-general/editor"),
         style: Default::default(),
         placeholder: String::new(),

@@ -132,6 +132,8 @@ pub struct ViewTree {
 
     // Native widgets, one per mounted node.
     fields: HashMap<AuthoredPath, Field>,
+    /// A rich text with links: its Tab stop and the link its arrows picked.
+    links: HashMap<AuthoredPath, text::links::Links>,
     editors: HashMap<AuthoredPath, EditorMount>,
     /// The guest's editor documents; handed over by the runtime, not built here.
     editor_store: Option<crate::editor::wire::EditorStore>,
@@ -174,6 +176,9 @@ pub struct ViewTree {
     user_activation: std::cell::Cell<Option<u32>>,
     /// The pane box this tree is clipped to, for its tooltip windows.
     slot_mask: tooltip_containment::SlotMask,
+    /// The seat this tree draws for, once a widget owns it: its renders and
+    /// their time are counted there (docs/perf.md).
+    perf_key: Option<crate::perf::Key>,
     #[cfg(test)]
     renders: u64,
 }
@@ -189,6 +194,7 @@ impl ViewTree {
             focus_targets: HashMap::new(),
             guest_focus_targets: HashMap::new(),
             fields: HashMap::new(),
+            links: HashMap::new(),
             authored_path: Vec::new(),
             scrolls: HashMap::new(),
             uniform_lists: HashMap::new(),
@@ -208,9 +214,16 @@ impl ViewTree {
             next_row: None,
             row: None,
             selection_order: Default::default(),
+            perf_key: None,
             #[cfg(test)]
             renders: 0,
         }
+    }
+
+    /// The perf key this tree's renders count under.
+    pub(crate) fn with_perf_key(mut self, key: crate::perf::Key) -> Self {
+        self.perf_key = Some(key);
+        self
     }
 
     fn node(
@@ -262,9 +275,16 @@ impl Render for ViewTree {
         {
             self.renders += 1;
         }
+        let _timed = self.perf_key.and_then(|key| {
+            crate::perf::count(key, "renders", 1);
+            crate::perf::time(key, "render")
+        });
         self.mounted.clear();
         self.authored_path.clear();
         self.render_index = 0;
+        // a linked text the last render did not draw is gone
+        self.links
+            .retain(|_, links| std::mem::take(&mut links.drawn));
         // Paragraph selection order starts at a base unique to this view (its
         // entity id in the high 32 bits) and restarts there every render, so
         // paragraphs keep stable numbers and two views never interleave.

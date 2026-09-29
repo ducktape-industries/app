@@ -173,7 +173,7 @@ pub(super) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
 
 /// Every served window's [`current`] nodes.
 pub(super) fn read(
-    windows: &impl Fn(&App) -> Vec<(String, AnyWindowHandle)>,
+    windows: &impl Fn(&App) -> Vec<super::Served>,
     filter: &Filter,
     bounds: bool,
     seen: &mut Seen,
@@ -181,7 +181,7 @@ pub(super) fn read(
 ) -> Vec<AxNode> {
     let list = cx.update(|cx| windows(cx));
     let mut out = Vec::new();
-    for (name, handle) in &list {
+    for (name, _, handle) in &list {
         if filter.window.as_deref().is_some_and(|want| want != name) {
             continue;
         }
@@ -208,6 +208,7 @@ pub(super) fn current(
     }
     // ponytail: gpui keeps a window's dirty flag private, so every read
     // draws; a wait's polls draw 20 times a second, and only with the door
+    crate::perf::count(crate::perf::Key::Shell, "door_draws", 1);
     window.draw(cx).clear(cx);
     let Some(tree) = window.a11y_tree() else {
         return Vec::new();

@@ -24,7 +24,7 @@ claim comes from another session's measurement it says so.
   stage)`, holding counters, gauges and small histograms.
 - One tracing target, `ducktape::perf`, for the per-event stream. It goes
   through the app's one `fmt` file layer (`src/main.rs` `install_log`), so
-  there is no second log format. The existing `ducktape::fuel` target is
+  there is no second log format. The former `ducktape::fuel` target was
   renamed into it, with no alias.
 - One door endpoint, `GET /perf`, on the AX door (`src/ax/http.rs`), same
   token, same loopback bind. It returns the registry as JSON and must not
@@ -39,17 +39,18 @@ claim comes from another session's measurement it says so.
 - **No new crate in the core mechanism.** The registry is stdlib: a
   `Mutex<BTreeMap>` of fixed-size sample rings. `serde_json` is already a
   dependency for the door's replies.
-- **`hdrhistogram` via `gpui-kit/profiler` is the one candidate dependency,
-  and phase 0 does not take it.** The gpui-pre fork already carries a frame
-  profiler (`WindowProfiler`, the foreground journal, `HangDetector`) behind
-  its `profiler` cargo feature; `gpui-kit` 0.6.1 exposes it as
-  `profiler = ["gpui/profiler"]`. The app does not enable it: `hdrhistogram`
-  is absent from `Cargo.lock`, and in the fork `window_profiler` is a
-  `#[cfg(feature = "profiler")]` field on `Window`. Turning it on is not
-  zero-cost when off: the journal allocates its ring at `App` build, and the
-  draw, input and task-poll paths take timestamps whenever the feature is
-  compiled in. It is the only way to get present-time and gpui-level
-  long-frame causes, so it is an owner question (§7), not a silent pick.
+- **`hdrhistogram` via `gpui-kit/profiler` is the one dependency, and only
+  behind the `perf-deep` feature** (owner, 2026-09-28; §7). The gpui-pre
+  fork carries a frame profiler (`WindowProfiler`, the foreground journal,
+  `HangDetector`) behind its `profiler` cargo feature; `gpui-kit` 0.6.1
+  exposes it as `profiler = ["gpui/profiler"]`, and the app's
+  `perf-deep = ["gpui-kit/profiler"]` turns it on for dev and qa builds.
+  A default build compiles none of it: `hdrhistogram` is in `Cargo.lock`
+  and absent from `cargo tree -e normal` without the feature. Turning it on
+  is not zero-cost when off: the journal allocates its ring at `App` build,
+  and the draw, input and task-poll paths take timestamps whenever the
+  feature is compiled in. It is the only way to get present time and
+  gpui-level long-frame causes.
 - **Not measured from inside the guest.** A view has no clock: its only wasm
   import is the panic hook the host binds in `Guest::instantiate`
   (`src/runtime/guest/lifecycle.rs`), and `clock.ticks` items carry an empty
@@ -72,12 +73,12 @@ claim comes from another session's measurement it says so.
 
 ## 2. Stages
 
-Legend for "held": which session has the file in flight (see §5). `70` is
-ducktape-70 (window-switch perf), `a3` is ducktape-a3 (view snapshot fix
-and dead wire-variant removal). Metric types: **C** counter, **H**
-histogram (µs unless said), **G** gauge. Class **D** is deterministic for
-the same inputs and can be gated; **W** is wall clock and is reported only
-under Xvfb.
+The "held" column named the session that had each file in flight when
+this was designed (`70` ducktape-70, `a3` ducktape-a3); both have merged,
+and phases 0 and 1 landed over every row (§5). Metric types: **C**
+counter, **H** histogram (µs unless said), **G** gauge. Class **D** is
+deterministic for the same inputs and can be gated; **W** is wall clock
+and is reported only under Xvfb.
 
 ### 2.1 One view's life
 
@@ -97,7 +98,7 @@ loop runs on the window thread inside `NativeModuleView::frame`
 | First frame of a swap | `first_frame_ms` | `Guest::first_frame` | H `first_frame` (W) | a3 |
 | Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `spawn_load` | `seat::spawn_load`, the closure after `Guest::load` returns: lock wait, then the match on `Loaded` through `locked.changes.send_replace(())`; a swap also drops the old `Guest` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
 | First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. Seats are preloaded by `spawn_roster_read` before any tab shows them, so "from load start" is not what a user feels | end of the first `Guest::tick` (`Guest.ticks == 0` in `Guest::redraw`), measured from `Mounted.shown` (set in `NativeModuleView::frame`) or from install end if later | H `first_tree` (W, ms) | a3 / 70 |
-| Tick: fuel | `tracing::debug!(target: "ducktape::fuel", used, limit)` in `Guest::tick` (`guest/requests.rs`) | same site; rename the target to `ducktape::perf` | H `fuel.tick` (D) | a3 |
+| Tick: fuel | `tracing::debug!(target: "ducktape::perf", used, limit)` in `Guest::tick` (`guest/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
 | Tick: wall | nothing | `Guest::tick`: the `arm` → `Exports::tick` → `shape` chain is one expression today and has to be split to time the call and the decode apart | H `tick.call`, H `tick.decode` (W) | a3 |
 | Requests per tick | nothing (only the `MAX_REQUESTS_PER_TICK` refusal) | `Guest::redraw`, the loop over `frame.requests` and `frame.cancels` | H `requests`, H `cancels` (D) | a3 |
 | Host-call latency and attempts | nothing (a warn when the 60 s retry budget runs out, `node::until_answered`) | `kernel::node::spawn_call`: `Instant` before the spawned future, record when `replies.item` is called; attempts from `until_answered`; the kind is the `(Capability, operation)` pair `kernel::answer` matched on. Also `node::spawn_device` | H `host_call.<kind>` (W), C `host_call.<kind>.attempts` (D) | free |
@@ -116,21 +117,16 @@ loop runs on the window thread inside `NativeModuleView::frame`
 | Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
 | Faults | warns `module_view_trapped` (`Guest::tick`), `module_view_unloadable` (`seat::spawn_load`) | same sites | C `faults` (D) | a3 / free |
 
-Two findings the table depends on, both true on dev today:
+Two findings the table depends on:
 
-- **There is no time budget.** The `src/runtime.rs` module doc says a view is
-  "ticked inside a fuel and time budget"; `guest::engine` sets only
-  `cranelift_opt_level`, `consume_fuel(true)` and the disk cache, and no
+- **There is no time budget.** `guest::engine` sets only
+  `cranelift_opt_level`, `consume_fuel(true)` and the disk cache; no
   `epoch_interruption`, `set_epoch_deadline` or `increment_epoch` appears in
   `src`. The only bound is `FUEL_PER_TICK`, re-armed by `guest::arm` before
-  every call. This is an owner decision (§7); the perf design does not
-  depend on it, but the doc comment is stale and the design cannot claim a
-  budget that is not there.
-- **`LoadTiming.status` and `LoadTiming.check` are never written.** They are
-  logged as `status_ms` and `check_ms`; the only writes in `Guest::load` are
-  to `path`, `fetch`, `compile`, `init` and `first_frame`. The `LoadTiming`
-  doc in `seat.rs` describes both as real. They go, and the split above
-  takes their place.
+  every call. The owner kept it that way (§7), and the `src/runtime.rs`
+  module doc now says so.
+- **`LoadTiming` had already lost `status` and `check`** by the time phase
+  0 landed; the split above is what it holds now (`seat.rs`).
 
 ### 2.2 The shell
 
@@ -151,7 +147,7 @@ so response bodies are decoded there.
 | Animation frames | `a_frame_is_cheap` test in `shell/figure.rs` (under 15 ms at test opt-level 1) | `Spin::render` (`shell/spin.rs`): time `Figure::frame`, and the interval between renders. `Spin::run` paces with a background timer plus `cx.notify()`, never `request_animation_frame`, so gpui's present-interval histogram and its inactive-window throttle both miss it | H `figure.frame`, H `figure.interval` (W) | free |
 | Idle frames per second | nothing (#347's PR body: idle drawing over 5 s at 979 ms before, 334 ms after; the ~20 idle frames/s per window and the pulse as its driver are ducktape-70's session notes, not in the PR) | count `DesktopWindow::render` per window over a quiet interval; door draws (`ax::actions::current` forces one per read) counted separately. Known idle drivers: the status-dot pulse (`screens::pulse`, `shell/screens.rs`, an `Animation::repeat().with_max_fps(30.)` drawn by `menubar`, `menus` and `screens`; gpui's animation element calls `request_animation_frame` at that cadence) — cheap since #347 but still ~20 frames/s while motion is on; the 1 s / 300 ms / 2 s ticks below; the Spin figure's 33 ms timer | C `renders.<window>`, C `door_draws` (D) | free / a3 |
 | Every dispatch re-renders every window | nothing | `Desktop::dispatch` ends in `cx.notify()`; each `DesktopWindow` observes the model and notifies itself (`DesktopWindow::new`); the subscriptions run a 1 s `WallTick`, a 300 ms `ToastTick` and, connected, a 2 s `Tick` (`Ducktape::subscriptions`, `ui/update.rs`). So an idle, connected app re-renders each window 1 + 1000/300 + 0.5 ≈ 4.8 times a second from the ticks alone. The `renders.<window>` counter above is the measure | | free |
-| `rail()` per desk render | nothing | `roster::rail` locks the roster, the registry and every seat mutex; called in `DesktopWindow::console` (`shell/desk.rs`) and through `panes::label` twice per pane in `pane_stage` | H `rail` (W), C `rail.calls` (D) | free (`roster.rs`) |
+| `rail()` per desk render | nothing | `Roster::rail` locks the roster, the registry and every seat mutex; called in `DesktopWindow::console` (`shell/desk.rs`) and through `panes::label` twice per pane in `pane_stage` | H `rail` (W), C `rail.calls` (D) | free (`roster.rs`) |
 | Synchronous I/O on the window thread | nothing | `backend::session::read_prefs`/`write_prefs`; `store::answer` (`src/runtime/store.rs`, a whole-file read per `get`, write and rename per `set`, inside a guest's redraw); `notify::Center::save` (`src/runtime/notify.rs`, the whole log rewritten per post); `backend::RpcClient::new` (`backend/noded.rs`) builds a new `reqwest::Client` per call, including the 2 s status tick in `ui/connect.rs` | H `io.<site>` (W) | free |
 | RSS | nothing | `libc::getrusage(RUSAGE_SELF).ru_maxrss` (libc is already a dependency): KiB on Linux, bytes on macOS; current RSS from `/proc/self/statm` on Linux only, skipped on macOS. Sampled by the same 1 s task that writes the summary | G `rss.peak`, G `rss.current` (bytes) | free |
 
@@ -174,37 +170,51 @@ and I/O histograms above are what will show which of these matter.
 
 ```rust
 //! Performance counters, on with `DUCKTAPE_PERF=1`, read at `GET /perf`.
+pub(crate) fn start()                            // first thing in `main`: t0, the switch, the sampler thread
 pub(crate) fn on() -> bool                       // one relaxed atomic load
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Key {
     View { module: &'static str, instance: u64 }, // the seat key (`seat::mounted`)
     Window(crate::runtime::WindowKey),
-    Shell,                                       // startup, reducer, rss
+    Shell,                                       // startup, reducer, io, rss
 }
 
 /// `None` when off: the caller never takes an `Instant`.
-pub(crate) fn time(key: Key, stage: &'static str) -> Option<Timer>
+pub(crate) fn time(key: Key, stage: &'static str) -> Option<Timer>  // `Timer::started()` for intervals
 pub(crate) fn count(key: Key, stage: &'static str, n: u64)
 pub(crate) fn gauge(key: Key, stage: &'static str, value: u64) // keeps max and last
 pub(crate) fn record(key: Key, stage: &'static str, value: u64) // a sample that is not a time (fuel, bytes)
 pub(crate) fn mark(stage: &'static str)          // ms since t0, once
+pub(crate) fn suffixed(stage: &str, suffix: &str) -> Option<&'static str> // an interned name, only when on
 
-pub(crate) fn snapshot() -> serde_json::Value
-pub(crate) fn reset()
+pub(crate) fn snapshot(by_instance: bool) -> serde_json::Value
+pub(crate) fn reset()                            // counters and samples; the marks stay
+pub(crate) fn summary()                          // one `perf_summary` line if anything changed
+pub(crate) fn retire(module: &'static str, instance: u64) // one `view_perf` line
 ```
 
 - `Timer` records `elapsed()` on drop into the histogram named by its key.
-- The store is `static REGISTRY: Mutex<BTreeMap<(Key, &'static str), Samples>>`
-  with `Samples { n, sum, max, last, ring: [u64; 256] }`. `n`, `sum` and
-  `max` cover everything since the last reset; p50/p95 come from the ring
-  and cover only the last 256 samples. `ponytail:` one global lock, one
-  fixed ring; fine at fewer than a few thousand samples a second.
+- The store is one `Mutex<BTreeMap<(Key, &'static str), Metric>>`, a metric
+  being a counter, a gauge `{max, last}` or `Samples { n, sum, max, last,
+  ring: [u64; 256] }`. `n`, `sum` and `max` cover everything since the last
+  reset; p50/p95 come from the ring and cover only the last 256 samples.
+  `ponytail:` one global lock, one fixed ring; fine at fewer than a few
+  thousand samples a second.
+- Stage names are flat and carry their group as a prefix (`tick.call`,
+  `fuel.tick`, `frame_bytes`, `host_call.module.query`,
+  `host_call.module.query.attempts`, `io.read_prefs`, `reducer.pane`), so
+  a key's JSON is one object of stage → value, the same in `/perf`,
+  `perf_summary` and `view_perf`.
 - Keys are `&'static str`: module names are interned already
   (`runtime::intern`), stage names are literals.
 - Keyed by **(module, instance)**, not module: the seat registry is
   `(module, instance)` (`seat::mounted`, `NativeModuleView::new`), and two
-  windows can show the same view. `/perf` aggregates by module on request.
+  windows can show the same view. The seat carries its instance
+  (`Mounted.instance`, `Guest.instance`), so the loader thread and the
+  window thread write under one key; a preloaded seat's load stages land
+  under instance 0 until a tab claims it. `/perf` aggregates by module
+  unless `?by=instance`.
 - Why not on `Guest`: stats must survive a swap and cover load stages that
   run before the `Guest` exists. The registry is a leaf lock; reading it
   never takes a seat lock.
@@ -225,55 +235,64 @@ only when on and only when the tree changed.
 ### 3.2 One tracing target
 
 - `ducktape::perf` carries the per-event debug stream: the per-tick fuel
-  event that lives in `Guest::tick` today under `ducktape::fuel`, plus one
-  debug event per registry sample. Callsite-filtered, so it costs nothing
-  unless `RUST_LOG=ducktape::perf=debug` (the filter is `info` plus
-  `RUST_LOG`, `install_log`).
-- The rename is `ducktape::fuel` → `ducktape::perf`, no alias. Two sites:
-  the `debug!` in `Guest::tick` (held, a3) and the `FUEL_PER_TICK` doc
-  comment in `src/runtime.rs` that names `RUST_LOG=ducktape::fuel=debug`
-  (free; goes stale the moment the target moves, so same PR).
-- `view_load` (`LoadTiming::log`) moves to this target as well, gains
-  `blob`, `code`, `instantiate_ms`, `restore_ms`, `snapshot_ms`,
-  `snapshot_bytes` and `install_ms`, drops `status_ms` and `check_ms`, and is
-  logged after install rather than before it. Nothing in qa reads the old
-  field names.
+  event in `Guest::tick`, plus one debug event per registry sample.
+  Callsite-filtered, so it costs nothing unless
+  `RUST_LOG=ducktape::perf=debug` (the filter is `info` plus `RUST_LOG`,
+  `install_log`). There is no `ducktape::fuel` target and no alias; the
+  `FUEL_PER_TICK` doc in `src/runtime.rs` names the new one.
+- `view_load` (`LoadTiming::log`) is on this target as well, with `blob`,
+  `code`, `instantiate_ms`, `restore_ms`, `snapshot_ms`, `snapshot_bytes`,
+  `lock_wait_ms` and `install_ms`, and is logged after install rather than
+  before it. Nothing in qa reads the old field names.
 
 ### 3.3 The door: `GET /perf`
 
-- Route: `("GET", "perf")` in `ax::http::route`, listed in its 404 endpoint
-  list; `Request::Perf` in `src/ax.rs`; a CLI verb `ducktape-app ax perf` in
-  `ax::http::cli`. `POST /perf/reset` clears; `GET` never mutates.
+- Route: `("GET", "perf")` and `("POST", "perf/reset")` in
+  `ax::http::route`, listed in its 404 endpoint list; `Request::Perf` and
+  `Request::PerfReset` in `src/ax.rs`; the CLI verb `ducktape-app ax perf
+  [--by instance]` in `ax::http::request`. `POST /perf/reset` clears the
+  counters and samples (the startup marks stay); `GET` never mutates.
 - **It must not draw.** `ax::actions::current` turns a11y on at the first
   read and calls `window.draw(cx)` on every read; a11y on switches
   `NativeModuleView::render` to the uncached tree. `/perf` is answered in
-  `ax::answer` straight from `perf::snapshot()` with no window read, or on
-  the `ax-door` accept thread (`ax::http::open`) before the request is
-  forwarded to the app thread. Both files are free (§5).
-- Reply shape, one object per key:
+  `ax::answer` from `perf::snapshot()`; its one window access reads
+  `is_a11y_active` (and, with `perf-deep`, the profiler's histograms) and
+  never draws.
+- Reply shape: one flat object of stage → value per key. A counter is a
+  number, a gauge `{max, last}`, a histogram `{n, mean, p50, p95, max,
+  last}` (µs for times). Views by module, or by `module/instance` with
+  `?by=instance`; windows by `WindowKey` number with the door's `name`
+  beside it; `startup` the marks in ms since `t0`:
 
 ```json
-{ "on": true, "since_ms": 123456,
-  "startup": { "log": 3, "gpui": 41, "fonts": 60, "boot": 70, "window": 190, "connected": 800, "desk": 1500 },
-  "views": { "chat/7": { "module": "chat", "instance": 7, "window": "console",
-      "ticks": 412, "busy_ticks": 3, "renders": 415, "faults": 0,
-      "fuel": { "tick": { "n": 412, "p50": 4100000, "p95": 31000000, "max": 71800000, "limit": 250000000 } },
-      "us": { "tick.call": {...}, "tick.decode": {...}, "merge": {...}, "replace": {...}, "render": {...}, "layout": {...}, "paint": {...} },
-      "bytes": { "frame": {...}, "events": {...}, "snapshot": 20480, "memory_max": 12582912, "pictures": 300000, "view": 1830000 },
-      "frames": { "full": 3, "patch": 90, "unchanged": 319 }, "nodes_max": 1900, "truncations": 0,
-      "requests": {...}, "backlog_max": 2,
-      "host_call": { "module.query": { "n": 20, "p50": 9000, "p95": 40000, "max": 90000, "attempts": 20 } },
-      "load": { "path": "first", "fetch_us": 12000, "blob": "disk", "compile_us": 900, "code": "memory",
-                "instantiate_us": 400, "restore_us": 0, "init_us": 3000, "install_us": 200, "first_tree_ms": 18 } } },
-  "windows": { "1": { "name": "console", "renders": 240, "door_draws": 0, "us": { "frame.render": {...} }, "switch_ms": {...} } },
-  "shell": { "reducer": { "connect": {...}, "pane": {...} }, "io": { "read_prefs": {...}, "store": {...} }, "rail": {...},
-             "figure": { "frame": {...}, "interval": {...} }, "long_frames": 0, "slow": [ {"at_ms": 1200, "key": "chat/7", "stage": "tick.call", "us": 31000} ] },
-  "rss": { "peak": 400000000, "current": 350000000 } }
+{ "on": true, "since_ms": 123456, "cache_on": true,
+  "startup": { "log": 3, "gpui": 41, "fonts": 60, "boot": 70, "window": 190, "connected": 800, "desk": 1500, "first_seated.chat": 1700 },
+  "views": { "chat": { "module": "chat",
+      "ticks": 412, "busy_ticks": 3, "draws": 900, "renders": 415, "faults": 0,
+      "fuel.tick": { "n": 412, "p50": 4100000, "p95": 31000000, "max": 71800000 },
+      "tick.call": {...}, "tick.decode": {...}, "merge": {...}, "replace": {...}, "render": {...},
+      "frame_bytes": {...}, "events_bytes": {...}, "snapshot_bytes": { "max": 20480 }, "memory": { "max": 12582912 },
+      "picture_bytes": {...}, "view_bytes": {...}, "nodes": { "max": 1900 }, "truncations": 0,
+      "frame.full": 3, "frame.patch": 90, "frame.unchanged": 319, "requests": {...}, "cancels": {...}, "backlog": {...},
+      "host_call.module.query": { "n": 20, "p50": 9000, "p95": 40000, "max": 90000 }, "host_call.module.query.attempts": 20,
+      "fetch": {...}, "fetch.disk": 1, "compile": {...}, "compile.memory": 1, "instantiate": {...}, "fuel.instantiate": {...},
+      "snapshot": {...}, "restore": {...}, "init": {...}, "first_frame": {...}, "install.lock_wait": {...}, "install": {...}, "first_tree": {...} } },
+  "windows": { "1": { "name": "console", "renders": 240, "frame.render": {...}, "switch": {...},
+                      "gpui": { "us": { "dirty_to_present": {...}, "draw": {...}, "present_interval": {...}, "input_latency": {...} } } } },
+  "shell": { "dispatch": {...}, "reducer.connect": {...}, "reducer.pane": {...}, "io.read_prefs": {...}, "io.store.get": {...},
+             "rail": {...}, "rail.calls": 900, "figure.frame": {...}, "figure.interval": {...}, "roster": {...},
+             "door_draws": 0, "rss.peak": { "max": 400000000 }, "rss.current": { "last": 350000000 } } }
 ```
 
 - `"cache_on"`: true when no served window has a11y active (`Window::is_a11y_active`).
   A gate refuses to judge cache metrics (`misses`, `hits`, full redraws per
   switch, idle drawing) from a reply with `cache_on: false` (§4.3).
+- `"gpui"` per window only with `perf-deep` (§3.5), µs from nanosecond
+  histograms kept since the window opened, not since the last reset;
+  `door_draws` counts the door's own draws for the process,
+  since `ax::actions::current` has no window key.
+- `misses` and `hits` are derived by the reader: `renders` and `draws`
+  per view.
 - Off: `{"error": "perf is off: launch with DUCKTAPE_PERF=1"}` with status
   409, so a gate fails loudly instead of passing on empty data.
 - Access as for every door call: loopback only, bearer token from the door
@@ -281,15 +300,14 @@ only when on and only when the tree changed.
 
 ### 3.4 app.log summaries
 
-- One `perf_summary` info line every 10 minutes if anything changed, and
-  once from `cx.on_app_quit` in `shell::launch::run` — the one hook every
-  quit path reaches (`Desktop::quit` runs only for `Command::Quit`, the
-  tray and menu path).
-- One `view_perf` info line per instance when it retires: swap (`seat::spawn_load`,
-  the `Loaded::Swap` arm replaces `slot`), retry (`seat::retry`) and roster
-  removal (`roster::spawn_roster_read`). There is no `impl Drop for Guest`
-  today (the only drops are `NativeModuleView`, `NodeTask`, `InFlight`); one
-  goes in, skipping instances whose `installed_generation` is `None`.
+- One `perf_summary` info line every 10 minutes if anything changed (the
+  `perf` sampler thread, which also reads RSS each second), and once from
+  `cx.on_app_quit` in `shell::launch::run` — the one hook every quit path
+  reaches (`Desktop::quit` runs only for `Command::Quit`, the tray and menu
+  path).
+- One `view_perf` info line per instance when it retires — swap, retry and
+  roster removal all drop the old `Guest`, so it is `impl Drop for Guest`,
+  skipping instances whose `installed_generation` is `None`.
 - Same stable field names as the `/perf` JSON, so a log line and a door
   reply are the same numbers.
 
@@ -320,10 +338,14 @@ only when on and only when the tree changed.
   `view_load`, so the swap/snapshot/restore path cannot be profiled that way.
 - **Not `Store::call_hook`.** It needs wasmtime's non-default `call-hook`
   feature.
-- **gpui histograms.** An app feature `perf-deep = ["gpui-kit/profiler"]`
-  would expose `Window::frame_duration_snapshot`,
-  `Window::input_latency_snapshot`, `App::foreground_journal` and
-  `HangDetector`. Owner call (§7).
+- **gpui histograms.** The app feature `perf-deep = ["gpui-kit/profiler"]`
+  (owner, §7) reads `Window::frame_duration_snapshot` and
+  `Window::input_latency_snapshot` into each window's `"gpui"` object in
+  `/perf` (`ax::gpui_perf`), and polls a `HangDetector` over
+  `App::foreground_journal` once a second (`shell::launch::first_present`)
+  until it latches the `first_present` startup mark. gpui's histograms
+  cover the window's whole life: `POST /perf/reset` does not clear them.
+  `cargo build --features perf-deep`; a default build has none of it.
 
 ---
 
@@ -495,106 +517,108 @@ Design:
   This covers load (fetch/compile/init), swap (a view redeployed mid-run;
   `kit seed` fills a stage with data and deploys no view), tick, switch and
   idle in one pass.
-- **`cargo test` counts**, already in CI: promote `ViewTree.renders` out of
-  `cfg(test)` and assert deterministic counts — an idle ViewTree renders
-  zero times across N frames (#347 added exactly this,
-  `an_unchanged_guest_tree_is_not_drawn_again` in `src/render/tests/layout.rs`,
-  on `ViewTree.renders`; promoting the counter keeps it unchanged); a
-  hand-dispatched `WallTick` with nothing changed renders no ViewTree (tests
-  skip subscriptions in `Desktop::subscriptions`); a still figure asks for
-  no frames. Times are flaky under the test scheduler; counts are not.
+- **`cargo test` counts**, already in CI. An idle ViewTree renders zero
+  times across N frames (#347's `an_unchanged_guest_tree_is_not_drawn_again`
+  in `src/render/tests/layout.rs`, on the `cfg(test)` field
+  `ViewTree.renders`). A seated view drawing #347's tree shape renders no
+  more than it ticks, read off the registry's `renders` and `ticks` as
+  `/perf` serves them (`an_idle_view_renders_no_more_than_it_ticks`,
+  `src/runtime/widget/tests.rs`): undoing #347's selection fix fails it.
+  Undoing its layout fix does not — under the test scheduler a notify from
+  inside a draw is cleared with that frame — so the bounds assertion in
+  #347's own test guards that one. Still to write: a hand-dispatched
+  `WallTick` with nothing changed renders no ViewTree; a still figure asks
+  for no frames. Times are flaky under the test scheduler; counts are not.
 
 ---
 
 ## 5. Rollout
 
-The view-stage hooks sit in files other sessions have in flight.
-ducktape-70 (window-switch perf) holds `src/render.rs`,
-`src/runtime/widget.rs`, `src/shell/panes.rs` and their tests; its fix has
-merged as #347 but the hold is not assumed lifted, and its instrumentation
-was never committed (§6), so nothing here conflicts with it. ducktape-a3
-(snapshot fix, dead wire-variant removal) holds `src/runtime/guest.rs`,
-`src/runtime/guest/{lifecycle,requests,tests}.rs`, `src/runtime/input.rs`
-and `input/*`, `src/render/{inputs,commands,interactivity}.rs`, render
-tests, `src/editor/wire*`, `src/ax/actions.rs`. Nothing new is created
-under `src/render/` (that needs a `mod` line in the held `render.rs`).
+**Phase 0 and phase 1 — landed 2026-09-28 (`perf/registry`), the owner's
+GO for both together.** The sessions that held the view files
+(ducktape-70, ducktape-a3) had merged, so both phases went in one branch.
 
-**Phase 0 — lands now, free files only.**
-- `src/perf.rs`: switch, registry, `snapshot`, `reset`, `mark`, the 10-minute
-  summary task and the RSS sampler (`shell::launch::run`), `perf_summary` on
-  `on_app_quit`.
-- `GET /perf`, `POST /perf/reset`, `Request::Perf`, `ax perf` CLI
-  (`src/ax.rs`, `src/ax/http.rs`), answered without a window read.
+Phase 0, as listed:
+- `src/perf.rs`: switch, registry, `snapshot`, `reset`, `mark`, the
+  sampler thread (RSS each second, `perf_summary` every 10 minutes),
+  `perf_summary` on `on_app_quit`.
+- `GET /perf`, `POST /perf/reset`, `Request::Perf`, `Request::PerfReset`,
+  `ax perf [--by instance]` (`src/ax.rs`, `src/ax/http.rs`), answered
+  without a draw.
 - Shell hooks: startup marks (`main.rs`, `shell/launch.rs`,
-  `shell/windows.rs`, `ui/connect.rs`, `ui/update.rs`); `Desktop::dispatch`
-  and the `Ducktape::update` domains; `DesktopWindow::render` frame.render
-  and per-window render counts (`shell.rs`); `Spin::render` figure timing;
-  `roster::rail`; I/O sites (`backend/session.rs`, `runtime/store.rs`,
-  `runtime/notify.rs`, `backend/noded.rs`).
-- View hooks in free files: blob source and view bytes
-  (`backend/views.rs` `program_bytes`), host-call latency and attempts
-  (`kernel/node.rs`), backlog (`kernel/replies.rs`), install and lock wait,
-  the `view_perf` retire line and the `LoadTiming` cleanup in `seat.rs`
-  (the fields' writers in `lifecycle.rs` wait for phase 1), roster timing,
-  picture bytes (`runtime/pictures.rs`).
-- Same PR: the `FUEL_PER_TICK` doc comment in `src/runtime.rs` stops naming
-  `ducktape::fuel`; the `LoadTiming` doc stops describing `status`/`check`.
+  `shell/windows.rs`, `ui/connect.rs`, `ui/update.rs`, `first_seated` in
+  `widget/present.rs`); `Desktop::dispatch` whole and the `Ducktape::update`
+  domains; `DesktopWindow::render` `frame.render` and `renders` per window;
+  the `switch` timer from `pane_message`, `raise_window` and the activation
+  observer to the next frame; `Spin::render` `figure.frame` and
+  `figure.interval`; `rail` and `rail.calls`; `io.read_prefs`,
+  `io.write_prefs`, `io.store.get`, `io.store.set`, `io.notify_save`,
+  `io.rpc_client`.
+- View hooks: blob source and view bytes (`backend/views.rs` hands the
+  source back with the bytes), `host_call.<capability>.<operation>` and its
+  `.attempts` (`kernel/node.rs`, one literal stage per `kernel::answer`
+  arm), `backlog` (`Replies::drain_into` answers the count), `install` and
+  `install.lock_wait`, the `view_perf` retire line (`impl Drop for Guest`)
+  and `view_load` after install (`seat.rs`), `roster`, `picture_bytes`
+  (`Pictures::bytes`).
+- Same PR: the `FUEL_PER_TICK` doc names `ducktape::perf`; the runtime
+  module doc no longer claims a time budget; ARCHITECTURE.md follows.
 
-**Phase 1 — after ducktape-70 releases its files and ducktape-a3 merges.**
-The `draws` counter and the promoted `renders` (cache hit/miss, full redraws
-per switch — the #347 metrics) are the first things to land here.
-- `Guest::tick` split (call / decode / merge), fuel target rename, frame
-  kind, bytes, nodes, requests, truncations, memory (`guest/requests.rs`,
-  `guest.rs`); the load-stage split and fuel per call in
-  `guest/lifecycle.rs`; `compile_view` source.
-- `NativeModuleView::frame`: replace timing, `first_tree`, `first_seated`
-  mark; `ViewTree::render` renders counter and time (`render.rs`);
-  `Observe::prepaint`/`paint` layout and paint (`runtime/input.rs`); switch
-  start in `pane_message` (`shell/panes.rs`).
-- `door_draws` in `ax::actions::current`.
+Phase 1, as listed:
+- `Guest::tick` split (`tick.call`, `tick.decode`, `merge`), the fuel
+  event on `ducktape::perf`, `frame.{full,patch,unchanged}`,
+  `frame_bytes`, `events_bytes`, `nodes`, `requests`, `cancels`,
+  `truncations`, `memory`, `faults`, `ticks`, `busy_ticks`
+  (`guest/requests.rs`); the load-stage split with fuel per call and
+  `snapshot_bytes` (`guest/lifecycle.rs`); `compile.{memory,disk,cold}`
+  from the in-process cache and wasmtime's hit counter (`guest.rs`,
+  approximate under concurrent loads, said so in code).
+- `NativeModuleView`: `replace`, `first_tree`, `first_seated.<module>`,
+  `draws` (`widget.rs`, `widget/present.rs`); `ViewTree::render` `renders`
+  and `render` under the seat's key (`render.rs`, `ViewTree::with_perf_key`).
+- `door_draws` in `ax::actions::current`, for the process.
+- The idle rule as an app test:
+  `runtime::widget::tests::an_idle_view_renders_no_more_than_it_ticks`
+  (`renders ≤ ticks + 2` on the registry's counters over eight cached
+  frames of #347's tree shape; a notify loop on the tree or #347's
+  selection refresh fails it).
+
+Where the landed code differs from §2: `input::Observe` no longer exists,
+so there is no per-view `layout`/`paint` histogram (gpui's own, under
+`perf-deep`, cover the window); `first_tree` runs from the start of the
+frame that found the view seated to its tree mounted; `door_draws` is
+process-wide; the registry's JSON is flat (§3.3). `kernel::node` has no
+`spawn_device`.
 
 **Phase 2 — qa.** `DUCKTAPE_PERF=1` in both rigs, `perf.jsonl`,
 `perf-budgets.json`, the end-of-scenario and end-of-mission gate with the
-idle window in both runners, the driving mission (§4.4).
+idle window in both runners, the driving mission (§4.4). Report-only until
+the owner says budgets block (§7).
 
 **Phase 3 — dev deep dives.** `DUCKTAPE_WASM_PROFILER`,
 `DUCKTAPE_WASM_PROFILE`.
-
-**Phase 4 — owner calls (§7).** The gpui `profiler` feature; blocking
-merges on budgets; a real time budget.
 
 ---
 
 ## 6. The temporary `DUCKTAPE_PERF` helper
 
-As ducktape-70 describes it (never committed — nothing below was checked
-against code): its `src/perf.rs` (29 lines: `on()`, a `Span` that
-`eprintln!`s on drop, `mark()`) and its span sites (`desk.render`,
-`pane_stage`, `view_props`, `module_view.render`, `module_view.turn`,
-`module_view.replace`, `view_tree.render`, `guest.tick`, a mark on every
-`pane_message`) are **folded into this design, not merged as they are**:
+ducktape-70's never-committed helper (a `Span` that `eprintln!`ed on drop,
+a stderr `mark()`, spans on the window-switch path) was folded into this
+design, not merged. What still informs:
 
-- `on()` becomes the permanent switch, same shape.
-- `Span`/`eprintln` become registry records. Its `span()` takes
-  `Instant::now()` unconditionally and checks the switch only on drop; the
-  permanent `time()` returns `None` before touching the clock.
-- `guest.tick` becomes the `tick.call`/`tick.decode`/`merge` split;
-  `module_view.replace` becomes `replace`; `view_tree.render` becomes
-  `render` plus the `renders` counter.
-- `module_view.render`, `module_view.turn`, `desk.render`, `pane_stage`,
-  `view_props` and the `pane_message` mark were window-switch diagnostics.
-  They survive only as `ducktape::perf` debug events while the switch is
-  under study; `mark()` as a stderr printer goes.
+- `on()` is the permanent switch, same shape.
+- Its `span()` took `Instant::now()` unconditionally and checked the switch
+  only on drop; the permanent `time()` returns `None` before touching the
+  clock, and every argument that allocates or walks a tree sits inside an
+  `if perf::on()`.
 - Its first suspect — `pane_stage` calling `set_focused`/`set_props` every
-  render — was not the cause. The root causes were the two cache-busting
-  loops in `render/layout.rs` and `render/text.rs` (§4.2), merged as #347
-  with a unit test and without any of the instrumentation: the helper was
-  never committed. Its early numbers (`view_tree.render` ~2.9 ms,
-  `module_view.render` 7–25 µs) were taken with the cache broken and are
-  superseded by the #347 before/after. The `renders ≤ ticks + 2` idle gate
-  and the `misses` delta per switch are what would have caught both loops,
-  and what catches the next one — with the cache on (§4.3).
-- No `[patch]` of gpui-pre to a scratchpad path lands.
+  render — was not the cause of the window-switch cost. The root causes
+  were the two cache-busting loops in `render/layout.rs` and
+  `render/text.rs` (§4.2), merged as #347. Its early numbers were taken
+  with the cache broken and are superseded by the #347 before/after. The
+  `renders ≤ ticks + 2` idle gate and the `misses` delta per switch are
+  what would have caught both loops, and what catches the next one — with
+  the cache on (§4.3).
 
 ---
 
@@ -603,33 +627,47 @@ against code): its `src/perf.rs` (29 lines: `on()`, a `Span` that
 1. **The gpui `profiler` feature.** It is the only route to end-to-end frame
    time (draw + present), input→present latency and gpui-level long-frame
    causes, and to a first-present startup mark. It costs one lock entry
-   (`hdrhistogram` 7.5.4; its deps are already locked), a journal ring at
-   `App` build and timestamps on draws, inputs and task polls whenever
-   compiled in. Options: (a) never; (b) an app feature `perf-deep =
-   ["gpui-kit/profiler"]` for dev and qa builds only, accepting that users
-   and qa then run different binaries; (c) always on, accepting the cost.
-   Phase 0 assumes (a) until told otherwise.
-2. **A time budget.** The `src/runtime.rs` doc claims one; none exists.
+   (`hdrhistogram`), a journal ring at `App` build and timestamps on draws,
+   inputs and task polls whenever compiled in. Options: (a) never; (b) an
+   app feature `perf-deep = ["gpui-kit/profiler"]` for dev and qa builds
+   only, accepting that users and qa then run different binaries; (c)
+   always on, accepting the cost.
+
+   **Answered (owner, 2026-09-28): (b).** `perf-deep` is declared; under it
+   `/perf` carries each window's frame and input histograms and the
+   `first_present` mark (§3.5). A default build compiles none of it.
+2. **A time budget.** The `src/runtime.rs` doc claimed one; none exists.
    Either add epoch interruption (always on; then the guest profiler no
-   longer splits the compile cache) or delete the claim. The perf design
-   works either way.
+   longer splits the compile cache) or delete the claim.
+
+   **Answered (owner, 2026-09-28): delete the claim.** Fuel
+   (`FUEL_PER_TICK`) is the only ceiling; no epoch interruption. The
+   module doc says so.
 3. **Do budgets block merges?** Fuel, bytes, nodes and idle counts are
-   deterministic enough to gate. Until the call, the qa gate reports and
-   does not fail.
+   deterministic enough to gate.
+
+   **Answered (owner, 2026-09-28): report only.** Nothing in this branch
+   fails on a budget; the qa gate is phase 2.
 4. **Measuring with the cache on.** §4.3 proposes one extra keys-only
    scenario per qa run for the cache-dependent metrics, because a11y cannot
    be turned off once the door has read a tree — and every door verb today,
    `/key` included, reads one, so the scenario also needs a `/key` that
    skips its reads. The alternative is a door launch mode that never
    activates a11y and refuses `/tree`, `/act` and `/wait` for the whole run.
-   This document picks the scenario and the no-read key.
+
+   **Answered (owner, 2026-09-28): the document's pick** — the scenario and
+   the no-read key, both phase 2.
 5. **Instance vs module keys on the door.** The registry is per
    `(module, instance)`; should `/perf` default to aggregating by module
    for qa's budgets, with instances behind `?by=instance`?
-6. **`POST /perf/reset` vs `GET /perf?reset=1`.** This document picks the
-   POST; the door's route table is a `(method, target)` match and the qa
-   client handles both methods.
+
+   **Answered (owner, 2026-09-28): yes.** `/perf` aggregates by module;
+   `?by=instance` lists instances.
+6. **`POST /perf/reset` vs `GET /perf?reset=1`.**
+
+   **Answered (owner, 2026-09-28): the POST.** `GET` never mutates.
 7. **`store.get`/`store.set` and the notification log on the window
-   thread.** The I/O histograms will show whether they matter; if they do,
-   moving them to the `views-kernel` thread is a runtime change, not a perf
-   one — flagging it now so it is not a surprise later.
+   thread.** The I/O histograms (`io.store.get`, `io.store.set`,
+   `io.notify_save`) will show whether they matter; if they do, moving them
+   to the `views-kernel` thread is a runtime change, not a perf one —
+   flagging it now so it is not a surprise later.

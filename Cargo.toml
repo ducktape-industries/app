@@ -28,13 +28,13 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules dev @ 52fb469a (#210 merged: nodes one sheet, chain.network; over #209 and #211), crates/sdk (abi, view-wire, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "design" }
+# --- sdk-line: modules chore/view-editor-no-spans @ 0c9e2a64 (editor formats, spans, presentation and options leave the wire; over dev 52fb469a), crates/sdk (abi, view-wire, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "0c9e2a6495e313015f0d6beaf9de955e10c7e583", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "0c9e2a6495e313015f0d6beaf9de955e10c7e583", package = "view-wire" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "0c9e2a6495e313015f0d6beaf9de955e10c7e583", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "0c9e2a6495e313015f0d6beaf9de955e10c7e583", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "0c9e2a6495e313015f0d6beaf9de955e10c7e583", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -58,6 +58,12 @@ zeroize = "1"
 wasmtime = "=46.0.3"
 libc = "0.2"
 
+[features]
+# dev and qa builds only (owner, 2026-09-28): gpui's own frame and input
+# histograms and its first present into `GET /perf` (docs/perf.md §3.5).
+# A default build compiles none of it: hdrhistogram is not in its graph.
+perf-deep = ["gpui-kit/profiler"]
+
 [dependencies]
 gpui-kit = "=0.6.1"
 gpui-base = "=0.6.4"
@@ -77,9 +83,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "0c9e2a6495e313015f0d6beaf9de955e10c7e583", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "52fb469a7311018e4f897b03bf27132764316857", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "0c9e2a6495e313015f0d6beaf9de955e10c7e583", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true

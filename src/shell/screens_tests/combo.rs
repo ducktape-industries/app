@@ -54,13 +54,11 @@ fn spotlight_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppC
 
 #[gpui_kit::test]
 fn an_empty_window_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppContext) {
-    crate::runtime::list_for_test("combotest-alpha");
-    crate::runtime::list_for_test("combotest-beta");
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    let (_view, mut native) = open(gate::desk(), cx);
+    let (_view, mut native) = open(two_programs(), cx);
     native.update(|window, cx| {
         draw(window, cx);
         window.dispatch_action(Box::new(keys::NewWindow), cx);
@@ -149,13 +147,11 @@ fn a_press_on_a_row_of_a_window_without_the_keys_opens_it_there(cx: &mut TestApp
 
 /// A desk with two empty windows (⌘N twice), the second in front.
 fn two_empty_windows(cx: &mut TestAppContext) -> (Entity<DesktopWindow>, VisualTestContext) {
-    crate::runtime::list_for_test("combotest-alpha");
-    crate::runtime::list_for_test("combotest-beta");
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    let (view, mut native) = open(gate::desk(), cx);
+    let (view, mut native) = open(two_programs(), cx);
     for _ in 0..2 {
         native.update(|window, cx| {
             draw(window, cx);
@@ -163,4 +159,11 @@ fn two_empty_windows(cx: &mut TestAppContext) -> (Entity<DesktopWindow>, VisualT
         });
     }
     (view, native)
+}
+
+/// A desk whose network lists two programs to open.
+fn two_programs() -> Ducktape {
+    let mut state = gate::desk();
+    state.roster = crate::runtime::Roster::listing(&["combotest-alpha", "combotest-beta"]);
+    state
 }

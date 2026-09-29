@@ -1,5 +1,6 @@
 //! The node in hand and what it runs: the global [`Connection`], the roster
-//! (the node's program list and each one's code), the rail rows the shell
+//! (the node's program list and each one's code; the app keeps one, reached
+//! through [`roster`], and a test builds its own), the rail rows the shell
 //! draws from it, the loads a connect or a new block starts, and the reading
 //! of a `duck://` link against the views this connection lists.
 use super::*;
@@ -42,40 +43,53 @@ pub(super) fn connection() -> &'static Mutex<Connection> {
     CONNECTION.get_or_init(Mutex::default)
 }
 
-/// The roster as the node last listed it: every program and its code.
-pub(super) fn listed() -> &'static Mutex<Vec<crate::backend::views::Program>> {
-    static LISTED: OnceLock<Mutex<Vec<crate::backend::views::Program>>> = OnceLock::new();
-    LISTED.get_or_init(Mutex::default)
-}
+/// A roster as a node last listed it, every program and its code, shared
+/// by whoever holds a clone: the app's one ([`roster`]), which the node's
+/// reads fill, its views load from and its windows draw, or a test's own.
+#[derive(Clone, Default)]
+pub(crate) struct Roster(Arc<Mutex<Vec<crate::backend::views::Program>>>);
 
-/// The blob a listed module's view comes from, and whether that blob is the
-/// view itself (a view-only entry) rather than a program carrying it.
-pub(super) fn listed_code(module: &str) -> Option<(abi::BlobId, bool)> {
-    listed()
-        .lock()
-        .expect("roster")
-        .iter()
-        .find(|program| program.name == module)
-        .map(|program| (program.code, program.bare))
-}
-
-/// Whether the roster lists `module`: a link to anything else names nothing.
-pub fn listed_view(module: &str) -> bool {
-    listed_code(module).is_some()
-}
-
-/// Lists `module` once, however many tests ask: two rows of one module
-/// would be one element id twice.
-#[cfg(test)]
-pub(crate) fn list_for_test(module: &str) {
-    let mut listed = listed().lock().unwrap();
-    if listed.iter().all(|program| program.name != module) {
-        listed.push(crate::backend::views::Program {
-            name: module.into(),
-            code: abi::BlobId::Sha256([0; 32]),
-            bare: false,
-        });
+impl Roster {
+    pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<crate::backend::views::Program>> {
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+
+    /// A roster of its own that lists `modules`, for a test to draw or
+    /// open.
+    #[cfg(test)]
+    pub(crate) fn listing(modules: &[&str]) -> Self {
+        let roster = Self::default();
+        roster
+            .lock()
+            .extend(modules.iter().map(|module| crate::backend::views::Program {
+                name: (*module).into(),
+                code: abi::BlobId::Sha256([0; 32]),
+                bare: false,
+            }));
+        roster
+    }
+
+    /// The blob a listed module's view comes from, and whether that blob is
+    /// the view itself (a view-only entry) rather than a program carrying it.
+    pub(super) fn code(&self, module: &str) -> Option<(abi::BlobId, bool)> {
+        self.lock()
+            .iter()
+            .find(|program| program.name == module)
+            .map(|program| (program.code, program.bare))
+    }
+
+    /// Whether it lists `module`: a link to anything else names nothing.
+    pub(crate) fn lists(&self, module: &str) -> bool {
+        self.code(module).is_some()
+    }
+}
+
+/// The app's one roster.
+pub(crate) fn roster() -> &'static Roster {
+    static ROSTER: OnceLock<Roster> = OnceLock::new();
+    ROSTER.get_or_init(Roster::default)
 }
 
 /// A code id as the 32-byte hash a seat records: sha256 as is, sha1 padded.
@@ -98,41 +112,51 @@ pub struct RailRow {
     pub empty: bool,
 }
 
-pub fn rail() -> Vec<RailRow> {
-    let programs: Vec<&'static str> = listed()
-        .lock()
-        .expect("roster")
-        .iter()
-        .map(|program| intern(&program.name))
-        .collect();
-    let registry = registry().lock().expect("module views");
-    programs
-        .into_iter()
-        .map(|module| {
-            let seat = registry
-                .iter()
-                .find_map(|((name, _), seat)| (*name == module).then_some(seat))
-                .map(|seat| seat.lock().expect("module view lock"));
-            let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
-                Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
-                    (guest.name.clone(), None, false)
+impl Roster {
+    pub(crate) fn rail(&self) -> Vec<RailRow> {
+        let _timed = crate::perf::time(crate::perf::Key::Shell, "rail");
+        crate::perf::count(crate::perf::Key::Shell, "rail.calls", 1);
+        // the names first, and the roster let go before the seats are
+        // locked: a roster read locks the seats, then the roster
+        let programs: Vec<&'static str> = self
+            .lock()
+            .iter()
+            .map(|program| intern(&program.name))
+            .collect();
+        let registry = registry().lock().expect("module views");
+        programs
+            .into_iter()
+            .map(|module| {
+                let seat = registry
+                    .iter()
+                    .find_map(|((name, _), seat)| (*name == module).then_some(seat))
+                    .map(|seat| seat.lock().expect("module view lock"));
+                let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
+                    Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
+                        (guest.name.clone(), None, false)
+                    }
+                    Some(Slot::Ready(_)) => (module.to_owned(), None, false),
+                    Some(Slot::Empty) => (module.to_owned(), None, true),
+                    Some(Slot::Failed(_)) => (module.to_owned(), Some("Failed"), false),
+                    // No seat yet (a pane just let go of it, the roster hasn't
+                    // remounted it) is loading too, not a final unnamed view —
+                    // else the raw module id flashes in the rail/pane title.
+                    Some(_) | None => (module.to_owned(), Some("Loading"), false),
+                };
+                RailRow {
+                    module,
+                    label,
+                    note,
+                    empty,
                 }
-                Some(Slot::Ready(_)) => (module.to_owned(), None, false),
-                Some(Slot::Empty) => (module.to_owned(), None, true),
-                Some(Slot::Failed(_)) => (module.to_owned(), Some("Failed"), false),
-                // No seat yet (a pane just let go of it, the roster hasn't
-                // remounted it) is loading too, not a final unnamed view —
-                // else the raw module id flashes in the rail/pane title.
-                Some(_) | None => (module.to_owned(), Some("Loading"), false),
-            };
-            RailRow {
-                module,
-                label,
-                note,
-                empty,
-            }
-        })
-        .collect()
+            })
+            .collect()
+    }
+
+    /// The one reading of a link, against the views this roster lists.
+    pub(crate) fn parse_link(&self, link: &str) -> Link {
+        parse_link_among(link, &self.rail())
+    }
 }
 
 /// A node was connected: every seat is asked again of it, and the roster
@@ -184,19 +208,22 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
         let Some(client) = asked_of.client.as_ref() else {
             return;
         };
+        let read = crate::perf::time(crate::perf::Key::Shell, "roster");
         let programs =
-            match handle().block_on(crate::backend::views::programs(client, &asked_of.network)) {
-                Ok(programs) => programs,
-                Err(error) => {
-                    tracing::warn!(
-                        target: "ducktape::app",
-                        reason = "roster_unreadable",
-                        error = %error,
-                        "the node's programs were not listed"
-                    );
-                    return;
-                }
-            };
+            handle().block_on(crate::backend::views::programs(client, &asked_of.network));
+        drop(read);
+        let programs = match programs {
+            Ok(programs) => programs,
+            Err(error) => {
+                tracing::warn!(
+                    target: "ducktape::app",
+                    reason = "roster_unreadable",
+                    error = %error,
+                    "the node's programs were not listed"
+                );
+                return;
+            }
+        };
         let loads = {
             let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
             if node_since_left {
@@ -220,8 +247,7 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                     registry.remove(&gone);
                 }
             }
-            let previous =
-                std::mem::replace(&mut *listed().lock().expect("roster"), programs.clone());
+            let previous = std::mem::replace(&mut *roster().lock(), programs.clone());
             let mut loads = Vec::new();
             for module in &names {
                 if !registry.keys().any(|(name, _)| name == module) {
@@ -271,11 +297,6 @@ pub enum Link {
     Web(String),
     /// Nothing this app opens.
     Unknown,
-}
-
-/// The one reading of a link, against the views this connection lists.
-pub fn parse_link(link: &str) -> Link {
-    parse_link_among(link, &rail())
 }
 
 fn parse_link_among(link: &str, rows: &[RailRow]) -> Link {
@@ -489,17 +510,10 @@ mod rail_tests {
     #[test]
     fn unmounted_module_is_loading_not_a_bare_id() {
         let module = "rail-tests-unmounted";
-        listed()
-            .lock()
-            .unwrap()
-            .push(crate::backend::views::Program {
-                name: module.into(),
-                code: abi::BlobId::Sha256([0; 32]),
-                bare: false,
-            });
         // No entry for `module` is inserted into registry(): this is the
         // `None` seat case rail() must treat as loading.
-        let row = rail()
+        let row = Roster::listing(&[module])
+            .rail()
             .into_iter()
             .find(|row| row.module == module)
             .expect("listed module appears in the rail");
@@ -513,22 +527,20 @@ mod rail_tests {
     #[test]
     fn a_view_only_entry_is_a_rail_row_and_a_short_link() {
         let view = abi::BlobId::Sha256([7; 32]);
-        listed()
-            .lock()
-            .unwrap()
-            .push(crate::backend::views::Program {
-                name: "explorer".into(),
-                code: view,
-                bare: true,
-            });
-        assert!(rail().iter().any(|row| row.module == "explorer"));
+        let roster = Roster::default();
+        roster.lock().push(crate::backend::views::Program {
+            name: "explorer".into(),
+            code: view,
+            bare: true,
+        });
+        assert!(roster.rail().iter().any(|row| row.module == "explorer"));
         assert_eq!(
-            parse_link("duck://explorer"),
+            roster.parse_link("duck://explorer"),
             Link::View {
                 module: "explorer",
                 route: None
             }
         );
-        assert_eq!(listed_code("explorer"), Some((view, true)));
+        assert_eq!(roster.code("explorer"), Some((view, true)));
     }
 }
