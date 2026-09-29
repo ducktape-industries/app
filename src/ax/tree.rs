@@ -5,7 +5,7 @@
 //! gives each node its stable id. The rest are the shapes of answers:
 //! [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
-use gpui_kit::accesskit::{HasPopup, Invalid, Live};
+use gpui_kit::accesskit::{HasPopup, Invalid, Live, Orientation};
 
 /// The actions the door offers, each with its word: a node supporting one
 /// is offered it, and `/act` performs each word (`actions::perform`).
@@ -105,6 +105,9 @@ pub(crate) struct Properties {
     /// `menu`, `listbox`, `tree`, `grid` or `dialog`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) has_popup: Option<&'static str>,
+    /// `horizontal` or `vertical`: which arrows step a composite's items.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) orientation: Option<&'static str>,
     /// The door id of the nearest ancestor the snapshot has; none at its root.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) parent: Option<String>,
@@ -137,6 +140,10 @@ impl Properties {
                 HasPopup::Tree => "tree",
                 HasPopup::Grid => "grid",
                 HasPopup::Dialog => "dialog",
+            }),
+            orientation: node.orientation().map(|orientation| match orientation {
+                Orientation::Horizontal => "horizontal",
+                Orientation::Vertical => "vertical",
             }),
             ..Default::default()
         }
@@ -642,6 +649,7 @@ mod key_tests {
                 .size(px(100.))
                 .role(Role::ListBox)
                 .aria_label("Rows")
+                .aria_orientation(Orientation::Vertical)
                 .child(row);
             crate::a11y::modal(
                 div()
@@ -684,7 +692,8 @@ mod key_tests {
             json("t:list"),
             serde_json::json!({
                 "id": "t:list", "role": "ListBox", "name": "Rows", "state": [], "actions": [],
-                "active_descendant": "t:row", "parent": "t:dialog", "in": "t",
+                "active_descendant": "t:row", "orientation": "vertical", "parent": "t:dialog",
+                "in": "t",
             })
         );
         assert_eq!(
