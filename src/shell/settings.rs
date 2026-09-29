@@ -66,6 +66,7 @@ impl DesktopWindow {
                         })
                     })
                     .child(label),
+                ink.ink,
             )
         });
         let rows = match state.settings_page {
@@ -162,6 +163,7 @@ impl DesktopWindow {
                     .child(
                         gpui_kit::component::Icon::new(gpui_kit::assets::IconName::X).size(px(16.)),
                     ),
+                ink.ink,
             ));
         let (top, tall) =
             super::desk::dialog_fit(f32::from(window.viewport_size().height), 680., 74.);
@@ -406,6 +408,7 @@ impl DesktopWindow {
                     true => ink.bg,
                     false => ink.muted,
                 })),
+            ink.ring(on),
         )
         .into_any_element()
     }
@@ -454,6 +457,7 @@ impl DesktopWindow {
                                     model.update(cx, |model, cx| model.dispatch(message(), cx))
                                 })
                                 .child(label),
+                            ink.ink,
                         )
                     }),
             )
@@ -507,6 +511,7 @@ impl DesktopWindow {
                                 })
                             })
                             .child("Forget"),
+                        ink.ink,
                     ))
             });
         [

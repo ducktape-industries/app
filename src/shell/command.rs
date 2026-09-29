@@ -332,6 +332,7 @@ impl DesktopWindow {
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
+            crate::a11y::ink(cx),
         )
         .into_any_element()
     }

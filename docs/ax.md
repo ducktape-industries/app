@@ -136,10 +136,10 @@ Helpers (`src/a11y.rs`):
 
 - `Control::control(role, name)` = `role` + `aria_label`.
 - `keyboard` = `focusable` + `tab_stop(true)` + `focus_shown` + a mouse-down `prevent_default` so a pointer press does not steal focus. Every shell button goes through it (`src/shell/ink.rs` `DesktopWindow::button`, `DesktopWindow::link`; `src/shell/panes.rs`, `settings.rs`, `notifications.rs`, `menus.rs`, `menubar.rs`, `screens.rs`, `sign_in.rs`, `desk.rs`). One tab stop is built outside it: the program tab in `src/shell/menubar.rs` (`focusable().tab_stop(true)` on a `sans` div with `.control(Role::Tab, …)`), so a mouse press moves focus to it.
-- `focus_shown` = a 2 px inset grey ring on `focus_visible`.
+- `focus_shown(element, color)` = a 2 px inset ring and a border in `color` on `focus_visible`. `color` is the palette's ink (`Ink::ring(false)`, the kit theme's `ring` token for a view's link), and on a control filled with ink the page colour (`Ink::ring(true)`: a primary button, the notification ask's filled button, a switch on), so the ring stays seen; the border takes it too because gpui paints a border after an inset shadow.
 - `modal` sets `set_modal` through `a11y_synthetic_children`. Only the view presenter calls it (`src/render/surfaces.rs`, on a named open `Overlay`). No shell overlay does.
 - `disabled` sets `set_disabled` through the same single `a11y_synthetic_children` slot and says GPUI has no setter; the fork has `aria_disabled` (`src/elements/div.rs`), and the presenter already uses it (`src/render/layout.rs` `container`, `uniform.rs` `uniform_list`, `pictures.rs` `primitive_interactivity`). `modal`, `disabled`, `whole` and `private` each overwrite that one slot; no element gets two of them today, so this is latent, not live.
-- `text_field(id, focus, set_value, field)` wraps a kit input in a div that tracks the input's focus handle and answers `SetValue`.
+- `text_field(id, focus, set_value, field, color)` wraps a kit input in a div that tracks the input's focus handle and answers `SetValue`; focused, by keyboard or pointer, the div wears the ring in `color` (the kit theme's `ring` token).
 - `AX_PRIVATE` (the door masks; AT reads) and `AX_WHOLE` (the door does not truncate).
 
 What the shell exposes and what it does not:

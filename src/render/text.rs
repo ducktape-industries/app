@@ -242,10 +242,15 @@ pub(super) fn paint_rich_selection(
     }
 }
 
-/// The mark on the link the arrows picked: the shell focus ring's grey,
+/// The mark on the link the arrows picked: the shell focus ring's ink,
 /// 2px around the range's words, which reads at 3:1 on either theme.
-fn paint_picked_link(layout: &TextLayout, range: &std::ops::Range<usize>, window: &mut Window) {
-    let ring = crate::a11y::ring();
+fn paint_picked_link(
+    layout: &TextLayout,
+    range: &std::ops::Range<usize>,
+    window: &mut Window,
+    cx: &App,
+) {
+    let ring = crate::a11y::ring(crate::a11y::ink(cx));
     for bounds in line_boxes(layout, range) {
         window.paint_quad(gpui_kit::quad(
             bounds,
@@ -428,7 +433,7 @@ impl ViewTree {
                     paint_rich_selection(&selection_layout, range, window, cx);
                 }
                 if let Some(range) = &picked {
-                    paint_picked_link(&selection_layout, range, window);
+                    paint_picked_link(&selection_layout, range, window, cx);
                 }
             },
         )

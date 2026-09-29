@@ -157,8 +157,8 @@ impl DesktopWindow {
                 .py(px(12.))
                 .border_b_1()
                 .border_color(ink.line)
-                .child(crate::a11y::keyboard(pick))
-                .child(crate::a11y::keyboard(forget))
+                .child(crate::a11y::keyboard(pick, ink.ink))
+                .child(crate::a11y::keyboard(forget, ink.ink))
         });
         let recent = (!state.recent_endpoints.is_empty()).then(|| {
             div()

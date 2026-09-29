@@ -336,6 +336,7 @@ impl DesktopWindow {
                     run(cx)
                 })
                 .child(label),
+            ink.ink,
         )
     }
 
