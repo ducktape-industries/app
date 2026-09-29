@@ -934,13 +934,13 @@ fn members(active: usize) -> view_wire::Node {
     list
 }
 
-/// A view's list answers an arrow once the update that pressed it has
-/// ended (a key reaches a view as an event the tree emits, and an emit is
-/// delivered when the outermost update ends): the arrow probe of
-/// `GET /audit` presses each arrow in an update of its own and reads after
-/// it, so a list whose arrows move its active row passes AX-107.
-#[gpui_kit::test]
-async fn the_arrow_probe_sees_a_views_list_move_its_active_row(cx: &mut gpui_kit::TestAppContext) {
+/// `GET /audit?walk=1` over a [`members`] list holding the keys, whose
+/// view steps the active row on `down` and `up`, `after` the key reached
+/// it (none: at once): the answer, and the keys the view heard.
+async fn arrow_probe(
+    cx: &mut gpui_kit::TestAppContext,
+    after: Option<std::time::Duration>,
+) -> (serde_json::Value, Vec<String>) {
     use gpui_kit::test::TestWindowExt as _;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
@@ -950,7 +950,6 @@ async fn the_arrow_probe_sees_a_views_list_move_its_active_row(cx: &mut gpui_kit
         |_, _| crate::render::ViewTree::new(members(1)),
     );
     let tree = window.root(cx).unwrap();
-    // the view: down and up step the active row, at once
     let active = Rc::new(Cell::new(1usize));
     let heard = Rc::new(RefCell::new(Vec::<String>::new()));
     let _view = cx.update(|cx| {
@@ -972,7 +971,15 @@ async fn the_arrow_probe_sees_a_views_list_move_its_active_row(cx: &mut gpui_kit
                 _ => return,
             };
             active.set(next);
-            tree.update(cx, |tree, cx| tree.replace(members(next), cx));
+            let Some(after) = after else {
+                tree.update(cx, |tree, cx| tree.replace(members(next), cx));
+                return;
+            };
+            cx.spawn(async move |cx| {
+                cx.background_executor().timer(after).await;
+                tree.update(cx, |tree, cx| tree.replace(members(next), cx))
+            })
+            .detach();
         })
     });
     // the list holds the keys: Tab is the app's binding, not a bare window's
@@ -983,9 +990,33 @@ async fn the_arrow_probe_sees_a_views_list_move_its_active_row(cx: &mut gpui_kit
         window.focus_next(cx);
     });
     let report = door_audit(window.into(), None, cx).await;
+    let heard = heard.borrow().clone();
+    (report, heard)
+}
+
+/// A view's list answers an arrow once the update that pressed it has
+/// ended (a key reaches a view as an event the tree emits, and an emit is
+/// delivered when the outermost update ends): the arrow probe of
+/// `GET /audit` presses each arrow in an update of its own and reads after
+/// it, so a list whose arrows move its active row passes AX-107.
+#[gpui_kit::test]
+async fn the_arrow_probe_sees_a_views_list_move_its_active_row(cx: &mut gpui_kit::TestAppContext) {
+    let (report, heard) = arrow_probe(cx, None).await;
     assert_eq!(report["applicable"]["AX-107"], 1, "the probe ran: {report}");
     assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
-    assert_eq!(heard.borrow()[..2], ["down", "up"]);
+    assert_eq!(heard[..2], ["down", "up"]);
+}
+
+/// A view that moves its active row a while after it heard the arrow (a
+/// guest ticks on a later draw) still passes AX-107: the probe reads again
+/// until the row has moved, before it presses the next arrow.
+#[gpui_kit::test]
+async fn the_arrow_probe_waits_for_a_view_that_answers_late(cx: &mut gpui_kit::TestAppContext) {
+    let late = std::time::Duration::from_millis(120);
+    let (report, heard) = arrow_probe(cx, Some(late)).await;
+    assert_eq!(report["applicable"]["AX-107"], 1, "the probe ran: {report}");
+    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
+    assert_eq!(heard[..2], ["down", "up"]);
 }
 
 /// The refused elements `Filter` keeps: a view's audit reports the ones under
