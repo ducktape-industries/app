@@ -178,6 +178,255 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
     }
 }
 
+/// A focused field wears one mark, on its own box. A view's input placed by
+/// a margin and a width in a row a spacer fills (forge's filter) keeps that
+/// box, and its node is that box and no wider: a press in the spacer's room
+/// is not a press on the field. Focused, its border takes the ring's colour
+/// (with the ring, an inset shadow the scene's quads do not show; `a11y`
+/// pins the two together), and the kit's own ring, a border painted round
+/// the box, is not drawn.
+#[gpui_kit::test]
+fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    let mut field = input("Filter", false, false);
+    let wire::Node::Input { style, .. } = &mut field else {
+        unreachable!()
+    };
+    *style = div()
+        .ml(px(16.))
+        .w(px(260.))
+        .h(px(32.))
+        .px_2()
+        .border_1()
+        .border_color(grey)
+        .style()
+        .clone();
+    let root = container_with_style(
+        "row",
+        div().flex().items_center().w(px(600.)).style().clone(),
+        [
+            field,
+            container_with_style("spacer", div().flex_1().style().clone(), []),
+            container_with_style("end", div().w(px(100.)).h(px(32.)).style().clone(), []),
+        ],
+    );
+    let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    // the field's box and border as drawn, the other borders drawn over
+    // it, and its node's box
+    let drawn = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let scale = window.scale_factor();
+            let quads = window.painted_quads();
+            let bordered = || {
+                quads
+                    .iter()
+                    .filter(|quad| quad.border_widths.left.as_f32() > 0.)
+            };
+            let field = bordered()
+                .find(|quad| quad.bounds.size.width.as_f32() == 260. * scale)
+                .expect("the field's box is drawn");
+            let over = bordered()
+                .filter(|quad| quad.bounds != field.bounds && quad.bounds.intersects(&field.bounds))
+                .count();
+            let update = window.a11y_tree().expect("an a11y tree once activated");
+            let node = update
+                .nodes
+                .iter()
+                .find(|(_, node)| node.role() == gpui_kit::Role::TextInput)
+                .and_then(|(_, node)| node.bounds())
+                .expect("the field's node has a box");
+            let scaled = |x: f64| x as f32 / scale;
+            let origin = field.bounds.origin.x.as_f32() / scale;
+            (
+                origin,
+                field.border_color,
+                over,
+                (scaled(node.x0), scaled(node.x1)),
+            )
+        })
+    };
+    native.update(|window, _| window.activate_a11y());
+    let unfocused = drawn(&mut native);
+    assert_eq!((unfocused.0, unfocused.1, unfocused.2), (16., grey, 0));
+    native.update(|window, cx| {
+        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        state.update(cx, |state, cx| state.focus(window, cx));
+    });
+    let (origin, border, over, node) = drawn(&mut native);
+    let ink = native.update(|_, cx| crate::a11y::ink(cx));
+    assert_eq!(
+        (origin, border, over),
+        (16., ink, 0),
+        "one mark, the field's"
+    );
+    assert_eq!(node, (16., 276.), "the field's node is its box");
+    let end = tree
+        .read_with(&native, |tree, _| {
+            tree.measured_bounds(&[named_id("row"), named_id("end")])
+        })
+        .unwrap();
+    assert_eq!(
+        (end.left(), end.right()),
+        (px(500.), px(600.)),
+        "the row's last box keeps its width and its place"
+    );
+}
+
+/// A view's input a fraction of its row wide takes that fraction once: the
+/// wrapper takes it of the row, and the kit's box the whole of the wrapper.
+#[gpui_kit::test]
+fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    let mut field = input("Filter", false, false);
+    let wire::Node::Input { style, .. } = &mut field else {
+        unreachable!()
+    };
+    *style = div()
+        .ml(px(16.))
+        .w(gpui_kit::relative(0.5))
+        .h(px(32.))
+        .px_2()
+        .border_1()
+        .border_color(grey)
+        .style()
+        .clone();
+    let root = container_with_style(
+        "row",
+        div().flex().items_center().w(px(600.)).style().clone(),
+        [
+            field,
+            container_with_style("spacer", div().flex_1().style().clone(), []),
+            container_with_style("end", div().w(px(100.)).h(px(32.)).style().clone(), []),
+        ],
+    );
+    let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let width = native.update(|window, cx| {
+        window.render_frame(cx);
+        let scale = window.scale_factor();
+        window
+            .painted_quads()
+            .iter()
+            .find(|quad| quad.border_widths.left.as_f32() > 0. && quad.border_color == grey)
+            .expect("the field's box is drawn")
+            .bounds
+            .size
+            .width
+            .as_f32()
+            / scale
+    });
+    assert_eq!(width, 300.);
+}
+
+/// A disabled field that holds focus (disabled while focused, as a busy
+/// dialog's) wears no ring: the kit hides its own focus look there too.
+#[gpui_kit::test]
+fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    let mut field = input("Filter", false, true);
+    let wire::Node::Input { style, .. } = &mut field else {
+        unreachable!()
+    };
+    *style = div()
+        .w(px(260.))
+        .h(px(32.))
+        .border_1()
+        .border_color(grey)
+        .style()
+        .clone();
+    let root = container_with_style("row", div().w(px(600.)).style().clone(), [field]);
+    let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let border = native.update(|window, cx| {
+        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        state.update(cx, |state, cx| state.focus(window, cx));
+        window.render_frame(cx);
+        let scale = window.scale_factor();
+        window
+            .painted_quads()
+            .iter()
+            .find(|quad| {
+                quad.border_widths.left.as_f32() > 0.
+                    && quad.bounds.size.width.as_f32() == 260. * scale
+            })
+            .expect("the field's box is drawn")
+            .border_color
+    });
+    assert_eq!(border, grey);
+}
+
+/// An editor's box is the view's, border and padding round the text: that
+/// box, not the text inside the padding, wears the ring and its colour.
+#[gpui_kit::test]
+fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    let root = wire::Node::Editor {
+        id: named_id("document"),
+        style: div()
+            .w(px(240.))
+            .h(px(60.))
+            .px_2()
+            .border_1()
+            .border_color(grey)
+            .style()
+            .clone(),
+        label: None,
+        binding: None,
+        placeholder: String::new(),
+        document: wire::editor_document::EditorDocumentRef {
+            document: "ring".into(),
+            reset: 1,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: 0,
+        },
+        on_document: 0,
+        editable: true,
+    };
+    let store = crate::editor::wire::EditorStore::new(91);
+    store.replace(&root).unwrap();
+    let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
+        let mut tree = ViewTree::new(root);
+        tree.set_editor_store(store, cx);
+        tree
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let border = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let scale = window.scale_factor();
+            window
+                .painted_quads()
+                .into_iter()
+                .find(|quad| quad.bounds.size.width.as_f32() == 240. * scale)
+                .expect("the view's box is drawn")
+                .border_color
+        })
+    };
+    assert_eq!(border(&mut native), grey);
+    native.update(|window, cx| {
+        let path = [named_id("document")];
+        let editor_mount::EditorView::Text(editor) = &tree.read(cx).editors[path.as_slice()].view;
+        let editor = editor.clone();
+        let focus = wire::WidgetCommand::Focus {
+            target: path.to_vec(),
+        };
+        editor.update(cx, |editor, cx| editor.widget_command(&focus, window, cx));
+    });
+    let ink = native.update(|_, cx| crate::a11y::ink(cx));
+    assert_eq!(border(&mut native), ink);
+}
+
 #[gpui_kit::test]
 fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

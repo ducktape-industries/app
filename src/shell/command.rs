@@ -335,7 +335,6 @@ impl DesktopWindow {
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
-            None,
         )
         .into_any_element()
     }
