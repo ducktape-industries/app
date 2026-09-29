@@ -323,6 +323,45 @@ fn a_fraction_wide_field_takes_its_fraction_once(cx: &mut gpui_kit::TestAppConte
     assert_eq!(width, 300.);
 }
 
+/// A disabled field that holds focus (disabled while focused, as a busy
+/// dialog's) wears no ring: the kit hides its own focus look there too.
+#[gpui_kit::test]
+fn a_disabled_field_wears_no_ring(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let grey = gpui_kit::hsla(0., 0., 0.5, 1.);
+    let mut field = input("Filter", false, true);
+    let wire::Node::Input { style, .. } = &mut field else {
+        unreachable!()
+    };
+    *style = div()
+        .w(px(260.))
+        .h(px(32.))
+        .border_1()
+        .border_color(grey)
+        .style()
+        .clone();
+    let root = container_with_style("row", div().w(px(600.)).style().clone(), [field]);
+    let window = cx.open_window(size(px(600.), px(200.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let border = native.update(|window, cx| {
+        let state = tree.read(cx).fields.values().next().unwrap().state.clone();
+        state.update(cx, |state, cx| state.focus(window, cx));
+        window.render_frame(cx);
+        let scale = window.scale_factor();
+        window
+            .painted_quads()
+            .iter()
+            .find(|quad| {
+                quad.border_widths.left.as_f32() > 0.
+                    && quad.bounds.size.width.as_f32() == 260. * scale
+            })
+            .expect("the field's box is drawn")
+            .border_color
+    });
+    assert_eq!(border, grey);
+}
+
 /// An editor's box is the view's, border and padding round the text: that
 /// box, not the text inside the padding, wears the ring and its colour.
 #[gpui_kit::test]
