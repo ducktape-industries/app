@@ -24,14 +24,12 @@ impl Render for Root {
     ) -> impl IntoElement {
         use gpui_kit::prelude::FluentBuilder as _;
         let seat = self.seat.read(cx);
-        let body = match (seat.tree(), seat.standin()) {
+        let body = match (seat.standin(), seat.tree()) {
+            (Some(standin), _) => standin.element(seat.module(), seat.instance(), seat.ax_mark()),
             // the cached path, no a11y reader
-            (Some(tree), _) => gpui_kit::AnyView::from(tree)
+            (None, Some(tree)) => gpui_kit::AnyView::from(tree)
                 .cached(gpui_kit::StyleRefinement::default().size_full())
                 .into_any_element(),
-            (None, Some(standin)) => {
-                standin.element(seat.module(), seat.instance(), seat.ax_mark())
-            }
             (None, None) => div().size_full().into_any_element(),
         };
         div()
@@ -430,6 +428,26 @@ fn a_load_landing_replaces_the_standin_without_a_frame_loop(cx: &mut TestAppCont
         renders_of(MODULE),
         1,
         "the tree rendered once and is cached"
+    );
+}
+
+/// A load that lands wakes the seat: `spawn_load`'s install signals
+/// `Mounted.wake`, which is what replaces the per-frame redraw loop in the
+/// running app. No gpui task is involved: the load thread's signal is read
+/// off the watch directly.
+#[test]
+fn a_load_that_lands_wakes_the_seat() {
+    const MODULE: &str = "install-wake-test";
+    let mounted = Mounted::seat();
+    let woke = mounted.lock().unwrap().wake.subscribe();
+    let generation = mounted.lock().unwrap().start();
+    let snapshot = connection().lock().unwrap().clone();
+    spawn_load(MODULE, &mounted, generation, snapshot)
+        .join()
+        .unwrap();
+    assert!(
+        woke.has_changed().unwrap(),
+        "the install signalled the seat's wake"
     );
 }
 

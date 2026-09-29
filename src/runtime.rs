@@ -269,6 +269,19 @@ pub(crate) fn intent_for_test(module: &str, instance: u64, intent: Intent) {
     guest.intents.push(intent);
 }
 
+/// `module`'s seat `instance` traps: its guest keeps its tree but shows a
+/// fault from now on, and the seat is woken as a trapping tick would.
+#[cfg(test)]
+pub(crate) fn fault_for_test(module: &str, instance: u64) {
+    let registry = registry().lock().unwrap();
+    let mut locked = registry[&(module, instance)].lock().unwrap();
+    let Slot::Ready(guest) = &mut locked.slot else {
+        panic!("{module} is not seated");
+    };
+    guest.fault = Some("trapped for the test".into());
+    locked.wake.send_replace(());
+}
+
 #[cfg(test)]
 fn seat_code_for_test(module: &'static str, min_width: u32, code: Module) {
     let ready = || {

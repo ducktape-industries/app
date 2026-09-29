@@ -1038,3 +1038,113 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
         "the badge the hidden seat handed over reached the model"
     );
 }
+
+/// A pane whose seat holds both a tree and a standin draws the standin: a
+/// guest that traps after its tree mounted shows "This view stopped" and
+/// its Retry, not the frozen tree.
+#[gpui_kit::test]
+fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-trapped-view";
+    let (model, key, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    native.run_until_parked();
+    let ids = |nodes: &serde_json::Value| -> Vec<String> {
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["id"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let (instance, before) = native.update(|window, cx| {
+        let nodes = draw(window, cx);
+        let layout = view.read(cx).layout(cx);
+        let pane = layout
+            .panes
+            .iter()
+            .find(|pane| pane.module == MODULE)
+            .unwrap();
+        let seat = model.read(cx).seats.read(cx).seat(pane.instance).unwrap();
+        (seat.read(cx).instance(), ids(&nodes))
+    });
+    let unavailable = format!("console:{MODULE}/view-unavailable");
+    assert!(
+        !before.contains(&unavailable),
+        "a live view shows no standin: {before:?}"
+    );
+    crate::runtime::fault_for_test(MODULE, instance);
+    native.run_until_parked();
+    let after = native.update(|window, cx| ids(&draw(window, cx)));
+    assert!(
+        after.contains(&unavailable),
+        "the trapped view shows its standin over the tree it keeps: {after:?}"
+    );
+    assert!(
+        after.contains(&format!("console:{MODULE}/view-retry")),
+        "{after:?}"
+    );
+}
+
+/// A popped-out pane's seat is placed in the new window as soon as that
+/// window opens, not at the next dispatch: a guest's Focus right after
+/// the pop-out runs in the window the pane is in.
+#[gpui_kit::test]
+fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-popout-place-view";
+    let (model, key, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    native.run_until_parked();
+    let (index, instance) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let index = layout
+            .panes
+            .iter()
+            .position(|pane| pane.module == MODULE)
+            .unwrap();
+        (index, layout.panes[index].instance)
+    });
+    let seat = native.update(|_, cx| model.read(cx).seats.read(cx).seat(instance).unwrap());
+    assert_eq!(
+        seat.read_with(&native, |seat, _| seat.window()),
+        Some(native.update(|_, cx| model.read(cx).windows[&key])),
+        "the seat starts in the console"
+    );
+    native.update(|window, cx| press(&format!("pane/{index}/popout"), window, cx));
+    // the test has no command loop: it opens the window the shell would
+    native.update(|_, cx| {
+        let (&popped, own) = model
+            .read(cx)
+            .state
+            .layouts
+            .iter()
+            .find(|(candidate, _)| **candidate != key)
+            .expect("the pane left for a window of its own");
+        let kind = WindowKind::View {
+            module: own.panes[0].module,
+        };
+        model.update(cx, |model, cx| {
+            model.open_window(popped, kind, oneshot::channel().0, None, cx)
+        });
+    });
+    native.run_until_parked();
+    let popped_handle = native.update(|_, cx| {
+        let model = model.read(cx);
+        let (&popped, _) = model
+            .windows
+            .iter()
+            .find(|(candidate, _)| **candidate != key)
+            .expect("the pop-out window opened");
+        model.windows[&popped]
+    });
+    assert_eq!(
+        seat.read_with(&native, |seat, _| seat.window()),
+        Some(popped_handle),
+        "the seat moved into the popped-out window as it opened"
+    );
+}

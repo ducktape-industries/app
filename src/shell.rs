@@ -351,6 +351,20 @@ impl Desktop {
             .collect()
     }
 
+    /// A seat per view pane, placed in its window, gone panes hidden and
+    /// the intents they hand over routed. After every `dispatch`, and once
+    /// more when a window opens: a pop-out's handle lands in `windows`
+    /// outside any dispatch, and its seat's commands must run there, not
+    /// in the console. s11 moves this onto `Windows.desks` observers.
+    fn reconcile_seats(&mut self, cx: &mut Context<Self>) {
+        let hidden = self.seats.update(cx, |seats, cx| {
+            seats.reconcile(&self.state.layouts, &self.windows, cx)
+        });
+        for (module, intent) in hidden {
+            self.dispatch(Message::ViewEvent(module, intent), cx);
+        }
+    }
+
     fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "dispatch");
         let runtime = crate::runtime::handle();
@@ -359,12 +373,7 @@ impl Desktop {
         let task = self.state.handle(message);
         // both bridges: s11 moves reconcile onto `Windows.desks` observers,
         // s10 has `Seats` encode the props from `Session` and `Account`
-        let hidden = self.seats.update(cx, |seats, cx| {
-            seats.reconcile(&self.state.layouts, &self.windows, cx)
-        });
-        for (module, intent) in hidden {
-            self.dispatch(Message::ViewEvent(module, intent), cx);
-        }
+        self.reconcile_seats(cx);
         let props = self.state.view_props();
         self.seats
             .update(cx, |seats, cx| seats.set_props(props, cx));

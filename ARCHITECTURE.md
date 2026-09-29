@@ -187,8 +187,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    .with_presentation(old.presentation())` and hands it the guest's
    `EditorStore`; the seat notifies, and the pane (`panes::pane_body`)
    draws `seat.tree()` cached (`layers::cached_unless_a11y`) inside the
-   `view/<module>` mark, laid out from `seat.min_width()`, or the seat's
-   `Standin` when it has no tree. `ViewTree::node` (`render.rs`) is the dispatcher: one
+   `view/<module>` mark, laid out from `seat.min_width()`, or its `Standin`
+   while it holds one (a load, a failure, a stopped view), over any tree it
+   keeps. `ViewTree::node` (`render.rs`) is the dispatcher: one
    method per `Node` variant, each building GPUI / gpui-kit elements.
    Native state that must outlive one frame (focus handles, field text,
    scroll offsets, list state, decoded images) lives in maps on `ViewTree`

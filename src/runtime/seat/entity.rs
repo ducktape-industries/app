@@ -133,6 +133,11 @@ impl Seat {
         self.props.as_deref()
     }
 
+    #[cfg(test)]
+    pub(crate) fn window(&self) -> Option<AnyWindowHandle> {
+        self.window
+    }
+
     /// A turn from a window callback (`on_next_frame`, `observe_in`, a
     /// `window.update` closure): the window is borrowed there, so a nested
     /// `window.update` in `turn`/`mount` would fail ("window not found").
