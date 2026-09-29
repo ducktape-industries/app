@@ -152,6 +152,23 @@ impl DesktopWindow {
         .flex()
         .flex_col()
         .min_h_0();
+        // the field's box, which wears its ring
+        let header = div()
+            .h(px(super::ink::tall(56.)))
+            .flex_shrink_0()
+            .px(px(16.))
+            .flex()
+            .items_center()
+            .border_b_1()
+            .border_color(ink.line)
+            .gap(px(12.))
+            .child(div().flex_1().child(field))
+            .child(mono(400, 12.).text_color(ink.muted).child("esc"));
+        let header = crate::a11y::around_field(
+            header,
+            input.read(cx).focus_handle(cx).is_focused(window),
+            ink.ring(false),
+        );
         let keys = self.model.clone();
         let scroll = self.spotlight_rows.clone();
         // the field, the longest list and the key hints
@@ -193,23 +210,7 @@ impl DesktopWindow {
                         cx.stop_propagation();
                         keys.update(cx, |model, cx| model.dispatch(message, cx));
                     })
-                    .child(
-                        combo
-                            .child(
-                                div()
-                                    .h(px(super::ink::tall(56.)))
-                                    .flex_shrink_0()
-                                    .px(px(16.))
-                                    .flex()
-                                    .items_center()
-                                    .border_b_1()
-                                    .border_color(ink.line)
-                                    .gap(px(12.))
-                                    .child(div().flex_1().child(field))
-                                    .child(mono(400, 12.).text_color(ink.muted).child("esc")),
-                            )
-                            .child(list),
-                    )
+                    .child(combo.child(header).child(list))
                     .child(
                         mono(400, 12.)
                             .flex_shrink_0()

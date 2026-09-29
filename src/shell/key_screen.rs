@@ -80,6 +80,7 @@ impl DesktopWindow {
                 window,
                 cx,
             );
+            let focused = self.field_focused("password", window, cx);
             let border = match failed {
                 true => ink.danger,
                 false => ink.field,
@@ -87,7 +88,7 @@ impl DesktopWindow {
             self.field(
                 "password-label",
                 "Password for this device's key",
-                field_box(field, border, 44., &ink).into_any_element(),
+                field_box(field, focused, border, 44., &ink).into_any_element(),
                 failed.then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink)),
                 &ink,
             )
