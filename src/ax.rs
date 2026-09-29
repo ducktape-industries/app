@@ -26,9 +26,10 @@
 //! pointer drag goes through its mouse dispatch ([`drag_by_id`]).
 //! `GET /audit?window&view&walk=1&launcher=1` runs the rules of
 //! `docs/ax.md` ([`audit`]) over one window — the named one, else the one
-//! holding focus, else the first — with the Tab walk when `walk`; `launcher`
-//! is the caller's word that the shell screen is not the desk (AX-018), and
-//! the shell says which controls its Help lists with a chord (AX-114).
+//! holding focus, else the first — with the Tab walk when `walk`, a key per
+//! update as `POST /key` presses it; `launcher` is the caller's word that
+//! the shell screen is not the desk (AX-018), and the shell says which
+//! controls its Help lists with a chord (AX-114).
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
 use futures::StreamExt as _;
@@ -291,6 +292,10 @@ pub(crate) type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
 
 const POLL: Duration = Duration::from_millis(50);
 
+/// Longest the audit's arrow probe waits for a view to move its active
+/// row after one key: a list whose arrows do nothing costs it twice.
+const ARROW_WAIT: Duration = Duration::from_millis(500);
+
 /// Longest a call may wait on the tree. The client picks its deadline, so
 /// an absurd one is honoured only this far.
 const MAX_DEADLINE: Duration = Duration::from_secs(60);
@@ -461,20 +466,45 @@ async fn answer(
                 .into_iter()
                 .find_map(|(name, _, other)| (other == handle).then_some(name))
                 .unwrap_or_default();
+            let gone = || Reply::new(404, json!({ "error": "no such window" }));
+            let opened = handle.update(cx, |_, window, cx| {
+                audit::Observer::open(
+                    window,
+                    cx,
+                    &name,
+                    walk,
+                    |scope| filter.keeps(scope),
+                    |window, cx| current(&name, window, cx, true, seen),
+                )
+            });
+            let Ok(mut observer) = opened else {
+                return gone();
+            };
+            // a key per update, as `POST /key` presses it: a view hears a
+            // key once the update that pressed it ends, and answers on the
+            // draw a read makes; the probe's arrows wait for that answer
+            loop {
+                match handle.update(cx, |_, window, cx| observer.press(window, cx)) {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(_) => return gone(),
+                }
+                let deadline = Instant::now() + ARROW_WAIT;
+                while !handle
+                    .update(cx, |_, window, cx| observer.read(window, cx))
+                    .unwrap_or(true)
+                    && Instant::now() < deadline
+                {
+                    cx.background_executor().timer(POLL).await;
+                }
+            }
             handle
                 .update(cx, |_, window, cx| {
-                    let mut reading = audit::observe(
-                        window,
-                        cx,
-                        &name,
-                        walk,
-                        |scope| filter.keeps(scope),
-                        |window, cx| current(&name, window, cx, true, seen),
-                    );
+                    let mut reading = observer.finish(window, cx);
                     reading.chords = crate::shell::chords();
                     Reply::ok(json!(audit::audit(&reading, launcher)))
                 })
-                .unwrap_or_else(|_| Reply::new(404, json!({ "error": "no such window" })))
+                .unwrap_or_else(|_| gone())
         }
         Request::Wait(wait) => {
             let deadline = deadline(wait.deadline_ms);

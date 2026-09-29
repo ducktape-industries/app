@@ -489,3 +489,102 @@ fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
         native.update(|window, cx| window.blur(cx));
     }
 }
+
+/// The door's Tab walk from inside the editor (docs/ax.md §1.1): Tab
+/// indents and the focus stays, which the audit still reports (AX-022);
+/// then the walk leaves by Esc, Tab, the way out Help gives, and reaches
+/// the stop painted after the editor instead of indenting until it gives
+/// up.
+#[cfg(test)]
+#[gpui_kit::test]
+fn the_door_walk_leaves_the_editor_by_esc_then_tab(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+
+    /// The editor, a field as a view mounts it, then one button, under the
+    /// kit's Root.
+    struct Host {
+        editor: Entity<TextEditor>,
+        after: gpui_kit::FocusHandle,
+    }
+    impl Render for Host {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            use gpui_kit::StatefulInteractiveElement as _;
+            div()
+                .size_full()
+                .child(div().h(px(100.)).child(self.editor.clone()))
+                .child(
+                    div()
+                        .id("after")
+                        .role(gpui_kit::Role::Button)
+                        .aria_label("After")
+                        .track_focus(&self.after)
+                        .on_click(|_, _, _| {})
+                        .size(px(40.)),
+                )
+        }
+    }
+
+    cx.update(gpui_kit::init);
+    let store = store_with("walk", "one", Vec::new(), "");
+    let mut host = None;
+    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
+        let editor = cx.new(|cx| {
+            let mut editor = TextEditor::new(editor_path(), store.clone(), window, cx);
+            let field = crate::render::Accessible {
+                role: Some(gpui_kit::Role::MultilineTextInput),
+                name: Some("Message".into()),
+                ..Default::default()
+            };
+            editor.set_accessible(field, cx);
+            editor
+        });
+        let made = cx.new(|cx| Host {
+            editor,
+            after: cx.focus_handle().tab_stop(true),
+        });
+        host = Some(made.clone());
+        gpui_kit::component::Root::new(made, window, cx)
+    });
+    let host = host.unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let snap = |window: &mut Window, cx: &mut App| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("w", window, false)
+    };
+    let (report, focus) = native.update(|window, cx| {
+        window.render_frame(cx);
+        let editor = host.read(cx).editor.read(cx);
+        editor.input.read(cx).focus_handle(cx).focus(window, cx);
+        let reading = crate::ax::audit::observe(window, cx, "w", true, |_| true, snap);
+        let focus: Vec<Vec<String>> = reading
+            .snapshots
+            .iter()
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter(|node| node.state.contains(&"focused"))
+                    .map(|node| node.id.clone())
+                    .collect()
+            })
+            .collect();
+        (crate::ax::audit::audit(&reading, false), focus)
+    });
+    let at = |step: usize| focus[step].join(",");
+    assert_eq!(at(0), "w:editor-field", "the walk starts in the editor");
+    assert!(
+        focus.iter().any(|ids| ids == &["w:after"]),
+        "the walk reaches the stop after the editor: {focus:?}"
+    );
+    let stays: Vec<&str> = report
+        .violations
+        .iter()
+        .filter(|violation| violation.rule == "AX-022")
+        .map(|violation| violation.id.as_str())
+        .collect();
+    assert_eq!(stays, ["step 1"], "the Tab the editor kept: {focus:?}");
+    assert_eq!(report.presses, 3, "{focus:?}");
+    let text = native.update(|_, cx| host.read(cx).editor.read(cx).input.read(cx).value());
+    assert_eq!(text.as_ref(), "one  ", "one Tab indented");
+}

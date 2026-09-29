@@ -566,6 +566,37 @@ fn ax_025_a_dialog_shows_with_something_focused() {
     assert_eq!(fails(&lost, "AX-025"), ["w:dlg"]);
 }
 
+/// A step whose focus is on a node the audit's scope left out (a `view=`
+/// walk on a shell stop) is the other scope's: AX-020, AX-022 and AX-023
+/// skip it, and to AX-025 it is focus. A step with no focus anywhere is
+/// judged as ever.
+#[test]
+fn a_step_whose_focus_is_outside_the_scope_is_left_to_that_scope() {
+    let dialog = || node("dlg", "Dialog", "Settings");
+    let a = || button("a", "A");
+    let judged = |outside: Vec<bool>| {
+        let mut told = reading(vec![vec![dialog(), focused(a())], vec![dialog(), a()]]);
+        told.modal = true;
+        told.outside = outside;
+        audit(&told, false)
+    };
+    let left = judged(vec![false, true]);
+    for rule in ["AX-020", "AX-022", "AX-023", "AX-025"] {
+        assert!(fails(&left, rule).is_empty(), "{rule}: {left:?}");
+    }
+    assert!(!left.applicable.contains_key("AX-020"));
+    assert!(!left.applicable.contains_key("AX-022"));
+    assert_eq!(left.applicable["AX-023"], 1, "step 0 only");
+    let lost = judged(vec![false, false]);
+    for (rule, id) in [
+        ("AX-020", "step 1"),
+        ("AX-023", "step 1"),
+        ("AX-025", "w:dlg"),
+    ] {
+        assert_eq!(fails(&lost, rule), [id], "{rule}");
+    }
+}
+
 #[test]
 fn coverage_counts_actionable_nodes_clean_of_errors_and_rules_failed_over_applicable() {
     let mut warned = button("thin", "Go");
@@ -607,9 +638,8 @@ fn a_node_seen_in_every_snapshot_counts_once() {
     assert_eq!(report.nodes, 1);
 }
 
-/// Six buttons, Tab order as painted: three below the window's edge, then
-/// three on it; the box around them holds the keys first.
-struct Stops(gpui_kit::FocusHandle);
+/// A box that holds the keys first, around the stops its builder paints.
+struct Stops(gpui_kit::FocusHandle, fn() -> Vec<gpui_kit::AnyElement>);
 
 impl gpui_kit::Render for Stops {
     fn render(
@@ -618,31 +648,115 @@ impl gpui_kit::Render for Stops {
         _: &mut gpui_kit::Context<Self>,
     ) -> impl gpui_kit::IntoElement {
         use gpui_kit::*;
-        let button = |id: &'static str, top: f32| {
-            div()
-                .id(id)
-                .role(Role::Button)
-                .aria_label(id)
-                .focusable()
-                .tab_stop(true)
-                .on_click(|_, _, _| {})
-                .absolute()
-                .left(px(0.))
-                .top(px(top))
-                .size(px(40.))
-        };
         div()
             .id("stops")
             .track_focus(&self.0)
             .relative()
             .size_full()
-            .child(button("hidden-1", 1000.))
-            .child(button("hidden-2", 1100.))
-            .child(button("hidden-3", 1200.))
-            .child(button("shown-1", 0.))
-            .child(button("shown-2", 50.))
-            .child(button("shown-3", 100.))
+            .children((self.1)())
     }
+}
+
+/// A 40 px button `id`, a Tab stop, `top` px down its box.
+fn stop(id: &'static str, top: f32) -> gpui_kit::AnyElement {
+    use gpui_kit::*;
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(id)
+        .focusable()
+        .tab_stop(true)
+        .on_click(|_, _, _| {})
+        .absolute()
+        .left(px(0.))
+        .top(px(top))
+        .size(px(40.))
+        .into_any_element()
+}
+
+/// `stops` in a window under the kit's root (what answers Tab), the keys
+/// on the box and then `tabs` stops on.
+fn stops_window(
+    cx: &mut gpui_kit::TestAppContext,
+    stops: fn() -> Vec<gpui_kit::AnyElement>,
+    tabs: usize,
+) -> gpui_kit::VisualTestContext {
+    use gpui_kit::AppContext as _;
+    use gpui_kit::test::TestWindowExt as _;
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(
+        gpui_kit::size(gpui_kit::px(200.), gpui_kit::px(200.)),
+        |window, cx| {
+            let held = cx.new(|cx| Stops(cx.focus_handle(), stops));
+            gpui_kit::component::Root::new(held, window, cx)
+        },
+    );
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        let root = window
+            .root::<gpui_kit::component::Root>()
+            .flatten()
+            .unwrap();
+        let held = root.read(cx).view().clone().downcast::<Stops>().unwrap();
+        held.read(cx).0.clone().focus(window, cx);
+        window.activate_a11y();
+        window.render_frame(cx);
+        for _ in 0..tabs {
+            window.focus_next(cx);
+        }
+    });
+    native
+}
+
+/// What `GET /audit?walk=1` answers over `window`, served as `w`, with
+/// `view=` when given.
+async fn door_audit(
+    window: gpui_kit::AnyWindowHandle,
+    view: Option<&str>,
+    cx: &mut gpui_kit::TestAppContext,
+) -> serde_json::Value {
+    let key = crate::runtime::WindowKey::unique();
+    let served = move |_: &App| vec![("w".to_owned(), key, window)];
+    let filter = crate::ax::Filter {
+        window: None,
+        view: view.map(str::to_owned),
+    };
+    let reply = cx
+        .spawn(async move |mut cx| {
+            let request = crate::ax::Request::Audit {
+                filter,
+                walk: true,
+                launcher: false,
+            };
+            crate::ax::answer(request, &served, &mut Default::default(), &mut cx).await
+        })
+        .await;
+    assert_eq!(reply.status, 200, "{}", reply.body);
+    serde_json::from_str(&reply.body).unwrap()
+}
+
+/// The ids `rule` fails on in a `/audit` answer.
+fn door_fails(report: &serde_json::Value, rule: &str) -> Vec<String> {
+    report["violations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|violation| violation["rule"] == rule)
+        .map(|violation| violation["id"].as_str().unwrap().to_owned())
+        .collect()
+}
+
+/// Six buttons, Tab order as painted: three below the window's edge, then
+/// three on it.
+fn six() -> Vec<gpui_kit::AnyElement> {
+    vec![
+        stop("hidden-1", 1000.),
+        stop("hidden-2", 1100.),
+        stop("hidden-3", 1200.),
+        stop("shown-1", 0.),
+        stop("shown-2", 50.),
+        stop("shown-3", 100.),
+    ]
 }
 
 /// The first snapshot shows three stops of a Tab cycle of six: N + 1
@@ -651,18 +765,8 @@ impl gpui_kit::Render for Stops {
 fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     cx: &mut gpui_kit::TestAppContext,
 ) {
-    use gpui_kit::AppContext as _;
     use gpui_kit::test::TestWindowExt as _;
-    cx.update(gpui_kit::init);
-    // the kit's root is what answers Tab
-    let window = cx.open_window(
-        gpui_kit::size(gpui_kit::px(200.), gpui_kit::px(200.)),
-        |window, cx| {
-            let stops = cx.new(|cx| Stops(cx.focus_handle()));
-            gpui_kit::component::Root::new(stops, window, cx)
-        },
-    );
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let mut native = stops_window(cx, six, 0);
     let snap = |window: &mut Window, cx: &mut App| {
         window.activate_a11y();
         window.render_frame(cx);
@@ -670,17 +774,195 @@ fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
         crate::ax::snapshot("w", window, true)
     };
     let report = native.update(|window, cx| {
-        let stops = window
-            .root::<gpui_kit::component::Root>()
-            .flatten()
-            .unwrap();
-        let held = stops.read(cx).view().clone().downcast::<Stops>().unwrap();
-        held.read(cx).0.clone().focus(window, cx);
         let reading = observe(window, cx, "w", true, |_| true, snap);
         audit(&reading, false)
     });
     assert!(fails(&report, "AX-021").is_empty(), "{report:?}");
     assert_eq!(report.presses, 7);
+}
+
+/// A `view/x` element at the right of the window, around `inside`.
+fn view_x(inside: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
+    use gpui_kit::*;
+    div()
+        .id("view/x")
+        .absolute()
+        .left(px(100.))
+        .top(px(0.))
+        .w(px(100.))
+        .h(px(200.))
+        .children(inside)
+        .into_any_element()
+}
+
+/// Two shell stops, then two in view `x`.
+fn shell_then_view() -> Vec<gpui_kit::AnyElement> {
+    vec![
+        stop("shell-1", 0.),
+        stop("shell-2", 50.),
+        view_x(vec![stop("in-1", 0.), stop("in-2", 50.)]),
+    ]
+}
+
+/// A `view=` audit walks the whole window's Tab cycle, and a step Tab
+/// spends on a stop outside the view is not the view's to judge: the view
+/// passes AX-020 and AX-022 as the whole window does, with C 1, and its
+/// own steps are still judged.
+#[gpui_kit::test]
+async fn a_view_audit_does_not_judge_the_steps_tab_spends_outside_the_view(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let native = stops_window(cx, shell_then_view, 0);
+    let window = gpui_kit::VisualContext::window_handle(&native);
+    let whole = door_audit(window, None, cx).await;
+    let view = door_audit(window, Some("x"), cx).await;
+    for (report, what) in [(&whole, "whole"), (&view, "view=x")] {
+        for rule in ["AX-020", "AX-022"] {
+            assert!(door_fails(report, rule).is_empty(), "{what}: {report}");
+        }
+        assert_eq!(report["coverage"]["rule"], 1.0, "{what}: {report}");
+        assert_eq!(report["presses"], 5, "{what}");
+    }
+    assert_eq!(whole["applicable"]["AX-020"], 5);
+    // in-1 and in-2: the view's own steps
+    assert_eq!(view["applicable"]["AX-020"], 2);
+}
+
+/// A shell stop, then a Dialog in view `x` holding one.
+fn shell_then_dialog() -> Vec<gpui_kit::AnyElement> {
+    use gpui_kit::*;
+    vec![
+        stop("shell-1", 0.),
+        view_x(vec![
+            div()
+                .id("dlg")
+                .role(Role::Dialog)
+                .aria_label("Dlg")
+                .size_full()
+                .child(stop("in-1", 0.))
+                .into_any_element(),
+        ]),
+    ]
+}
+
+/// Focus on a node a `view=` audit leaves out is still focus: a view's
+/// Dialog that Tab leaves for a shell stop has something focused (AX-025),
+/// as the whole window's audit says; the focus is outside it (AX-104) in
+/// both.
+#[gpui_kit::test]
+async fn a_view_audit_counts_focus_outside_the_view_as_focus(cx: &mut gpui_kit::TestAppContext) {
+    // the dialog opens with the keys on its own stop
+    let native = stops_window(cx, shell_then_dialog, 2);
+    let window = gpui_kit::VisualContext::window_handle(&native);
+    let whole = door_audit(window, None, cx).await;
+    let view = door_audit(window, Some("x"), cx).await;
+    for (report, what) in [(&whole, "whole"), (&view, "view=x")] {
+        assert!(door_fails(report, "AX-025").is_empty(), "{what}: {report}");
+        assert_eq!(door_fails(report, "AX-104"), ["w:x/dlg"], "{what}");
+    }
+}
+
+/// The key route of the list [`members`] draws.
+const KEYS: u32 = 9;
+
+/// A focusable ListBox of four rows, `active` the chosen one, whose keys go
+/// to the view: the Members list's shape.
+fn members(active: usize) -> view_wire::Node {
+    use gpui_kit::Styled as _;
+    let container = |key: String, children| {
+        view_wire::Node::Container(view_wire::ContainerNode {
+            id: Some(view_wire::ElementIdWire::Name(key.into())),
+            style: gpui_kit::div().flex().flex_col().style().clone(),
+            interactivity: Default::default(),
+            children,
+        })
+    };
+    let rows = (0..4)
+        .map(|n| {
+            let mut row = container(format!("row-{n}"), Vec::new());
+            if let view_wire::Node::Container(view_wire::ContainerNode {
+                interactivity,
+                style,
+                ..
+            }) = &mut row
+            {
+                *style = gpui_kit::div()
+                    .w(gpui_kit::px(80.))
+                    .h(gpui_kit::px(24.))
+                    .style()
+                    .clone();
+                interactivity.role = Some(gpui_kit::Role::ListBoxOption);
+                interactivity.aria.label = Some(format!("Row {n}").into());
+                interactivity.aria.selected = Some(n == active);
+                interactivity.aria.active_descendant = n == active;
+                interactivity.on_click = Some(100 + n as u32);
+            }
+            row
+        })
+        .collect();
+    let mut list = container("list".to_owned(), rows);
+    if let view_wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut list {
+        interactivity.role = Some(gpui_kit::Role::ListBox);
+        interactivity.aria.label = Some("Members".into());
+        interactivity.focusable = true;
+        interactivity.tab_stop = Some(true);
+        interactivity.on_key_down = Some(KEYS);
+    }
+    list
+}
+
+/// A view's list answers an arrow once the update that pressed it has
+/// ended (a key reaches a view as an event the tree emits, and an emit is
+/// delivered when the outermost update ends): the arrow probe of
+/// `GET /audit` presses each arrow in an update of its own and reads after
+/// it, so a list whose arrows move its active row passes AX-107.
+#[gpui_kit::test]
+async fn the_arrow_probe_sees_a_views_list_move_its_active_row(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    use std::cell::{Cell, RefCell};
+    use std::rc::Rc;
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(
+        gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
+        |_, _| crate::render::ViewTree::new(members(1)),
+    );
+    let tree = window.root(cx).unwrap();
+    // the view: down and up step the active row, at once
+    let active = Rc::new(Cell::new(1usize));
+    let heard = Rc::new(RefCell::new(Vec::<String>::new()));
+    let _view = cx.update(|cx| {
+        let (active, heard) = (active.clone(), heard.clone());
+        cx.subscribe(&tree, move |tree, event: &view_wire::Event, cx| {
+            let view_wire::Event::KeyDown {
+                handler: KEYS,
+                event,
+                ..
+            } = event
+            else {
+                return;
+            };
+            let key = event.clone().into_gpui().keystroke.key;
+            heard.borrow_mut().push(key.clone());
+            let next = match key.as_str() {
+                "down" => (active.get() + 1).min(3),
+                "up" => active.get().saturating_sub(1),
+                _ => return,
+            };
+            active.set(next);
+            tree.update(cx, |tree, cx| tree.replace(members(next), cx));
+        })
+    });
+    // the list holds the keys: Tab is the app's binding, not a bare window's
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.focus_next(cx);
+    });
+    let report = door_audit(window.into(), None, cx).await;
+    assert_eq!(report["applicable"]["AX-107"], 1, "the probe ran: {report}");
+    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
+    assert_eq!(heard.borrow()[..2], ["down", "up"]);
 }
 
 /// The refused elements `Filter` keeps: a view's audit reports the ones under
