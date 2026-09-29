@@ -35,10 +35,8 @@ mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
 mod approve;
-mod command;
 mod connect;
 mod desk;
-mod empty_desk;
 mod entities;
 mod facts;
 mod figure;
@@ -641,8 +639,15 @@ pub(crate) struct DesktopWindow {
     /// a load. Tab back into the rail lands on the front window's program
     /// again.
     rail_cursor: Option<&'static str>,
-    /// An empty window's field, made the first time one shows.
-    command: Option<command::CommandLine>,
+    /// The desk's body while no window is on it.
+    empty_desk: Entity<layers::EmptyPane>,
+    /// Each empty window's body and each Help window's, by instance (s5
+    /// hands them to `PaneView`).
+    empty_panes: HashMap<u64, Entity<layers::EmptyPane>>,
+    help_panes: HashMap<u64, Entity<layers::HelpPane>>,
+    /// The launcher's figure, written at its draw until s9's
+    /// `LauncherLayer` writes it from its observers.
+    launcher_spin: Entity<spin::Spin>,
     /// What was open over the desk when it was last drawn.
     covered: Option<crate::Overlay>,
     /// What had the keys when something opened over the desk: they go back

@@ -102,6 +102,12 @@ impl DesktopWindow {
             });
         let focus = cx.focus_handle();
         focus.focus(window, cx);
+        let empty_desk = {
+            let (model, root) = (model.clone(), focus.clone());
+            cx.new(|cx| layers::EmptyPane::desk(model, key, kind, root, window, cx))
+        };
+        let launcher_spin = cx
+            .new(|cx| spin::Spin::new(figure::Figure::Roll, false, gpui_kit::Hsla::default(), cx));
         Self {
             model,
             key,
@@ -113,7 +119,10 @@ impl DesktopWindow {
             settings_rows: Default::default(),
             stops: HashMap::new(),
             rail_cursor: None,
-            command: None,
+            empty_desk,
+            empty_panes: HashMap::new(),
+            help_panes: HashMap::new(),
+            launcher_spin,
             covered: None,
             refocus: None,
             modal: cx.focus_handle(),

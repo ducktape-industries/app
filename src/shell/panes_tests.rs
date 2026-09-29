@@ -1038,3 +1038,217 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
         "the badge the hidden seat handed over reached the model"
     );
 }
+
+/// A frame as the platform delivers one, a figure's tick after the last:
+/// the timers that came due run, whatever they dirtied draws, then the
+/// next-frame callbacks. The cached path: no a11y reader.
+fn tick_frame(native: &mut VisualTestContext) {
+    native
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(1000 / super::figure::FPS));
+    native.run_until_parked();
+    native.update(|window, cx| {
+        window.simulate_next_frame(cx);
+    });
+    native.run_until_parked();
+}
+
+/// Motion switched off with the desk otherwise idle: the empty desk's
+/// figure hears it from the pane's observer, not from a draw, so it stops
+/// on the frame that shows it and asks for none after it. Switched on
+/// again, it tumbles with nothing else drawing it in. Each of its frames
+/// draws the pane around it (the pane is cached, and a figure's frame
+/// dirties it), so the pane's count is the figure's; the window's is not,
+/// since the bar's dot pulses while motion is on.
+#[gpui_kit::test]
+fn an_empty_pane_stops_its_figure_when_motion_goes_off_without_a_frame_loop(
+    cx: &mut TestAppContext,
+) {
+    let _on = crate::perf::on_for_test();
+    let (model, key, view, mut native) = console(cx);
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::SetMotion(true), cx);
+        model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx);
+    });
+    assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
+    let drawn = window_count(key, "renders.empty");
+    for _ in 0..10 {
+        tick_frame(&mut native);
+    }
+    assert!(
+        window_count(key, "renders.empty") >= drawn + 10,
+        "with motion on the figure tumbles"
+    );
+
+    // the frame that shows it still is the one the switch draws
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::SetMotion(false), cx)
+    });
+    native.run_until_parked();
+    let drawn = window_count(key, "renders.empty");
+    for _ in 0..super::figure::FPS {
+        tick_frame(&mut native);
+    }
+    assert_eq!(
+        window_count(key, "renders.empty"),
+        drawn,
+        "the still figure drew its pane on"
+    );
+
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::SetMotion(true), cx)
+    });
+    for _ in 0..10 {
+        tick_frame(&mut native);
+    }
+    assert!(
+        window_count(key, "renders.empty") >= drawn + 10,
+        "switched on again, the figure stayed still"
+    );
+}
+
+/// The keys going to an empty window's own box (a press on its
+/// background, or the keys coming back to it with the window) go on to its
+/// field, so typing starts at once: in front, and again when the window
+/// comes back to the front; not while the keyboard holds the window.
+#[gpui_kit::test]
+fn the_command_field_takes_the_keys_when_its_pane_comes_to_the_front(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = console(cx);
+    // gpui reports focus moves only in the active window
+    native.update(|window, _| window.activate_window());
+    key(&mut native, "secondary-n");
+    settle(&mut native);
+    let focused = |native: &mut VisualTestContext| native.update(|window, cx| window.focused(cx));
+    let own = native.update(|_, cx| {
+        let view = view.read(cx);
+        let layout = view.layout(cx);
+        assert!(
+            layout.panes[layout.focused].is_empty(),
+            "⌘N: an empty window"
+        );
+        view.pane_keys[&layout.panes[layout.focused].instance]
+            .0
+            .clone()
+    });
+    let field = focused(&mut native);
+    assert!(
+        field.is_some() && field.as_ref() != Some(&own),
+        "⌘N: the field has the keys"
+    );
+
+    // a press on the window's background gives the keys to its box
+    native.update(|window, cx| own.focus(window, cx));
+    settle(&mut native);
+    assert_eq!(focused(&mut native), field, "the box kept the keys");
+
+    key(&mut native, "secondary-1");
+    settle(&mut native);
+    assert_ne!(focused(&mut native), field);
+    key(&mut native, "secondary-2");
+    settle(&mut native);
+    assert_eq!(
+        focused(&mut native),
+        field,
+        "back in front, the keys are not in the field"
+    );
+
+    // held by the keyboard (⌘⇧M), its box keeps them for the arrows
+    key(&mut native, "secondary-shift-m");
+    settle(&mut native);
+    assert_eq!(
+        focused(&mut native),
+        Some(own),
+        "the field took the keys from a hold"
+    );
+}
+
+/// Help greets a new account and is plain help otherwise, and a Help
+/// window already showing follows the model when that changes.
+#[gpui_kit::test]
+fn help_greets_a_new_account_and_titles_otherwise(cx: &mut TestAppContext) {
+    let (model, _, _, mut native) = console(cx);
+    let title = |native: &mut VisualTestContext| {
+        let nodes = native.update(draw);
+        let page = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "console:help/page")
+            .unwrap_or_else(|| panic!("no help page: {nodes}"));
+        let heading = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == "console:heading" && node["role"] == "Heading")
+            .unwrap_or_else(|| panic!("no heading: {nodes}"));
+        assert_eq!(
+            page["name"], heading["name"],
+            "the page is named by its heading"
+        );
+        heading["name"].as_str().unwrap().to_owned()
+    };
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::OpenHelp, cx)
+    });
+    assert_eq!(title(&mut native), "Ducktape help");
+    // a new account lands on it greeted (`open_help(true)`)
+    model.update(&mut native, |model, cx| {
+        model.state.welcome = true;
+        cx.notify();
+    });
+    assert_eq!(title(&mut native), "Welcome to Ducktape");
+    // asked for again, it is just help
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::OpenHelp, cx)
+    });
+    assert_eq!(title(&mut native), "Ducktape help");
+}
+
+/// The window itself takes the keys once its last pane leaves, wherever
+/// they were (the bar, here); while something open over the desk holds
+/// them it keeps them, and they go to the window when it closes.
+#[gpui_kit::test]
+fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) {
+    let (model, key, view, mut native) = console(cx);
+    let root_has_them = |native: &mut VisualTestContext| {
+        native.update(|window, cx| view.read(cx).focus.is_focused(window))
+    };
+    settle(&mut native);
+    native
+        .update(|window, cx| super::pane_hold_tests::focus_control("rail-connection", window, cx));
+    settle(&mut native);
+    assert!(!root_has_them(&mut native));
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx)
+    });
+    settle(&mut native);
+    assert_eq!(panes(&mut native, &view).0, 0);
+    assert!(root_has_them(&mut native), "the keys stayed on the bar");
+
+    // Settings open over the desk when its last pane leaves
+    self::key(&mut native, "secondary-n");
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::OpenSettings, cx)
+    });
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx)
+    });
+    settle(&mut native);
+    native.update(|window, cx| {
+        assert!(
+            view.read(cx).modal.contains_focused(window, cx),
+            "the last pane leaving took the keys from Settings"
+        )
+    });
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::CloseOverlay(crate::Overlay::Settings), cx)
+    });
+    settle(&mut native);
+    assert!(
+        root_has_them(&mut native),
+        "Settings closed over a bare desk"
+    );
+}

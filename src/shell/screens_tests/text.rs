@@ -105,7 +105,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         labels(&nodes)
             .iter()
             .any(|line| line.contains("Tab switches")),
-        command::CHAT_READY
+        layers::CHAT_READY
     );
 
     // Settings › About

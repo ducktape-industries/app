@@ -3,7 +3,9 @@
 //! asks about a view's notices (the permission bar). Where panes sit, stack
 //! and which has the keys is `ui::layout`'s: this file only draws it and
 //! sends `PaneMessage`s. Their seats are `entities::Seats`', the
-//! pointer's hold on them `pane_drag.rs`'s, a desk with none `empty_desk.rs`'s.
+//! pointer's hold on them `pane_drag.rs`'s, the bodies the app draws itself
+//! (an empty window, Help, a desk with none) `layers::EmptyPane`'s and
+//! `layers::HelpPane`'s.
 use super::*;
 
 pub(super) fn label(roster: &crate::runtime::Roster, module: &str) -> String {
@@ -19,11 +21,6 @@ pub(super) fn label(roster: &crate::runtime::Roster, module: &str) -> String {
         .find(|row| row.module == module)
         .map(|row| row.label)
         .unwrap_or_else(|| module.to_owned())
-}
-
-/// What an empty window lists: the rail's programs, as the menu bar shows them.
-pub(super) fn openable(roster: &crate::runtime::Roster) -> Vec<crate::runtime::RailRow> {
-    roster.rail().into_iter().filter(|row| !row.empty).collect()
 }
 
 impl DesktopWindow {
@@ -85,7 +82,6 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) {
         self.pane_message(PaneMessage::Open(module), window, cx);
-        self.clear_command(window, cx);
     }
 
     fn pane_button(
@@ -162,9 +158,18 @@ impl DesktopWindow {
         let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
         let layout = self.layout(cx);
         let moved = self.keys_move(&layout, cx);
+        let here = |instance: &u64| layout.panes.iter().any(|pane| pane.instance == *instance);
+        self.empty_panes.retain(|instance, _| here(instance));
+        self.help_panes.retain(|instance, _| here(instance));
         if layout.panes.is_empty() {
             self.sync_hold(&layout, window, cx);
-            return self.empty_desk(moved, &ink, window, cx);
+            // the window itself takes the keys once the last pane leaves:
+            // the empty desk's observer gives them (`EmptyPane::moved`)
+            return super::layers::cached_unless_a11y(
+                self.empty_desk.clone().into(),
+                StyleRefinement::default().size_full(),
+                window,
+            );
         }
         let center = self.model.read(cx).state.center.clone();
         let roster = self.model.read(cx).state.roster.clone();
@@ -195,7 +200,7 @@ impl DesktopWindow {
                 .is_some_and(|held| held.instance == pane.instance)
                 && self.kind == crate::shell::WindowKind::Console;
             let own = self.pane_focus(pane.instance, focused && moved, window, cx);
-            let view = self.pane_body(index, pane, focused, &own, window, cx);
+            let view = self.pane_body(pane, focused, &own, window, cx);
             // it holds the pane's keys when nothing in the view does; Tab
             // never lands on it, so it offers assistive technology no focus
             // either (as the window's root). On the desk it names the chord
@@ -305,10 +310,10 @@ impl DesktopWindow {
     }
 
     /// What a pane shows: its seat's tree or standin, told whether it is
-    /// in front, or else the app's own Help or the finder.
+    /// in front, or else the app's own Help or an empty window's finder,
+    /// each a cached view of its own.
     fn pane_body(
         &mut self,
-        index: usize,
         pane: &layout::Pane,
         focused: bool,
         own: &gpui_kit::FocusHandle,
@@ -369,13 +374,39 @@ impl DesktopWindow {
                 }
             }
             // Help draws no field: its box keeps the keys
-            None if pane.module == layout::HELP => self.help_view(cx),
+            None if pane.module == layout::HELP => {
+                let (model, key) = (self.model.clone(), self.key);
+                let help = self
+                    .help_panes
+                    .entry(pane.instance)
+                    .or_insert_with(|| cx.new(|cx| super::layers::HelpPane::new(&model, key, cx)))
+                    .clone();
+                super::layers::cached_unless_a11y(
+                    help.into(),
+                    StyleRefinement::default().size_full(),
+                    window,
+                )
+            }
+            // the finder, which takes the keys when the window's box does
             None => {
-                // the bare window box has the keys: the field takes them
-                if focused && own.is_focused(window) && self.holding.is_none() {
-                    self.focus_command(window, cx);
-                }
-                self.command_view(index, focused, window, cx)
+                let (model, key, desk) = (self.model.clone(), self.key, cx.weak_entity());
+                let instance = pane.instance;
+                let empty = self
+                    .empty_panes
+                    .entry(instance)
+                    .or_insert_with(|| {
+                        cx.new(|cx| {
+                            super::layers::EmptyPane::window(
+                                model, key, instance, desk, own, window, cx,
+                            )
+                        })
+                    })
+                    .clone();
+                super::layers::cached_unless_a11y(
+                    empty.into(),
+                    StyleRefinement::default().size_full(),
+                    window,
+                )
             }
         }
     }

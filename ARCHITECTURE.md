@@ -367,7 +367,8 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   (`shell/launcher.rs` frame with a `spin` figure on the left; `screens.rs`
   Connect; `sign_in.rs` key, phrase, recover, account) or the desk
   (`shell/desk.rs`): `menubar.rs` across the top, `panes.rs` drawing each
-  pane's seat (its tree or standin), `help.rs` or `command.rs` body, and one overlay
+  pane's seat (its tree or standin) or the app's own body (`layers::EmptyPane`:
+  the bare desk's figure or an empty window's finder; `layers::HelpPane`), and one overlay
   at a time (`spotlight.rs`, `settings.rs`, `approve.rs`, `menus.rs`,
   `notifications.rs`). Native effects the reducer asks for travel as
   `shell::Command` through `commands()`'s channel to the pump in
@@ -652,8 +653,9 @@ House words, and where one word means several things.
   **popover** hangs under a bar button; a **scrim** dims the desk and makes
   the overlay modal.
 - **Command** — two meanings. (1) `shell::Command`: a native effect the
-  reducer asks the window thread for. (2) `shell/command.rs`: the empty
-  pane's program-finder field and its `Mode` (Module | Chat).
+  reducer asks the window thread for. (2) The command line: the empty
+  pane's program-finder field and its `Mode` (Module | Chat), in
+  `shell/layers/empty_pane.rs`.
 - **Task / Subscription** — `view_wire::Task` and `Subscription`, the view
   SDK's types reused by the host reducer.
 - **ink / Ink** — the design palette per appearance and the widget kit the

@@ -21,7 +21,7 @@ fn desk_of_two(cx: &mut TestAppContext) -> Setup {
 }
 
 /// The keyboard focus on the element with `id`, as the AX door gives it.
-fn focus_control(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
+pub(super) fn focus_control(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
     use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
     draw(window, cx);
     let node = window
