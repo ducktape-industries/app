@@ -274,6 +274,7 @@ impl DesktopWindow {
                             model.update(cx, |model, cx| model.dispatch(message, cx));
                         }
                     }),
+                ink.ink,
             )
         };
         // The NetworkSwitcher board: `padding: 12px 16px; gap: 12px`, a

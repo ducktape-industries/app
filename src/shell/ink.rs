@@ -34,6 +34,15 @@ fn rgb(value: u32) -> Hsla {
 }
 
 impl Ink {
+    /// The colour a control's focus ring and border take: ink, and on a
+    /// control filled with ink the page's colour, so the ring stays seen.
+    pub(super) fn ring(&self, filled: bool) -> Hsla {
+        match filled {
+            true => self.bg,
+            false => self.ink,
+        }
+    }
+
     pub(super) fn of(dark: bool) -> Self {
         match dark {
             false => Self {
@@ -209,6 +218,7 @@ impl DesktopWindow {
             Kind::Primary => (ink.ink, ink.bg),
             Kind::Secondary | Kind::Small => (gpui_kit::transparent_black(), ink.ink),
         };
+        let filled = matches!(kind, Kind::Primary);
         let (height, pad, size) = match kind {
             Kind::Small => (34., 12., 14.),
             _ => (44., 18., 15.),
@@ -233,7 +243,7 @@ impl DesktopWindow {
                 })
             })
             .child(text);
-        let button = crate::a11y::keyboard(button).aria_disabled(disabled);
+        let button = crate::a11y::keyboard(button, ink.ring(filled)).aria_disabled(disabled);
         match press {
             Press::Busy => crate::a11y::Patch::default().busy().on(button),
             _ => button,
@@ -271,6 +281,7 @@ impl DesktopWindow {
                     model.update(cx, |model, cx| model.dispatch(message(), cx))
                 })
                 .child(text),
+            ink.ink,
         )
         .into_any_element()
     }
@@ -291,9 +302,17 @@ impl DesktopWindow {
 
 /// `<input>`'s box around a bare field: `height 44px; padding 0 12px;
 /// border 1px solid field; font 400 15px`. `border` recolors it (an
-/// error's danger, a match's green).
-pub(super) fn field_box(field: AnyElement, border: Hsla, height: f32, ink: &Ink) -> Div {
-    sans(400, 15.)
+/// error's danger). While the field is `focused` the box
+/// wears its ring, and the ring's ink hides that colour: the note under the
+/// field still says it.
+pub(super) fn field_box(
+    field: AnyElement,
+    focused: bool,
+    border: Hsla,
+    height: f32,
+    ink: &Ink,
+) -> Div {
+    let field_box = sans(400, 15.)
         .h(px(tall(height)))
         .px(px(12.))
         .flex()
@@ -302,13 +321,31 @@ pub(super) fn field_box(field: AnyElement, border: Hsla, height: f32, ink: &Ink)
         .border_color(border)
         .bg(ink.bg)
         .text_color(ink.ink)
-        .child(div().flex_1().min_w_0().child(field))
+        .child(div().flex_1().min_w_0().child(field));
+    crate::a11y::around_field(field_box, focused, ink.ring(false))
 }
 
 #[cfg(test)]
 mod tests {
     use super::Ink;
-    use gpui_kit::{Hsla, Rgba};
+    use gpui_kit::{Hsla, IntoElement as _, Rgba, Styled as _};
+
+    /// A focused field's box wears the ring, its border in the ring's ink
+    /// over an error's danger; unfocused, the box keeps its border colour.
+    #[test]
+    fn a_focused_fields_box_wears_the_ring() {
+        let ink = Ink::of(false);
+        let field = || gpui_kit::div().into_any_element();
+        let mut on = super::field_box(field(), true, ink.danger, 44., &ink);
+        assert_eq!(
+            on.style().box_shadow,
+            Some(vec![crate::a11y::ring(ink.ring(false))])
+        );
+        assert_eq!(on.style().border_color, Some(ink.ring(false)));
+        let mut off = super::field_box(field(), false, ink.danger, 44., &ink);
+        assert_eq!(off.style().box_shadow, None);
+        assert_eq!(off.style().border_color, Some(ink.danger));
+    }
 
     /// WCAG 2.2's contrast ratio of two opaque colors.
     fn contrast(one: Hsla, other: Hsla) -> f32 {
@@ -359,11 +396,12 @@ mod tests {
     #[test]
     fn the_focus_ring_and_state_marks_read_at_three_to_one() {
         reach(3., |ink| {
-            let ring = crate::a11y::ring().color;
+            let (ring, inverted) = (ink.ring(false), ink.ring(true));
             vec![
                 ("the focus ring", ring, ink.bg),
                 ("the focus ring on a chosen row", ring, ink.surface),
-                ("the focus ring on a filled button", ring, ink.ink),
+                ("the focus ring on a switch off", ring, ink.strong),
+                ("the focus ring on a filled button", inverted, ink.ink),
                 ("a chosen pane's frame, a switch on", ink.ink, ink.bg),
                 ("the node's dot, in sync", ink.ok, ink.bg),
                 (
@@ -373,6 +411,115 @@ mod tests {
                 ),
             ]
         });
+    }
+
+    /// The ring is the theme's ink, so a view's field and link wear the
+    /// colour the shell's buttons do.
+    #[gpui_kit::test]
+    fn the_ring_is_the_themes_ink(cx: &mut gpui_kit::TestAppContext) {
+        use gpui_kit::component::{Theme, ThemeMode};
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::shell::theme::configure_native_theme(cx);
+            for (mode, dark) in [(ThemeMode::Light, false), (ThemeMode::Dark, true)] {
+                Theme::change(mode, None, cx);
+                assert_eq!(crate::a11y::ink(cx), Ink::of(dark).ink);
+            }
+        });
+    }
+
+    /// What a keyboard-focused shell button (`DesktopWindow::button`'s own)
+    /// shows, and a mouse-moved one does not: a 2px ink ring and border on
+    /// the outline button, the page's colour on the ink-filled Primary, and
+    /// nothing once the last input was the mouse.
+    #[gpui_kit::test]
+    fn a_keyboard_focused_button_wears_an_ink_ring_that_inverts_on_ink(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        use super::{DesktopWindow, Kind, Message, Press};
+        use gpui_kit::test::TestWindowExt as _;
+        use gpui_kit::{
+            BoxShadow, Context, Div, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+            Modifiers, Render, Stateful, Styled as _, VisualTestContext, Window, div, point, px,
+            size,
+        };
+        use std::{cell::RefCell, rc::Rc};
+        type Seen = Rc<RefCell<Vec<(Vec<BoxShadow>, Option<Hsla>)>>>;
+        struct Buttons(Entity<DesktopWindow>, Ink, [FocusHandle; 2], Seen);
+        impl Render for Buttons {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                let (desktop, ink) = (self.0.clone(), self.1);
+                let (focus, seen) = (self.2.clone(), self.3.clone());
+                gpui_kit::canvas(
+                    move |_, window, cx| {
+                        let mut both = Vec::new();
+                        for (nth, kind) in [Kind::Secondary, Kind::Primary].into_iter().enumerate()
+                        {
+                            let message = || Message::ToggleNetworkMenu;
+                            let mut button = desktop.read(cx).button(
+                                nth,
+                                "Go",
+                                kind,
+                                message,
+                                Press::Ready,
+                                &ink,
+                            );
+                            let button = button
+                                .downcast_mut::<Stateful<Div>>()
+                                .expect("a shell button is a Stateful<Div>");
+                            // the handle a frame would give it
+                            let mut button = std::mem::replace(button, div().id("taken"))
+                                .track_focus(&focus[nth]);
+                            let style =
+                                button.interactivity().compute_style(None, None, window, cx);
+                            both.push((style.box_shadow, style.border_color));
+                        }
+                        *seen.borrow_mut() = both;
+                    },
+                    |_, _, _, _| {},
+                )
+                .size_full()
+            }
+        }
+        cx.update(gpui_kit::init);
+        let (desktop, _) = crate::shell::screens_tests::open(crate::Ducktape::boot().0, cx);
+        for dark in [false, true] {
+            let ink = Ink::of(dark);
+            let seen = Seen::default();
+            let focus = cx.update(|cx| [cx.focus_handle(), cx.focus_handle()]);
+            let window = cx.open_window(size(px(200.), px(200.)), {
+                let (desktop, focus, seen) = (desktop.clone(), focus.clone(), seen.clone());
+                move |_, _| Buttons(desktop, ink, focus, seen)
+            });
+            let mut native = VisualTestContext::from_window(window.into(), cx);
+            let shown = |native: &mut VisualTestContext| {
+                native.update(|window, cx| window.render_frame(cx));
+                seen.borrow().clone()
+            };
+            // both are drawn with an ink border
+            let bare = (vec![], Some(ink.ink));
+            assert_eq!(shown(&mut native), vec![bare.clone(), bare.clone()]);
+            let ring = |color| {
+                let ring = BoxShadow {
+                    color,
+                    offset: point(px(0.), px(0.)),
+                    blur_radius: px(0.),
+                    spread_radius: px(2.),
+                    inset: true,
+                };
+                (vec![ring], Some(color))
+            };
+            // Tab lands on the outline button: ink
+            native.update(|window, cx| focus[0].focus(window, cx));
+            native.simulate_keystrokes("shift");
+            assert_eq!(shown(&mut native), vec![ring(ink.ink), bare.clone()]);
+            // and on the ink-filled one: the page's colour, over its border too
+            native.update(|window, cx| focus[1].focus(window, cx));
+            assert_eq!(shown(&mut native), vec![bare.clone(), ring(ink.bg)]);
+            // a click moves the mouse: the focus stays, the ring goes
+            native.simulate_click(point(px(5.), px(5.)), Modifiers::default());
+            assert_eq!(shown(&mut native), vec![bare.clone(), bare]);
+        }
     }
 
     /// AX-121's control boundary: a text field's border, on the page and

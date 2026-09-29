@@ -39,6 +39,7 @@ impl DesktopWindow {
             window,
             cx,
         );
+        let focused = self.field_focused("endpoint", window, cx);
         let border = match note {
             Some(_) => ink.danger,
             None => ink.field,
@@ -68,9 +69,12 @@ impl DesktopWindow {
             div()
                 .flex()
                 .gap(px(8.))
-                .child(div().flex_1().child(
-                    field_box(field, border, 44., &ink).font_family(super::theme::FAMILY_MONO),
-                ))
+                .child(
+                    div().flex_1().child(
+                        field_box(field, focused, border, 44., &ink)
+                            .font_family(super::theme::FAMILY_MONO),
+                    ),
+                )
                 .child(self.button(
                     "connect",
                     "Connect",
@@ -157,8 +161,8 @@ impl DesktopWindow {
                 .py(px(12.))
                 .border_b_1()
                 .border_color(ink.line)
-                .child(crate::a11y::keyboard(pick))
-                .child(crate::a11y::keyboard(forget))
+                .child(crate::a11y::keyboard(pick, ink.ink))
+                .child(crate::a11y::keyboard(forget, ink.ink))
         });
         let recent = (!state.recent_endpoints.is_empty()).then(|| {
             div()

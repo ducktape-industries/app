@@ -139,6 +139,7 @@ impl ViewTree {
                         let _ = view.update(cx, |_, cx| cx.notify());
                     }
                 }),
+            crate::a11y::ink(cx),
         );
         if focused {
             element = element.child(
