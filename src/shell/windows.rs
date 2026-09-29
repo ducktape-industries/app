@@ -135,6 +135,7 @@ impl DesktopWindow {
 impl Desktop {
     pub(super) fn new(state: Ducktape, tray: crate::tray::Tray) -> Self {
         Self {
+            drawn: state.beat_face(),
             state,
             tray,
             windows: BTreeMap::new(),

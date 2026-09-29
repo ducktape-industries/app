@@ -146,16 +146,67 @@ impl Ducktape {
         }
     }
 
-    /// What runs while the app does: the clocks, and nothing else.
+    /// What runs while the app does: the clocks, and nothing else. A
+    /// toast's count runs only while one shows.
     pub(crate) fn subscriptions(&self) -> Subscription<Message> {
-        let mut recipes = vec![
-            Subscription::run(wall_ticks),
-            Subscription::run(toast_ticks),
-        ];
+        let mut recipes = vec![Subscription::run(wall_ticks)];
+        if !self.toast.is_empty() {
+            recipes.push(Subscription::run(toast_ticks));
+        }
         if self.connected {
             recipes.push(Subscription::run(status_ticks));
         }
         Subscription::batch(recipes)
+    }
+
+    /// What a clock's beat ([`Message::is_beat`]) can move on screen: the
+    /// toast; the node's line, height (the bar says it) and answering; the
+    /// time an open panel counts from (the node's ages, the bell's, the
+    /// week in Settings); and the roster and its seats, which load on
+    /// threads of their own and tell no window. A beat that finds it as
+    /// the windows last drew it draws no frame (`Desktop::dispatch`,
+    /// docs/perf.md).
+    pub(crate) fn beat_face(&self) -> BeatFace {
+        use crate::{Overlay, Popover};
+        let counting = matches!(
+            self.overlay,
+            Some(Overlay::Menu(Popover::Node | Popover::Notifications) | Overlay::Settings)
+        );
+        (
+            self.toast.clone(),
+            self.status.clone(),
+            self.height,
+            self.node.clone(),
+            self.reconnecting(),
+            counting.then_some((self.wall_now, self.block_seen, self.heard)),
+            self.roster.changes(),
+        )
+    }
+}
+
+/// See [`Ducktape::beat_face`].
+pub(crate) type BeatFace = (
+    String,
+    String,
+    i64,
+    Option<crate::backend::NodeStatus>,
+    bool,
+    Option<(i64, i64, i64)>,
+    u64,
+);
+
+impl Message {
+    /// The clocks' messages and the status poll's answers: they come
+    /// whether or not anything moved.
+    pub(crate) fn is_beat(&self) -> bool {
+        matches!(
+            self,
+            Message::Tick
+                | Message::WallTick
+                | Message::ToastTick
+                | Message::StatusPushed(_)
+                | Message::StatusMissed
+        )
     }
 }
 
