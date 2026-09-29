@@ -351,7 +351,7 @@ fn the_chords_and_the_menu_do_nothing_under_an_overlay(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
-fn the_hold_is_told_in_words_and_worn_as_a_ring(cx: &mut TestAppContext) {
+fn the_hold_is_told_in_words_once_while_it_lasts(cx: &mut TestAppContext) {
     let (_, _, _, mut native) = desk_of_two(cx);
     let count = |native: &mut VisualTestContext| {
         native
