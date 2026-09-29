@@ -253,6 +253,8 @@ only when on and only when the tree changed.
   [--by instance | --reset]` in `ax::http::request` (`--reset` sends the
   POST). `POST /perf/reset` clears the
   counters and samples (the startup marks stay); `GET` never mutates.
+- `POST /key` with `"delta": false` is the one press that reads no tree
+  (§4.3), so it leaves `cache_on` as it found it.
 - **It must not draw.** `ax::actions::current` turns a11y on at the first
   read and calls `window.draw(cx)` on every read; a11y on switches
   `NativeModuleView::render` to the uncached tree. `/perf` is answered in
@@ -488,6 +490,19 @@ Design:
   door's window list (`Desktop::ax_windows`) without a tree; unnamed, it
   finds the focused node in the tree it just read, so the flag makes
   `window` required (falling back to the first window, as it does today).
+
+  **Landed (`perf/key-no-read`).** `Key` in `src/ax.rs` has `delta`, true
+  unless the body says `"delta": false`. With it false, `answer` presses
+  through `press_keys` and answers `{}`: it calls neither `read` nor
+  `settle`, so a11y stays off and the window is not drawn. `keyboard_window`
+  gets no nodes, so `window` names the window, and an unnamed press goes to
+  the first window served (no focused node to look for); `window` is not
+  made required, since the first window is what a rig with one console
+  wants. `ducktape-app ax key <keys> --no-read` sends it. Tests:
+  `ax::tests::a_press_without_a_read_keeps_the_cache_on` (a11y off after
+  the press, `/perf` `cache_on: true`; a tree read flips both),
+  `ax::http::tests::key_route_parses_the_no_delta_flag` and `key_cli_words`.
+  `/keys` and `/drag` still read.
 - The gate refuses to judge a cache metric from a `cache_on: false` reply
   and says so, instead of passing.
 - Recommended default for the owner (§7): the extra scenario plus the
@@ -527,9 +542,13 @@ Design:
   `src/runtime/widget/tests.rs`): undoing #347's selection fix fails it.
   Undoing its layout fix does not — under the test scheduler a notify from
   inside a draw is cleared with that frame — so the bounds assertion in
-  #347's own test guards that one. Still to write: a hand-dispatched
-  `WallTick` with nothing changed renders no ViewTree; a still figure asks
-  for no frames. Times are flaky under the test scheduler; counts are not.
+  #347's own test guards that one. Also counts: a hand-dispatched
+  `WallTick` with nothing changed renders no ViewTree
+  (`a_wall_tick_with_nothing_changed_renders_no_view_tree`,
+  `src/shell/panes_tests.rs`, on the registry's `renders` for a seated view,
+  the cached path); a still figure asks for no frames
+  (`a_still_figure_asks_for_no_frames`, `src/shell/spin.rs`, older than
+  this document). Times are flaky under the test scheduler; counts are not.
 
 ---
 
@@ -658,6 +677,7 @@ design, not merged. What still informs:
 
    **Answered (owner, 2026-09-28): the document's pick** — the scenario and
    the no-read key, both phase 2.
+   The no-read key has landed (§4.3); the scenario has not.
 5. **Instance vs module keys on the door.** The registry is per
    `(module, instance)`; should `/perf` default to aggregating by module
    for qa's budgets, with instances behind `?by=instance`?

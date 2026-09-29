@@ -285,7 +285,7 @@ fn call(door: &DoorFile, method: &str, target: &str, body: &str) -> std::io::Res
 const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--compact] [--bounds]
        ducktape-app ax actions [--window W] [--view V]
        ducktape-app ax act <id> <press|focus|set_value|type|increment|decrement|expand|collapse|context_menu|scroll_into_view> [value]
-       ducktape-app ax key <keys> [--text T] [--window W]   (keys: tab, shift-tab, enter, ctrl-k …)
+       ducktape-app ax key <keys> [--text T] [--window W] [--no-read]   (keys: tab, shift-tab, enter, ctrl-k …; --no-read: press without reading any tree, answers {}, docs/perf.md §4.3)
        ducktape-app ax keys [--window W]
        ducktape-app ax drag <x1,y1> <x2,y2> [--id ID] [--steps N] [--window W]   (px; local to ID's bounds when given)
        ducktape-app ax audit [--window W] [--view V] [--walk] [--launcher]   (docs/ax.md phase 1; --launcher: the shell screen is not the desk)
@@ -339,7 +339,9 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
     let mut rest = args.iter().skip(1);
     while let Some(arg) = rest.next() {
         match arg.strip_prefix("--") {
-            Some(name @ ("compact" | "bounds" | "gone" | "walk" | "launcher" | "reset")) => {
+            Some(
+                name @ ("compact" | "bounds" | "gone" | "walk" | "launcher" | "reset" | "no-read"),
+            ) => {
                 flags.insert(name, "1");
             }
             Some(name) => {
@@ -367,7 +369,7 @@ fn request(args: &[String]) -> Option<(&'static str, String, String)> {
         (Some("key"), keys) if keys.len() <= 1 => (
             "POST",
             "/key".to_owned(),
-            json!({ "keys": keys.first().copied().unwrap_or_default(), "text": flags.get("text").copied().unwrap_or_default(), "window": flags.get("window") }).to_string(),
+            json!({ "keys": keys.first().copied().unwrap_or_default(), "text": flags.get("text").copied().unwrap_or_default(), "window": flags.get("window"), "delta": !flags.contains_key("no-read") }).to_string(),
         ),
         (Some("keys"), []) => ("GET", format!("/keys?{}", query(&["window"])), String::new()),
         (Some("audit"), []) => (
@@ -458,5 +460,38 @@ mod tests {
             Some(("POST", "/perf/reset".to_owned(), String::new()))
         );
         assert_eq!(request(&words("perf --reset --by instance")), None);
+    }
+
+    /// `POST /key` carries `"delta": false` when asked, and only then; a body
+    /// without it means the delta, as before.
+    #[test]
+    fn key_route_parses_the_no_delta_flag() {
+        let key = |body: &str| match route("POST", "/key", body.as_bytes(), false) {
+            Ok(Request::Key(key)) => key,
+            other => panic!("not a key request: {other:?}"),
+        };
+        assert!(key(r#"{"keys":"tab"}"#).delta);
+        let bare = key(r#"{"keys":"tab","window":"console","delta":false}"#);
+        assert!(!bare.delta);
+        assert_eq!(bare.window.as_deref(), Some("console"));
+    }
+
+    /// `ax key … --no-read` sends `"delta": false`; without it the body says
+    /// `true`, and the flag takes no value word.
+    #[test]
+    fn key_cli_words() {
+        let body = |line: &str| {
+            let (method, target, body) = request(&words(line)).expect("a key request");
+            assert_eq!((method, target.as_str()), ("POST", "/key"));
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()
+        };
+        assert_eq!(body("key tab --window console")["delta"], true);
+        let quiet = body("key tab --no-read --window console");
+        assert_eq!(quiet["delta"], false);
+        assert_eq!(
+            (quiet["keys"].as_str(), quiet["window"].as_str()),
+            (Some("tab"), Some("console"))
+        );
+        assert_eq!(body("key --no-read")["keys"], "");
     }
 }
