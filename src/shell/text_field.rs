@@ -110,8 +110,18 @@ impl DesktopWindow {
             .into_any_element()
     }
 
+    /// Whether the field `key` holds focus, for the box drawn around it
+    /// ([`crate::a11y::around_field`]).
+    pub(super) fn field_focused(&self, key: &str, window: &Window, cx: &gpui_kit::App) -> bool {
+        use gpui_kit::Focusable as _;
+        self.inputs
+            .get(key)
+            .is_some_and(|input| input.state.read(cx).focus_handle(cx).is_focused(window))
+    }
+
     /// [`Self::input`]'s field with no node of its own, and its state: no
-    /// role, name or value. It takes Tab and wears the ring; a
+    /// role, name or value. It takes Tab; the box drawn around it wears the
+    /// ring ([`crate::a11y::around_field`]), and a
     /// [`crate::a11y::combo_box`] around it and its list speaks for it.
     pub(super) fn bare_input(
         &mut self,
@@ -202,7 +212,7 @@ impl DesktopWindow {
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
-            crate::a11y::ink(cx),
+            None,
         );
         (state.clone(), field)
     }

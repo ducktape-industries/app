@@ -48,6 +48,7 @@ impl DesktopWindow {
             window,
             cx,
         );
+        let focused = self.field_focused("restore-phrase", window, cx);
         let failed = !state.unlock_error.is_empty();
         let form = div()
             .flex()
@@ -59,6 +60,7 @@ impl DesktopWindow {
                     "Recovery key",
                     field_box(
                         phrase,
+                        focused,
                         match failed {
                             true => ink.danger,
                             false => ink.field,
@@ -247,10 +249,11 @@ impl DesktopWindow {
                     window,
                     cx,
                 );
+                let focused = self.field_focused(key, window, cx);
                 self.field(
                     SharedString::from(format!("{key}-label")),
                     format!("Word {}", nth + 1),
-                    field_box(field, ink.field, 44., &ink).into_any_element(),
+                    field_box(field, focused, ink.field, 44., &ink).into_any_element(),
                     None,
                     &ink,
                 )

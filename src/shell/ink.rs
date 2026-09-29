@@ -302,9 +302,17 @@ impl DesktopWindow {
 
 /// `<input>`'s box around a bare field: `height 44px; padding 0 12px;
 /// border 1px solid field; font 400 15px`. `border` recolors it (an
-/// error's danger, a match's green).
-pub(super) fn field_box(field: AnyElement, border: Hsla, height: f32, ink: &Ink) -> Div {
-    sans(400, 15.)
+/// error's danger, a match's green). While the field is `focused` the box
+/// wears its ring, and the ring's ink hides that colour: the note under the
+/// field still says it.
+pub(super) fn field_box(
+    field: AnyElement,
+    focused: bool,
+    border: Hsla,
+    height: f32,
+    ink: &Ink,
+) -> Div {
+    let field_box = sans(400, 15.)
         .h(px(tall(height)))
         .px(px(12.))
         .flex()
@@ -313,7 +321,8 @@ pub(super) fn field_box(field: AnyElement, border: Hsla, height: f32, ink: &Ink)
         .border_color(border)
         .bg(ink.bg)
         .text_color(ink.ink)
-        .child(div().flex_1().min_w_0().child(field))
+        .child(div().flex_1().min_w_0().child(field));
+    crate::a11y::around_field(field_box, focused, ink.ring(false))
 }
 
 #[cfg(test)]
