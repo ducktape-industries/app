@@ -492,6 +492,256 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
     });
 }
 
+/// A pressable button that is `focusable`, with the Tab stop `tab_stop`,
+/// alone in a row: whether its node offers focus to assistive technology,
+/// and whether the first Tab lands on it.
+fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>) -> (bool, bool) {
+    cx.update(gpui_kit::init);
+    let button = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("press")),
+        style: div().w(px(80.)).h(px(40.)).style().clone(),
+        interactivity: wire::Interactivity {
+            role: Some(Role::Button),
+            focusable: true,
+            tab_stop,
+            on_click: Some(7),
+            aria: wire::Aria {
+                author_id: Some("press".into()),
+                label: Some("Rename".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("row")),
+        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![button],
+    });
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(sanitized(root))
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        // Tab is the app's binding to `focus_next`; a bare window has none
+        window.focus_next(cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let (press, heard) = heard(update, "press").expect("the button has a node");
+        (heard.focus_action, update.focus == press)
+    })
+}
+
+/// A view control as the SDK lowers `focusable()` (option B: `tab_stop:
+/// Some(true)` unless the view said otherwise) is a Tab stop the host
+/// honours: Tab lands on it.
+#[gpui_kit::test]
+fn a_lowered_focusable_with_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext) {
+    assert_eq!(pressable_after_tab(cx, Some(true)), (true, true));
+}
+
+/// A raw-wire guest's `focusable` without a `tab_stop` is taken at its
+/// word: the node offers focus to assistive technology and Tab skips it.
+/// The host adds no stop the wire did not ask for (79b524d3); the SDK's
+/// lint faults such a control as `Unreachable`.
+#[gpui_kit::test]
+fn a_raw_focusable_without_tab_stop_offers_focus_but_tab_skips_it(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (offers, reached) = pressable_after_tab(cx, None);
+    assert!(offers, "the door reads it as offering focus");
+    assert!(!reached, "Tab skips a focusable the wire left out");
+}
+
+/// A container the view focuses by id (a menu frame it opens) stays in the
+/// Tab order: the handle the host makes for it takes the wire's Tab stop,
+/// as the handle gpui makes for an element does.
+#[gpui_kit::test]
+fn a_container_the_view_focuses_by_id_stays_a_tab_stop(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let stop = |key_name: &str, role: Role| {
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(key(key_name)),
+            style: div().w(px(80.)).h(px(40.)).style().clone(),
+            interactivity: wire::Interactivity {
+                role: Some(role),
+                focusable: true,
+                tab_stop: Some(true),
+                aria: wire::Aria {
+                    author_id: Some(key_name.into()),
+                    label: Some(key_name.into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            children: Vec::new(),
+        })
+    };
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("row")),
+        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![stop("menu", Role::Menu), stop("next", Role::Button)],
+    });
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(sanitized(root))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let focused = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let update = window.a11y_tree().expect("an a11y tree once activated");
+            ["menu", "next"]
+                .into_iter()
+                .find(|name| heard(update, name).is_some_and(|(id, _)| id == update.focus))
+        })
+    };
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        tree.update(cx, |tree, cx| {
+            let target = vec![key("menu")];
+            tree.execute_widget_command(wire::WidgetCommand::Focus { target }, window, cx)
+                .unwrap();
+        });
+    });
+    assert_eq!(focused(&mut native), Some("menu"), "the view focused it");
+    // Tab is the app's binding to `focus_next`; a bare window has none
+    native.update(|window, cx| window.focus_next(cx));
+    assert_eq!(focused(&mut native), Some("next"));
+    native.update(|window, cx| window.focus_next(cx));
+    assert_eq!(
+        focused(&mut native),
+        Some("menu"),
+        "Tab comes back round to the container it focused"
+    );
+}
+
+/// A focusable composite `id` of three `item` rows whose second is its
+/// active descendant, as the SDK builds one.
+fn claiming_composite(id: &str, role: Role, item: Role) -> wire::Node {
+    let rows = (0..3)
+        .map(|n| {
+            let row = format!("{id}-{n}");
+            wire::Node::Container(view_wire::ContainerNode {
+                id: Some(key(&row)),
+                style: div().w(px(60.)).h(px(20.)).style().clone(),
+                interactivity: wire::Interactivity {
+                    role: Some(item),
+                    aria: wire::Aria {
+                        author_id: Some(row.clone().into()),
+                        label: Some(row.into()),
+                        selected: Some(n == 1),
+                        active_descendant: n == 1,
+                        ..Default::default()
+                    },
+                    on_click: Some(20 + n),
+                    ..Default::default()
+                },
+                children: Vec::new(),
+            })
+        })
+        .collect();
+    wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key(id)),
+        style: div().flex().w(px(200.)).h(px(20.)).style().clone(),
+        interactivity: wire::Interactivity {
+            role: Some(role),
+            focusable: true,
+            tab_stop: Some(true),
+            on_key_down: Some(9),
+            aria: wire::Aria {
+                author_id: Some(id.into()),
+                label: Some(id.into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        children: rows,
+    })
+}
+
+/// During a hold (⌘⇧M) the shell's pane box has the keys and is an
+/// ancestor of every claim its view makes. With two composites on the
+/// screen each claiming its active row (Forge's Code: a tab list and the
+/// tree), neither has the keys, so neither claim counts: the pane box is
+/// what assistive technology hears focused, not a row, and no build
+/// panics on two claims under one focused box.
+#[gpui_kit::test]
+fn a_held_pane_over_two_claiming_composites_reports_the_pane_box(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    struct Pane {
+        view: Entity<ViewTree>,
+        own: gpui_kit::FocusHandle,
+    }
+    impl Render for Pane {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("pane")
+                .role(Role::Group)
+                .aria_label("Held window")
+                .track_focus(&self.own)
+                .size_full()
+                .child(self.view.clone())
+        }
+    }
+    cx.update(gpui_kit::init);
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("screen")),
+        style: div()
+            .flex()
+            .flex_col()
+            .w(px(280.))
+            .h(px(80.))
+            .style()
+            .clone(),
+        interactivity: Default::default(),
+        children: vec![
+            claiming_composite("tabs", Role::TabList, Role::Tab),
+            claiming_composite("files", Role::ListBox, Role::ListBoxOption),
+        ],
+    });
+    let root = sanitized(root);
+    let claims = |node: &wire::Node| {
+        let mut claims = 0;
+        super::super::commands::walk_authored_paths(node, &mut Vec::new(), &mut |node, _| {
+            if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = node {
+                claims += usize::from(interactivity.aria.active_descendant);
+            }
+        });
+        claims
+    };
+    let kept = claims(&root);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, cx| Pane {
+        view: cx.new(|_| ViewTree::new(root)),
+        own: cx.focus_handle(),
+    });
+    let pane = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        let own = pane.read(cx).own.clone();
+        own.focus(window, cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let focused = update
+            .nodes
+            .iter()
+            .find(|(id, _)| *id == update.focus)
+            .map(|(_, node)| (node.role(), node.label().map(str::to_owned)));
+        assert_eq!(focused, Some((Role::Group, Some("Held window".into()))));
+    });
+    assert_eq!(kept, 2, "the sanitizer keeps a claim per composite");
+}
+
 mod phase_two {
     //! What phase 2 added to the one mapper: the aria gpui has no setter for,
     //! through one `a11y::Patch`; a Status's words as its value; a List and a

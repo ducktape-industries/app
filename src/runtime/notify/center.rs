@@ -65,7 +65,7 @@ pub(crate) struct Center {
     /// The window in front and the view focused in it.
     pub(super) front: Option<(WindowKey, &'static str)>,
     /// Views that posted before the person said anything about them.
-    pub(super) asking: BTreeSet<String>,
+    pub(crate) asking: BTreeSet<String>,
     pub(super) not_now: BTreeSet<String>,
 }
 

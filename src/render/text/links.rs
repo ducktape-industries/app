@@ -132,6 +132,13 @@ impl ViewTree {
                                 press(at, cx);
                                 return;
                             }
+                            // Enter presses a link, Space nothing; kept from
+                            // a composite around the text, which cannot tell
+                            // it came from here and would press its own item
+                            "space" => {
+                                cx.stop_propagation();
+                                return;
+                            }
                             _ => return,
                         };
                         cx.stop_propagation();

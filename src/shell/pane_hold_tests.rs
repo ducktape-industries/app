@@ -398,7 +398,9 @@ fn chords_with_shift_are_written_for_the_platform() {
 }
 
 /// Shift+Return on a bar tab shows its program in the window in front,
-/// as Shift-click does; a plain Return opens it, as a click does.
+/// as Shift-click does; a plain Return opens it, as a click does. The
+/// keys reach the tab as the rail's one Tab stop, on the front window's
+/// program, and the arrow moves them to the next.
 #[gpui_kit::test]
 fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = console(cx);
@@ -434,8 +436,12 @@ fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
         );
     });
     native.update(|window, cx| {
-        focus_control("rail/hold-tab-b", window, cx);
-        window.dispatch_keystroke(Keystroke::parse("shift-enter").unwrap(), cx);
+        focus_control("rail/hold-tab-a", window, cx);
+        window.dispatch_keystroke(Keystroke::parse("right").unwrap(), cx);
+    });
+    settle(&mut native);
+    native.update(|window, cx| {
+        window.dispatch_keystroke(Keystroke::parse("shift-enter").unwrap(), cx)
     });
     settle(&mut native);
     assert_eq!(

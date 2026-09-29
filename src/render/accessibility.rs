@@ -207,6 +207,19 @@ pub(crate) fn announce<E: gpui_kit::InteractiveElement>(element: E, accessible: 
     })
 }
 
+/// `handle` with the Tab stop and index `interactivity` asks for: gpui
+/// gives an element's tab stop and index only to a handle it makes itself,
+/// so a handle the view names, or one it focuses by id, takes them here.
+pub(super) fn tabbed(handle: FocusHandle, interactivity: &wire::Interactivity) -> FocusHandle {
+    handle
+        .tab_stop(
+            interactivity
+                .tab_stop
+                .unwrap_or(interactivity.tab_index.is_some()),
+        )
+        .tab_index(interactivity.tab_index.map_or(0, |index| index as isize))
+}
+
 impl ViewTree {
     /// The one aria mapper: `node`'s `Interactivity` as assistive
     /// technology receives it, on the element a renderer built. Role,
@@ -317,9 +330,14 @@ impl ViewTree {
             element = element.aria_orientation(value);
         }
         // gpui panics (debug) on a claim by the focused node or on a second
-        // claim in a frame: the sanitizer keeps neither
+        // claim under the one it counts claims under (the claimant's nearest
+        // focusable ancestor, when focused): the sanitizer keeps neither
         if aria.active_descendant {
             element = element.aria_active_descendant();
+            // its bounds are measured, and its scroller brought to it, by path
+            if node.identity().is_some() {
+                self.claiming.insert(self.authored_path.clone());
+            }
         }
         element = crate::a11y::Patch {
             live: aria.live,
@@ -345,19 +363,12 @@ impl ViewTree {
                 });
             });
         }
-        // gpui gives an element's tab stop and index only to a handle it
-        // makes itself; a view's own handle takes them here
         let focus_handle = interactivity.focus_handle.map(|id| {
-            self.guest_focus_targets
+            let handle = self
+                .guest_focus_targets
                 .entry(id)
-                .or_insert_with(|| cx.focus_handle())
-                .clone()
-                .tab_stop(
-                    interactivity
-                        .tab_stop
-                        .unwrap_or(interactivity.tab_index.is_some()),
-                )
-                .tab_index(interactivity.tab_index.map_or(0, |index| index as isize))
+                .or_insert_with(|| cx.focus_handle());
+            tabbed(handle.clone(), interactivity)
         });
         element = super::interactivity::apply(element, interactivity, focus_handle, cx);
         if let Some(handler) = interactivity.on_click {

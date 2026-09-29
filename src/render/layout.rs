@@ -71,7 +71,8 @@ impl ViewTree {
                 handle.focus(window, cx);
             }
             if let Some((_, handle)) = self.focus_targets.get(&path) {
-                element = element.track_focus(handle);
+                let handle = super::accessibility::tabbed(handle.clone(), interactivity);
+                element = element.track_focus(&handle);
             }
             element = match style.overflow.y == Some(gpui_kit::Overflow::Scroll) {
                 true => element.child(over_padding(&style.padding, self.measure(&path, cx))),
@@ -104,8 +105,9 @@ impl ViewTree {
     }
 
     /// A zero-paint absolute canvas that records its bounds into
-    /// `bounds[path]` and notifies when they change. Only a node that owns
-    /// `path` may measure there (see `container`).
+    /// `bounds[path]` and notifies when they change, and, on the first frame
+    /// a claim is on `path`, scrolls to it ([`Self::reveal`]). Only a node
+    /// that owns `path` may measure there (see `container`).
     pub(super) fn measure(
         &self,
         path: &[wire::ElementIdWire],
@@ -118,7 +120,13 @@ impl ViewTree {
                 let _ = weak.update(cx, |this, cx| {
                     let changed = this.bounds.get(&route) != Some(&bounds);
                     if changed {
-                        this.bounds.insert(route, bounds);
+                        this.bounds.insert(route.clone(), bounds);
+                        cx.notify();
+                    }
+                    let moved = this.claiming.contains(&route)
+                        && this.revealed.insert(route.clone())
+                        && this.reveal(&route, bounds);
+                    if moved {
                         cx.notify();
                     }
                 });
@@ -127,6 +135,36 @@ impl ViewTree {
         )
         .absolute()
         .inset_0()
+    }
+}
+
+impl ViewTree {
+    /// Scrolls the scroller nearest above `path` by the least that shows
+    /// `row`, the claimed node's bounds this frame (its top, when it is
+    /// taller than the scroller); the next frame draws it there. True when
+    /// it moved. A row in a virtual list is left to the list, which the
+    /// guest scrolls to the row it claims; only a plain scroller is the
+    /// host's to move, and only vertically.
+    fn reveal(&self, path: &[wire::ElementIdWire], row: Bounds<Pixels>) -> bool {
+        let nearest = (0..path.len()).rev().map(|end| &path[..end]).find(|above| {
+            self.scrolls.contains_key(*above)
+                || self.uniform_lists.contains_key(*above)
+                || self.variable_lists.keys().any(|list| list.path == *above)
+        });
+        let Some(scroller) = nearest.and_then(|above| self.scrolls.get(above)) else {
+            return false;
+        };
+        let view = scroller.bounds();
+        let by = match row.top() < view.top() || row.size.height > view.size.height {
+            true => view.top() - row.top(),
+            false => (view.bottom() - row.bottom()).min(px(0.)),
+        };
+        if by == px(0.) {
+            return false;
+        }
+        let offset = scroller.offset();
+        scroller.set_offset(point(offset.x, offset.y + by));
+        true
     }
 }
 

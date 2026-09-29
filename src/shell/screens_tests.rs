@@ -11,6 +11,7 @@ mod launcher;
 mod live;
 mod names;
 mod overlays;
+mod roving;
 mod text;
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
