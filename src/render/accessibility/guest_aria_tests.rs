@@ -492,6 +492,72 @@ fn a_tracked_handle_the_view_makes_a_tab_stop_takes_tab(cx: &mut gpui_kit::TestA
     });
 }
 
+/// A pressable button that is `focusable`, with the Tab stop `tab_stop`,
+/// alone in a row: whether its node offers focus to assistive technology,
+/// and whether the first Tab lands on it.
+fn pressable_after_tab(cx: &mut gpui_kit::TestAppContext, tab_stop: Option<bool>) -> (bool, bool) {
+    cx.update(gpui_kit::init);
+    let button = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("press")),
+        style: div().w(px(80.)).h(px(40.)).style().clone(),
+        interactivity: wire::Interactivity {
+            role: Some(Role::Button),
+            focusable: true,
+            tab_stop,
+            on_click: Some(7),
+            aria: wire::Aria {
+                author_id: Some("press".into()),
+                label: Some("Rename".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(key("row")),
+        style: div().flex().w(px(280.)).h(px(80.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![button],
+    });
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(sanitized(root))
+    });
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        // Tab is the app's binding to `focus_next`; a bare window has none
+        window.focus_next(cx);
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let update = window.a11y_tree().expect("an a11y tree once activated");
+        let (press, heard) = heard(update, "press").expect("the button has a node");
+        (heard.focus_action, update.focus == press)
+    })
+}
+
+/// A view control as the SDK lowers `focusable()` (option B: `tab_stop:
+/// Some(true)` unless the view said otherwise) is a Tab stop the host
+/// honours: Tab lands on it.
+#[gpui_kit::test]
+fn a_lowered_focusable_with_tab_stop_takes_tab(cx: &mut gpui_kit::TestAppContext) {
+    assert_eq!(pressable_after_tab(cx, Some(true)), (true, true));
+}
+
+/// A raw-wire guest's `focusable` without a `tab_stop` is taken at its
+/// word: the node offers focus to assistive technology and Tab skips it.
+/// The host adds no stop the wire did not ask for (79b524d3); the SDK's
+/// lint faults such a control as `Unreachable`.
+#[gpui_kit::test]
+fn a_raw_focusable_without_tab_stop_offers_focus_but_tab_skips_it(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    let (offers, reached) = pressable_after_tab(cx, None);
+    assert!(offers, "the door reads it as offering focus");
+    assert!(!reached, "Tab skips a focusable the wire left out");
+}
+
 /// A container the view focuses by id (a menu frame it opens) stays in the
 /// Tab order: the handle the host makes for it takes the wire's Tab stop,
 /// as the handle gpui makes for an element does.
