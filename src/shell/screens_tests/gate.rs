@@ -342,7 +342,7 @@ fn snap(window: &mut Window, cx: &mut gpui_kit::App) -> Vec<crate::ax::AxNode> {
 pub(super) fn errors(native: &mut VisualTestContext, screen: &str, launcher: bool) -> Vec<String> {
     native.update(snap);
     let report = native.update(|window, cx| {
-        let mut reading = audit::observe(window, cx, true, |_| true, snap);
+        let mut reading = audit::observe(window, cx, "shell", true, |_| true, snap);
         reading.chords = crate::shell::chords();
         audit::audit(&reading, launcher)
     });
@@ -402,7 +402,7 @@ fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppCo
         );
     }
     let report = native.update(|window, cx| {
-        let mut reading = audit::observe(window, cx, true, |_| true, snap);
+        let mut reading = audit::observe(window, cx, "shell", true, |_| true, snap);
         reading.chords = crate::shell::chords();
         audit::audit(&reading, false)
     });

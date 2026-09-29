@@ -96,7 +96,7 @@ fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
             draw(window, cx);
             crate::ax::snapshot("shell", window, false)
         };
-        let mut reading = crate::ax::audit::observe(window, cx, false, |_| true, snap);
+        let mut reading = crate::ax::audit::observe(window, cx, "shell", false, |_| true, snap);
         reading.chords = crate::shell::chords();
         crate::ax::audit::audit(&reading, false)
     });

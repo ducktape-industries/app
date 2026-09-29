@@ -436,6 +436,16 @@ pub(super) fn door_ids(paths: &[(String, Vec<String>)]) -> Vec<String> {
     ids
 }
 
+/// The scope (`<window>` or `<window>/<module>`) a snapshot gives the node
+/// an element draws, and so the scope [`Filter`] judges a refused element
+/// by.
+pub(super) fn scope_of(name: &str, element: &gpui_kit::GlobalElementId) -> String {
+    match element_path(element.iter()).0 {
+        Some(module) => format!("{name}/{module}"),
+        None => name.to_owned(),
+    }
+}
+
 /// A path's module (after [`VIEW_MARK`]) and its stable segments: the
 /// names call sites pass, not entities, focus handles or the kit's own
 /// type-path ids (`gpui_component::button::button::Button`).
