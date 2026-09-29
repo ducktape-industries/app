@@ -34,7 +34,7 @@ pub(super) fn on_testkit() -> Ducktape {
     state
 }
 
-pub(super) fn status(height: u64) -> backend::NodeStatus {
+pub(crate) fn status(height: u64) -> backend::NodeStatus {
     backend::NodeStatus {
         network: "testkit".into(),
         time: 0,

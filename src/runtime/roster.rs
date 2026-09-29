@@ -46,14 +46,30 @@ pub(super) fn connection() -> &'static Mutex<Connection> {
 /// A roster as a node last listed it, every program and its code, shared
 /// by whoever holds a clone: the app's one ([`roster`]), which the node's
 /// reads fill, its views load from and its windows draw, or a test's own.
+/// Also how many times it, or a seat of one of its programs, changed on a
+/// thread of its own ([`Roster::changes`]).
 #[derive(Clone, Default)]
-pub(crate) struct Roster(Arc<Mutex<Vec<crate::backend::views::Program>>>);
+pub(crate) struct Roster(
+    Arc<Mutex<Vec<crate::backend::views::Program>>>,
+    Arc<std::sync::atomic::AtomicU64>,
+);
 
 impl Roster {
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<crate::backend::views::Program>> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// How many times the list or a seat changed off the window thread.
+    /// That tells no window: the shell reads this on the clock's beat and
+    /// draws when it moved (`Ducktape::beat_face`).
+    pub(crate) fn changes(&self) -> u64 {
+        self.1.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(crate) fn changed(&self) {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// A roster of its own that lists `modules`, for a test to draw or
@@ -248,6 +264,9 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                 }
             }
             let previous = std::mem::replace(&mut *roster().lock(), programs.clone());
+            if previous != programs {
+                roster().changed();
+            }
             let mut loads = Vec::new();
             for module in &names {
                 if !registry.keys().any(|(name, _)| name == module) {

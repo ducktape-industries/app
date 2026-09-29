@@ -20,6 +20,7 @@ mod onboarding_tests;
 #[cfg(test)]
 mod sign_in_tests;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 pub(crate) use app::*;
+pub(crate) use update::BeatFace;

@@ -327,6 +327,9 @@ struct Desktop {
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
     desk_bounds: Option<gpui_kit::WindowBounds>,
+    /// What a clock's beat can move on screen, as the windows were last
+    /// told to draw it (`Ducktape::beat_face`).
+    drawn: crate::BeatFace,
 }
 
 impl Desktop {
@@ -349,12 +352,18 @@ impl Desktop {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "dispatch");
         let runtime = crate::runtime::handle();
         let _runtime = runtime.enter();
+        let beat = message.is_beat();
         let task = self.state.handle(message);
         self.mount(cx);
         self.tray.sync(&self.state);
         self.start(task, cx).detach();
         self.subscriptions(cx);
-        cx.notify();
+        // a clock's beat that finds nothing moved on screen draws no frame
+        let face = self.state.beat_face();
+        if !beat || face != self.drawn {
+            cx.notify();
+        }
+        self.drawn = face;
     }
 
     /// The launcher and the desk are one window: crossing from one to
