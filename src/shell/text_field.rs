@@ -212,7 +212,6 @@ impl DesktopWindow {
                 }
             },
             input.role(gpui_kit::component::RoleOverride::Presentational),
-            None,
         );
         (state.clone(), field)
     }
