@@ -884,4 +884,8 @@ fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
         },
         "Help stayed where the press found it"
     );
+    assert!(
+        native.update(|_, cx| view.read(cx).drag.is_none()),
+        "the release did not let go"
+    );
 }
