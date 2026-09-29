@@ -286,10 +286,10 @@ pub(crate) struct Reading {
 
 /// An element the fork left out of the tree because an earlier one had its
 /// accessibility id (AX-123), as one snapshot's frame refused it: the door
-/// id of the node that kept it (its `GlobalElementId` where the snapshot
-/// does not show it), the refused element's `GlobalElementId`, and which of
-/// the identical refusals on that frame this is (two siblings given one
-/// element id refuse twice with one path).
+/// id of the node that kept it (its `GlobalElementId`, else its `NodeId`,
+/// where the snapshot does not show it), the refused element's
+/// `GlobalElementId`, and which of the identical refusals on that frame
+/// this is (two siblings given one element id refuse twice with one path).
 #[derive(Debug)]
 pub(crate) struct Refused {
     pub(crate) kept: String,
