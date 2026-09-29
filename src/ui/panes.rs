@@ -210,6 +210,19 @@ mod tests {
         assert_eq!(modules(&state, console), ["calendar", "chat", "files"]);
     }
 
+    /// A view picked from ⌘K or a menu opens as a bar click does: the
+    /// focused window keeps its program.
+    #[test]
+    fn a_picked_view_opens_beside_the_focused_one() {
+        let (mut state, console) = desk();
+        let _ = state.update(Message::SelectView("files"));
+        assert_eq!(modules(&state, console), ["chat", "files"]);
+        assert_eq!(state.active, Some("files"));
+        let _ = state.update(Message::SelectView("chat"));
+        assert_eq!(modules(&state, console), ["chat", "files"], "its own");
+        assert_eq!(state.active, Some("chat"));
+    }
+
     /// ⌘N opens an empty window, ⌘1–9 focus, ⌘` cycles, ⌘W closes.
     #[test]
     fn the_desk_keys_move_the_model() {
@@ -328,7 +341,7 @@ mod tests {
         state.roster = crate::runtime::Roster::listing(&["pane-link"]);
         let _ = state.update(Message::SelectView("forge"));
         let _ = state.update(Message::OpenLink("duck://pane-link/x".into()));
-        assert_eq!(modules(&state, console), ["forge", "pane-link"]);
+        assert_eq!(modules(&state, console), ["chat", "forge", "pane-link"]);
         assert_eq!(state.active, Some("pane-link"));
         // leaving the network empties every window, keeping its measure
         let _ = state.update(Message::Disconnect);
