@@ -563,6 +563,78 @@ fn the_approve_dialog_forgets_what_it_found_when_it_opens_or_closes(cx: &mut Tes
     }
 }
 
+/// A second node of the same network keeps the key, the account and the
+/// screen; another chain leaves everything of the last one and starts at
+/// the key step. An account answer from the node left, or for another
+/// key, is not this one's.
+#[gpui_kit::test]
+fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
+    let _seat = backend::seat_serial();
+    let (account, screen) = desk(cx);
+    let keyring = |dir: &str, other_chain| backend::Keyring {
+        dir: dir.into(),
+        other_chain,
+    };
+    account.update(cx, |account, cx| {
+        account.seed_network(NODE, "testkit", "testkit");
+        account.resolved(NODE, "ab", Some((7, "ada".into())), cx);
+    });
+    let left = account.update(cx, |account, cx| {
+        account.take_up(keyring("testkit", false), NODE.into(), "testkit".into(), cx)
+    });
+    assert!(!left, "a second node of one network was a switch");
+    let kept = state(&account, cx);
+    assert_eq!(
+        kept.signer_key, "ab",
+        "a second node of one network keeps the key"
+    );
+    assert_eq!(kept.account, Some(Some((7, "ada".into()))));
+    assert_eq!(shown(&screen, cx), "Desk");
+
+    let left = account.update(cx, |account, cx| {
+        account.take_up(
+            keyring("testkit+200", true),
+            NODE.into(),
+            "testkit".into(),
+            cx,
+        )
+    });
+    assert!(left, "another chain kept the network in hand");
+    let switched = state(&account, cx);
+    assert!(
+        switched.signer_key.is_empty(),
+        "the seat is locked on a switch"
+    );
+    assert_eq!(switched.account, None, "the account is asked again");
+    assert_eq!(
+        shown(&screen, cx),
+        "Unlock",
+        "another chain starts at the key step"
+    );
+
+    // an answer from the node left, then the one asked
+    account.update(cx, |account, cx| {
+        account.unlocked("ab".into(), cx);
+        account.resolved("http://old", "ab", Some((1, "Stale".into())), cx);
+    });
+    assert_eq!(
+        state(&account, cx).account,
+        None,
+        "the old node's answer landed"
+    );
+    account.update(cx, |account, cx| {
+        account.resolved(NODE, "cd", Some((2, "Other".into())), cx)
+    });
+    assert_eq!(
+        state(&account, cx).account,
+        None,
+        "another key's answer landed"
+    );
+    resolved(&account, None, cx);
+    assert_eq!(state(&account, cx).account, Some(None));
+    assert_eq!(shown(&screen, cx), "Account");
+}
+
 // ---------- what the desktop does on the account's events ----------
 
 /// A desktop over `session`'s entities, its console window's desk laid
