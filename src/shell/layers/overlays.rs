@@ -282,7 +282,11 @@ impl Render for OverlayLayer {
             Some(Overlay::Settings(page)) => Some(self.settings(page, window, cx)),
             _ => None,
         };
-        div().absolute().inset_0().children(dialog)
+        // `size_full` too: cached, this view is a layout root of its own,
+        // where a block's height is its content's (taffy), and the scrim is
+        // absolute. Sized by its insets alone the root would be 0px high and
+        // the scrim culled (`Screens::render`)
+        div().absolute().inset_0().size_full().children(dialog)
     }
 }
 

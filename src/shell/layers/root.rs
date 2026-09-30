@@ -3,7 +3,7 @@
 //! the panes (`PaneLayer`), the dialog open over them (`OverlayLayer`;
 //! "Add a device…" still `Screens`'), the node's breath (`StatusDot`) and
 //! the footer (`ToastView`). Before the desk the console draws its
-//! launcher screen (`Screens`) and the footer.
+//! launcher screen (`Screens`, uncached) and the footer.
 //! Every cached layer under it hits while nothing it observes moved (P6):
 //! a pulse of the dot draws the dot, this root and the uncached pane layer
 //! and pane views under it, and no cached layer redraws.
@@ -49,8 +49,8 @@ pub(in crate::shell) struct WindowRoot {
     toast: Entity<ToastView>,
     /// The node's breath over the bar's well (the console only).
     dot: Option<Entity<StatusDot>>,
-    /// The handle a menu hanging from the bar holds the keys by (`Chrome`'s;
-    /// the console only).
+    /// The handle the box a bar menu's card hangs from holds the keys by
+    /// (`Chrome`'s; the console only).
     menu: Option<FocusHandle>,
     /// A pane or window switch under way: started where it was asked for,
     /// ended on the frame after the one that shows it (docs/perf.md).
@@ -254,7 +254,6 @@ impl Render for WindowRoot {
             // was presented: an upper bound, high by one frame interval
             window.on_next_frame(move |_, _| drop(switching));
         }
-        let full = || StyleRefinement::default().size_full();
         let layer = || StyleRefinement::default().absolute().inset_0();
         let cached =
             |view: gpui_kit::AnyView, size, window: &Window| cached_unless_a11y(view, size, window);
@@ -262,9 +261,16 @@ impl Render for WindowRoot {
         let toast = deferred(cached(self.toast.clone().into(), layer(), window)).with_priority(2);
         let launcher = self.kind == WindowKind::Console && !self.on_desk(cx);
         let content = match (launcher, &self.screens) {
+            // The launcher (the sign-in and unlock screens) is drawn
+            // uncached, against the spec's cached `size_full` (chief,
+            // 2026-09-30): a cached launcher moves the unlock screen's
+            // pixels by 1 LSB (GPU sprite order within one draw order),
+            // which the look rule forbids, and these screens gain nothing
+            // from the cache. s9's LauncherLayer stays uncached for the
+            // same reason.
             (true, Some(screens)) => div()
                 .size_full()
-                .child(cached(screens.clone().into(), full(), window))
+                .child(screens.clone())
                 .child(toast)
                 .into_any_element(),
             _ => {
