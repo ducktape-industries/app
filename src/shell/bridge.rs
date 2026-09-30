@@ -318,6 +318,100 @@ mod tests {
         assert_eq!(chain.get(), 1, "the chain did not move once for one block");
     }
 
+    /// Each bridged source moved: its slice moved with it, once; a view's post
+    /// reaches the bell's slice through the dispatch its `Intent::Notified` makes.
+    #[gpui_kit::test]
+    fn a_moved_source_moves_its_slice_once(cx: &mut TestAppContext) {
+        let (model, key, _, mut native) = console(cx);
+        let e = model.read_with(&native, |model, _| {
+            let e = &model.entities;
+            (
+                e.session.clone(),
+                e.account.clone(),
+                e.screen.clone(),
+                e.rail.clone(),
+                e.toast.clone(),
+                e.windows.clone(),
+                e.notifications.clone(),
+                e.by_window[&key].spotlight.clone(),
+            )
+        });
+        let (session, _a) = notifies(&e.0, &mut native);
+        let (account, _b) = notifies(&e.1, &mut native);
+        let (screen, _c) = notifies(&e.2, &mut native);
+        let (rail, _d) = notifies(&e.3, &mut native);
+        let (toast, _e) = notifies(&e.4, &mut native);
+        let (windows, _f) = notifies(&e.5, &mut native);
+        let (notifications, _g) = notifies(&e.6, &mut native);
+        let (spotlight, _h) = notifies(&e.7, &mut native);
+        model.update(&mut native, |model, cx| {
+            let state = &mut model.state;
+            state.error = "refused".into();
+            state.sign_in.locked = !state.sign_in.locked;
+            state.stage = crate::Stage::Connect;
+            state.badges.insert("pane-ax-test", 2);
+            state.toast = "said".into();
+            state.active = Some("other-view");
+            state.spotlight_query = "cha".into();
+            model.bridge(false, cx);
+        });
+        model.update(&mut native, |model, _| {
+            let settings = notify::Settings {
+                banners: true,
+                in_front: false,
+                burst: 3,
+                views: Default::default(),
+            };
+            let post = view_wire::methods::Notification {
+                title: "a".into(),
+                body: "b".into(),
+                tag: String::new(),
+                link: String::new(),
+            };
+            let _ = model.state.center.lock().post(
+                &settings,
+                "pane-ax-test",
+                "Pane",
+                post,
+                std::time::Instant::now(),
+                0,
+            );
+        });
+        send(
+            &model,
+            Message::ViewEvent("pane-ax-test", crate::runtime::Intent::Notified),
+            &mut native,
+        );
+        for (name, seen) in [
+            ("session", session),
+            ("account", account),
+            ("screen", screen),
+            ("rail", rail),
+            ("toast", toast),
+            ("windows", windows),
+            ("notifications", notifications),
+            ("spotlight", spotlight),
+        ] {
+            assert_eq!(seen.get(), 1, "{name} did not follow its source");
+        }
+    }
+
+    /// A poll at the same height a second later moves only `heard`, which is not compared.
+    #[gpui_kit::test]
+    fn a_poll_that_only_moves_heard_leaves_the_chain_still(cx: &mut TestAppContext) {
+        let (model, _, _, mut native) = console(cx);
+        send(&model, Message::StatusPushed(status(7)), &mut native);
+        let chain = model.read_with(&native, |model, _| model.entities.chain.clone());
+        let (chain, _chain) = notifies(&chain, &mut native);
+        send(&model, Message::WallTick, &mut native);
+        send(&model, Message::StatusPushed(status(7)), &mut native);
+        assert_eq!(
+            chain.get(),
+            0,
+            "a poll that only moved heard notified the chain"
+        );
+    }
+
     /// A drag frame moves the desk and leaves the front still; a focus that
     /// brings another program forward moves it once.
     #[gpui_kit::test]
