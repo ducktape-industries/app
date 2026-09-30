@@ -1,10 +1,12 @@
 //! Real pane controls exercised through the same AccessKit actions as the AX door.
-use super::entities::{Overlay, Popover, SettingsPage, Spot};
-use super::layers::tests::{open_now, run_spot, show};
+use super::entities::{Entities, Overlay, Popover, SettingsPage, Spot};
+use super::layers::tests::{
+    active, open_help, open_now, pane, popped, run_spot, select_view, set_motion, show, toast,
+};
 use super::*;
 use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{ElementId, TestAppContext, VisualTestContext, px, size};
+use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, Window, px, size};
 
 pub(super) fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     window.activate_a11y();
@@ -48,25 +50,19 @@ fn press(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
 /// A console window on a desk with a program to show, as the AX door sees it.
 pub(super) fn console(
     cx: &mut TestAppContext,
-) -> (
-    Entity<Desktop>,
-    WindowKey,
-    Entity<WindowRoot>,
-    VisualTestContext,
-) {
+) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
     let mut seed = super::layers::tests::Seed::boot();
     // its own roster and centre, not the app's ones every test shares
     seed.state.roster = Default::default();
     seed.state.center = Default::default();
     seed.screen = super::entities::Screen::Desk;
-    seed.state.active = Some("pane-ax-test");
-    seed.state.console_win = Some(WindowKey::unique());
+    seed.active = Some("pane-ax-test");
     super::layers::tests::open_console(seed, cx)
 }
 
 #[gpui_kit::test]
 fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext) {
-    let (model, key, view, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     let nodes = native.update(draw);
     for control in ["split", "close", "popout"] {
         let id = format!("console:pane/0/{control}");
@@ -105,36 +101,13 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
         assert_eq!(view.read(cx).layout(cx).panes.len(), layout::MAX_PANES);
     });
     let instance = native.update(|_, cx| view.read(cx).layout(cx).panes[0].instance);
+    // the pane leaves for a window of its own, which `Windows` opens
     native.update(|window, cx| press("pane/0/popout", window, cx));
-    // the model put the pane in a window of its own and asked the shell to
-    // open it; the test has no command loop, so it opens it the same way
-    native.update(|_, cx| {
-        let (&popped, own) = model
-            .read(cx)
-            .state
-            .layouts
-            .iter()
-            .find(|(candidate, _)| **candidate != key)
-            .expect("the pane left for a window of its own");
-        let kind = WindowKind::View {
-            module: own.panes[0].module,
-        };
-        model.update(cx, |model, cx| {
-            model.open_window(popped, kind, oneshot::channel().0, None, cx)
-        });
-    });
     native.run_until_parked();
-    let (popped_key, popped_handle, popped) = native.update(|_, cx| {
+    let (popped_key, popped_handle, popped) = popped(&app, key, &mut native);
+    native.update(|_, cx| {
         assert_eq!(view.read(cx).layout(cx).panes.len(), layout::MAX_PANES - 1);
-        let model = model.read(cx);
-        let (&key, popped) = model
-            .views
-            .iter()
-            .find(|(candidate, _)| **candidate != key)
-            .expect("popout opened a view window");
-        let popped = popped.upgrade().unwrap();
         assert_eq!(popped.read(cx).layout(cx).panes[0].instance, instance);
-        (key, model.windows[&key], popped)
     });
     native.update(|_, cx| {
         popped_handle
@@ -150,10 +123,11 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
             instance
         );
         assert!(popped.read(cx).layout(cx).panes.is_empty());
-        model.update(cx, |model, _| {
-            model.views.remove(&popped_key);
-            model.windows.remove(&popped_key);
-        });
+        // its window went with it, and `Windows` heard so
+        assert!(
+            !app.windows.read(cx).handles().contains_key(&popped_key),
+            "the pop-out's window is still listed"
+        );
     });
     for remaining in (0..layout::MAX_PANES).rev() {
         native.update(|window, cx| press("pane/0/close", window, cx));
@@ -382,36 +356,31 @@ fn closing_an_overlay_gives_the_keys_back_to_what_had_them(cx: &mut TestAppConte
 /// there, and a window's own change asks nothing back of the desk.
 #[gpui_kit::test]
 fn the_focused_window_is_the_active_program(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     native.update(|window, cx| {
         draw(window, cx);
     });
-    let active =
-        |native: &mut VisualTestContext| native.update(|_, cx| model.read(cx).state.active);
     native.update(|window, cx| {
         view.update(cx, |view, cx| {
             view.pane_message(PaneMessage::Split("pane-ax-other"), window, cx)
         })
     });
-    assert_eq!(active(&mut native), Some("pane-ax-other"));
+    assert_eq!(active(&app, &mut native), Some("pane-ax-other"));
     native.update(|window, cx| {
         view.update(cx, |view, cx| {
             view.pane_message(PaneMessage::Focus(0), window, cx)
         })
     });
-    assert_eq!(active(&mut native), Some("pane-ax-test"));
+    assert_eq!(active(&app, &mut native), Some("pane-ax-test"));
     key(&mut native, "secondary-2");
-    assert_eq!(active(&mut native), Some("pane-ax-other"));
-    // the model's own ask (Spotlight) is carried out by the window
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SelectView("pane-ax-test"), cx)
-    });
-    native.run_until_parked();
+    assert_eq!(active(&app, &mut native), Some("pane-ax-other"));
+    // a pick (Spotlight's) lands on the console's desk
+    select_view(&app, "pane-ax-test", &mut native);
     native.update(|window, cx| {
         draw(window, cx);
     });
     assert_eq!(panes(&mut native, &view), (2, 0));
-    assert_eq!(active(&mut native), Some("pane-ax-test"));
+    assert_eq!(active(&app, &mut native), Some("pane-ax-test"));
 }
 
 /// A window that comes to the front (⌘N, ⌘W, ⌘1…9, ⌃Tab) has the keys:
@@ -460,11 +429,9 @@ pub(super) fn settle(native: &mut VisualTestContext) {
 /// keys too: Help from ⌘/, the Help menu or the empty desk's button.
 #[gpui_kit::test]
 fn help_the_model_opens_has_the_keys(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenHelp, cx)
-    });
+    open_help(&app, &mut native);
     settle(&mut native);
     assert_eq!(panes(&mut native, &view), (2, 1));
     assert!(
@@ -479,7 +446,7 @@ fn help_the_model_opens_has_the_keys(cx: &mut TestAppContext) {
 /// window has them once the dialog closes.
 #[gpui_kit::test]
 fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     settle(&mut native);
     show(
         &view,
@@ -487,9 +454,7 @@ fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
         &mut native,
     );
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenHelp, cx)
-    });
+    open_help(&app, &mut native);
     settle(&mut native);
     assert_eq!(panes(&mut native, &view), (2, 1));
     native.update(|window, cx| {
@@ -511,7 +476,7 @@ fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
 /// not the window it was picked over.
 #[gpui_kit::test]
 fn a_view_the_model_selects_has_the_keys(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     native.update(|window, cx| {
         draw(window, cx);
         view.update(cx, |view, cx| {
@@ -520,9 +485,7 @@ fn a_view_the_model_selects_has_the_keys(cx: &mut TestAppContext) {
     });
     settle(&mut native);
     assert!(in_front(&mut native, &view), "the split has the keys");
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SelectView("pane-ax-test"), cx)
-    });
+    select_view(&app, "pane-ax-test", &mut native);
     settle(&mut native);
     assert_eq!(panes(&mut native, &view), (2, 0));
     assert!(in_front(&mut native, &view), "SelectView");
@@ -574,15 +537,10 @@ fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
 /// is typed narrows the programs, ↓ picks the next, Enter opens it there.
 #[gpui_kit::test]
 fn an_empty_window_opens_what_its_field_finds(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
-    model.update(&mut native, |model, cx| {
-        let roster = crate::runtime::Roster::listing(&["cmdtest-alpha", "cmdtest-beta"]);
-        model.state.roster = roster.clone();
-        model
-            .entities
-            .rail
-            .update(cx, |rail, cx| rail.read_off(roster, cx));
-    });
+    let (app, _, view, mut native) = console(cx);
+    let roster = crate::runtime::Roster::listing(&["cmdtest-alpha", "cmdtest-beta"]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
     native.update(|window, cx| {
         draw(window, cx);
         window.dispatch_action(Box::new(keys::NewWindow), cx);
@@ -606,7 +564,7 @@ fn an_empty_window_opens_what_its_field_finds(cx: &mut TestAppContext) {
 /// mounted behind it and no pop-out, since nothing there could leave.
 #[gpui_kit::test]
 fn help_opens_in_a_window_the_app_draws(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     native.update(|window, cx| {
         draw(window, cx);
         window.dispatch_action(Box::new(keys::OpenHelp), cx);
@@ -620,7 +578,7 @@ fn help_opens_in_a_window_the_app_draws(cx: &mut TestAppContext) {
             .position(|pane| pane.module == layout::HELP)
             .expect("help opened");
         let instance = layout.panes[index].instance;
-        assert!(model.read(cx).seats.read(cx).seat(instance).is_none());
+        assert!(app.seats.read(cx).seat(instance).is_none());
         let ids: Vec<&str> = nodes
             .as_array()
             .unwrap()
@@ -636,7 +594,7 @@ fn help_opens_in_a_window_the_app_draws(cx: &mut TestAppContext) {
 /// scrolls to the rest, rather than squeezing it.
 #[gpui_kit::test]
 fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
-    let (model, key, _, mut native) = console(cx);
+    let (_, _, view, mut native) = console(cx);
     native.update(|window, cx| {
         draw(window, cx);
         window.dispatch_action(Box::new(keys::OpenHelp), cx);
@@ -650,14 +608,15 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
         w: 320.,
         h: 400.,
     };
-    model.update(&mut native, |model, cx| {
-        let index = model.state.layouts[&key]
+    let index = native.update(|_, cx| {
+        view.read(cx)
+            .layout(cx)
             .panes
             .iter()
             .position(|pane| pane.module == layout::HELP)
-            .unwrap();
-        model.dispatch(Message::Pane(key, PaneMessage::Frame(index, narrow)), cx);
+            .unwrap()
     });
+    pane(&view, PaneMessage::Frame(index, narrow), &mut native);
     let width = |nodes: &serde_json::Value, id: &str| {
         nodes
             .as_array()
@@ -682,21 +641,21 @@ fn a_narrow_help_window_scrolls_rather_than_squeezes(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
     const MODULE: &str = "pane-seated-view";
-    let (model, key, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     native.update(|window, cx| {
         draw(window, cx);
     });
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
-    });
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     let width = |native: &mut VisualTestContext| {
         native.update(|_, cx| view.read(cx).layout(cx).panes[0].frame.unwrap().w)
     };
     assert_eq!(width(&mut native), 768., "60% of the desk, no view yet");
     let tab = native.update(|_, cx| {
         let instance = view.read(cx).layout(cx).panes[0].instance;
-        let seats = model.read(cx).seats.read(cx);
-        seats.seat(instance).expect("a seat for the pane")
+        app.seats
+            .read(cx)
+            .seat(instance)
+            .expect("a seat for the pane")
     });
     let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let _heard = native.update(|_, cx| {
@@ -729,7 +688,7 @@ fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppConte
     use view_wire as wire;
     const MODULE: &str = "pane-desk-redraw-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
+    let (_, key, view, mut native) = console(cx);
     // a frame as the platform delivers one: what asked for it runs, then
     // whatever that dirtied draws
     let frame = |native: &mut VisualTestContext| {
@@ -739,9 +698,7 @@ fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppConte
         native.run_until_parked();
     };
     frame(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
-    });
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     let line = wire::Node::RichText {
         id: Some(wire::ElementIdWire::Name("line".into())),
         style: gpui_kit::div().h(px(20.)).style().clone(),
@@ -789,42 +746,47 @@ pub(super) fn window_count(key: WindowKey, stage: &str) -> u64 {
         .unwrap_or(0)
 }
 
-/// The clocks beat whatever happens. A beat that moves nothing on screen
-/// draws no frame and tells the model's observers nothing, and one that
-/// moves something does: a roster that changed on its own thread (the
-/// empty desk lists the programs from the model), a toast running out
-/// (docs/perf.md).
+/// The wall clock beats whatever happens. A beat that moves nothing on
+/// screen draws no frame and tells the `Desktop`'s observers nothing, and
+/// one that moves something does: a roster that changed on its own thread
+/// (the empty desk lists the programs from it). A toast takes itself down
+/// on its own clock, and draws the window as it goes (docs/perf.md).
 #[gpui_kit::test]
 fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
     use crate::ui::test_support::status;
     const MODULE: &str = "pane-beat-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
+    // what is left of the reducer: the beat, over a roster of the test's own
+    let roster = crate::runtime::Roster::default();
+    let desktop = native.update(|_, cx| {
+        use gpui_kit::AppContext as _;
+        let state = Ducktape {
+            center: Default::default(),
+            roster: roster.clone(),
+        };
+        cx.new(|cx| Desktop::new(state, crate::tray::init(cx).0, app.clone(), cx))
+    });
     let send = |message: Message, native: &mut VisualTestContext| {
-        model.update(native, |model, cx| model.dispatch(message, cx));
+        desktop.update(native, |desktop, cx| desktop.dispatch(message, cx));
         native.run_until_parked();
     };
     crate::runtime::seat_for_test(MODULE, 400);
-    model.update(&mut native, |model, _| {
-        // the breath stands still: its frames are not the beats'
-        model.state.motion = false;
-    });
-    send(Message::Pane(key, PaneMessage::Select(MODULE)), &mut native);
-    super::layers::tests::polled(&model, status(7), &mut native);
+    // the breath stands still: its frames are not the beats'
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    super::layers::tests::polled(&app, status(7), &mut native);
     let still = window_count(key, "renders");
     let told = std::rc::Rc::new(std::cell::Cell::new(0));
     let _told = native.update(|_, cx| {
         let told = told.clone();
-        cx.observe(&model, move |_, _| told.set(told.get() + 1))
+        cx.observe(&desktop, move |_, _| told.set(told.get() + 1))
     });
-    for message in [Message::WallTick, Message::ToastTick] {
-        send(message, &mut native);
-    }
+    send(Message::WallTick, &mut native);
     // the poll's answers are `Session`'s, not the reducer's: a miss and
     // the same height move nothing on screen either
-    let session = model.read_with(&native, |model, _| model.entities.session.clone());
     for answer in [Err("no".to_owned()), Ok(status(7))] {
-        session.update(&mut native, |session, cx| {
+        app.session.update(&mut native, |session, cx| {
             session.status_answered(answer, cx)
         });
         native.run_until_parked();
@@ -841,7 +803,7 @@ fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
     );
 
     // a roster read or a seat load landed on its own thread
-    model.read_with(&native, |model, _| model.state.roster.changed());
+    roster.changed();
     send(Message::WallTick, &mut native);
     assert_eq!(
         told.get(),
@@ -849,14 +811,29 @@ fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
         "the roster moved under the beat and the model told no one"
     );
 
-    // a toast shows for twelve beats, and goes on the thirteenth
-    send(Message::ShowToast("Saved.".into()), &mut native);
-    let shown = window_count(key, "renders");
-    for _ in 0..12 {
-        send(Message::ToastTick, &mut native);
+    // a toast shows for 3.6 s on its own clock, and goes then: the frame
+    // that shows it and the one its callbacks ask for, then none until
+    // it goes
+    toast(&app, "Saved.", &mut native);
+    for _ in 0..2 {
+        native.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        native
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(100));
+        native.run_until_parked();
     }
+    let shown = window_count(key, "renders");
+    native
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(3200));
+    native.run_until_parked();
     assert_eq!(window_count(key, "renders"), shown, "a toast's count drew");
-    send(Message::ToastTick, &mut native);
+    native
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(300));
+    native.run_until_parked();
     assert!(
         window_count(key, "renders") > shown,
         "the toast ran out and stayed on screen"
@@ -932,11 +909,9 @@ fn a_help_window_in_front_keeps_the_keys_in_its_box(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
     use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput};
-    let (model, _, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenHelp, cx)
-    });
+    open_help(&app, &mut native);
     settle(&mut native);
     let (index, start) = native.update(|_, cx| {
         let layout = view.read(cx).layout(cx);
@@ -985,19 +960,65 @@ fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
     );
 }
 
+/// A row of the bell's list clicked closes the menu and opens what the
+/// notice is about: its program's seat on the console (`Windows::open_notice`).
+#[gpui_kit::test]
+fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-bell-row-view";
+    let (app, _, view, mut native) = console(cx);
+    let roster = crate::runtime::Roster::listing(&[MODULE]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    let id = native.update(|_, cx| {
+        let notifications = app.notifications.read(cx);
+        let settings = app.prefs.read(cx).get().notify.clone();
+        let post = view_wire::methods::Notification {
+            title: "Ping".into(),
+            body: "From the bell".into(),
+            tag: String::new(),
+            link: String::new(),
+        };
+        let _ = notifications.center().lock().post(
+            &settings,
+            MODULE,
+            "Bell",
+            post,
+            std::time::Instant::now(),
+            0,
+        );
+        notifications.entries()[0].id
+    });
+    app.notifications.update(&mut native, |notifications, cx| {
+        _ = notifications.refresh(cx)
+    });
+    show(
+        &view,
+        Some(Overlay::Menu(Popover::Notifications)),
+        &mut native,
+    );
+    native.update(|window, cx| press(&format!("notif/{id}"), window, cx));
+    settle(&mut native);
+    assert_eq!(
+        native.update(|_, cx| *view.read(cx).overlays().read(cx).get()),
+        None,
+        "the bell stayed open"
+    );
+    assert!(
+        native.update(|_, cx| view.read(cx).desk.read(cx).holds(MODULE)),
+        "the notice's program never opened"
+    );
+}
+
 /// A pane that leaves the desk with an intent still to hand over (a badge
-/// its last update set) gets it to the model: `hide` returns them and the
+/// its last update set) gets it to the rail: `hide` returns them and the
 /// reconcile routes them, since the seat's own route is dropped in the
 /// same update.
 #[gpui_kit::test]
 fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
     const MODULE: &str = "pane-hidden-intent-view";
-    let (model, key, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
-    });
-    native.run_until_parked();
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     let (index, instance) = native.update(|_, cx| {
         let layout = view.read(cx).layout(cx);
         let index = layout
@@ -1006,23 +1027,73 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
             .position(|pane| pane.module == MODULE)
             .expect("the pane opened");
         let instance = layout.panes[index].instance;
-        let seat = model
-            .read(cx)
-            .seats
-            .read(cx)
-            .seat(instance)
-            .expect("seated");
+        let seat = app.seats.read(cx).seat(instance).expect("seated");
         (index, seat.read(cx).instance())
     });
     crate::runtime::intent_for_test(MODULE, instance, crate::runtime::Intent::Badge(3));
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Close(index)), cx)
-    });
-    native.run_until_parked();
+    pane(&view, PaneMessage::Close(index), &mut native);
     assert_eq!(
-        native.update(|_, cx| model.read(cx).state.badges.get(MODULE).copied()),
-        Some(3),
-        "the badge the hidden seat handed over reached the model"
+        native.update(|_, cx| app.rail.read(cx).badge(MODULE)),
+        3,
+        "the badge the hidden seat handed over reached the rail"
+    );
+}
+
+/// A view's link (`link.open`) is routed by `Seats` to `Windows::open_link`
+/// on the seat's next turn: the listed view opens on the console's desk,
+/// comes to the front and is handed the route.
+#[gpui_kit::test]
+fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-link-intent-view";
+    const LINKED: &str = "pane-link-intent-target";
+    let (app, _, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    let roster = crate::runtime::Roster::listing(&[MODULE, LINKED]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    let instance = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let pane = layout
+            .panes
+            .iter()
+            .find(|pane| pane.module == MODULE)
+            .expect("the pane opened");
+        let seat = app.seats.read(cx).seat(pane.instance).expect("seated");
+        seat.read(cx).instance()
+    });
+    crate::runtime::intent_for_test(
+        MODULE,
+        instance,
+        crate::runtime::Intent::OpenLink(format!("duck://{LINKED}/room/7")),
+    );
+    // the seat's next turn, as the door settles them; a turn owed to a
+    // frame lands after it
+    for _ in 0..2 {
+        app.seats.update(&mut native, |seats, cx| seats.settle(cx));
+        native.run_until_parked();
+        native.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        native.run_until_parked();
+    }
+    let modules: Vec<_> = native.update(|_, cx| {
+        view.read(cx)
+            .layout(cx)
+            .panes
+            .iter()
+            .map(|pane| pane.module)
+            .collect()
+    });
+    assert!(
+        modules.contains(&LINKED),
+        "the link opened nothing: {modules:?}"
+    );
+    assert_eq!(active(&app, &mut native), Some(LINKED));
+    assert_eq!(
+        crate::runtime::take_route(LINKED).as_deref(),
+        Some("room/7"),
+        "the view was not handed its route"
     );
 }
 
@@ -1052,12 +1123,10 @@ fn an_empty_pane_stops_its_figure_when_motion_goes_off_without_a_frame_loop(
     cx: &mut TestAppContext,
 ) {
     let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     native.update(|_, cx| cx.set_reduce_motion(false));
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(true), cx);
-        model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx);
-    });
+    set_motion(&app, true, &mut native);
+    pane(&view, PaneMessage::Close(0), &mut native);
     assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
     let drawn = window_count(key, "renders.empty");
     for _ in 0..10 {
@@ -1069,10 +1138,7 @@ fn an_empty_pane_stops_its_figure_when_motion_goes_off_without_a_frame_loop(
     );
 
     // the frame that shows it still is the one the switch draws
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(false), cx)
-    });
-    native.run_until_parked();
+    set_motion(&app, false, &mut native);
     let drawn = window_count(key, "renders.empty");
     for _ in 0..super::figure::FPS {
         tick_frame(&mut native);
@@ -1083,9 +1149,7 @@ fn an_empty_pane_stops_its_figure_when_motion_goes_off_without_a_frame_loop(
         "the still figure drew its pane on"
     );
 
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(true), cx)
-    });
+    set_motion(&app, true, &mut native);
     for _ in 0..10 {
         tick_frame(&mut native);
     }
@@ -1100,17 +1164,13 @@ fn an_empty_pane_stops_its_figure_when_motion_goes_off_without_a_frame_loop(
 #[gpui_kit::test]
 fn a_roster_change_redraws_the_bare_desk(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
-    model.update(&mut native, |model, cx| {
-        // a still figure: its frames are not the roster's
-        model.dispatch(Message::SetMotion(false), cx);
-        model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx);
-    });
-    native.run_until_parked();
+    let (app, key, view, mut native) = console(cx);
+    // a still figure: its frames are not the roster's
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Close(0), &mut native);
     assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
     let drawn = window_count(key, "renders.empty");
-    let rail = model.read_with(&native, |model, _| model.entities.rail.clone());
-    rail.update(&mut native, |rail, cx| {
+    app.rail.update(&mut native, |rail, cx| {
         rail.read_off(crate::runtime::Roster::listing(&["bare-desk-view"]), cx)
     });
     native.run_until_parked();
@@ -1180,7 +1240,7 @@ fn the_command_field_takes_the_keys_when_its_pane_comes_to_the_front(cx: &mut Te
 /// window already showing follows the model when that changes.
 #[gpui_kit::test]
 fn help_greets_a_new_account_and_titles_otherwise(cx: &mut TestAppContext) {
-    let (model, _, _, mut native) = console(cx);
+    let (app, _, _, mut native) = console(cx);
     let title = |native: &mut VisualTestContext| {
         let nodes = native.update(draw);
         let page = nodes
@@ -1201,23 +1261,17 @@ fn help_greets_a_new_account_and_titles_otherwise(cx: &mut TestAppContext) {
         );
         heading["name"].as_str().unwrap().to_owned()
     };
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenHelp, cx)
-    });
+    open_help(&app, &mut native);
     assert_eq!(title(&mut native), "Ducktape help");
     // a new account lands on it greeted (`Account::welcome`)
-    model.update(&mut native, |model, cx| {
-        model.entities.account.update(cx, |account, cx| {
-            let mut state = account.get().clone();
-            state.welcome = true;
-            account.seed(state, None, None, cx);
-        });
+    app.account.update(&mut native, |account, cx| {
+        let mut state = account.get().clone();
+        state.welcome = true;
+        account.seed(state, None, None, cx);
     });
     assert_eq!(title(&mut native), "Welcome to Ducktape");
     // asked for again, it is just help
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenHelp, cx)
-    });
+    open_help(&app, &mut native);
     assert_eq!(title(&mut native), "Ducktape help");
 }
 
@@ -1226,7 +1280,7 @@ fn help_greets_a_new_account_and_titles_otherwise(cx: &mut TestAppContext) {
 /// them it keeps them, and they go to the window when it closes.
 #[gpui_kit::test]
 fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) {
-    let (model, key, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     let root_has_them = |native: &mut VisualTestContext| {
         native.update(|window, cx| view.read(cx).focus.is_focused(window))
     };
@@ -1235,9 +1289,7 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
         .update(|window, cx| super::pane_hold_tests::focus_control("rail-connection", window, cx));
     settle(&mut native);
     assert!(!root_has_them(&mut native));
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx)
-    });
+    pane(&view, PaneMessage::Close(0), &mut native);
     settle(&mut native);
     assert_eq!(panes(&mut native, &view).0, 0);
     assert!(root_has_them(&mut native), "the keys stayed on the bar");
@@ -1251,9 +1303,7 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
         &mut native,
     );
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx)
-    });
+    pane(&view, PaneMessage::Close(0), &mut native);
     settle(&mut native);
     native.update(|window, cx| {
         assert!(
@@ -1275,13 +1325,11 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
     native
         .update(|window, cx| super::pane_hold_tests::focus_control("rail-connection", window, cx));
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::ShowToast("saved".into()), cx)
-    });
+    toast(&app, "saved", &mut native);
     settle(&mut native);
     assert!(
         !root_has_them(&mut native),
-        "a later model notify pulled the keys back to the root"
+        "a later notify pulled the keys back to the root"
     );
 }
 
@@ -1291,12 +1339,9 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
 #[gpui_kit::test]
 fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
     const MODULE: &str = "pane-trapped-view";
-    let (model, key, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
-    });
-    native.run_until_parked();
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     let ids = |nodes: &serde_json::Value| -> Vec<String> {
         nodes
             .as_array()
@@ -1313,7 +1358,7 @@ fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
             .iter()
             .find(|pane| pane.module == MODULE)
             .unwrap();
-        let seat = model.read(cx).seats.read(cx).seat(pane.instance).unwrap();
+        let seat = app.seats.read(cx).seat(pane.instance).unwrap();
         (seat.read(cx).instance(), ids(&nodes))
     });
     let unavailable = format!("console:{MODULE}/view-unavailable");
@@ -1340,12 +1385,9 @@ fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext) {
     const MODULE: &str = "pane-popout-place-view";
-    let (model, key, view, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
-    });
-    native.run_until_parked();
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     let (index, instance) = native.update(|_, cx| {
         let layout = view.read(cx).layout(cx);
         let index = layout
@@ -1355,39 +1397,16 @@ fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext
             .unwrap();
         (index, layout.panes[index].instance)
     });
-    let seat = native.update(|_, cx| model.read(cx).seats.read(cx).seat(instance).unwrap());
+    let seat = native.update(|_, cx| app.seats.read(cx).seat(instance).unwrap());
     assert_eq!(
         seat.read_with(&native, |seat, _| seat.window()),
-        Some(native.update(|_, cx| model.read(cx).windows[&key])),
+        Some(native.update(|_, cx| app.windows.read(cx).handles()[&key])),
         "the seat starts in the console"
     );
+    // the pane leaves for a window of its own, which `Windows` opens
     native.update(|window, cx| press(&format!("pane/{index}/popout"), window, cx));
-    // the test has no command loop: it opens the window the shell would
-    native.update(|_, cx| {
-        let (&popped, own) = model
-            .read(cx)
-            .state
-            .layouts
-            .iter()
-            .find(|(candidate, _)| **candidate != key)
-            .expect("the pane left for a window of its own");
-        let kind = WindowKind::View {
-            module: own.panes[0].module,
-        };
-        model.update(cx, |model, cx| {
-            model.open_window(popped, kind, oneshot::channel().0, None, cx)
-        });
-    });
     native.run_until_parked();
-    let popped_handle = native.update(|_, cx| {
-        let model = model.read(cx);
-        let (&popped, _) = model
-            .windows
-            .iter()
-            .find(|(candidate, _)| **candidate != key)
-            .expect("the pop-out window opened");
-        model.windows[&popped]
-    });
+    let (_, popped_handle, _) = popped(&app, key, &mut native);
     assert_eq!(
         seat.read_with(&native, |seat, _| seat.window()),
         Some(popped_handle),
@@ -1460,7 +1479,7 @@ fn a_pane_wake_re_renders_its_tree_and_not_the_siblings(cx: &mut TestAppContext)
     const FIRST: &str = "pane-wake-first-view";
     const SECOND: &str = "pane-wake-second-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (_, key, view, mut native) = console(cx);
     let frame = |native: &mut VisualTestContext| {
         native.update(|window, cx| {
             window.simulate_next_frame(cx);
@@ -1480,10 +1499,8 @@ fn a_pane_wake_re_renders_its_tree_and_not_the_siblings(cx: &mut TestAppContext)
     };
     crate::runtime::seat_drawing_for_test(FIRST, 400, line("first"));
     crate::runtime::seat_drawing_for_test(SECOND, 400, line("second"));
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Select(FIRST)), cx);
-        model.dispatch(Message::Pane(key, PaneMessage::Split(SECOND)), cx);
-    });
+    pane(&view, PaneMessage::Select(FIRST), &mut native);
+    pane(&view, PaneMessage::Split(SECOND), &mut native);
     for _ in 0..8 {
         frame(&mut native);
     }
@@ -1550,10 +1567,10 @@ fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppCont
 #[gpui_kit::test]
 fn an_overlay_moving_draws_the_panes_by_its_slice_alone(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (app, key, _, mut native) = console(cx);
     native.run_until_parked();
-    let overlays = model.read_with(&native, |model, _| {
-        model.entities.by_window[&key].overlays.clone()
+    let overlays = app.windows.read_with(&native, |windows, _| {
+        windows.own(key).expect("the console").overlays.clone()
     });
     for overlay in [Some(Overlay::Spotlight), None] {
         let before = window_count(key, "renders.panes");

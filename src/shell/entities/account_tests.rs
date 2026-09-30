@@ -2,13 +2,12 @@
 //! the screens as one table, the key and account steps' guards, and what
 //! the desktop does on the account's events (a lock's toast, a new
 //! account's Help, a network left).
-use super::super::{Desktop, WindowKey};
+use super::super::{WindowKey, WindowKind};
 use super::tests::session;
 use super::{Account, AccountStep, Chain, Entities, Screen, Session, Slice};
 use crate::backend;
-use crate::ui::layout::{EMPTY, HELP, Layout};
-use crate::{AppMessage as Message, Ducktape};
-use gpui_kit::{AppContext as _, Entity, TestAppContext};
+use crate::ui::layout::{EMPTY, HELP};
+use gpui_kit::{Bounds, Entity, TestAppContext, point, px, size};
 
 /// The node the account is on: none, so it asks nothing. (A socket's
 /// answer would wake the test from the runtime's thread, which the test
@@ -662,41 +661,51 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
 
 // ---------- what the desktop does on the account's events ----------
 
-/// A desktop over `session`'s entities, its console window's desk laid
-/// out; nothing is drawn.
-fn desktop(cx: &mut TestAppContext) -> (Entity<Desktop>, WindowKey, Entities) {
-    let mut state = Ducktape::boot();
-    state.roster = Default::default();
-    state.center = Default::default();
-    let key = WindowKey::unique();
-    let mut layout = Layout::default();
-    layout.split(EMPTY);
-    layout.measure((1280., 764.));
-    layout.settle();
-    layout.initialized = true;
-    state.console_win = Some(key);
-    state.layouts.insert(key, layout);
-    let mut made = None;
-    let model = cx.new(|cx| {
-        let entities = Entities::for_test(&state, cx);
-        made = Some(entities.clone());
-        Desktop::new(state, crate::tray::init(cx).0, entities, cx)
+/// The entities with a console window open, its desk laid out with one
+/// empty window; nothing is drawn.
+fn desktop(cx: &mut TestAppContext) -> (Entities, WindowKey) {
+    let entities = cx.update(|cx| {
+        gpui_kit::init(cx);
+        super::tests::entities(cx)
     });
-    (model, key, made.unwrap())
+    let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
+    let key = entities.windows.update(cx, |windows, cx| {
+        windows.open(WindowKind::Console, Some(at), cx)
+    });
+    cx.run_until_parked();
+    desk_of(&entities, key, cx).update(cx, |desk, cx| {
+        desk.resize((1280., 764.), cx);
+        desk.split(EMPTY, cx);
+    });
+    (entities, key)
 }
 
-fn modules(model: &Entity<Desktop>, key: WindowKey, cx: &mut TestAppContext) -> Vec<&'static str> {
-    model.read_with(cx, |model, _| modules_of(&model.state, key))
+fn desk_of(entities: &Entities, key: WindowKey, cx: &TestAppContext) -> Entity<super::Desk> {
+    entities.windows.read_with(cx, |windows, _| {
+        windows.own(key).expect("the console").desk.clone()
+    })
 }
 
-/// Locking says so: the account's toast reaches the reducer's notice.
+fn modules(entities: &Entities, key: WindowKey, cx: &mut TestAppContext) -> Vec<&'static str> {
+    desk_of(entities, key, cx).read_with(cx, |desk, _| {
+        desk.get().panes.iter().map(|pane| pane.module).collect()
+    })
+}
+
+fn active(entities: &Entities, cx: &TestAppContext) -> Option<&'static str> {
+    entities
+        .windows
+        .read_with(cx, |windows, _| windows.active())
+}
+
+/// Locking says so: the account's toast reaches the notice.
 #[gpui_kit::test]
 fn a_locked_toast_still_shows(cx: &mut TestAppContext) {
     let _seat = backend::seat_serial();
-    let (model, _, entities) = desktop(cx);
+    let (entities, _) = desktop(cx);
     entities.account.update(cx, |account, cx| account.lock(cx));
     cx.run_until_parked();
-    let toast = model.read_with(cx, |model, _| model.state.toast.clone());
+    let toast = entities.toast.read_with(cx, |toast, _| toast.get().clone());
     assert_eq!(toast, "Locked");
 }
 
@@ -704,7 +713,7 @@ fn a_locked_toast_still_shows(cx: &mut TestAppContext) {
 /// the step, or a key that already has an account, does not.
 #[gpui_kit::test]
 fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
-    let (model, key, entities) = desktop(cx);
+    let (entities, key) = desktop(cx);
     let account = &entities.account;
     let signing_in = |entities: &Entities, cx: &mut TestAppContext| {
         entities.screen.update(cx, |screen, cx| {
@@ -724,37 +733,35 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
         account.account_created(Ok((7, "ada".into())), cx)
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
-    assert_eq!(modules(&model, key, cx), [HELP]);
-    assert_eq!(
-        model.read_with(cx, |model, _| model.state.active),
-        None,
-        "help is no program"
-    );
+    assert_eq!(modules(&entities, key, cx), [HELP]);
+    assert_eq!(active(&entities, cx), None, "help is no program");
     assert!(welcome(cx), "a new account is greeted");
-    model.update(cx, |model, cx| model.dispatch(Message::OpenHelp, cx));
-    assert_eq!(modules(&model, key, cx), [HELP], "not twice");
+    entities
+        .windows
+        .update(cx, |windows, cx| windows.help_asked(cx));
+    assert_eq!(modules(&entities, key, cx), [HELP], "not twice");
     assert!(!welcome(cx), "asked for, help is just help");
 
-    let (model, key, entities) = desktop(cx);
+    let (entities, key) = desktop(cx);
     signing_in(&entities, cx);
     entities.account.update(cx, |account, cx| {
         account.resolved(NODE, "ab", None, cx);
         account.create_later(cx);
     });
     assert_eq!(
-        modules(&model, key, cx),
+        modules(&entities, key, cx),
         [EMPTY],
         "not now: the desk as it was"
     );
 
-    let (model, key, entities) = desktop(cx);
+    let (entities, key) = desktop(cx);
     signing_in(&entities, cx);
     entities.account.update(cx, |account, cx| {
         account.resolved(NODE, "ab", Some((7, "ada".into())), cx);
     });
     assert_eq!(shown(&entities.screen, cx), "Desk");
     assert_eq!(
-        modules(&model, key, cx),
+        modules(&entities, key, cx),
         [EMPTY],
         "a known account is not greeted"
     );
@@ -766,11 +773,13 @@ fn a_new_account_opens_on_help(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn leaving_the_network_clears_the_desks_and_badges(cx: &mut TestAppContext) {
     let _seat = backend::seat_serial();
-    let (model, key, entities) = desktop(cx);
-    model.update(cx, |model, _| {
-        model.state.active = Some("chat");
-        model.state.badges.insert("chat", 3);
-    });
+    let (entities, key) = desktop(cx);
+    entities
+        .windows
+        .update(cx, |windows, cx| windows.select_view("chat", cx));
+    entities
+        .rail
+        .update(cx, |rail, cx| rail.set_badge("chat", 3, cx));
     entities.chain.update(cx, |chain, cx| {
         chain.set(
             Chain {
@@ -781,30 +790,27 @@ fn leaving_the_network_clears_the_desks_and_badges(cx: &mut TestAppContext) {
             cx,
         );
     });
-    assert_eq!(modules(&model, key, cx), [EMPTY]);
+    assert_eq!(modules(&entities, key, cx), ["chat"]);
+    assert_eq!(active(&entities, cx), Some("chat"));
     entities.session.update(cx, Session::disconnect);
     cx.run_until_parked();
-    model.read_with(cx, |model, _| {
-        assert!(
-            modules_of(&model.state, key).is_empty(),
-            "the desk kept its panes"
-        );
-        assert_eq!(model.state.active, None);
-        assert!(model.state.badges.is_empty());
-        assert!(
-            model.state.layouts.get(&key).unwrap().desk.is_some(),
-            "the desk lost its measure"
-        );
-    });
+    assert!(
+        modules(&entities, key, cx).is_empty(),
+        "the desk kept its panes"
+    );
+    assert_eq!(active(&entities, cx), None);
+    assert!(
+        entities
+            .rail
+            .read_with(cx, |rail, _| rail.badges().is_empty())
+    );
+    assert!(
+        desk_of(&entities, key, cx).read_with(cx, |desk, _| desk.get().desk.is_some()),
+        "the desk lost its measure"
+    );
     assert_eq!(
         entities.chain.read_with(cx, |chain, _| chain.node.clone()),
         None
     );
     assert_eq!(shown(&entities.screen, cx), "Connect");
-}
-
-fn modules_of(state: &Ducktape, key: WindowKey) -> Vec<&'static str> {
-    state.layouts.get(&key).map_or(Vec::new(), |layout| {
-        layout.panes.iter().map(|pane| pane.module).collect()
-    })
 }

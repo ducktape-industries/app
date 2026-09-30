@@ -10,6 +10,7 @@
 //! the `PaneLayer`'s, brought in line with the model after every draw.
 use super::layers::PaneLayer;
 use super::*;
+use gpui_kit::Window;
 
 /// Pixels an arrow moves or sizes by; with Shift, [`FAR`].
 const STEP: f32 = 8.;
@@ -71,26 +72,23 @@ impl WindowRoot {
         }
     }
 
-    /// A hold's message to the model. Not `pane_message`: that hands the
+    /// A hold's message to the desk. Not `pane_message`: that hands the
     /// keys to the window in front, and the hold has them.
     pub(super) fn hold_message(&mut self, message: PaneMessage, cx: &mut Context<Self>) {
-        let key = self.key;
-        self.model.update(cx, |model, cx| {
-            model.dispatch(Message::Pane(key, message), cx)
-        });
+        self.desk.update(cx, |desk, cx| desk.moved_by(message, cx));
         cx.notify();
     }
 }
 
 impl PaneLayer {
-    /// A hold's message to the model, through the window.
+    /// A hold's message to the desk, through the window.
     fn hold_message(&self, message: PaneMessage, cx: &mut gpui_kit::App) {
         let _ = self
             .window
             .update(cx, |desk, cx| desk.hold_message(message, cx));
     }
 
-    /// Brings the keys in line with the model: to the held window's box
+    /// Brings the keys in line with the desk: to the held window's box
     /// when a window is taken, and back to what had them when it is let go.
     /// After a draw (`PaneLayer::drawn`), after Search closing gave the keys
     /// back to what had them (the overlay layer's observer, before the

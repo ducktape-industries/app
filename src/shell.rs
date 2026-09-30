@@ -1,35 +1,22 @@
 //! The native shell: every OS window the app opens, and everything drawn
 //! in one that is not a program's view. Nothing a network decides is here.
 //!
-//! `Desktop` is the one model entity: it owns the app state (`Ducktape`),
-//! runs the reducer for every message, keeps the tray in step and holds
-//! one live program view per pane. Each OS window's root is a
+//! The shell's state is its entities (`entities`): app-wide ones
+//! (`Session`, `Account`, `Rail`, `Windows`, …) and one set per window,
+//! each written by its own methods. Each OS window's root is a
 //! `layers::WindowRoot`, a thin gpui view laying the window's layers out
 //! as siblings: the launcher (connect, key, account, recovery screens;
 //! `layers::LauncherLayer`) until sign-in, then the desk: the menu bar
 //! (`layers::Chrome`), the panes floating under it (`layers::PaneLayer`),
 //! the open dialog (⌘K, Settings, "Add a device…": `layers::OverlayLayer`),
 //! the node's breath (`layers::StatusDot`) and the footer
-//! (`layers::ToastView`).
-//!
-//! The reducer's tasks run without `&mut App`, so they cannot touch a
-//! window. They ask for a native effect through the `NativeCommand` channel
-//! below; `launch::run` pumps it into `Desktop::execute` on the window
-//! thread.
+//! (`layers::ToastView`). `Desktop` is what is left of the reducer: the
+//! wall clock's beat and the tray (s12 deletes it).
 
-use crate::a11y::Control as _;
 use crate::ui::task::Task;
-use futures::{
-    StreamExt as _,
-    channel::{mpsc, oneshot},
-};
-use gpui_kit::prelude::FluentBuilder;
-use gpui_kit::{
-    AppContext as _, AsyncApp, Context, Entity, IntoElement, ParentElement as _, Styled as _,
-    Window,
-};
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Mutex, OnceLock};
+use futures::StreamExt as _;
+use gpui_kit::{Context, Subscription};
+use std::collections::HashMap;
 
 use crate::ui::layout::{self, PaneMessage};
 use crate::{AppMessage as Message, Ducktape};
@@ -38,11 +25,9 @@ use crate::{AppMessage as Message, Ducktape};
 mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
-mod bridge;
 pub(crate) mod entities;
 mod figure;
 mod help;
-pub(crate) use entities::{Screen, Spot};
 pub(crate) use help::chords;
 pub(crate) use layers::Kept;
 mod ink;
@@ -100,151 +85,6 @@ pub(crate) fn chord_label(key: &str) -> String {
     }
 }
 
-/// A native effect the reducer asks for. Its tasks have no `&mut App`, so
-/// they send one of these over a channel; `launch::run` pumps it into
-/// `Desktop::execute` on the window thread. `send` waits until it ran;
-/// `post` does not, and works from any thread.
-pub(crate) enum NativeCommand {
-    Open {
-        key: WindowKey,
-        kind: WindowKind,
-        /// Where it opens; `None` is the display's centre.
-        at: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
-        reply: oneshot::Sender<WindowKey>,
-    },
-    Raise(WindowKey),
-    /// A window off the screen (a pop-out whose pane left it).
-    Close(WindowKey),
-    /// The appearance the model holds, onto the app's theme.
-    SyncAppearance,
-    /// A link pressed off the window thread: the reducer reads it.
-    OpenLink(String),
-    /// A web page, for the system browser.
-    OpenUrl(String),
-    Quit,
-}
-
-/// A command on the channel, and the pump's word that it ran.
-pub(crate) struct PendingCommand {
-    pub command: NativeCommand,
-    pub completed: oneshot::Sender<()>,
-}
-
-fn sender() -> &'static Mutex<Option<mpsc::UnboundedSender<PendingCommand>>> {
-    static SENDER: OnceLock<Mutex<Option<mpsc::UnboundedSender<PendingCommand>>>> = OnceLock::new();
-    SENDER.get_or_init(Mutex::default)
-}
-
-/// Installs the channel's sender for this process and hands back its
-/// receiver for the pump.
-pub(crate) fn commands() -> mpsc::UnboundedReceiver<PendingCommand> {
-    let (send, receive) = mpsc::unbounded();
-    let mut current = sender().lock().expect("native shell commands");
-    assert!(current.is_none(), "one native shell per process");
-    // runtime::notify and backend::auth_page cannot depend on shell: they
-    // call these hooks instead
-    crate::runtime::notify::on_open_link(post_open_link);
-    crate::backend::auth_page::on_open_url(post_open_url);
-    *current = Some(send);
-    receive
-}
-
-async fn send(command: NativeCommand) {
-    let (completed, received) = oneshot::channel();
-    let pending = PendingCommand { command, completed };
-    let sent = sender()
-        .lock()
-        .expect("native shell commands")
-        .as_ref()
-        .is_some_and(|sender| sender.unbounded_send(pending).is_ok());
-    if !sent {
-        tracing::error!(target: "ducktape::app", reason = "native_shell_closed", "native window command could not be delivered");
-        return;
-    }
-    let _ = received.await;
-}
-
-pub(crate) fn open(kind: WindowKind) -> (WindowKey, Task<WindowKey>) {
-    open_at(kind, None)
-}
-
-/// A window of `kind` opened at `at`, its key known before it is.
-pub(crate) fn open_at(
-    kind: WindowKind,
-    at: Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
-) -> (WindowKey, Task<WindowKey>) {
-    let key = WindowKey::unique();
-    let task = Task::stream(
-        futures::stream::once(async move {
-            let (reply, receive) = oneshot::channel();
-            send(NativeCommand::Open {
-                key,
-                kind,
-                at,
-                reply,
-            })
-            .await;
-            receive.await.ok()
-        })
-        .filter_map(std::future::ready),
-    );
-    (key, task)
-}
-
-fn effect<M: 'static>(command: NativeCommand) -> Task<M> {
-    Task::future(async move {
-        send(command).await;
-    })
-    .discard()
-}
-
-pub(crate) fn raise<M: 'static>(key: WindowKey) -> Task<M> {
-    effect(NativeCommand::Raise(key))
-}
-
-pub(crate) fn close<M: 'static>(key: WindowKey) -> Task<M> {
-    effect(NativeCommand::Close(key))
-}
-
-pub(crate) fn sync_appearance<M: 'static>() -> Task<M> {
-    effect(NativeCommand::SyncAppearance)
-}
-
-pub(crate) fn quit<M: 'static>() -> Task<M> {
-    effect(NativeCommand::Quit)
-}
-
-/// A web page, in the system browser.
-pub(crate) fn open_url<M: 'static>(url: String) -> Task<M> {
-    effect(NativeCommand::OpenUrl(url))
-}
-
-/// A link pressed off the window thread (a banner's click), handed to the
-/// reducer as `Message::OpenLink`.
-fn post_open_link(url: String) {
-    post(NativeCommand::OpenLink(url));
-}
-
-/// A web page for the system browser, asked for off the window thread
-/// (the passkey ceremony's page).
-fn post_open_url(url: String) {
-    post(NativeCommand::OpenUrl(url));
-}
-
-/// A command sent without waiting for it to be done.
-fn post(command: NativeCommand) {
-    let (completed, _dropped) = oneshot::channel();
-    let pending = PendingCommand { command, completed };
-    let sent = sender()
-        .lock()
-        .expect("native shell commands")
-        .as_ref()
-        .is_some_and(|sender| sender.unbounded_send(pending).is_ok());
-    if !sent {
-        tracing::error!(target: "ducktape::app", reason = "native_shell_closed", "a link could not be delivered");
-    }
-}
-
 /// A stream that yields every `period`.
 pub(crate) fn every(period: std::time::Duration) -> impl futures::Stream<Item = ()> {
     futures::stream::unfold((), move |()| async move {
@@ -253,101 +93,44 @@ pub(crate) fn every(period: std::time::Duration) -> impl futures::Stream<Item = 
     })
 }
 
-/// How long a window leaving full size has to report its frame.
-const LEAVE_FULL_SIZE: std::time::Duration = std::time::Duration::from_secs(3);
-/// How long a frame has to stand before it is the one: a window manager
-/// can send the state and the frame as separate events, in either order.
-const FRAME_SETTLES: std::time::Duration = std::time::Duration::from_millis(100);
-
-/// The frame a window leaving full size went back to, from the frames it
-/// reports (`None` while still full size): the last one once no other
-/// follows for a moment, or whatever it last said when time runs out.
-async fn left_full_size(
-    mut frames: futures::channel::mpsc::UnboundedReceiver<
-        Option<gpui_kit::Bounds<gpui_kit::Pixels>>,
-    >,
-    cx: &gpui_kit::AsyncApp,
-) -> Option<gpui_kit::Bounds<gpui_kit::Pixels>> {
-    let clock = cx.background_executor();
-    let give_up = clock.now() + LEAVE_FULL_SIZE;
-    let mut last = None;
-    loop {
-        let left = give_up.saturating_duration_since(clock.now());
-        let wait = if last.is_some() {
-            FRAME_SETTLES.min(left)
-        } else {
-            left
-        };
-        let timer = std::pin::pin!(clock.timer(wait));
-        match futures::future::select(frames.next(), timer).await {
-            futures::future::Either::Left((Some(frame), _)) => last = frame.or(last),
-            _ => return last,
-        }
-    }
-}
-
 // ---------- the desktop actor ----------
 
-/// The one model entity. It owns the app state, runs the reducer
-/// (`dispatch`), and keeps what outlives a draw: the tray, every OS
-/// window's handle and view, the subscription streams, and each pane's
-/// live program view. Not a window: `WindowRoot` is.
+/// What is left of the reducer: the wall clock's beat (`dispatch`, gated
+/// so a beat that moves nothing draws nothing) and the tray, kept in step
+/// with the session, the chain and the appearance. Not a window:
+/// `WindowRoot` is. s12 deletes it.
 struct Desktop {
     state: Ducktape,
     tray: crate::tray::Tray,
-    windows: BTreeMap<WindowKey, gpui_kit::AnyWindowHandle>,
-    /// Each OS window's root view (not a program's view).
-    views: BTreeMap<WindowKey, gpui_kit::WeakEntity<WindowRoot>>,
     /// The model's subscriptions (`Ducktape::subscriptions`), by recipe
     /// key: each a task feeding its stream's messages into `dispatch`.
     streams: HashMap<u64, gpui_kit::Task<()>>,
-    /// Every pane's seat, by the pane's instance: a pane keeps its seat
-    /// whichever window the model puts it in.
-    seats: Entity<entities::Seats>,
-    /// The seats' intents, into `dispatch` as `Message::ViewEvent`.
-    _seat_intents: gpui_kit::Subscription,
-    /// The shell's state as the layers read it, app-wide and per window,
-    /// written from `state` after every dispatch (`bridge.rs`) until each
-    /// entity's methods take over its source.
     entities: entities::Entities,
-    /// Where the desk window was when it last gave way to the launcher:
-    /// it comes back there.
-    desk_bounds: Option<gpui_kit::WindowBounds>,
     /// What a clock's beat can move on screen, as the windows were last
     /// told to draw it (`Ducktape::beat_face`).
     drawn: crate::BeatFace,
-    /// The entities' events and moves the reducer still acts on
-    /// (`windows.rs`, `Desktop::new`).
-    _subscriptions: Vec<gpui_kit::Subscription>,
+    _subscriptions: [Subscription; 3],
 }
 
 impl Desktop {
-    fn ax_windows(&self) -> Vec<crate::ax::Served> {
-        let mut nth = 0;
-        self.windows
-            .iter()
-            .map(|(key, handle)| {
-                nth += 1;
-                let name = match nth {
-                    1 => "console".to_owned(),
-                    nth => format!("console{nth}"),
-                };
-                (name, *key, *handle)
-            })
-            .collect()
-    }
-
-    /// A seat per view pane, placed in its window, gone panes hidden and
-    /// the intents they hand over routed. After every `dispatch`, and once
-    /// more when a window opens: a pop-out's handle lands in `windows`
-    /// outside any dispatch, and its seat's commands must run there, not
-    /// in the console. s11 moves this onto `Windows.desks` observers.
-    fn reconcile_seats(&mut self, cx: &mut Context<Self>) {
-        let hidden = self.seats.update(cx, |seats, cx| {
-            seats.reconcile(&self.state.layouts, &self.windows, cx)
-        });
-        for (module, intent) in hidden {
-            self.dispatch(Message::ViewEvent(module, intent), cx);
+    fn new(
+        state: Ducktape,
+        tray: crate::tray::Tray,
+        entities: entities::Entities,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let subscriptions = [
+            cx.observe(&entities.session, |desktop, _, cx| desktop.sync_tray(cx)),
+            cx.observe(&entities.chain, |desktop, _, cx| desktop.sync_tray(cx)),
+            cx.observe(&entities.prefs, |desktop, _, cx| desktop.sync_tray(cx)),
+        ];
+        Self {
+            drawn: state.beat_face(),
+            state,
+            tray,
+            streams: HashMap::new(),
+            entities,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -356,47 +139,7 @@ impl Desktop {
         let runtime = crate::runtime::handle();
         let _runtime = runtime.enter();
         let beat = message.is_beat();
-        let notify_saved = matches!(
-            message,
-            Message::SetNotifyBanners(_)
-                | Message::SetNotifyInFront(_)
-                | Message::SetNotifyBurst(_)
-                | Message::NotifyPermission(..)
-        );
-        let task = match message {
-            // a link is read against the chain in hand, which is `Session`'s
-            Message::OpenLink(link) => {
-                let chain = self.entities.session.read(cx).get().chain.clone();
-                self.state.open_link(&link, &chain)
-            }
-            // Help asked for is just help: it greets a new account only
-            // until then (`Account.welcome`)
-            Message::OpenHelp => {
-                self.entities
-                    .account
-                    .update(cx, |account, cx| account.help_asked(cx));
-                self.state.handle(message)
-            }
-            message => self.state.handle(message),
-        };
-        self.settle(task, beat, notify_saved, cx);
-    }
-
-    /// After the state moved: the seats, the bridged slices, the tray and
-    /// `task` follow it; the windows draw unless a clock's `beat` moved
-    /// nothing on screen.
-    fn settle(
-        &mut self,
-        task: Task<Message>,
-        beat: bool,
-        notify_saved: bool,
-        cx: &mut Context<Self>,
-    ) {
-        // s11 moves reconcile onto `Windows.desks` observers
-        self.reconcile_seats(cx);
-        // after the seats: a pane's view finds its seat when its desk moves
-        self.bridge(notify_saved, cx);
-        self.sync_tray(cx);
+        let task = self.state.handle(message);
         self.start(task, cx).detach();
         self.subscriptions(cx);
         // a clock's beat that finds nothing moved on screen draws no frame
@@ -412,142 +155,9 @@ impl Desktop {
         let snapshot = crate::tray::Snapshot::of(
             self.entities.session.read(cx).get(),
             self.entities.chain.read(cx),
-            self.state.appearance,
+            self.entities.prefs.read(cx).get().appearance,
         );
         self.tray.sync(snapshot);
-    }
-
-    /// Before the desk: the console window is the launcher's size.
-    fn in_launcher(&self, cx: &Context<Self>) -> bool {
-        *self.entities.screen.read(cx).get() != Screen::Desk
-    }
-
-    /// The launcher and the desk are one window: crossing from one to
-    /// the other resizes it in place rather than closing it and opening
-    /// another. The launcher comes up centred on the window's display; the
-    /// desk comes back where it was, at its size, maximized or fullscreen
-    /// again if it had been.
-    fn swap_console(&mut self, cx: &mut Context<Self>) {
-        use gpui_kit::WindowBounds;
-        let Some(handle) = self
-            .state
-            .console_win
-            .and_then(|key| self.windows.get(&key).copied())
-        else {
-            return;
-        };
-        let Some(view) = self
-            .state
-            .console_win
-            .and_then(|key| self.views.get(&key).cloned())
-        else {
-            return;
-        };
-        let launcher = self.in_launcher(cx);
-        let desk = self.desk_bounds;
-        // deferred: the crossing is often dispatched from inside this very
-        // window's update (a click on Lock), where it can't be updated again
-        cx.spawn(async move |desktop, cx| {
-            // the frames the window reports, `None` while still full size
-            let (heard, frames) = futures::channel::mpsc::unbounded();
-            // a full-size window ignores (or the window manager overrides) a
-            // new frame, so leave that state first
-            let left = handle
-                .update(cx, |_, window, cx| {
-                    let bounds = window.window_bounds().get_bounds();
-                    let left = if window.is_fullscreen() {
-                        window.toggle_fullscreen();
-                        WindowBounds::Fullscreen(bounds)
-                    } else if window.is_maximized() {
-                        // macOS "maximized" is only a size a new frame replaces
-                        if !cfg!(target_os = "macos") {
-                            window.zoom_window();
-                        }
-                        WindowBounds::Maximized(bounds)
-                    } else {
-                        return (WindowBounds::Windowed(bounds), None);
-                    };
-                    let observing = view
-                        .update(cx, |_, cx| {
-                            cx.observe_window_bounds(window, move |_, window, _| {
-                                let frame = (!window.is_fullscreen() && !window.is_maximized())
-                                    .then(|| window.bounds());
-                                let _ = heard.unbounded_send(frame);
-                            })
-                        })
-                        .ok();
-                    (left, observing)
-                })
-                .ok();
-            // held until the wait is over
-            let (mut left, _observing) = left.unzip();
-            let full = matches!(left, Some(WindowBounds::Fullscreen(_)))
-                || matches!(left, Some(WindowBounds::Maximized(_))) && !cfg!(target_os = "macos");
-            if full {
-                // the window manager (or macOS's animation) puts back the
-                // frame the window had before it went full size: wait for it,
-                // and keep it as the frame the desk goes full size from again
-                let restored = match left_full_size(frames, cx).await {
-                    Some(restored) => Some(restored),
-                    // it never said: take the window as it is
-                    None => handle
-                        .update(cx, |_, window, _| {
-                            (!window.is_fullscreen() && !window.is_maximized())
-                                .then(|| window.bounds())
-                        })
-                        .ok()
-                        .flatten(),
-                };
-                if let Some(restored) = restored {
-                    left = left.map(|left| match left {
-                        WindowBounds::Fullscreen(_) => WindowBounds::Fullscreen(restored),
-                        _ => WindowBounds::Maximized(restored),
-                    });
-                }
-            }
-            let _ = handle.update(cx, |_, window, cx| {
-                let display = window.display(cx).map(|display| display.visible_bounds());
-                let centred = |extent: gpui_kit::Size<gpui_kit::Pixels>| match display {
-                    Some(display) => windows::centered(extent, display),
-                    None => gpui_kit::Bounds::new(window.bounds().origin, extent),
-                };
-                let to = match (launcher, desk) {
-                    (true, _) => centred(gpui_kit::size(
-                        gpui_kit::px(layers::LAUNCHER_SIZE.0),
-                        gpui_kit::px(layers::LAUNCHER_SIZE.1),
-                    )),
-                    (false, Some(desk)) => desk.get_bounds(),
-                    (false, None) => centred(gpui_kit::size(
-                        gpui_kit::px(windows::WINDOW_SIZE.0),
-                        gpui_kit::px(windows::WINDOW_SIZE.1),
-                    )),
-                };
-                window.set_bounds(to);
-                match (launcher, desk) {
-                    (false, Some(WindowBounds::Fullscreen(_))) => window.toggle_fullscreen(),
-                    (false, Some(WindowBounds::Maximized(_))) if !cfg!(target_os = "macos") => {
-                        window.zoom_window()
-                    }
-                    _ => {}
-                }
-            });
-            if launcher {
-                let _ = desktop.update(cx, |this, _| this.desk_bounds = left);
-            }
-        })
-        .detach();
-    }
-
-    fn sync_appearance(&mut self, cx: &mut Context<Self>) {
-        use gpui_kit::component::{Theme, ThemeMode};
-        match self.state.appearance {
-            crate::Appearance::Light => Theme::change(ThemeMode::Light, None, cx),
-            crate::Appearance::Dark => Theme::change(ThemeMode::Dark, None, cx),
-            crate::Appearance::System => Theme::sync_system_appearance(None, cx),
-        }
-        self.state.system_dark = Theme::global(cx).is_dark();
-        configure_native_theme(cx);
-        self.bridge(false, cx);
     }
 
     fn start(&self, task: Task<Message>, cx: &mut Context<Self>) -> gpui_kit::Task<()> {
@@ -594,53 +204,6 @@ impl Desktop {
             self.streams.insert(recipe.key, task);
         }
     }
-
-    fn execute(&mut self, command: NativeCommand, cx: &mut Context<Self>) {
-        match command {
-            NativeCommand::Open {
-                key,
-                kind,
-                at,
-                reply,
-            } => self.open_window(key, kind, reply, at, cx),
-            NativeCommand::Raise(key) => self.raise_window(key, cx),
-            NativeCommand::Close(key) => {
-                if let Some(handle) = self.windows.get(&key) {
-                    remove(*handle, cx);
-                }
-            }
-            NativeCommand::SyncAppearance => {
-                self.sync_appearance(cx);
-                cx.notify();
-            }
-            NativeCommand::OpenLink(link) => self.dispatch(Message::OpenLink(link), cx),
-            NativeCommand::OpenUrl(url) => cx.open_url(&url),
-            NativeCommand::Quit => self.quit(cx),
-        }
-    }
-
-    fn raise_window(&mut self, key: WindowKey, cx: &mut Context<Self>) {
-        if let Some(view) = self.views.get(&key) {
-            // a frame follows even when the window is already active
-            let _ = view.update(cx, |view, cx| {
-                view.start_switch();
-                cx.notify()
-            });
-        }
-        if let Some(handle) = self.windows.get(&key) {
-            let _ = handle.update(cx, |_, window, _| window.activate_window());
-        }
-    }
-
-    fn quit(&mut self, cx: &mut Context<Self>) {
-        let windows = self.windows.values().copied().collect::<Vec<_>>();
-        cx.defer(move |cx| {
-            for handle in windows {
-                let _ = handle.update(cx, |_, window, cx| release_window_input(window, cx));
-            }
-            cx.quit();
-        });
-    }
 }
 
 fn release_window_input(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
@@ -658,33 +221,4 @@ fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
             window.remove_window();
         });
     });
-}
-
-#[cfg(test)]
-mod swap_tests {
-    use super::*;
-    use gpui_kit::{Bounds, point, px, size};
-
-    #[gpui_kit::test]
-    async fn a_window_leaving_full_size_is_taken_at_the_frame_it_settles_on(
-        cx: &mut gpui_kit::TestAppContext,
-    ) {
-        let frame = |x: f32| Bounds::new(point(px(x), px(0.)), size(px(800.), px(600.)));
-        let (heard, frames) = futures::channel::mpsc::unbounded();
-        let wait = cx.spawn(async move |cx| left_full_size(frames, &cx).await);
-        // the state first, still at full size, then two frames
-        for reported in [None, Some(frame(1.)), Some(frame(2.))] {
-            heard.unbounded_send(reported).unwrap();
-        }
-        cx.run_until_parked();
-        cx.executor().advance_clock(FRAME_SETTLES);
-        assert_eq!(wait.await, Some(frame(2.)));
-
-        // a window that never says: given up on, not waited for forever
-        let (_heard, frames) = futures::channel::mpsc::unbounded();
-        let wait = cx.spawn(async move |cx| left_full_size(frames, &cx).await);
-        cx.run_until_parked();
-        cx.executor().advance_clock(LEAVE_FULL_SIZE);
-        assert_eq!(wait.await, None);
-    }
 }

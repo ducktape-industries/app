@@ -4,7 +4,6 @@
 //! Connect. Plus the number, hash and date formatters they read by.
 
 use super::Chrome;
-use crate::AppMessage as Message;
 use crate::a11y::Control as _;
 use crate::shell::entities::{Account, Overlay, Popover, Session};
 use crate::shell::ink::{Ink, mono, sans, words};
@@ -179,7 +178,9 @@ impl Chrome {
             "Account",
             self.closing(
                 menu,
-                self.dispatching(|| Message::SelectView(crate::runtime::intern(ACCOUNT_VIEW))),
+                self.on_windows(|windows, cx| {
+                    windows.select_view(crate::runtime::intern(ACCOUNT_VIEW), cx)
+                }),
             ),
             ink,
         ));

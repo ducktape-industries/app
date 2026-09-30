@@ -1,14 +1,17 @@
-//! App start: the gpui application, the `Desktop` model and the console
-//! window, with every outside source of events pumped into
-//! `Desktop::dispatch`: open-URL requests, the tray, a window closing, the
-//! AX door, and the native `NativeCommand` channel. Fonts and the theme are
+//! App start: the gpui application, the entities, the `Desktop` (the
+//! beat and the tray) and the console window, with every outside source
+//! of events wired to the entity it moves: open-URL requests and the
+//! links a banner posts (`Windows::open_link`), the tray (`Windows`,
+//! `Prefs`), a window closing (`Windows::closed_id`), the AX door
+//! (`Windows::served`, `Seats::settle`). Fonts and the theme are
 //! registered here too.
 
 use super::*;
+use gpui_kit::{AppContext as _, AsyncApp};
 
 pub(crate) fn run() {
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
-    let (url_sender, mut urls) = mpsc::unbounded::<Vec<String>>();
+    let (url_sender, mut urls) = futures::channel::mpsc::unbounded::<Vec<String>>();
     application.on_open_urls(move |urls| {
         let _ = url_sender.unbounded_send(urls);
     });
@@ -19,28 +22,25 @@ pub(crate) fn run() {
         keys::menus(cx);
         initialize_rendering(cx);
         crate::perf::mark("fonts");
-        let mut commands = commands();
+        let mut posted = entities::posted();
         let state = Ducktape::boot();
         crate::perf::mark("boot");
         let (tray, mut tray_events) = crate::tray::init(cx);
-        let desktop = cx.new(|cx| {
-            let entities = entities::Entities::new(&state, crate::runtime::changes_channel(), cx);
-            Desktop::new(state, tray, entities, cx)
-        });
-        desktop.update(cx, |desktop, cx| {
-            desktop.sync_appearance(cx);
-            desktop.sync_tray(cx);
-        });
-        let quitting = desktop.downgrade();
+        let entities = entities::Entities::new(&state, crate::runtime::changes_channel(), cx);
+        let windows = entities.windows.clone();
+        windows.update(cx, |windows, cx| windows.sync_appearance(cx));
+        let desktop = cx.new(|cx| Desktop::new(state, tray, entities.clone(), cx));
+        desktop.update(cx, |desktop, cx| desktop.sync_tray(cx));
+        let quitting = windows.downgrade();
         cx.on_action(move |_: &keys::Quit, cx| {
-            let _ = quitting.update(cx, |desktop, cx| desktop.dispatch(Message::TrayQuit, cx));
+            let _ = quitting.update(cx, |windows, cx| windows.quit(cx));
         });
-        let url_desktop = desktop.downgrade();
+        let url_windows = windows.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(urls) = urls.next().await {
-                let result = url_desktop.update(cx, |desktop, cx| {
+                let result = url_windows.update(cx, |windows, cx| {
                     for url in urls {
-                        desktop.dispatch(Message::OpenLink(url), cx);
+                        windows.open_link(&url, cx);
                     }
                 });
                 if result.is_err() {
@@ -49,14 +49,11 @@ pub(crate) fn run() {
             }
         })
         .detach();
-        let tray_desktop = desktop.downgrade();
+        let posted_windows = windows.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
-            while let Some(row) = tray_events.next().await {
-                let Some(message) = crate::tray::message(row) else {
-                    continue;
-                };
-                if tray_desktop
-                    .update(cx, |desktop, cx| desktop.dispatch(message, cx))
+            while let Some(posted) = posted.next().await {
+                if posted_windows
+                    .update(cx, |windows, cx| windows.posted(posted, cx))
                     .is_err()
                 {
                     break;
@@ -64,57 +61,62 @@ pub(crate) fn run() {
             }
         })
         .detach();
-        let weak = desktop.downgrade();
+        let (tray_windows, tray_prefs) = (windows.downgrade(), entities.prefs.downgrade());
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            while let Some(row) = tray_events.next().await {
+                let Some(pick) = crate::tray::pick(row) else {
+                    continue;
+                };
+                let result = match pick {
+                    crate::tray::Pick::Open => {
+                        tray_windows.update(cx, |windows, cx| windows.raise_console(cx))
+                    }
+                    crate::tray::Pick::Appearance(mode) => {
+                        tray_prefs.update(cx, |prefs, cx| prefs.set_appearance(mode, cx))
+                    }
+                    crate::tray::Pick::Quit => {
+                        tray_windows.update(cx, |windows, cx| windows.quit(cx))
+                    }
+                };
+                if result.is_err() {
+                    break;
+                }
+            }
+        })
+        .detach();
+        let weak = windows.downgrade();
         cx.on_window_closed(move |cx, id| {
             let weak = weak.clone();
             cx.defer(move |cx| {
-                let _ = weak.update(cx, |desktop, cx| {
-                    let key = desktop
-                        .windows
-                        .iter()
-                        .find_map(|(key, handle)| (handle.window_id() == id).then_some(*key));
-                    let Some(key) = key else {
-                        return;
-                    };
-                    desktop.windows.remove(&key);
-                    desktop.views.remove(&key);
-                    desktop.dispatch(Message::WindowWasClosed(key), cx);
-                });
+                let _ = weak.update(cx, |windows, cx| windows.closed_id(id, cx));
             });
         })
         .detach();
-        desktop.update(cx, |desktop, cx| {
-            // the first window is the console; it draws the connect screen
-            // until a node answers
-            let (key, opened) = open(WindowKind::Console);
-            desktop.state.console_win = Some(key);
-            desktop
-                .start(opened.map(Message::ConsoleOpened), cx)
-                .detach();
-            desktop.subscriptions(cx);
-            // the first thing to do: reach the node last used, if there was one
-            if let Some(target) = entities::Session::boot_target() {
-                desktop
-                    .entities
-                    .session
-                    .update(cx, |session, cx| session.connect(target, cx));
-            }
+        // the first window is the console; it draws the connect screen
+        // until a node answers
+        windows.update(cx, |windows, cx| {
+            windows.open(WindowKind::Console, None, cx);
         });
+        desktop.update(cx, |desktop, cx| desktop.subscriptions(cx));
+        // the first thing to do: reach the node last used, if there was one
+        if let Some(target) = entities::Session::boot_target() {
+            entities
+                .session
+                .update(cx, |session, cx| session.connect(target, cx));
+        }
         first_present(cx);
         if let Some(calls) = crate::ax::open() {
-            let door_desktop = desktop.downgrade();
-            let settle_desktop = door_desktop.clone();
+            let door_windows = windows.downgrade();
+            let door_seats = entities.seats.downgrade();
             cx.spawn(async move |cx: &mut AsyncApp| {
                 let windows = move |cx: &gpui_kit::App| {
-                    door_desktop
+                    door_windows
                         .upgrade()
-                        .map(|desktop| desktop.read(cx).ax_windows())
+                        .map(|windows| windows.read(cx).served())
                         .unwrap_or_default()
                 };
                 let settle = move |cx: &mut gpui_kit::App| {
-                    let _ = settle_desktop.update(cx, |desktop, cx| {
-                        desktop.seats.update(cx, |seats, cx| seats.settle(cx))
-                    });
+                    let _ = door_seats.update(cx, |seats, cx| seats.settle(cx));
                 };
                 let door = crate::ax::Door {
                     windows: &windows,
@@ -124,19 +126,10 @@ pub(crate) fn run() {
             })
             .detach();
         }
-        let command_desktop = desktop.downgrade();
-        cx.spawn(async move |cx: &mut AsyncApp| {
-            while let Some(pending) = commands.next().await {
-                let _ =
-                    command_desktop.update(cx, |desktop, cx| desktop.execute(pending.command, cx));
-                let _ = pending.completed.send(());
-            }
-        })
-        .detach();
-        // the only strong handle to the model: it lives until the app quits
-        let mut desktop = Some(desktop);
+        // the only strong handles to the model: they live until the app quits
+        let mut kept = Some((desktop, entities));
         cx.on_app_quit(move |_| {
-            drop(desktop.take());
+            drop(kept.take());
             // the one hook every quit path reaches
             crate::perf::summary();
             async {}

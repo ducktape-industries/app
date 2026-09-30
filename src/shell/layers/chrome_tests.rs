@@ -3,9 +3,9 @@
 //! cached under everything else (a keystroke in Spotlight, root_tests.rs;
 //! a drag), and its
 //! dot slot is committed from the frame's callback (docs/perf.md).
-use crate::shell::layers::tests::polled;
+use crate::shell::PaneMessage;
+use crate::shell::layers::tests::{pane, polled, set_motion};
 use crate::shell::panes_tests::{console, window_count};
-use crate::shell::{Message, PaneMessage};
 use crate::ui::test_support::status;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px, size};
@@ -47,21 +47,17 @@ fn tree_renders(module: &str) -> u64 {
 fn a_beat_that_moves_a_height_re_renders_the_chrome_once_and_no_pane(cx: &mut TestAppContext) {
     const MODULE: &str = "chrome-height-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
-    let send = |message: Message, native: &mut VisualTestContext| {
-        model.update(native, |model, cx| model.dispatch(message, cx));
-        native.run_until_parked();
-    };
+    let (app, key, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
-    send(Message::SetMotion(false), &mut native);
-    send(Message::Pane(key, PaneMessage::Select(MODULE)), &mut native);
-    polled(&model, status(7), &mut native);
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    polled(&app, status(7), &mut native);
     for _ in 0..8 {
         frame(&mut native);
     }
     let (chrome, tree) = (window_count(key, "renders.chrome"), tree_renders(MODULE));
     assert!(chrome > 0 && tree > 0, "the bar and the tree drew");
-    polled(&model, status(8), &mut native);
+    polled(&app, status(8), &mut native);
     for _ in 0..3 {
         frame(&mut native);
     }
@@ -78,19 +74,15 @@ fn a_beat_that_moves_a_height_re_renders_the_chrome_once_and_no_pane(cx: &mut Te
 #[gpui_kit::test]
 fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (app, key, _, mut native) = console(cx);
     native.run_until_parked();
     let chrome = window_count(key, "renders.chrome");
     assert!(chrome > 0, "the bar never drew");
     // the rail is refreshed by hand: no loader thread reaches a test's
     // scheduler (the drain itself is `entities::rail`'s own test)
     let roster = crate::runtime::Roster::listing(&["chrome-roster-alpha"]);
-    model.update(&mut native, |model, cx| {
-        model
-            .entities
-            .rail
-            .update(cx, |rail, cx| rail.read_off(roster, cx));
-    });
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
     native.run_until_parked();
     assert_eq!(
         window_count(key, "renders.chrome"),
@@ -99,35 +91,82 @@ fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext)
     );
 }
 
-/// A pane dragged to a new frame moves the desk and nothing the chrome
-/// reads: the bar stays cached.
+/// A pane dragged to a new frame (the pointer's move on a held title)
+/// moves the desk (`Desk::set_frame`, one notify) and nothing else: no
+/// reducer message (`shell.dispatch` stands still), and nothing the chrome
+/// reads, so the bar stays cached. The press draws the chrome once (gpui's
+/// `div` calls `window.refresh()` for a pending click, and again on the
+/// release that clears its active state); the frames between them are the
+/// drag's, and the move is measured alone.
 #[gpui_kit::test]
-fn a_drag_frame_leaves_the_chrome_cached(cx: &mut TestAppContext) {
+fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
+    use crate::shell::layers;
+    use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
     const MODULE: &str = "chrome-drag-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
-    let send = |message: Message, native: &mut VisualTestContext| {
-        model.update(native, |model, cx| model.dispatch(message, cx));
-        native.run_until_parked();
-    };
+    let (_, key, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
-    send(Message::Pane(key, PaneMessage::Select(MODULE)), &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     for _ in 0..3 {
         frame(&mut native);
     }
-    let chrome = window_count(key, "renders.chrome");
+    let dispatched = || {
+        crate::perf::snapshot(false)["shell"]["dispatch"]["n"]
+            .as_u64()
+            .unwrap_or(0)
+    };
     let mut moved = native
         .update(|_, cx| view.read(cx).layout(cx).panes[0].frame)
         .expect("the pane has no frame");
+    let title = gpui_kit::point(px(moved.x + 100.), px(layers::BAR + moved.y + 15.));
+    let to = gpui_kit::point(title.x + px(40.), title.y + px(30.));
     moved.x += 40.;
     moved.y += 30.;
-    send(
-        Message::Pane(key, PaneMessage::Frame(0, moved)),
-        &mut native,
-    );
+    let desk = native.update(|_, cx| view.read(cx).desk.clone());
+    // the press takes hold of the title (and draws the chrome once, as any
+    // press does: gpui's `div` refreshes the window for the pending click)
+    native.update(|window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: title,
+                button: MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        )
+    });
+    native.run_until_parked();
+    frame(&mut native);
+    let chrome = window_count(key, "renders.chrome");
+    let messages = dispatched();
+    let told = std::rc::Rc::new(std::cell::Cell::new(0));
+    let _told = native.update(|_, cx| {
+        let told = told.clone();
+        cx.observe(&desk, move |_, _| told.set(told.get() + 1))
+    });
+    // the pointer's move, as `pane_drag::follow` lands it
+    native.update(|window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: to,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        )
+    });
+    native.run_until_parked();
     frame(&mut native);
     let frame_now = native.update(|_, cx| view.read(cx).layout(cx).panes[0].frame);
     assert_eq!(frame_now, Some(moved), "the drag never landed");
+    assert_eq!(told.get(), 1, "the desk notified other than once");
+    assert_eq!(
+        dispatched(),
+        messages,
+        "a drag frame went through the reducer"
+    );
     assert_eq!(
         window_count(key, "renders.chrome"),
         chrome,
@@ -140,10 +179,10 @@ fn a_drag_frame_leaves_the_chrome_cached(cx: &mut TestAppContext) {
 /// the draw; and a bar that has not moved commits nothing.
 #[gpui_kit::test]
 fn the_dot_slot_is_committed_after_the_frame(cx: &mut TestAppContext) {
-    let (model, key, _, mut native) = console(cx);
-    let dot = model.read_with(&native, |model, _| {
-        model.entities.by_window[&key].dot.clone()
-    });
+    let (app, key, _, mut native) = console(cx);
+    let dot = app
+        .windows
+        .read_with(&native, |windows, _| windows.own(key).unwrap().dot.clone());
     let slot = |native: &mut VisualTestContext| native.update(|_, cx| *dot.read(cx).get());
     // the fixture delivered the first frame's callback
     let first = slot(&mut native).expect("the first frame committed no slot");
@@ -192,20 +231,16 @@ fn the_dot_slot_is_committed_after_the_frame(cx: &mut TestAppContext) {
 fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
     use crate::shell::entities::{Overlay, Popover};
     let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     let overlays = native.update(|_, cx| view.read(cx).overlays());
-    let send = |message: Message, native: &mut VisualTestContext| {
-        model.update(native, |model, cx| model.dispatch(message, cx));
-        native.run_until_parked();
-    };
     let second = |native: &mut VisualTestContext| {
         native
             .executor()
             .advance_clock(std::time::Duration::from_millis(1000));
         native.run_until_parked();
     };
-    send(Message::SetMotion(false), &mut native);
-    polled(&model, status(7), &mut native);
+    set_motion(&app, false, &mut native);
+    polled(&app, status(7), &mut native);
     // the beats' first second after a status settles the bar
     second(&mut native);
     second(&mut native);
@@ -244,39 +279,25 @@ fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
 fn the_strip_title_follows_the_rail(cx: &mut TestAppContext) {
     const MODULE: &str = "chrome-strip-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
-    let send = |message: Message, native: &mut VisualTestContext| {
-        model.update(native, |model, cx| model.dispatch(message, cx));
-        native.run_until_parked();
-    };
+    let (app, key, view, mut native) = console(cx);
     // listed, not yet seated: a Loading row
     let roster = crate::runtime::Roster::listing(&[MODULE]);
-    model.update(&mut native, |model, cx| {
-        model.state.roster = roster.clone();
-        model
-            .entities
-            .rail
-            .update(cx, |rail, cx| rail.read_off(roster, cx));
-    });
-    send(Message::Pane(key, PaneMessage::Select(MODULE)), &mut native);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     for _ in 0..3 {
         frame(&mut native);
     }
-    let rows = |native: &mut VisualTestContext| {
-        model.read_with(native, |model, cx| {
-            model.entities.rail.read(cx).rows().to_vec()
-        })
-    };
+    let rows =
+        |native: &mut VisualTestContext| app.rail.read_with(native, |rail, _| rail.rows().to_vec());
     assert_eq!(rows(&mut native)[0].note, Some("Loading"));
     let strip = window_count(key, "renders.strip.0");
     assert!(strip > 0, "the strip never drew");
     // the seat lands; the rail hears it (by hand: no loader thread reaches
     // a test's scheduler) and the strip follows
     crate::runtime::seat_for_test(MODULE, 400);
-    model.update(&mut native, |model, cx| {
-        model.entities.rail.update(cx, |rail, cx| {
-            rail.refresh(cx);
-        });
+    app.rail.update(&mut native, |rail, cx| {
+        rail.refresh(cx);
     });
     native.run_until_parked();
     assert_eq!(rows(&mut native)[0].note, None, "the row is still Loading");

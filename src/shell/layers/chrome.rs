@@ -15,13 +15,12 @@
 //! leaves them where they went (`keys_left`; owner, 2026-09-28).
 
 use super::super::entities::{
-    Account, Chain, DotSlot, Front, Notifications, Observed, Overlay, Overlays, Popover, Prefs,
-    Rail, Session, Slice, WindowEntities,
+    Account, Chain, DotSlot, Entities, Front, Notifications, Observed, Overlay, Overlays, Popover,
+    Prefs, Rail, Session, Slice, WindowEntities, Windows,
 };
 use super::super::ink::{Ink, mono, sans};
 use super::super::{
-    Desktop, Message, PaneMessage, WindowKey, WindowRoot, chord_label, keys, pane_hold, screens,
-    theme,
+    PaneMessage, WindowKey, WindowRoot, chord_label, keys, pane_hold, screens, theme,
 };
 use crate::a11y::Control as _;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -35,8 +34,8 @@ pub(in crate::shell) const BAR: f32 = 36.;
 
 /// The menu bar and its menus, one per console window.
 pub(in crate::shell) struct Chrome {
-    /// The reducer, until the arms the rows dispatch move (s9-s11).
-    model: Entity<Desktop>,
+    /// The app's windows: a menu row that opens a program goes through them.
+    windows: Entity<Windows>,
     key: WindowKey,
     /// Its window: a tab's click opens the program through it.
     window: WeakEntity<WindowRoot>,
@@ -74,21 +73,20 @@ pub(in crate::shell) struct Chrome {
 
 impl Chrome {
     pub(in crate::shell) fn new(
-        model: Entity<Desktop>,
+        app: Entities,
         key: WindowKey,
         own: &WindowEntities,
         desk_window: WeakEntity<WindowRoot>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let entities = &model.read(cx).entities;
         let (session, chain, account, rail, notifications, prefs) = (
-            entities.session.clone(),
-            entities.chain.clone(),
-            entities.account.clone(),
-            entities.rail.clone(),
-            entities.notifications.clone(),
-            entities.prefs.clone(),
+            app.session.clone(),
+            app.chain.clone(),
+            app.account.clone(),
+            app.rail.clone(),
+            app.notifications.clone(),
+            app.prefs.clone(),
         );
         let (stop, menu) = (cx.focus_handle().tab_stop(true), cx.focus_handle());
         let subscriptions = [
@@ -119,7 +117,7 @@ impl Chrome {
             front: Observed::new(&own.front, cx),
             prefs: Observed::new(&prefs, cx),
             dot: Observed::new(&own.dot, cx),
-            model,
+            windows: app.windows.clone(),
             menu,
             stop,
             rail_cursor: None,
@@ -180,9 +178,22 @@ impl Chrome {
         }
     }
 
-    fn dispatching(&self, message: fn() -> Message) -> impl Fn(&mut App) + 'static {
-        let model = self.model.clone();
-        move |cx| model.update(cx, |model, cx| model.dispatch(message(), cx))
+    /// What a press does: `call` on the notification centre.
+    fn on_notifications(
+        &self,
+        call: impl Fn(&mut Notifications, &mut Context<Notifications>) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let notifications = self.notifications.entity().clone();
+        move |cx| notifications.update(cx, |notifications, cx| call(notifications, cx))
+    }
+
+    /// What a press does: `call` on the windows.
+    fn on_windows(
+        &self,
+        call: impl Fn(&mut Windows, &mut Context<Windows>) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let windows = self.windows.clone();
+        move |cx| windows.update(cx, |windows, cx| call(windows, cx))
     }
 
     /// A row of the menu `menu` that is done with it: the menu closes,

@@ -130,23 +130,24 @@ Two findings the table depends on:
 
 ### 2.2 The shell
 
-Threads: reducer, all rendering, view ticks and the door's answers run on
-the gpui foreground thread (`Desktop::dispatch` and `Desktop::start` in
-`src/shell.rs`; `ax::serve` in `src/ax.rs`). I/O is driven by the
-`views-kernel` tokio thread (`kernel::handle`), but reducer `Task` futures
-are polled on the foreground under `runtime.enter()` in `Desktop::start`,
-so response bodies are decoded there.
+Threads: the entities' methods, the beat, all rendering, view ticks and
+the door's answers run on the gpui foreground thread (`src/shell/entities/`,
+`Desktop::dispatch` in `src/shell.rs`; `ax::serve` in `src/ax.rs`). I/O is
+driven by the `views-kernel` tokio thread (`kernel::handle`), but the
+entities' `Task` futures are polled on the foreground under
+`runtime.enter()` (`spawn_on_runtime`), so response bodies are decoded
+there.
 
 | Stage | Measured today | Hook point | Metric | Held |
 |---|---|---|---|---|
-| Startup milestones | nothing | t0 at the top of `main` (`src/main.rs`); `log` after `install_log`; `gpui` at the top of the `application.run` closure in `shell::launch::run`; `fonts` after `initialize_rendering`; `boot` after `Ducktape::boot`; `window` at `Ok(handle)` in `Desktop::open_window` (`shell/windows.rs`); `connected` in `Session::connect_answered` (`shell/entities/session.rs`); `desk` where `Desktop` sees `Screen` cross from the launcher to the desk (`shell/windows.rs`); `first_seated.<module>` in `Seat::mount`. No first-present mark without the gpui profiler | G `startup.<mark>` ms since t0 (W) | free, except `frame` (70) |
+| Startup milestones | nothing | t0 at the top of `main` (`src/main.rs`); `log` after `install_log`; `gpui` at the top of the `application.run` closure in `shell::launch::run`; `fonts` after `initialize_rendering`; `boot` after `Ducktape::boot`; `window` at `Ok(handle)` in `Windows::open_window` (`shell/entities/windows.rs`); `connected` in `Session::connect_answered` (`shell/entities/session.rs`); `desk` where `Windows` sees `Screen` cross from the launcher to the desk (`shell/entities/windows.rs`); `first_seated.<module>` in `Seat::mount`. No first-present mark without the gpui profiler | G `startup.<mark>` ms since t0 (W) | free, except `frame` (70) |
 | Frame time per window | nothing (`ZED_MEASUREMENTS=1` — `gpui_util::measure` in the fork's frame callback — prints `frame duration` to stderr for callback-driven frames only, no rebuild) | `WindowRoot::render` (`shell/layers/root.rs`) for the app's render phase; end-to-end draw+present needs the fork's `WindowProfiler` (§1, §7) | H `frame.render` per `WindowKey` (W) | free |
 | Long frames > 16 ms with a cause | nothing | with only the app's spans: a ring of the last N spans over 1 ms, timestamped; a `frame.render` over budget is written to the ring with the spans that overlapped it (reducer domain, view module and stage, `turn`/`hide`/close). Draw/present/input causes need `HangDetector` over `cx.foreground_journal()` (fork, `profiler` feature) | C `long_frames`, ring `slow` (W) | free |
-| Reducer update per message | nothing | `Desktop::dispatch` (`shell.rs`) whole; each routing arm of `Ducktape::update` (`ui/update.rs`) keyed by domain (`overlay`, `notify`, `desk`, `pane`), and every `Session` and `Account` method (`shell/entities/`) as `reducer.connect` and `reducer.sign_in`. **Never key by `{:?}` of the message**: `AppMessage`'s derived `Debug` prints payloads, and the entities' methods take passwords, codes and phrases as arguments. Messages arrive three ways — the spawn site in `Desktop::start`, synchronously from input listeners (`pane_message`, keys, screens), and from a frame's callback (`DeskShown`, measured in `layers::PaneLayer`'s prepaint and dispatched from `window.on_next_frame`, never from the draw) — and `dispatch` sees all three | H `reducer.<domain>` (W) | free |
-| Pane / window switch | nothing (ducktape-70's temporary `pane_message` mark and `pane_stage` span) | start at `WindowRoot::pane_message` / `open_view` (`shell/panes.rs`), `Desktop::raise_window` (`shell.rs`) or the `WindowFocused` dispatch from `WindowRoot::new`'s activation observer (`shell/layers/root.rs`); end with `window.on_next_frame` scheduled from the `WindowRoot::render` that shows the switch. Next-frame callbacks run at the start of the frame after the switched one was presented, so this is an upper bound high by one frame interval | H `switch` (W, ms) | 70 (`panes.rs`), free (`shell.rs`, `windows.rs`) |
+| Entity method per call | nothing | `Desktop::dispatch` (`shell.rs`) whole (the `WallTick` beat alone, until s12); every entity method (`shell/entities/`) keyed by the domain the reducer's arms had: `Desk` as `reducer.pane`, `Windows`, `Toast` and `Prefs` as `reducer.desk`, `Notifications` as `reducer.notify`, `Overlays` as `reducer.overlay`, `Session` as `reducer.connect`, `Account` as `reducer.sign_in`. **Never key by the argument**: the entities' methods take passwords, codes and phrases. Calls arrive three ways — synchronously from input listeners (`pane_message`, keys, screens), from a frame's callback (`PaneLayer::shown`: the desk's size and its seed, measured in the pane layer's prepaint and called from `window.on_next_frame`, never from the draw), and from the entities' own tasks, observers and subscriptions | H `reducer.<domain>` (W) | free |
+| Pane / window switch | nothing (ducktape-70's temporary `pane_message` mark and `pane_stage` span) | start at `WindowRoot::pane_message` / `open_view` (`shell/panes.rs`), `Windows::raise` (`shell/entities/windows.rs`) or `WindowRoot::new`'s activation observer calling `start_switch` (`shell/layers/root.rs`); end with `window.on_next_frame` scheduled from the `WindowRoot::render` that shows the switch. Next-frame callbacks run at the start of the frame after the switched one was presented, so this is an upper bound high by one frame interval | H `switch` (W, ms) | 70 (`panes.rs`), free (`shell.rs`, `windows.rs`) |
 | Animation frames | `a_frame_is_cheap` test in `shell/figure.rs` (under 15 ms at test opt-level 1) | `Spin::render` (`shell/spin.rs`): time `Figure::frame`, and the interval between renders. `Spin::run` paces with a background timer plus `cx.notify()`, never `request_animation_frame`, so gpui's present-interval histogram and its inactive-window throttle both miss it | H `figure.frame`, H `figure.interval` (W) | free |
 | Idle frames per second | nothing (#347's PR body: idle drawing over 5 s at 979 ms before, 334 ms after; the ~20 idle frames/s per window and the pulse as its driver are ducktape-70's session notes, not in the PR) | count `WindowRoot::render` per window over a quiet interval; door draws (`ax::actions::current` forces one per read) counted separately. Known idle drivers: the status-dot pulse (`status_bar::pulse`, `shell/status_bar.rs`, an `Animation::repeat().with_max_fps(30.)` drawn by `layers::StatusDot`, an uncached root sibling over the bar's empty well, so a pulse draws the dot and the root and leaves the cached bar alone: `renders.dot` ≈ `renders`, `renders.chrome` flat), the node menu and the reconnecting bar; capped, gpui's animation element paces itself with a background timer and `cx.notify` on the view drawing it) — cheap since #347 but still ~20 frames/s while motion is on, each a `WindowRoot::render` whose cached layers hit; the Spin figure's 33 ms timer on an empty desk. The clocks no longer draw an idle window (next row). Why the root is not cached: a view skips its render only when it is itself `.cached()`, clean, and no cached ancestor is re-rendering; a cached view that renders again renders every cached view inside it again (`gpui:src/view.rs`, the cached miss path sets `window.refreshing`); and a program's tick dirties the root, its ancestor. So a cached root spared the pulse's frames would redraw every program's tree on every program's tick, the #347 class (tried 2026-09-29: with the window cached, three model notifies took a seated tree from 2 renders to 5). The root is therefore thin and uncached, and the caches are its siblings' (P5, P6) | C `renders.<window>`, C `door_draws` (D) | free / a3 |
-| The clocks draw only what they move | `a_beat_that_moves_nothing_draws_nothing` (`shell/panes_tests.rs`): five beats that move nothing, 5 window renders before, 0 after. Idle probe (2026-09-29, the brief's no-read recipe: Forge opened from Spotlight, cache on, a seeded stage at 1 s blocks, release builds, two runs each), window renders over 5 s: motion off 25 / 23 before, 3 / 3 after; motion on 121 / 122 before, 107 / 109 after (the pulse); dispatches 30 / 30 before, 14 / 14 after | `Desktop::dispatch` ends in `cx.notify()`, and no layer observes the model: every layer draws from the entities the bridge writes (`Desktop::bridge`), so a dispatch draws only the layers whose slices it moved, and the test counts the model's notifies too. A clock's beat is the exception (`AppMessage::is_beat`: the 1 s `WallTick`, the 300 ms `ToastTick`): it notifies only when `Ducktape::beat_face` differs from the face the windows were last told to draw. The face is the toast, and `Roster::changes`, which a roster read that found the list changed and each seat load bump from threads of their own that tell no window. The node's 2 s status poll is `Session`'s own (`shell/entities/session.rs`, on the executor's timer): its answer writes `Chain` compare-before-notify, so a still chain draws nothing, a moved height draws only the layers reading `Chain`, and `heard` restamps without a notify (`an_unchanged_status_poll_notifies_nothing`, `a_moved_height_notifies_the_chain_and_not_the_session`, `heard_moves_without_a_notify`, `entities/session_tests.rs`). The `ToastTick` runs only while a toast shows (`Ducktape::subscriptions`, `ui/update.rs`). Before, an idle connected app re-rendered each window 1 + 1000/300 + 0.5 ≈ 4.8 times a second from the clocks alone; now once or twice per moved height on a live chain (the poll and the account read it starts), and not at all on a still one. The `renders.<window>` counter above is the measure | | free |
+| The clocks draw only what they move | `a_beat_that_moves_nothing_draws_nothing` (`shell/panes_tests.rs`): a beat and two poll answers that move nothing, 0 window renders and 0 notifies. Idle probe (2026-09-29, the brief's no-read recipe: Forge opened from Spotlight, cache on, a seeded stage at 1 s blocks, release builds, two runs each), window renders over 5 s: motion off 25 / 23 before, 3 / 3 after; motion on 121 / 122 before, 107 / 109 after (the pulse); dispatches 30 / 30 before, 14 / 14 after | No layer observes `Desktop`: every layer draws from the entities the controls write, so a call draws only the layers observing what it moved, and the test counts `Desktop`'s notifies too. The clock's beat (`AppMessage::WallTick`, 1 s, the one message left) notifies only when `Ducktape::beat_face` differs from the face the windows were last told to draw: `Roster::changes`, which a roster read that found the list changed and each seat load bump from threads of their own that tell no window. A toast takes itself down on its own 3.6 s timer (`Toast::show`, `shell/entities/toast.rs`): one notify up, one down, no tick between. The node's 2 s status poll is `Session`'s own (`shell/entities/session.rs`, on the executor's timer): its answer writes `Chain` compare-before-notify, so a still chain draws nothing, a moved height draws only the layers reading `Chain`, and `heard` restamps without a notify (`an_unchanged_status_poll_notifies_nothing`, `a_moved_height_notifies_the_chain_and_not_the_session`, `heard_moves_without_a_notify`, `entities/session_tests.rs`). Before, an idle connected app re-rendered each window 1 + 1000/300 + 0.5 ≈ 4.8 times a second from the clocks alone; now once or twice per moved height on a live chain (the poll and the account read it starts), and not at all on a still one. The `renders.<window>` counter above is the measure | | free |
 | `rail()` per roster change | nothing | `Roster::rail` locks the roster, the registry and every seat mutex. `entities::Rail::refresh` calls it once per burst on `runtime::changes_channel` (a roster read that found the list changed, a load installed, a seat claimed, retried or dropped); the bar (`layers::Chrome`), the pane strip (`layers::Strip`, through `panes::label`), the empty panes (`layers::EmptyPane`) and the dialogs (`layers::OverlayLayer`) read the `Rail`'s rows, so an idle app calls it 0 times | H `rail` (W), C `rail.calls` (D) | free (`roster.rs`) |
 | Synchronous I/O on the window thread | nothing | `backend::session::read_prefs`/`write_prefs`; `store::answer` (`src/runtime/store.rs`, a whole-file read per `get`, write and rename per `set`, inside a guest's redraw); `notify::Center::save` (`src/runtime/notify.rs`, the whole log rewritten per post); `backend::RpcClient::new` (`backend/noded.rs`) builds a new `reqwest::Client` per call; the status poll builds one per connect (`Session::status_source`) and asks through it | H `io.<site>` (W) | free |
 | RSS | nothing | `libc::getrusage(RUSAGE_SELF).ru_maxrss` (libc is already a dependency): KiB on Linux, bytes on macOS; current RSS from `/proc/self/statm` on Linux only, skipped on macOS. Sampled by the same 1 s task that writes the summary | G `rss.peak`, G `rss.current` (bytes) | free |
@@ -158,8 +159,9 @@ deep tree clones on every patch (`guest::merge`), change
 `rail()` once per roster change; `read_prefs` in render paths through
 `notify::Settings::load` (the permission bar in `layers::PaneView`, Settings ›
 Notifications); file I/O in
-reducer arms and guest requests; a `reqwest::Client` per RPC. The reducer
-and I/O histograms above are what will show which of these matter.
+the entities' methods (`Prefs::set_*`) and guest requests; a
+`reqwest::Client` per RPC. The `reducer.<domain>` and I/O histograms above
+are what will show which of these matter.
 
 ---
 
@@ -218,7 +220,7 @@ pub(crate) fn retire(module: &'static str, instance: u64) // one `view_perf` lin
   run before the `Guest` exists. The registry is a leaf lock; reading it
   never takes a seat lock.
 - Windows are keyed by `WindowKey` (`src/runtime.rs`). The door names
-  windows positionally (`console`, `console2`, … in `Desktop::ax_windows`),
+  windows positionally (`console`, `console2`, … in `Windows::served`),
   which shifts when one closes, so the snapshot carries both.
 
 **Cost when off.** `on()` is an atomic load. `time` returns `None` before
@@ -305,8 +307,7 @@ only when on and only when the tree changed.
 - One `perf_summary` info line every 10 minutes if anything changed (the
   `perf` sampler thread, which also reads RSS each second), and once from
   `cx.on_app_quit` in `shell::launch::run` — the one hook every quit path
-  reaches (`Desktop::quit` runs only for `Command::Quit`, the tray and menu
-  path).
+  reaches (`Windows::quit` runs only for the tray's and the menu's Quit).
 - One `view_perf` info line per instance when it retires — swap, retry and
   roster removal all drop the old `Guest`, so it is `impl Drop for Guest`,
   skipping instances whose `installed_generation` is `None`.
@@ -487,7 +488,7 @@ Design:
   that skips both reads and answers `{}` — in `src/ax.rs`, which is free —
   or OS-level key injection on the rig's Xvfb. This document picks the flag.
   With `window` named, `keyboard_window` already resolves the handle from the
-  door's window list (`Desktop::ax_windows`) without a tree; unnamed, it
+  door's window list (`Windows::served`) without a tree; unnamed, it
   finds the focused node in the tree it just read, so the flag makes
   `window` required (falling back to the first window, as it does today).
 
@@ -570,8 +571,8 @@ Phase 0, as listed:
   without a draw.
 - Shell hooks: startup marks (`main.rs`, `shell/launch.rs`,
   `shell/windows.rs`, `shell/entities/session.rs`, `first_seated` in
-  `seat/entity.rs`); `Desktop::dispatch` whole and the `Ducktape::update`
-  domains; `WindowRoot::render` `frame.render` and `renders` per window
+  `seat/entity.rs`); `Desktop::dispatch` (the beat) and the entities'
+  `reducer.<domain>` timers; `WindowRoot::render` `frame.render` and `renders` per window
   (the root is uncached: every layer's miss draws it once);
   the bar, `renders.chrome` (`layers::Chrome`, cached: a count is a miss);
   the launcher screens, `renders.launcher` (`layers::LauncherLayer`,
@@ -590,7 +591,7 @@ Phase 0, as listed:
   the pane bodies the app draws, `renders.empty` (`layers::EmptyPane`: the
   bare desk or an empty window) and `renders.help` (`layers::HelpPane`) per
   window;
-  the `switch` timer from `pane_message`, `raise_window` and the activation
+  the `switch` timer from `pane_message`, `Windows::raise` and the activation
   observer to the next frame; `Spin::render` `figure.frame` and
   `figure.interval`; `rail` and `rail.calls`; `io.read_prefs`,
   `io.write_prefs`, `io.store.get`, `io.store.set`, `io.notify_save`,

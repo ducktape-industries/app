@@ -4,6 +4,7 @@
 //! the `PaneLayer`'s; the grips are drawn by the `PaneView` they size.
 use super::layers::{PaneLayer, PaneView};
 use super::*;
+use gpui_kit::Window;
 
 impl PaneLayer {
     /// Takes hold of window `index` at `at`: `sides` follow the pointer;
@@ -287,9 +288,9 @@ pub(super) fn raise(
 
 /// The pointer, window-wide, so a fast one can't slip off the window it
 /// holds: while a window is held, a move carries it and a release lets it
-/// go, a release that comes before the next frame too. Every move
-/// dispatches `Pane(Frame)`: `Desk` is bridged until s11, so a frame set
-/// on it directly would be snapped back by the next dispatch.
+/// go, a release that comes before the next frame too. Every move sets
+/// the frame on the `Desk` (compared: a pointer that stays put moves
+/// nothing).
 pub(super) fn follow(this: gpui_kit::Entity<PaneLayer>, window: &mut Window) {
     use gpui_kit::*;
     let held = this.clone();
@@ -306,13 +307,9 @@ pub(super) fn follow(this: gpui_kit::Entity<PaneLayer>, window: &mut Window) {
                 cx.notify();
             } else {
                 let to = (event.position.x.into(), event.position.y.into());
-                let (key, frame) = (this.key, drag.frame(to));
-                this.model.update(cx, |model, cx| {
-                    model.dispatch(
-                        Message::Pane(key, PaneMessage::Frame(drag.index, frame)),
-                        cx,
-                    )
-                });
+                let frame = drag.frame(to);
+                this.desk
+                    .update(cx, |desk, cx| desk.set_frame(drag.index, frame, cx));
             }
         });
     });

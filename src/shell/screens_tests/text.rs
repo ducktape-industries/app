@@ -78,7 +78,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
 
     // Help: its lead, a section, every paragraph, the keys table
     let mut seed = gate::desk();
-    seed.state.active = Some(layout::HELP);
+    seed.active = Some(layout::HELP);
     let (_view, mut native) = open(seed, cx);
     // tall enough that the door shows the whole page, unscrolled
     native.simulate_resize(size(px(1280.), px(2400.)));

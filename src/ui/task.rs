@@ -4,7 +4,6 @@
 //! `entities::spawn_on_runtime`.)
 use futures::{Stream, StreamExt};
 use std::any::TypeId;
-use std::future::Future;
 use std::hash::{Hash, Hasher};
 
 pub type BoxStream<T> = futures::stream::LocalBoxStream<'static, T>;
@@ -15,24 +14,8 @@ impl<T: 'static> Task<T> {
     pub fn none() -> Self {
         Self(None)
     }
-    pub fn done(value: T) -> Self {
-        Self::future(std::future::ready(value))
-    }
-    pub fn future(future: impl Future<Output = T> + 'static) -> Self {
-        Self::stream(futures::stream::once(future))
-    }
     pub fn stream(stream: impl Stream<Item = T> + 'static) -> Self {
         Self(Some(stream.boxed_local()))
-    }
-    pub fn map<U: 'static>(self, map: impl FnMut(T) -> U + 'static) -> Task<U> {
-        Task(self.0.map(|stream| stream.map(map).boxed_local()))
-    }
-    pub fn discard<U: 'static>(self) -> Task<U> {
-        Task(self.0.map(|stream| {
-            stream
-                .filter_map(|_| std::future::ready(None))
-                .boxed_local()
-        }))
     }
     pub fn into_stream(self) -> BoxStream<T> {
         self.0
@@ -58,11 +41,6 @@ impl<T: 'static> Subscription<T> {
     pub fn into_recipes(self) -> Vec<Recipe<T>> {
         self.recipes
     }
-    pub fn none() -> Self {
-        Self {
-            recipes: Vec::new(),
-        }
-    }
     pub fn run<S: Stream<Item = T> + 'static>(make: fn() -> S) -> Self {
         Self {
             recipes: vec![Recipe {
@@ -70,12 +48,5 @@ impl<T: 'static> Subscription<T> {
                 start: Box::new(move || make().boxed_local()),
             }],
         }
-    }
-    pub fn batch(subscriptions: impl IntoIterator<Item = Self>) -> Self {
-        let mut result = Self::none();
-        for mut subscription in subscriptions {
-            result.recipes.append(&mut subscription.recipes);
-        }
-        result
     }
 }

@@ -5,13 +5,11 @@
 //! frame). Green while the node answers, red while it does not; an 8px
 //! still disc with motion off.
 
-use super::super::entities::{DotSlot, Observed, Prefs, Session, Slice, WindowEntities};
+use super::super::WindowKey;
+use super::super::entities::{DotSlot, Entities, Observed, Prefs, Session, Slice, WindowEntities};
 use super::super::ink::Ink;
 use super::super::status_bar::pulse;
-use super::super::{Desktop, WindowKey};
-use gpui_kit::{
-    Context, Entity, IntoElement, ParentElement as _, Render, Styled as _, Window, div,
-};
+use gpui_kit::{Context, IntoElement, ParentElement as _, Render, Styled as _, Window, div};
 
 pub(in crate::shell) struct StatusDot {
     key: WindowKey,
@@ -22,18 +20,16 @@ pub(in crate::shell) struct StatusDot {
 
 impl StatusDot {
     pub(in crate::shell) fn new(
-        model: &Entity<Desktop>,
+        app: &Entities,
         key: WindowKey,
         own: &WindowEntities,
         cx: &mut Context<Self>,
     ) -> Self {
-        let entities = &model.read(cx).entities;
-        let (session, prefs) = (entities.session.clone(), entities.prefs.clone());
         Self {
             key,
             slot: Observed::new(&own.dot, cx),
-            session: Observed::new(&session, cx),
-            prefs: Observed::new(&prefs, cx),
+            session: Observed::new(&app.session, cx),
+            prefs: Observed::new(&app.prefs, cx),
         }
     }
 }

@@ -1,12 +1,13 @@
 //! The programs the bar lists, each by the name its view gives itself, and
 //! each view's unread count. The rows are read off the roster once per
 //! change a loader thread, a seat coming or going, or a retry reports on the
-//! roster's channel, never at a draw; the badges are bridged from the model
-//! until s11 routes `Intent::Badge` here.
-use crate::runtime::{RailRow, Roster};
+//! roster's channel, never at a draw; the badges come from each view's
+//! `Intent::Badge` (`Seats`), and go when the network is left.
+use super::{Session, SessionEvent};
+use crate::runtime::{Link, RailRow, Roster};
 use futures::StreamExt as _;
 use futures::channel::mpsc::UnboundedReceiver;
-use gpui_kit::{Context, Task};
+use gpui_kit::{Context, Entity, Subscription, Task};
 use std::collections::BTreeMap;
 
 pub(crate) struct Rail {
@@ -15,17 +16,24 @@ pub(crate) struct Rail {
     /// What the rows are read off; not compared.
     roster: Roster,
     _drain: Task<()>,
+    _session: Subscription,
 }
 
 impl Rail {
     /// The rail of `roster`, read now and again on every message `changes`
-    /// brings (a burst read once).
+    /// brings (a burst read once); its badges cleared as the network in
+    /// hand is left.
     pub(crate) fn new(
         roster: Roster,
-        badges: BTreeMap<&'static str, i64>,
         mut changes: UnboundedReceiver<()>,
+        session: &Entity<Session>,
         cx: &mut Context<Self>,
     ) -> Self {
+        let leaving = cx.subscribe(session, |this, _, event: &SessionEvent, cx| {
+            if let SessionEvent::LeftNetwork = event {
+                this.set_badges(BTreeMap::new(), cx);
+            }
+        });
         let drain = cx.spawn(async move |this, cx| {
             while changes.next().await.is_some() {
                 while changes.try_recv().is_ok() {}
@@ -36,10 +44,21 @@ impl Rail {
         });
         Self {
             rows: roster.rail(),
-            badges,
+            badges: BTreeMap::new(),
             roster,
             _drain: drain,
+            _session: leaving,
         }
+    }
+
+    /// A link read against the programs the node lists (`Roster::parse_link`).
+    pub(crate) fn parse_link(&self, link: &str) -> Link {
+        self.roster.parse_link(link)
+    }
+
+    /// Whether the node lists `module`.
+    pub(crate) fn lists(&self, module: &str) -> bool {
+        self.roster.lists(module)
     }
 
     pub(crate) fn rows(&self) -> &[RailRow] {
@@ -74,12 +93,20 @@ impl Rail {
         self.refresh(cx);
     }
 
+    /// `module`'s unread count (`host.badge`); 0 or less takes it off.
+    /// Notifies only when it moved.
+    pub(crate) fn set_badge(&mut self, module: &'static str, count: i64, cx: &mut Context<Self>) {
+        let was = match count > 0 {
+            true => self.badges.insert(module, count),
+            false => self.badges.remove(module),
+        };
+        if was != (count > 0).then_some(count) {
+            cx.notify();
+        }
+    }
+
     /// Each view's unread count; notifies only when one moved.
-    pub(crate) fn set_badges(
-        &mut self,
-        badges: BTreeMap<&'static str, i64>,
-        cx: &mut Context<Self>,
-    ) -> bool {
+    fn set_badges(&mut self, badges: BTreeMap<&'static str, i64>, cx: &mut Context<Self>) -> bool {
         if badges == self.badges {
             return false;
         }
@@ -103,7 +130,8 @@ mod tests {
         const MODULE: &str = "rail-drain-view";
         let roster = Roster::listing(&[MODULE]);
         let (send, changes) = futures::channel::mpsc::unbounded();
-        let rail = cx.new(|cx| Rail::new(roster.clone(), BTreeMap::new(), changes, cx));
+        let session = cx.update(crate::shell::entities::tests::session);
+        let rail = cx.new(|cx| Rail::new(roster.clone(), changes, &session, cx));
         let seen = Rc::new(Cell::new(0));
         let count = seen.clone();
         let _observing = cx.update(|cx| cx.observe(&rail, move |_, _| count.set(count.get() + 1)));

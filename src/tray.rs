@@ -1,8 +1,8 @@
 //! The status item (macOS): the network and the block, Open, Appearance,
 //! Quit. Elsewhere the tray is a no-op that still answers the shell.
 
+use crate::Appearance;
 use crate::shell::entities::{Chain, SessionState};
-use crate::{AppMessage as Message, Appearance};
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui_kit::App;
 
@@ -78,13 +78,22 @@ impl Snapshot {
     }
 }
 
-pub fn message(row: usize) -> Option<Message> {
+/// A row of the menu clicked: what it asks of the shell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pick {
+    /// The console brought forward, or opened if there is none.
+    Open,
+    Appearance(Appearance),
+    Quit,
+}
+
+pub fn pick(row: usize) -> Option<Pick> {
     match row {
-        OPEN => Some(Message::TrayOpen),
-        SYSTEM => Some(Message::SetAppearance(Appearance::System)),
-        LIGHT => Some(Message::SetAppearance(Appearance::Light)),
-        DARK => Some(Message::SetAppearance(Appearance::Dark)),
-        QUIT => Some(Message::TrayQuit),
+        OPEN => Some(Pick::Open),
+        SYSTEM => Some(Pick::Appearance(Appearance::System)),
+        LIGHT => Some(Pick::Appearance(Appearance::Light)),
+        DARK => Some(Pick::Appearance(Appearance::Dark)),
+        QUIT => Some(Pick::Quit),
         _ => None,
     }
 }
@@ -269,17 +278,17 @@ mod tests {
 
     #[test]
     fn the_menu_routes_open_appearance_and_quit() {
-        assert!(matches!(message(OPEN), Some(Message::TrayOpen)));
-        assert!(matches!(message(QUIT), Some(Message::TrayQuit)));
+        assert_eq!(pick(OPEN), Some(Pick::Open));
+        assert_eq!(pick(QUIT), Some(Pick::Quit));
         for (row, mode) in [
             (SYSTEM, Appearance::System),
             (LIGHT, Appearance::Light),
             (DARK, Appearance::Dark),
         ] {
-            assert!(matches!(message(row), Some(Message::SetAppearance(set)) if set == mode));
+            assert_eq!(pick(row), Some(Pick::Appearance(mode)));
         }
         for row in [NETWORK, STATUS, 2, 4, APPEARANCE, 9] {
-            assert!(message(row).is_none());
+            assert!(pick(row).is_none());
         }
         let mut session = SessionState {
             network: "dognet".into(),
