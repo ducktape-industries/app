@@ -271,6 +271,9 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
     } else {
         drop(locked);
     }
+    drop(registry);
+    // the module's row may now be read off this seat
+    rail_moved();
     seat
 }
 
@@ -295,6 +298,8 @@ pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
     let generation = locked.start();
     locked.wake.send_replace(());
     drop(locked);
+    // a failure's row says Loading again
+    rail_moved();
     Loads {
         _threads: vec![spawn_load(module, seat, generation, snapshot)],
     }
@@ -338,6 +343,7 @@ pub(super) fn spawn_load(
             loaded,
         );
         roster().changed();
+        rail_moved();
         locked.wake.send_replace(());
         timing.install = installed.elapsed();
         if timing.started.is_some() {

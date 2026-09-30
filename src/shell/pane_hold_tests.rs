@@ -336,8 +336,9 @@ fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppCon
 fn the_chords_and_the_menu_do_nothing_under_an_overlay(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = desk_of_two(cx);
     let before = frame(&mut native, &view, 1);
-    model.update(&mut native, |model, _| {
-        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node))
+    model.update(&mut native, |model, cx| {
+        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node));
+        model.bridge(false, cx);
     });
     stroke(&mut native, "secondary-shift-m");
     stroke(&mut native, "secondary-shift-enter");
@@ -375,7 +376,7 @@ fn the_hold_is_told_in_words_once_while_it_lasts(cx: &mut TestAppContext) {
 
 #[test]
 fn the_announcement_is_worded_for_the_platform() {
-    let words = pane_hold::hold_words(&Default::default(), "");
+    let words = pane_hold::hold_words(&[], "");
     assert!(words.starts_with("Moving Empty window. Arrows move, Shift further, "));
     let (size, keep) = match cfg!(target_os = "macos") {
         true => ("Option", "Return"),
@@ -404,8 +405,13 @@ fn chords_with_shift_are_written_for_the_platform() {
 #[gpui_kit::test]
 fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = console(cx);
-    model.update(&mut native, |model, _| {
-        model.state.roster = crate::runtime::Roster::listing(&["hold-tab-a", "hold-tab-b"]);
+    model.update(&mut native, |model, cx| {
+        let roster = crate::runtime::Roster::listing(&["hold-tab-a", "hold-tab-b"]);
+        model.state.roster = roster.clone();
+        model
+            .entities
+            .rail
+            .update(cx, |rail, cx| rail.read_off(roster, cx));
     });
     native.update(|window, cx| {
         view.update(cx, |view, cx| {

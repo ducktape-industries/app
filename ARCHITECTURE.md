@@ -373,7 +373,16 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   driven by `PaneMessage` through `ui/panes.rs`. Sentinel modules: `EMPTY`
   (an empty pane shows the program finder) and `HELP`.
 - **Shell.** `Desktop` (`shell.rs`) owns `Ducktape`, the tray, the OS
-  window handles, the `Seats` entity and the running task streams.
+  window handles, the `Seats` entity and the running task streams. It also
+  holds `entities::Entities` (`shell/entities/`): the shell's state as
+  compared slices the layers read — the session, the chain, the account,
+  the screen, the rail's badges, the notification centre's counts, the
+  toast, the prefs, the program in front, and per window its desk, what is
+  open over it and Spotlight — written from `Ducktape` at the end of every
+  dispatch by `shell/bridge.rs` until each one's own methods take its
+  source over. Neither the rail's rows nor a window's front is bridged:
+  the rows are refreshed off the roster's changes channel, and the front
+  (`Front::of_desk`) is derived from its desk by an observer.
   `DesktopWindow::render` copies the fields a draw needs into `Facts`
   (`shell/screens.rs`) and picks by `Stage`: the launcher screens
   (`shell/launcher.rs` frame with a `spin` figure on the left; `screens.rs`
@@ -537,8 +546,12 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   polled on the window thread (HTTP bodies decode there). Every
   `Desktop::dispatch` ends in `cx.notify()`, and every `DesktopWindow`
   observes the model, so each message re-renders every window; the wall and
-  toast timers alone make that several times a second. A desk render calls
-  `Roster::rail()` more than once, and each call locks every seat.
+  toast timers alone make that several times a second. `Roster::rail()`,
+  which locks every seat, runs once per roster or seat change
+  (`entities::Rail`), not per render of a desk whose panes all hold
+  programs; still per draw of Spotlight and Settings › Notifications while
+  open, and of an empty pane (a bare desk, an empty window: its render and
+  its model observer) until s9.
 - **Off-thread.** View loads, roster reads, node I/O, describe, banners and
   key opening are off the window thread (§2).
 - **Measured.** A `view_load` info line per network load
@@ -659,7 +672,8 @@ House words, and where one word means several things.
 - **split / cycle / fill / measure** — pane geometry operations in
   `ui/layout.rs`. `split` adds a pane.
 - **rail / RailRow** — the roster-ordered program list the menu bar shows
-  as tabs (`Roster::rail`). The name is from an older side rail and
+  as tabs (`Roster::rail`, read into `entities::Rail` once per change the
+  roster's channel reports). The name is from an older side rail and
   survives in AX ids (`rail/<module>`, `rail-search`) that qa depends on.
 - **overlay / popover / scrim** — the one thing open over the desk
   (`Overlay`: Spotlight, Approve, Settings, Network, a bar menu); a

@@ -108,6 +108,49 @@ pub(crate) fn roster() -> &'static Roster {
     ROSTER.get_or_init(Roster::default)
 }
 
+type Changes = futures::channel::mpsc::UnboundedSender<()>;
+
+fn changes() -> &'static Mutex<Option<Changes>> {
+    static CHANGES: OnceLock<Mutex<Option<Changes>>> = OnceLock::new();
+    CHANGES.get_or_init(Mutex::default)
+}
+
+/// The rail's wake: one message each time the roster or a seat moved in a
+/// way [`Roster::rail`] reads, from whichever thread moved it. Installing
+/// it replaces the one before; the app installs one; of the tests only
+/// `a_seat_claimed_or_dropped_wakes_the_rail` does (the others' rails are
+/// refreshed by hand, and no loader thread wakes their scheduler).
+pub(crate) fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
+    let (send, receive) = futures::channel::mpsc::unbounded();
+    *changes().lock().expect("roster changes") = Some(send);
+    receive
+}
+
+/// `programs` in place of what `roster` listed, the one before handed
+/// back. A list that moved counts a change and wakes the rail: a program
+/// that left starts no load, so this is the only word the rail gets of it.
+pub(super) fn relist(
+    roster: &Roster,
+    programs: Vec<crate::backend::views::Program>,
+) -> Vec<crate::backend::views::Program> {
+    let mut listed = roster.lock();
+    let previous = std::mem::replace(&mut *listed, programs);
+    let moved = previous != *listed;
+    drop(listed);
+    if moved {
+        roster.changed();
+        rail_moved();
+    }
+    previous
+}
+
+/// The rows [`Roster::rail`] reads may have moved: the rail is told.
+pub(super) fn rail_moved() {
+    if let Some(send) = &*changes().lock().expect("roster changes") {
+        let _ = send.unbounded_send(());
+    }
+}
+
 /// A code id as the 32-byte hash a seat records: sha256 as is, sha1 padded.
 pub(super) fn code_digest(code: &abi::BlobId) -> [u8; 32] {
     let mut digest = [0; 32];
@@ -262,10 +305,7 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                     registry.remove(&gone);
                 }
             }
-            let previous = std::mem::replace(&mut *roster().lock(), programs.clone());
-            if previous != programs {
-                roster().changed();
-            }
+            let previous = relist(roster(), programs.clone());
             let mut loads = Vec::new();
             for module in &names {
                 if !registry.keys().any(|(name, _)| name == module) {

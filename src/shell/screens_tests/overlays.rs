@@ -41,6 +41,7 @@ fn show(view: &Entity<DesktopWindow>, native: &mut VisualTestContext, overlay: O
     view.update(native, |view, cx| {
         view.model.update(cx, |model, cx| {
             model.state.overlay = overlay;
+            model.bridge(false, cx);
             cx.notify();
         })
     });

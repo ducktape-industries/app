@@ -24,7 +24,10 @@ pub(crate) fn run() {
         crate::perf::mark("boot");
         let (mut tray, mut tray_events) = crate::tray::init(cx);
         tray.sync(&state);
-        let desktop = cx.new(|cx| Desktop::new(state, tray, cx));
+        let desktop = cx.new(|cx| {
+            let entities = entities::Entities::new(&state, crate::runtime::changes_channel(), cx);
+            Desktop::new(state, tray, entities, cx)
+        });
         desktop.update(cx, |desktop, cx| desktop.sync_appearance(cx));
         let quitting = desktop.downgrade();
         cx.on_action(move |_: &keys::Quit, cx| {

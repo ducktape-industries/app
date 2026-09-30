@@ -35,6 +35,7 @@ mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
 mod approve;
+mod bridge;
 mod connect;
 mod desk;
 mod entities;
@@ -325,10 +326,10 @@ struct Desktop {
     seats: Entity<entities::Seats>,
     /// The seats' intents, into `dispatch` as `Message::ViewEvent`.
     _seat_intents: gpui_kit::Subscription,
-    /// Each window's panes as its layers read them, written from
-    /// `state.layouts` after every dispatch (`bridge`; s11 gives `Desk`
-    /// its methods and deletes the bridge).
-    desks: BTreeMap<WindowKey, Entity<entities::Desk>>,
+    /// The shell's state as the layers read it, app-wide and per window,
+    /// written from `state` after every dispatch (`bridge.rs`) until each
+    /// entity's methods take over its source.
+    entities: entities::Entities,
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
     desk_bounds: Option<gpui_kit::WindowBounds>,
@@ -367,35 +368,18 @@ impl Desktop {
         }
     }
 
-    /// The `Desk` of window `key`, made the first time it is asked for.
-    fn desk(&mut self, key: WindowKey, cx: &mut Context<Self>) -> Entity<entities::Desk> {
-        let layout = self.state.layouts.get(&key).cloned().unwrap_or_default();
-        self.desks
-            .entry(key)
-            .or_insert_with(|| cx.new(|_| entities::Slice::new(layout)))
-            .clone()
-    }
-
-    /// One write per bridged slice, from the state the reducer just moved;
-    /// each compares first, so a dispatch that moved no window's panes
-    /// notifies no `Desk`. The one writer while bridged: a layer that wants
-    /// a layout changed dispatches `Message::Pane`, as before. Deleted in
-    /// s11, when `Desk`'s methods take the `Pane(..)` arms. A closed
-    /// window's desk stays in the map until then (a `Layout::default()`).
-    fn bridge(&mut self, cx: &mut Context<Self>) {
-        for (key, desk) in &self.desks {
-            let layout = self.state.layouts.get(key).cloned().unwrap_or_default();
-            desk.update(cx, |desk, cx| {
-                desk.set(layout, cx);
-            });
-        }
-    }
-
     fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "dispatch");
         let runtime = crate::runtime::handle();
         let _runtime = runtime.enter();
         let beat = message.is_beat();
+        let notify_saved = matches!(
+            message,
+            Message::SetNotifyBanners(_)
+                | Message::SetNotifyInFront(_)
+                | Message::SetNotifyBurst(_)
+                | Message::NotifyPermission(..)
+        );
         let task = self.state.handle(message);
         // both bridges: s11 moves reconcile onto `Windows.desks` observers,
         // s10 has `Seats` encode the props from `Session` and `Account`
@@ -404,7 +388,7 @@ impl Desktop {
         self.seats
             .update(cx, |seats, cx| seats.set_props(props, cx));
         // after the seats: a pane's view finds its seat when its desk moves
-        self.bridge(cx);
+        self.bridge(notify_saved, cx);
         self.tray.sync(&self.state);
         self.start(task, cx).detach();
         self.subscriptions(cx);
@@ -541,6 +525,7 @@ impl Desktop {
         }
         self.state.system_dark = Theme::global(cx).is_dark();
         configure_native_theme(cx);
+        self.bridge(false, cx);
     }
 
     fn start(&self, task: Task<Message>, cx: &mut Context<Self>) -> gpui_kit::Task<()> {
@@ -662,6 +647,8 @@ pub(crate) struct DesktopWindow {
     kind: WindowKind,
     /// This window's panes, as the model has them (`Desktop::bridge`).
     desk: Entity<entities::Desk>,
+    /// The programs the bar lists, read off the roster when it moves.
+    rail_rows: entities::Observed<entities::Rail>,
     /// The panes, drawn: one `PaneView` per pane, the keys' handoff between
     /// them, the pointer's and the keyboard's hold on one.
     panes: Entity<layers::PaneLayer>,
