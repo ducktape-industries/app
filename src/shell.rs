@@ -6,10 +6,10 @@
 //! one live program view per pane. Each OS window's root is a
 //! `layers::WindowRoot`, a thin gpui view laying the window's layers out
 //! as siblings: the launcher (connect, key, account, recovery screens;
-//! `layers::Screens`) until sign-in, then the desk: the menu bar
+//! `layers::LauncherLayer`) until sign-in, then the desk: the menu bar
 //! (`layers::Chrome`), the panes floating under it (`layers::PaneLayer`),
-//! the open dialog (⌘K, Settings: `layers::OverlayLayer`; "Add a device…":
-//! `Screens`), the node's breath (`layers::StatusDot`) and the footer
+//! the open dialog (⌘K, Settings, "Add a device…": `layers::OverlayLayer`),
+//! the node's breath (`layers::StatusDot`) and the footer
 //! (`layers::ToastView`).
 //!
 //! The reducer's tasks run without `&mut App`, so they cannot touch a
@@ -38,11 +38,8 @@ use crate::{AppMessage as Message, Ducktape, Stage};
 mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
-mod approve;
 mod bridge;
-mod connect;
 mod entities;
-mod facts;
 mod figure;
 mod help;
 pub(crate) use entities::Spot;
@@ -51,9 +48,8 @@ pub(crate) use layers::Kept;
 mod ink;
 mod keys;
 mod launch;
-mod launcher;
 mod layers;
-pub(in crate::shell) use layers::{Screens, WindowRoot};
+pub(in crate::shell) use layers::WindowRoot;
 mod pane_drag;
 mod pane_hold;
 #[cfg(test)]
@@ -68,9 +64,6 @@ mod status_bar;
 mod windows;
 
 pub(crate) use launch::run;
-mod account_screens;
-mod key_screen;
-mod recovery_screens;
 mod spin;
 mod theme;
 
@@ -489,8 +482,8 @@ impl Desktop {
                 };
                 let to = match (launcher, desk) {
                     (true, _) => centred(gpui_kit::size(
-                        gpui_kit::px(launcher::LAUNCHER_SIZE.0),
-                        gpui_kit::px(launcher::LAUNCHER_SIZE.1),
+                        gpui_kit::px(layers::LAUNCHER_SIZE.0),
+                        gpui_kit::px(layers::LAUNCHER_SIZE.1),
                     )),
                     (false, Some(desk)) => desk.get_bounds(),
                     (false, None) => centred(gpui_kit::size(

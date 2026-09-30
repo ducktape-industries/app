@@ -9,12 +9,12 @@ mod dot;
 mod empty_pane;
 mod fields;
 mod help_pane;
+mod launcher;
 mod overlays;
 mod panes;
 mod root;
 #[cfg(test)]
 mod root_tests;
-mod screens;
 #[cfg(test)]
 pub(super) mod tests;
 mod toast;
@@ -23,11 +23,10 @@ pub(crate) use cached::cached_unless_a11y;
 pub(super) use chrome::{BAR, Chrome, tab_label};
 pub(super) use dot::StatusDot;
 pub(super) use empty_pane::{CHAT_READY, CONTEXT, EmptyPane};
-pub(super) use fields::TextField;
 pub(super) use help_pane::HelpPane;
+pub(super) use launcher::{LAUNCHER_SIZE, LauncherLayer};
 pub(crate) use overlays::Kept;
-pub(super) use overlays::{OverlayLayer, scrim};
+pub(super) use overlays::OverlayLayer;
 pub(super) use panes::{PaneLayer, PaneView};
 pub(super) use root::WindowRoot;
-pub(super) use screens::Screens;
 pub(super) use toast::ToastView;

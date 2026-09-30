@@ -1,68 +1,60 @@
 //! "Add a device…": approving another device onto the account.
 
-use super::entities::Overlay;
-use super::layers::{TextField, scrim};
-use super::*;
-use facts::Facts;
+use super::super::super::Message;
+use super::super::super::ink::{self, *};
+use super::super::fields::TextField;
+use super::{OverlayLayer, scrim};
+use crate::shell::entities::Overlay;
+use gpui_kit::*;
 
-impl Screens {
+impl OverlayLayer {
     /// "Add a device…": the code a new device shows, then its fingerprint
     /// to compare, then this device's yes — consent it signs for the
     /// account and hands over the relay. Dressed as the canvas's dialogs:
     /// `border: 1.5px solid ink`, a soft shadow, on a scrim below the bar.
-    pub(super) fn approve(
-        &mut self,
-        state: &Facts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use super::ink::{self, *};
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let error = (!state.unlock_error.is_empty())
-            .then(|| self.alert("approve-error", state.unlock_error.clone(), &ink));
-        let (said, fields) = match &state.approve_fingerprint {
+    /// What it asks still goes to the reducer (s10: `Account`).
+    pub(super) fn approve(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let account = self.account.read(cx).get();
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let failed = (!account.error.is_empty()).then(|| account.error.clone());
+        let error = failed
+            .clone()
+            .map(|error| alert("approve-error", error, &ink));
+        let (said, fields) = match &account.approve {
             None => {
-                let code = self.input(
+                let code = self.approve_code.input(
+                    "approve-code",
                     TextField {
-                        key: "approve-code",
-                        placeholder: "XXXX-XXXX",
-                        masked: false,
-                        value: |state| &state.sign_in.approve_code,
-                        on_change: Message::ApproveCodeTyped,
-                        on_enter: || Message::ApproveFind,
-                        label: Some("Code".into()),
+                        label: "Code".into(),
                         private: false,
-                        error: (!state.unlock_error.is_empty()).then(|| state.unlock_error.clone()),
+                        error: failed,
                         size: 15.,
                     },
-                    window,
                     cx,
                 );
-                let focused = self.field_focused("approve-code", window, cx);
+                let focused = self.approve_code.focused(window, cx);
                 (
                     "On the new device, choose \"Add this device from another device\". Type the code it shows.",
                     div()
                         .flex()
                         .flex_col()
                         .gap(px(16.))
-                        .child(
-                            self.field(
-                                "approve-code-label",
-                                "Code",
-                                field_box(code, focused, ink.field, 44., &ink)
-                                    .font_family(super::theme::FAMILY_MONO)
-                                    .into_any_element(),
-                                error,
-                                &ink,
-                            ),
-                        )
-                        .child(div().flex().child(self.button(
+                        .child(field(
+                            "approve-code-label",
+                            "Code",
+                            field_box(code, focused, ink.field, 44., &ink)
+                                .font_family(super::super::super::theme::FAMILY_MONO)
+                                .into_any_element(),
+                            error,
+                            &ink,
+                        ))
+                        .child(div().flex().child(button(
+                            &self.model,
                             "approve-find",
                             "Next",
                             Kind::Primary,
                             || Message::ApproveFind,
-                            state.unlock_busy,
+                            account.busy,
                             &ink,
                         ))),
                 )
@@ -81,12 +73,13 @@ impl Screens {
                             .child(fingerprint.clone()),
                     ))
                     .children(error)
-                    .child(div().flex().child(self.button(
+                    .child(div().flex().child(button(
+                        &self.model,
                         "approve-confirm",
                         "Approve",
                         Kind::Primary,
                         || Message::ApproveConfirm,
-                        state.unlock_busy,
+                        account.busy,
                         &ink,
                     ))),
             ),

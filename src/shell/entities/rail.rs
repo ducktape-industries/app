@@ -46,6 +46,11 @@ impl Rail {
         &self.rows
     }
 
+    /// Each view's unread count.
+    pub(crate) fn badges(&self) -> &BTreeMap<&'static str, i64> {
+        &self.badges
+    }
+
     /// `module`'s unread count; 0 with none.
     pub(crate) fn badge(&self, module: &str) -> i64 {
         self.badges.get(module).copied().unwrap_or(0)

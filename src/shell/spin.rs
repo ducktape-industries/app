@@ -46,6 +46,10 @@ pub(super) struct Spin {
     ticking: bool,
     /// When it last drew, for `figure.interval`; kept only with perf on.
     last_drawn: Option<Instant>,
+    /// The figure its last render drew: a test tells a write the frame
+    /// showed from one it did not (a cached figure written mid-draw).
+    #[cfg(test)]
+    drawn: Option<Figure>,
 }
 
 fn smoothstep((from, to): (f32, f32), x: f32) -> f32 {
@@ -75,6 +79,8 @@ impl Spin {
             glyphs: None,
             ticking: false,
             last_drawn: None,
+            #[cfg(test)]
+            drawn: None,
         }
     }
 
@@ -91,6 +97,17 @@ impl Spin {
             self.ink = ink;
             cx.notify();
         }
+    }
+
+    /// The figure its owner last set.
+    pub(super) fn figure(&self) -> Figure {
+        self.figure
+    }
+
+    /// The figure its last render drew.
+    #[cfg(test)]
+    pub(super) fn drawn(&self) -> Option<Figure> {
+        self.drawn
     }
 
     /// Where its own motion is, in seconds.
@@ -261,6 +278,10 @@ impl Render for Spin {
             self.last_drawn = Some(timed.started());
         }
         let stamps = stamps(&self.figure.frame(self.turn, self.t()));
+        #[cfg(test)]
+        {
+            self.drawn = Some(self.figure);
+        }
         drop(timed);
         let ink = self.ink;
         let spin = cx.entity();

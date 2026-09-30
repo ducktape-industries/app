@@ -160,6 +160,24 @@ pub(super) fn label(id: impl Into<ElementId>, text: impl Into<SharedString>, ink
     sans(500, 14.).text_color(ink.ink).child(words(id, text))
 }
 
+/// `<label>` over its control, `gap: 8px`, and a line under it; `id` is
+/// the label's.
+pub(super) fn field(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    control: AnyElement,
+    below: Option<AnyElement>,
+    ink: &Ink,
+) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.))
+        .child(label(id, text, ink))
+        .child(control)
+        .children(below)
+}
+
 /// Whether a button takes a press: `Off` reads at 0.3, and `Busy` is off
 /// because the work it starts is in flight, which it says to assistive
 /// technology too. A `bool` is whether it is off.
@@ -197,8 +215,9 @@ pub(super) enum Kind {
     Small,
 }
 
-/// [`Screens::button`] for a view that is not the screens': it dispatches
-/// through `model`.
+/// `<button>`: `height 44px; padding 0 18px; border 1.5px solid ink;
+/// font 500 15px`, filled for [`Kind::Primary`]. Off or busy, it reads at
+/// 0.3 ([`Press`]). Pressed, it dispatches `message` through `model`.
 #[allow(clippy::too_many_arguments, reason = "one button, seven facts")]
 pub(super) fn button(
     model: &Entity<Desktop>,
@@ -250,52 +269,21 @@ pub(super) fn button(
     .into_any_element()
 }
 
-impl Screens {
-    /// `<button>`: `height 44px; padding 0 18px; border 1.5px solid ink;
-    /// font 500 15px`, filled for [`Kind::Primary`]. Off or busy, it reads
-    /// at 0.3 ([`Press`]).
-    pub(super) fn button(
-        &self,
-        id: impl Into<ElementId>,
-        text: impl Into<SharedString>,
-        kind: Kind,
-        message: fn() -> Message,
-        press: impl Into<Press>,
-        ink: &Ink,
-    ) -> AnyElement {
-        button(&self.model, id, text, kind, message, press, ink)
-    }
-    /// `<a>`: `400 15px`, underlined, in ink; `small` is the back link's
-    /// `13px` muted.
-    pub(super) fn link(
-        &self,
-        id: &'static str,
-        text: impl Into<SharedString>,
-        message: fn() -> Message,
-        small: bool,
-        ink: &Ink,
-    ) -> AnyElement {
-        let model = self.model.clone();
-        let dispatch =
-            move |cx: &mut App| model.update(cx, |model, cx| model.dispatch(message(), cx));
-        link_running(id, text, dispatch, small, ink)
-    }
-
-    /// `<span role=alert>`: `400 13px/1.5` in danger, read out at once as
-    /// it shows.
-    pub(super) fn alert(&self, id: &'static str, said: String, ink: &Ink) -> AnyElement {
-        let alert = sans(400, 13.)
-            .line_height(px(13. * 1.5))
-            .id(id)
-            .role(Role::Alert)
-            .text_color(ink.danger);
-        crate::a11y::live(alert, accesskit::Live::Assertive, said.clone())
-            .child(said)
-            .into_any_element()
-    }
+/// `<span role=alert>`: `400 13px/1.5` in danger, read out at once as it
+/// shows.
+pub(super) fn alert(id: &'static str, said: String, ink: &Ink) -> AnyElement {
+    let alert = sans(400, 13.)
+        .line_height(px(13. * 1.5))
+        .id(id)
+        .role(Role::Alert)
+        .text_color(ink.danger);
+    crate::a11y::live(alert, accesskit::Live::Assertive, said.clone())
+        .child(said)
+        .into_any_element()
 }
 
-/// [`Screens::link`] that runs `run` when pressed.
+/// `<a>`: `400 15px`, underlined, in ink; `small` is the back link's
+/// `13px` muted. Pressed, it runs `run`.
 pub(super) fn link_running(
     id: &'static str,
     text: impl Into<SharedString>,
@@ -455,7 +443,7 @@ mod tests {
         });
     }
 
-    /// What a keyboard-focused shell button (`Screens::button`'s own)
+    /// What a keyboard-focused shell button (`ink::button`'s own)
     /// shows, and a mouse-moved one does not: a 2px ink ring and border on
     /// the outline button, the page's colour on the ink-filled Primary, and
     /// nothing once the last input was the mouse.

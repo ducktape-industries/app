@@ -66,7 +66,7 @@ view's tree lowers onto GPUI elements one to one.
 | Module | Owns | Runs on |
 |---|---|---|
 | `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), `app.log` + panic hook, fd limit, `DUCKTAPE_VIEWS_DIR`, then `shell::run` | process start |
-| `shell.rs`, `shell/` | the native chrome: `Desktop` (the one model entity), `layers::WindowRoot` (one per OS window, laying its layers out: `Chrome`, `PaneLayer`, `OverlayLayer`, `Screens`, `StatusDot`, `ToastView`), `Command` effects, launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
+| `shell.rs`, `shell/` | the native chrome: `Desktop` (the one model entity), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), `Command` effects, launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
 | `ui.rs`, `ui/` | `Ducktape` state, `AppMessage`, the reducer (`Ducktape::handle` → sub-reducers), the pure pane geometry (`ui/layout.rs`) | window thread (called from `Desktop::dispatch`) |
 | `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
@@ -341,7 +341,7 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
                                    ├─ tray.sync            (polled by Desktop::start,
                                    ├─ start(task)           each yield re-dispatched)
                                    ├─ subscriptions (timers)
-                                   └─ cx.notify() ─► every `Screens` (the launcher; Approve until s9) re-renders
+                                   └─ bridge ─► the slices it moved ─► the layers observing them re-render
 ```
 
 - **State.** `Ducktape` (`ui/app.rs`): appearance, `stage` (which screen
@@ -389,11 +389,17 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   (`Desktop::window_entities`).
   `layers::WindowRoot` (`layers/root.rs`, one thin uncached view per OS
   window) lays the window's layers out as siblings. Before the desk the
-  console draws `layers::Screens` (`layers/screens.rs`, cached over the
-  model), which copies the fields a draw needs into `Facts` (`shell/facts.rs`)
-  and picks by `Stage`: the launcher screens (`shell/launcher.rs` frame with
-  a `spin` figure on the left; `connect.rs`; `key_screen.rs`,
-  `recovery_screens.rs`, `account_screens.rs`). On the desk: `layers::Chrome`
+  console draws `layers::LauncherLayer` (`layers/launcher.rs`, uncached:
+  cached, the unlock screen moved by 1 LSB, and these screens gain nothing
+  from the cache),
+  which reads `Screen`, `Session`, `Account` and `Prefs` and picks by
+  `Screen`: the frame with a `spin` figure on the left (written from its
+  observers, or a frame after a screen change from a next-frame callback,
+  as the unlock screen's pixels need; never from a draw), then
+  `launcher/connect.rs`, `key.rs`, `recovery.rs`, `account.rs`. Its fields own what is typed and send each change to the
+  reducer; what the reducer resets without typing (a step's secrets as it
+  goes, the address the session moved to) the layer writes into them from
+  its observers. On the desk: `layers::Chrome`
   across the top (`layers/chrome.rs`, a cached view of the bar reading the
   entities alone, its menus hanging from their buttons: `chrome/menus.rs`,
   `chrome/bell.rs`), `layers/panes.rs` drawing each pane's seat (its tree or
@@ -402,9 +408,8 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   `layers::Strip`, `layers::OverlayLayer` (`layers/overlays.rs`, cached over
   `Overlays`, `Spotlight` and the slices its dialogs read) for Spotlight and
   Settings (`overlays/spotlight.rs`, `overlays/settings.rs`, their fields in
-  `layers/fields.rs`) and the keys' handoff as anything opens over the desk
-  or closes, `Screens` again only while "Add a device…" is open
-  (`approve.rs`, until s9), the node's breath
+  `layers/fields.rs`) and "Add a device…" (`overlays/approve.rs`), and the
+  keys' handoff as anything opens over the desk or closes, the node's breath
   (`layers::StatusDot`, `layers/dot.rs`, a root sibling over the bar's empty
   well at `DotSlot`) and the footer (`layers::ToastView`, `layers/toast.rs`,
   cached over `Toast`, `Session` and `Prefs`, drawn deferred over an open
@@ -470,7 +475,7 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
    - **Join from another device** (`backend/join.rs`): `new_code` shows a
      Crockford code; `join_from_device` posts the request to the relay and
      waits for consent. On a device already on the account, "Add a device…"
-     (`shell/approve.rs`, `ApproveFind`/`ApproveConfirm`) calls
+     (`shell/layers/overlays/approve.rs`, `ApproveFind`/`ApproveConfirm`) calls
      `find_request`, shows `fingerprint` for both sides to compare, and
      `approve` signs the `Consent`.
    - **Recovery key**: `join_with_recovery_key` types an existing 24-word
@@ -482,9 +487,9 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
    the seated key (§4). `Message::Lock` empties the seat; the reader key
    signs queries meanwhile.
 
-Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
-(Connect), `shell/sign_in.rs`, `shell/approve.rs`, `shell/launcher.rs`
-(screens); `backend/session.rs`, `backend/device_key.rs`,
+Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/layers/launcher.rs`
+and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
+`backend/session.rs`, `backend/device_key.rs`,
 `backend/passkey.rs`, `backend/join.rs` (the work).
 
 ## 7. Accessibility and the AX test door
@@ -560,18 +565,13 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   loader thread takes that mutex for `snapshot` and for the install (not
   for compile, `restore` or `first_frame`), so a swap stalls the window for
   those two steps. The reducer's own `Task`s are
-  polled on the window thread (HTTP bodies decode there). Every
-  `Desktop::dispatch` ends in `cx.notify()`, and the console's `Screens`
-  layer observes the model: before the desk, and on it while Approve is
-  open, each message re-renders it (and the root over it; the cached layers
-  beside it hit). Otherwise on the desk a message draws only the layers
-  whose slices it moved. A clock's beat that moves nothing notifies nothing
-  (`beat_face`). `Roster::rail()`,
+  polled on the window thread (HTTP bodies decode there). No layer
+  observes the model: a message draws only the layers whose slices it
+  moved (`Desktop::bridge`), and a clock's beat that moves nothing notifies
+  nothing (`beat_face`). `Roster::rail()`,
   which locks every seat, runs once per roster or seat change
-  (`entities::Rail`), not per render of a desk whose panes all hold
-  programs, nor per draw of Spotlight or Settings; still per draw of an
-  empty pane (a bare desk, an empty window: its render and its model
-  observer) until s9.
+  (`entities::Rail`), never at a draw: the bar, the pane strips, the
+  empty panes, Spotlight and Settings read the `Rail`'s rows.
 - **Off-thread.** View loads, roster reads, node I/O, describe, banners and
   key opening are off the window thread (§2).
 - **Measured.** A `view_load` info line per network load
@@ -759,9 +759,10 @@ House words, and where one word means several things.
   `kernel.rs` and a case in `kernel/tests.rs`, which stands up a loopback
   `TcpListener` as the node.
 - **Add a native screen or overlay.** A screen: state and messages in
-  `ui/app.rs` (a `Stage` variant), the reducer arm in the matching
-  `ui/*.rs`, the drawing as a `Screens` method in `shell/` built from
-  `ink` pieces, routed from `Screens::render` (`shell/layers/screens.rs`).
+  `ui/app.rs` (a `Stage` variant, and its `Screen` in
+  `shell/entities/screen.rs`), the reducer arm in the matching `ui/*.rs`,
+  the drawing as a `LauncherLayer` method in `shell/layers/launcher/` built
+  from `ink` pieces, routed from its render (`shell/layers/launcher.rs`).
   An overlay: an `Overlay` variant (`shell/entities/overlays.rs`), opened
   and closed by `Overlays` methods from the control that opens it, drawn
   as an `OverlayLayer` method (`shell/layers/overlays/`, routed from its

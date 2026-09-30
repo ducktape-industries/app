@@ -120,7 +120,7 @@ impl Desktop {
         let launcher = kind == crate::shell::WindowKind::Console && self.state.in_launcher();
         let extent = match kind {
             crate::shell::WindowKind::Console if launcher => {
-                size(px(launcher::LAUNCHER_SIZE.0), px(launcher::LAUNCHER_SIZE.1))
+                size(px(layers::LAUNCHER_SIZE.0), px(layers::LAUNCHER_SIZE.1))
             }
             crate::shell::WindowKind::Console => size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1)),
             crate::shell::WindowKind::View { .. } => size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1)),

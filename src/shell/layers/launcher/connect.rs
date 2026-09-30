@@ -1,93 +1,86 @@
 //! The Connect screen, first in the launcher: a node address, the nodes
 //! reached before, and why the last try did not land.
 
-use super::launcher::LauncherScreen;
-use super::layers::TextField;
-use super::*;
+use super::super::super::ink::*;
+use super::super::super::{Message, theme};
+use super::super::fields::TextField;
+use super::{LauncherLayer, LauncherScreen};
+use crate::a11y::Control as _;
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 
-impl Screens {
+impl LauncherLayer {
     /// Main (Connect): an address, the nodes reached before, and why the
     /// last try did not land.
-    pub(super) fn connect(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use super::ink::*;
-        use gpui_kit::*;
-        let state = self.model.read(cx).state.facts();
-        let ink = Ink::of(state.dark);
+    pub(super) fn connect(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let session = self.session.read(cx).get();
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
         // The address refusal is about what is typed now; a failed try is
         // about the last address. Both clear on the next keystroke or try.
-        let note = [&state.endpoint_error, &state.error]
+        let note = [&session.endpoint_error, &session.error]
             .into_iter()
             .find(|note| !note.is_empty())
             .cloned();
-        let field = self.input(
+        let input = self.fields.endpoint.input(
+            "endpoint",
             TextField {
-                key: "endpoint",
-                placeholder: "127.0.0.1:8844",
-                masked: false,
-                value: |state| &state.endpoint,
-                on_change: Message::EndpointTyped,
-                on_enter: || Message::ConnectSubmit,
-                label: Some("Node address".into()),
+                label: "Node address".into(),
                 private: false,
                 error: note.clone(),
                 size: 15.,
             },
-            window,
             cx,
         );
-        let focused = self.field_focused("endpoint", window, cx);
+        let focused = self.fields.endpoint.focused(window, cx);
         let border = match note {
             Some(_) => ink.danger,
             None => ink.field,
         };
-        // Only a try in flight has a status worth reading.
-        let below = match (&note, state.connecting) {
-            (Some(note), _) => Some(self.alert("connect-error", note.clone(), &ink)),
-            (None, true) => Some(
-                // a note's look; its words are the live region's own
-                crate::a11y::live(
-                    sans(400, 13.)
-                        .line_height(px(13. * 1.55))
-                        .text_color(ink.muted)
-                        .id("connect-status")
-                        .role(Role::Status),
-                    accesskit::Live::Polite,
-                    state.status.clone(),
+        // Only a try in flight has a status worth reading: the address it
+        // reaches for (on this screen no node is in hand).
+        let below = match (&note, session.connecting) {
+            (Some(note), _) => Some(alert("connect-error", note.clone(), &ink)),
+            (None, true) => {
+                let status = format!("Reaching {}…", session.endpoint);
+                Some(
+                    // a note's look; its words are the live region's own
+                    crate::a11y::live(
+                        sans(400, 13.)
+                            .line_height(px(13. * 1.55))
+                            .text_color(ink.muted)
+                            .id("connect-status")
+                            .role(Role::Status),
+                        accesskit::Live::Polite,
+                        status.clone(),
+                    )
+                    .child(status)
+                    .into_any_element(),
                 )
-                .child(state.status.clone())
-                .into_any_element(),
-            ),
+            }
             (None, false) => None,
         };
-        let form = self.field(
+        let form = field(
             "endpoint-label",
             "Node address",
             div()
                 .flex()
                 .gap(px(8.))
-                .child(
-                    div().flex_1().child(
-                        field_box(field, focused, border, 44., &ink)
-                            .font_family(super::theme::FAMILY_MONO),
-                    ),
-                )
+                .child(div().flex_1().child(
+                    field_box(input, focused, border, 44., &ink).font_family(theme::FAMILY_MONO),
+                ))
                 .child(self.button(
                     "connect",
                     "Connect",
                     Kind::Primary,
                     || Message::ConnectSubmit,
-                    state.connecting,
+                    session.connecting,
                     &ink,
                 ))
                 .into_any_element(),
             below,
             &ink,
         );
-        let rows = state.recent_endpoints.iter().map(|entry| {
+        let rows = session.recent_endpoints.iter().map(|entry| {
             let pick_model = self.model.clone();
             let pick_target = entry.url.clone();
             let forget_model = self.model.clone();
@@ -164,7 +157,7 @@ impl Screens {
                 .child(crate::a11y::keyboard(pick, ink.ink))
                 .child(crate::a11y::keyboard(forget, ink.ink))
         });
-        let recent = (!state.recent_endpoints.is_empty()).then(|| {
+        let recent = (!session.recent_endpoints.is_empty()).then(|| {
             div()
                 .id("recent")
                 .flex()
@@ -178,15 +171,14 @@ impl Screens {
                 .children(rows)
                 .into_any_element()
         });
-        let caption = match state.recent_endpoints.is_empty() {
+        let caption = match session.recent_endpoints.is_empty() {
             true => "No network yet.",
             false => "A node, drawn in characters.",
         };
-        self.launcher(
+        self.frame(
             LauncherScreen {
                 id: "connect",
                 tight: false,
-                figure: figure::Figure::Roll,
                 caption: caption.into(),
                 back: None,
                 label: "[01 / 03] Network".into(),

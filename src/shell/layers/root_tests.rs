@@ -361,7 +361,10 @@ fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext)
 }
 
 /// Before the desk the console's root draws the launcher's screen alone:
-/// each screen change draws it once, and no bar until the desk.
+/// each screen change draws it once, and once more when the screen's
+/// figure follows a frame late
+/// (`the_figure_follows_the_screen_without_a_render_write`); no bar until
+/// the desk.
 #[gpui_kit::test]
 fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
@@ -390,13 +393,12 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     model.update(&mut native, |model, cx| {
         model.state.stage = crate::Stage::Unlock(Default::default());
         model.bridge(false, cx);
-        cx.notify();
     });
     frame(&mut native);
     assert_eq!(
         window_count(key, "renders.launcher"),
-        launcher + 1,
-        "a screen change drew the launcher other than once"
+        launcher + 2,
+        "a screen change and its figure drew the launcher other than twice"
     );
     let nodes = native.update(draw);
     assert!(
@@ -411,7 +413,6 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     model.update(&mut native, |model, cx| {
         model.state.stage = crate::Stage::Desk;
         model.bridge(false, cx);
-        cx.notify();
     });
     frame(&mut native);
     let nodes = native.update(draw);
@@ -422,6 +423,95 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     assert!(
         window_count(key, "renders.chrome") > 0,
         "the desk drew no bar"
+    );
+}
+
+/// The launcher's figure is never written from a draw: written during the
+/// launcher's draw, the figure (a cached view of its own) would keep last
+/// frame's drawing until something else drew it again (P3). A screen
+/// change draws the launcher with the last screen's figure (its glyphs
+/// enter the atlas after the screen's text, which the unlock screen's
+/// pixels depend on), the next frame draws the new figure, and no frame
+/// follows that.
+#[gpui_kit::test]
+fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext) {
+    use crate::shell::figure::Figure;
+    let _on = crate::perf::on_for_test();
+    let (mut state, _) = crate::Ducktape::boot();
+    state.center = Default::default();
+    state.roster = Default::default();
+    // a still figure: none of its own frames
+    state.motion = false;
+    let (model, key, view, mut native) = open_console(state, cx);
+    frame(&mut native);
+    let spin = native.update(|_, cx| view.read(cx).launcher().read(cx).spin.clone());
+    let drawn = |native: &mut VisualTestContext| native.update(|_, cx| spin.read(cx).drawn());
+    assert_eq!(
+        drawn(&mut native),
+        Some(Figure::Roll),
+        "Connect draws the roll"
+    );
+    let launcher = window_count(key, "renders.launcher");
+
+    model.update(&mut native, |model, cx| {
+        model.state.stage = crate::Stage::Unlock(Default::default());
+        model.bridge(false, cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        (drawn(&mut native), window_count(key, "renders.launcher")),
+        (Some(Figure::Roll), launcher + 1),
+        "the frame showing the key screen drew other than the last figure, once"
+    );
+    frame(&mut native);
+    assert_eq!(
+        (drawn(&mut native), window_count(key, "renders.launcher")),
+        (Some(Figure::Ring), launcher + 2),
+        "the frame after it drew other than the key screen's figure, once"
+    );
+    frame(&mut native);
+    assert_eq!(
+        window_count(key, "renders.launcher"),
+        launcher + 2,
+        "a third frame followed the screen change"
+    );
+}
+
+/// Back from the desk the figure is drawn afresh (the desk kept no frame
+/// of it), so it comes with its screen: the frame that shows the connect
+/// screen draws the roll, not the key screen's ring it last drew.
+#[gpui_kit::test]
+fn a_figure_back_from_the_desk_comes_with_its_screen(cx: &mut TestAppContext) {
+    use crate::shell::figure::Figure;
+    let (mut state, _) = crate::Ducktape::boot();
+    state.center = Default::default();
+    state.roster = Default::default();
+    state.motion = false;
+    let (model, _, view, mut native) = open_console(state, cx);
+    let spin = native.update(|_, cx| view.read(cx).launcher().read(cx).spin.clone());
+    let drawn = |native: &mut VisualTestContext| native.update(|_, cx| spin.read(cx).drawn());
+    for stage in [crate::Stage::Unlock(Default::default()), crate::Stage::Desk] {
+        model.update(&mut native, |model, cx| {
+            model.state.stage = stage;
+            model.bridge(false, cx);
+        });
+        frame(&mut native);
+        frame(&mut native);
+    }
+    assert_eq!(
+        drawn(&mut native),
+        Some(Figure::Ring),
+        "the key screen drew"
+    );
+    model.update(&mut native, |model, cx| {
+        model.state.stage = crate::Stage::Connect;
+        model.bridge(false, cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        drawn(&mut native),
+        Some(Figure::Roll),
+        "the connect screen came back with the key screen's figure"
     );
 }
 
@@ -506,8 +596,7 @@ fn quads(native: &mut VisualTestContext) -> Vec<gpui_kit::Quad> {
 /// A dialog open over the desk, drawn cached (no reader on): its scrim
 /// paints below the bar, the window wide and high, over the panes. The
 /// cached view is a layout root of its own, where its height is its
-/// content's unless it says `size_full`: Spotlight is `OverlayLayer`'s,
-/// "Add a device…" still `Screens`'.
+/// content's unless it says `size_full`: both are `OverlayLayer`'s.
 #[gpui_kit::test]
 fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
     const MODULE: &str = "root-scrim-view";

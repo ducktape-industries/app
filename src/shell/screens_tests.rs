@@ -200,9 +200,10 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
     // The recovery-phrase input is not visually masked (it is not a
     // PasswordInput), but its typed text must leave the process masked too.
     let model = native.update(|_, cx| view.read(cx).model.clone());
-    model.update(cx, |model, _| {
+    model.update(cx, |model, cx| {
         model.state.signer_key = "ab".into();
         model.state.stage = Stage::Recover(Default::default());
+        model.bridge(false, cx);
     });
     native.update(|window, cx| {
         type_into(
@@ -227,13 +228,24 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
 
     // The new key's sheet: its words are the sheet's name, masked; no other
     // node carries them.
-    model.update(cx, |model, _| {
+    model.update(cx, |model, cx| {
         model.state.stage = Stage::Phrase(crate::ui::Phrase {
             words: crate::Secret::from(String::from("canoe pond forest")),
             ..Default::default()
         });
+        model.bridge(false, cx);
     });
     let nodes = native.update(draw);
+    let sheet = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == "shell:phrase")
+        .unwrap_or_else(|| panic!("no phrase sheet: {nodes}"));
+    assert!(
+        sheet["name"].as_str().is_some_and(|name| !name.is_empty()),
+        "the sheet shows no words: {sheet}"
+    );
     assert!(
         !nodes.to_string().contains("canoe"),
         "new recovery phrase leaked into the AX tree: {nodes}"
@@ -267,13 +279,20 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
     assert_eq!(passkeys, 0, "the key screen offered a passkey: {nodes}");
 
     let model = native.update(|_, cx| view.read(cx).model.clone());
-    model.update(cx, |model, _| {
+    model.update(cx, |model, cx| {
         model.state.signer_key = "ab".into();
         model.state.stage = Stage::Account(Default::default());
+        model.bridge(false, cx);
     });
     native.update(|window, cx| type_into("create-account-name/field", "duck", window, cx));
     let nodes = native.update(draw);
     assert_eq!(find(&nodes, "TextInput", "Account name")["value"], "duck");
+    // the field owns the name, and the reducer heard it as it was typed
+    let heard = model.read_with(cx, |model, _| match &model.state.stage {
+        Stage::Account(step) => step.name.clone(),
+        _ => String::new(),
+    });
+    assert_eq!(heard, "duck", "the typed name never reached the reducer");
     gate::passes(&mut native, "account-step-typed", true);
     find(&nodes, "Button", "Create account");
     find(&nodes, "Button", "Add this device from another device");
@@ -349,8 +368,9 @@ fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &m
     // ConnectSubmit swaps Connect for sign-in once the node answers: the
     // endpoint field the reader was on is gone.
     let model = native.update(|_, cx| view.read(cx).model.clone());
-    model.update(cx, |model, _| {
-        model.state.stage = Stage::Unlock(Default::default())
+    model.update(cx, |model, cx| {
+        model.state.stage = Stage::Unlock(Default::default());
+        model.bridge(false, cx);
     });
     native.update(draw);
 
@@ -418,10 +438,11 @@ fn initials_take_the_first_letter_of_two_words() {
     assert_eq!(initials("# ?"), "?");
 }
 
-/// The field state outlives the model's copy of a secret: after "Read
-/// without a key" the model's password is empty, and the password
-/// field used to go on showing the old dots — while a retry sent nothing.
-/// The field mirrors the model on every draw.
+/// The field owns what is typed, and the reducer's copy of a secret can go
+/// without it: after "Read without a key" and back the model's password is
+/// empty, and the password field used to go on showing the old dots —
+/// while a retry sent nothing. A screen change empties the fields of the
+/// step it left, in the launcher's observer.
 #[gpui_kit::test]
 fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -436,7 +457,11 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
     native.update(draw);
     let field = |native: &mut VisualTestContext| {
         native.update(|_, cx| {
-            view.read(cx).screens().read(cx).inputs["password"]
+            view.read(cx)
+                .launcher()
+                .read(cx)
+                .fields
+                .password
                 .state
                 .read(cx)
                 .value()
@@ -453,12 +478,12 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
         "hunter22"
     );
 
-    model.update(cx, |model, _| {
-        // reading without a key wipes it; the key screen comes back
-        model.state.update(Message::BrowseWithoutKey);
-        model.state.update(Message::SignIn);
-    });
-    native.update(draw);
+    // reading without a key wipes it; the key screen comes back (from the
+    // desk's account menu)
+    for message in [Message::BrowseWithoutKey, Message::SignIn] {
+        model.update(cx, |model, cx| model.dispatch(message, cx));
+        native.update(draw);
+    }
     assert_eq!(
         field(&mut native),
         "",
@@ -466,37 +491,204 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
     );
 }
 
-/// Keys can land in a field before their change event reaches the model —
-/// the AX door's `type` sends a word's keys in one update. A draw in
-/// between must not put the model's older text back over them: the door
-/// typed "abcdef" into a phrase-check word and the field showed "ef".
+/// The field is the source of what is typed: a change reaches `Session` as
+/// it happens, with no draw between, and a draw writes nothing into the
+/// field either way — keys can land in a field before their change goes
+/// out (the AX door's `type` sends a word's keys in one update), and a
+/// draw that put the model's older text back would eat them.
 #[gpui_kit::test]
-fn a_draw_leaves_text_the_model_has_not_heard_yet(cx: &mut TestAppContext) {
+fn typed_text_reaches_the_entity_on_change_not_on_draw(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let (state, _) = Ducktape::boot();
+    let (view, mut native) = open(state, cx);
+    native.update(draw);
+    let (model, field) = native.update(|_, cx| {
+        let view = view.read(cx);
+        let field = view.launcher().read(cx).fields.endpoint.state.clone();
+        (view.model.clone(), field)
+    });
+    let session = native.update(|_, cx| model.read(cx).entities.session.clone());
+    let endpoint = |native: &mut VisualTestContext| {
+        native.update(|_, cx| session.read(cx).get().endpoint.clone())
+    };
+    native.update(|window, cx| {
+        field.update(cx, |field, cx| {
+            field.replace_all("10.0.0.5:8844", window, cx)
+        })
+    });
+    assert_eq!(
+        endpoint(&mut native),
+        "10.0.0.5:8844",
+        "the session waited for a draw"
+    );
+
+    native.update(|window, cx| {
+        // set_value emits no change: nobody has heard of this text
+        field.update(cx, |field, cx| field.set_value("abcdef", window, cx));
+    });
+    native.update(draw);
+    let shown = native.update(|_, cx| field.read(cx).value().to_string());
+    assert_eq!(
+        shown, "abcdef",
+        "a draw wiped keys the session had not heard"
+    );
+    assert_eq!(
+        endpoint(&mut native),
+        "10.0.0.5:8844",
+        "a draw sent the field's text"
+    );
+}
+
+/// The account's name is typed once: the reducer carries it to the
+/// recovery key's screen and back ("← Back"), and so does its field; it
+/// goes when the account steps do, and a new account step starts empty.
+#[gpui_kit::test]
+fn the_account_name_goes_only_with_the_account_steps(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
     let (mut state, _) = Ducktape::boot();
-    state.stage = Stage::Unlock(Default::default());
-    state.key_exists = true;
+    state.signer_key = "ab".into();
+    state.stage = Stage::Account(Default::default());
     let (view, mut native) = open(state, cx);
-    native.update(draw);
-    native.update(|window, cx| {
-        let field = view.read(cx).screens().read(cx).inputs["password"]
-            .state
-            .clone();
-        // set_value emits no change: the model has not heard of this text.
-        field.update(cx, |field, cx| field.set_value("abcdef", window, cx));
+    native.update(|window, cx| type_into("create-account-name/field", "duck", window, cx));
+    let model = native.update(|_, cx| view.read(cx).model.clone());
+    let name = |native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            let field = &view.read(cx).launcher().read(cx).fields.name;
+            field.state.read(cx).value().to_string()
+        })
+    };
+    let heard = |cx: &mut TestAppContext| {
+        model.read_with(cx, |model, _| match &model.state.stage {
+            Stage::Account(step) => step.name.clone(),
+            _ => String::new(),
+        })
+    };
+    for message in [Message::RecoverShow, Message::RecoverCancel] {
+        model.update(cx, |model, cx| model.dispatch(message, cx));
+        native.update(draw);
+    }
+    assert_eq!(heard(cx), "duck", "the reducer lost the name");
+    assert_eq!(name(&mut native), "duck", "the field lost the name");
+
+    // "Not now", then "Create account" from the desk
+    for message in [Message::CreateAccountLater, Message::ShowCreateAccount] {
+        model.update(cx, |model, cx| model.dispatch(message, cx));
+        native.update(draw);
+    }
+    assert_eq!(heard(cx), "");
+    assert_eq!(
+        name(&mut native),
+        "",
+        "a new account step kept the old name"
+    );
+}
+
+/// The console closed to the tray mid-step and opened again: its new
+/// fields show what the reducer holds of the step, which is what a submit
+/// sends.
+#[gpui_kit::test]
+fn a_console_opened_mid_step_shows_what_the_reducer_holds(cx: &mut TestAppContext) {
+    let unlock = Stage::Unlock(crate::ui::Unlock {
+        password: "hunter2".to_string().into(),
+        ..Default::default()
     });
-    native.update(draw);
-    let shown = native.update(|_, cx| {
-        view.read(cx).screens().read(cx).inputs["password"]
-            .state
-            .read(cx)
-            .value()
-            .to_string()
+    let recover = Stage::Recover(crate::ui::Recover {
+        phrase: "abandon ability".to_string().into(),
+        name: "duck".into(),
     });
-    assert_eq!(shown, "abcdef", "a draw wiped keys the model had not heard");
+    let account = Stage::Account(crate::ui::Account {
+        name: "duck".into(),
+        ..Default::default()
+    });
+    let phrase = Stage::Phrase(crate::ui::Phrase {
+        quiz: Some([0, 5, 9]),
+        answers: ["one", "two", "three"].map(|word| word.to_string().into()),
+        ..Default::default()
+    });
+    for (stage, want) in [
+        (unlock, ["hunter2", "", "", "", "", ""]),
+        (recover, ["", "abandon ability", "duck", "", "", ""]),
+        (account, ["", "", "duck", "", "", ""]),
+        (phrase, ["", "", "", "one", "two", "three"]),
+    ] {
+        let (mut state, _) = Ducktape::boot();
+        state.signer_key = "ab".into();
+        let step = stage.step();
+        state.stage = stage;
+        let (view, mut native) = open(state, cx);
+        let shown = native.update(|_, cx| {
+            let fields = &view.read(cx).launcher().read(cx).fields;
+            let [a, b, c] = &fields.words;
+            [&fields.password, &fields.restore, &fields.name, a, b, c]
+                .map(|field| field.state.read(cx).value().to_string())
+        });
+        assert_eq!(
+            shown, want,
+            "{step}: the fields lost what the reducer holds"
+        );
+    }
+}
+
+/// The reducer puts another address in `Session` (the node reached, a
+/// switch that did not land): the address field shows it, and what is
+/// typed after goes out as before.
+#[gpui_kit::test]
+fn the_address_field_shows_where_the_session_moved_it(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let (state, _) = Ducktape::boot();
+    let (view, mut native) = open(state, cx);
+    native.update(|window, cx| type_into("endpoint/field", "10.0.0.5:8844", window, cx));
+    let model = native.update(|_, cx| view.read(cx).model.clone());
+    model.update(cx, |model, cx| {
+        model.state.endpoint = "http://127.0.0.1:1".into();
+        model.bridge(false, cx);
+    });
+    let nodes = native.update(draw);
+    assert_eq!(
+        find(&nodes, "TextInput", "Node address")["value"],
+        "http://127.0.0.1:1"
+    );
+    native.update(|window, cx| type_into("endpoint/field", "10.0.0.6:8844", window, cx));
+    let typed = model.read_with(cx, |model, _| model.state.endpoint.clone());
+    assert_eq!(typed, "10.0.0.6:8844");
+}
+
+/// "Add a device…" opens with its code field empty, as the reducer's copy
+/// of the code is emptied as it opens (`ApproveOpen`).
+#[gpui_kit::test]
+fn add_a_device_opens_with_its_code_field_empty(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let (view, mut native) = open((gate::desk(), Overlay::Approve), cx);
+    native.update(|window, cx| type_into("approve-code/field", "ABCD-EFGH", window, cx));
+    let nodes = native.update(draw);
+    assert_eq!(find(&nodes, "TextInput", "Code")["value"], "ABCD-EFGH");
+    let model = native.update(|_, cx| view.read(cx).model.clone());
+    let heard = model.read_with(cx, |model, _| model.state.sign_in.approve_code.clone());
+    assert_eq!(
+        heard, "ABCD-EFGH",
+        "the typed code never reached the reducer"
+    );
+    super::layers::tests::show(&view, None, &mut native);
+    native.update(draw);
+    super::layers::tests::show(&view, Some(Overlay::Approve), &mut native);
+    let nodes = native.update(draw);
+    assert_eq!(
+        find(&nodes, "TextInput", "Code")["value"],
+        "",
+        "the code field kept the last code"
+    );
 }
 
 /// The rail's network name is the switcher: a button that says which
