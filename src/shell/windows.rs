@@ -85,9 +85,6 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> Self {
         let observer = cx.observe(&model, |_, _, cx| cx.notify());
-        // s5 deletes this: `PaneView` observes its own `Seat`
-        let seats = model.read(cx).seats.clone();
-        let seats = cx.observe(&seats, |_, _, cx| cx.notify());
         let activation =
             cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
                 let message = match window.is_window_active() {
@@ -102,9 +99,11 @@ impl DesktopWindow {
             });
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let empty_desk = {
-            let (model, root) = (model.clone(), focus.clone());
-            cx.new(|cx| layers::EmptyPane::desk(model, key, kind, root, window, cx))
+        let desk = model.update(cx, |model, cx| model.desk(key, cx));
+        let panes = {
+            let (model, desk, root, this) =
+                (model.clone(), desk.clone(), focus.clone(), cx.weak_entity());
+            cx.new(|cx| layers::PaneLayer::new(model, key, kind, desk, root, this, window, cx))
         };
         let launcher_spin = cx
             .new(|cx| spin::Spin::new(figure::Figure::Roll, false, gpui_kit::Hsla::default(), cx));
@@ -112,26 +111,20 @@ impl DesktopWindow {
             model,
             key,
             kind,
-            drag: None,
+            desk,
+            panes,
             inputs: HashMap::new(),
             spotlight_focused: false,
             spotlight_rows: Default::default(),
             settings_rows: Default::default(),
             stops: HashMap::new(),
             rail_cursor: None,
-            empty_desk,
-            empty_panes: HashMap::new(),
-            help_panes: HashMap::new(),
             launcher_spin,
             covered: None,
             refocus: None,
             modal: cx.focus_handle(),
             menu: cx.focus_handle(),
             menu_held: false,
-            pane_keys: HashMap::new(),
-            panes_moved: false,
-            holding: None,
-            front: None,
             bar_buttons: Default::default(),
             rail: Default::default(),
             bar_needs: 0.,
@@ -141,7 +134,6 @@ impl DesktopWindow {
             focus,
             _activation: activation,
             _observer: observer,
-            _seats: seats,
             _focus_lost: cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
         }
     }
@@ -162,6 +154,7 @@ impl Desktop {
             streams: HashMap::new(),
             seats,
             _seat_intents: seat_intents,
+            desks: BTreeMap::new(),
             desk_bounds: None,
         }
     }

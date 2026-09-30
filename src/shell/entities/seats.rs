@@ -11,9 +11,6 @@ struct Placed {
     seat: Entity<Seat>,
     /// Its intents, re-emitted as `(module, intent)`; dropping it unsubscribes.
     _intents: Subscription,
-    /// s5 deletes this: `PaneView` observes its own `Seat`. Until then the
-    /// `DesktopWindow` observes `Seats`, which notifies when any seat does.
-    _redraw: Subscription,
 }
 
 pub(crate) struct Seats {
@@ -38,7 +35,8 @@ impl Seats {
     /// whose layout holds it, and none for a pane they no longer hold: that
     /// one is told it is hidden first, and the intents its last update
     /// produced come back for the caller to route (its subscription is
-    /// dropped here, so an emit would be lost).
+    /// dropped here, so an emit would be lost). Notifies when a seat came
+    /// or went, never when one moved: a pane's view observes its own seat.
     #[must_use]
     pub(crate) fn reconcile(
         &mut self,
@@ -63,18 +61,18 @@ impl Seats {
             .filter(|instance| !wanted.contains_key(instance))
             .copied()
             .collect();
+        let mut moved = !gone.is_empty();
         for (instance, (module, window)) in wanted {
             let placed = self.map.entry(instance).or_insert_with(|| {
+                moved = true;
                 let seat = cx.new(|cx| Seat::new(module, cx));
                 let _intents = cx.subscribe(&seat, move |_, _, intent: &Intent, cx| {
                     cx.emit((module, intent.clone()))
                 });
-                let _redraw = cx.observe(&seat, |_, _, cx| cx.notify());
                 Placed {
                     module,
                     seat,
                     _intents,
-                    _redraw,
                 }
             });
             if let Some(window) = window {
@@ -88,6 +86,9 @@ impl Seats {
             };
             let intents = placed.seat.update(cx, |seat, _| seat.hide());
             hidden.extend(intents.into_iter().map(|intent| (placed.module, intent)));
+        }
+        if moved {
+            cx.notify();
         }
         hidden
     }

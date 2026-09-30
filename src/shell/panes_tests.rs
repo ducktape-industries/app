@@ -7,6 +7,9 @@ use gpui_kit::{ElementId, TestAppContext, VisualTestContext, px, size};
 pub(super) fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     window.activate_a11y();
     window.render_frame(cx);
+    // the frame's callbacks (the desk's size, a switch's end) run before
+    // the next frame, as the platform delivers them
+    window.simulate_next_frame(cx);
     window.render_frame(cx);
     serde_json::to_value(crate::ax::snapshot("console", window, false)).unwrap()
 }
@@ -75,6 +78,12 @@ pub(super) fn console(
         model.views.insert(key, view.downgrade());
         model.state.console_win = Some(key);
     });
+    // the platform's first frame: the desk's size and its seed reach the
+    // model from the frame's callback, not from the draw
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.simulate_next_frame(cx);
+    })
+    .unwrap();
     (
         model,
         key,
@@ -471,7 +480,9 @@ pub(super) fn in_front(native: &mut VisualTestContext, view: &Entity<DesktopWind
         let view = view.read(cx);
         let layout = view.layout(cx);
         let instance = layout.panes[layout.focused].instance;
-        view.pane_keys[&instance].0.contains_focused(window, cx)
+        view.panes.read(cx).pane_keys[&instance]
+            .0
+            .contains_focused(window, cx)
     })
 }
 
@@ -930,7 +941,9 @@ fn a_help_window_in_front_keeps_the_keys_in_its_box(cx: &mut TestAppContext) {
         let view = view.read(cx);
         let layout = view.layout(cx);
         assert_eq!(layout.focused, index, "Help is in front");
-        let own = &view.pane_keys[&layout.panes[index].instance].0;
+        let own = view.panes.read(cx).pane_keys[&layout.panes[index].instance]
+            .0
+            .clone();
         assert!(
             own.contains_focused(window, cx),
             "the keys left the Help window: focused = {:?}",
@@ -993,7 +1006,7 @@ fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
         "Help stayed where the press found it"
     );
     assert!(
-        native.update(|_, cx| view.read(cx).drag.is_none()),
+        native.update(|_, cx| view.read(cx).panes.read(cx).drag.is_none()),
         "the release did not let go"
     );
 }
@@ -1127,7 +1140,7 @@ fn the_command_field_takes_the_keys_when_its_pane_comes_to_the_front(cx: &mut Te
             layout.panes[layout.focused].is_empty(),
             "⌘N: an empty window"
         );
-        view.pane_keys[&layout.panes[layout.focused].instance]
+        view.panes.read(cx).pane_keys[&layout.panes[layout.focused].instance]
             .0
             .clone()
     });
@@ -1407,11 +1420,109 @@ fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestApp
     native.update(|window, cx| {
         let view = view.read(cx);
         let layout = view.layout(cx);
-        let own = &view.pane_keys[&layout.panes[layout.focused].instance].0;
+        let own = view.panes.read(cx).pane_keys[&layout.panes[layout.focused].instance]
+            .0
+            .clone();
         assert!(
             own.is_focused(window),
             "the box keeps the keys, its first frame had no control: {:?}",
             window.focused(cx)
         );
     });
+}
+
+/// A wake of one pane's seat (here a load landing: a fresh tree) draws that
+/// pane's tree again and no other pane's. Each body is cached on its own
+/// under the uncached layer and pane views (P6), so the sibling's tree
+/// hits; the pane views themselves render with the window, so
+/// `renders.pane.1` is not asserted flat. The cached path: no a11y reader.
+#[gpui_kit::test]
+fn a_pane_wake_re_renders_its_tree_and_not_the_siblings(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    use view_wire as wire;
+    const FIRST: &str = "pane-wake-first-view";
+    const SECOND: &str = "pane-wake-second-view";
+    let _on = crate::perf::on_for_test();
+    let (model, key, _, mut native) = console(cx);
+    let frame = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        native.run_until_parked();
+    };
+    let line = |text: &str| wire::Node::RichText {
+        id: Some(wire::ElementIdWire::Name("line".into())),
+        style: gpui_kit::div().h(px(20.)).style().clone(),
+        text: text.into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: Vec::new(),
+        on_click: None,
+        on_hover: None,
+        tooltip: None,
+    };
+    crate::runtime::seat_drawing_for_test(FIRST, 400, line("first"));
+    crate::runtime::seat_drawing_for_test(SECOND, 400, line("second"));
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(FIRST)), cx);
+        model.dispatch(Message::Pane(key, PaneMessage::Split(SECOND)), cx);
+    });
+    for _ in 0..8 {
+        frame(&mut native);
+    }
+    let renders = |module: &str| {
+        crate::perf::snapshot(false)["views"][module]["renders"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("{module} counts its renders"))
+    };
+    let (first, second) = (renders(FIRST), renders(SECOND));
+    assert!(first > 0 && second > 0, "both trees drew");
+    let panes = window_count(key, "renders.panes");
+    // the first seat wakes: its view lands again, a fresh tree
+    crate::runtime::seat_drawing_for_test(FIRST, 400, line("first again"));
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    assert_eq!(renders(FIRST), first + 1, "the woken pane's tree drew once");
+    assert_eq!(renders(SECOND), second, "the sibling's tree drew again");
+    assert!(
+        window_count(key, "renders.panes") > panes,
+        "the layer drew with the window"
+    );
+}
+
+/// The desk's size reaches the model from the frame's callback, after the
+/// frame that measured it, never from the draw itself; and a frame at a
+/// size the model already has commits nothing.
+#[gpui_kit::test]
+fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppContext) {
+    let (_, _, view, mut native) = console(cx);
+    let desk =
+        |native: &mut VisualTestContext| native.update(|_, cx| view.read(cx).layout(cx).desk);
+    // the fixture delivered the first frame's callback
+    assert_eq!(desk(&mut native), Some((1280., 800. - desk::BAR)));
+    native.simulate_resize(size(px(1000.), px(700.)));
+    native.run_until_parked();
+    // the window drew at its new size; the model still has the old one
+    native.update(|window, cx| {
+        window.render_frame(cx);
+    });
+    assert_eq!(
+        desk(&mut native),
+        Some((1280., 800. - desk::BAR)),
+        "the draw itself moved the desk"
+    );
+    let ran = native.update(|window, cx| window.simulate_next_frame(cx));
+    assert!(ran > 0, "the frame asked for no callback");
+    assert_eq!(desk(&mut native), Some((1000., 700. - desk::BAR)));
+    // the same size again: nothing to commit, no callback asked for
+    native.update(|window, cx| {
+        window.render_frame(cx);
+    });
+    assert_eq!(
+        native.update(|window, cx| window.simulate_next_frame(cx)),
+        0,
+        "a frame at the same size asked for a callback"
+    );
+    assert_eq!(desk(&mut native), Some((1000., 700. - desk::BAR)));
 }

@@ -343,6 +343,8 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
 fn snap(window: &mut Window, cx: &mut gpui_kit::App) -> Vec<crate::ax::AxNode> {
     window.activate_a11y();
     window.render_frame(cx);
+    // the frame's callbacks (the desk's size, its seed) run before the next
+    window.simulate_next_frame(cx);
     window.render_frame(cx);
     crate::ax::snapshot("shell", window, true)
 }

@@ -259,7 +259,7 @@ impl EmptyPane {
                 spin.set(Figure::Roll, motion, Ink::of(dark).figure, cx)
             });
             // Not while something open over the desk keeps the keys; once
-            // it closes, if the last window left meanwhile (`keys_move`).
+            // it closes, if the last window left meanwhile (`PaneLayer::keys_move`).
             if !(*console && overlay) {
                 if now_bare && !*bare {
                     root.focus(window, cx);
@@ -434,7 +434,7 @@ impl EmptyPane {
             sans(400, 15.)
                 .id(SharedString::from(format!("empty/{module}")))
                 // in a window without the keys too: the keyboard reaches it
-                // by the chord that moves to that window (`pane_stage`)
+                // by the chord that moves to that window (`PaneView`)
                 .control(Role::ListBoxOption, SharedString::from(name.clone()))
                 // the picked row is the one the field's ↑↓ move
                 .aria_selected(picked)

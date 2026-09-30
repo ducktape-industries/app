@@ -36,7 +36,6 @@ pub(crate) struct Facts {
     /// The QR URL, once the person picked the phone.
     pub(crate) passkey_qr: Option<String>,
     pub(crate) phrase_quiz: Option<[usize; 3]>,
-    pub(crate) active: Option<&'static str>,
     pub(crate) badges: BTreeMap<&'static str, i64>,
     pub(crate) motion: bool,
     pub(crate) appearance: crate::Appearance,
@@ -84,7 +83,6 @@ impl Ducktape {
                 crate::Stage::Phrase(step) => step.quiz,
                 _ => None,
             },
-            active: self.active,
             badges: self.badges.clone(),
             motion: self.motion,
             appearance: self.appearance,

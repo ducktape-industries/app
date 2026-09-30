@@ -20,6 +20,8 @@ use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};
 fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     window.activate_a11y();
     window.render_frame(cx);
+    // the frame's callbacks (the desk's size) run before the next frame
+    window.simulate_next_frame(cx);
     window.render_frame(cx);
     serde_json::to_value(crate::ax::snapshot("shell", window, false)).unwrap()
 }
@@ -115,6 +117,12 @@ pub(super) fn open(
         model.windows.insert(key, handle.into());
         model.views.insert(key, view.downgrade());
     });
+    // the platform's first frame: the desk's size and its seed reach the
+    // model from the frame's callback, not from the draw
+    cx.update_window(handle.into(), |_, window, cx| {
+        window.simulate_next_frame(cx);
+    })
+    .unwrap();
     (view, VisualTestContext::from_window(handle.into(), cx))
 }
 

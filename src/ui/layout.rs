@@ -114,7 +114,7 @@ impl Pane {
     }
 }
 
-#[derive(Clone, Default, Debug)]
+#[derive(Clone, Default, Debug, PartialEq)]
 pub(crate) struct Layout {
     pub(crate) panes: Vec<Pane>,
     pub(crate) focused: usize,

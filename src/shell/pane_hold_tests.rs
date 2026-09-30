@@ -278,7 +278,7 @@ fn a_held_window_sent_back_remembers_what_had_its_keys(cx: &mut TestAppContext) 
         native.update(|_, cx| {
             let view = view.read(cx);
             let instance = view.layout(cx).panes[1].instance;
-            view.pane_keys[&instance].1.clone()
+            view.panes.read(cx).pane_keys[&instance].1.clone()
         })
     };
     stroke(&mut native, "secondary-shift-m");

@@ -6,23 +6,21 @@
 //! window is held is the model's (`Layout::held`); this file gives it the
 //! keys while it is, and hands them back to what had them. ⌘⇧↩ fills the
 //! desk with the window in front, as a double press on its title bar does.
+//! The chords are the window's (`DesktopWindow`); the hold on the keys is
+//! the `PaneLayer`'s, brought in line with the model after every draw.
+use super::layers::PaneLayer;
 use super::*;
 
 /// Pixels an arrow moves or sizes by; with Shift, [`FAR`].
 const STEP: f32 = 8.;
 const FAR: f32 = 32.;
 
-/// The keys are on their way to the held window's box, there, or on their
-/// way back.
+/// The held window's box has the keys.
 pub(super) struct Holding {
     /// The held window's box.
     own: gpui_kit::FocusHandle,
     /// What had the keys when the hold took them.
     previous: Option<gpui_kit::FocusHandle>,
-    /// The box has them.
-    taken: bool,
-    /// The model let go: they go back on the next defer (`give_back`).
-    let_go: bool,
 }
 
 /// What a screen reader is told when a window is taken: how to move it and
@@ -82,9 +80,21 @@ impl DesktopWindow {
         });
         cx.notify();
     }
+}
+
+impl PaneLayer {
+    /// A hold's message to the model, through the window.
+    fn hold_message(&self, message: PaneMessage, cx: &mut gpui_kit::App) {
+        let _ = self
+            .window
+            .update(cx, |desk, cx| desk.hold_message(message, cx));
+    }
 
     /// Brings the keys in line with the model: to the held window's box
     /// when a window is taken, and back to what had them when it is let go.
+    /// After a draw (`PaneLayer::drawn`): Search giving the keys back to
+    /// what had them (`desk.rs`, deferred from the draw) has gone first,
+    /// and that is what is kept.
     pub(super) fn sync_hold(
         &mut self,
         layout: &layout::Layout,
@@ -97,56 +107,20 @@ impl DesktopWindow {
         let own = held
             .and_then(|held| self.pane_keys.get(&held.instance))
             .map(|(own, _)| own.clone());
-        match (own, self.holding.as_mut()) {
+        match (own, &self.holding) {
             (None, None) => {}
-            // on their way back: a hold begun meanwhile waits for them
-            (_, Some(holding)) if holding.let_go => {}
-            (None, Some(holding)) => {
-                // The hold keeps them until they are back, so the window
-                // does not take its own box for what had them (`pane_focus`).
-                holding.let_go = true;
-                let this = cx.entity();
-                window.defer(cx, move |window, cx| {
-                    this.update(cx, |this, cx| this.give_back(window, cx))
-                });
-            }
+            (None, Some(_)) => self.give_back(window, cx),
             (Some(own), None) => {
                 self.holding = Some(Holding {
                     own: own.clone(),
-                    previous: None,
-                    taken: false,
-                    let_go: false,
+                    previous: window.focused(cx),
                 });
-                let this = cx.entity();
-                // Twice deferred: Search giving the keys back to what had
-                // them (`desk.rs`) goes first, and that is what is kept.
-                window.defer(cx, move |window, cx| {
-                    window.defer(cx, move |window, cx| {
-                        let previous = window.focused(cx);
-                        let begun = this.update(cx, |this, _| {
-                            this.holding
-                                .as_mut()
-                                .filter(|holding| !holding.let_go)
-                                .map(|holding| {
-                                    holding.previous = previous;
-                                    holding.taken = true;
-                                })
-                        });
-                        if begun.is_some() {
-                            own.focus(window, cx);
-                        }
-                    });
-                });
+                own.focus(window, cx);
             }
-            (Some(own), Some(holding)) => {
-                if holding.taken && !own.is_focused(window) {
+            (Some(own), Some(_)) => {
+                if !own.is_focused(window) {
                     // the keys went elsewhere (a Tab, a press, assistive technology)
-                    let this = cx.entity();
-                    window.defer(cx, move |_, cx| {
-                        this.update(cx, |this, cx| {
-                            this.hold_message(PaneMessage::Release { keep: true }, cx)
-                        })
-                    });
+                    self.hold_message(PaneMessage::Release { keep: true }, cx);
                 }
             }
         }
@@ -156,26 +130,23 @@ impl DesktopWindow {
     /// box still has them. A press, a Tab or assistive technology that took
     /// them left them where they went.
     fn give_back(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(Holding {
-            own,
-            previous,
-            taken,
-            ..
-        }) = self.holding.take()
-        else {
+        let Some(Holding { own, previous }) = self.holding.take() else {
             return;
         };
-        // a hold begun meanwhile takes them on the next draw
-        cx.notify();
-        let Some(previous) = previous.filter(|_| taken && own.is_focused(window)) else {
+        let Some(previous) = previous else {
             return;
         };
-        previous.focus(window, cx);
-        // something that opened over the desk as the hold ended took the box
-        // for what had them: they go back to `previous` when it closes
-        if self.refocus.as_ref() == Some(&own) {
-            self.refocus = Some(previous);
+        if own.is_focused(window) {
+            previous.focus(window, cx);
         }
+        // something that opened over the desk as the hold ended took the box
+        // for what had them (its own keys came first, `desk.rs`): they go
+        // back to `previous` when it closes
+        let _ = self.window.update(cx, |desk, _| {
+            if desk.refocus.as_ref() == Some(&own) {
+                desk.refocus = Some(previous);
+            }
+        });
     }
 
     /// A key while window `index` is held.
