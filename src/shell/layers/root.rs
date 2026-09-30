@@ -44,8 +44,9 @@ pub(in crate::shell) struct WindowRoot {
     /// The node's breath over the bar's well (the console only).
     dot: Option<Entity<StatusDot>>,
     /// A menu hanging from the bar (Node, Account, the bell, Networks): the
-    /// keys go into it when it opens (`Screens`), its card holds them
-    /// (`Chrome`), and it closes when they leave it (`menu_left_by_keys`).
+    /// keys go into it when it opens (`Screens`), the box its card hangs
+    /// from holds them (`Chrome`), and it closes when they leave it
+    /// (`menu_left_by_keys`).
     /// Not `Screens::modal`: gpui-base keeps a focus trap for as long as
     /// its handle lives, so a menu on it would trap Tab once a dialog had.
     menu: FocusHandle,

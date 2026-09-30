@@ -118,3 +118,27 @@ fn an_account_answer_from_before_a_switch_is_dropped() {
     });
     assert_eq!(state.account, Some(None));
 }
+
+#[test]
+fn a_status_restamps_heard_and_a_moved_height_restamps_block_seen() {
+    let (mut state, _) = Ducktape::boot();
+    state.connected = true;
+    state.height = 4295;
+    let before = crate::runtime::notify::wall();
+    let _ = state.update(Message::StatusPushed(status(4295)));
+    assert!(
+        state.heard >= before,
+        "heard is the wall clock, not the beat"
+    );
+    assert_eq!(state.block_seen, 0, "the same height moved no block");
+    state.block_seen = before - 300;
+    state.heard = before - 300;
+    let _ = state.update(Message::StatusPushed(status(4295)));
+    assert_eq!(state.block_seen, before - 300);
+    assert!(state.heard >= before);
+    let _ = state.update(Message::StatusPushed(status(4296)));
+    assert!(
+        state.block_seen >= before,
+        "a new height is a block seen now"
+    );
+}
