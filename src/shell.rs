@@ -676,8 +676,8 @@ pub(crate) struct DesktopWindow {
     /// it when it opens, and Tab and Shift+Tab stay in it.
     modal: gpui_kit::FocusHandle,
     /// A menu hanging from the bar (Node, Account, the bell, Networks): the
-    /// keys go into it when it opens (`desk_view`), its card holds them
-    /// (`layers::Chrome`), and it closes when they leave it
+    /// keys go into it when it opens (`desk_view`), the box its card hangs
+    /// from holds them (`layers::Chrome`), and it closes when they leave it
     /// (`menu_left_by_keys`). Not `modal`: gpui-base keeps a focus
     /// trap for as long as its handle lives, so a menu on it would trap Tab
     /// once a dialog had.

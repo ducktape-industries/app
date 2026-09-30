@@ -48,8 +48,8 @@ pub(in crate::shell) struct Chrome {
     front: Observed<Slice<Front>>,
     prefs: Observed<Slice<Prefs>>,
     dot: Observed<DotSlot>,
-    /// The open menu's card holds the keys by this (the window's own: it
-    /// puts them in when the menu opens).
+    /// The box the open menu's card hangs from holds the keys by this (the
+    /// window's own: it puts them in when the menu opens).
     menu: FocusHandle,
     /// The Programs rail's one Tab stop (`a11y::roving`).
     stop: FocusHandle,
@@ -219,7 +219,7 @@ impl Chrome {
     /// click on it closes the menu (as a click on the bar itself does not:
     /// the backdrop starts under the bar). Drawn first among the deferred
     /// children, so the menu's card lies over it. Invisible, and nothing
-    /// about focus or keys: the card holds those.
+    /// about focus or keys: the box its card hangs from holds those.
     fn backdrop(&self, id: &'static str, closes: crate::Overlay, window: &Window) -> AnyElement {
         let model = self.model.clone();
         let viewport = window.viewport_size();
@@ -322,13 +322,13 @@ impl Chrome {
             _ => corner.right_0(),
         };
         deferred(
-            corner.child(BarFoot(Some(
+            corner.child(BarFoot(
                 anchored()
                     .anchor(anchor)
                     .snap_to_window_with_margin(px(8.))
                     .child(card)
                     .into_any_element(),
-            ))),
+            )),
         )
         .with_priority(1)
         .into_any_element()
@@ -888,7 +888,7 @@ impl Render for Chrome {
 /// pixel up, and the snap to device pixels puts that half on one side of a
 /// whole pixel or the other by scale (39 at 1x, 40 at 2x): the corner
 /// gives the card its x, the bar gives it its y.
-struct BarFoot(Option<AnyElement>);
+struct BarFoot(AnyElement);
 
 impl IntoElement for BarFoot {
     type Element = Self;
@@ -915,8 +915,7 @@ impl Element for BarFoot {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, ()) {
-        let child = self.0.as_mut().expect("the card is laid out once");
-        (child.request_layout(window, cx), ())
+        (self.0.request_layout(window, cx), ())
     }
 
     fn prepaint(
@@ -928,10 +927,9 @@ impl Element for BarFoot {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let child = self.0.as_mut().expect("the card is prepainted once");
         let down = px(BAR + 4.) - bounds.origin.y;
         window.with_element_offset(point(px(0.), down), |window| {
-            child.prepaint(window, cx);
+            self.0.prepaint(window, cx);
         });
     }
 
@@ -945,9 +943,7 @@ impl Element for BarFoot {
         window: &mut Window,
         cx: &mut App,
     ) {
-        if let Some(child) = self.0.as_mut() {
-            child.paint(window, cx);
-        }
+        self.0.paint(window, cx);
     }
 }
 
