@@ -173,13 +173,16 @@ pub(super) fn shortcuts(window: &Window, cx: &App) -> Vec<Shortcut> {
 
 /// Every served window's [`current`] nodes.
 pub(super) fn read(
-    windows: &impl Fn(&App) -> Vec<super::Served>,
+    door: &super::Door<'_>,
     filter: &Filter,
     bounds: bool,
     seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Vec<AxNode> {
-    let list = cx.update(|cx| windows(cx));
+    let list = cx.update(|cx| {
+        (door.settle)(cx);
+        (door.windows)(cx)
+    });
     let mut out = Vec::new();
     for (name, _, handle) in &list {
         if filter.window.as_deref().is_some_and(|want| want != name) {

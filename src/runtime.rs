@@ -13,7 +13,7 @@
 //! view gets.
 //!
 //! This file is also the submodules' PRELUDE: `guest`, `roster`, `seat`,
-//! `widget`, `input` and `display_diagnostics` open with `use super::*;`,
+//! `input` and `display_diagnostics` open with `use super::*;`,
 //! so every private `use` below (`Guest`, `Connection`, `Mounted`, `Slot`,
 //! `Instant`, `wire`, the wasmtime types...) and every constant is theirs
 //! too. A name a child uses without importing it comes from here. `kernel`,
@@ -26,20 +26,17 @@ pub(crate) mod notify;
 mod roster;
 mod seat;
 mod store;
-mod widget;
 
 pub(crate) use kernel::local_offset;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, roster};
-pub(crate) use seat::{Failure, NODE_UNREACHABLE, retry};
+pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat};
 pub use seat::{Loads, override_views_from};
-pub(crate) use widget::NativeModuleView;
 
 use guest::Guest;
 use roster::{Connection, code_digest, connection};
 use seat::{
-    LoadTiming, Loaded, Mounted, Slot, Unloaded, log_source, mounted, registry, spawn_load,
-    view_override,
+    LoadTiming, Loaded, Mounted, Slot, Unloaded, log_source, registry, spawn_load, view_override,
 };
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
@@ -127,12 +124,23 @@ fn pending_routes() -> &'static Mutex<std::collections::BTreeMap<&'static str, S
     ROUTES.get_or_init(Mutex::default)
 }
 
-/// Hold `route` for `module`'s view until it asks.
+/// Hold `route` for `module`'s view until it asks, and wake the seats
+/// already open on it: a view that is up reads the route in its next
+/// turn, and nothing else about it moves.
 pub(crate) fn route_to(module: &'static str, route: String) {
     pending_routes()
         .lock()
         .expect("pending routes")
         .insert(module, route);
+    // registry, then seat: the order `retry` takes them in
+    let registry = registry().lock().expect("module views");
+    for seat in registry
+        .iter()
+        .filter(|((name, _), _)| *name == module)
+        .map(|(_, seat)| seat)
+    {
+        seat.lock().expect("module view lock").wake.send_replace(());
+    }
 }
 
 /// The route waiting for `module`, handed out once.
@@ -218,6 +226,124 @@ pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: 
         ),
     )
     .unwrap();
+    seat_code_for_test(module, min_width, code);
+}
+
+/// [`seat_for_test`], its view saying `busy` (out of budget, tick again
+/// soon) on its first `busy_ticks` ticks and quiet from then on.
+#[cfg(test)]
+pub(crate) fn seat_busy_for_test(module: &'static str, min_width: u32, busy_ticks: u32) {
+    let encode = |busy| {
+        let frame = wire::encode(&wire::Frame {
+            root: Some(wire::Node::empty()),
+            busy,
+            ..Default::default()
+        });
+        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+        (bytes, frame.len() as u32)
+    };
+    let (busy, busy_len) = encode(true);
+    let (quiet, quiet_len) = encode(false);
+    let busy_tick = wire::abi::pack(65536, busy_len);
+    let quiet_tick = wire::abi::pack(69632, quiet_len);
+    let code = Module::new(
+        guest::engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (global $n (mut i32) (i32.const 0))
+            (data (i32.const 65536) "{busy}")
+            (data (i32.const 69632) "{quiet}")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64)
+                global.get $n i32.const 1 i32.add global.set $n
+                global.get $n i32.const {busy_ticks} i32.le_u
+                if (result i64) i64.const {busy_tick} else i64.const {quiet_tick} end)
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
+    )
+    .unwrap();
+    seat_code_for_test(module, min_width, code);
+}
+
+/// [`seat_for_test`], its view drawing `first` on its first tick, saying
+/// `busy` (tick again soon), and `then` on every later tick: a view whose
+/// first frame is not its settled one.
+#[cfg(test)]
+pub(crate) fn seat_frames_for_test(
+    module: &'static str,
+    min_width: u32,
+    first: wire::Node,
+    then: wire::Node,
+) {
+    let encode = |root, busy| {
+        let frame = wire::encode(&wire::Frame {
+            root: Some(root),
+            busy,
+            ..Default::default()
+        });
+        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+        (bytes, frame.len() as u32)
+    };
+    let (first, first_len) = encode(first, true);
+    let (then, then_len) = encode(then, false);
+    assert!(
+        first_len < 4096 && then_len < 4096,
+        "test frames fit their pages"
+    );
+    let first_tick = wire::abi::pack(65536, first_len);
+    let then_tick = wire::abi::pack(69632, then_len);
+    let code = Module::new(
+        guest::engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (global $n (mut i32) (i32.const 0))
+            (data (i32.const 65536) "{first}")
+            (data (i32.const 69632) "{then}")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64)
+                global.get $n i32.const 1 i32.add global.set $n
+                global.get $n i32.const 1 i32.le_u
+                if (result i64) i64.const {first_tick} else i64.const {then_tick} end)
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
+    )
+    .unwrap();
+    seat_code_for_test(module, min_width, code);
+}
+
+/// An intent `module`'s seat `instance` will hand over on its next update,
+/// as a `host.badge` or `link.open` request would leave it.
+#[cfg(test)]
+pub(crate) fn intent_for_test(module: &str, instance: u64, intent: Intent) {
+    let registry = registry().lock().unwrap();
+    let seat = &registry[&(module, instance)];
+    let Slot::Ready(guest) = &mut seat.lock().unwrap().slot else {
+        panic!("{module} is not seated");
+    };
+    guest.intents.push(intent);
+}
+
+/// `module`'s seat `instance` traps: its guest keeps its tree but shows a
+/// fault from now on, and the seat is woken as a trapping tick would.
+#[cfg(test)]
+pub(crate) fn fault_for_test(module: &str, instance: u64) {
+    let registry = registry().lock().unwrap();
+    let mut locked = registry[&(module, instance)].lock().unwrap();
+    let Slot::Ready(guest) = &mut locked.slot else {
+        panic!("{module} is not seated");
+    };
+    guest.fault = Some("trapped for the test".into());
+    locked.wake.send_replace(());
+}
+
+#[cfg(test)]
+pub(crate) fn seat_code_for_test(module: &'static str, min_width: u32, code: Module) {
     let ready = || {
         let mut guest = Guest::instantiate(module, &code, module).unwrap();
         guest.min_width = min_width;
@@ -234,6 +360,8 @@ pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: 
         registry.insert((module, 0), seats[0].clone());
     }
     for seat in seats {
-        seat.lock().unwrap().slot = ready();
+        let mut locked = seat.lock().unwrap();
+        locked.slot = ready();
+        locked.wake.send_replace(());
     }
 }

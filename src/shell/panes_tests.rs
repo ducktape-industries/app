@@ -59,7 +59,7 @@ pub(super) fn console(
         state.roster = Default::default();
         state.stage = crate::Stage::Desk;
         state.active = Some("pane-ax-test");
-        Desktop::new(state, crate::tray::init(cx).0)
+        Desktop::new(state, crate::tray::init(cx).0, cx)
     });
     let key = WindowKey::unique();
     let mut view = None;
@@ -636,7 +636,7 @@ fn help_opens_in_a_window_the_app_draws(cx: &mut TestAppContext) {
             .position(|pane| pane.module == layout::HELP)
             .expect("help opened");
         let instance = layout.panes[index].instance;
-        assert!(!model.read(cx).mounted.contains_key(&instance));
+        assert!(model.read(cx).seats.read(cx).seat(instance).is_none());
         let ids: Vec<&str> = nodes
             .as_array()
             .unwrap()
@@ -710,9 +710,9 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
     };
     assert_eq!(width(&mut native), 768., "60% of the desk, no view yet");
     let tab = native.update(|_, cx| {
-        let mounted = &model.read(cx).mounted;
-        let pane = mounted.values().find(|pane| pane.module == MODULE);
-        pane.expect("a tab for the pane").view.clone()
+        let instance = view.read(cx).layout(cx).panes[0].instance;
+        let seats = model.read(cx).seats.read(cx);
+        seats.seat(instance).expect("a seat for the pane")
     });
     let said = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
     let _heard = native.update(|_, cx| {
@@ -996,4 +996,208 @@ fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
         native.update(|_, cx| view.read(cx).drag.is_none()),
         "the release did not let go"
     );
+}
+
+/// A pane that leaves the desk with an intent still to hand over (a badge
+/// its last update set) gets it to the model: `hide` returns them and the
+/// reconcile routes them, since the seat's own route is dropped in the
+/// same update.
+#[gpui_kit::test]
+fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-hidden-intent-view";
+    let (model, key, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    native.run_until_parked();
+    let (index, instance) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let index = layout
+            .panes
+            .iter()
+            .position(|pane| pane.module == MODULE)
+            .expect("the pane opened");
+        let instance = layout.panes[index].instance;
+        let seat = model
+            .read(cx)
+            .seats
+            .read(cx)
+            .seat(instance)
+            .expect("seated");
+        (index, seat.read(cx).instance())
+    });
+    crate::runtime::intent_for_test(MODULE, instance, crate::runtime::Intent::Badge(3));
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Close(index)), cx)
+    });
+    native.run_until_parked();
+    assert_eq!(
+        native.update(|_, cx| model.read(cx).state.badges.get(MODULE).copied()),
+        Some(3),
+        "the badge the hidden seat handed over reached the model"
+    );
+}
+
+/// A pane whose seat holds both a tree and a standin draws the standin: a
+/// guest that traps after its tree mounted shows "This view stopped" and
+/// its Retry, not the frozen tree.
+#[gpui_kit::test]
+fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-trapped-view";
+    let (model, key, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    native.run_until_parked();
+    let ids = |nodes: &serde_json::Value| -> Vec<String> {
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|node| node["id"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let (instance, before) = native.update(|window, cx| {
+        let nodes = draw(window, cx);
+        let layout = view.read(cx).layout(cx);
+        let pane = layout
+            .panes
+            .iter()
+            .find(|pane| pane.module == MODULE)
+            .unwrap();
+        let seat = model.read(cx).seats.read(cx).seat(pane.instance).unwrap();
+        (seat.read(cx).instance(), ids(&nodes))
+    });
+    let unavailable = format!("console:{MODULE}/view-unavailable");
+    assert!(
+        !before.contains(&unavailable),
+        "a live view shows no standin: {before:?}"
+    );
+    crate::runtime::fault_for_test(MODULE, instance);
+    native.run_until_parked();
+    let after = native.update(|window, cx| ids(&draw(window, cx)));
+    assert!(
+        after.contains(&unavailable),
+        "the trapped view shows its standin over the tree it keeps: {after:?}"
+    );
+    assert!(
+        after.contains(&format!("console:{MODULE}/view-retry")),
+        "{after:?}"
+    );
+}
+
+/// A popped-out pane's seat is placed in the new window as soon as that
+/// window opens, not at the next dispatch: a guest's Focus right after
+/// the pop-out runs in the window the pane is in.
+#[gpui_kit::test]
+fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-popout-place-view";
+    let (model, key, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx)
+    });
+    native.run_until_parked();
+    let (index, instance) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let index = layout
+            .panes
+            .iter()
+            .position(|pane| pane.module == MODULE)
+            .unwrap();
+        (index, layout.panes[index].instance)
+    });
+    let seat = native.update(|_, cx| model.read(cx).seats.read(cx).seat(instance).unwrap());
+    assert_eq!(
+        seat.read_with(&native, |seat, _| seat.window()),
+        Some(native.update(|_, cx| model.read(cx).windows[&key])),
+        "the seat starts in the console"
+    );
+    native.update(|window, cx| press(&format!("pane/{index}/popout"), window, cx));
+    // the test has no command loop: it opens the window the shell would
+    native.update(|_, cx| {
+        let (&popped, own) = model
+            .read(cx)
+            .state
+            .layouts
+            .iter()
+            .find(|(candidate, _)| **candidate != key)
+            .expect("the pane left for a window of its own");
+        let kind = WindowKind::View {
+            module: own.panes[0].module,
+        };
+        model.update(cx, |model, cx| {
+            model.open_window(popped, kind, oneshot::channel().0, None, cx)
+        });
+    });
+    native.run_until_parked();
+    let popped_handle = native.update(|_, cx| {
+        let model = model.read(cx);
+        let (&popped, _) = model
+            .windows
+            .iter()
+            .find(|(candidate, _)| **candidate != key)
+            .expect("the pop-out window opened");
+        model.windows[&popped]
+    });
+    assert_eq!(
+        seat.read_with(&native, |seat, _| seat.window()),
+        Some(popped_handle),
+        "the seat moved into the popped-out window as it opened"
+    );
+}
+
+/// A pane picked in Spotlight hands the keys by its view's first frame, as
+/// the draw that showed that frame did while the guest ticked on the draw
+/// path: a view whose first frame has no control keeps them on the pane's
+/// box even though its second frame, ticked before that draw (props, a
+/// reply, a busy frame), has a field. The seat holds that second tick
+/// until the first's frame has drawn (`Seat::turn`, one tick per draw).
+#[gpui_kit::test]
+fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    const MODULE: &str = "pane-first-frame-view";
+    let field = view_wire::Node::Input {
+        options: view_wire::InputOptions {
+            label: "Search".into(),
+            ..Default::default()
+        },
+        id: view_wire::ElementIdWire::Name("search".into()),
+        placeholder: String::new(),
+        value: String::new(),
+        on_input: Some(1),
+        on_submit: None,
+        secure: false,
+        style: gpui_kit::div().w(px(200.)).h(px(24.)).style().clone(),
+    };
+    let (model, _, view, mut native) = console(cx);
+    settle(&mut native);
+    key(&mut native, "secondary-k");
+    settle(&mut native);
+    crate::runtime::seat_frames_for_test(MODULE, 200, view_wire::Node::empty(), field);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Spot(crate::Spot::Open(MODULE)), cx)
+    });
+    settle(&mut native);
+    let nodes = native.update(draw);
+    assert!(
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == format!("console:{MODULE}/search")),
+        "the second frame's field is up: {nodes}"
+    );
+    native.update(|window, cx| {
+        let view = view.read(cx);
+        let layout = view.layout(cx);
+        let own = &view.pane_keys[&layout.panes[layout.focused].instance].0;
+        assert!(
+            own.is_focused(window),
+            "the box keeps the keys, its first frame had no control: {:?}",
+            window.focused(cx)
+        );
+    });
 }

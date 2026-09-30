@@ -290,6 +290,16 @@ pub(crate) type Call = (Request, std::sync::mpsc::Sender<Reply>);
 /// the shell's key for it, and its handle.
 pub(crate) type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
 
+/// What the door serves: the windows, by name, and the seats behind them.
+pub(crate) struct Door<'a> {
+    /// The windows it serves, by name.
+    pub(crate) windows: &'a dyn Fn(&App) -> Vec<Served>,
+    /// Turns every seat, called before each read: a reply the guest has
+    /// answered is in the tree the read draws, as the draw itself took it
+    /// in before the seat left the draw path (`Seats::settle`).
+    pub(crate) settle: &'a dyn Fn(&mut App),
+}
+
 const POLL: Duration = Duration::from_millis(50);
 
 /// Longest the audit's arrow probe waits for a view to move its active
@@ -312,25 +322,19 @@ fn bounded(ms: u64) -> Duration {
 }
 
 /// Answers the door's calls on the app's thread until the door is gone.
-/// `windows` lists the windows it serves, by name.
 pub(crate) async fn serve(
     mut calls: futures::channel::mpsc::UnboundedReceiver<Call>,
-    windows: impl Fn(&App) -> Vec<Served>,
+    door: Door<'_>,
     cx: &mut AsyncApp,
 ) {
     let mut seen = Seen::default();
     while let Some((request, reply)) = calls.next().await {
-        let answer = answer(request, &windows, &mut seen, cx).await;
+        let answer = answer(request, &door, &mut seen, cx).await;
         let _ = reply.send(answer.revised(seen.revision));
     }
 }
 
-async fn answer(
-    request: Request,
-    windows: &impl Fn(&App) -> Vec<Served>,
-    seen: &mut Seen,
-    cx: &mut AsyncApp,
-) -> Reply {
+async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut AsyncApp) -> Reply {
     let all = Filter::default();
     match request {
         Request::Tree {
@@ -338,17 +342,15 @@ async fn answer(
             compact: small,
             bounds,
         } => {
-            let nodes = read(windows, &filter, bounds, seen, cx);
+            let nodes = read(door, &filter, bounds, seen, cx);
             match small {
                 true => Reply::ok(json!(compact(&nodes))),
                 false => Reply::ok(json!(nodes)),
             }
         }
-        Request::Actions(filter) => {
-            Reply::ok(json!(offers(&read(windows, &filter, false, seen, cx))))
-        }
+        Request::Actions(filter) => Reply::ok(json!(offers(&read(door, &filter, false, seen, cx)))),
         Request::Act(act) => {
-            let before = read(windows, &all, false, seen, cx);
+            let before = read(door, &all, false, seen, cx);
             let Some(target) = before.iter().find(|node| node.id == act.id) else {
                 return Reply::new(
                     404,
@@ -368,7 +370,7 @@ async fn answer(
                 .unwrap_or_default()
                 .to_owned();
             let handle = cx
-                .update(|cx| windows(cx))
+                .update(|cx| (door.windows)(cx))
                 .into_iter()
                 .find_map(|(window, _, handle)| (window == name).then_some(handle));
             let value = act.value.unwrap_or_default();
@@ -377,16 +379,16 @@ async fn answer(
                     perform_by_id(&name, window, cx, &act.id, &act.action, &value)
                 });
             }
-            let after = settle(&before, act.deadline_ms, windows, seen, cx).await;
+            let after = settle(&before, act.deadline_ms, door, seen, cx).await;
             Reply::ok(json!(delta(&before, &after)))
         }
         Request::Key(key) => {
             // no tree to read: the window comes from the list alone
             let before = match key.delta {
-                true => read(windows, &all, false, seen, cx),
+                true => read(door, &all, false, seen, cx),
                 false => Vec::new(),
             };
-            let Some(handle) = keyboard_window(key.window.as_deref(), &before, windows, cx) else {
+            let Some(handle) = keyboard_window(key.window.as_deref(), &before, door, cx) else {
                 return Reply::new(404, json!({ "error": "no such window" }));
             };
             let pressed = handle
@@ -400,14 +402,14 @@ async fn answer(
             if !key.delta {
                 return Reply::ok(json!({}));
             }
-            let after = settle(&before, key.deadline_ms, windows, seen, cx).await;
+            let after = settle(&before, key.deadline_ms, door, seen, cx).await;
             Reply::ok(json!(delta(&before, &after)))
         }
         Request::Drag(drag) => {
             if let Err(reply) = drag.checked() {
                 return reply;
             }
-            let before = read(windows, &all, false, seen, cx);
+            let before = read(door, &all, false, seen, cx);
             let handle = match &drag.id {
                 Some(id) => {
                     if !before.iter().any(|node| node.id == *id) {
@@ -416,20 +418,15 @@ async fn answer(
                             json!({ "error": "no such node", "nearest": nearest(id, &before) }),
                         );
                     }
-                    keyboard_window(
-                        id.split_once(':').map(|(name, _)| name),
-                        &before,
-                        windows,
-                        cx,
-                    )
+                    keyboard_window(id.split_once(':').map(|(name, _)| name), &before, door, cx)
                 }
-                None => keyboard_window(drag.window.as_deref(), &before, windows, cx),
+                None => keyboard_window(drag.window.as_deref(), &before, door, cx),
             };
             let Some(handle) = handle else {
                 return Reply::new(404, json!({ "error": "no such window" }));
             };
             let name = cx
-                .update(|cx| windows(cx))
+                .update(|cx| (door.windows)(cx))
                 .into_iter()
                 .find_map(|(name, _, other)| (other == handle).then_some(name))
                 .unwrap_or_default();
@@ -439,13 +436,12 @@ async fn answer(
             if sent.status != 200 {
                 return sent;
             }
-            settle(&before, drag.deadline_ms, windows, seen, cx).await;
+            settle(&before, drag.deadline_ms, door, seen, cx).await;
             sent
         }
         Request::Keys(filter) => {
-            let before = read(windows, &all, false, seen, cx);
-            let Some(handle) = keyboard_window(filter.window.as_deref(), &before, windows, cx)
-            else {
+            let before = read(door, &all, false, seen, cx);
+            let Some(handle) = keyboard_window(filter.window.as_deref(), &before, door, cx) else {
                 return Reply::new(404, json!({ "error": "no such window" }));
             };
             handle
@@ -457,13 +453,12 @@ async fn answer(
             walk,
             launcher,
         } => {
-            let before = read(windows, &all, false, seen, cx);
-            let Some(handle) = keyboard_window(filter.window.as_deref(), &before, windows, cx)
-            else {
+            let before = read(door, &all, false, seen, cx);
+            let Some(handle) = keyboard_window(filter.window.as_deref(), &before, door, cx) else {
                 return Reply::new(404, json!({ "error": "no such window" }));
             };
             let name = cx
-                .update(|cx| windows(cx))
+                .update(|cx| (door.windows)(cx))
                 .into_iter()
                 .find_map(|(name, _, other)| (other == handle).then_some(name))
                 .unwrap_or_default();
@@ -498,14 +493,18 @@ async fn answer(
                         Err(_) => return gone(),
                     }
                     let deadline = Instant::now() + ARROW_WAIT;
-                    while !handle
-                        .update(cx, |_, window, cx| observer.read(window, cx))
-                        .unwrap_or(true)
-                        && Instant::now() < deadline
-                    {
+                    loop {
+                        cx.update(|cx| (door.settle)(cx));
+                        let moved = handle
+                            .update(cx, |_, window, cx| observer.read(window, cx))
+                            .unwrap_or(true);
+                        if moved || Instant::now() >= deadline {
+                            break;
+                        }
                         cx.background_executor().timer(POLL).await;
                     }
                 }
+                cx.update(|cx| (door.settle)(cx));
                 handle
                     .update(cx, |_, window, cx| {
                         let mut reading = observer.finish(window, cx);
@@ -523,7 +522,7 @@ async fn answer(
         Request::Wait(wait) => {
             let deadline = deadline(wait.deadline_ms);
             loop {
-                let nodes = read(windows, &all, false, seen, cx);
+                let nodes = read(door, &all, false, seen, cx);
                 if let Some(reply) = wait.step(&nodes, Instant::now() >= deadline) {
                     return reply;
                 }
@@ -531,7 +530,7 @@ async fn answer(
             }
         }
         Request::Perf { by_instance } => {
-            let served = cx.update(|cx| windows(cx));
+            let served = cx.update(|cx| (door.windows)(cx));
             let mut windows = Vec::with_capacity(served.len());
             for (name, key, handle) in served {
                 // a11y read, never a draw: the cached path must stay cached
@@ -553,9 +552,9 @@ async fn answer(
         Request::PerfReset => perf_reset_reply(),
         Request::Reveal(Reveal { id }) => {
             // a window's tree is switched on by the read
-            let _ = read(windows, &all, false, seen, cx);
+            let _ = read(door, &all, false, seen, cx);
             let name = id.split_once(':').map_or("", |(name, _)| name).to_owned();
-            cx.update(|cx| windows(cx))
+            cx.update(|cx| (door.windows)(cx))
                 .into_iter()
                 .find_map(|(window, _, handle)| (window == name).then_some(handle))
                 .and_then(|handle| {
@@ -655,7 +654,7 @@ fn gpui_perf(_: &Window) -> serde_json::Value {
 async fn settle(
     before: &[AxNode],
     deadline_ms: Option<u64>,
-    windows: &impl Fn(&App) -> Vec<Served>,
+    door: &Door<'_>,
     seen: &mut Seen,
     cx: &mut AsyncApp,
 ) -> Vec<AxNode> {
@@ -665,7 +664,7 @@ async fn settle(
     let mut quiet = 0;
     while quiet < 3 && Instant::now() < deadline {
         cx.background_executor().timer(POLL).await;
-        let now = read(windows, &Filter::default(), false, seen, cx);
+        let now = read(door, &Filter::default(), false, seen, cx);
         let key = serde_json::to_string(&now).unwrap_or_default();
         match key == last {
             true => quiet += 1,
@@ -682,10 +681,10 @@ async fn settle(
 fn keyboard_window(
     named: Option<&str>,
     nodes: &[AxNode],
-    windows: &impl Fn(&App) -> Vec<Served>,
+    door: &Door<'_>,
     cx: &mut AsyncApp,
 ) -> Option<AnyWindowHandle> {
-    let list = cx.update(|cx| windows(cx));
+    let list = cx.update(|cx| (door.windows)(cx));
     let find = |want: &str| {
         list.iter()
             .find_map(|(name, _, handle)| (name == want).then_some(*handle))
@@ -791,11 +790,15 @@ mod tests {
         let served = move |_: &App| vec![("console".to_owned(), key, handle)];
         let (answered, perf) = cx
             .spawn(async move |mut cx| {
+                let door = Door {
+                    windows: &served,
+                    settle: &|_| {},
+                };
                 let mut seen = Seen::default();
-                let answered = answer(request(), &served, &mut seen, &mut cx).await;
+                let answered = answer(request(), &door, &mut seen, &mut cx).await;
                 let perf = answer(
                     Request::Perf { by_instance: false },
-                    &served,
+                    &door,
                     &mut seen,
                     &mut cx,
                 )
@@ -852,5 +855,63 @@ mod tests {
         assert!(active, "a tree read switches a11y on");
         let perf: serde_json::Value = serde_json::from_str(&perf.body).unwrap();
         assert_eq!(perf["cache_on"], false);
+    }
+
+    /// A read turns the seats first: what a guest has answered since its
+    /// last turn is in the tree the read draws, as the draw itself took it
+    /// in while the guest was stepped on the draw path. Here the seat's
+    /// guest holds an intent its next turn hands over; the read delivers
+    /// it, the same request with the seats left alone does not.
+    #[gpui_kit::test]
+    async fn a_read_turns_the_seats_first(cx: &mut gpui_kit::TestAppContext) {
+        const MODULE: &str = "door-read-turns-view";
+        crate::runtime::seat_for_test(MODULE, 200);
+        cx.update(gpui_kit::init);
+        let seat = cx.update(|cx| {
+            use gpui_kit::AppContext as _;
+            cx.new(|cx| crate::runtime::Seat::new(MODULE, cx))
+        });
+        let heard = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let _heard = cx.update(|cx| {
+            let heard = heard.clone();
+            cx.subscribe(&seat, move |_, intent: &crate::runtime::Intent, _| {
+                heard.borrow_mut().push(intent.clone())
+            })
+        });
+        cx.run_until_parked();
+        let instance = seat.read_with(cx, |seat, _| seat.instance());
+        let window = cx.open_window(
+            gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
+            |_, _| crate::render::ViewTree::new(view_wire::Node::empty()),
+        );
+        let handle: AnyWindowHandle = window.into();
+        let key = crate::runtime::WindowKey::unique();
+        let served = move |_: &App| vec![("console".to_owned(), key, handle)];
+        let read = || Request::Tree {
+            filter: Filter::default(),
+            compact: true,
+            bounds: false,
+        };
+        for (settles, expected) in [(false, false), (true, true)] {
+            crate::runtime::intent_for_test(MODULE, instance, crate::runtime::Intent::Badge(3));
+            heard.borrow_mut().clear();
+            let turning = seat.clone();
+            cx.spawn(async move |mut cx| {
+                let settle = move |cx: &mut App| turning.update(cx, |seat, cx| seat.turn(cx));
+                let quiet = |_: &mut App| {};
+                let door = Door {
+                    windows: &served,
+                    settle: if settles { &settle } else { &quiet },
+                };
+                answer(read(), &door, &mut Seen::default(), &mut cx).await
+            })
+            .await;
+            assert_eq!(
+                heard.borrow().contains(&crate::runtime::Intent::Badge(3)),
+                expected,
+                "settles={settles}: the read {} the seat",
+                if settles { "turned" } else { "left" }
+            );
+        }
     }
 }

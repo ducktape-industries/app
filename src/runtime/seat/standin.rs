@@ -2,13 +2,15 @@
 //! skeleton, or why there is none, with Retry where a retry helps.
 use super::*;
 
-/// What a tab draws where its view is not: the load's stage over a skeleton
+/// What a pane draws where its view is not: the load's stage over a skeleton
 /// of a view, or why there is none — named, with Retry where a retry helps.
-pub(super) struct Standin {
-    pub(super) title: Option<&'static str>,
-    pub(super) words: String,
-    pub(super) loading: bool,
-    pub(super) retry: bool,
+/// Compared: the seat notifies only when the words move.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Standin {
+    pub(crate) title: Option<&'static str>,
+    pub(crate) words: String,
+    pub(crate) loading: bool,
+    pub(crate) retry: bool,
 }
 
 impl From<String> for Standin {
@@ -33,7 +35,7 @@ impl From<&Failure> for Standin {
     }
 }
 
-/// The words a loading tab says for its stage.
+/// The words a loading pane says for its stage.
 pub(super) fn stage_words(slot: &Slot) -> String {
     let size = |bytes: u64| match bytes < 1_000_000 {
         true => format!("{} KB", bytes.div_ceil(1000)),
@@ -54,17 +56,19 @@ pub(super) fn stage_words(slot: &Slot) -> String {
     }
 }
 
-impl NativeModuleView {
-    /// THE ONE STAND-IN every tab draws where its view is not, native, so it
-    /// draws before any wasm exists: a loading view says its stage over a
-    /// skeleton laid out as a view lays itself out — a heading, then rows,
-    /// from the top of the full pane the view will take, so nothing moves
-    /// when it seats — and a failed one says what failed, why, and offers
-    /// Retry.
-    pub(super) fn standin(
+impl Standin {
+    /// THE ONE STAND-IN every pane draws where its view is not, native, so
+    /// it draws before any wasm exists: a loading view says its stage over
+    /// a skeleton laid out as a view lays itself out — a heading, then
+    /// rows, from the top of the full pane the view will take, so nothing
+    /// moves when it seats — and a failed one says what failed, why, and
+    /// offers Retry, which asks the seat's view for again (`retry`) and so
+    /// turns the seat.
+    pub(crate) fn element(
         &self,
-        standin: Standin,
-        cx: &mut gpui_kit::Context<Self>,
+        module: &'static str,
+        instance: u64,
+        mark: gpui_kit::ElementId,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::component::button::Button;
         use gpui_kit::{
@@ -76,9 +80,7 @@ impl NativeModuleView {
             words,
             loading,
             retry: offers_retry,
-        } = standin;
-        let module = self.module;
-        let instance = self.instance;
+        } = self.clone();
         // a stable id per kind, so the tree tells a load on its way from a
         // view that is not there
         let (id, words_id) = match loading {
@@ -114,18 +116,17 @@ impl NativeModuleView {
                 Button::new("view-retry")
                     .label("Retry")
                     .outline()
-                    .on_click(cx.listener(move |_, _, _, cx| {
+                    .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         drop(retry(module, instance));
-                        cx.notify();
-                    }))
+                    })
             }));
         #[cfg(test)]
         let reason = {
             use gpui_kit::test::TestSupportExt as _;
             reason.test_support()
         };
-        let pane = div().id(self.ax_mark()).size_full().flex().flex_col().p_4();
+        let pane = div().id(mark).size_full().flex().flex_col().p_4();
         if !loading {
             return pane
                 .items_center()

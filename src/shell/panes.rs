@@ -2,7 +2,7 @@
 //! buttons, seats it on the desk, hands the keys to the one in front and
 //! asks about a view's notices (the permission bar). Where panes sit, stack
 //! and which has the keys is `ui::layout`'s: this file only draws it and
-//! sends `PaneMessage`s. Their program views are `mount.rs`'s, the
+//! sends `PaneMessage`s. Their seats are `entities::Seats`', the
 //! pointer's hold on them `pane_drag.rs`'s, a desk with none `empty_desk.rs`'s.
 use super::*;
 
@@ -166,7 +166,6 @@ impl DesktopWindow {
             self.sync_hold(&layout, window, cx);
             return self.empty_desk(moved, &ink, window, cx);
         }
-        let props = self.model.read(cx).state.view_props();
         let center = self.model.read(cx).state.center.clone();
         let roster = self.model.read(cx).state.roster.clone();
         let this = cx.entity();
@@ -196,7 +195,7 @@ impl DesktopWindow {
                 .is_some_and(|held| held.instance == pane.instance)
                 && self.kind == crate::shell::WindowKind::Console;
             let own = self.pane_focus(pane.instance, focused && moved, window, cx);
-            let view = self.pane_body(index, pane, focused, &own, &props, window, cx);
+            let view = self.pane_body(index, pane, focused, &own, window, cx);
             // it holds the pane's keys when nothing in the view does; Tab
             // never lands on it, so it offers assistive technology no focus
             // either (as the window's root). On the desk it names the chord
@@ -305,33 +304,72 @@ impl DesktopWindow {
         own
     }
 
-    /// What a pane shows: its program view, told whether it is in front and
-    /// given the session's props, or else the app's own Help or the finder.
-    #[allow(clippy::too_many_arguments, reason = "one pane, drawn")]
+    /// What a pane shows: its seat's tree or standin, told whether it is
+    /// in front, or else the app's own Help or the finder.
     fn pane_body(
         &mut self,
         index: usize,
         pane: &layout::Pane,
         focused: bool,
         own: &gpui_kit::FocusHandle,
-        props: &[u8],
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let mounted = self
-            .model
-            .read(cx)
-            .mounted
-            .get(&pane.instance)
-            .map(|mounted| mounted.view.clone());
-        match mounted {
-            Some(view) => {
-                view.update(cx, |view, cx| {
-                    view.set_focused(focused, cx);
-                    view.set_props(props.to_vec(), cx);
-                });
-                view.into_any_element()
+        let seat = self.model.read(cx).seats.read(cx).seat(pane.instance);
+        match seat {
+            Some(seat) => {
+                // a write at render, never a notify or a turn; s5 moves it
+                // onto `PaneView`'s `Desk` observer
+                seat.update(cx, |seat, _| seat.set_focused(focused));
+                let seat = seat.read(cx);
+                // every draw of the seat; the tree's own `renders` are the
+                // cache misses among them
+                crate::perf::count(
+                    crate::perf::Key::View {
+                        module: seat.module(),
+                        instance: seat.instance(),
+                    },
+                    "draws",
+                    1,
+                );
+                // a standin (a load, a failure, a stopped view) goes over
+                // any tree the seat keeps: that tree is stale until the
+                // next live frame, and its presentation carries over then
+                match (seat.standin(), seat.tree()) {
+                    (Some(standin), _) => {
+                        standin.element(seat.module(), seat.instance(), seat.ax_mark())
+                    }
+                    (None, Some(tree)) => {
+                        let guest = super::layers::cached_unless_a11y(
+                            tree.into(),
+                            StyleRefinement::default().size_full(),
+                            window,
+                        );
+                        let mut context = KeyContext::default();
+                        context.set("ducktape_guest", format!("view{}", seat.instance()));
+                        // A view owns its own inset: a split pane runs to the
+                        // edges. Narrower than its minimum, it scrolls sideways
+                        // rather than being squeezed and cut at the window's
+                        // edge. The layer occludes: a guest under another one
+                        // is never hovered, as if each were its own window.
+                        div()
+                            .id(seat.ax_mark())
+                            .key_context(context)
+                            .size_full()
+                            .overflow_hidden()
+                            .overflow_x_scroll()
+                            .child(
+                                div()
+                                    .size_full()
+                                    .min_w(px(seat.min_width()))
+                                    .occlude()
+                                    .child(guest),
+                            )
+                            .into_any_element()
+                    }
+                    (None, None) => div().size_full().into_any_element(),
+                }
             }
             // Help draws no field: its box keeps the keys
             None if pane.module == layout::HELP => self.help_view(cx),

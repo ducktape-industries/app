@@ -24,7 +24,7 @@ pub(crate) fn run() {
         crate::perf::mark("boot");
         let (mut tray, mut tray_events) = crate::tray::init(cx);
         tray.sync(&state);
-        let desktop = cx.new(|_| Desktop::new(state, tray));
+        let desktop = cx.new(|cx| Desktop::new(state, tray, cx));
         desktop.update(cx, |desktop, cx| desktop.sync_appearance(cx));
         let quitting = desktop.downgrade();
         cx.on_action(move |_: &keys::Quit, cx| {
@@ -92,6 +92,7 @@ pub(crate) fn run() {
         first_present(cx);
         if let Some(calls) = crate::ax::open() {
             let door_desktop = desktop.downgrade();
+            let settle_desktop = door_desktop.clone();
             cx.spawn(async move |cx: &mut AsyncApp| {
                 let windows = move |cx: &gpui_kit::App| {
                     door_desktop
@@ -99,7 +100,16 @@ pub(crate) fn run() {
                         .map(|desktop| desktop.read(cx).ax_windows())
                         .unwrap_or_default()
                 };
-                crate::ax::serve(calls, windows, cx).await;
+                let settle = move |cx: &mut gpui_kit::App| {
+                    let _ = settle_desktop.update(cx, |desktop, cx| {
+                        desktop.seats.update(cx, |seats, cx| seats.settle(cx))
+                    });
+                };
+                let door = crate::ax::Door {
+                    windows: &windows,
+                    settle: &settle,
+                };
+                crate::ax::serve(calls, door, cx).await;
             })
             .detach();
         }
