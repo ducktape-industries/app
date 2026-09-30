@@ -241,7 +241,6 @@ impl DesktopWindow {
             Role::Dialog,
             "Settings",
             crate::Overlay::Settings,
-            true,
             &ink,
             |card| {
                 card.mt(px(top))
@@ -360,7 +359,7 @@ impl DesktopWindow {
             .filter(|row| !row.empty)
             .map(|row| {
                 let module = row.module;
-                let name = super::menubar::tab_label(&row);
+                let name = super::layers::tab_label(&row);
                 let chosen = settings.views.get(module).copied();
                 let week = state.center.lock().this_week(module, now);
                 let hint = match week {

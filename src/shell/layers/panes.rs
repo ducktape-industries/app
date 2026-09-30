@@ -1,17 +1,21 @@
 //! One window's panes, drawn. `PaneLayer` keeps a `PaneView` per pane its
 //! `Desk` holds, hands the keys to the one in front, holds one for the
 //! pointer (`pane_drag.rs`) or the keyboard (`pane_hold.rs`), and reports
-//! the desk's size. A `PaneView` draws a pane's title bar, its body (a
-//! seat's tree, an empty window's finder or Help, each a cached view of its
-//! own) and its grips. Neither is cached: an uncached parent lets the
-//! cached bodies inside it hit (P6), so a seat's tree draws again only
-//! when its seat moves.
+//! the desk's size. A `PaneView` draws a pane's strip (`Strip`: its title
+//! bar and, while its view asks to notify, the permission bar), its body (a
+//! seat's tree, an empty window's finder or Help) and its grips; the strip
+//! and each body are cached views of their own. Neither layer nor pane view
+//! is cached: an uncached parent lets the cached views inside it hit (P6),
+//! so a seat's tree draws again only when its seat moves, and a strip only
+//! when what it shows does.
 //!
 //! Where panes sit, stack and which has the keys is the model's
 //! (`ui::layout`, read through the `Desk` slice); this file draws it and
 //! sends `PaneMessage`s through the window (`DesktopWindow::pane_message`).
 
-use super::super::entities::{Desk, Observed, Overlays, Rail, Seats, WindowEntities};
+use super::super::entities::{
+    Desk, Notifications, Observed, Overlays, Prefs, Rail, Seats, Slice, WindowEntities,
+};
 use super::super::{
     Desktop, DesktopWindow, Message, PaneMessage, WindowKey, WindowKind, chord_label, layout,
     pane_drag, pane_hold, panes, theme,
@@ -165,9 +169,28 @@ impl PaneLayer {
                 self.desk.clone(),
                 self.model.read(cx).entities.rail.clone(),
             );
+            let (notifications, prefs) = {
+                let entities = &model.read(cx).entities;
+                (entities.notifications.clone(), entities.prefs.clone())
+            };
             let (layer, desk_window) = (cx.weak_entity(), self.window.clone());
             let (module, instance) = (pane.module, pane.instance);
             let view = cx.new(|cx| {
+                let strip = cx.new(|cx| {
+                    Strip::new(
+                        model.clone(),
+                        key,
+                        kind,
+                        instance,
+                        &desk,
+                        &rail,
+                        &notifications,
+                        &prefs,
+                        layer.clone(),
+                        desk_window.clone(),
+                        cx,
+                    )
+                });
                 let body = match seat {
                     Some(seat) => Body::Seat(Observed::new(&seat, cx)),
                     None if module == layout::HELP => {
@@ -188,13 +211,14 @@ impl PaneLayer {
                 };
                 PaneView {
                     rail: Observed::new(&rail, cx),
+                    notifications: Observed::new(&notifications, cx),
+                    strip,
                     model,
                     key,
                     kind,
                     instance,
                     desk,
                     layer,
-                    window: desk_window,
                     own,
                     body,
                 }
@@ -388,112 +412,20 @@ pub(in crate::shell) struct PaneView {
     kind: WindowKind,
     instance: u64,
     desk: Entity<Desk>,
-    /// Its program's name.
+    /// Its program's name, for the view's own label and the hold's words.
     rail: Observed<Rail>,
+    /// Its view asks to notify: the strip grows a bar, and is not cached
+    /// meanwhile (the bar's height is its words').
+    notifications: Observed<Notifications>,
+    /// Its title bar and permission bar, cached.
+    strip: Entity<Strip>,
     layer: WeakEntity<PaneLayer>,
-    window: WeakEntity<DesktopWindow>,
     /// The pane's own focus: it holds the keys when nothing in the view does.
     own: FocusHandle,
     body: Body,
 }
 
-/// A button on a pane's title bar.
-#[derive(Clone, Copy)]
-enum PaneAction {
-    Split,
-    PopOut,
-    PopIn,
-    Close,
-}
-
-impl PaneAction {
-    /// Its element id, its accessible name on the window of `module` (one
-    /// window's Close is not another's: "Close Chat window"), its glyph.
-    fn parts(
-        self,
-        rail: &[crate::runtime::RailRow],
-        module: &str,
-    ) -> (&'static str, String, gpui_kit::assets::IconName) {
-        use gpui_kit::assets::IconName;
-        let program = panes::label(rail, module);
-        let window = match module {
-            layout::EMPTY => "empty window".to_owned(),
-            _ => format!("{program} window"),
-        };
-        match self {
-            Self::Split => ("split", format!("Open another {window}"), IconName::Plus),
-            Self::PopOut => (
-                "popout",
-                format!("Open {program} in a new window"),
-                IconName::SquareArrowOutUpRight,
-            ),
-            Self::PopIn => (
-                "popin",
-                format!("Move {program} to the main window"),
-                IconName::ArrowDownLeft,
-            ),
-            Self::Close => ("close", format!("Close {window}"), IconName::X),
-        }
-    }
-}
-
 impl PaneView {
-    /// Something done to this window's panes, through the window: it hands
-    /// the keys to the pane in front.
-    fn pane_message(&self, message: PaneMessage, window: &mut Window, cx: &mut App) {
-        let _ = self
-            .window
-            .update(cx, |desk, cx| desk.pane_message(message, window, cx));
-    }
-
-    fn pane_button(
-        &self,
-        index: usize,
-        module: &'static str,
-        action: PaneAction,
-        enabled: bool,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
-        let ink = super::super::ink::Ink::of(self.model.read(cx).state.dark());
-        let hover = ink.surface;
-        // The element id is stable for the AX door and tests; the AX name
-        // is a phrase a screen reader can announce on its own, not the bare
-        // verb.
-        let (id, name, glyph) = action.parts(self.rail.read(cx).rows(), module);
-        crate::a11y::keyboard(
-            div()
-                .id(SharedString::from(format!("pane/{index}/{id}")))
-                .control(Role::Button, name)
-                .size(px(28.))
-                .text_color(ink.muted)
-                .flex()
-                .items_center()
-                .justify_center()
-                .when(enabled, |button| {
-                    button.cursor_pointer().hover(move |style| style.bg(hover))
-                })
-                .opacity(if enabled { 1. } else { 0.35 })
-                // a press on a control isn't a hold on the title bar
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    if !enabled {
-                        return;
-                    }
-                    let message = match action {
-                        PaneAction::Split => PaneMessage::Split(module),
-                        PaneAction::Close => PaneMessage::Close(index),
-                        PaneAction::PopOut => PaneMessage::PopOut { index, at: None },
-                        PaneAction::PopIn => PaneMessage::PopIn,
-                    };
-                    this.pane_message(message, window, cx);
-                }))
-                .child(gpui_kit::component::Icon::new(glyph).size(px(18.))),
-            ink.ink,
-        )
-        .aria_disabled(!enabled)
-    }
-
     /// What the pane shows: its seat's tree or standin, or else the app's
     /// own Help or an empty window's finder, each a cached view of its own.
     fn body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -562,87 +494,6 @@ impl PaneView {
         }
     }
 
-    /// The pane's title bar: the handle it is held by on the desk, its name,
-    /// and its buttons at the right end.
-    fn title_bar(
-        &self,
-        index: usize,
-        layout: &layout::Layout,
-        ink: &super::super::ink::Ink,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
-        let pane = &layout.panes[index];
-        let focused = index == layout.focused;
-        let console = self.kind == WindowKind::Console;
-        let on_desk = console && pane.frame.is_some();
-        let controls = div()
-            .flex()
-            .items_center()
-            .gap(px(2.))
-            .when(console, |strip| {
-                strip.child(self.pane_button(
-                    index,
-                    pane.module,
-                    PaneAction::Split,
-                    layout.panes.len() < layout::MAX_PANES,
-                    cx,
-                ))
-            })
-            // an empty or Help window has no program view to carry out
-            .when(console && pane.is_view(), |strip| {
-                strip.child(self.pane_button(index, pane.module, PaneAction::PopOut, true, cx))
-            })
-            .when(!console, |strip| {
-                strip.child(self.pane_button(index, pane.module, PaneAction::PopIn, true, cx))
-            })
-            .child(self.pane_button(index, pane.module, PaneAction::Close, true, cx));
-        // A window of its own on macOS draws no title bar of the
-        // system's: this bar is its handle, and the traffic lights sit
-        // over its left end. Elsewhere the system's bar names it.
-        let lights = theme::traffic_lights(window).filter(|_| !on_desk);
-        let handle = lights.is_some();
-        div()
-            .id(SharedString::from(format!("pane/{index}/strip")))
-            .h(px(TITLE))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .pl(px(lights.unwrap_or(12.)))
-            .pr(px(2.))
-            .border_b_1()
-            .border_color(ink.line)
-            .bg(match focused {
-                true => ink.surface,
-                false => ink.bg,
-            })
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                    match (on_desk, event.click_count) {
-                        (true, 2) => this.pane_message(PaneMessage::Fill(index), window, cx),
-                        (true, _) => this.hold(index, pane_drag::Sides::NONE, event.position, cx),
-                        (false, 2) if handle => window.titlebar_double_click(),
-                        (false, _) if handle => window.start_window_move(),
-                        (false, _) => {}
-                    }
-                }),
-            )
-            .when(on_desk || handle, |title| {
-                title.child(
-                    super::super::ink::mono(500, 12.)
-                        .flex_shrink_0()
-                        .text_color(ink.ink)
-                        .child(panes::label(self.rail.read(cx).rows(), pane.module)),
-                )
-            })
-            // pushes the controls to the bar's right end
-            .child(div().flex_1().min_w_0())
-            .child(controls)
-            .into_any_element()
-    }
-
     /// The pointer takes hold of this pane (`pane_drag.rs`).
     pub(in crate::shell) fn hold(
         &self,
@@ -654,97 +505,6 @@ impl PaneView {
         let _ = self
             .layer
             .update(cx, |layer, cx| layer.hold(index, sides, at, cx));
-    }
-
-    /// The NotifPermission board: a view posted before the person said
-    /// anything about its notices, so its window asks, at the top. Until
-    /// they answer its notices wait in Notifications, silently.
-    fn permission_bar(&self, module: &'static str, cx: &mut Context<Self>) -> AnyElement {
-        use super::super::ink::*;
-        use crate::runtime::notify::{self, Permission};
-        let ink = Ink::of(self.model.read(cx).state.dark());
-        let name = panes::label(self.rail.read(cx).rows(), module);
-        let burst = notify::Settings::load().burst;
-        let button = |id: &'static str, text: &'static str, filled: bool, message: Message| {
-            let model = self.model.clone();
-            let message = std::cell::RefCell::new(Some(message));
-            crate::a11y::keyboard(
-                sans(500, 14.)
-                    .id(SharedString::from(format!("notify-ask/{module}/{id}")))
-                    .control(Role::Button, text)
-                    .h(px(tall(30.)))
-                    .px(px(12.))
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .cursor_pointer()
-                    .border(px(1.5))
-                    .border_color(ink.ink)
-                    .when(filled, |button| button.bg(ink.ink).text_color(ink.bg))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        if let Some(message) = message.borrow_mut().take() {
-                            model.update(cx, |model, cx| model.dispatch(message, cx));
-                        }
-                    })
-                    .child(text),
-                ink.ring(filled),
-            )
-        };
-        // announced as it appears: nothing else says a view is waiting
-        crate::a11y::live(
-            div()
-                .id(SharedString::from(format!("notify-ask/{module}")))
-                .role(Role::Group),
-            accesskit::Live::Polite,
-            format!("{name} wants to show desktop notifications"),
-        )
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .gap(px(12.))
-        .px(px(14.))
-        .py(px(10.))
-        .bg(ink.surface)
-        .border_b_1()
-        .border_color(ink.line)
-        .child(
-            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
-                .size(px(14.))
-                .text_color(ink.ink),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(px(1.))
-                .child(
-                    sans(500, 14.)
-                        .text_color(ink.ink)
-                        .child(format!("{name} wants to show desktop notifications")),
-                )
-                .child(note(
-                    "burst",
-                    format!("At most {burst} banners a minute; the rest wait in Notifications."),
-                    ink.muted,
-                )),
-        )
-        .child(button(
-            "allow",
-            "Allow",
-            true,
-            Message::NotifyPermission(module, Permission::Allow),
-        ))
-        .child(button(
-            "not-now",
-            "Not now",
-            false,
-            Message::NotifyNotNow(module),
-        ))
-        .into_any_element()
     }
 
     /// The pane's box around `contents` (title bar, permission bar, body),
@@ -845,7 +605,6 @@ impl Render for PaneView {
             .is_some_and(|held| held.instance == pane.instance)
             && self.kind == WindowKind::Console;
         let rail = self.rail.read(cx).rows().to_vec();
-        let center = self.model.read(cx).state.center.clone();
         let view = self.body(window, cx);
         // it holds the pane's keys when nothing in the view does; Tab
         // never lands on it, so it offers assistive technology no focus
@@ -885,14 +644,432 @@ impl Render for PaneView {
             .w_full()
             .child(view);
         // Every window has a title bar, so a view owns all of its
-        // rectangle: nothing floats over its corners.
-        let title = self.title_bar(index, &layout, &ink, window, cx);
-        let asking = (pane.is_view() && center.lock().asking(pane.module))
-            .then(|| self.permission_bar(pane.module, cx));
-        let contents = [Some(title), asking, Some(view.into_any_element())]
-            .into_iter()
-            .flatten()
-            .collect();
-        self.place(index, &layout, contents, &ink, cx)
+        // rectangle: nothing floats over its corners. The strip is cached
+        // at the title bar's height; while its view asks to notify it
+        // grows a bar of its words' height, and draws uncached
+        let asking = pane.is_view() && self.notifications.read(cx).asking(pane.module);
+        let strip = match asking {
+            true => self.strip.clone().into_any_element(),
+            false => cached_unless_a11y(
+                self.strip.clone().into(),
+                StyleRefinement::default()
+                    .w_full()
+                    .h(px(TITLE))
+                    .flex_shrink_0(),
+                window,
+            ),
+        };
+        self.place(
+            index,
+            &layout,
+            vec![strip, view.into_any_element()],
+            &ink,
+            cx,
+        )
+    }
+}
+
+/// What of its desk a strip shows, compared: a frame that moves leaves the
+/// strip cached; a focus, a place in the stack or a pop-out draws it again.
+#[derive(Clone, Copy, Default, PartialEq)]
+struct Shown {
+    /// The pane is on its desk (else the strip is stale, and not drawn).
+    here: bool,
+    index: usize,
+    focused: bool,
+    /// Framed on the console's desk (a title bar to hold it by).
+    on_desk: bool,
+    module: &'static str,
+    is_view: bool,
+    /// Split is offered (the desk has room for another window).
+    split: bool,
+}
+
+impl Shown {
+    fn of(layout: &layout::Layout, instance: u64, kind: WindowKind) -> Self {
+        let Some(index) = layout
+            .panes
+            .iter()
+            .position(|pane| pane.instance == instance)
+        else {
+            return Self::default();
+        };
+        let pane = &layout.panes[index];
+        Self {
+            here: true,
+            index,
+            focused: index == layout.focused,
+            on_desk: kind == WindowKind::Console && pane.frame.is_some(),
+            module: pane.module,
+            is_view: pane.is_view(),
+            split: layout.panes.len() < layout::MAX_PANES,
+        }
+    }
+}
+
+/// A pane's strip: its title bar (the handle it is held by on the desk,
+/// its name, its buttons at the right end) and, while its view asks to
+/// notify, the permission bar. A cached view: it observes the rail (its
+/// name), the notifications (the ask), the prefs (dark, the burst) and
+/// reads its desk through a compared `Shown`.
+pub(in crate::shell) struct Strip {
+    model: Entity<Desktop>,
+    key: WindowKey,
+    kind: WindowKind,
+    layer: WeakEntity<PaneLayer>,
+    window: WeakEntity<DesktopWindow>,
+    rail: Observed<Rail>,
+    notifications: Observed<Notifications>,
+    prefs: Observed<Slice<Prefs>>,
+    shown: Shown,
+    _desk: Subscription,
+}
+
+/// A button on a pane's title bar.
+#[derive(Clone, Copy)]
+enum PaneAction {
+    Split,
+    PopOut,
+    PopIn,
+    Close,
+}
+
+impl PaneAction {
+    /// Its element id, its accessible name on the window of `module` (one
+    /// window's Close is not another's: "Close Chat window"), its glyph.
+    fn parts(
+        self,
+        rail: &[crate::runtime::RailRow],
+        module: &str,
+    ) -> (&'static str, String, gpui_kit::assets::IconName) {
+        use gpui_kit::assets::IconName;
+        let program = panes::label(rail, module);
+        let window = match module {
+            layout::EMPTY => "empty window".to_owned(),
+            _ => format!("{program} window"),
+        };
+        match self {
+            Self::Split => ("split", format!("Open another {window}"), IconName::Plus),
+            Self::PopOut => (
+                "popout",
+                format!("Open {program} in a new window"),
+                IconName::SquareArrowOutUpRight,
+            ),
+            Self::PopIn => (
+                "popin",
+                format!("Move {program} to the main window"),
+                IconName::ArrowDownLeft,
+            ),
+            Self::Close => ("close", format!("Close {window}"), IconName::X),
+        }
+    }
+}
+
+impl Strip {
+    #[allow(clippy::too_many_arguments, reason = "one strip, one pane")]
+    fn new(
+        model: Entity<Desktop>,
+        key: WindowKey,
+        kind: WindowKind,
+        instance: u64,
+        desk: &Entity<Desk>,
+        rail: &Entity<Rail>,
+        notifications: &Entity<Notifications>,
+        prefs: &Entity<Slice<Prefs>>,
+        layer: WeakEntity<PaneLayer>,
+        window: WeakEntity<DesktopWindow>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let observing = cx.observe(desk, move |this, desk, cx| {
+            let shown = Shown::of(desk.read(cx).get(), instance, kind);
+            if shown != this.shown {
+                this.shown = shown;
+                cx.notify();
+            }
+        });
+        Self {
+            shown: Shown::of(desk.read(cx).get(), instance, kind),
+            model,
+            key,
+            kind,
+            layer,
+            window,
+            rail: Observed::new(rail, cx),
+            notifications: Observed::new(notifications, cx),
+            prefs: Observed::new(prefs, cx),
+            _desk: observing,
+        }
+    }
+
+    /// Something done to this window's panes, through the window: it hands
+    /// the keys to the pane in front.
+    fn pane_message(&self, message: PaneMessage, window: &mut Window, cx: &mut App) {
+        let _ = self
+            .window
+            .update(cx, |desk, cx| desk.pane_message(message, window, cx));
+    }
+
+    /// The pointer takes hold of this pane (`pane_drag.rs`).
+    fn hold(&self, index: usize, sides: pane_drag::Sides, at: Point<Pixels>, cx: &mut App) {
+        let _ = self
+            .layer
+            .update(cx, |layer, cx| layer.hold(index, sides, at, cx));
+    }
+
+    fn pane_button(
+        &self,
+        index: usize,
+        module: &'static str,
+        action: PaneAction,
+        enabled: bool,
+        ink: &super::super::ink::Ink,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let hover = ink.surface;
+        // The element id is stable for the AX door and tests; the AX name
+        // is a phrase a screen reader can announce on its own, not the bare
+        // verb.
+        let (id, name, glyph) = action.parts(self.rail.read(cx).rows(), module);
+        crate::a11y::keyboard(
+            div()
+                .id(SharedString::from(format!("pane/{index}/{id}")))
+                .control(Role::Button, name)
+                .size(px(28.))
+                .text_color(ink.muted)
+                .flex()
+                .items_center()
+                .justify_center()
+                .when(enabled, |button| {
+                    button.cursor_pointer().hover(move |style| style.bg(hover))
+                })
+                .opacity(if enabled { 1. } else { 0.35 })
+                // a press on a control isn't a hold on the title bar
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    if !enabled {
+                        return;
+                    }
+                    let message = match action {
+                        PaneAction::Split => PaneMessage::Split(module),
+                        PaneAction::Close => PaneMessage::Close(index),
+                        PaneAction::PopOut => PaneMessage::PopOut { index, at: None },
+                        PaneAction::PopIn => PaneMessage::PopIn,
+                    };
+                    this.pane_message(message, window, cx);
+                }))
+                .child(gpui_kit::component::Icon::new(glyph).size(px(18.))),
+            ink.ink,
+        )
+        .aria_disabled(!enabled)
+    }
+
+    /// The pane's title bar: the handle it is held by on the desk, its name,
+    /// and its buttons at the right end.
+    fn title_bar(
+        &self,
+        ink: &super::super::ink::Ink,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Shown {
+            index,
+            focused,
+            on_desk,
+            module,
+            is_view,
+            split,
+            ..
+        } = self.shown;
+        let console = self.kind == WindowKind::Console;
+        let controls = div()
+            .flex()
+            .items_center()
+            .gap(px(2.))
+            .when(console, |strip| {
+                strip.child(self.pane_button(index, module, PaneAction::Split, split, ink, cx))
+            })
+            // an empty or Help window has no program view to carry out
+            .when(console && is_view, |strip| {
+                strip.child(self.pane_button(index, module, PaneAction::PopOut, true, ink, cx))
+            })
+            .when(!console, |strip| {
+                strip.child(self.pane_button(index, module, PaneAction::PopIn, true, ink, cx))
+            })
+            .child(self.pane_button(index, module, PaneAction::Close, true, ink, cx));
+        // A window of its own on macOS draws no title bar of the
+        // system's: this bar is its handle, and the traffic lights sit
+        // over its left end. Elsewhere the system's bar names it.
+        let lights = theme::traffic_lights(window).filter(|_| !on_desk);
+        let handle = lights.is_some();
+        div()
+            .id(SharedString::from(format!("pane/{index}/strip")))
+            .h(px(TITLE))
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .gap(px(8.))
+            .pl(px(lights.unwrap_or(12.)))
+            .pr(px(2.))
+            .border_b_1()
+            .border_color(ink.line)
+            .bg(match focused {
+                true => ink.surface,
+                false => ink.bg,
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, window, cx| {
+                    match (on_desk, event.click_count) {
+                        (true, 2) => this.pane_message(PaneMessage::Fill(index), window, cx),
+                        (true, _) => this.hold(index, pane_drag::Sides::NONE, event.position, cx),
+                        (false, 2) if handle => window.titlebar_double_click(),
+                        (false, _) if handle => window.start_window_move(),
+                        (false, _) => {}
+                    }
+                }),
+            )
+            .when(on_desk || handle, |title| {
+                title.child(
+                    super::super::ink::mono(500, 12.)
+                        .flex_shrink_0()
+                        .text_color(ink.ink)
+                        .child(panes::label(self.rail.read(cx).rows(), module)),
+                )
+            })
+            // pushes the controls to the bar's right end
+            .child(div().flex_1().min_w_0())
+            .child(controls)
+            .into_any_element()
+    }
+
+    /// The NotifPermission board: a view posted before the person said
+    /// anything about its notices, so its window asks, at the top. Until
+    /// they answer its notices wait in Notifications, silently.
+    fn permission_bar(
+        &self,
+        module: &'static str,
+        ink: &super::super::ink::Ink,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        use super::super::ink::*;
+        use crate::runtime::notify::Permission;
+        let name = panes::label(self.rail.read(cx).rows(), module);
+        let burst = self.prefs.read(cx).get().notify.burst;
+        let button = |id: &'static str, text: &'static str, filled: bool, message: Message| {
+            let model = self.model.clone();
+            let message = std::cell::RefCell::new(Some(message));
+            crate::a11y::keyboard(
+                sans(500, 14.)
+                    .id(SharedString::from(format!("notify-ask/{module}/{id}")))
+                    .control(Role::Button, text)
+                    .h(px(tall(30.)))
+                    .px(px(12.))
+                    .flex()
+                    .flex_shrink_0()
+                    .items_center()
+                    .cursor_pointer()
+                    .border(px(1.5))
+                    .border_color(ink.ink)
+                    .when(filled, |button| button.bg(ink.ink).text_color(ink.bg))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        if let Some(message) = message.borrow_mut().take() {
+                            model.update(cx, |model, cx| model.dispatch(message, cx));
+                        }
+                    })
+                    .child(text),
+                ink.ring(filled),
+            )
+        };
+        // announced as it appears: nothing else says a view is waiting
+        crate::a11y::live(
+            div()
+                .id(SharedString::from(format!("notify-ask/{module}")))
+                .role(Role::Group),
+            accesskit::Live::Polite,
+            format!("{name} wants to show desktop notifications"),
+        )
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .gap(px(12.))
+        .px(px(14.))
+        .py(px(10.))
+        .bg(ink.surface)
+        .border_b_1()
+        .border_color(ink.line)
+        .child(
+            gpui_kit::component::Icon::new(gpui_kit::assets::IconName::Bell)
+                .size(px(14.))
+                .text_color(ink.ink),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .child(
+                    sans(500, 14.)
+                        .text_color(ink.ink)
+                        .child(format!("{name} wants to show desktop notifications")),
+                )
+                .child(note(
+                    "burst",
+                    format!("At most {burst} banners a minute; the rest wait in Notifications."),
+                    ink.muted,
+                )),
+        )
+        .child(button(
+            "allow",
+            "Allow",
+            true,
+            Message::NotifyPermission(module, Permission::Allow),
+        ))
+        .child(button(
+            "not-now",
+            "Not now",
+            false,
+            Message::NotifyNotNow(module),
+        ))
+        .into_any_element()
+    }
+}
+
+impl Render for Strip {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let Shown {
+            here,
+            index,
+            module,
+            is_view,
+            ..
+        } = self.shown;
+        if !here {
+            // gone from its desk: dropped with its pane view
+            return div().into_any_element();
+        }
+        if crate::perf::on() {
+            crate::perf::count(
+                crate::perf::Key::Window(self.key),
+                crate::runtime::intern(&format!("renders.strip.{index}")),
+                1,
+            );
+        }
+        let ink = super::super::ink::Ink::of(self.prefs.read(cx).get().dark());
+        let title = self.title_bar(&ink, window, cx);
+        let asking = (is_view && self.notifications.read(cx).asking(module))
+            .then(|| self.permission_bar(module, &ink, cx));
+        div()
+            .w_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .child(title)
+            .children(asking)
+            .into_any_element()
     }
 }

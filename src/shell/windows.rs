@@ -100,9 +100,12 @@ impl DesktopWindow {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         let own = model.update(cx, |model, cx| model.window_entities(key, kind, cx));
-        let rail = model.read(cx).entities.rail.clone();
-        let rail_rows = entities::Observed::new(&rail, cx);
         let desk = own.desk.clone();
+        let menu = cx.focus_handle();
+        let chrome = (kind == WindowKind::Console).then(|| {
+            let (model, menu, this) = (model.clone(), menu.clone(), cx.weak_entity());
+            cx.new(|cx| layers::Chrome::new(model, key, &own, menu, this, window, cx))
+        });
         let panes = {
             let (model, root, this) = (model.clone(), focus.clone(), cx.weak_entity());
             cx.new(|cx| layers::PaneLayer::new(model, key, kind, own, root, this, window, cx))
@@ -114,25 +117,18 @@ impl DesktopWindow {
             key,
             kind,
             desk,
-            rail_rows,
+            chrome,
             panes,
             inputs: HashMap::new(),
             spotlight_focused: false,
             spotlight_rows: Default::default(),
             settings_rows: Default::default(),
             stops: HashMap::new(),
-            rail_cursor: None,
             launcher_spin,
             covered: None,
             refocus: None,
             modal: cx.focus_handle(),
-            menu: cx.focus_handle(),
-            menu_held: false,
-            bar_buttons: Default::default(),
-            rail: Default::default(),
-            bar_needs: 0.,
-            bar_made: 0,
-            bar_drawn: None,
+            menu,
             switching: None,
             focus,
             _activation: activation,

@@ -102,7 +102,6 @@ impl DesktopWindow {
             Role::Dialog,
             "Add a device",
             crate::Overlay::Approve,
-            true,
             &ink,
             |card| {
                 card.mt(px(84.))

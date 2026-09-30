@@ -3,28 +3,37 @@
 //! the networks this device has reached, switched to without a trip through
 //! Connect. Plus the number, hash and date formatters they read by.
 
-use super::*;
-use facts::Facts;
-use status_bar::pulse;
+use super::Chrome;
+use crate::a11y::Control as _;
+use crate::shell::ink::{Ink, mono, sans, words};
+use crate::shell::status_bar::pulse;
+use crate::{AppMessage as Message, Popover};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 
 /// The program whose view is Account (the account, its keys, agents and
 /// invites), which the account menu opens.
 const ACCOUNT_VIEW: &str = "module-registry";
 
-impl DesktopWindow {
+impl Chrome {
     /// What the breath means (the NodeStatus board): in sync or not, and
-    /// the node's own numbers, `padding: 7px 16px` each.
+    /// the node's own numbers, `padding: 7px 16px` each. The ages count
+    /// from the wall clock, drawn again by the menu's own second.
     pub(super) fn node_menu(
         &self,
-        state: &Facts,
+        ink: &Ink,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use super::ink::*;
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let ok = !state.reconnecting;
-        let host = crate::backend::host_of(&state.connected_rpc).to_owned();
+    ) -> AnyElement {
+        let (session, chain, motion) = (
+            self.session.read(cx).get(),
+            self.chain.read(cx),
+            self.prefs.read(cx).get().motion,
+        );
+        let ok = !session.reconnecting;
+        let host = crate::backend::host_of(&session.connected_rpc).to_owned();
+        let now = crate::runtime::notify::wall();
+        let (block_age, heard_age) = (now - chain.block_seen, now - chain.heard);
         // the key and its value, each a Label: `Height`, `6,230`
         let row = |key: &'static str, value: String, code: bool| {
             div()
@@ -44,8 +53,8 @@ impl DesktopWindow {
                 )
         };
         let mut rows = vec![];
-        if let Some(node) = &state.node {
-            for (key, value, code) in node_facts(node, state.block_age, ok) {
+        if let Some(node) = &chain.node {
+            for (key, value, code) in node_facts(node, block_age, ok) {
                 rows.push(row(key, value, code));
                 if key == "Epoch" {
                     rows.push(
@@ -61,23 +70,23 @@ impl DesktopWindow {
             }
         }
         // down: when it was last heard, and that the numbers are from then
-        let heard = match (ok, &state.node) {
+        let heard = match (ok, &chain.node) {
             (false, Some(node)) => Some(
                 div().px(px(16.)).pb(px(10.)).child(
                     sans(400, 13.)
                         .text_color(ink.muted)
-                        .child(last_heard(node.height, state.heard_age)),
+                        .child(last_heard(node.height, heard_age)),
                 ),
             ),
             _ => None,
         };
         let copy = {
-            let url = state.connected_rpc.clone();
+            let url = session.connected_rpc.clone();
             self.menu_row(
                 "copy-node",
                 "Copy node address",
                 move |cx| cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(url.clone())),
-                cx,
+                ink,
             )
         };
         let body = div()
@@ -92,7 +101,7 @@ impl DesktopWindow {
                     .pt(px(14.))
                     .px(px(16.))
                     .pb(px(12.))
-                    .child(pulse(ok, state.motion, &ink))
+                    .child(pulse(ok, motion, ink))
                     .child(
                         div()
                             .flex_1()
@@ -109,7 +118,7 @@ impl DesktopWindow {
                             .child(
                                 mono(400, 12.)
                                     .text_color(ink.muted)
-                                    .child(words("node", format!("{} · {host}", state.network))),
+                                    .child(words("node", format!("{} · {host}", session.network))),
                             ),
                     ),
             )
@@ -129,7 +138,7 @@ impl DesktopWindow {
                             "node-retry",
                             "Retry now",
                             self.dispatching(|| Message::Tick),
-                            cx,
+                            ink,
                         )
                     }))
                     .child(copy)
@@ -137,36 +146,37 @@ impl DesktopWindow {
                         "node-switch",
                         "Switch node…",
                         self.dispatching(|| Message::ToggleNetworkMenu),
-                        cx,
+                        ink,
                     )),
             );
-        self.hanging(crate::Popover::Node, 340., body, window, cx)
+        self.popover(Popover::Node, 340., body, ink, window, cx)
     }
 
     /// Who is signed in, and the ways out.
     pub(super) fn account_menu(
         &self,
-        state: &Facts,
+        ink: &Ink,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use super::ink::*;
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let (name, number) = match &state.account {
+    ) -> AnyElement {
+        let (account, network) = (
+            self.account.read(cx).get().account.clone(),
+            self.session.read(cx).get().network.clone(),
+        );
+        let (name, number) = match &account {
             Some(Some((number, name))) => (name.clone(), Some(*number)),
             _ => ("Signed in".to_owned(), None),
         };
         let detail = match number {
-            Some(number) => format!("account {number} · {}", state.network),
-            None => state.network.clone(),
+            Some(number) => format!("account {number} · {network}"),
+            None => network,
         };
         // Account shows a key with no account too: its key, and Create account
         let mut rows = div().flex().flex_col().child(self.menu_row(
             "account-view",
             "Account",
             self.dispatching(|| Message::SelectView(crate::runtime::intern(ACCOUNT_VIEW))),
-            cx,
+            ink,
         ));
         if let Some(number) = number {
             rows = rows.child(self.menu_row(
@@ -175,20 +185,20 @@ impl DesktopWindow {
                 move |cx| {
                     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(number.to_string()))
                 },
-                cx,
+                ink,
             ));
             rows = rows
                 .child(self.menu_row(
                     "add-device",
                     "Add a device…",
                     self.dispatching(|| Message::ApproveOpen),
-                    cx,
+                    ink,
                 ))
                 .child(self.menu_row(
                     "recovery-key",
                     "Make a recovery key…",
                     self.dispatching(|| Message::RecoveryKeyStart),
-                    cx,
+                    ink,
                 ));
         }
         let body = div()
@@ -230,18 +240,18 @@ impl DesktopWindow {
                                 "lock",
                                 "Lock",
                                 self.dispatching(|| Message::Lock),
-                                cx,
+                                ink,
                             ))
                             .child(self.menu_row(
                                 "disconnect",
                                 "Switch node…",
                                 // as the node menu's: the networks this device reached
                                 self.dispatching(|| Message::ToggleNetworkMenu),
-                                cx,
+                                ink,
                             )),
                     ),
             );
-        self.hanging(crate::Popover::Account, 300., body, window, cx)
+        self.popover(Popover::Account, 300., body, ink, window, cx)
     }
 
     /// The switcher's menu: each node this device reached (its network, its
@@ -250,16 +260,15 @@ impl DesktopWindow {
     /// click anywhere outside, or Escape, closes it.
     pub(super) fn network_menu(
         &self,
-        state: &Facts,
         narrow: bool,
-        window: &Window,
-    ) -> gpui_kit::AnyElement {
-        use super::ink::*;
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
+        ink: &Ink,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let session = self.session.read(cx).get();
         let surface = ink.surface;
+        let model = self.model.clone();
         let item = |id: SharedString, role: Role, name: String, message: Message| {
-            let model = self.model.clone();
+            let model = model.clone();
             let message = std::cell::Cell::new(Some(message));
             crate::a11y::keyboard(
                 div()
@@ -280,53 +289,57 @@ impl DesktopWindow {
         // The NetworkSwitcher board: `padding: 12px 16px; gap: 12px`, a
         // hairline above each row; the name `500 15px` in a `110px` column,
         // the host in mono.
-        let rows = state.recent_endpoints.iter().map(|entry| {
-            let current = entry.url == state.connected_rpc;
-            let name = match current {
-                true => format!("{} (current)", entry.label()),
-                false => entry.label(),
-            };
-            let network = entry.name();
-            item(
-                SharedString::from(format!("network-menu/{}", entry.url)),
-                Role::MenuItemRadio,
-                name,
-                Message::SwitchNetwork(entry.url.clone()),
-            )
-            .aria_toggled(current.into())
-            .flex()
-            .items_baseline()
-            .gap(px(12.))
-            .px(px(16.))
-            .py(px(12.))
-            .border_t_1()
-            .border_color(ink.line)
-            .child(
-                div()
-                    .w(px(110.))
-                    .flex_shrink_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.))
-                    .child(sans(500, 15.).text_color(ink.ink).truncate().child(network))
-                    .when(entry.other_chain, |column| {
-                        column.child(sans(400, 12.).text_color(ink.muted).child("Other chain"))
-                    }),
-            )
-            .child(
-                mono(400, 13.)
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_color(ink.muted)
-                    .child(entry.host().to_owned()),
-            )
-            .child(
-                mono(400, 12.)
-                    .text_color(ink.muted)
-                    .child(if current { "Current" } else { "" }),
-            )
-        });
+        let rows: Vec<_> = session
+            .recent_endpoints
+            .iter()
+            .map(|entry| {
+                let current = entry.url == session.connected_rpc;
+                let name = match current {
+                    true => format!("{} (current)", entry.label()),
+                    false => entry.label(),
+                };
+                let network = entry.name();
+                item(
+                    SharedString::from(format!("network-menu/{}", entry.url)),
+                    Role::MenuItemRadio,
+                    name,
+                    Message::SwitchNetwork(entry.url.clone()),
+                )
+                .aria_toggled(current.into())
+                .flex()
+                .items_baseline()
+                .gap(px(12.))
+                .px(px(16.))
+                .py(px(12.))
+                .border_t_1()
+                .border_color(ink.line)
+                .child(
+                    div()
+                        .w(px(110.))
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(sans(500, 15.).text_color(ink.ink).truncate().child(network))
+                        .when(entry.other_chain, |column| {
+                            column.child(sans(400, 12.).text_color(ink.muted).child("Other chain"))
+                        }),
+                )
+                .child(
+                    mono(400, 13.)
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(ink.muted)
+                        .child(entry.host().to_owned()),
+                )
+                .child(mono(400, 12.).text_color(ink.muted).child(if current {
+                    "Current"
+                } else {
+                    ""
+                }))
+            })
+            .collect();
         let add = item(
             "network-menu/add".into(),
             Role::MenuItem,
@@ -344,38 +357,36 @@ impl DesktopWindow {
                 .text_color(ink.ink)
                 .child("Add a network"),
         );
-        let count = state.recent_endpoints.len();
-        let at = self.under_button(crate::Overlay::Network, gpui_kit::Anchor::TopLeft, window);
-        self.overlay(
+        let count = session.recent_endpoints.len();
+        let body = div()
+            .flex()
+            .flex_col()
+            .child(
+                mono(400, 12.)
+                    .px(px(16.))
+                    .py(px(12.))
+                    .text_color(ink.muted)
+                    .child(format!("Networks · {count}")),
+            )
+            .children(rows)
+            .child(
+                div()
+                    .flex()
+                    .px(px(16.))
+                    .py(px(12.))
+                    .border_t_1()
+                    .border_color(ink.line)
+                    .child(add),
+            );
+        self.hanging(
             "network-menu",
             Role::Menu,
             "Networks",
-            crate::Overlay::Network,
-            false,
-            &ink,
-            |card| {
-                at.child(
-                    card.w(px(if narrow { 300. } else { 400. }))
-                        .child(
-                            mono(400, 12.)
-                                .px(px(16.))
-                                .py(px(12.))
-                                .text_color(ink.muted)
-                                .child(format!("Networks · {count}")),
-                        )
-                        .children(rows)
-                        .child(
-                            div()
-                                .flex()
-                                .px(px(16.))
-                                .py(px(12.))
-                                .border_t_1()
-                                .border_color(ink.line)
-                                .child(add),
-                        ),
-                )
-                .into_any_element()
-            },
+            Anchor::TopLeft,
+            if narrow { 300. } else { 400. },
+            body,
+            ink,
+            cx,
         )
     }
 }
@@ -499,7 +510,7 @@ fn founded(time: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ago, epoch_into, founded, grouped, last_heard, node_facts, short_hex};
 
     #[test]
     fn node_numbers_read_short() {
@@ -578,29 +589,5 @@ mod tests {
         assert_eq!(node_facts(&node(), 13, true)[1].1, "13s ago");
         assert!(last_heard(4295, 150).starts_with("Last heard at block 4,295, 2m ago."));
         assert_eq!(ago(-1), "0s");
-    }
-
-    /// Last heard counts from the node's last answer: a chain stalled for
-    /// five minutes, then a node gone quiet 4s ago, was heard 4s ago.
-    #[test]
-    fn last_heard_counts_from_the_last_answer() {
-        let (mut state, _) = crate::Ducktape::boot();
-        // the height stands still throughout: nothing else is asked for
-        (state.connected, state.height) = (true, 4295);
-        let _ = state.update(Message::StatusPushed(node()));
-        for _ in 0..300 {
-            let _ = state.update(Message::WallTick);
-            let _ = state.update(Message::StatusPushed(node()));
-        }
-        for _ in 0..4 {
-            let _ = state.update(Message::WallTick);
-            let _ = state.update(Message::StatusMissed);
-        }
-        let facts = state.facts();
-        assert!(facts.reconnecting);
-        assert_eq!((facts.block_age, facts.heard_age), (304, 4));
-        assert!(
-            last_heard(4295, facts.heard_age).starts_with("Last heard at block 4,295, 4s ago.")
-        );
     }
 }

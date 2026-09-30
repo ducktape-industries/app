@@ -1,32 +1,34 @@
 //! The bell's panel: the notification centre's rows.
 
-use super::*;
-use desk::BAR;
-use facts::Facts;
+use super::Chrome;
+use crate::AppMessage as Message;
+use crate::a11y::Control as _;
+use crate::shell::desk::BAR;
+use crate::shell::ink::{Ink, mono, sans, tall};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 
-impl DesktopWindow {
+impl Chrome {
     /// The bell's panel (the NotifCenter board): 400 wide under the bell,
     /// kept inside the window; the rows, newest first, under Today and
-    /// Earlier.
-    pub(super) fn notifications(
+    /// Earlier. The ages count from the wall clock, drawn again by the
+    /// menu's own second; the rows are read again when the log moves
+    /// (`Notifications.entries_rev`).
+    pub(super) fn bell_menu(
         &self,
-        state: &Facts,
+        ink: &Ink,
         window: &Window,
         cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use super::ink::*;
-        use gpui_kit::*;
+    ) -> AnyElement {
         const WIDTH: f32 = 400.;
-        let ink = Ink::of(state.dark);
         let viewport = window.viewport_size();
         let (wide, high) = (f32::from(viewport.width), f32::from(viewport.height));
         let width = WIDTH.min(wide - 16.).max(0.);
         let now = crate::runtime::notify::wall();
         let midnight = local_midnight(now);
-        let center = state.center.lock();
-        let unread = center.unread();
-        let entries: Vec<_> = center.entries().cloned().collect();
-        drop(center);
+        let notifications = self.notifications.read(cx);
+        let unread = notifications.unread();
+        let entries = notifications.entries();
         let small_link = |id: &'static str, text: &'static str, message: fn() -> Message| {
             let model = self.model.clone();
             let hover = ink.ink;
@@ -276,7 +278,7 @@ impl DesktopWindow {
             .child(header)
             .child(list)
             .child(footer);
-        self.hanging(crate::Popover::Notifications, width, body, window, cx)
+        self.popover(crate::Popover::Notifications, width, body, ink, window, cx)
     }
 }
 
@@ -300,7 +302,7 @@ fn ago(at: i64, now: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::{ago, local_midnight};
 
     #[test]
     fn times_read_short() {

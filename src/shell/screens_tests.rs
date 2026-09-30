@@ -606,7 +606,10 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
             now - 3 * 86_400,
         );
     }
-    view.update(&mut native, |_, cx| cx.notify());
+    // the bell reads the centre through its slice: as a dispatch would
+    view.update(&mut native, |view, cx| {
+        view.model.update(cx, |model, cx| model.bridge(false, cx))
+    });
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications, 2 unread");
     // the count on the bell is announced as notices land

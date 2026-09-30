@@ -37,7 +37,7 @@ mod settings;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use center::{CenterHandle, Notice, center, wall};
+pub(crate) use center::{CenterHandle, Entry, Notice, center, wall};
 pub(crate) use settings::{
     BURSTS, Permission, Settings, not_now, save_banners, save_burst, save_in_front, set_permission,
 };

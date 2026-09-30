@@ -66,8 +66,7 @@ pub(crate) struct WindowEntities {
     pub(crate) overlays: Entity<Overlays>,
     pub(crate) spotlight: Entity<Slice<Spotlight>>,
     /// Derived from `desk` (`Front::of_desk`); never bridged.
-    #[cfg_attr(not(test), expect(dead_code, reason = "Chrome reads it from s6b"))]
     pub(crate) front: Entity<Slice<Front>>,
-    #[expect(dead_code, reason = "Chrome's dot probe commits it from s6b")]
+    /// Where the bar's status well is: Chrome commits it after each frame.
     pub(crate) dot: Entity<DotSlot>,
 }

@@ -32,6 +32,20 @@ impl Notifications {
         (center.unread(), center.asking.clone(), center.rev())
     }
 
+    pub(crate) fn unread(&self) -> usize {
+        self.unread
+    }
+
+    /// The views waiting for a word on their notices.
+    pub(crate) fn asking(&self, module: &str) -> bool {
+        self.asking.contains(module)
+    }
+
+    /// The log's rows, newest first, as the bell lists them.
+    pub(crate) fn entries(&self) -> Vec<crate::runtime::notify::Entry> {
+        self.center.lock().entries().cloned().collect()
+    }
+
     /// Read off the centre again; notifies only when something moved.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
         let (unread, asking, entries_rev) = Self::read(&self.center);
