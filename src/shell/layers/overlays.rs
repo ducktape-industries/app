@@ -308,10 +308,10 @@ impl Render for OverlayLayer {
             Some(Overlay::Approve) => Some(self.approve(window, cx)),
             _ => None,
         };
-        // `size_full` too: cached, this view is laid out as a root of its
-        // own, where a block's height is its content's (taffy), and the
-        // dialog's backdrop is absolute. Sized by its insets alone the root
-        // would be 0px high and the scrim culled
+        // `size_full` too: cached, this view is a layout root of its own,
+        // where a block's height is its content's (taffy), and the scrim is
+        // absolute. Sized by its insets alone the root would be 0px high and
+        // the scrim culled
         div().absolute().inset_0().size_full().children(dialog)
     }
 }

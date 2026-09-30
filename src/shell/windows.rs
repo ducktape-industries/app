@@ -184,11 +184,11 @@ impl Desktop {
                 Err(error) => {
                     tracing::error!(target: "ducktape::app", reason = "native_window_open_failed", %error, "window could not be opened");
                     model.update(cx, |model, cx| {
+                        // said first: the dispatches below bridge it
+                        model.state.error = format!("The window could not be opened: {error}");
                         // a pane on its way to this window goes back to the desk
                         model.dispatch(Message::Pane(key, PaneMessage::PopIn), cx);
                         model.dispatch(Message::WindowWasClosed(key), cx);
-                        model.state.error = format!("The window could not be opened: {error}");
-                        model.bridge(false, cx);
                         cx.notify();
                     });
                 }

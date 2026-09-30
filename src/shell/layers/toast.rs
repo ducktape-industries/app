@@ -56,7 +56,9 @@ impl Render for ToastView {
         let prefs = self.prefs.read(cx).get();
         let lost = session.reconnecting && *self.screen.read(cx).get() != Screen::Connect;
         let toast = self.toast.read(cx).get().clone();
-        let layer = div().absolute().inset_0();
+        // `size_full` too: cached, this view is a layout root of its own
+        // (`OverlayLayer::render`)
+        let layer = div().absolute().inset_0().size_full();
         if !lost && toast.is_empty() {
             return layer;
         }

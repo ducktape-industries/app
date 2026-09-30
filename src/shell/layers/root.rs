@@ -49,8 +49,8 @@ pub(in crate::shell) struct WindowRoot {
     toast: Entity<ToastView>,
     /// The node's breath over the bar's well (the console only).
     dot: Option<Entity<StatusDot>>,
-    /// The handle a menu hanging from the bar holds the keys by (`Chrome`'s;
-    /// the console only).
+    /// The handle the box a bar menu's card hangs from holds the keys by
+    /// (`Chrome`'s; the console only).
     menu: Option<FocusHandle>,
     /// A pane or window switch under way: started where it was asked for,
     /// ended on the frame after the one that shows it (docs/perf.md).

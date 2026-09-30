@@ -7,8 +7,8 @@
 //! node button's 12px well was laid out, read at prepaint and committed
 //! after the frame when it moved.
 //!
-//! Each open menu is its bar button's deferred child, anchored to the
-//! button's corner 4px under the bar; the backdrop under it (a click on it
+//! Each open menu hangs beside its bar button (`footed`), deferred and
+//! anchored to the button's corner 4px under the bar; the backdrop under it (a click on it
 //! closes the menu, and presses stay off the desk) is a deferred child of
 //! the bar drawn first. A menu's keys: the arrows step its rows; Tab past
 //! its ends, or anything else that takes the keys out of it, closes it and
@@ -49,8 +49,8 @@ pub(in crate::shell) struct Chrome {
     front: Observed<Slice<Front>>,
     prefs: Observed<Slice<Prefs>>,
     dot: Observed<DotSlot>,
-    /// The open menu's card holds the keys by this; the overlay layer puts
-    /// them in when the menu opens (`OverlayLayer::moved`).
+    /// The box the open menu's card hangs from holds the keys by this; the
+    /// overlay layer puts them in when the menu opens (`OverlayLayer::moved`).
     pub(in crate::shell) menu: FocusHandle,
     /// The Programs rail's one Tab stop (`a11y::roving`).
     stop: FocusHandle,
@@ -237,7 +237,7 @@ impl Chrome {
     /// click on it closes the menu (as a click on the bar itself does not:
     /// the backdrop starts under the bar). Drawn first among the deferred
     /// children, so the menu's card lies over it. Invisible, and nothing
-    /// about focus or keys: the card holds those.
+    /// about focus or keys: the box its card hangs from holds those.
     fn backdrop(&self, id: &'static str, closes: Overlay, window: &Window) -> AnyElement {
         let close = self.overlaying(move |overlays, cx| overlays.close(closes, cx));
         let viewport = window.viewport_size();
@@ -256,18 +256,18 @@ impl Chrome {
         .into_any_element()
     }
 
-    /// A menu hanging from the bar button it is a child of: its card (the
-    /// canvas's `border: 1.5px solid ink` and a soft shadow, `width` wide),
-    /// `anchor` (a top corner) at the same corner of the button, 4px below
-    /// the bar (`top: 40px`), shifted back inside the window when it would
-    /// run off it. Deferred over the backdrop. The box the card hangs from
-    /// holds the keys by `menu`: its rows step with the arrows and stop at
-    /// its ends; Tab and Shift+Tab move on, and past its ends they close it
-    /// (`keys_left`; `keys::MenuTab`, bound over the kit's Tab under the
-    /// `menu` context). Escape closes it through `keys::CloseOverlay`
-    /// (bound under the `overlay` context). A press inside stays inside: occluded, the
-    /// backdrop is not under the pointer. No `on_click` on the card: that
-    /// would offer a press on the dialog.
+    /// A menu hanging beside the bar button that opened it (`footed`): its
+    /// card (the canvas's `border: 1.5px solid ink` and a soft shadow,
+    /// `width` wide), `anchor` (a top corner) at the same corner of the
+    /// button, 4px below the bar (`top: 40px`), shifted back inside the
+    /// window when it would run off it. Deferred over the backdrop. The box
+    /// the card hangs from holds the keys by `menu`: its rows step with the
+    /// arrows and stop at its ends; Tab and Shift+Tab move on, and past its
+    /// ends they close it (`keys_left`; `keys::MenuTab`, bound over the
+    /// kit's Tab under the `menu` context). Escape closes it through
+    /// `keys::CloseOverlay` (bound under the `overlay` context). A press
+    /// inside stays inside: occluded, the backdrop is not under the pointer.
+    /// No `on_click` on the card: that would offer a press on the dialog.
     #[allow(clippy::too_many_arguments, reason = "one shape, four menus")]
     fn hanging(
         &self,
@@ -293,17 +293,16 @@ impl Chrome {
             .shadow_lg()
             .w(px(width))
             .child(body);
-        // the corner: a point-sized box at the button's corner, 4px under
-        // the bar, that the anchored card takes its position from (the
-        // button is centred in the bar's 35px inside its border line, half a
-        // pixel up: the extra half puts the card's top on a whole pixel). It holds
-        // the menu handle and hears the rows' keys (no id, no role: the card
-        // is the node assistive technology sees, and it offers no focus of
-        // its own)
+        // the corner: a point-sized box 5px under the button's foot
+        // (`Chrome::footed`, whose bottom is the bar's inside edge at 35)
+        // that the anchored card hangs from, so its top lands on 40 (the
+        // canvas's menus: `top: 40px`). It holds the menu handle and hears
+        // the rows' keys (no id, no role: the card is the node assistive
+        // technology sees, and it offers no focus of its own)
         let menu = self.menu.clone();
         let corner = div()
             .absolute()
-            .bottom(px(-4.5))
+            .bottom(px(-5.))
             .size_0()
             .track_focus(&self.menu)
             .capture_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -347,6 +346,27 @@ impl Chrome {
         )
         .with_priority(1)
         .into_any_element()
+    }
+
+    /// A bar button with its open menu beside it, in a box the bar's inside
+    /// height (35px above the border line). The 36px button is centred in
+    /// the box as it was in the bar, half a pixel up, so it is drawn where
+    /// it was; the menu's corner hangs from the box, whose edges lie on
+    /// whole pixels. Layout snaps each edge to the device grid where it lies
+    /// (gpui's `layout_bounds`), so a card laid out half a pixel off has
+    /// some of its rows land a pixel from where the same card on a whole
+    /// pixel has them. The corner hangs 5px under the box, so the card is
+    /// laid out on a whole pixel.
+    fn footed(button: Stateful<Div>, menu: AnyElement) -> AnyElement {
+        div()
+            .relative()
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .items_center()
+            .child(button)
+            .child(menu)
+            .into_any_element()
     }
 
     /// A menu hanging below the bar, its right edge under its button's
@@ -632,12 +652,12 @@ impl Render for Chrome {
             toggle(Overlay::Network),
         )
         .aria_expanded(network_open)
-        .relative()
         .child(sans(500, 13.).child(bar.network.clone()))
-        .child(div().text_color(ink.muted).child("⌄"))
-        .when(network_open, |item| {
-            item.child(self.network_menu(narrow, &ink, cx))
-        });
+        .child(div().text_color(ink.muted).child("⌄"));
+        let network = match network_open {
+            true => Self::footed(network, self.network_menu(narrow, &ink, cx)),
+            false => network.into_any_element(),
+        };
         let chord = chord_label("K");
         let search = item(
             "rail-search",
@@ -672,7 +692,6 @@ impl Render for Chrome {
             toggle(Overlay::Menu(Popover::Notifications)),
         )
         .aria_expanded(bell_open)
-        .relative()
         .child(
             div()
                 .relative()
@@ -707,10 +726,11 @@ impl Render for Chrome {
                         }),
                     )
                 }),
-        )
-        .when(bell_open, |item| {
-            item.child(self.bell_menu(&ink, window, cx))
-        });
+        );
+        let bell = match bell_open {
+            true => Self::footed(bell, self.bell_menu(&ink, window, cx)),
+            false => bell.into_any_element(),
+        };
         // the height moves every block: it is the description, so the
         // name holds still
         let said = match (bar.connecting, bar.reconnecting) {
@@ -752,12 +772,12 @@ impl Render for Chrome {
         )
         .aria_description(format!("Block {}", bar.height))
         .aria_expanded(node_open)
-        .relative()
         .px(px(12.))
-        .child(well)
-        .when(node_open, |item| {
-            item.child(self.node_menu(&ink, window, cx))
-        });
+        .child(well);
+        let node = match node_open {
+            true => Self::footed(node, self.node_menu(&ink, window, cx)),
+            false => node.into_any_element(),
+        };
         let account_open = bar.open == Some(Overlay::Menu(Popover::Account));
         let who = match (&bar.account, bar.unlocked) {
             (_, false) => item(
@@ -767,7 +787,8 @@ impl Render for Chrome {
                 None,
                 Box::new(self.dispatching(|| Message::SignIn)),
             )
-            .child(div().underline().child("Sign in")),
+            .child(div().underline().child("Sign in"))
+            .into_any_element(),
             // named by what it says
             (Some(None), true) => item(
                 "rail-account",
@@ -776,7 +797,8 @@ impl Render for Chrome {
                 None,
                 Box::new(self.dispatching(|| Message::ShowCreateAccount)),
             )
-            .child(div().underline().child("Create account")),
+            .child(div().underline().child("Create account"))
+            .into_any_element(),
             (account, true) => {
                 let name = match account {
                     Some(Some((_, name))) => name.clone(),
@@ -786,7 +808,7 @@ impl Render for Chrome {
                     true => screens::initials(&name),
                     false => name.clone(),
                 };
-                item(
+                let who = item(
                     "rail-account",
                     SharedString::from(format!("Account: {name}")),
                     account_open,
@@ -794,11 +816,11 @@ impl Render for Chrome {
                     toggle(Overlay::Menu(Popover::Account)),
                 )
                 .aria_expanded(account_open)
-                .relative()
-                .child(shown)
-                .when(account_open, |item| {
-                    item.child(self.account_menu(&ink, window, cx))
-                })
+                .child(shown);
+                match account_open {
+                    true => Self::footed(who, self.account_menu(&ink, window, cx)),
+                    false => who.into_any_element(),
+                }
             }
         };
         // Settings are the app's, not the account's: their own spot at the

@@ -1,6 +1,7 @@
 //! The window's layers, counted: each draws for what it observes and for
 //! nothing else (P1, P6 in the app), and the root lays them out as the
 //! window's kind and screen say (docs/perf.md).
+use super::BAR;
 use super::tests::open_console;
 use crate::runtime::WindowKey;
 use crate::shell::entities::{Overlay, Popover};
@@ -541,4 +542,96 @@ fn raising_an_active_window_closes_its_switch_timer(cx: &mut TestAppContext) {
         before + 1,
         "the switch timer stayed open"
     );
+}
+
+/// The quads the window painted last, with no reader on: the cached path.
+fn quads(native: &mut VisualTestContext) -> Vec<gpui_kit::Quad> {
+    native.update(|window, _| window.painted_quads())
+}
+
+/// A dialog open over the desk, drawn cached (no reader on): its scrim
+/// paints below the bar, the window wide and high, over the panes. The
+/// cached view is a layout root of its own, where its height is its
+/// content's unless it says `size_full`: both are `OverlayLayer`'s.
+#[gpui_kit::test]
+fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
+    const MODULE: &str = "root-scrim-view";
+    let (model, key, view, mut native) = console(cx);
+    crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::SetMotion(false), cx);
+        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx);
+    });
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    for overlay in [Overlay::Spotlight, Overlay::Approve] {
+        super::tests::show(&view, Some(overlay), &mut native);
+        // a miss (the dialog opened), then hits
+        for _ in 0..3 {
+            frame(&mut native);
+            let quads = quads(&mut native);
+            let scale = native.update(|window, _| window.scale_factor());
+            let scrim = quads
+                .iter()
+                .find(|quad| {
+                    quad.background
+                        .as_solid()
+                        .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
+                })
+                .unwrap_or_else(|| panic!("{overlay:?}'s scrim paints"));
+            assert_eq!(
+                (
+                    scrim.bounds.origin.y.0,
+                    scrim.bounds.size.width.0,
+                    scrim.bounds.size.height.0,
+                ),
+                (BAR * scale, 1280. * scale, (800. - BAR) * scale),
+                "{overlay:?}'s scrim fills the window under the bar"
+            );
+            // the pane's box: a 1px border, taller than the dialog's rows
+            let pane = quads
+                .iter()
+                .filter(|quad| {
+                    quad.border_widths.top.0 == scale && quad.bounds.size.height.0 > 400. * scale
+                })
+                .map(|quad| quad.order)
+                .max()
+                .expect("a pane paints");
+            assert!(
+                scrim.order > pane,
+                "{overlay:?}'s scrim {} under a pane {pane}",
+                scrim.order
+            );
+        }
+        super::tests::show(&view, None, &mut native);
+        frame(&mut native);
+    }
+}
+
+/// A toast drawn cached (no reader on) sits at the window's foot: its layer
+/// is a layout root of its own, and says `size_full` so its `bottom` is the
+/// window's.
+#[gpui_kit::test]
+fn a_cached_toast_sits_at_the_foot(cx: &mut TestAppContext) {
+    let (model, _, _, mut native) = console(cx);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::SetMotion(false), cx);
+        model.dispatch(Message::ShowToast("Saved".into()), cx);
+    });
+    for _ in 0..3 {
+        frame(&mut native);
+        let scale = native.update(|window, _| window.scale_factor());
+        let toast = quads(&mut native)
+            .into_iter()
+            .find(|quad| {
+                quad.bounds.size.width.0 == 560. * scale && quad.border_widths.top.0 == 1.5 * scale
+            })
+            .expect("the toast's bar paints");
+        let foot = (toast.bounds.origin.y + toast.bounds.size.height).0;
+        assert!(
+            (foot - (800. - 32.) * scale).abs() < 1.,
+            "the toast's foot at {foot}, not 32px over the window's"
+        );
+    }
 }
