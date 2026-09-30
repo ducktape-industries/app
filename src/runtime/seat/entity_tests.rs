@@ -776,8 +776,8 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
 }
 
 /// A seat claimed or dropped moves what `Roster::rail` reads, so each wakes
-/// the rail; so do a retry (its row reads Loading again) and the load it
-/// starts (its row leaves Loading). The only test that installs the app's
+/// the rail; so do a retry (its row reads Loading again), the load it
+/// starts (its row leaves Loading) and a roster read that moved the list. The only test that installs the app's
 /// channel: another test's seat may send into it meanwhile, which can pass
 /// this by accident but never fail it.
 #[gpui_kit::test]
@@ -808,4 +808,12 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(!registry().lock().unwrap().contains_key(&key));
     assert!(woken() > 0, "a dropped seat told the rail nothing");
+    // a roster read that lists something else tells the rail too
+    let listed = crate::backend::views::Program {
+        name: "rail-wake-listed".into(),
+        code: abi::BlobId::Sha256([0; 32]),
+        bare: false,
+    };
+    crate::runtime::roster::relist(&Roster::default(), vec![listed]);
+    assert!(woken() > 0, "a changed roster told the rail nothing");
 }

@@ -300,6 +300,53 @@ mod tests {
         assert_eq!(seen.get(), 1, "the save and the beat after it");
     }
 
+    /// The door's walk puts a saved notice setting back: `Prefs` follows
+    /// the file back, not only the next save.
+    #[gpui_kit::test]
+    fn a_kept_notice_setting_put_back_reaches_the_prefs_slice(cx: &mut TestAppContext) {
+        let (model, _, _, mut native) = console(cx);
+        let prefs = model.read_with(&native, |model, _| model.entities.prefs.clone());
+        let burst = |native: &mut VisualTestContext| {
+            prefs.read_with(native, |prefs, _| prefs.get().notify.burst)
+        };
+        let kept = native
+            .update(|window, cx| Kept::of(window, cx))
+            .expect("the console is the shell's");
+        let before = burst(&mut native);
+        let other = notify::BURSTS.into_iter().find(|it| *it != before).unwrap();
+        send(&model, Message::SetNotifyBurst(other), &mut native);
+        native.update(|_, cx| kept.restore(cx));
+        assert_eq!(
+            burst(&mut native),
+            before,
+            "Prefs kept the burst the walk put back"
+        );
+    }
+
+    /// The theme synced outside a dispatch reaches `Prefs` with it.
+    #[gpui_kit::test]
+    fn an_appearance_synced_outside_a_dispatch_reaches_the_prefs_slice(cx: &mut TestAppContext) {
+        let (model, _, _, mut native) = console(cx);
+        let before = model.read_with(&native, |m, cx| m.entities.prefs.read(cx).get().system_dark);
+        let target = if before {
+            crate::Appearance::Light
+        } else {
+            crate::Appearance::Dark
+        };
+        model.update(&mut native, |m, cx| {
+            m.state.appearance = target;
+            m.sync_appearance(cx);
+        });
+        let (state_dark, slice_dark) = model.read_with(&native, |m, cx| {
+            (
+                m.state.system_dark,
+                m.entities.prefs.read(cx).get().system_dark,
+            )
+        });
+        assert_ne!(state_dark, before, "the theme did not move");
+        assert_eq!(slice_dark, state_dark, "Prefs.system_dark lags the state");
+    }
+
     /// The node answers at the same height twice: the chain moved once,
     /// and the session, which holds no status line, not at all.
     #[gpui_kit::test]
