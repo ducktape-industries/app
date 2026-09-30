@@ -1,5 +1,6 @@
 //! Which view is where: each native window's panes, their frames on the
-//! desk, their stacking and focus. The model's, moved by the reducer; the
+//! desk, their stacking and focus. Each window's `Desk` (a
+//! `shell::entities` slice) holds one and moves it by its methods; the
 //! shell draws it and reports the desk's size. The desk seats each
 //! program's view in a window of its own, free to move, resize and
 //! overlap: a frame on the desk and a place in the stacking order.

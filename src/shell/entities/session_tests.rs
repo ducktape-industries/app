@@ -10,7 +10,7 @@
 use super::tests::session;
 use super::{LOST_AFTER, STATUS_EVERY, Screen, Session, SessionEvent, SessionState, StatusSource};
 use crate::backend::NodeStatus;
-use crate::ui::test_support::status;
+use crate::shell::entities::tests::status;
 use futures::FutureExt as _;
 use gpui_kit::{Entity, Subscription, TestAppContext};
 use std::cell::{Cell, RefCell};
@@ -272,7 +272,7 @@ fn a_switch_that_does_not_land_keeps_the_network_in_hand(cx: &mut TestAppContext
 }
 
 /// Disconnect: off every network, the Connect screen, the poll gone, the
-/// key locked, and the reducer told to clear the desks.
+/// key locked, and the desks told to clear (`LeftNetwork`).
 #[gpui_kit::test]
 fn disconnecting_leaves_everything_of_the_network(cx: &mut TestAppContext) {
     let _seat = crate::backend::seat_serial();

@@ -52,8 +52,8 @@ tracking are [docs/ax.md](docs/ax.md) and [docs/perf.md](docs/perf.md).
 | `src/backend/session.rs` | the seated key, its frames, preferences |
 | `src/runtime.rs`, `runtime/` | the wasm view runtime: seats, loads, swaps, the kernel relay |
 | `src/render.rs`, `editor/` | the wire tree presenter and the one native text field (IME, caret, clipboard) |
-| `src/shell.rs`, `ui/` | the window, the two native screens, the state and reducer |
-| `src/shell/{layout,panes,windows}.rs` | one to three views side by side, pop-out into their own windows and back |
+| `src/shell.rs`, `shell/` | the native chrome: the app's state as entities (`shell/entities/`, each written by its own methods) and each window's root with its layers (`shell/layers/`: launcher, menu bar, panes, dialogs, footer) |
+| `src/ui/layout.rs`, `src/shell/entities/{desk,windows}.rs` | panes floating on the desk, popped out into their own windows and back |
 
 ## Dependency line
 

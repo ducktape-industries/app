@@ -10,16 +10,11 @@
 //! (`layers::Chrome`), the panes floating under it (`layers::PaneLayer`),
 //! the open dialog (⌘K, Settings, "Add a device…": `layers::OverlayLayer`),
 //! the node's breath (`layers::StatusDot`) and the footer
-//! (`layers::ToastView`). `Desktop` is what is left of the reducer: the
-//! wall clock's beat and the tray (s12 deletes it).
-
-use crate::ui::task::Task;
-use futures::StreamExt as _;
-use gpui_kit::{Context, Subscription};
-use std::collections::HashMap;
+//! (`layers::ToastView`). `launch::run` makes the entities and opens the
+//! console; from there on, input calls an entity method, the method
+//! compares and notifies, and only the layers observing what moved draw.
 
 use crate::ui::layout::{self, PaneMessage};
-use crate::{AppMessage as Message, Ducktape};
 
 #[cfg(debug_assertions)]
 mod fixtures;
@@ -83,142 +78,4 @@ pub(crate) fn chord_label(key: &str) -> String {
         (false, false) => format!("Ctrl {key}"),
         (false, true) => format!("Ctrl Shift {}", key.replace('↩', "Enter")),
     }
-}
-
-/// A stream that yields every `period`.
-pub(crate) fn every(period: std::time::Duration) -> impl futures::Stream<Item = ()> {
-    futures::stream::unfold((), move |()| async move {
-        tokio::time::sleep(period).await;
-        Some(((), ()))
-    })
-}
-
-// ---------- the desktop actor ----------
-
-/// What is left of the reducer: the wall clock's beat (`dispatch`, gated
-/// so a beat that moves nothing draws nothing) and the tray, kept in step
-/// with the session, the chain and the appearance. Not a window:
-/// `WindowRoot` is. s12 deletes it.
-struct Desktop {
-    state: Ducktape,
-    tray: crate::tray::Tray,
-    /// The model's subscriptions (`Ducktape::subscriptions`), by recipe
-    /// key: each a task feeding its stream's messages into `dispatch`.
-    streams: HashMap<u64, gpui_kit::Task<()>>,
-    entities: entities::Entities,
-    /// What a clock's beat can move on screen, as the windows were last
-    /// told to draw it (`Ducktape::beat_face`).
-    drawn: crate::BeatFace,
-    _subscriptions: [Subscription; 3],
-}
-
-impl Desktop {
-    fn new(
-        state: Ducktape,
-        tray: crate::tray::Tray,
-        entities: entities::Entities,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let subscriptions = [
-            cx.observe(&entities.session, |desktop, _, cx| desktop.sync_tray(cx)),
-            cx.observe(&entities.chain, |desktop, _, cx| desktop.sync_tray(cx)),
-            cx.observe(&entities.prefs, |desktop, _, cx| desktop.sync_tray(cx)),
-        ];
-        Self {
-            drawn: state.beat_face(),
-            state,
-            tray,
-            streams: HashMap::new(),
-            entities,
-            _subscriptions: subscriptions,
-        }
-    }
-
-    fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
-        let _timed = crate::perf::time(crate::perf::Key::Shell, "dispatch");
-        let runtime = crate::runtime::handle();
-        let _runtime = runtime.enter();
-        let beat = message.is_beat();
-        let task = self.state.handle(message);
-        self.start(task, cx).detach();
-        self.subscriptions(cx);
-        // a clock's beat that finds nothing moved on screen draws no frame
-        let face = self.state.beat_face();
-        if !beat || face != self.drawn {
-            cx.notify();
-        }
-        self.drawn = face;
-    }
-
-    /// The status item follows the session, the chain and the appearance.
-    fn sync_tray(&mut self, cx: &Context<Self>) {
-        let snapshot = crate::tray::Snapshot::of(
-            self.entities.session.read(cx).get(),
-            self.entities.chain.read(cx),
-            self.entities.prefs.read(cx).get().appearance,
-        );
-        self.tray.sync(snapshot);
-    }
-
-    fn start(&self, task: Task<Message>, cx: &mut Context<Self>) -> gpui_kit::Task<()> {
-        let mut stream = task.into_stream();
-        let runtime = crate::runtime::handle();
-        cx.spawn(async move |desktop, cx| {
-            loop {
-                let message = futures::future::poll_fn(|context| {
-                    let _runtime = runtime.enter();
-                    stream.poll_next_unpin(context)
-                })
-                .await;
-                let Some(message) = message else {
-                    break;
-                };
-                if desktop
-                    .update(cx, |this, cx| this.dispatch(message, cx))
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })
-    }
-
-    fn subscriptions(&mut self, cx: &mut Context<Self>) {
-        // the ticks run on the wall clock and wake from the kernel's
-        // thread: under gpui's test scheduler a wake from another thread
-        // is nondeterminism, and fails whichever test outlasts a tick
-        if cfg!(test) {
-            return;
-        }
-        let runtime = crate::runtime::handle();
-        let _runtime = runtime.enter();
-        let recipes = self.state.subscriptions().into_recipes();
-        self.streams
-            .retain(|key, _| recipes.iter().any(|recipe| recipe.key == *key));
-        for recipe in recipes {
-            if self.streams.contains_key(&recipe.key) {
-                continue;
-            }
-            let stream = (recipe.start)();
-            let task = self.start(Task::stream(stream), cx);
-            self.streams.insert(recipe.key, task);
-        }
-    }
-}
-
-fn release_window_input(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
-    window.blur(cx);
-    window.draw(cx).clear(cx);
-}
-
-/// Takes a window off the screen, its input let go first. Deferred:
-/// releasing input draws the window, and the caller is most often in the
-/// middle of updating it. `on_window_closed` (launch.rs) then forgets it.
-fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
-    cx.defer(move |cx| {
-        let _ = window.update(cx, |_, window, cx| {
-            release_window_input(window, cx);
-            window.remove_window();
-        });
-    });
 }

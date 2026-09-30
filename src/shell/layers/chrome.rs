@@ -2,7 +2,7 @@
 //! network, the programs as tabs, then Search (⌘K), the bell, the node's
 //! breath, who is signed in, and Settings), and the menus hanging from its
 //! buttons (`menus.rs`, `bell.rs`). A cached view of its own over the
-//! slices it reads: a beat that moves none of them leaves it alone, and a
+//! slices it reads: a write that moves none of them leaves it alone, and a
 //! pane's tick never reaches it. It writes one thing, `DotSlot`: where the
 //! node button's 12px well was laid out, read at prepaint and committed
 //! after the frame when it moved.

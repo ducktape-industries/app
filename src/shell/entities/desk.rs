@@ -10,8 +10,8 @@ use gpui_kit::Context;
 
 pub(crate) type Desk = Slice<Layout>;
 
-/// Every write here is timed with the reducer's pane arms it took over
-/// (docs/perf.md: a `reducer.*` sample past 250 ms is a hang).
+/// Every write here is timed as `reducer.pane` (docs/perf.md: a
+/// `reducer.*` sample past 250 ms is a hang).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.pane")
 }

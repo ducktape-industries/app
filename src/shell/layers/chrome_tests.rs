@@ -4,9 +4,9 @@
 //! a drag), and its
 //! dot slot is committed from the frame's callback (docs/perf.md).
 use crate::shell::PaneMessage;
+use crate::shell::entities::tests::status;
 use crate::shell::layers::tests::{pane, polled, set_motion};
 use crate::shell::panes_tests::{console, window_count};
-use crate::ui::test_support::status;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px, size};
 use view_wire as wire;
@@ -41,8 +41,8 @@ fn tree_renders(module: &str) -> u64 {
 }
 
 /// A block landing moves the bar's height: the chrome draws once, and no
-/// pane's view tree draws with it (the root and the pane layer still draw
-/// under the beat gate until s7).
+/// pane's view tree draws with it (the root and the pane layer, uncached,
+/// draw with it).
 #[gpui_kit::test]
 fn a_beat_that_moves_a_height_re_renders_the_chrome_once_and_no_pane(cx: &mut TestAppContext) {
     const MODULE: &str = "chrome-height-view";
@@ -69,7 +69,7 @@ fn a_beat_that_moves_a_height_re_renders_the_chrome_once_and_no_pane(cx: &mut Te
     assert_eq!(tree_renders(MODULE), tree, "a height moved and a tree drew");
 }
 
-/// The rail's rows moving (a loader thread's word, not a beat) draw the
+/// The rail's rows moving (a loader thread's word, no clock) draw the
 /// chrome once, with nothing dispatched.
 #[gpui_kit::test]
 fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext) {
@@ -92,14 +92,13 @@ fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext)
 }
 
 /// A pane dragged to a new frame (the pointer's move on a held title)
-/// moves the desk (`Desk::set_frame`, one notify) and nothing else: no
-/// reducer message (`shell.dispatch` stands still), and nothing the chrome
-/// reads, so the bar stays cached. The press draws the chrome once (gpui's
-/// `div` calls `window.refresh()` for a pending click, and again on the
-/// release that clears its active state); the frames between them are the
-/// drag's, and the move is measured alone.
+/// moves the desk (`Desk::set_frame`, one notify) and nothing else:
+/// nothing the chrome reads, so the bar stays cached. The press draws the
+/// chrome once (gpui's `div` calls `window.refresh()` for a pending click,
+/// and again on the release that clears its active state); the frames
+/// between them are the drag's, and the move is measured alone.
 #[gpui_kit::test]
-fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
+fn a_drag_frame_moves_the_desk_once_and_leaves_the_chrome_cached(cx: &mut TestAppContext) {
     use crate::shell::layers;
     use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
     const MODULE: &str = "chrome-drag-view";
@@ -110,11 +109,6 @@ fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
     for _ in 0..3 {
         frame(&mut native);
     }
-    let dispatched = || {
-        crate::perf::snapshot(false)["shell"]["dispatch"]["n"]
-            .as_u64()
-            .unwrap_or(0)
-    };
     let mut moved = native
         .update(|_, cx| view.read(cx).layout(cx).panes[0].frame)
         .expect("the pane has no frame");
@@ -140,7 +134,6 @@ fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
     native.run_until_parked();
     frame(&mut native);
     let chrome = window_count(key, "renders.chrome");
-    let messages = dispatched();
     let told = std::rc::Rc::new(std::cell::Cell::new(0));
     let _told = native.update(|_, cx| {
         let told = told.clone();
@@ -162,11 +155,6 @@ fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
     let frame_now = native.update(|_, cx| view.read(cx).layout(cx).panes[0].frame);
     assert_eq!(frame_now, Some(moved), "the drag never landed");
     assert_eq!(told.get(), 1, "the desk notified other than once");
-    assert_eq!(
-        dispatched(),
-        messages,
-        "a drag frame went through the reducer"
-    );
     assert_eq!(
         window_count(key, "renders.chrome"),
         chrome,
@@ -241,7 +229,7 @@ fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
     };
     set_motion(&app, false, &mut native);
     polled(&app, status(7), &mut native);
-    // the beats' first second after a status settles the bar
+    // the first seconds after a status settle the bar
     second(&mut native);
     second(&mut native);
     for menu in [Popover::Node, Popover::Notifications] {
@@ -274,7 +262,7 @@ fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
 }
 
 /// A pane's strip names its program from the rail: a row still Loading
-/// that becomes Ready draws the strip once, with no beat.
+/// that becomes Ready draws the strip once, on no clock.
 #[gpui_kit::test]
 fn the_strip_title_follows_the_rail(cx: &mut TestAppContext) {
     const MODULE: &str = "chrome-strip-view";

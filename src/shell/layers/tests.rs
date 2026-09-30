@@ -8,7 +8,8 @@ use super::super::entities::{
 };
 use super::super::{PaneMessage, WindowKey, WindowKind, keys};
 use super::WindowRoot;
-use crate::Ducktape;
+use crate::runtime::Roster;
+use crate::runtime::notify::CenterHandle;
 use crate::ui::layout::Layout;
 use gpui_kit::{
     AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, VisualTestContext, point, px,
@@ -19,7 +20,8 @@ use gpui_kit::{
 /// `Session`, `Chain`, `Account`, `Screen`, `Prefs` and `Toast` hold, the
 /// program in front, and the console's desk as it stands.
 pub(in crate::shell) struct Seed {
-    pub(in crate::shell) state: Ducktape,
+    pub(in crate::shell) roster: Roster,
+    pub(in crate::shell) center: CenterHandle,
     pub(in crate::shell) session: SessionState,
     pub(in crate::shell) chain: Chain,
     pub(in crate::shell) account: AccountState,
@@ -39,16 +41,12 @@ pub(in crate::shell) struct Seed {
 }
 
 impl Seed {
-    /// A fresh boot: the Connect screen, off every network.
+    /// A fresh boot on the app's stores: the Connect screen, off every
+    /// network.
     pub(in crate::shell) fn boot() -> Self {
-        Ducktape::boot().into()
-    }
-}
-
-impl From<Ducktape> for Seed {
-    fn from(state: Ducktape) -> Self {
         Self {
-            state,
+            roster: crate::runtime::roster().clone(),
+            center: crate::runtime::notify::center().clone(),
             session: SessionState::booted(),
             chain: Chain::default(),
             account: AccountState::default(),
@@ -75,7 +73,8 @@ pub(in crate::shell) fn open_console(
     cx: &mut TestAppContext,
 ) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
     let Seed {
-        state,
+        roster,
+        center,
         session,
         chain,
         account,
@@ -92,7 +91,7 @@ pub(in crate::shell) fn open_console(
         keys::bind(cx);
     });
     let app = cx.update(|cx| {
-        let app = entities::Entities::for_test(&state, cx);
+        let app = entities::Entities::for_test(roster, center, cx);
         // a window that closes is forgotten, as `launch::run` wires it
         let windows = app.windows.downgrade();
         cx.on_window_closed(move |cx, id| {

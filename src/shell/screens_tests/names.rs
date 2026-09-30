@@ -20,7 +20,7 @@ fn names_say_which_one(cx: &mut TestAppContext) {
         keys::bind(cx);
     });
     let mut seed = gate::desk();
-    seed.state.roster = crate::runtime::Roster::listing(&["names-test"]);
+    seed.roster = crate::runtime::Roster::listing(&["names-test"]);
     seed.active = Some(crate::runtime::intern("names-test"));
     seed.chain.height = 6230;
     let (view, mut native) = open(seed, cx);
@@ -69,7 +69,7 @@ fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
     });
     // a program to open, so the empty desk offers its buttons
     let mut seed = gate::desk();
-    seed.state.roster = crate::runtime::Roster::listing(&["chords-test"]);
+    seed.roster = crate::runtime::Roster::listing(&["chords-test"]);
     let (_view, mut native) = open(seed, cx);
     let nodes = native.update(draw);
     for (id, popup) in [

@@ -26,8 +26,8 @@ fn booted(screen: Screen, key: bool) -> Seed {
     seed.session.recent_endpoints.clear();
     // and hands over the app's notification centre and roster, which every
     // test shares: a screen state gets its own
-    seed.state.center = Default::default();
-    seed.state.roster = Default::default();
+    seed.center = Default::default();
+    seed.roster = Default::default();
     seed.screen = screen;
     if key {
         seed.account.signer_key = "ab".into();
@@ -62,7 +62,7 @@ fn on_desk(overlay: Overlay) -> Build {
 /// for each.
 fn two_programs() -> Seed {
     let mut seed = desk();
-    seed.state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
+    seed.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
     seed
 }
 
@@ -221,7 +221,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             false,
             plain(|| {
                 let mut seed = desk();
-                seed.state.roster = crate::runtime::Roster::listing(&["gate-program"]);
+                seed.roster = crate::runtime::Roster::listing(&["gate-program"]);
                 seed
             }),
         ),
@@ -302,7 +302,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             false,
             plain(|| {
                 let mut seed = desk();
-                seed.state.center.lock().ask_for_test("gate-asking");
+                seed.center.lock().ask_for_test("gate-asking");
                 seed.active = Some("gate-asking");
                 seed
             }),
@@ -431,8 +431,8 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
         .find(|(name, ..)| *name == "settings-notifications")
         .unwrap();
     let scene = build();
-    scene.0.state.center.lock().ask_for_test("gate-a");
-    let center = scene.0.state.center.clone();
+    scene.0.center.lock().ask_for_test("gate-a");
+    let center = scene.0.center.clone();
     let prefs = crate::backend::read_prefs();
     assert_eq!(prefs, serde_json::json!({}));
     let (_view, native) = open(scene, cx);

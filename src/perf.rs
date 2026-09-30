@@ -58,7 +58,7 @@ pub(crate) enum Key {
         instance: u64,
     },
     Window(WindowKey),
-    /// Startup, the reducer, I/O, RSS.
+    /// Startup, the entities' methods, I/O, RSS.
     Shell,
 }
 

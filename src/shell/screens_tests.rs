@@ -643,7 +643,7 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
     });
     let mut seed = Seed::boot();
     // its own roster, not the app's one every test shares
-    seed.state.roster = Default::default();
+    seed.roster = Default::default();
     seed.screen = Screen::Desk;
     seed.session.connected = true;
     seed.session.network = "testkit".into();
@@ -689,8 +689,8 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     let mut seed = Seed::boot();
     // its own centre and roster, not the app's ones every test shares
     let center = CenterHandle::default();
-    seed.state.center = center.clone();
-    seed.state.roster = Default::default();
+    seed.center = center.clone();
+    seed.roster = Default::default();
     seed.screen = Screen::Desk;
     seed.session.connected = true;
     seed.session.network = "testkit".into();

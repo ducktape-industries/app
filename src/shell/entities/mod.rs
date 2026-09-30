@@ -49,7 +49,8 @@ pub(crate) use spotlight::Spotlight;
 pub(crate) use toast::Toast;
 pub(crate) use windows::{Windows, posted};
 
-use crate::Ducktape;
+use crate::runtime::Roster;
+use crate::runtime::notify::CenterHandle;
 use futures::channel::mpsc;
 use gpui_kit::{App, AppContext as _, Entity};
 
@@ -84,11 +85,12 @@ impl std::ops::Deref for Entities {
 }
 
 impl Entities {
-    /// Every app-wide entity, off the app's roster and notification centre
-    /// (`state`) and this device's prefs; the rail's rows read now and
-    /// again on every message `changes` brings.
+    /// Every app-wide entity, off a roster, a notification centre and this
+    /// device's prefs; the rail's rows read now and again on every message
+    /// `changes` brings.
     pub(crate) fn new(
-        state: &Ducktape,
+        roster: Roster,
+        center: CenterHandle,
         changes: mpsc::UnboundedReceiver<()>,
         cx: &mut App,
     ) -> Self {
@@ -97,10 +99,10 @@ impl Entities {
         let account = cx.new(|_| Account::new(screen.clone()));
         let session = {
             let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());
-            cx.new(|_| Session::new(chain, account, screen, state.center.clone()))
+            cx.new(|_| Session::new(chain, account, screen, center.clone()))
         };
-        let rail = cx.new(|cx| Rail::new(state.roster.clone(), changes, &session, cx));
-        let notifications = cx.new(|_| Notifications::new(state.center.clone()));
+        let rail = cx.new(|cx| Rail::new(roster, changes, &session, cx));
+        let notifications = cx.new(|_| Notifications::new(center));
         let toast = cx.new(|cx| Toast::new(&session, &account, cx));
         let prefs = cx.new(|_| Slice::new(Prefs::load()));
         let seats = cx.new(|cx| Seats::new(&session, &account, &prefs, &rail, &notifications, cx));
@@ -124,8 +126,8 @@ impl Entities {
 
     /// As `new`, with a rail no loader thread wakes: a test refreshes it.
     #[cfg(test)]
-    pub(crate) fn for_test(state: &Ducktape, cx: &mut App) -> Self {
-        Self::new(state, mpsc::unbounded().1, cx)
+    pub(crate) fn for_test(roster: Roster, center: CenterHandle, cx: &mut App) -> Self {
+        Self::new(roster, center, mpsc::unbounded().1, cx)
     }
 }
 
@@ -143,7 +145,8 @@ pub(crate) struct WindowEntities {
     pub(crate) dot: Entity<DotSlot>,
 }
 
-/// The app-wide entities off no reducer, for the entities' own tests.
+/// The app-wide entities on stores of the test's own, for the entities'
+/// own tests.
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -160,13 +163,28 @@ pub(crate) mod tests {
     /// Every entity off a roster and a centre of the test's own, on the
     /// desk with no window open.
     pub(crate) fn entities(cx: &mut App) -> Entities {
-        let mut state = Ducktape::boot();
-        state.roster = Default::default();
-        state.center = Default::default();
-        let entities = Entities::for_test(&state, cx);
+        let entities = Entities::for_test(Default::default(), Default::default(), cx);
         entities.screen.update(cx, |screen, cx| {
             screen.set(Screen::Desk, cx);
         });
         entities
+    }
+
+    /// The node's answer at `height`, for the tests that feed the session
+    /// one.
+    pub(crate) fn status(height: u64) -> crate::backend::NodeStatus {
+        crate::backend::NodeStatus {
+            network: "testkit".into(),
+            time: 0,
+            block_time_ms: 0,
+            epoch_length: 0,
+            height,
+            tip: [0; 32],
+            root: abi::Root([0; 32]),
+            epoch: 0,
+            identity: Vec::new(),
+            contract: crate::backend::noded::NODE_CONTRACT,
+            genesis: [0; 32],
+        }
     }
 }

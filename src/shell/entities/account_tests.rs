@@ -783,7 +783,7 @@ fn leaving_the_network_clears_the_desks_and_badges(cx: &mut TestAppContext) {
     entities.chain.update(cx, |chain, cx| {
         chain.set(
             Chain {
-                node: Some(crate::ui::test_support::status(7)),
+                node: Some(crate::shell::entities::tests::status(7)),
                 height: 7,
                 ..Chain::default()
             },

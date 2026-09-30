@@ -1,8 +1,8 @@
 //! What is open over one window's desk, and the words for it: the dialogs
 //! on a scrim (Spotlight, Settings, Approve), the network switcher and the
 //! bar's menus. Only the console's opens anything; a pop-out's stays shut.
-//! Its methods are the one writer; what the reducer still owns follows it
-//! from observers (`Desktop::window_entities`).
+//! Its methods are the one writer; it closes itself when the network is
+//! left (its `Session` observer).
 use super::{Session, SessionState};
 use gpui_kit::{Context, Entity, Subscription};
 
@@ -50,7 +50,7 @@ pub(crate) enum Spot {
     Settings,
     CreateAccount,
     Lock,
-    Appearance(crate::Appearance),
+    Appearance(crate::backend::Appearance),
     OtherNetwork,
     Help,
     /// The focused window fills the desk (⌘⇧↩).
@@ -192,8 +192,8 @@ impl Overlays {
     }
 }
 
-/// Every write here is timed with the reducer's overlay arms it took over
-/// (docs/perf.md: a `reducer.*` sample past 250 ms is a hang).
+/// Every write here is timed as `reducer.overlay` (docs/perf.md: a
+/// `reducer.*` sample past 250 ms is a hang).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.overlay")
 }

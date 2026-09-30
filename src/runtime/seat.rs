@@ -342,7 +342,6 @@ pub(super) fn spawn_load(
             asked_for,
             loaded,
         );
-        roster().changed();
         rail_moved();
         locked.wake.send_replace(());
         timing.install = installed.elapsed();
