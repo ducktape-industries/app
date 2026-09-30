@@ -336,9 +336,10 @@ answers `None` on any failure but a transport one, which becomes
 The shell's state is a set of entities (`shell/entities/`), each written
 by its own methods and by nothing else, each compared before it notifies;
 the layers observe them and draw; the controls call their methods. What
-crosses entities goes by observers and events, never by one entity
-updating another (children excepted: `Windows` updates each window's
-`Desk`, `Overlays`, `Spotlight`). The cycles:
+crosses entities goes by observers and events, or by one-way calls
+(`Windows` into each window's `Desk`, `Overlays`, `Spotlight`, and into
+`Toast`, `Prefs`, `Account`, `Notifications`, `Session`), never back
+into the caller. The cycles:
 
 ```
 shell control ─► entity method ─► its compared state ─► the layers observing it re-render
@@ -724,11 +725,11 @@ House words, and where one word means several things.
   draws the pane area. Unrelated.
 - **override** — `DUCKTAPE_VIEWS_DIR`: a developer's `<module>_view.wasm`
   files replace the network's views, unverified, logged.
-- **console** — the main OS window (`WindowKind::Console`, `console_win`):
+- **console** — the main OS window (`WindowKind::Console`, `Windows.console`):
   the launcher first, then the desk. Also the AX door's window names
   `console`, `console2`, ….
 - **launcher** — every screen before the desk (Connect, key, phrase,
-  recover, account), in the console at launcher size; `in_launcher()`.
+  recover, account), in the console at launcher size; `Screen != Desk`.
 - **desk** — the area under the menu bar where panes float
   (`ui/layout.rs`); also `Screen::Desk` and the `desk` key context.
 - **pane / window** — `layout::Pane` is one floating frame on the desk
