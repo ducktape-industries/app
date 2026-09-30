@@ -290,6 +290,29 @@ fn a_toast_dismisses_itself_after_3_6_s_with_two_notifies(cx: &mut TestAppContex
     assert_eq!(seen.get(), 3);
 }
 
+/// A node answering (`SessionEvent::Connected`) brings the console back:
+/// with its window closed to the tray, a new one opens.
+#[gpui_kit::test]
+fn a_node_answering_reopens_a_closed_console(cx: &mut TestAppContext) {
+    use super::SessionEvent;
+    let (app, key) = console(cx);
+    let handle = app
+        .windows
+        .read_with(cx, |windows, _| windows.handles()[&key]);
+    cx.update_window(handle, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(window_count(&app, cx), 0, "the console never closed");
+    app.session
+        .update(cx, |_, cx| cx.emit(SessionEvent::Connected));
+    cx.run_until_parked();
+    assert_eq!(
+        window_count(&app, cx),
+        1,
+        "the node answered and no console came"
+    );
+}
+
 /// A notice setting saved reaches the file and `Prefs` in the call that
 /// saved it, with one notify; a reload after it moves nothing.
 #[gpui_kit::test]
@@ -355,6 +378,11 @@ fn an_appearance_change_syncs_the_theme(cx: &mut TestAppContext) {
             .update(cx, |prefs, cx| prefs.set_appearance(mode, cx));
         cx.run_until_parked();
         assert_eq!(dark(cx), (expected, expected), "{mode:?}");
+        assert_eq!(
+            crate::backend::load_appearance(),
+            mode,
+            "the appearance never reached the file"
+        );
     }
 }
 

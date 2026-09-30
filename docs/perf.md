@@ -596,7 +596,7 @@ Phase 0, as listed:
   the pane bodies the app draws, `renders.empty` (`layers::EmptyPane`: the
   bare desk or an empty window) and `renders.help` (`layers::HelpPane`) per
   window;
-  the `switch` timer from `pane_message`, `raise_window` and the activation
+  the `switch` timer from `pane_message`, `Windows::raise` and the activation
   observer to the next frame; `Spin::render` `figure.frame` and
   `figure.interval`; `rail` and `rail.calls`; `io.read_prefs`,
   `io.write_prefs`, `io.store.get`, `io.store.set`, `io.notify_save`,

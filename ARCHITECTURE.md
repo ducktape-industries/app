@@ -337,9 +337,10 @@ answers `None` on any failure but a transport one, which becomes
 The shell's state is a set of entities (`shell/entities/`), each written
 by its own methods and by nothing else, each compared before it notifies;
 the layers observe them and draw; the controls call their methods. What
-crosses entities goes by observers and events, never by one entity
-updating another (children excepted: `Windows` updates each window's
-`Desk`, `Overlays`, `Spotlight`). The cycles:
+crosses entities goes by observers and events, or by one-way calls
+(`Windows` into each window's `Desk`, `Overlays`, `Spotlight`, and into
+`Toast`, `Prefs`, `Account`, `Notifications`, `Session`), never back
+into the caller. The cycles:
 
 ```
 shell control ─► entity method ─► its compared state ─► the layers observing it re-render

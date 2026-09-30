@@ -91,11 +91,16 @@ fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext)
     );
 }
 
-/// A pane dragged to a new frame moves the desk (`Desk::set_frame`, one
-/// notify) and nothing else: nothing the chrome reads, so the bar stays
-/// cached.
+/// A pane dragged to a new frame (the pointer's move on a held title)
+/// moves the desk (`Desk::set_frame`, one notify) and nothing else:
+/// nothing the chrome reads, so the bar stays cached. The press draws the
+/// chrome once (gpui's `div` calls `window.refresh()` for a pending click,
+/// and again on the release that clears its active state); the frames
+/// between them are the drag's, and the move is measured alone.
 #[gpui_kit::test]
 fn a_drag_frame_moves_the_desk_once_and_leaves_the_chrome_cached(cx: &mut TestAppContext) {
+    use crate::shell::layers;
+    use gpui_kit::{MouseButton, MouseDownEvent, MouseMoveEvent, PlatformInput};
     const MODULE: &str = "chrome-drag-view";
     let _on = crate::perf::on_for_test();
     let (_, key, view, mut native) = console(cx);
@@ -104,20 +109,47 @@ fn a_drag_frame_moves_the_desk_once_and_leaves_the_chrome_cached(cx: &mut TestAp
     for _ in 0..3 {
         frame(&mut native);
     }
-    let chrome = window_count(key, "renders.chrome");
+    let mut moved = native
+        .update(|_, cx| view.read(cx).layout(cx).panes[0].frame)
+        .expect("the pane has no frame");
+    let title = gpui_kit::point(px(moved.x + 100.), px(layers::BAR + moved.y + 15.));
+    let to = gpui_kit::point(title.x + px(40.), title.y + px(30.));
+    moved.x += 40.;
+    moved.y += 30.;
     let desk = native.update(|_, cx| view.read(cx).desk.clone());
+    // the press takes hold of the title (and draws the chrome once, as any
+    // press does: gpui's `div` refreshes the window for the pending click)
+    native.update(|window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseDown(MouseDownEvent {
+                position: title,
+                button: MouseButton::Left,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+            cx,
+        )
+    });
+    native.run_until_parked();
+    frame(&mut native);
+    let chrome = window_count(key, "renders.chrome");
     let told = std::rc::Rc::new(std::cell::Cell::new(0));
     let _told = native.update(|_, cx| {
         let told = told.clone();
         cx.observe(&desk, move |_, _| told.set(told.get() + 1))
     });
-    let mut moved = native
-        .update(|_, cx| view.read(cx).layout(cx).panes[0].frame)
-        .expect("the pane has no frame");
-    moved.x += 40.;
-    moved.y += 30.;
     // the pointer's move, as `pane_drag::follow` lands it
-    desk.update(&mut native, |desk, cx| desk.set_frame(0, moved, cx));
+    native.update(|window, cx| {
+        window.dispatch_event(
+            PlatformInput::MouseMove(MouseMoveEvent {
+                position: to,
+                pressed_button: Some(MouseButton::Left),
+                modifiers: Default::default(),
+            }),
+            cx,
+        )
+    });
     native.run_until_parked();
     frame(&mut native);
     let frame_now = native.update(|_, cx| view.read(cx).layout(cx).panes[0].frame);

@@ -164,6 +164,8 @@ impl Slice<Layout> {
             PaneMessage::Frame(index, frame) => self.set_frame(index, frame, cx),
             PaneMessage::Hold(index) => self.hold(index, cx),
             PaneMessage::Release { keep } => self.release(keep, cx),
+            // desk-only (tests): a pop-out's window stays; panes.rs routes
+            // Close to `Windows::close_pane`
             PaneMessage::Close(index) => _ = self.close(index, cx),
             PaneMessage::PopOut { .. } | PaneMessage::PopIn => {}
         }

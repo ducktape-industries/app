@@ -315,11 +315,12 @@ fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppCon
     // the OS window losing the keys
     stroke(&mut native, "secondary-shift-m");
     assert!(held(&mut native, &view));
-    // the OS window losing the keys: `Windows` drops the desk's hold
-    native.update(|_, cx| {
-        let desk = view.read(cx).desk.clone();
-        desk.update(cx, |desk, cx| desk.drop_hold(cx));
-    });
+    // the OS window losing the keys: `Windows` hears the deactivation and
+    // drops the desk's hold
+    native.update(|window, _| window.activate_window());
+    native.run_until_parked();
+    assert!(held(&mut native, &view), "activation dropped the hold");
+    native.deactivate_window();
     settle(&mut native);
     assert!(!held(&mut native, &view), "the window lost the keys");
 }

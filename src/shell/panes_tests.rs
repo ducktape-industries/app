@@ -866,6 +866,55 @@ fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
     );
 }
 
+/// A row of the bell's list clicked closes the menu and opens what the
+/// notice is about: its program's seat on the console (`Windows::open_notice`).
+#[gpui_kit::test]
+fn a_bell_row_opens_the_notices_program(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-bell-row-view";
+    let (app, _, view, mut native) = console(cx);
+    let roster = crate::runtime::Roster::listing(&[MODULE]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    let id = native.update(|_, cx| {
+        let notifications = app.notifications.read(cx);
+        let settings = app.prefs.read(cx).get().notify.clone();
+        let post = view_wire::methods::Notification {
+            title: "Ping".into(),
+            body: "From the bell".into(),
+            tag: String::new(),
+            link: String::new(),
+        };
+        let _ = notifications.center().lock().post(
+            &settings,
+            MODULE,
+            "Bell",
+            post,
+            std::time::Instant::now(),
+            0,
+        );
+        notifications.entries()[0].id
+    });
+    app.notifications.update(&mut native, |notifications, cx| {
+        _ = notifications.refresh(cx)
+    });
+    show(
+        &view,
+        Some(Overlay::Menu(Popover::Notifications)),
+        &mut native,
+    );
+    native.update(|window, cx| press(&format!("notif/{id}"), window, cx));
+    settle(&mut native);
+    assert_eq!(
+        native.update(|_, cx| *view.read(cx).overlays().read(cx).get()),
+        None,
+        "the bell stayed open"
+    );
+    assert!(
+        native.update(|_, cx| view.read(cx).desk.read(cx).holds(MODULE)),
+        "the notice's program never opened"
+    );
+}
+
 /// A pane that leaves the desk with an intent still to hand over (a badge
 /// its last update set) gets it to the rail: `hide` returns them and the
 /// reconcile routes them, since the seat's own route is dropped in the
