@@ -57,6 +57,15 @@ fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::Ap
     );
 }
 
+/// Activates the test window and waits for it to be so: gpui reports focus
+/// moves (`on_focus_out`, `on_blur`) only in the active window, and
+/// `activate_window` takes effect once the executor runs.
+fn activate(native: &mut VisualTestContext) {
+    native.update(|window, _| window.activate_window());
+    native.run_until_parked();
+    native.update(|window, _| assert!(window.is_window_active(), "the window did not activate"));
+}
+
 /// An assistive technology's press (AccessKit's Click) on the node whose
 /// element is `id` inside the element `within`: the path the door's
 /// `/act press` takes.

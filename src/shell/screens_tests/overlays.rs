@@ -188,7 +188,7 @@ fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
     for (overlay, _, name) in MENUS {
         let (view, mut native) = open(gate::desk(), cx);
         // gpui reports focus moves only in the active window
-        native.update(|window, _| window.activate_window());
+        super::activate(&mut native);
         native.update(draw);
         show(&view, &mut native, Some(overlay));
         native.simulate_click(
@@ -410,7 +410,7 @@ fn opening_a_menu_does_not_close_it(cx: &mut TestAppContext) {
     for (overlay, role, name) in MENUS {
         let (view, mut native) = open(gate::desk(), cx);
         // gpui reports focus moves only in the active window
-        native.update(|window, _| window.activate_window());
+        super::activate(&mut native);
         native.update(draw);
         show(&view, &mut native, Some(overlay));
         native.run_until_parked();
@@ -440,7 +440,7 @@ fn a_press_on_the_menus_own_button_toggles_it_once(cx: &mut TestAppContext) {
         keys::bind(cx);
     });
     let (view, mut native) = open(gate::desk(), cx);
-    native.update(|window, _| window.activate_window());
+    super::activate(&mut native);
     let node = bar_button(&mut native, "rail-connection");
     let press = |native: &mut VisualTestContext, at| {
         native.simulate_click(at, gpui_kit::Modifiers::none());
@@ -473,7 +473,7 @@ fn the_bells_settings_row_opens_settings_and_the_belt_leaves_it_open(cx: &mut Te
         keys::bind(cx);
     });
     let (view, mut native) = open(gate::desk(), cx);
-    native.update(|window, _| window.activate_window());
+    super::activate(&mut native);
     native.update(draw);
     show(
         &view,
