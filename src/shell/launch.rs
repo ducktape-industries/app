@@ -1,13 +1,14 @@
-//! App start: the gpui application, the entities, the `Desktop` (the
-//! beat and the tray) and the console window, with every outside source
-//! of events wired to the entity it moves: open-URL requests and the
-//! links a banner posts (`Windows::open_link`), the tray (`Windows`,
-//! `Prefs`), a window closing (`Windows::closed_id`), the AX door
-//! (`Windows::served`, `Seats::settle`). Fonts and the theme are
-//! registered here too.
+//! App start: the gpui application, the entities and the console window,
+//! with every outside source of events wired to the entity it moves:
+//! open-URL requests and the links a banner posts (`Windows::open_link`),
+//! the tray (it follows `Session`, `Chain` and `Prefs`; its rows call
+//! `Windows` and `Prefs`), a window closing (`Windows::closed_id`), the
+//! AX door (`Windows::served`, `Seats::settle`), quitting
+//! (`Windows::quit`). Fonts and the theme are registered here too.
 
 use super::*;
-use gpui_kit::{AppContext as _, AsyncApp};
+use futures::StreamExt as _;
+use gpui_kit::AsyncApp;
 
 pub(crate) fn run() {
     let application = gpui_kit::application().with_assets(gpui_kit::assets::AllAssets);
@@ -23,14 +24,16 @@ pub(crate) fn run() {
         initialize_rendering(cx);
         crate::perf::mark("fonts");
         let mut posted = entities::posted();
-        let state = Ducktape::boot();
+        // the app's two stores: the notification centre (its log read
+        // off disk) and the roster the node's reads fill
+        let center = crate::runtime::notify::center().clone();
+        let roster = crate::runtime::roster().clone();
         crate::perf::mark("boot");
-        let (tray, mut tray_events) = crate::tray::init(cx);
-        let entities = entities::Entities::new(&state, crate::runtime::changes_channel(), cx);
+        let changes = crate::runtime::changes_channel();
+        let entities = entities::Entities::new(roster, center, changes, cx);
+        let (tray, mut tray_events) = crate::tray::init(&entities, cx);
         let windows = entities.windows.clone();
         windows.update(cx, |windows, cx| windows.sync_appearance(cx));
-        let desktop = cx.new(|cx| Desktop::new(state, tray, entities.clone(), cx));
-        desktop.update(cx, |desktop, cx| desktop.sync_tray(cx));
         let quitting = windows.downgrade();
         cx.on_action(move |_: &keys::Quit, cx| {
             let _ = quitting.update(cx, |windows, cx| windows.quit(cx));
@@ -97,7 +100,6 @@ pub(crate) fn run() {
         windows.update(cx, |windows, cx| {
             windows.open(WindowKind::Console, None, cx);
         });
-        desktop.update(cx, |desktop, cx| desktop.subscriptions(cx));
         // the first thing to do: reach the node last used, if there was one
         if let Some(target) = entities::Session::boot_target() {
             entities
@@ -126,8 +128,9 @@ pub(crate) fn run() {
             })
             .detach();
         }
-        // the only strong handles to the model: they live until the app quits
-        let mut kept = Some((desktop, entities));
+        // the only strong handles to the entities and the tray: they live
+        // until the app quits
+        let mut kept = Some((tray, entities));
         cx.on_app_quit(move |_| {
             drop(kept.take());
             // the one hook every quit path reaches

@@ -55,24 +55,32 @@ pub(crate) fn write_prefs(prefs: &serde_json::Value) -> bool {
     true
 }
 
-pub(crate) fn load_appearance() -> crate::Appearance {
+/// Light, dark, or as the OS says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Appearance {
+    System,
+    Light,
+    Dark,
+}
+
+pub(crate) fn load_appearance() -> Appearance {
     match read_prefs()["appearance"].as_str() {
-        Some("light") => crate::Appearance::Light,
-        Some("dark") => crate::Appearance::Dark,
-        _ => crate::Appearance::System,
+        Some("light") => Appearance::Light,
+        Some("dark") => Appearance::Dark,
+        _ => Appearance::System,
     }
 }
 
-pub(crate) fn save_appearance(mode: crate::Appearance) -> bool {
+pub(crate) fn save_appearance(mode: Appearance) -> bool {
     let mut prefs = read_prefs();
     match mode {
-        crate::Appearance::System => {
+        Appearance::System => {
             if let Some(prefs) = prefs.as_object_mut() {
                 prefs.remove("appearance");
             }
         }
-        crate::Appearance::Light => prefs["appearance"] = serde_json::json!("light"),
-        crate::Appearance::Dark => prefs["appearance"] = serde_json::json!("dark"),
+        Appearance::Light => prefs["appearance"] = serde_json::json!("light"),
+        Appearance::Dark => prefs["appearance"] = serde_json::json!("dark"),
     }
     write_prefs(&prefs)
 }

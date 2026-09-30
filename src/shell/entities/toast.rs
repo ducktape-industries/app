@@ -69,7 +69,7 @@ impl Toast {
     }
 }
 
-/// Timed with the reducer's desk arms it took over (docs/perf.md).
+/// Timed as `reducer.desk`, the name qa's hang rule reads (docs/perf.md).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.desk")
 }

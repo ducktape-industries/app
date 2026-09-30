@@ -12,9 +12,10 @@
 //! new recovery key's words are held here uncompared while their screens
 //! show, and go with them.
 //!
-//! What the reducer still owns follows through events: a notice
-//! (`AccountEvent::Toast`), Help opened greeted for a new account
-//! (`Welcome`), "Add a device…" closing once approved (`Approved`).
+//! What other entities do for it follows through events: a notice
+//! (`AccountEvent::Toast`, `Toast`), Help opened greeted for a new
+//! account (`Welcome`, `Windows`), "Add a device…" closing once approved
+//! (`Approved`, `Windows`).
 
 use super::{AccountStep, Screen, Slice, on_runtime, spawn_on_runtime};
 use crate::backend;
@@ -60,7 +61,8 @@ pub(crate) struct AccountState {
     pub(crate) welcome: bool,
 }
 
-/// What the reducer still does for the account.
+/// What other entities do for the account: `Toast` shows the notice,
+/// `Windows` opens Help and closes "Add a device…".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum AccountEvent {
     Toast(String),
@@ -179,8 +181,8 @@ impl Account {
     /// Another chain than the last (a switch, not a second node of the same
     /// network): nothing of the last one carries over (its seated key, its
     /// account, any sign-in half done), and the key step comes first; `true`
-    /// then, for what the reducer clears. A second node of the same network
-    /// keeps the screen it was on.
+    /// then, for what leaving the last network clears. A second node of the
+    /// same network keeps the screen it was on.
     pub(crate) fn take_up(
         &mut self,
         keyring: backend::Keyring,
@@ -1023,7 +1025,7 @@ impl Account {
         self.call = None;
         self.edit(|state| state.busy = false, cx);
         match done {
-            // the dialog closes (`Desktop`), which clears what it found
+            // the dialog closes (`Windows`), which clears what it found
             Ok(()) => {
                 cx.emit(AccountEvent::Approved);
                 cx.emit(AccountEvent::Toast(

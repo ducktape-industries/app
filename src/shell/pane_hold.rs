@@ -10,7 +10,7 @@
 //! the `PaneLayer`'s, brought in line with the model after every draw.
 use super::layers::PaneLayer;
 use super::*;
-use gpui_kit::Window;
+use gpui_kit::{Context, Window};
 
 /// Pixels an arrow moves or sizes by; with Shift, [`FAR`].
 const STEP: f32 = 8.;

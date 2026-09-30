@@ -348,8 +348,8 @@ fn an_appearance_change_syncs_the_theme(cx: &mut TestAppContext) {
         )
     };
     for (mode, expected) in [
-        (crate::Appearance::Dark, true),
-        (crate::Appearance::Light, false),
+        (crate::backend::Appearance::Dark, true),
+        (crate::backend::Appearance::Light, false),
     ] {
         app.prefs
             .update(cx, |prefs, cx| prefs.set_appearance(mode, cx));

@@ -5,6 +5,7 @@
 use super::super::layers::tests::open_now;
 use super::*;
 use gpui_kit::{Pixels, Role};
+use std::collections::HashMap;
 
 /// Whether `window`'s focused node is the `role` named `name`, or inside it.
 fn focus_inside(window: &Window, role: Role, name: &str) -> bool {
@@ -251,7 +252,7 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     // the bell's panel, one notice unread: Mark all read goes as it works
     let mut seed = gate::desk();
     let center = CenterHandle::default();
-    seed.state.center = center.clone();
+    seed.center = center.clone();
     let silent = Settings {
         banners: true,
         in_front: false,

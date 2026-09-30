@@ -4,9 +4,9 @@
 use super::BAR;
 use super::tests::{Seed, open_console, pane, polled, pop_out, set_motion, set_screen, toast};
 use crate::shell::PaneMessage;
+use crate::shell::entities::tests::status;
 use crate::shell::entities::{Overlay, Popover, Screen};
 use crate::shell::panes_tests::{console, draw, settle, window_count};
-use crate::ui::test_support::status;
 use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px};
 use view_wire as wire;
 
@@ -95,6 +95,99 @@ fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
         count(&mut native, "renders.chrome"),
         chrome,
         "a pulse drew the bar"
+    );
+}
+
+/// Every render counter window `key` has, by name.
+fn render_counts(key: crate::runtime::WindowKey) -> Vec<(String, u64)> {
+    let snapshot = crate::perf::snapshot(false);
+    let counts = snapshot["windows"][key.0.to_string()]
+        .as_object()
+        .expect("the window counts");
+    counts
+        .iter()
+        .filter(|(name, _)| name.starts_with("renders"))
+        .map(|(name, count)| (name.clone(), count.as_u64().unwrap_or(0)))
+        .collect()
+}
+
+/// An idle app on a chain that stands still draws nothing: the node's
+/// status poll runs on its own clock and lands the same height (and, once,
+/// no answer), and no layer of the window draws, nor the root that lays
+/// them out, nor a pane's tree. No clock of the app's draws it otherwise:
+/// the wall clock's beat went with the reducer, and its `shell.dispatch`
+/// timer with it.
+#[gpui_kit::test]
+fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
+    use crate::shell::entities::{STATUS_EVERY, SessionState, StatusSource};
+    use futures::FutureExt as _;
+    use std::{cell::Cell, rc::Rc};
+    const MODULE: &str = "root-still-view";
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    // the node answers height 7 to every ask but the fourth
+    let asked = Rc::new(Cell::new(0));
+    let source: StatusSource = {
+        let asked = asked.clone();
+        Rc::new(move || {
+            let n = asked.get();
+            asked.set(n + 1);
+            let answer = match n {
+                3 => Err("no answer".to_owned()),
+                _ => Ok(status(7)),
+            };
+            std::future::ready(answer).boxed_local()
+        })
+    };
+    app.session.update(&mut native, |session, cx| {
+        let on_node = SessionState {
+            connected: true,
+            network: "testkit".into(),
+            chain: "testkit".into(),
+            ..SessionState::booted()
+        };
+        session.seed_connected(on_node, source, cx)
+    });
+    let poll = |native: &mut VisualTestContext| {
+        native.executor().advance_clock(STATUS_EVERY);
+        native.run_until_parked();
+    };
+    // the first answer moves the height from none to 7, and draws it
+    poll(&mut native);
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    let still = render_counts(key);
+    let tree = tree_renders(MODULE);
+    assert!(
+        still
+            .iter()
+            .any(|(name, count)| name == "renders.chrome" && *count > 0),
+        "the bar never drew: {still:?}"
+    );
+    let before = asked.get();
+    for _ in 0..6 {
+        poll(&mut native);
+    }
+    assert_eq!(asked.get(), before + 6, "the poll did not run");
+    assert_eq!(
+        render_counts(key),
+        still,
+        "a poll that moved nothing drew the window"
+    );
+    assert_eq!(
+        tree_renders(MODULE),
+        tree,
+        "a still chain drew a pane's tree"
+    );
+    assert!(
+        crate::perf::snapshot(false)["shell"]
+            .get("dispatch")
+            .is_none(),
+        "something still times a reducer dispatch"
     );
 }
 
@@ -311,8 +404,8 @@ fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext)
 fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
     let mut seed = Seed::boot();
-    seed.state.center = Default::default();
-    seed.state.roster = Default::default();
+    seed.center = Default::default();
+    seed.roster = Default::default();
     seed.account.key_exists = true;
     let (_, key, view, mut native) = open_console(seed, cx);
     let nodes = native.update(draw);
@@ -374,8 +467,8 @@ fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext)
     use crate::shell::figure::Figure;
     let _on = crate::perf::on_for_test();
     let mut seed = Seed::boot();
-    seed.state.center = Default::default();
-    seed.state.roster = Default::default();
+    seed.center = Default::default();
+    seed.roster = Default::default();
     // a still figure: none of its own frames
     seed.prefs.motion = false;
     let (_, key, view, mut native) = open_console(seed, cx);
@@ -417,8 +510,8 @@ fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext)
 fn a_figure_back_from_the_desk_comes_with_its_screen(cx: &mut TestAppContext) {
     use crate::shell::figure::Figure;
     let mut seed = Seed::boot();
-    seed.state.center = Default::default();
-    seed.state.roster = Default::default();
+    seed.center = Default::default();
+    seed.roster = Default::default();
     seed.prefs.motion = false;
     let (_, _, view, mut native) = open_console(seed, cx);
     let spin = native.update(|_, cx| view.read(cx).launcher().read(cx).spin.clone());

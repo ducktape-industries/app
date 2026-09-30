@@ -8,10 +8,11 @@
 //! block N" moved with every block, and the screens that say it build it
 //! from `Chain`'s height.
 //!
-//! What the reducer still owns follows through events: the network left
-//! (`SessionEvent::LeftNetwork`: the desks, badges and active program go),
-//! a failure said over a network in hand (`Toast`), the console brought
-//! forward as a node answers (`Connected`).
+//! What other entities do for it follows through events: the network left
+//! (`SessionEvent::LeftNetwork`: `Windows` clears the desks and the active
+//! program, `Rail` its badges), a failure said over a network in hand
+//! (`Toast`), the console brought forward as a node answers (`Connected`,
+//! `Windows`).
 
 use super::{Account, Chain, Screen, Slice, on_runtime, spawn_on_runtime};
 use crate::backend;
@@ -79,7 +80,7 @@ impl SessionState {
     }
 }
 
-/// What the reducer still does for the session.
+/// What other entities do for the session (`Windows`, `Rail`, `Toast`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SessionEvent {
     /// The network in hand was left (disconnected, or another chain taken

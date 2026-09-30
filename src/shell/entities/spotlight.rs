@@ -118,9 +118,12 @@ impl Spotlight {
             }
         }
         for (title, mode) in [
-            ("Light appearance", crate::Appearance::Light),
-            ("Dark appearance", crate::Appearance::Dark),
-            ("Match the system's appearance", crate::Appearance::System),
+            ("Light appearance", crate::backend::Appearance::Light),
+            ("Dark appearance", crate::backend::Appearance::Dark),
+            (
+                "Match the system's appearance",
+                crate::backend::Appearance::System,
+            ),
         ] {
             rows.push(row(
                 "Actions",

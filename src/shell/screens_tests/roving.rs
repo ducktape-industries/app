@@ -111,8 +111,8 @@ fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppCo
 fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppContext) {
     keyed(cx);
     let mut seed = gate::desk();
-    seed.prefs.appearance = crate::Appearance::Dark;
-    seed.state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
+    seed.prefs.appearance = crate::backend::Appearance::Dark;
+    seed.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
     let settings = Overlay::Settings(SettingsPage::Appearance);
     let (view, mut native) = open((seed, settings), cx);
     native.update(draw);
@@ -132,7 +132,7 @@ fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppCont
     let appearance = view.read_with(&native, |view, cx| view.app.prefs.read(cx).get().appearance);
     assert_eq!(
         appearance,
-        crate::Appearance::System,
+        crate::backend::Appearance::System,
         "the arrows picked it"
     );
     // the Notifications page: the burst limit and one group per view
@@ -160,7 +160,7 @@ fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppCont
 fn the_programs_rail_is_one_tab_stop_whose_arrows_move_the_keys(cx: &mut TestAppContext) {
     keyed(cx);
     let mut seed = gate::desk();
-    seed.state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b", "gate-c"]);
+    seed.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b", "gate-c"]);
     let (view, mut native) = open(seed, cx);
     // gpui reports focus moves only in the active window: the rail hears
     // the keys leave it from one

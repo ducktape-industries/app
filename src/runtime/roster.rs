@@ -46,30 +46,15 @@ pub(super) fn connection() -> &'static Mutex<Connection> {
 /// A roster as a node last listed it, every program and its code, shared
 /// by whoever holds a clone: the app's one ([`roster`]), which the node's
 /// reads fill, its views load from and its windows draw, or a test's own.
-/// Also how many times it, or a seat of one of its programs, changed on a
-/// thread of its own ([`Roster::changes`]).
+/// A change tells the rail ([`changes_channel`]), never a window.
 #[derive(Clone, Default)]
-pub(crate) struct Roster(
-    Arc<Mutex<Vec<crate::backend::views::Program>>>,
-    Arc<std::sync::atomic::AtomicU64>,
-);
+pub(crate) struct Roster(Arc<Mutex<Vec<crate::backend::views::Program>>>);
 
 impl Roster {
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<crate::backend::views::Program>> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// How many times the list or a seat changed off the window thread.
-    /// That tells no window: the shell reads this on the clock's beat and
-    /// draws when it moved (`Ducktape::beat_face`).
-    pub(crate) fn changes(&self) -> u64 {
-        self.1.load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    pub(crate) fn changed(&self) {
-        self.1.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// A roster of its own that lists `modules`, for a test to draw or
@@ -127,8 +112,8 @@ pub(crate) fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()>
 }
 
 /// `programs` in place of what `roster` listed, the one before handed
-/// back. A list that moved counts a change and wakes the rail: a program
-/// that left starts no load, so this is the only word the rail gets of it.
+/// back. A list that moved wakes the rail: a program that left starts no
+/// load, so this is the only word the rail gets of it.
 pub(super) fn relist(
     roster: &Roster,
     programs: Vec<crate::backend::views::Program>,
@@ -138,7 +123,6 @@ pub(super) fn relist(
     let moved = previous != *listed;
     drop(listed);
     if moved {
-        roster.changed();
         rail_moved();
     }
     previous

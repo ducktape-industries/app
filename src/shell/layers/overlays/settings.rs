@@ -283,7 +283,7 @@ impl OverlayLayer {
     }
 
     fn appearance_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
-        use crate::Appearance;
+        use crate::backend::Appearance;
         let (appearance, motion) = {
             let prefs = self.prefs.read(cx).get();
             (prefs.appearance, prefs.motion)

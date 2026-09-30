@@ -189,7 +189,7 @@ fn in_order(module: &str, job: impl FnOnce() + Send + 'static) {
 /// ([`on_open_link`]) so this layer never calls up into it.
 static OPEN_LINK: OnceLock<fn(String)> = OnceLock::new();
 
-/// The shell says how a link a banner click opens reaches the reducer.
+/// The shell says how a link a banner click opens reaches `Windows`.
 pub(crate) fn on_open_link(open: fn(String)) {
     let _ = OPEN_LINK.set(open);
 }

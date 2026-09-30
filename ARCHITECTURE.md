@@ -50,9 +50,10 @@ What the app deliberately does not know:
   the app signs and forwards `body` and returns the program's bytes as
   they are. `module.describe` renders an op readable by running the
   *program's own* describe module, sandboxed.
-- **No program state.** `Ducktape` (`src/ui/app.rs`) holds the node, the
-  key, the account, which screen the console shows and where panes sit.
-  What a person does inside a program lives in that program's view.
+- **No program state.** The shell's entities (`src/shell/entities/`) hold
+  the node, the key, the account, which screen the console shows and where
+  panes sit. What a person does inside a program lives in that program's
+  view.
 - **No private key in a view.** Writes are signed in `backend/session.rs`
   by the one seated key; a view never sees a key or a password.
 
@@ -66,23 +67,23 @@ view's tree lowers onto GPUI elements one to one.
 | Module | Owns | Runs on |
 |---|---|---|
 | `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), `app.log` + panic hook, fd limit, `DUCKTAPE_VIEWS_DIR`, then `shell::run` | process start |
-| `shell.rs`, `shell/` | the native chrome: the entities (`shell/entities/`: `Session`, `Account`, `Chain`, `Screen`, `Windows` and each window's `Desk`, `Overlays`, `Spotlight`, `Front`; `Toast`, `Prefs`, `Notifications`, `Rail`, `Seats`), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), `Desktop` (the wall clock's beat and the tray), launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
-| `ui.rs`, `ui/` | `Ducktape` (the roster and the notification centre), `AppMessage::WallTick`, the pure pane geometry (`ui/layout.rs`) | window thread |
+| `shell.rs`, `shell/` | the native chrome. `shell.rs` is the module root (`run`, `WindowKind`, `chord_label`); `shell/launch.rs` starts the app and wires what arrives from outside to the entity it moves. The entities (`shell/entities/`: `Session`, `Account`, `Chain`, `Screen`, `Windows` and each window's `Desk`, `Overlays`, `Spotlight`, `Front`, `DotSlot`; `Toast`, `Prefs`, `Notifications`, `Rail`, `Seats`), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
+| `ui.rs`, `ui/` | the pure pane geometry (`ui/layout.rs`: `Layout`, `Pane`, `PaneMessage`), which each window's `Desk` holds | window thread |
 | `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
 | `editor.rs`, `editor/` | `EditorStore` (guest-owned documents projected natively) and `TextEditor` (the one multi-line native field; `editor/text.rs` is mounted as `editor::wire::text` by a `#[path]`) | window thread |
 | `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
 | `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client | `ax-door` accept thread; answers on the window thread |
-| `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item | window thread |
+| `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`) | window thread |
 
 Dependencies, top down (an arrow means "calls into"):
 
 ```
 main
- └─ shell ──────────► ui (layout geometry, the beat)
-     │  │              └──► backend (connect, keys, prefs)
-     │  │              └──► runtime (Roster, connected, notify)
+ └─ shell ──────────► ui (layout geometry)
+     │  ├─► shell::entities ──► backend (connect, keys, prefs)
+     │  │                   └──► runtime (Roster, connected, notify)
      │  └─► runtime::Seat ──► render::ViewTree ──► a11y
      │          │                              └──► editor (TextEditor)
      │          ├─► runtime::guest (wasmtime) ──► editor::wire (EditorStore)
@@ -91,16 +92,16 @@ main
      └─► ax ──► (reads the GPUI a11y tree of every window)
 ```
 
-`ui/` never touches GPUI: `ui/layout.rs` is pure geometry, and the beat
-is a `view_wire::Task` stream. The native effects (open, raise, close,
-swap console, sync appearance, open URL, quit) are `Windows`' methods.
+`ui/` never touches GPUI: `ui/layout.rs` is pure geometry. The native
+effects (open, raise, close, swap console, sync appearance, open URL,
+quit) are `Windows`' methods.
 `render/` never touches the node. `backend/` never names a user program.
 
 ### Threads
 
 | Thread | What runs there | Where it is made |
 |---|---|---|
-| **window / main** (GPUI foreground) | every entity method and the `WallTick` beat (`Desktop::dispatch`); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
+| **window / main** (GPUI foreground) | every entity method and the timers the entities own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn`, `live`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
 | **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
@@ -121,7 +122,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    which bumps `Connection.rev` and starts `roster::spawn_roster_read`.
    That thread calls `backend::views::programs` (the `module-registry`
    query), stores the list in the app's `Roster` (`roster::roster`, the
-   one `Ducktape.roster` holds), retires seats of programs that left,
+   one `launch::run` hands the `Rail`), retires seats of programs that left,
    creates a preloaded seat `(module, 0)` for each program and starts a
    load for every seat whose active code moved (or that was never
    asked of this node). Each new block (`Session::status_answered` with a moved
@@ -345,8 +346,15 @@ shell control ─► entity method ─► its compared state ─► the layers o
                                         └─ observers / events ─► another entity's method (Windows.active from a Desk,
                                                                    Seats from Windows and every Desk, Rail from LeftNetwork)
 
-wall clock (1 s) ─ WallTick ─► Desktop::dispatch ─► notify only when `beat_face` (the roster's changes) moved
+loader / roster thread ─► runtime::changes_channel ─► Rail::refresh (rows, compared) ─► the layers reading the rail
+                       └─► a seat's wake ─► Seat::turn ─► its pane's tree
 ```
+
+No clock beats for the whole app: each timer belongs to the entity whose
+value it moves (`Session`'s 2 s status poll onto `Chain`, `Toast`'s 3.6 s
+dismiss, an open menu's 1 s ages in `layers::Chrome`, a `Seat`'s clock
+items and busy frame), so with motion off an app with nothing moving
+draws nothing.
 
 - **Session** (`shell/entities/session.rs`). `SessionState`, compared
   before it notifies: the endpoint being typed and the recent ones, the
@@ -425,11 +433,16 @@ wall clock (1 s) ─ WallTick ─► Desktop::dispatch ─► notify only when `
   `Notifications::refresh`, `Seated` → every desk holding the view
   settles (a window placed before its view came widens to it), `OpenLink`
   → `Windows::open_link`. `Seats` holds `Windows` weakly.
-- **Desktop** (`shell.rs`) is what is left of the reducer: the 1 s
-  `WallTick` over `Ducktape` (`ui/app.rs`: the roster and the notification
-  centre) and the tray, which it syncs from `Session`, `Chain` and `Prefs`.
-  `AppMessage::WallTick` is the one message; a beat notifies only when
-  `beat_face` (`Roster::changes`) moved. Goes in s12.
+- **Start** (`shell/launch.rs::run`). Makes the entities over the app's
+  roster and notification centre (`Entities::new`), the tray (`tray.rs`:
+  an entity observing `Session`, `Chain` and `Prefs`, drawn once at start;
+  its rows call `Windows::raise_console`, `Windows::quit` and
+  `Prefs::set_appearance`) and the console (`Windows::open(Console)`), then
+  wires what arrives from outside: open-URL requests and the links a
+  banner posts (`Windows::open_link`, `Windows::posted`), a window closing
+  (`Windows::closed_id`), the AX door (`Windows::served`,
+  `Seats::settle`), the Quit action (`Windows::quit`). The entities and
+  the tray live until the app quits.
 - **Layers.** `layers::WindowRoot` (`layers/root.rs`, one thin uncached
   view per OS window) holds `Entities` (every app-wide entity and
   `Windows`) and lays the window's layers out as siblings. Before the desk
@@ -462,7 +475,8 @@ wall clock (1 s) ─ WallTick ─► Desktop::dispatch ─► notify only when `
   `layers/dot.rs`, a root sibling over the bar's empty well at `DotSlot`)
   and the footer (`layers::ToastView`, `layers/toast.rs`, cached over
   `Toast`, `Session` and `Prefs`, drawn deferred over an open menu).
-  `shell/windows.rs` is the geometry of where windows open. Keyboard
+  `shell/windows.rs` is the geometry of where windows open, and how one
+  leaves the screen (`remove`: its input let go first). Keyboard
   shortcuts are GPUI actions bound in `shell/keys.rs` under key contexts
   the windows set; each calls an entity method.
 
@@ -576,7 +590,8 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   reads the same AccessKit tree GPUI hands the OS (`ax::tree::snapshot`
   over `Window::a11y_tree`); every act goes through GPUI's own a11y action,
   key or mouse dispatch (`ax::actions`). Ids are `<window>:<element id>`;
-  windows are `console`, `console2`, … (`Windows::served`); a view's
+  windows are `console`, `console2`, … in the order they opened
+  (`Windows::served`, by `WindowKey`), read on every request; a view's
   nodes sit under the `view/<module>` mark `Seat::ax_mark`
   wraps around each view (`tree::VIEW_MARK`). Answers carry
   `X-Ax-Revision`, which moves when a tree changed. `ducktape-app ax …`
@@ -612,11 +627,11 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   layout and paint follow in the next frame, lock released. The
   loader thread takes that mutex for `snapshot` and for the install (not
   for compile, `restore` or `first_frame`), so a swap stalls the window for
-  those two steps. The reducer's own `Task`s and the entities'
-  (`spawn_on_runtime`) are polled on the window thread (HTTP bodies decode
-  there). No layer observes `Desktop`: a call draws only the layers
-  observing the entities it moved, and the clock's beat that moves nothing
-  notifies nothing (`beat_face`). `Roster::rail()`,
+  those two steps. The entities' `Task`s (`spawn_on_runtime`) are polled
+  on the window thread (HTTP bodies decode there). A call draws only the
+  layers observing the entities it moved, and nothing beats for the whole
+  app: a status poll that finds the height where it was notifies nobody.
+  `Roster::rail()`,
   which locks every seat, runs once per roster or seat change
   (`entities::Rail`), never at a draw: the bar, the pane strips, the
   empty panes, Spotlight and Settings read the `Rail`'s rows.
@@ -656,10 +671,12 @@ House words, and where one word means several things.
 - **seat** — four meanings. (1) `seat::Mounted`: the per-`(module,
   instance)` slot a view is loaded into, in `runtime/seat.rs`.
   (2) the **seated key**: the signing key in `backend/session.rs`'s
-  `SIGNER` (`seat_key`, `seated_frame`; `SignIn::seating` while it opens).
-  (3) "unseated": a pane that left the desk for its own window
+  `SIGNER` (`seat_key`, `seated_frame`; `AccountState::seating` while it
+  opens). (3) "unseated": a pane that left the desk for its own window
   (`shell/windows.rs`). (4) the element id `seat` of the pane area
-  (`shell/layers/root.rs`).
+  (`shell/layers/root.rs`). Also `runtime::Seat` (`seat/entity.rs`): the
+  entity one pane's view lives in, made and dropped by `Seats`, stepping
+  its guest from its wakes (`turn`).
 - **slot** — `seat::Slot`, what a seat holds (Loading … Ready … Failed).
   Also the **slot mask** in `render/`: the pane box a view is clipped to,
   applied to tooltips (`tooltip_containment::SlotMask`).
@@ -724,11 +741,12 @@ House words, and where one word means several things.
   draws the pane area. Unrelated.
 - **override** — `DUCKTAPE_VIEWS_DIR`: a developer's `<module>_view.wasm`
   files replace the network's views, unverified, logged.
-- **console** — the main OS window (`WindowKind::Console`, `console_win`):
+- **console** — the main OS window (`WindowKind::Console`, `Windows::console`):
   the launcher first, then the desk. Also the AX door's window names
   `console`, `console2`, ….
 - **launcher** — every screen before the desk (Connect, key, phrase,
-  recover, account), in the console at launcher size; `in_launcher()`.
+  recover, account), in the console at launcher size, while `Screen` is
+  not `Desk`.
 - **desk** — the area under the menu bar where panes float
   (`ui/layout.rs`); also `Screen::Desk` and the `desk` key context.
 - **pane / window** — `layout::Pane` is one floating frame on the desk
@@ -751,9 +769,19 @@ House words, and where one word means several things.
   the overlay modal.
 - **Command** — the command line: the empty pane's program-finder field
   and its `Mode` (Module | Chat), in `shell/layers/empty_pane.rs`.
-- **Task / Subscription** — `view_wire::Task` and `Subscription`, the view
-  SDK's types; the host's `WallTick` stream (`ui/task.rs`) reuses them
-  until s12.
+- **entity / Slice / Observed** — the shell's state is gpui entities
+  (`shell/entities/`), each written by its own methods. `Slice<T>`
+  (`entities/slice.rs`) is a shared value whose one write compares first:
+  setting an equal value notifies nobody. `Observed<T>` is how a layer
+  holds an entity: making one subscribes, so a view cannot read what it
+  does not observe. `Entities` bundles the app-wide ones; `Windows` holds
+  each window's own (`WindowEntities`).
+- **layer** — one of the sibling views a window's root (`WindowRoot`,
+  `shell/layers/root.rs`, thin and uncached) lays out: `LauncherLayer`,
+  `Chrome`, `PaneLayer` with a `PaneView` per pane, `OverlayLayer`,
+  `StatusDot`, `ToastView`. Each counts its renders (`renders.<layer>`,
+  docs/perf.md) and draws only for what it observes; the cached ones skip
+  their render when nothing they read moved.
 - **ink / Ink** — the design palette per appearance and the widget kit the
   shell screens are built from (`shell/ink.rs`); `ink.ink` is the text
   colour. **board / canvas** — the external design mockups the screens were
@@ -762,7 +790,7 @@ House words, and where one word means several things.
   (`shell/figure.rs`); **spin** is the widget that tumbles and drags it
   (`shell/spin.rs`). In `runtime/kernel.rs` "spin" means busy per-frame
   work on the window thread.
-- **keyring** — two meanings. (1) `Ducktape.keyring` / `session::Keyring`:
+- **keyring** — two meanings. (1) `backend::Keyring` (`backend/key_dir.rs`):
   the *directory name* under `<ducktape home>/remotes/` holding this
   network's keys (`<network>` or `<network>+<founded>`). (2) the `keyring`
   crate: the OS credential store `backend/device_key.rs` uses.

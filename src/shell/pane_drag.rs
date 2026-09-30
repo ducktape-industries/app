@@ -4,7 +4,7 @@
 //! the `PaneLayer`'s; the grips are drawn by the `PaneView` they size.
 use super::layers::{PaneLayer, PaneView};
 use super::*;
-use gpui_kit::Window;
+use gpui_kit::{Context, Window};
 
 impl PaneLayer {
     /// Takes hold of window `index` at `at`: `sides` follow the pointer;

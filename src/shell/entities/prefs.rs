@@ -3,8 +3,8 @@
 //! `runtime::notify::settings`) and then edits the compared value, so a
 //! choice already made notifies nobody.
 use super::Slice;
+use crate::backend::{self, Appearance};
 use crate::runtime::notify;
-use crate::{Appearance, backend};
 use gpui_kit::Context;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -38,7 +38,7 @@ impl Prefs {
     }
 }
 
-/// Timed with the reducer's desk arms it took over (docs/perf.md).
+/// Timed as `reducer.desk`, the name qa's hang rule reads (docs/perf.md).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.desk")
 }

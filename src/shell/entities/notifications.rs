@@ -9,7 +9,7 @@ use crate::runtime::notify::{self, CenterHandle, Entry, Permission};
 use gpui_kit::{App, Context, Entity};
 use std::collections::BTreeSet;
 
-/// Timed with the reducer's notify arms it took over (docs/perf.md).
+/// Timed as `reducer.notify`, the name qa's hang rule reads (docs/perf.md).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.notify")
 }

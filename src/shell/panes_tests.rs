@@ -53,8 +53,8 @@ pub(super) fn console(
 ) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
     let mut seed = super::layers::tests::Seed::boot();
     // its own roster and centre, not the app's ones every test shares
-    seed.state.roster = Default::default();
-    seed.state.center = Default::default();
+    seed.roster = Default::default();
+    seed.center = Default::default();
     seed.screen = super::entities::Screen::Desk;
     seed.active = Some("pane-ax-test");
     super::layers::tests::open_console(seed, cx)
@@ -744,100 +744,6 @@ pub(super) fn window_count(key: WindowKey, stage: &str) -> u64 {
     crate::perf::snapshot(false)["windows"][key.0.to_string()][stage]
         .as_u64()
         .unwrap_or(0)
-}
-
-/// The wall clock beats whatever happens. A beat that moves nothing on
-/// screen draws no frame and tells the `Desktop`'s observers nothing, and
-/// one that moves something does: a roster that changed on its own thread
-/// (the empty desk lists the programs from it). A toast takes itself down
-/// on its own clock, and draws the window as it goes (docs/perf.md).
-#[gpui_kit::test]
-fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
-    use crate::ui::test_support::status;
-    const MODULE: &str = "pane-beat-view";
-    let _on = crate::perf::on_for_test();
-    let (app, key, view, mut native) = console(cx);
-    // what is left of the reducer: the beat, over a roster of the test's own
-    let roster = crate::runtime::Roster::default();
-    let desktop = native.update(|_, cx| {
-        use gpui_kit::AppContext as _;
-        let state = Ducktape {
-            center: Default::default(),
-            roster: roster.clone(),
-        };
-        cx.new(|cx| Desktop::new(state, crate::tray::init(cx).0, app.clone(), cx))
-    });
-    let send = |message: Message, native: &mut VisualTestContext| {
-        desktop.update(native, |desktop, cx| desktop.dispatch(message, cx));
-        native.run_until_parked();
-    };
-    crate::runtime::seat_for_test(MODULE, 400);
-    // the breath stands still: its frames are not the beats'
-    set_motion(&app, false, &mut native);
-    pane(&view, PaneMessage::Select(MODULE), &mut native);
-    super::layers::tests::polled(&app, status(7), &mut native);
-    let still = window_count(key, "renders");
-    let told = std::rc::Rc::new(std::cell::Cell::new(0));
-    let _told = native.update(|_, cx| {
-        let told = told.clone();
-        cx.observe(&desktop, move |_, _| told.set(told.get() + 1))
-    });
-    send(Message::WallTick, &mut native);
-    // the poll's answers are `Session`'s, not the reducer's: a miss and
-    // the same height move nothing on screen either
-    for answer in [Err("no".to_owned()), Ok(status(7))] {
-        app.session.update(&mut native, |session, cx| {
-            session.status_answered(answer, cx)
-        });
-        native.run_until_parked();
-    }
-    assert_eq!(
-        window_count(key, "renders"),
-        still,
-        "a beat that moved nothing drew the window"
-    );
-    assert_eq!(
-        told.get(),
-        0,
-        "a beat that moved nothing told the model's observers"
-    );
-
-    // a roster read or a seat load landed on its own thread
-    roster.changed();
-    send(Message::WallTick, &mut native);
-    assert_eq!(
-        told.get(),
-        1,
-        "the roster moved under the beat and the model told no one"
-    );
-
-    // a toast shows for 3.6 s on its own clock, and goes then: the frame
-    // that shows it and the one its callbacks ask for, then none until
-    // it goes
-    toast(&app, "Saved.", &mut native);
-    for _ in 0..2 {
-        native.update(|window, cx| {
-            window.simulate_next_frame(cx);
-        });
-        native
-            .executor()
-            .advance_clock(std::time::Duration::from_millis(100));
-        native.run_until_parked();
-    }
-    let shown = window_count(key, "renders");
-    native
-        .executor()
-        .advance_clock(std::time::Duration::from_millis(3200));
-    native.run_until_parked();
-    assert_eq!(window_count(key, "renders"), shown, "a toast's count drew");
-    native
-        .executor()
-        .advance_clock(std::time::Duration::from_millis(300));
-    native.run_until_parked();
-    assert!(
-        window_count(key, "renders") > shown,
-        "the toast ran out and stayed on screen"
-    );
 }
 
 /// A modifier key going down or up changes nothing on screen, so it draws

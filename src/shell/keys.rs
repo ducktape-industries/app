@@ -16,7 +16,7 @@
 
 use super::entities::{Overlay, Popover};
 use super::*;
-use gpui_kit::{Action, KeyBinding, KeyContext, Menu, MenuItem};
+use gpui_kit::{Action, Context, KeyBinding, KeyContext, Menu, MenuItem};
 
 gpui_kit::actions!(
     desk,

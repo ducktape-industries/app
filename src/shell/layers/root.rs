@@ -164,7 +164,7 @@ impl WindowRoot {
     pub(in crate::shell) fn close_by_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         match (self.kind, cfg!(target_os = "macos")) {
             (WindowKind::Console, false) => window.minimize_window(),
-            _ => super::super::remove(window.window_handle(), cx),
+            _ => super::super::windows::remove(window.window_handle(), cx),
         }
     }
 

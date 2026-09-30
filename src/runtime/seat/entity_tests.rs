@@ -619,8 +619,8 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
 }
 
 /// A program that leaves the roster gives up its seat: the pane shows the
-/// "no view" standin, not its frozen tree. On the draw path the beat's
-/// redraw picked this up; now the retire itself has to wake the seat.
+/// "no view" standin, not its frozen tree: the retire itself wakes the
+/// seat, since no clock redraws the window.
 #[gpui_kit::test]
 fn a_retired_program_shows_no_view(cx: &mut TestAppContext) {
     const MODULE: &str = "retired-test";

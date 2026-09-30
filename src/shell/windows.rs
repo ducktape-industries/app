@@ -1,6 +1,6 @@
 //! Where an OS window goes: a pop-out off its source window (`cascade`,
-//! `unseated`), the launcher centred (`centered`). Opening one is
-//! `entities::Windows`'.
+//! `unseated`), the launcher centred (`centered`); and how one leaves the
+//! screen (`remove`). Opening one is `entities::Windows`'.
 
 use super::layout;
 use gpui_kit::{Bounds, Pixels, Size, point, px, size};
@@ -74,6 +74,28 @@ pub(in crate::shell) fn unseated(
         origin.y = origin.y.min(bottom).max(display.origin.y);
     }
     Bounds::new(origin, extent)
+}
+
+/// Lets go of a window's input: the keys, and whatever its last draw
+/// held.
+pub(in crate::shell) fn release_window_input(
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::App,
+) {
+    window.blur(cx);
+    window.draw(cx).clear(cx);
+}
+
+/// Takes a window off the screen, its input let go first. Deferred:
+/// releasing input draws the window, and the caller is most often in the
+/// middle of updating it. `on_window_closed` (launch.rs) then forgets it.
+pub(in crate::shell) fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
+    cx.defer(move |cx| {
+        let _ = window.update(cx, |_, window, cx| {
+            release_window_input(window, cx);
+            window.remove_window();
+        });
+    });
 }
 
 #[cfg(test)]

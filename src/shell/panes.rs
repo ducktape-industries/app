@@ -5,7 +5,7 @@
 //! which has the keys is `ui::layout`'s; their seats are
 //! `entities::Seats`'.
 use super::*;
-use gpui_kit::Window;
+use gpui_kit::{Context, Window};
 
 /// A pane's name: its program's, as the rail lists it (`Rail`).
 pub(in crate::shell) fn label(rail: &[crate::runtime::RailRow], module: &str) -> String {

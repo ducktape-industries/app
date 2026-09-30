@@ -22,7 +22,8 @@ use super::{
 use crate::runtime::notify::{CenterHandle, Entry};
 use crate::runtime::{Link, WindowKey};
 use crate::shell::layers::{self, WindowRoot};
-use crate::shell::{WindowKind, release_window_input, remove, theme, windows};
+use crate::shell::windows::{release_window_input, remove};
+use crate::shell::{WindowKind, theme, windows};
 use crate::ui::layout::{self, Layout};
 use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
@@ -33,7 +34,7 @@ use gpui_kit::{
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
 
-/// Timed with the reducer's desk arms it took over (docs/perf.md).
+/// Timed as `reducer.desk`, the name qa's hang rule reads (docs/perf.md).
 fn timed() -> Option<crate::perf::Timer> {
     crate::perf::time(crate::perf::Key::Shell, "reducer.desk")
 }
@@ -61,7 +62,7 @@ pub(crate) struct Windows {
     /// The console shows the launcher (else the desk), as last seen.
     launcher: bool,
     /// The appearance the theme was last synced to.
-    appearance: crate::Appearance,
+    appearance: crate::backend::Appearance,
     subscriptions: Vec<Subscription>,
 }
 
@@ -668,9 +669,9 @@ impl Windows {
         use gpui_kit::component::{Theme, ThemeMode};
         let _timed = timed();
         match self.shared.prefs.read(cx).get().appearance {
-            crate::Appearance::Light => Theme::change(ThemeMode::Light, None, cx),
-            crate::Appearance::Dark => Theme::change(ThemeMode::Dark, None, cx),
-            crate::Appearance::System => Theme::sync_system_appearance(None, cx),
+            crate::backend::Appearance::Light => Theme::change(ThemeMode::Light, None, cx),
+            crate::backend::Appearance::Dark => Theme::change(ThemeMode::Dark, None, cx),
+            crate::backend::Appearance::System => Theme::sync_system_appearance(None, cx),
         }
         let dark = Theme::global(cx).is_dark();
         self.shared

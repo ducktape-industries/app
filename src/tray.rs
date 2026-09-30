@@ -1,10 +1,10 @@
 //! The status item (macOS): the network and the block, Open, Appearance,
 //! Quit. Elsewhere the tray is a no-op that still answers the shell.
 
-use crate::Appearance;
-use crate::shell::entities::{Chain, SessionState};
+use crate::backend::Appearance;
+use crate::shell::entities::{Chain, Prefs, Session, SessionState, Shared, Slice};
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
-use gpui_kit::App;
+use gpui_kit::{App, AppContext as _, Context, Entity, Subscription};
 
 /// What the item shows, diffed before each native update.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -98,13 +98,21 @@ pub fn pick(row: usize) -> Option<Pick> {
     }
 }
 
+/// The item, kept in step with the session, the chain and the appearance
+/// by observing them.
 pub struct Tray {
     snapshot: Option<Snapshot>,
     #[cfg(target_os = "macos")]
     native: Option<native::StatusItem>,
+    session: Entity<Session>,
+    chain: Entity<Chain>,
+    prefs: Entity<Slice<Prefs>>,
+    _follows: [Subscription; 3],
 }
 
-pub fn init(_: &mut App) -> (Tray, UnboundedReceiver<usize>) {
+/// The item over `app`'s session, chain and prefs, drawn once now and
+/// again whenever one of them moves; and the rows clicked, by index.
+pub fn init(app: &Shared, cx: &mut App) -> (Entity<Tray>, UnboundedReceiver<usize>) {
     let (send, receive) = unbounded();
     #[cfg(target_os = "macos")]
     let native = match native::StatusItem::new(send) {
@@ -116,18 +124,37 @@ pub fn init(_: &mut App) -> (Tray, UnboundedReceiver<usize>) {
     };
     #[cfg(not(target_os = "macos"))]
     drop(send);
-    (
-        Tray {
+    let tray = cx.new(|cx| {
+        let mut tray = Tray {
             snapshot: None,
             #[cfg(target_os = "macos")]
             native,
-        },
-        receive,
-    )
+            session: app.session.clone(),
+            chain: app.chain.clone(),
+            prefs: app.prefs.clone(),
+            _follows: [
+                cx.observe(&app.session, |tray: &mut Tray, _, cx| tray.follow(cx)),
+                cx.observe(&app.chain, |tray: &mut Tray, _, cx| tray.follow(cx)),
+                cx.observe(&app.prefs, |tray: &mut Tray, _, cx| tray.follow(cx)),
+            ],
+        };
+        tray.follow(cx);
+        tray
+    });
+    (tray, receive)
 }
 
 impl Tray {
-    pub fn sync(&mut self, next: Snapshot) {
+    fn follow(&mut self, cx: &mut Context<Self>) {
+        let next = Snapshot::of(
+            self.session.read(cx).get(),
+            self.chain.read(cx),
+            self.prefs.read(cx).get().appearance,
+        );
+        self.sync(next);
+    }
+
+    fn sync(&mut self, next: Snapshot) {
         if self.snapshot.as_ref() == Some(&next) {
             return;
         }
@@ -313,5 +340,64 @@ mod tests {
         session.endpoint = "http://b".into();
         let snapshot = Snapshot::of(&session, &chain, Appearance::System);
         assert_eq!(snapshot.labels[STATUS], "Reaching http://b…");
+    }
+
+    /// The item draws itself as the app starts, and again from its own
+    /// observers when the session, the chain or the appearance moves: no
+    /// one else tells it.
+    #[gpui_kit::test]
+    fn the_tray_follows_the_session_the_chain_and_the_appearance(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        let app = cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::shell::entities::tests::entities(cx)
+        });
+        let (tray, _) = cx.update(|cx| init(&app, cx));
+        let labels = |cx: &mut gpui_kit::TestAppContext| {
+            tray.read_with(cx, |tray, _| {
+                tray.snapshot.clone().expect("drawn at start").labels
+            })
+        };
+        let drawn = labels(cx);
+        assert_eq!(drawn[NETWORK], "No network");
+        assert_eq!(drawn[STATUS], "Not connected");
+        app.session.update(cx, |session, cx| {
+            session.seed(
+                SessionState {
+                    network: "dognet".into(),
+                    connected: true,
+                    ..SessionState::default()
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(labels(cx)[NETWORK], "dognet", "the session moved");
+        app.chain.update(cx, |chain, cx| {
+            chain.set(
+                Chain {
+                    height: 7,
+                    ..Chain::default()
+                },
+                cx,
+            )
+        });
+        cx.run_until_parked();
+        assert_eq!(labels(cx)[STATUS], "Connected · block 7", "the chain moved");
+        app.prefs.update(cx, |prefs, cx| {
+            let dark = Prefs {
+                appearance: Appearance::Dark,
+                ..prefs.get().clone()
+            };
+            prefs.set(dark, cx)
+        });
+        cx.run_until_parked();
+        let drawn = labels(cx);
+        assert_eq!(
+            (drawn[DARK].as_str(), drawn[SYSTEM].as_str()),
+            ("✓ Dark", "System"),
+            "the appearance moved"
+        );
     }
 }

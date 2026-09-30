@@ -5,7 +5,7 @@ use gpui_kit::{App, Context, Entity, Subscription};
 use std::future::Future;
 
 /// A shared value. Its one write compares first: setting an equal value
-/// notifies no observer, so a beat that moves nothing draws nothing.
+/// notifies no observer, so a write that moves nothing draws nothing.
 pub(crate) struct Slice<T: PartialEq>(T);
 
 impl<T: PartialEq + 'static> Slice<T> {
@@ -67,9 +67,9 @@ impl<T: 'static> Observed<T> {
     }
 }
 
-/// Polls `work` with the views kernel's tokio runtime entered (as
-/// `Desktop::start` runs the reducer's tasks): its timers and sockets
-/// need the runtime, and the window thread is not one of its threads.
+/// Polls `work` with the views kernel's tokio runtime entered: its timers
+/// and sockets need the runtime, and the window thread is not one of its
+/// threads.
 pub(crate) async fn on_runtime<R>(work: impl Future<Output = R>) -> R {
     let runtime = crate::runtime::handle();
     let mut work = std::pin::pin!(work);
