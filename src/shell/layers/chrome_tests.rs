@@ -98,7 +98,7 @@ fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext)
 fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
     const MODULE: &str = "chrome-drag-view";
     let _on = crate::perf::on_for_test();
-    let (app, key, view, mut native) = console(cx);
+    let (_, key, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
     pane(&view, PaneMessage::Select(MODULE), &mut native);
     for _ in 0..3 {
@@ -139,7 +139,6 @@ fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
         chrome,
         "a drag frame drew the chrome"
     );
-    let _ = app;
 }
 
 /// The dot's slot (where the bar laid its 12px well out) reaches `DotSlot`

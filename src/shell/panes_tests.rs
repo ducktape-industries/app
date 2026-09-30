@@ -990,6 +990,64 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
     );
 }
 
+/// A view's link (`link.open`) is routed by `Seats` to `Windows::open_link`
+/// on the seat's next turn: the listed view opens on the console's desk,
+/// comes to the front and is handed the route.
+#[gpui_kit::test]
+fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-link-intent-view";
+    const LINKED: &str = "pane-link-intent-target";
+    let (app, _, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(MODULE, 400);
+    let roster = crate::runtime::Roster::listing(&[MODULE, LINKED]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    let instance = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let pane = layout
+            .panes
+            .iter()
+            .find(|pane| pane.module == MODULE)
+            .expect("the pane opened");
+        let seat = app.seats.read(cx).seat(pane.instance).expect("seated");
+        seat.read(cx).instance()
+    });
+    crate::runtime::intent_for_test(
+        MODULE,
+        instance,
+        crate::runtime::Intent::OpenLink(format!("duck://{LINKED}/room/7")),
+    );
+    // the seat's next turn, as the door settles them; a turn owed to a
+    // frame lands after it
+    for _ in 0..2 {
+        app.seats.update(&mut native, |seats, cx| seats.settle(cx));
+        native.run_until_parked();
+        native.update(|window, cx| {
+            window.simulate_next_frame(cx);
+        });
+        native.run_until_parked();
+    }
+    let modules: Vec<_> = native.update(|_, cx| {
+        view.read(cx)
+            .layout(cx)
+            .panes
+            .iter()
+            .map(|pane| pane.module)
+            .collect()
+    });
+    assert!(
+        modules.contains(&LINKED),
+        "the link opened nothing: {modules:?}"
+    );
+    assert_eq!(active(&app, &mut native), Some(LINKED));
+    assert_eq!(
+        crate::runtime::take_route(LINKED).as_deref(),
+        Some("room/7"),
+        "the view was not handed its route"
+    );
+}
+
 /// A frame as the platform delivers one, a figure's tick after the last:
 /// the timers that came due run, whatever they dirtied draws, then the
 /// next-frame callbacks. The cached path: no a11y reader.
