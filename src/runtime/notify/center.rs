@@ -67,6 +67,8 @@ pub(crate) struct Center {
     /// Views that posted before the person said anything about them.
     pub(crate) asking: BTreeSet<String>,
     pub(super) not_now: BTreeSet<String>,
+    /// Moves with every change to the log: the bell's list is read again.
+    rev: u64,
 }
 
 /// A notification centre, shared by whoever holds a clone: the app's one
@@ -200,6 +202,7 @@ impl Center {
         };
         self.entries.push(entry);
         self.prune(wall);
+        self.rev += 1;
         self.save();
     }
 
@@ -219,11 +222,17 @@ impl Center {
         self.entries.iter().filter(|entry| !entry.read).count()
     }
 
+    /// How many times the log changed: equal, it lists what it listed.
+    pub(crate) fn rev(&self) -> u64 {
+        self.rev
+    }
+
     /// A row picked: read now, and handed back to open.
     pub(crate) fn open(&mut self, id: u64) -> Option<Entry> {
         let entry = self.entries.iter_mut().find(|entry| entry.id == id)?;
         entry.read = true;
         let entry = entry.clone();
+        self.rev += 1;
         self.save();
         Some(entry)
     }
@@ -239,6 +248,7 @@ impl Center {
             }
         }
         if changed {
+            self.rev += 1;
             self.save();
         }
         changed
@@ -248,11 +258,13 @@ impl Center {
         for entry in &mut self.entries {
             entry.read = true;
         }
+        self.rev += 1;
         self.save();
     }
 
     pub(crate) fn clear_read(&mut self) {
         self.entries.retain(|entry| !entry.read);
+        self.rev += 1;
         self.save();
     }
 
@@ -294,6 +306,7 @@ impl Center {
         *self = Center {
             network: network.to_owned(),
             front: self.front,
+            rev: self.rev + 1,
             ..Center::default()
         };
         self.entries = log_path(network)

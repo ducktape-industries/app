@@ -6,19 +6,17 @@
 //! `entities::Seats`'.
 use super::*;
 
-pub(super) fn label(roster: &crate::runtime::Roster, module: &str) -> String {
+/// A pane's name: its program's, as the rail lists it (`Rail`).
+pub(super) fn label(rail: &[crate::runtime::RailRow], module: &str) -> String {
     if module == layout::EMPTY {
         return "Empty".to_owned();
     }
     if module == layout::HELP {
         return "Help".to_owned();
     }
-    roster
-        .rail()
-        .into_iter()
+    rail.iter()
         .find(|row| row.module == module)
-        .map(|row| row.label)
-        .unwrap_or_else(|| module.to_owned())
+        .map_or_else(|| module.to_owned(), |row| row.label.clone())
 }
 
 impl DesktopWindow {

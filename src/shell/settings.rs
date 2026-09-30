@@ -57,6 +57,8 @@ impl Kept {
                 desktop.state.appearance = self.appearance;
                 desktop.sync_appearance(cx);
             }
+            // the prefs file is back too: the notice settings are read again
+            desktop.bridge(true, cx);
             cx.notify();
         });
     }

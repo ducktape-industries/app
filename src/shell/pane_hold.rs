@@ -25,14 +25,14 @@ pub(super) struct Holding {
 
 /// What a screen reader is told when a window is taken: how to move it and
 /// how to let go. The chords are the platform's.
-pub(super) fn hold_words(roster: &crate::runtime::Roster, module: &str) -> String {
+pub(super) fn hold_words(rail: &[crate::runtime::RailRow], module: &str) -> String {
     let (size, keep) = match cfg!(target_os = "macos") {
         true => ("Option", "Return"),
         false => ("Alt", "Enter"),
     };
     format!(
         "Moving {} window. Arrows move, Shift further, {size} sizes, {keep} keeps, Escape puts back",
-        panes::label(roster, module),
+        panes::label(rail, module),
     )
 }
 

@@ -11,7 +11,7 @@
 //! (`ui::layout`, read through the `Desk` slice); this file draws it and
 //! sends `PaneMessage`s through the window (`DesktopWindow::pane_message`).
 
-use super::super::entities::{Desk, Observed, Seats};
+use super::super::entities::{Desk, Observed, Overlays, Rail, Seats, WindowEntities};
 use super::super::{
     Desktop, DesktopWindow, Message, PaneMessage, WindowKey, WindowKind, chord_label, layout,
     pane_drag, pane_hold, panes, theme,
@@ -41,6 +41,11 @@ pub(in crate::shell) struct PaneLayer {
     pub(in crate::shell) key: WindowKey,
     pub(in crate::shell) kind: WindowKind,
     pub(in crate::shell) desk: Entity<Desk>,
+    /// What is open over this window's desk: the keys and the pointer's
+    /// presses leave the panes alone while something is. Read at a press
+    /// and after a draw, never at one.
+    pub(in crate::shell) overlays: Entity<Overlays>,
+    rail: Entity<Rail>,
     seats: Entity<Seats>,
     /// The window this layer draws in: pane messages and the overlay's
     /// `refocus` are its.
@@ -71,13 +76,15 @@ impl PaneLayer {
         model: Entity<Desktop>,
         key: WindowKey,
         kind: WindowKind,
-        desk: Entity<Desk>,
+        own: WindowEntities,
         root: FocusHandle,
         desk_window: WeakEntity<DesktopWindow>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        let WindowEntities { desk, overlays, .. } = own;
         let seats = model.read(cx).seats.clone();
+        let rail = model.read(cx).entities.rail.clone();
         let empty_desk = {
             let model = model.clone();
             cx.new(|cx| EmptyPane::desk(model, key, kind, root, window, cx))
@@ -101,6 +108,8 @@ impl PaneLayer {
             key,
             kind,
             desk,
+            overlays,
+            rail,
             seats,
             window: desk_window,
             empty_desk,
@@ -149,8 +158,13 @@ impl PaneLayer {
                 .or_insert_with(|| (cx.focus_handle(), None))
                 .0
                 .clone();
-            let (model, key, kind, desk) =
-                (self.model.clone(), self.key, self.kind, self.desk.clone());
+            let (model, key, kind, desk, rail) = (
+                self.model.clone(),
+                self.key,
+                self.kind,
+                self.desk.clone(),
+                self.rail.clone(),
+            );
             let (layer, desk_window) = (cx.weak_entity(), self.window.clone());
             let (module, instance) = (pane.module, pane.instance);
             let view = cx.new(|cx| {
@@ -173,6 +187,7 @@ impl PaneLayer {
                     })),
                 };
                 PaneView {
+                    rail: Observed::new(&rail, cx),
                     model,
                     key,
                     kind,
@@ -220,8 +235,7 @@ impl PaneLayer {
     /// holds them; once it closes, and then to the new front, not back to
     /// what had them when it opened.
     fn keys_move(&mut self, layout: &layout::Layout, cx: &mut App) -> bool {
-        let covered =
-            self.kind == WindowKind::Console && self.model.read(cx).state.overlay.is_some();
+        let covered = self.overlays.read(cx).get().is_some();
         if covered {
             return false;
         }
@@ -374,6 +388,8 @@ pub(in crate::shell) struct PaneView {
     kind: WindowKind,
     instance: u64,
     desk: Entity<Desk>,
+    /// Its program's name.
+    rail: Observed<Rail>,
     layer: WeakEntity<PaneLayer>,
     window: WeakEntity<DesktopWindow>,
     /// The pane's own focus: it holds the keys when nothing in the view does.
@@ -395,11 +411,11 @@ impl PaneAction {
     /// window's Close is not another's: "Close Chat window"), its glyph.
     fn parts(
         self,
-        roster: &crate::runtime::Roster,
+        rail: &[crate::runtime::RailRow],
         module: &str,
     ) -> (&'static str, String, gpui_kit::assets::IconName) {
         use gpui_kit::assets::IconName;
-        let program = panes::label(roster, module);
+        let program = panes::label(rail, module);
         let window = match module {
             layout::EMPTY => "empty window".to_owned(),
             _ => format!("{program} window"),
@@ -443,7 +459,7 @@ impl PaneView {
         // The element id is stable for the AX door and tests; the AX name
         // is a phrase a screen reader can announce on its own, not the bare
         // verb.
-        let (id, name, glyph) = action.parts(&self.model.read(cx).state.roster, module);
+        let (id, name, glyph) = action.parts(self.rail.read(cx).rows(), module);
         crate::a11y::keyboard(
             div()
                 .id(SharedString::from(format!("pane/{index}/{id}")))
@@ -618,7 +634,7 @@ impl PaneView {
                     super::super::ink::mono(500, 12.)
                         .flex_shrink_0()
                         .text_color(ink.ink)
-                        .child(panes::label(&self.model.read(cx).state.roster, pane.module)),
+                        .child(panes::label(self.rail.read(cx).rows(), pane.module)),
                 )
             })
             // pushes the controls to the bar's right end
@@ -647,7 +663,7 @@ impl PaneView {
         use super::super::ink::*;
         use crate::runtime::notify::{self, Permission};
         let ink = Ink::of(self.model.read(cx).state.dark());
-        let name = panes::label(&self.model.read(cx).state.roster, module);
+        let name = panes::label(self.rail.read(cx).rows(), module);
         let burst = notify::Settings::load().burst;
         let button = |id: &'static str, text: &'static str, filled: bool, message: Message| {
             let model = self.model.clone();
@@ -828,7 +844,7 @@ impl Render for PaneView {
             .held
             .is_some_and(|held| held.instance == pane.instance)
             && self.kind == WindowKind::Console;
-        let roster = self.model.read(cx).state.roster.clone();
+        let rail = self.rail.read(cx).rows().to_vec();
         let center = self.model.read(cx).state.center.clone();
         let view = self.body(window, cx);
         // it holds the pane's keys when nothing in the view does; Tab
@@ -840,7 +856,7 @@ impl Render for PaneView {
             .on(div()
                 .id(SharedString::from(format!("pane/{index}/view")))
                 .role(Role::Group)
-                .aria_label(panes::label(&roster, pane.module))
+                .aria_label(panes::label(&rail, pane.module))
                 .when(self.kind == WindowKind::Console, |view| {
                     view.aria_keyshortcuts(chord_label(&(index + 1).to_string()))
                 })
@@ -856,7 +872,7 @@ impl Render for PaneView {
                             crate::a11y::live(
                                 div().id("hold-say").role(Role::Status),
                                 accesskit::Live::Polite,
-                                pane_hold::hold_words(&roster, pane.module),
+                                pane_hold::hold_words(&rail, pane.module),
                             )
                             .absolute()
                             .size(px(1.))

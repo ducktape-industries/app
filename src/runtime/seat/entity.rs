@@ -514,5 +514,7 @@ impl Drop for Seat {
             .lock()
             .expect("module views")
             .remove(&(self.module, self.instance));
+        // the module's row says Loading until a seat is back
+        rail_moved();
     }
 }

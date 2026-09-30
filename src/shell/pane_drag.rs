@@ -264,8 +264,7 @@ pub(super) fn raise(
         let (covered, layout, desk_window) = {
             let this = this.read(cx);
             // a press on something open over the desk is not on a window
-            let covered = this.kind == crate::shell::WindowKind::Console
-                && this.model.read(cx).state.overlay.is_some();
+            let covered = this.overlays.read(cx).get().is_some();
             (covered, this.layout(cx), this.window.clone())
         };
         // a press ends the hold the keyboard has on a window, as it is

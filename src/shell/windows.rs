@@ -99,11 +99,13 @@ impl DesktopWindow {
             });
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let desk = model.update(cx, |model, cx| model.desk(key, cx));
+        let own = model.update(cx, |model, cx| model.window_entities(key, kind, cx));
+        let rail = model.read(cx).entities.rail.clone();
+        let rail_rows = entities::Observed::new(&rail, cx);
+        let desk = own.desk.clone();
         let panes = {
-            let (model, desk, root, this) =
-                (model.clone(), desk.clone(), focus.clone(), cx.weak_entity());
-            cx.new(|cx| layers::PaneLayer::new(model, key, kind, desk, root, this, window, cx))
+            let (model, root, this) = (model.clone(), focus.clone(), cx.weak_entity());
+            cx.new(|cx| layers::PaneLayer::new(model, key, kind, own, root, this, window, cx))
         };
         let launcher_spin = cx
             .new(|cx| spin::Spin::new(figure::Figure::Roll, false, gpui_kit::Hsla::default(), cx));
@@ -112,6 +114,7 @@ impl DesktopWindow {
             key,
             kind,
             desk,
+            rail_rows,
             panes,
             inputs: HashMap::new(),
             spotlight_focused: false,
@@ -140,7 +143,12 @@ impl DesktopWindow {
 }
 
 impl Desktop {
-    pub(super) fn new(state: Ducktape, tray: crate::tray::Tray, cx: &mut Context<Self>) -> Self {
+    pub(super) fn new(
+        state: Ducktape,
+        tray: crate::tray::Tray,
+        entities: entities::Entities,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let seats = cx.new(|_| entities::Seats::new());
         let seat_intents = cx.subscribe(&seats, |desktop, _, (module, intent), cx| {
             desktop.dispatch(Message::ViewEvent(module, intent.clone()), cx)
@@ -154,7 +162,7 @@ impl Desktop {
             streams: HashMap::new(),
             seats,
             _seat_intents: seat_intents,
-            desks: BTreeMap::new(),
+            entities,
             desk_bounds: None,
         }
     }
@@ -173,7 +181,9 @@ impl Desktop {
         use gpui_kit::*;
         let title = match kind {
             crate::shell::WindowKind::Console => "Ducktape".to_owned(),
-            crate::shell::WindowKind::View { module } => panes::label(&self.state.roster, module),
+            crate::shell::WindowKind::View { module } => {
+                panes::label(self.entities.rail.read(cx).rows(), module)
+            }
         };
         // the launcher is a small window of a fixed size; the desk grows
         let launcher = kind == crate::shell::WindowKind::Console && self.state.in_launcher();
@@ -247,6 +257,7 @@ impl Desktop {
                         model.dispatch(Message::Pane(key, PaneMessage::PopIn), cx);
                         model.dispatch(Message::WindowWasClosed(key), cx);
                         model.state.error = format!("The window could not be opened: {error}");
+                        model.bridge(false, cx);
                         cx.notify();
                     });
                 }

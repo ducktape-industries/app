@@ -58,11 +58,13 @@ pub(super) fn console(
     });
     let model = cx.new(|cx| {
         let (mut state, _) = Ducktape::boot();
-        // its own roster, not the app's one every test shares
+        // its own roster and centre, not the app's ones every test shares
         state.roster = Default::default();
+        state.center = Default::default();
         state.stage = crate::Stage::Desk;
         state.active = Some("pane-ax-test");
-        Desktop::new(state, crate::tray::init(cx).0, cx)
+        let entities = entities::Entities::for_test(&state, cx);
+        Desktop::new(state, crate::tray::init(cx).0, entities, cx)
     });
     let key = WindowKey::unique();
     let mut view = None;
@@ -206,8 +208,9 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     // top-left corner stays uncovered
     let behind = gpui_kit::point(px(first.x + 14.), px(desk::BAR + first.y + 14.));
     // over a menu's backdrop the press closes the menu, and raises nothing
-    model.update(&mut native, |model, _| {
-        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Account))
+    model.update(&mut native, |model, cx| {
+        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Account));
+        model.bridge(false, cx);
     });
     native.update(|window, cx| {
         draw(window, cx);
