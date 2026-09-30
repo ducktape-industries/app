@@ -721,3 +721,56 @@ fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
         "the clipboard answer was delivered in a second tick"
     );
 }
+
+/// One tick per draw: two wakes in one flush (moved props and a route)
+/// tick twice, but the second tick waits until the first's frame has
+/// drawn, so every frame the guest produced is drawn once, in order, and
+/// none is skipped past on the way to the draw.
+#[gpui_kit::test]
+fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
+    const MODULE: &str = "fresh-draws-first-test";
+    let _on = crate::perf::on_for_test();
+    crate::runtime::seat_for_test(MODULE, 320);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    native.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    native.run_until_parked();
+    assert_eq!((ticks_of(&seat, &native), renders_of(MODULE)), (1, 1));
+    {
+        let mounted = mounted_of(&seat, &native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        guest.props_subscription = Some(98);
+        guest.route_subscriptions.push(99);
+    }
+    // the props turn is deferred; the route lands after it has run, still
+    // before any draw, and asks for a turn of its own
+    let routed = seat.clone();
+    native.update(|_, cx| {
+        seat.update(cx, |seat, cx| seat.set_props(b"moved".to_vec(), cx));
+        cx.defer(move |cx| {
+            crate::runtime::route_to(MODULE, "somewhere".into());
+            routed.update(cx, |seat, cx| seat.turn(cx));
+        });
+    });
+    native.run_until_parked();
+    for _ in 0..2 {
+        native.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        native.run_until_parked();
+    }
+    assert_eq!(
+        ticks_of(&seat, &native),
+        3,
+        "the props and the route each ticked the guest"
+    );
+    assert_eq!(
+        renders_of(MODULE),
+        3,
+        "each fresh frame drew before the next turn replaced it"
+    );
+}

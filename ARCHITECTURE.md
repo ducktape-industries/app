@@ -158,7 +158,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    and binds `Exports` (`memory`, `alloc`, `init`, `tick`, `snapshot`,
    `restore`); `Guest::load` then runs `init` on a fresh view, or `restore`
    on a replacement.
-5. **Turn / tick.** A seat is never stepped by a draw. Every wake ends in
+5. **Turn / tick.** A seat is never stepped inside a draw. Every wake ends in
    one `Seat::turn`: a kernel reply (`Replies::changes`), a due
    `clock.ticks` item (a timer the turn re-arms), a `ViewTree` event, moved
    props (`Seats::set_props`, compared), the theme, the seat's `wake`
@@ -166,7 +166,18 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    `BUSY_FRAME` timer, never back to back). `turn` is entered at app level
    only: anything reachable from a window callback or `Desktop::dispatch`
    goes through `Seat::wake` = `cx.defer(turn)`, because `turn` updates the
-   window itself. `turn` → `Guest::redraw`: it merges pending inputs, drains
+   window itself. One tick per draw: a turn that ticked holds the seat
+   until its tree has drawn (`render::Drawn`, sent by every render; a tick
+   dirties the tree), and a turn asked for meanwhile runs right after the
+   draw. So every frame the guest makes is drawn before the next, as when
+   it ticked on the draw path: the first draw of a fresh view shows its
+   first frame (the keys a pane hands its first control go by it) and a
+   reply's chain of ticks advances one frame per draw. The AX door turns
+   every seat before a read
+   (`Seats::settle`), so the tree it draws has what the guest has answered,
+   as the draw itself took in; the door's task yields to no reply wake
+   between a press and its read.
+   `turn` → `Guest::redraw`: it merges pending inputs, drains
    kernel `Replies`, fires due `clock.ticks`, syncs visibility, offset and
    route subscriptions, and — only if something is pending, the frame said
    `busy`, or there was never a first tree — calls `Guest::tick`: `arm`
@@ -480,7 +491,8 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   channel to `ax::serve` on the window thread. Endpoints: `GET /tree`
   (`?compact`, `?bounds`, `?window`, `?view`), `GET /actions`, `POST /act`,
   `POST /key`, `GET /keys`, `POST /drag`, `POST /wait`, and `POST /reveal`
-  only with `DUCKTAPE_AX_DOOR_PRIVATE=1`. Every read draws the window and
+  only with `DUCKTAPE_AX_DOOR_PRIVATE=1`. Every read settles the seats
+  (`ax::Door::settle`), draws the window and
   reads the same AccessKit tree GPUI hands the OS (`ax::tree::snapshot`
   over `Window::a11y_tree`); every act goes through GPUI's own a11y action,
   key or mouse dispatch (`ax::actions`). Ids are `<window>:<element id>`;

@@ -268,6 +268,55 @@ pub(crate) fn seat_busy_for_test(module: &'static str, min_width: u32, busy_tick
     seat_code_for_test(module, min_width, code);
 }
 
+/// [`seat_for_test`], its view drawing `first` on its first tick, saying
+/// `busy` (tick again soon), and `then` on every later tick: a view whose
+/// first frame is not its settled one.
+#[cfg(test)]
+pub(crate) fn seat_frames_for_test(
+    module: &'static str,
+    min_width: u32,
+    first: wire::Node,
+    then: wire::Node,
+) {
+    let encode = |root, busy| {
+        let frame = wire::encode(&wire::Frame {
+            root: Some(root),
+            busy,
+            ..Default::default()
+        });
+        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+        (bytes, frame.len() as u32)
+    };
+    let (first, first_len) = encode(first, true);
+    let (then, then_len) = encode(then, false);
+    assert!(
+        first_len < 4096 && then_len < 4096,
+        "test frames fit their pages"
+    );
+    let first_tick = wire::abi::pack(65536, first_len);
+    let then_tick = wire::abi::pack(69632, then_len);
+    let code = Module::new(
+        guest::engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (global $n (mut i32) (i32.const 0))
+            (data (i32.const 65536) "{first}")
+            (data (i32.const 69632) "{then}")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64)
+                global.get $n i32.const 1 i32.add global.set $n
+                global.get $n i32.const 1 i32.le_u
+                if (result i64) i64.const {first_tick} else i64.const {then_tick} end)
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
+    )
+    .unwrap();
+    seat_code_for_test(module, min_width, code);
+}
+
 /// An intent `module`'s seat `instance` will hand over on its next update,
 /// as a `host.badge` or `link.open` request would leave it.
 #[cfg(test)]

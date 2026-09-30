@@ -1148,3 +1148,56 @@ fn a_popped_out_seat_moves_into_its_window_when_it_opens(cx: &mut TestAppContext
         "the seat moved into the popped-out window as it opened"
     );
 }
+
+/// A pane picked in Spotlight hands the keys by its view's first frame, as
+/// the draw that showed that frame did while the guest ticked on the draw
+/// path: a view whose first frame has no control keeps them on the pane's
+/// box even though its second frame, ticked before that draw (props, a
+/// reply, a busy frame), has a field. The seat holds that second tick
+/// until the first's frame has drawn (`Seat::turn`, one tick per draw).
+#[gpui_kit::test]
+fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    const MODULE: &str = "pane-first-frame-view";
+    let field = view_wire::Node::Input {
+        options: view_wire::InputOptions {
+            label: "Search".into(),
+            ..Default::default()
+        },
+        id: view_wire::ElementIdWire::Name("search".into()),
+        placeholder: String::new(),
+        value: String::new(),
+        on_input: Some(1),
+        on_submit: None,
+        secure: false,
+        style: gpui_kit::div().w(px(200.)).h(px(24.)).style().clone(),
+    };
+    let (model, _, view, mut native) = console(cx);
+    settle(&mut native);
+    key(&mut native, "secondary-k");
+    settle(&mut native);
+    crate::runtime::seat_frames_for_test(MODULE, 200, view_wire::Node::empty(), field);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Spot(crate::Spot::Open(MODULE)), cx)
+    });
+    settle(&mut native);
+    let nodes = native.update(draw);
+    assert!(
+        nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"] == format!("console:{MODULE}/search")),
+        "the second frame's field is up: {nodes}"
+    );
+    native.update(|window, cx| {
+        let view = view.read(cx);
+        let layout = view.layout(cx);
+        let own = &view.pane_keys[&layout.panes[layout.focused].instance].0;
+        assert!(
+            own.is_focused(window),
+            "the box keeps the keys, its first frame had no control: {:?}",
+            window.focused(cx)
+        );
+    });
+}

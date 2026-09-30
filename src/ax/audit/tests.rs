@@ -751,7 +751,11 @@ pub(crate) async fn door_audit(
                 walk: true,
                 launcher: false,
             };
-            crate::ax::answer(request, &served, &mut Default::default(), &mut cx).await
+            let door = crate::ax::Door {
+                windows: &served,
+                settle: &|_| {},
+            };
+            crate::ax::answer(request, &door, &mut Default::default(), &mut cx).await
         })
         .await;
     assert_eq!(reply.status, 200, "{}", reply.body);
