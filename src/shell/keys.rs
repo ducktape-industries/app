@@ -8,10 +8,10 @@
 //! something open), whether the desk's keys reach it (`desk`: on the desk,
 //! nothing open over it), and whether something is open over it
 //! (`overlay`). A guest editor (`GuestEditor`) sits deeper, so its own keys
-//! come first. An empty window's ↑↓ and Enter are its field's (`command.rs`
-//! takes them); Tab there is `SwitchMode` once agent chat is built
-//! (`command::CHAT_READY`), under the empty window's own context
-//! (`command::CONTEXT`), and until then moves focus. A desk window is a
+//! come first. An empty window's ↑↓ and Enter are its field's
+//! (`layers::EmptyPane` takes them); Tab there is `SwitchMode` once agent chat is built
+//! (`layers::CHAT_READY`), under the empty window's own context
+//! (`layers::CONTEXT`), and until then moves focus. A desk window is a
 //! pane; an OS window is a `DesktopWindow`.
 
 use super::*;
@@ -72,11 +72,11 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("secondary-k", ToggleSpotlight, Some("Ducktape && on_desk")),
         KeyBinding::new("escape", CloseOverlay, Some("Ducktape && overlay")),
     ];
-    if super::command::CHAT_READY {
+    if super::layers::CHAT_READY {
         bindings.push(KeyBinding::new(
             "tab",
             SwitchMode,
-            Some(super::command::CONTEXT),
+            Some(super::layers::CONTEXT),
         ));
     }
     for nth in 1..=9 {
@@ -279,11 +279,11 @@ mod tests {
         cx.update(bind);
         let empty = [
             "Ducktape console on_desk desk",
-            super::super::command::CONTEXT,
+            super::super::layers::CONTEXT,
         ];
         assert_eq!(
             resolve("tab", &empty, cx).is_some(),
-            super::super::command::CHAT_READY
+            super::super::layers::CHAT_READY
         );
     }
 }

@@ -119,6 +119,7 @@ pub(super) fn code_digest(code: &abi::BlobId) -> [u8; 32] {
 /// The programs the rail lists, in roster order, with the name each one's
 /// view gives itself (its program name until the manifest is read) and
 /// whether it has a view at all.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RailRow {
     pub module: &'static str,
     pub label: String,

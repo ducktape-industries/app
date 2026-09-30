@@ -432,9 +432,9 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      30 fps cap); `door_draws == 0`. Preconditions,
      or a healthy app fails: no rail row saying `Loading`
      (`DesktopWindow::console` requests an animation frame per render while
-     one does) and no empty pane in any served window (`pane_stage` draws the
-     Spin figure there, paced at 33 ms by `Spin::run` whatever the window's
-     activity).
+     one does) and no bare desk in any served window (its
+     `layers::EmptyPane` draws the Spin figure, paced at 33 ms by `Spin::run`
+     whatever the window's activity; `renders.empty` counts its frames).
    - idle drawing time per 5 s ≤ 500 ms (334 measured), report-only.
 4. **Switch budget** (the keys-only scenario, §4.3): full view redraws per
    window switch (`misses` delta) ≤ 20 per window (11–14 measured; 57–67 was
@@ -573,6 +573,9 @@ Phase 0, as listed:
   `shell/windows.rs`, `ui/connect.rs`, `ui/update.rs`, `first_seated` in
   `seat/entity.rs`); `Desktop::dispatch` whole and the `Ducktape::update`
   domains; `DesktopWindow::render` `frame.render` and `renders` per window;
+  the pane bodies the app draws, `renders.empty` (`layers::EmptyPane`: the
+  bare desk or an empty window) and `renders.help` (`layers::HelpPane`) per
+  window;
   the `switch` timer from `pane_message`, `raise_window` and the activation
   observer to the next frame; `Spin::render` `figure.frame` and
   `figure.interval`; `rail` and `rail.calls`; `io.read_prefs`,

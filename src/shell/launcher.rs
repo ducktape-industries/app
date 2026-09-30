@@ -81,6 +81,10 @@ impl DesktopWindow {
         use gpui_kit::*;
         let state = self.model.read(cx).state.facts();
         let ink = Ink::of(state.dark);
+        // removed in s9: `LauncherLayer` writes its figure from its observers
+        self.launcher_spin.update(cx, |spin, cx| {
+            spin.set(figure, state.motion, ink.figure, cx)
+        });
         // The canvas draws a title bar. macOS lends the window's own
         // (transparent, the traffic lights in it); elsewhere the system's
         // title bar is that bar. It is the desk's menu bar height: one
@@ -122,14 +126,7 @@ impl DesktopWindow {
                     .items_center()
                     .justify_center()
                     .bg(ink.surface)
-                    .child(super::spin::drawing(
-                        "launcher-figure-drawing",
-                        figure,
-                        state.motion,
-                        ink.figure,
-                        window,
-                        cx,
-                    )),
+                    .child(super::spin::drawing(&self.launcher_spin)),
             )
             .child(tag("caption", caption, &ink));
         let reading =

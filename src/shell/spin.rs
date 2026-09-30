@@ -23,13 +23,13 @@ const RESUME: (f32, f32) = (0.8, 2.2);
 const FLING_MAX: f32 = 8.;
 
 pub(super) struct Spin {
-    pub(super) figure: Figure,
+    figure: Figure,
     /// The app's motion switch.
     switch: bool,
     /// It tumbles on its own: the switch is on and the system does not ask
     /// for less motion. Read at `new` and on every tick.
     moving: bool,
-    pub(super) ink: Hsla,
+    ink: Hsla,
     /// How it is held now.
     turn: Rotation,
     /// The spin a release gave it, radians a second about x and y.
@@ -75,6 +75,21 @@ impl Spin {
             glyphs: None,
             ticking: false,
             last_drawn: None,
+        }
+    }
+
+    /// What it shows, as its owner has it: the figure, the motion switch
+    /// and the ink. Written from the owner's observers, never from a draw
+    /// (a write there reaches a cached figure only on its next frame), and
+    /// compared: an equal write draws nothing.
+    pub(super) fn set(&mut self, figure: Figure, switch: bool, ink: Hsla, cx: &mut Context<Self>) {
+        let now = moving(switch, cx);
+        if (self.figure, self.switch, self.moving, self.ink) != (figure, switch, now, ink) {
+            self.figure = figure;
+            self.switch = switch;
+            self.moving = now;
+            self.ink = ink;
+            cx.notify();
         }
     }
 
@@ -146,7 +161,8 @@ impl Spin {
 
     /// Waits for the next frame and asks for it to be drawn. Its render
     /// waits for the one after, so a hidden window, never drawn, stops;
-    /// shown again, it picks up where it was.
+    /// shown again, it picks up where it was. Stilled while it waited
+    /// (motion switched off, a hand took hold of it), it asks for none.
     fn run(&mut self, cx: &mut Context<Self>) {
         if self.ticking || !self.alive() {
             return;
@@ -158,8 +174,10 @@ impl Spin {
                 .await;
             let _ = spin.update(cx, |spin, cx| {
                 spin.ticking = false;
-                spin.tick(cx);
-                cx.notify();
+                if spin.alive() {
+                    spin.tick(cx);
+                    cx.notify();
+                }
             });
         })
         .detach();
@@ -330,36 +348,12 @@ fn listen(spin: Entity<Spin>, bounds: Bounds<Pixels>, window: &mut Window) {
     });
 }
 
-/// The figure, kept across frames under `id` without tying its redraws to
-/// the view it sits in: it redraws alone, `figure::FPS` times a second
-/// while it moves.
-pub(super) fn drawing(
-    id: impl Into<ElementId>,
-    figure: Figure,
-    moving: bool,
-    ink: Hsla,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let spin = window.with_global_id(id.into(), |global, window| {
-        window.with_element_state(global, |kept: Option<Entity<Spin>>, _| {
-            let spin = kept.unwrap_or_else(|| cx.new(|cx| Spin::new(figure, moving, ink, cx)));
-            (spin.clone(), spin)
-        })
-    });
-    spin.update(cx, |spin, cx| {
-        let now = self::moving(moving, cx);
-        if (spin.figure, spin.switch, spin.moving, spin.ink) != (figure, moving, now, ink) {
-            spin.figure = figure;
-            spin.switch = moving;
-            spin.moving = now;
-            spin.ink = ink;
-            cx.notify();
-        }
-    });
-    // cached: the launcher redrawing (a caret, a hover) reuses the last
-    // frame instead of stamping it again
-    AnyView::from(spin)
+/// The figure `spin`, as its owner last set it: it redraws alone,
+/// `figure::FPS` times a second while it moves. Drawing it writes nothing.
+pub(super) fn drawing(spin: &Entity<Spin>) -> AnyElement {
+    // cached: the view it sits in redrawing (a caret, a hover) reuses the
+    // last frame instead of stamping it again
+    AnyView::from(spin.clone())
         .cached(
             StyleRefinement::default()
                 .w(px(figure::COLS as f32 * figure::ADVANCE))
