@@ -427,19 +427,44 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      ViewTree in `Seat::turn`. Renders far above ticks is a
      notify loop: the #347 class of bug, and this is its regression gate
      (only meaningful with `cache_on: true`, §4.3);
-   - shell `renders.<window>` ≤ seconds / 2 + 2 with motion off (nothing
+   - per window, the root and its layers (§5 names the view each counts):
+     root `renders.<window>` ≤ seconds / 2 + 2 with motion off (nothing
      beats: a window draws only what moved, at most a new height per 2 s
      status poll and the account read it starts); ≤ 25 × seconds with
-     motion on (the pulse's 30 fps cap); `door_draws == 0`. Preconditions,
-     or a healthy app fails: no text field focused (a focused field's caret
+     motion on (each pulse of `layers::StatusDot` draws the dot and the
+     root; the pulse is capped at 30 fps, `with_max_fps`, and the budget
+     moves to 30 × seconds only if a measured root count passes 125 per
+     5 s, which none below does); `renders.chrome` ≤ seconds / 2 + 2 in
+     both modes (the dot is the bar's sibling, so a pulse leaves the bar
+     cached);
+     `renders.pane.<n>` ≤ root `renders` (a `PaneView` is uncached and
+     draws with the root, never more); `renders.overlays` and
+     `renders.toast` ≤ 2; a view's `draws` ≤ root `renders`;
+     `door_draws == 0`. In-process, on the same counters:
+     `a_pulse_re_renders_the_dot_and_not_the_chrome`,
+     `a_still_chain_draws_no_frame`, `a_pane_wake_leaves_the_chrome_alone`
+     and `a_toast_re_renders_its_layer_only`
+     (`src/shell/layers/root_tests.rs`). Preconditions, or a healthy app
+     fails: no text field focused (a focused field's caret
      blinks every 500 ms, gpui-base 0.7, and each blink draws the field's
      cached ancestor, its layer or its view's tree, and the root: the idle
-     recipe Tabs the keys onto a button first) and no bare desk in any
-     served window (its `layers::EmptyPane` draws the Spin figure, paced at
+     recipe Tabs the keys onto a button first); no menu open (the node
+     menu and the bell tick their ages every second, and the node menu's
+     pulse draws the bar); the node answering (the reconnecting bar pulses
+     in the footer, `renders.toast`); and no empty pane in a served window
+     (each `layers::EmptyPane` draws the Spin figure, paced at
      33 ms by `Spin::run` whatever the window's activity; `renders.empty`
      counts its frames). A rail row saying `Loading` is no precondition: no
      frame loop waits on it (the seat wakes on its own `wake`, the rail on
-     `runtime::changes_channel`).
+     `runtime::changes_channel`). Measured, release, Xvfb 1280×800, the
+     stage seeded at 1 s blocks, Forge open with the keys on a button,
+     5 s windows (the idle probe, 2026-09-30), on app `e44fa089` (#402) and
+     `5b470cfc` (#401), two runs each per setting: motion off root 2, 2 /
+     2, 2; motion on 107, 107 / 105, 105 (about 21 a second, under 125 per
+     5 s: the budget stays 25 × seconds); `renders.chrome` 2 in every run,
+     both modes; `renders.pane.0` and forge `draws` equal to the root in
+     every run; forge ViewTree `renders` 0 on 0 ticks; `renders.overlays`,
+     `renders.toast` and `door_draws` 0.
    - idle drawing time per 5 s ≤ 500 ms (334 measured), report-only.
 4. **Switch budget** (the keys-only scenario, §4.3): full view redraws per
    window switch (`misses` delta) ≤ 20 per window (11–14 measured; 57–67 was
