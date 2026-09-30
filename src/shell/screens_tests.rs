@@ -589,6 +589,52 @@ fn the_account_name_goes_only_with_the_account_steps(cx: &mut TestAppContext) {
     );
 }
 
+/// The console closed to the tray mid-step and opened again: its new
+/// fields show what the reducer holds of the step, which is what a submit
+/// sends.
+#[gpui_kit::test]
+fn a_console_opened_mid_step_shows_what_the_reducer_holds(cx: &mut TestAppContext) {
+    let unlock = Stage::Unlock(crate::ui::Unlock {
+        password: "hunter2".to_string().into(),
+        ..Default::default()
+    });
+    let recover = Stage::Recover(crate::ui::Recover {
+        phrase: "abandon ability".to_string().into(),
+        name: "duck".into(),
+    });
+    let account = Stage::Account(crate::ui::Account {
+        name: "duck".into(),
+        ..Default::default()
+    });
+    let phrase = Stage::Phrase(crate::ui::Phrase {
+        quiz: Some([0, 5, 9]),
+        answers: ["one", "two", "three"].map(|word| word.to_string().into()),
+        ..Default::default()
+    });
+    for (stage, want) in [
+        (unlock, ["hunter2", "", "", "", "", ""]),
+        (recover, ["", "abandon ability", "duck", "", "", ""]),
+        (account, ["", "", "duck", "", "", ""]),
+        (phrase, ["", "", "", "one", "two", "three"]),
+    ] {
+        let (mut state, _) = Ducktape::boot();
+        state.signer_key = "ab".into();
+        let step = stage.step();
+        state.stage = stage;
+        let (view, mut native) = open(state, cx);
+        let shown = native.update(|_, cx| {
+            let fields = &view.read(cx).launcher().read(cx).fields;
+            let [a, b, c] = &fields.words;
+            [&fields.password, &fields.restore, &fields.name, a, b, c]
+                .map(|field| field.state.read(cx).value().to_string())
+        });
+        assert_eq!(
+            shown, want,
+            "{step}: the fields lost what the reducer holds"
+        );
+    }
+}
+
 /// The reducer puts another address in `Session` (the node reached, a
 /// switch that did not land): the address field shows it, and what is
 /// typed after goes out as before.

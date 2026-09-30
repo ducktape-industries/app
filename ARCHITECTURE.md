@@ -390,7 +390,8 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   `layers::WindowRoot` (`layers/root.rs`, one thin uncached view per OS
   window) lays the window's layers out as siblings. Before the desk the
   console draws `layers::LauncherLayer` (`layers/launcher.rs`, uncached:
-  cached, the unlock screen moved by 1 LSB, and nothing pulses under it),
+  cached, the unlock screen moved by 1 LSB, and these screens gain nothing
+  from the cache),
   which reads `Screen`, `Session`, `Account` and `Prefs` and picks by
   `Screen`: the frame with a `spin` figure on the left (written from its
   observers), then `launcher/connect.rs`, `key.rs`, `recovery.rs`,

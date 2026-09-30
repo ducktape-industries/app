@@ -195,6 +195,27 @@ impl LauncherLayer {
         };
         let endpoint = session.read(cx).get().endpoint.clone();
         fields.endpoint.set(endpoint.clone(), window, cx);
+        // a console opened mid-step (closed to the tray and opened again)
+        // shows what the reducer holds of it, and will submit (s10: the
+        // fields are the only copy)
+        let held: Vec<(&NativeInput, String)> = match &model.read(cx).state.stage {
+            Stage::Unlock(step) => vec![(&fields.password, step.password.to_string())],
+            Stage::Recover(step) => vec![
+                (&fields.restore, step.phrase.to_string()),
+                (&fields.name, step.name.clone()),
+            ],
+            Stage::Account(step) => vec![(&fields.name, step.name.clone())],
+            Stage::Phrase(step) => fields
+                .words
+                .iter()
+                .zip(&step.answers)
+                .map(|(field, answer)| (field, answer.to_string()))
+                .collect(),
+            Stage::Connect | Stage::Desk => Vec::new(),
+        };
+        for (field, text) in held {
+            field.set(text, window, cx);
+        }
         let subscriptions = [
             cx.observe_in(&screen, window, |this, _, window, cx| {
                 this.screen_moved(window, cx)
