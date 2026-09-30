@@ -164,6 +164,9 @@ fn the_programs_rail_is_one_tab_stop_whose_arrows_move_the_keys(cx: &mut TestApp
     let mut state = gate::desk();
     state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b", "gate-c"]);
     let (view, mut native) = open(state, cx);
+    // gpui reports focus moves only in the active window: the rail hears
+    // the keys leave it from one
+    super::activate(&mut native);
     native.update(draw);
     let stops = tab_round(&mut native);
     assert_eq!(under(&stops, "rail/"), ["shell:rail/gate-a"], "{stops:?}");

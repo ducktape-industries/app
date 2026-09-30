@@ -46,6 +46,11 @@ impl Rail {
         &self.rows
     }
 
+    /// `module`'s unread count; 0 with none.
+    pub(crate) fn badge(&self, module: &str) -> i64 {
+        self.badges.get(module).copied().unwrap_or(0)
+    }
+
     /// The rows read off the roster again; notifies only when they moved.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
         let rows = self.roster.rail();

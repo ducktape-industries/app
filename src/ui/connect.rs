@@ -224,10 +224,11 @@ impl Ducktape {
 
     fn apply_status(&mut self, status: &backend::NodeStatus) {
         let height = i64::try_from(status.height).unwrap_or(-1);
+        let now = crate::runtime::notify::wall();
         if height != self.height {
-            self.block_seen = self.wall_now;
+            self.block_seen = now;
         }
-        self.heard = self.wall_now;
+        self.heard = now;
         self.height = height;
         self.node = Some(status.clone());
         // mid-switch the line reads "Reaching …" until the other node answers

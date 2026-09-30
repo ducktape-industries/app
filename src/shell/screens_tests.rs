@@ -57,6 +57,15 @@ fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::Ap
     );
 }
 
+/// Activates the test window and waits for it to be so: gpui reports focus
+/// moves (`on_focus_out`, `on_blur`) only in the active window, and
+/// `activate_window` takes effect once the executor runs.
+fn activate(native: &mut VisualTestContext) {
+    native.update(|window, _| window.activate_window());
+    native.run_until_parked();
+    native.update(|window, _| assert!(window.is_window_active(), "the window did not activate"));
+}
+
 /// An assistive technology's press (AccessKit's Click) on the node whose
 /// element is `id` inside the element `within`: the path the door's
 /// `/act press` takes.
@@ -606,7 +615,10 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
             now - 3 * 86_400,
         );
     }
-    view.update(&mut native, |_, cx| cx.notify());
+    // the bell reads the centre through its slice: as a dispatch would
+    view.update(&mut native, |view, cx| {
+        view.model.update(cx, |model, cx| model.bridge(false, cx))
+    });
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications, 2 unread");
     // the count on the bell is announced as notices land

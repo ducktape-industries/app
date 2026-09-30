@@ -1,12 +1,12 @@
-//! The desk frame of a window: the menu bar (console only), the pane area
-//! (`layers::PaneLayer`), whatever is open over it, and the footer. Here the
-//! bar is measured for folding and the keys go back where they were when an
-//! overlay closes. Also the pieces every overlay is
-//! built from: `overlay` (backdrop and card), `hanging` (a menu under its
-//! bar button), `menu_row`, `dialog_fit`.
+//! The desk frame of a window: the menu bar (`layers::Chrome`, console
+//! only), the pane area (`layers::PaneLayer`), the dialog open over it, and
+//! the footer. Here the keys go where an overlay opening or closing sends
+//! them. Also the pieces every dialog is built from: `overlay` (scrim and
+//! card), `dialog_fit`.
 
+use super::layers::cached_unless_a11y;
 use super::*;
-use crate::{Overlay, Popover};
+use crate::Overlay;
 
 /// The menu bar's height.
 pub(super) const BAR: f32 = 36.;
@@ -21,57 +21,7 @@ impl DesktopWindow {
         cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        self.menu_left(window, cx);
         let state = self.model.read(cx).state.facts();
-        let rail = self.rail_rows.read(cx).rows().to_vec();
-        if rail.iter().any(|row| row.note == Some("Loading")) {
-            window.request_animation_frame();
-        }
-        // Folding. The tabs show their full labels until they overflow their
-        // strip; then every tab folds to its icon or initial, so none is cut.
-        // `bar_needs` is the narrowest window the full labels are known to
-        // need: the width the bar was last drawn unfolded at, plus how far
-        // the strip overflowed there (`self.rail.max_offset()`). Layout
-        // reports that overflow one frame late, so a bar drawn unfolded at a
-        // new width asks for one more frame to be measured in. `bar_needs`
-        // only grows while the bar shows the same words. New words (the
-        // network, the tab list, the sign-in state: `bar_made` hashes them)
-        // reset it to measure again, and the overflow the old words left is
-        // skipped on that frame. Badge counts stay out of the hash: they
-        // tick while folded, and a re-measure draws the bar whole for a frame.
-        let made_of = {
-            use std::hash::{Hash as _, Hasher as _};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            state.network.hash(&mut hasher);
-            for row in &rail {
-                (row.module, &row.label, row.note, row.empty).hash(&mut hasher);
-            }
-            (state.signer_key.is_empty(), &state.account).hash(&mut hasher);
-            hasher.finish()
-        };
-        let remade = self.bar_made != made_of;
-        if remade {
-            self.bar_made = made_of;
-            self.bar_needs = 0.;
-        }
-        let width = f32::from(window.viewport_size().width);
-        // last frame's overflow: the old words', on the frame that remade the bar
-        let over = f32::from(self.rail.max_offset().x);
-        if let Some(drawn) = self.bar_drawn
-            && !remade
-            && over > 0.
-            && drawn + over > self.bar_needs
-        {
-            self.bar_needs = drawn + over;
-        }
-        let narrow = width < self.bar_needs;
-        let drawn = (!narrow).then_some(width);
-        // drawn whole at a new width or of new words: the next frame measures
-        // it, so ask for one (nothing else may draw one soon)
-        if drawn.is_some() && (remade || drawn != self.bar_drawn) {
-            window.request_animation_frame();
-        }
-        self.bar_drawn = drawn;
         // tell the notification centre which window is in front and which
         // view is focused in it: that view's banners stay away (unless asked for)
         let layout = self.layout(cx);
@@ -84,18 +34,23 @@ impl DesktopWindow {
             .lock()
             .set_front(self.key, window.is_window_active(), focused);
         let console = self.kind == crate::shell::WindowKind::Console;
-        let bar = console.then(|| self.menubar(&state, &rail, narrow, window, cx));
+        // the bar: a cached view of its own, its menus hanging from it
+        let bar = self.chrome.clone().map(|chrome| {
+            cached_unless_a11y(
+                chrome.into(),
+                StyleRefinement::default()
+                    .w_full()
+                    .h(px(BAR))
+                    .flex_shrink_0(),
+                window,
+            )
+        });
         let overlay = match state.overlay.filter(|_| console) {
-            None => None,
             Some(Overlay::Spotlight) => Some(self.spotlight(&state, window, cx)),
             Some(Overlay::Approve) => Some(self.approve(&state, window, cx)),
             Some(Overlay::Settings) => Some(self.settings(&state, window, cx)),
-            Some(Overlay::Network) => Some(self.network_menu(&state, narrow, window)),
-            Some(Overlay::Menu(Popover::Node)) => Some(self.node_menu(&state, window, cx)),
-            Some(Overlay::Menu(Popover::Account)) => Some(self.account_menu(&state, window, cx)),
-            Some(Overlay::Menu(Popover::Notifications)) => {
-                Some(self.notifications(&state, window, cx))
-            }
+            // the menus are the bar's
+            Some(Overlay::Network | Overlay::Menu(_)) | None => None,
         };
         if state.overlay != Some(Overlay::Spotlight) {
             self.spotlight_focused = false;
@@ -146,29 +101,28 @@ impl DesktopWindow {
                     .child(self.panes.clone()),
             )
             .children(overlay)
-            .children(self.footer(cx))
+            // over an open menu, which is deferred too, as it paints today
+            .children(
+                self.footer(cx)
+                    .map(|footer| deferred(footer).with_priority(2)),
+            )
             .into_any_element()
     }
 
-    /// Something open over the desk, below the bar (its items stay live,
-    /// and one menu gives way to the next in one click): a backdrop that
-    /// closes it on a click, dimmed when `scrim`, and on it the card the
-    /// canvas dresses its menus and dialogs in, `border: 1.5px solid ink`
-    /// and a soft shadow. `dress` places and fills the card. Escape closes
-    /// it through `keys::CloseOverlay` (bound under the `overlay` context).
-    /// The backdrop holds the handle the keys enter it by (`desk_view`).
-    /// Dimmed, it is modal, on `modal`: Tab and Shift+Tab go round its
-    /// controls, never out to the bar. Not dimmed, it is a menu, on `menu`:
-    /// the keys may leave it, and it closes when they do
-    /// (`DesktopWindow::menu_left`).
-    #[allow(clippy::too_many_arguments, reason = "one frame, five overlays")]
+    /// A dialog open over the desk, below the bar: a dimmed backdrop that
+    /// closes it on a click, and on it the card the canvas dresses its
+    /// dialogs in, `border: 1.5px solid ink` and a soft shadow. `dress`
+    /// places and fills the card. Escape closes it through
+    /// `keys::CloseOverlay` (bound under the `overlay` context). The
+    /// backdrop holds the handle the keys enter it by (`desk_view`): it is
+    /// modal, on `modal`, so Tab and Shift+Tab go round its controls, never
+    /// out to the bar. (The bar's menus are `layers::Chrome`'s.)
     pub(super) fn overlay(
         &self,
         id: &'static str,
         role: gpui_kit::Role,
         name: &'static str,
         closes: crate::Overlay,
-        scrim: bool,
         ink: &super::ink::Ink,
         dress: impl FnOnce(gpui_kit::Stateful<gpui_kit::Div>) -> gpui_kit::AnyElement,
     ) -> gpui_kit::AnyElement {
@@ -185,13 +139,10 @@ impl DesktopWindow {
             .occlude()
             // a dialog keeps its margin from the window's sides, as
             // `dialog_fit` keeps it from the bottom
-            .when(scrim, |backdrop| {
-                backdrop
-                    .bg(ink.bg.opacity(0.6))
-                    .flex()
-                    .justify_center()
-                    .px(px(DIALOG_EDGE))
-            })
+            .bg(ink.bg.opacity(0.6))
+            .flex()
+            .justify_center()
+            .px(px(DIALOG_EDGE))
             .on_click(move |_, _, cx| {
                 model.update(cx, |model, cx| {
                     model.dispatch(Message::CloseOverlay(closes), cx)
@@ -211,135 +162,12 @@ impl DesktopWindow {
             .border(px(1.5))
             .border_color(ink.ink)
             .shadow_lg();
-        match scrim {
-            // modal to assistive technology as to the keyboard: what is
-            // behind the scrim is not reachable
-            true => backdrop
-                .child(dress(crate::a11y::modal(card)))
-                .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
-                .into_any_element(),
-            // a menu's rows step with the arrows as with Tab, and stop at
-            // its ends
-            false => {
-                let modal = self.menu.clone();
-                backdrop
-                    .track_focus(&self.menu)
-                    .capture_key_down(move |event: &KeyDownEvent, window, cx| {
-                        let down = match event.keystroke.key.as_str() {
-                            "down" => true,
-                            "up" => false,
-                            _ => return,
-                        };
-                        let step = |window: &mut Window, cx: &mut App, down| match down {
-                            true => window.focus_next(cx),
-                            false => window.focus_prev(cx),
-                        };
-                        cx.stop_propagation();
-                        step(window, cx, down);
-                        if !modal.contains_focused(window, cx) {
-                            step(window, cx, !down);
-                        }
-                    })
-                    .child(dress(card))
-                    .into_any_element()
-            }
-        }
-    }
-
-    /// A menu hanging below the bar (the canvas's menus: `top: 40px`), its
-    /// right edge under its button's.
-    pub(super) fn hanging(
-        &self,
-        which: crate::Popover,
-        width: f32,
-        body: impl IntoElement,
-        window: &Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use gpui_kit::*;
-        let ink = super::ink::Ink::of(self.model.read(cx).state.dark());
-        let (id, name) = match which {
-            crate::Popover::Node => ("node-status", "Node status"),
-            crate::Popover::Account => ("account-menu", "Account"),
-            crate::Popover::Notifications => ("notifications", "Notifications"),
-        };
-        let overlay = Overlay::Menu(which);
-        let at = self.under_button(overlay, Anchor::TopRight, window);
-        // a short window scrolls the menu rather than cutting it off
-        // (the card's 1.5px border above and below it)
-        let room = f32::from(window.viewport_size().height) - BAR - 8. - 3.;
-        let body = div()
-            .id(SharedString::from(format!("{id}-body")))
-            .max_h(px(room.max(0.)))
-            .overflow_y_scroll()
-            .child(body);
-        self.overlay(id, Role::Dialog, name, overlay, false, &ink, |card| {
-            at.child(card.w(px(width)).child(body)).into_any_element()
-        })
-    }
-
-    /// Where `overlay`'s menu hangs: `anchor` (a top corner) at the same
-    /// corner of its bar button, 4px below the bar, shifted back inside the
-    /// window when it would run off it. Before the button was ever painted,
-    /// the window's edge on that side.
-    pub(super) fn under_button(
-        &self,
-        overlay: Overlay,
-        anchor: gpui_kit::Anchor,
-        window: &Window,
-    ) -> gpui_kit::Anchored {
-        use gpui_kit::*;
-        let left = anchor == Anchor::TopLeft;
-        let x = match self.bar_buttons.get(&overlay) {
-            Some(button) if left => button.left(),
-            Some(button) => button.right(),
-            None if left => px(8.),
-            None => window.viewport_size().width - px(8.),
-        };
-        anchored()
-            .position(point(x, px(BAR + 4.)))
-            .anchor(anchor)
-            .snap_to_window_with_margin(px(8.))
-    }
-
-    /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`.
-    pub(super) fn menu_row(
-        &self,
-        id: &'static str,
-        label: &'static str,
-        run: impl Fn(&mut gpui_kit::App) + 'static,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::Stateful<gpui_kit::Div> {
-        use super::ink::{Ink, sans};
-        use gpui_kit::*;
-        let ink = Ink::of(self.model.read(cx).state.dark());
-        let surface = ink.surface;
-        crate::a11y::keyboard(
-            sans(400, 14.)
-                .id(id)
-                .control(Role::MenuItem, label)
-                .h(px(36.))
-                .px(px(16.))
-                .flex()
-                .items_center()
-                .justify_between()
-                .cursor_pointer()
-                .hover(move |style| style.bg(surface))
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    run(cx)
-                })
-                .child(label),
-            ink.ink,
-        )
-    }
-
-    pub(super) fn dispatching(
-        &self,
-        message: fn() -> Message,
-    ) -> impl Fn(&mut gpui_kit::App) + 'static {
-        let model = self.model.clone();
-        move |cx| model.update(cx, |model, cx| model.dispatch(message(), cx))
+        // modal to assistive technology as to the keyboard: what is
+        // behind the scrim is not reachable
+        backdrop
+            .child(dress(crate::a11y::modal(card)))
+            .focus_trap(SharedString::from(format!("{id}-backdrop")), &self.modal)
+            .into_any_element()
     }
 }
 

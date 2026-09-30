@@ -269,6 +269,7 @@ impl Center {
     }
 
     /// Whether `module`'s window shows the permission bar.
+    #[cfg(test)]
     pub(crate) fn asking(&self, module: &str) -> bool {
         self.asking.contains(module)
     }

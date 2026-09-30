@@ -42,6 +42,11 @@ gpui_kit::actions!(
         SwitchMode,
         /// Escape: whatever is open over the desk.
         CloseOverlay,
+        /// Tab in a menu hanging from the bar: on, and past its end out of
+        /// it, which closes it (`layers::Chrome`).
+        MenuTab,
+        /// Shift+Tab in a menu: back, and past its start out of it.
+        MenuTabBack,
     ]
 );
 
@@ -52,6 +57,10 @@ pub(crate) struct FocusPane(pub(crate) usize);
 
 /// The app's context, on every window's root.
 pub(super) const CONTEXT: &str = "Ducktape";
+
+/// The context of a menu hanging from the bar, on the box that holds its
+/// keys (`layers::Chrome`).
+pub(super) const MENU: &str = "menu";
 
 /// Every key the app answers, with the context it answers in.
 pub(crate) fn bind(cx: &mut gpui_kit::App) {
@@ -71,6 +80,10 @@ pub(crate) fn bind(cx: &mut gpui_kit::App) {
         KeyBinding::new("ctrl-shift-tab", CycleBack, DESK),
         KeyBinding::new("secondary-k", ToggleSpotlight, Some("Ducktape && on_desk")),
         KeyBinding::new("escape", CloseOverlay, Some("Ducktape && overlay")),
+        // over the kit's own Tab, which would move the keys and leave the
+        // menu open behind them
+        KeyBinding::new("tab", MenuTab, Some(MENU)),
+        KeyBinding::new("shift-tab", MenuTabBack, Some(MENU)),
     ];
     if super::layers::CHAT_READY {
         bindings.push(KeyBinding::new(

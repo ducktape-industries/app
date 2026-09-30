@@ -44,8 +44,8 @@ What the app deliberately does not know:
   programs are named by id and nothing else: `identity`
   (`backend/passkey.rs`, `backend/join.rs`: accounts and keys),
   `module-registry` (`backend/views.rs`: the roster query;
-  `shell/menus.rs`: the Account menu opens it), and `valset`; all three
-  also pick an icon on a folded menu bar (`shell/menubar.rs`).
+  `shell/layers/chrome/menus.rs`: the Account menu opens it), and `valset`;
+  all three also pick an icon on a folded menu bar (`shell/layers/chrome.rs`).
 - **No payload.** `module.query` and `op.submit` carry `Call{target, body}`;
   the app signs and forwards `body` and returns the program's bytes as
   they are. `module.describe` renders an op readable by running the
@@ -387,11 +387,13 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   (`shell/screens.rs`) and picks by `Stage`: the launcher screens
   (`shell/launcher.rs` frame with a `spin` figure on the left; `screens.rs`
   Connect; `sign_in.rs` key, phrase, recover, account) or the desk
-  (`shell/desk.rs`): `menubar.rs` across the top, `panes.rs` drawing each
+  (`shell/desk.rs`): `layers::Chrome` across the top (`layers/chrome.rs`, a
+  cached view of the bar reading the entities alone, its menus hanging from
+  their buttons: `chrome/menus.rs`, `chrome/bell.rs`), `panes.rs` drawing each
   pane's seat (its tree or standin) or the app's own body (`layers::EmptyPane`:
-  the bare desk's figure or an empty window's finder; `layers::HelpPane`), and one overlay
-  at a time (`spotlight.rs`, `settings.rs`, `approve.rs`, `menus.rs`,
-  `notifications.rs`). Native effects the reducer asks for travel as
+  the bare desk's figure or an empty window's finder; `layers::HelpPane`) under
+  a cached `layers::Strip`, and one dialog at a time (`spotlight.rs`,
+  `settings.rs`, `approve.rs`). Native effects the reducer asks for travel as
   `shell::Command` through `commands()`'s channel to the pump in
   `shell/launch.rs` and `Desktop::execute`; `shell/windows.rs` decides where
   windows open. Keyboard shortcuts are GPUI actions bound in

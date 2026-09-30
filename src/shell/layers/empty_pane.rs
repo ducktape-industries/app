@@ -58,11 +58,7 @@ struct CommandLine {
 fn matching(rows: Vec<RailRow>, query: &str) -> Vec<RailRow> {
     let query = query.trim().to_lowercase();
     rows.into_iter()
-        .filter(|row| {
-            super::super::menubar::tab_label(row)
-                .to_lowercase()
-                .contains(&query)
-        })
+        .filter(|row| super::tab_label(row).to_lowercase().contains(&query))
         .collect()
 }
 
@@ -426,7 +422,7 @@ impl EmptyPane {
         let list = rows.iter().enumerate().map(|(nth, row)| {
             let module = row.module;
             let picked = focused && nth == pick;
-            let name = super::super::menubar::tab_label(row);
+            let name = super::tab_label(row);
             let note = match badges.get(module).copied().unwrap_or(0) {
                 0 => String::new(),
                 count => format!("{count} unread"),

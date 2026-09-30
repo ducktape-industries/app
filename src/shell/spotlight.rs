@@ -179,7 +179,6 @@ impl DesktopWindow {
             Role::Dialog,
             "Search",
             crate::Overlay::Spotlight,
-            true,
             &ink,
             |card| {
                 card.mt(px(top))

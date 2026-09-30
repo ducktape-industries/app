@@ -11,3 +11,13 @@ pub(crate) struct Prefs {
     /// Read off disk once, and again only after a notice setting was saved.
     pub(crate) notify: notify::Settings,
 }
+
+impl Prefs {
+    pub(crate) fn dark(&self) -> bool {
+        match self.appearance {
+            crate::Appearance::Light => false,
+            crate::Appearance::Dark => true,
+            crate::Appearance::System => self.system_dark,
+        }
+    }
+}

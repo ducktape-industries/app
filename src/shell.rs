@@ -5,8 +5,9 @@
 //! runs the reducer for every message, keeps the tray in step and holds
 //! one live program view per pane. Each OS window is a `DesktopWindow`,
 //! a gpui view that draws the launcher (connect, key, account, recovery
-//! screens) until sign-in, then the desk: the menu bar and the panes
-//! floating under it, with the open overlay (⌘K, a menu, Settings) on top.
+//! screens) until sign-in, then the desk: the menu bar (`layers::Chrome`)
+//! and the panes floating under it, with the open overlay (⌘K, a menu,
+//! Settings) on top.
 //!
 //! The reducer's tasks run without `&mut App`, so they cannot touch a
 //! window. They ask for a native effect through the `NativeCommand` channel
@@ -49,16 +50,13 @@ mod keys;
 mod launch;
 mod launcher;
 mod layers;
-mod menubar;
-mod menus;
-mod notifications;
 mod pane_drag;
 mod pane_hold;
 #[cfg(test)]
 mod pane_hold_tests;
 mod panes;
 #[cfg(test)]
-mod panes_tests;
+pub(in crate::shell) mod panes_tests;
 mod screens;
 #[cfg(test)]
 mod screens_tests;
@@ -640,15 +638,16 @@ fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
 /// The gpui view of one OS window. It draws the launcher or the desk from
 /// the model's state (`Render` below), turns clicks and keys into
 /// messages for `Desktop::dispatch`, and keeps what is the window's own:
-/// its native text fields, drag, focus and bar measurements.
+/// its native text fields and focus.
 pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
     /// This window's panes, as the model has them (`Desktop::bridge`).
     desk: Entity<entities::Desk>,
-    /// The programs the bar lists, read off the roster when it moves.
-    rail_rows: entities::Observed<entities::Rail>,
+    /// The menu bar and its menus (the console only): a cached view over
+    /// the slices it reads, drawn in the bar slot.
+    chrome: Option<Entity<layers::Chrome>>,
     /// The panes, drawn: one `PaneView` per pane, the keys' handoff between
     /// them, the pointer's and the keyboard's hold on one.
     panes: Entity<layers::PaneLayer>,
@@ -664,11 +663,6 @@ pub(crate) struct DesktopWindow {
     /// The one Tab stop of each tab list and radio group drawn here, by
     /// the composite's id: its active item tracks it (`a11y::roving`).
     stops: HashMap<gpui_kit::SharedString, gpui_kit::FocusHandle>,
-    /// The program tab the arrows moved to while the Programs rail has the
-    /// keys: Return opens it, as a view's tab list does where opening costs
-    /// a load. Tab back into the rail lands on the front window's program
-    /// again.
-    rail_cursor: Option<&'static str>,
     /// The launcher's figure, written at its draw until s9's
     /// `LauncherLayer` writes it from its observers.
     launcher_spin: Entity<spin::Spin>,
@@ -682,25 +676,12 @@ pub(crate) struct DesktopWindow {
     /// it when it opens, and Tab and Shift+Tab stay in it.
     modal: gpui_kit::FocusHandle,
     /// A menu hanging from the bar (Node, Account, the bell, Networks): the
-    /// keys go into it when it opens, and it closes when they leave it
-    /// ([`Self::menu_left`]). Not `modal`: gpui-base keeps a focus trap for
-    /// as long as its handle lives, so a menu on it would trap Tab once a
-    /// dialog had.
+    /// keys go into it when it opens (`desk_view`), the box its card hangs
+    /// from holds them (`layers::Chrome`), and it closes when they leave it
+    /// (`menu_left_by_keys`). Not `modal`: gpui-base keeps a focus
+    /// trap for as long as its handle lives, so a menu on it would trap Tab
+    /// once a dialog had.
     menu: gpui_kit::FocusHandle,
-    /// The open menu held the keys when the window was last drawn.
-    menu_held: bool,
-    /// Where the bar's menu buttons were last painted: each menu hangs
-    /// under its own.
-    bar_buttons: HashMap<crate::Overlay, gpui_kit::Bounds<gpui_kit::Pixels>>,
-    /// The bar's program tabs: how far past their strip they ran.
-    rail: gpui_kit::ScrollHandle,
-    /// The window width the bar's full words need; narrower, it folds.
-    bar_needs: f32,
-    /// What `bar_needs` was measured over: the network, the tabs, who is
-    /// signed in. Changed, the bar is measured again.
-    bar_made: u64,
-    /// The width the bar was last drawn at unfolded; `None` while folded.
-    bar_drawn: Option<f32>,
     /// A pane or window switch under way: started where it was asked for,
     /// ended on the frame after the one that shows it (docs/perf.md).
     switching: Option<crate::perf::Timer>,
@@ -782,25 +763,15 @@ impl DesktopWindow {
         self.focus.focus(window, cx);
     }
 
-    /// The keys left the menu hanging from the bar since the last draw: Tab
-    /// past its ends, a click elsewhere, anything else. It closes, as a menu
-    /// does, before this draw shows it, and the keys stay where they went
-    /// (owner, 2026-09-28). Read at the draw, not from gpui's focus events:
-    /// those say nothing while the OS window is in the background, and a
-    /// window driven there (the AX door under Xvfb) moves its keys too.
-    fn menu_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let menu = match self.model.read(cx).state.overlay {
-            Some(menu @ (crate::Overlay::Network | crate::Overlay::Menu(_))) => Some(menu),
-            _ => None,
-        };
-        let holds = menu.is_some() && self.menu.contains_focused(window, cx);
-        let left = std::mem::replace(&mut self.menu_held, holds) && !holds;
-        if let (true, Some(menu)) = (left, menu) {
-            self.refocus = None;
-            self.model.update(cx, |model, cx| {
-                model.dispatch(Message::CloseOverlay(menu), cx)
-            });
-        }
+    /// The keys left the open menu (Tab past its end, a click elsewhere;
+    /// `layers::Chrome`): it closes, and the keys stay where they went
+    /// (owner, 2026-09-28) rather than going back to what had them before
+    /// it opened.
+    pub(super) fn menu_left_by_keys(&mut self, menu: crate::Overlay, cx: &mut Context<Self>) {
+        self.refocus = None;
+        self.model.update(cx, |model, cx| {
+            model.dispatch(Message::CloseOverlay(menu), cx)
+        });
     }
 
     /// This window's panes, as the model has them (the `Desk` slice).

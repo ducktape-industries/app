@@ -66,6 +66,12 @@ impl<T: 'static> Observed<T> {
     pub(crate) fn read<'a>(&self, cx: &'a App) -> &'a T {
         self.entity.read(cx)
     }
+
+    /// The handle itself, for a write the view owns (a measurement it
+    /// commits after the frame).
+    pub(crate) fn entity(&self) -> &Entity<T> {
+        &self.entity
+    }
 }
 
 /// Runs `work` on the window thread with the views kernel's tokio runtime

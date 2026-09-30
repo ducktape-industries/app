@@ -261,9 +261,10 @@ pub struct Ducktape {
     pub(crate) status_misses: u32,
     /// The node's last answer, whole: the node status menu reads it.
     pub(crate) node: Option<backend::NodeStatus>,
-    /// `wall_now` when the height last moved: "Last block 2s ago".
+    /// The wall second (`notify::wall()`) the height last moved: "Last
+    /// block 2s ago".
     pub(crate) block_seen: i64,
-    /// `wall_now` when the node last answered its status: "Last heard at
+    /// The wall second the node last answered its status: "Last heard at
     /// block 4,295, 5s ago", however long the height stood still before.
     pub(crate) heard: i64,
     /// What is open over the desk.
@@ -314,8 +315,8 @@ pub struct Ducktape {
     pub(crate) connect_generation: u64,
     /// The attempt in flight; dropping it aborts the request.
     pub(crate) connect_task: Option<crate::ui::task::Handle>,
-    /// Seconds since launch, one `WallTick` each; `block_seen` is read
-    /// against it.
+    /// Seconds since launch, one `WallTick` each: the beat an open menu's
+    /// ages were once drawn from (`beat_face`).
     pub(crate) wall_now: i64,
     /// The notification centre the bell draws: the app's one, which its
     /// views post into.
@@ -575,16 +576,6 @@ impl Ducktape {
                 .load(std::sync::atomic::Ordering::Relaxed)
             && !step.passkey_qr.is_empty())
         .then(|| step.passkey_qr.clone())
-    }
-
-    /// Seconds since the height last moved.
-    pub(crate) fn block_age(&self) -> i64 {
-        self.wall_now - self.block_seen
-    }
-
-    /// Seconds since the node last answered its status.
-    pub(crate) fn heard_age(&self) -> i64 {
-        self.wall_now - self.heard
     }
 
     /// Connected, but the last [`LOST_AFTER`] status polls went unanswered.

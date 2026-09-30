@@ -828,7 +828,7 @@ fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppConte
 }
 
 /// A window's count under `stage` in the perf registry.
-fn window_count(key: WindowKey, stage: &str) -> u64 {
+pub(super) fn window_count(key: WindowKey, stage: &str) -> u64 {
     crate::perf::snapshot(false)["windows"][key.0.to_string()][stage]
         .as_u64()
         .unwrap_or(0)

@@ -4,7 +4,7 @@
 //! the keys leave closes, and leaves them where they went.
 use super::*;
 use crate::{Overlay, Popover};
-use gpui_kit::Role;
+use gpui_kit::{Pixels, Role};
 
 /// Whether `window`'s focused node is the `role` named `name`, or inside it.
 fn focus_inside(window: &Window, role: Role, name: &str) -> bool {
@@ -175,8 +175,10 @@ fn a_menu_closes_when_the_keys_leave_it(cx: &mut TestAppContext) {
     }
 }
 
-/// A click on the bar where nothing is (its end past the window's edge)
-/// takes the keys to the window, out of the menu: it closes.
+/// A click outside a menu closes it: low on the desk, on the backdrop
+/// under the menu, which closes it and reaches no window behind; and on
+/// the bar where nothing is (its end past the window's edge), which takes
+/// the keys to the window, out of the menu.
 #[gpui_kit::test]
 fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -185,7 +187,17 @@ fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
     });
     for (overlay, _, name) in MENUS {
         let (view, mut native) = open(gate::desk(), cx);
+        // gpui reports focus moves only in the active window
+        super::activate(&mut native);
         native.update(draw);
+        show(&view, &mut native, Some(overlay));
+        native.simulate_click(
+            gpui_kit::point(px(640.), px(790.)),
+            gpui_kit::Modifiers::none(),
+        );
+        native.update(draw);
+        assert_eq!(open_now(&view, &mut native), None, "a click under {name}");
+
         show(&view, &mut native, Some(overlay));
         let nodes = native.update(|window, cx| {
             draw(window, cx);
@@ -199,7 +211,7 @@ fn a_click_outside_a_menu_closes_it(cx: &mut TestAppContext) {
         );
         native.update(draw);
         native.update(draw);
-        assert_eq!(open_now(&view, &mut native), None, "a click outside {name}");
+        assert_eq!(open_now(&view, &mut native), None, "a click beside {name}");
     }
 }
 
@@ -324,4 +336,206 @@ fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) 
         assert!(keys.is_some());
         assert_eq!(window.focused(cx), keys, "a press on a row took the keys");
     });
+}
+
+/// The middle of the bar button with the id `id`.
+fn bar_button(native: &mut VisualTestContext, id: &str) -> gpui_kit::Point<Pixels> {
+    let nodes = native.update(|window, cx| {
+        draw(window, cx);
+        serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+    });
+    let id = format!("shell:{id}");
+    let button = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == id)
+        .unwrap_or_else(|| panic!("missing {id} in {nodes}"));
+    let at = |n: usize| button["bounds"][n].as_f64().unwrap() as f32;
+    gpui_kit::point(px((at(0) + at(2)) / 2.), px((at(1) + at(3)) / 2.))
+}
+
+/// Tab past a menu's last control closes it (M6), and the keys stay where
+/// Tab took them: the next control in the walk, not what had them before
+/// the menu opened (the window itself, here).
+#[gpui_kit::test]
+fn tab_past_a_menus_end_closes_it_and_keeps_the_keys_where_they_went(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    for (overlay, role, name) in MENUS {
+        let (view, mut native) = open(gate::desk(), cx);
+        let root = native.update(|window, cx| {
+            draw(window, cx);
+            view.read(cx).focus.clone()
+        });
+        show(&view, &mut native, Some(overlay));
+        native.update(|window, _| assert!(focus_inside(window, role, name), "{name} took no keys"));
+        let mut presses = 0;
+        while open_now(&view, &mut native).is_some() && presses < 30 {
+            native.simulate_keystrokes("tab");
+            presses += 1;
+        }
+        assert_eq!(open_now(&view, &mut native), None, "tab out of {name}");
+        // where the closing Tab left them, before any frame ran a handoff
+        let went = native.update(|window, cx| window.focused(cx));
+        native.update(draw);
+        native.update(draw);
+        native.update(|window, cx| {
+            draw(window, cx);
+            assert!(
+                went.is_some() && went != Some(root),
+                "{name}: the keys went nowhere"
+            );
+            assert_eq!(window.focused(cx), went, "{name}: the close moved the keys");
+            let (role, focused) = focused_node(window).expect("nothing has the keys");
+            assert!(
+                role == Role::Button || role == Role::Tab,
+                "{name}: the keys went to {role:?} {focused}"
+            );
+        });
+    }
+}
+
+/// Opening a menu moves the keys from its handle to its first row: the
+/// belt hears the keys leaving the menu, not its handle, so the menu
+/// stays open with its first row focused.
+#[gpui_kit::test]
+fn opening_a_menu_does_not_close_it(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    for (overlay, role, name) in MENUS {
+        let (view, mut native) = open(gate::desk(), cx);
+        // gpui reports focus moves only in the active window
+        super::activate(&mut native);
+        native.update(draw);
+        show(&view, &mut native, Some(overlay));
+        native.run_until_parked();
+        native.update(draw);
+        assert_eq!(
+            open_now(&view, &mut native),
+            Some(overlay),
+            "{name} closed as it opened"
+        );
+        native.update(|window, _| {
+            assert!(
+                focus_inside(window, role, name),
+                "{name}: {:?} has the keys",
+                focused_node(window)
+            )
+        });
+    }
+}
+
+/// A press on a menu's own bar button toggles it: open, shut, open again;
+/// and a press on another menu's button opens that one. Nothing under the
+/// bar closes the menu first and swallows the press.
+#[gpui_kit::test]
+fn a_press_on_the_menus_own_button_toggles_it_once(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    let node = bar_button(&mut native, "rail-connection");
+    let press = |native: &mut VisualTestContext, at| {
+        native.simulate_click(at, gpui_kit::Modifiers::none());
+        native.update(draw);
+        native.update(draw);
+    };
+    let menu = Some(Overlay::Menu(Popover::Node));
+    press(&mut native, node);
+    assert_eq!(open_now(&view, &mut native), menu, "the first press");
+    press(&mut native, node);
+    assert_eq!(open_now(&view, &mut native), None, "the second press");
+    press(&mut native, node);
+    assert_eq!(open_now(&view, &mut native), menu, "the third press");
+    let account = bar_button(&mut native, "rail-account");
+    press(&mut native, account);
+    assert_eq!(
+        open_now(&view, &mut native),
+        Some(Overlay::Menu(Popover::Account)),
+        "a press on the next menu's button"
+    );
+}
+
+/// The bell's Settings row opens Settings as the bell closes: the keys
+/// leave the bell's subtree, and the belt, seeing the bell no longer open,
+/// leaves Settings alone.
+#[gpui_kit::test]
+fn the_bells_settings_row_opens_settings_and_the_belt_leaves_it_open(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    native.update(draw);
+    show(
+        &view,
+        &mut native,
+        Some(Overlay::Menu(Popover::Notifications)),
+    );
+    native.update(|window, cx| press("notifications", "notif-settings", window, cx));
+    native.update(draw);
+    native.run_until_parked();
+    native.update(draw);
+    assert_eq!(open_now(&view, &mut native), Some(Overlay::Settings));
+    native.update(|window, _| {
+        assert!(
+            focus_inside(window, Role::Dialog, "Settings"),
+            "{:?}",
+            focused_node(window)
+        )
+    });
+}
+
+/// A menu's card hangs 4px under the bar (`top: 40px`) on a 1x display as
+/// on a 2x one: its button is centred in the bar half a pixel up, and the
+/// snap to device pixels must not carry that half into the card, nor into
+/// what the card holds: the bell's footer row sits where the base drew it
+/// (`notif-settings` at y 221 in a 1280x800 window with nothing to read),
+/// not a pixel lower from a card laid out on a half pixel.
+#[gpui_kit::test]
+fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    for (overlay, role, name) in [
+        (Overlay::Network, Role::Menu, "Networks"),
+        (Overlay::Menu(Popover::Node), Role::Dialog, "Node status"),
+        (
+            Overlay::Menu(Popover::Notifications),
+            Role::Dialog,
+            "Notifications",
+        ),
+    ] {
+        let mut state = gate::desk();
+        state.overlay = Some(overlay);
+        let (_view, mut native) = open(state, cx);
+        for scale in [1., 2.] {
+            // this menu's window: the ones the earlier menus opened stay open
+            let window = native.update(|window, _| window.window_handle());
+            native.simulate_window_scale_factor_change(window, scale);
+            let nodes = native.update(|window, cx| {
+                draw(window, cx);
+                serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+            });
+            let card = find(&nodes, &format!("{role:?}"), name);
+            assert_eq!(
+                card["bounds"][1], 40,
+                "{name} at {scale}x: {}",
+                card["bounds"]
+            );
+            if overlay == Overlay::Menu(Popover::Notifications) && scale == 1. {
+                let footer = find(&nodes, "Button", "Notification settings");
+                assert_eq!(footer["bounds"][1], 221, "{}", footer["bounds"]);
+            }
+        }
+    }
 }
