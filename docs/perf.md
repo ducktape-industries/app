@@ -458,12 +458,14 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      frame loop waits on it (the seat wakes on its own `wake`, the rail on
      `runtime::changes_channel`). Measured, release, Xvfb 1280×800, the
      stage seeded at 1 s blocks, Forge open with the keys on a button,
-     5 s windows (the idle probe, 2026-09-30), on app `e44fa089` (#402) and
-     `5b470cfc` (#401), two runs each per setting: motion off root 2, 2 /
-     2, 2; motion on 107, 107 / 105, 105 (about 21 a second, under 125 per
-     5 s: the budget stays 25 × seconds); `renders.chrome` 2 in every run,
-     both modes; `renders.pane.0` and forge `draws` equal to the root in
-     every run; forge ViewTree `renders` 0 on 0 ticks; `renders.overlays`,
+     5 s windows (the idle probe, 2026-09-30), on the s12 build (#403,
+     `cab059c6`), three runs per setting: motion off root 2, 2, 3 (a frame
+     per status poll, each moving the height at 1 s blocks; the third
+     window caught three polls); motion on 107, 107, 105 (about 21 a
+     second, under 125 per 5 s: the budget stays 25 × seconds);
+     `renders.chrome` 2, 2, 3 motion off and 2 in every motion-on run;
+     `renders.pane.0` and forge `draws` equal to the root in every run;
+     forge ViewTree `renders` 0 on 0 ticks; `renders.overlays`,
      `renders.toast` and `door_draws` 0.
    - idle drawing time per 5 s ≤ 500 ms (334 measured), report-only.
 4. **Switch budget** (the keys-only scenario, §4.3): full view redraws per
