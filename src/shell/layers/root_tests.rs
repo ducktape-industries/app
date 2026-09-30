@@ -389,7 +389,6 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     model.update(&mut native, |model, cx| {
         model.state.stage = crate::Stage::Unlock(Default::default());
         model.bridge(false, cx);
-        cx.notify();
     });
     frame(&mut native);
     assert_eq!(
@@ -410,7 +409,6 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     model.update(&mut native, |model, cx| {
         model.state.stage = crate::Stage::Desk;
         model.bridge(false, cx);
-        cx.notify();
     });
     frame(&mut native);
     let nodes = native.update(draw);
@@ -421,6 +419,54 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     assert!(
         window_count(key, "renders.chrome") > 0,
         "the desk drew no bar"
+    );
+}
+
+/// The launcher's figure is written from its observers, never from a
+/// draw: written during the launcher's draw, the figure (a cached view of
+/// its own) would keep last frame's drawing until something else drew it
+/// again (P3). A screen change draws the new figure in the frame that
+/// shows the screen, draws the launcher once, and no frame follows.
+#[gpui_kit::test]
+fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext) {
+    use crate::shell::figure::Figure;
+    let _on = crate::perf::on_for_test();
+    let (mut state, _) = crate::Ducktape::boot();
+    state.center = Default::default();
+    state.roster = Default::default();
+    // a still figure: none of its own frames
+    state.motion = false;
+    let (model, key, view, mut native) = open_console(state, cx);
+    frame(&mut native);
+    let spin = native.update(|_, cx| view.read(cx).launcher().read(cx).spin.clone());
+    let drawn = |native: &mut VisualTestContext| native.update(|_, cx| spin.read(cx).drawn());
+    assert_eq!(
+        drawn(&mut native),
+        Some(Figure::Roll),
+        "Connect draws the roll"
+    );
+    let launcher = window_count(key, "renders.launcher");
+
+    model.update(&mut native, |model, cx| {
+        model.state.stage = crate::Stage::Unlock(Default::default());
+        model.bridge(false, cx);
+    });
+    frame(&mut native);
+    assert_eq!(
+        drawn(&mut native),
+        Some(Figure::Ring),
+        "the frame showing the key screen drew the last screen's figure"
+    );
+    assert_eq!(
+        window_count(key, "renders.launcher"),
+        launcher + 1,
+        "the screen change drew the launcher other than once"
+    );
+    frame(&mut native);
+    assert_eq!(
+        window_count(key, "renders.launcher"),
+        launcher + 1,
+        "a second frame followed the screen change"
     );
 }
 

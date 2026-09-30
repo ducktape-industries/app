@@ -1,18 +1,18 @@
 //! What opens over the console's desk on a scrim: ⌘K's Spotlight
-//! (`spotlight.rs`) and Settings (`settings.rs`), a cached view of its own
-//! over the entities it reads. A keystroke in Spotlight's field moves
-//! `Spotlight` and draws this layer, and nothing else in the window.
+//! (`spotlight.rs`), Settings (`settings.rs`) and "Add a device…"
+//! (`approve.rs`), a cached view of its own over the entities it reads. A
+//! keystroke in Spotlight's field moves `Spotlight` and draws this layer,
+//! and nothing else in the window.
 //!
 //! Here the keys go where something opening or closing over the desk
-//! sends them, whoever draws it (the bar's menus are `Chrome`'s, "Add a
-//! device…" still `Screens`'): whatever opens takes them, unless something
-//! in it already did (Spotlight's field); one giving way to the next hands
-//! them on; the last to close gives them back to what had them before the
-//! first opened, unless they left a menu by the keys and closed it. The
-//! handoff follows `Overlays` (`moved`); the keys enter what opened after
-//! the draw that shows it (`entered`), when its first control is in the
-//! frame `focus_next` walks. Also the scrim and card every dialog on it is
-//! dressed in (`scrim`).
+//! sends them, whoever draws it (the bar's menus are `Chrome`'s): whatever
+//! opens takes them, unless something in it already did (Spotlight's
+//! field); one giving way to the next hands them on; the last to close
+//! gives them back to what had them before the first opened, unless they
+//! left a menu by the keys and closed it. The handoff follows `Overlays`
+//! (`moved`); the keys enter what opened after the draw that shows it
+//! (`entered`), when its first control is in the frame `focus_next` walks.
+//! Also the scrim and card every dialog on it is dressed in (`scrim`).
 
 use super::super::entities::{
     Account, Notifications, Observed, Overlay, Overlays, Prefs, Rail, Session, Slice, Spot,
@@ -20,6 +20,7 @@ use super::super::entities::{
 };
 use super::super::{Desktop, Message, WindowKey};
 use super::BAR;
+use super::fields::NativeInput;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement as _,
@@ -27,6 +28,7 @@ use gpui_kit::{
 };
 use std::collections::HashMap;
 
+mod approve;
 mod settings;
 mod spotlight;
 
@@ -55,6 +57,9 @@ pub(in crate::shell) struct OverlayLayer {
     /// Spotlight's field: it owns what is typed, and each change writes
     /// `Spotlight.query`.
     field: Entity<InputState>,
+    /// "Add a device…"'s code: each change goes to the reducer (s10:
+    /// `Account`), which empties it as the dialog opens; so does this.
+    approve_code: NativeInput,
     /// Spotlight's list: ↑↓ scroll the picked row into it.
     spotlight_rows: gpui_kit::ScrollHandle,
     /// Settings' page: the row holding the keys scrolls into view.
@@ -101,6 +106,14 @@ impl OverlayLayer {
         let field = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search programs, networks, actions")
         });
+        let approve_code = NativeInput::new(
+            "XXXX-XXXX",
+            false,
+            |this: &mut Self, text, cx| this.send(Message::ApproveCodeTyped(text), cx),
+            |this: &mut Self, cx| this.send(Message::ApproveFind, cx),
+            window,
+            cx,
+        );
         let subscriptions = [
             cx.observe_in(&own.overlays, window, |this, _, window, cx| {
                 this.moved(window, cx)
@@ -140,6 +153,7 @@ impl OverlayLayer {
             model,
             key,
             field,
+            approve_code,
             spotlight_rows: Default::default(),
             settings_rows: Default::default(),
             stops: HashMap::new(),
@@ -190,6 +204,10 @@ impl OverlayLayer {
         let Some(open) = open else {
             return;
         };
+        if open == Overlay::Approve {
+            // what the last one typed went as it opened (`ApproveOpen`)
+            self.approve_code.wipe(window, cx);
+        }
         if open == Overlay::Spotlight {
             self.field.update(cx, |field, cx| {
                 // no Change: the query is set here
@@ -216,6 +234,13 @@ impl OverlayLayer {
             into.focus(window, cx);
             window.focus_next(cx);
         }
+    }
+
+    /// `message` to the reducer, which still owns what "Add a device…" asks
+    /// for (s10 moves it into `Account`).
+    fn send(&self, message: Message, cx: &mut gpui_kit::App) {
+        self.model
+            .update(cx, |model, cx| model.dispatch(message, cx));
     }
 
     /// Enter in Spotlight's field: the picked row runs.
@@ -280,9 +305,14 @@ impl Render for OverlayLayer {
         let dialog = match *self.overlays.read(cx).get() {
             Some(Overlay::Spotlight) => Some(self.spotlight(window, cx)),
             Some(Overlay::Settings(page)) => Some(self.settings(page, window, cx)),
+            Some(Overlay::Approve) => Some(self.approve(window, cx)),
             _ => None,
         };
-        div().absolute().inset_0().children(dialog)
+        // `size_full` too: cached, this view is laid out as a root of its
+        // own, where a block's height is its content's (taffy), and the
+        // dialog's backdrop is absolute. Sized by its insets alone the root
+        // would be 0px high and the scrim culled
+        div().absolute().inset_0().size_full().children(dialog)
     }
 }
 

@@ -1,41 +1,29 @@
 //! The native text fields the shell's layers type into, as an element over
-//! a field's state (`bare`). The overlay layer's field (Spotlight's) owns
-//! what is typed and tells its entity on each change. The launcher's still
-//! mirror the model's copy (`Screens::input`), their states kept as long as
-//! their window (`NativeInput`), until s9 gives them the typed text too.
+//! a field's state (`bare`). Each field is made with the layer that draws
+//! it and owns what is typed: every change goes out from its event
+//! (`NativeInput::new`), and nothing is written into it at a draw. What
+//! the model resets without typing (a password wiped as its step goes, the
+//! address rewritten to the node reached) the layer writes into the field
+//! from its observers.
 
-use super::super::{Ducktape, Message};
-use super::Screens;
-use gpui_kit::{AppContext as _, Context, Entity, IntoElement as _, Styled as _, Window};
+use gpui_kit::component::input::{InputEvent, InputState};
+use gpui_kit::{
+    AppContext as _, Context, Entity, IntoElement as _, Styled as _, Subscription, Window,
+};
 
-/// One native text field's state, kept for as long as its window lives
-/// (see `Screens::input`).
+/// One native text field, made with the layer that draws it and kept as
+/// long as that layer.
 pub(in crate::shell) struct NativeInput {
-    pub(in crate::shell) state: Entity<gpui_kit::component::input::InputState>,
-    /// A digest of the model text the field last agreed with — what it
-    /// sent on its last change, or what the model last pushed into it.
-    mirrored: std::rc::Rc<std::cell::Cell<u64>>,
-    _subscription: gpui_kit::Subscription,
-}
-
-/// A field's text reduced to what `input` compares, so a mirrored password
-/// is not kept a second time in the clear.
-fn digest(text: &str) -> u64 {
-    use std::hash::{Hash as _, Hasher as _};
-    let mut hasher = std::hash::DefaultHasher::new();
-    text.hash(&mut hasher);
-    hasher.finish()
-}
-
-/// What a screen asks of its text field (`Screens::input`).
-pub(in crate::shell) struct TextField {
-    /// Its element id, and what its state is kept under in the window.
-    pub(in crate::shell) key: &'static str,
-    pub(in crate::shell) placeholder: &'static str,
-    /// Its accessible name; the placeholder when `None`.
-    pub(in crate::shell) label: Option<gpui_kit::SharedString>,
+    pub(in crate::shell) state: Entity<InputState>,
     /// Drawn as dots, with the password role.
-    pub(in crate::shell) masked: bool,
+    masked: bool,
+    _events: Subscription,
+}
+
+/// How a layer draws one of its fields (`NativeInput::input`).
+pub(in crate::shell) struct TextField {
+    /// Its accessible name.
+    pub(in crate::shell) label: gpui_kit::SharedString,
     /// Sensitive without being masked (the recovery phrase): its value is
     /// read aloud, and the test door masks it (`a11y::AX_PRIVATE`).
     pub(in crate::shell) private: bool,
@@ -44,155 +32,109 @@ pub(in crate::shell) struct TextField {
     pub(in crate::shell) error: Option<String>,
     /// The text size, in the canvas's px (`ink::fit` scales it).
     pub(in crate::shell) size: f32,
-    /// The model's copy of the text, which the field mirrors.
-    pub(in crate::shell) value: fn(&Ducktape) -> &str,
-    /// What every change dispatches, with the text.
-    pub(in crate::shell) on_change: fn(String) -> Message,
-    /// What Enter dispatches.
-    pub(in crate::shell) on_enter: fn() -> Message,
 }
 
-impl Screens {
-    /// A native text field; Enter dispatches `on_enter`, every change
-    /// dispatches `on_change` with the text.
-    ///
-    /// The model owns the text; the field mirrors it. `value` reads the
-    /// model's copy, and a draw writes it into the field when the MODEL
-    /// moved since the two last agreed (`mirrored`): a password wiped after
-    /// Unlock or Lock, a new key's form reset, the endpoint rewritten to
-    /// the origin actually reached. The field state is kept per window for
-    /// as long as the window lives, so without this a field would keep
-    /// showing text the model no longer holds, and a retry would send
-    /// something other than what is on screen.
-    ///
-    /// It compares against what was last agreed, not against the field's
-    /// own text: keys can land in the field before their change event
-    /// reaches the model (a burst of keys in one update, as the AX door's
-    /// `type` sends), and a draw in between would otherwise wipe them.
-    ///
-    /// Its accessible name is
-    /// `label`, or `placeholder` when a field's hint text already reads as
-    /// one (a value-shaped placeholder like an example URL does not). Its
-    /// accessible value is the field's current text — unless `masked`: a
-    /// `PasswordInput` shows no text, so it gives none (the door's mask is
-    /// not the platform's; a value set here reaches every AX client).
-    /// `private` marks a field (the recovery phrase) that is sensitive
-    /// without being visually masked [`crate::a11y::AX_PRIVATE`]: assistive
-    /// technology reads the text on the screen; the test door masks it.
-    pub(in crate::shell) fn input(
-        &mut self,
-        field: TextField,
+impl NativeInput {
+    /// A field of the layer `V`, its id `key`: every change hands the text
+    /// to `on_change`, Enter calls `on_enter`, and the layer draws again.
+    pub(in crate::shell) fn new<V: 'static>(
+        placeholder: &'static str,
+        masked: bool,
+        on_change: impl Fn(&mut V, String, &mut Context<V>) + 'static,
+        on_enter: impl Fn(&mut V, &mut Context<V>) + 'static,
         window: &mut Window,
-        cx: &mut Context<Self>,
+        cx: &mut Context<V>,
+    ) -> Self {
+        let state = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder(placeholder)
+                .masked(masked)
+        });
+        let events = cx.subscribe_in(&state, window, move |this, input, event, _, cx| {
+            match event {
+                InputEvent::PressEnter { .. } => on_enter(this, cx),
+                InputEvent::Change => {
+                    let text = input.read(cx).value().to_string();
+                    on_change(this, text, cx);
+                }
+                _ => {}
+            }
+            cx.notify();
+        });
+        Self {
+            state,
+            masked,
+            _events: events,
+        }
+    }
+
+    /// Empties the field, when it holds anything; no change goes out.
+    pub(in crate::shell) fn wipe(&self, window: &mut Window, cx: &mut gpui_kit::App) {
+        self.set(String::new(), window, cx);
+    }
+
+    /// Puts `text` in the field, when it holds something else; no change
+    /// goes out (`set_value` emits none).
+    pub(in crate::shell) fn set(&self, text: String, window: &mut Window, cx: &mut gpui_kit::App) {
+        if *self.state.read(cx).value() != *text {
+            self.state
+                .update(cx, |state, cx| state.set_value(text, window, cx));
+        }
+    }
+
+    /// Whether the field holds focus, for the box drawn around it
+    /// ([`crate::a11y::around_field`]).
+    pub(in crate::shell) fn focused(&self, window: &Window, cx: &gpui_kit::App) -> bool {
+        use gpui_kit::Focusable as _;
+        self.state.read(cx).focus_handle(cx).is_focused(window)
+    }
+
+    /// The field `key`, drawn as `field` says.
+    ///
+    /// Its accessible name is `label`. Its accessible value is the field's
+    /// current text — unless masked: a `PasswordInput` shows no text, so it
+    /// gives none (the door's mask is not the platform's; a value set here
+    /// reaches every AX client). `private` marks a field (the recovery
+    /// phrase) that is sensitive without being visually masked
+    /// [`crate::a11y::AX_PRIVATE`]: assistive technology reads the text on
+    /// the screen; the test door masks it.
+    pub(in crate::shell) fn input(
+        &self,
+        key: &'static str,
+        field: TextField,
+        cx: &gpui_kit::App,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::StatefulInteractiveElement as _;
-        let (label, placeholder) = (field.label.clone(), field.placeholder);
-        let (masked, private, error) = (field.masked, field.private, field.error.clone());
-        let (state, field) = self.bare_input(field, window, cx);
-        let field = field.aria_label(label.unwrap_or_else(|| placeholder.into()));
-        let field = match masked {
-            true => field,
-            false => field.aria_value(state.read(cx).value().to_string()),
+        let TextField {
+            label,
+            private,
+            error,
+            size,
+        } = field;
+        let masked = self.masked;
+        let element = bare(key, &self.state, size, masked, cx).aria_label(label);
+        let element = match masked {
+            true => element,
+            false => element.aria_value(self.state.read(cx).value().to_string()),
         };
         // every form here refuses its fields empty (AX-109)
         let mut patch = crate::a11y::Patch::default().required();
         if private {
             patch = patch.class_name(crate::a11y::AX_PRIVATE);
         }
-        let field = match error {
+        let element = match error {
             Some(error) => {
                 patch = patch.invalid();
-                field.aria_description(error)
+                element.aria_description(error)
             }
-            None => field,
+            None => element,
         };
         patch
             .on(match masked {
-                true => field.role(gpui_kit::Role::PasswordInput),
-                false => field.role(gpui_kit::Role::TextInput),
+                true => element.role(gpui_kit::Role::PasswordInput),
+                false => element.role(gpui_kit::Role::TextInput),
             })
             .into_any_element()
-    }
-
-    /// Whether the field `key` holds focus, for the box drawn around it
-    /// ([`crate::a11y::around_field`]).
-    pub(in crate::shell) fn field_focused(
-        &self,
-        key: &str,
-        window: &Window,
-        cx: &gpui_kit::App,
-    ) -> bool {
-        use gpui_kit::Focusable as _;
-        self.inputs
-            .get(key)
-            .is_some_and(|input| input.state.read(cx).focus_handle(cx).is_focused(window))
-    }
-
-    /// [`Self::input`]'s field with no node of its own ([`bare`]), and its
-    /// state.
-    pub(in crate::shell) fn bare_input(
-        &mut self,
-        field: TextField,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> (
-        Entity<gpui_kit::component::input::InputState>,
-        gpui_kit::Stateful<gpui_kit::Div>,
-    ) {
-        let TextField {
-            key,
-            placeholder,
-            masked,
-            size,
-            value,
-            on_change,
-            on_enter,
-            ..
-        } = field;
-        use gpui_kit::component::input::{InputEvent, InputState};
-        if !self.inputs.contains_key(key) {
-            let state = cx.new(|cx| {
-                InputState::new(window, cx)
-                    .placeholder(placeholder)
-                    .masked(masked)
-            });
-            let model = self.model.clone();
-            let mirrored = std::rc::Rc::new(std::cell::Cell::new(digest("")));
-            let agreed = mirrored.clone();
-            let subscription = cx.subscribe_in(&state, window, move |_, input, event, _, cx| {
-                match event {
-                    InputEvent::PressEnter { .. } => {
-                        model.update(cx, |model, cx| model.dispatch(on_enter(), cx));
-                    }
-                    InputEvent::Change => {
-                        let text = input.read(cx).value().to_string();
-                        agreed.set(digest(&text));
-                        model.update(cx, |model, cx| model.dispatch(on_change(text), cx));
-                    }
-                    _ => {}
-                }
-                cx.notify();
-            });
-            self.inputs.insert(
-                key,
-                NativeInput {
-                    state,
-                    mirrored,
-                    _subscription: subscription,
-                },
-            );
-        }
-        let NativeInput {
-            state, mirrored, ..
-        } = &self.inputs[key];
-        // set_value emits no Change, so mirroring never echoes back.
-        let now = digest(value(&self.model.read(cx).state));
-        if now != mirrored.get() {
-            mirrored.set(now);
-            let text = value(&self.model.read(cx).state).to_owned();
-            state.update(cx, |state, cx| state.set_value(text, window, cx));
-        }
-        (state.clone(), bare(key, state, size, masked, cx))
     }
 }
 
@@ -203,7 +145,7 @@ impl Screens {
 /// the door sets its value through `"{key}/field"`.
 pub(in crate::shell) fn bare(
     key: &'static str,
-    state: &Entity<gpui_kit::component::input::InputState>,
+    state: &Entity<InputState>,
     size: f32,
     masked: bool,
     cx: &gpui_kit::App,

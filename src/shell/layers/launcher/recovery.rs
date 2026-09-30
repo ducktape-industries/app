@@ -2,97 +2,70 @@
 //! this device (`recover`); a new key's words shown once (`phrase`), then
 //! three of them asked back (`phrase_check`).
 
-use super::ink::{self, *};
-use super::launcher::LauncherScreen;
-use super::launcher::{buttons, node_caption};
-use super::layers::TextField;
-use super::*;
-use facts::Facts;
-use figure::Figure;
+use super::super::super::Message;
+use super::super::super::ink::{self, *};
+use super::super::fields::TextField;
+use super::{LauncherLayer, LauncherScreen, buttons};
+use gpui_kit::*;
 
-/// The phrase check's `nth` typed word.
-fn answer(state: &Ducktape, nth: usize) -> &str {
-    match &state.stage {
-        crate::Stage::Phrase(step) => step.answers[nth].as_str(),
-        _ => "",
-    }
-}
-
-impl Screens {
+impl LauncherLayer {
     /// The account's recovery key, typed: its 24 words say yes to this
     /// device's key joining. An old device phrase works as one.
-    pub(super) fn recover(
-        &mut self,
-        state: &Facts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let phrase = self.input(
+    pub(super) fn recover(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let account = self.account.read(cx).get();
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let failed = !account.error.is_empty();
+        let phrase = self.fields.restore.input(
+            "restore-phrase",
             TextField {
-                key: "restore-phrase",
-                placeholder: "24 words, separated by spaces",
-                masked: false,
-                value: |state| match &state.stage {
-                    crate::Stage::Recover(step) => step.phrase.as_str(),
-                    _ => "",
-                },
-                on_change: Message::RestorePhraseTyped,
-                on_enter: || Message::RecoverSubmit,
-                label: Some("Recovery key".into()),
+                label: "Recovery key".into(),
                 private: true,
-                error: (!state.unlock_error.is_empty()).then(|| state.unlock_error.clone()),
+                error: failed.then(|| account.error.clone()),
                 size: 15.,
             },
-            window,
             cx,
         );
-        let focused = self.field_focused("restore-phrase", window, cx);
-        let failed = !state.unlock_error.is_empty();
+        let focused = self.fields.restore.focused(window, cx);
         let form = div()
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(
-                self.field(
-                    "restore-phrase-label",
-                    "Recovery key",
-                    field_box(
-                        phrase,
-                        focused,
-                        match failed {
-                            true => ink.danger,
-                            false => ink.field,
-                        },
-                        44.,
-                        &ink,
-                    )
-                    .into_any_element(),
-                    failed.then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink)),
+            .child(field(
+                "restore-phrase-label",
+                "Recovery key",
+                field_box(
+                    phrase,
+                    focused,
+                    match failed {
+                        true => ink.danger,
+                        false => ink.field,
+                    },
+                    44.,
                     &ink,
-                ),
-            )
+                )
+                .into_any_element(),
+                failed.then(|| alert("unlock-error", account.error.clone(), &ink)),
+                &ink,
+            ))
             .child(buttons([self.button(
                 "recover-submit",
-                match state.unlock_busy {
+                match account.busy {
                     true => "Adding…",
                     false => "Add this device",
                 },
                 Kind::Primary,
                 || Message::RecoverSubmit,
-                Press::busy(state.unlock_busy),
+                Press::busy(account.busy),
                 &ink,
             )]));
-        self.launcher(
+        self.frame(
             LauncherScreen {
                 id: "recover",
                 tight: false,
-                figure: Figure::Card,
-                caption: node_caption(state),
+                caption: self.node_caption(cx),
                 back: Some(("recover-back", "← Back", || Message::RecoverCancel)),
                 label: "[03 / 03] Account · recovery key".into(),
-                headline: format!("Your {} recovery key", state.network),
+                headline: format!("Your {} recovery key", self.session.read(cx).get().network),
                 lead: Some("The 24 words you wrote down for this account. They add this device; nothing else changes.".into()),
                 body: vec![form.into_any_element()],
             },
@@ -101,23 +74,10 @@ impl Screens {
         )
     }
 
-    /// Phrase: a new recovery key's 24 words, then a check of three.
-    pub(super) fn phrase(
-        &mut self,
-        state: &Facts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use gpui_kit::*;
-        if let Some(asked) = state.phrase_quiz {
-            return self.phrase_check(state, asked, window, cx);
-        }
-        let ink = Ink::of(state.dark);
-        // read here, not copied into every draw's facts; wiped when dropped
-        let phrase = zeroize::Zeroizing::new(match &self.model.read(cx).state.stage {
-            crate::Stage::Phrase(step) => step.words.to_string(),
-            _ => String::new(),
-        });
+    /// Phrase: a new recovery key's 24 words.
+    pub(super) fn phrase(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let phrase = self.phrase.as_deref().map_or("", String::as_str);
         let words: Vec<&str> = phrase.split_whitespace().collect();
         let per_column = words.len().div_ceil(3).max(1);
         // `grid-template-columns: repeat(3, 1fr); grid-auto-flow: column;
@@ -151,7 +111,7 @@ impl Screens {
             div()
                 .id("phrase")
                 .role(Role::Group)
-                .aria_label(phrase.as_str().to_owned())
+                .aria_label(phrase.to_owned())
                 .flex()
                 .gap(px(24.))
                 .children(columns),
@@ -180,18 +140,17 @@ impl Screens {
                 false,
                 &ink,
             ));
-        self.launcher(
+        self.frame(
             LauncherScreen {
                 id: "recovery",
                 tight: true, // the 24 words need the room
-                figure: Figure::Card,
                 caption: "Twenty-four words, on paper.".into(),
                 back: None,
                 label: "Recovery key".into(),
                 headline: "Write these down".into(),
                 lead: Some(format!(
                 "In order, on paper. With them a new device joins your {} account when no other is at hand — and so can anyone holding them.",
-                state.network
+                self.session.read(cx).get().network
             )),
                 body: vec![sheet.into_any_element(), done.into_any_element()],
             },
@@ -201,59 +160,34 @@ impl Screens {
     }
 
     /// PhraseCheck: three words typed back from the paper.
-    fn phrase_check(
-        &mut self,
-        state: &Facts,
+    pub(super) fn phrase_check(
+        &self,
         asked: [usize; 3],
         window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        type Field = (&'static str, fn(&Ducktape) -> &str, fn(String) -> Message);
-        let fields: [Field; 3] = [
-            (
-                "phrase-word-1",
-                |state| answer(state, 0),
-                |text| Message::PhraseWordTyped(0, text),
-            ),
-            (
-                "phrase-word-2",
-                |state| answer(state, 1),
-                |text| Message::PhraseWordTyped(1, text),
-            ),
-            (
-                "phrase-word-3",
-                |state| answer(state, 2),
-                |text| Message::PhraseWordTyped(2, text),
-            ),
-        ];
+        cx: &App,
+    ) -> AnyElement {
+        let account = self.account.read(cx).get();
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let keys = ["phrase-word-1", "phrase-word-2", "phrase-word-3"];
         let [a, b, c] = asked.map(|nth| nth + 1);
-        let rows: Vec<_> = fields
-            .into_iter()
+        let rows: Vec<_> = (self.fields.words.iter().zip(keys))
             .zip(asked)
-            .map(|((key, value, on_change), nth)| {
-                let field = self.input(
+            .map(|((word, key), nth)| {
+                let input = word.input(
+                    key,
                     TextField {
-                        key,
-                        placeholder: "",
-                        masked: false,
-                        value,
-                        on_change,
-                        on_enter: || Message::PhraseCheckSubmit,
-                        label: Some(format!("Word {}", nth + 1).into()),
+                        label: format!("Word {}", nth + 1).into(),
                         private: true,
                         error: None,
                         size: 15.,
                     },
-                    window,
                     cx,
                 );
-                let focused = self.field_focused(key, window, cx);
-                self.field(
+                let focused = word.focused(window, cx);
+                field(
                     SharedString::from(format!("{key}-label")),
                     format!("Word {}", nth + 1),
-                    field_box(field, focused, ink.field, 44., &ink).into_any_element(),
+                    field_box(input, focused, ink.field, 44., &ink).into_any_element(),
                     None,
                     &ink,
                 )
@@ -266,8 +200,8 @@ impl Screens {
             .gap(px(14.))
             .children(rows)
             .children(
-                (!state.unlock_error.is_empty())
-                    .then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink)),
+                (!account.error.is_empty())
+                    .then(|| alert("unlock-error", account.error.clone(), &ink)),
             )
             .child(
                 div()
@@ -280,7 +214,7 @@ impl Screens {
                         "Confirm",
                         Kind::Primary,
                         || Message::PhraseCheckSubmit,
-                        state.unlock_busy,
+                        account.busy,
                         &ink,
                     ))
                     .child(self.link(
@@ -292,11 +226,10 @@ impl Screens {
                     )),
             );
         let prompt = format!("Type words {a}, {b} and {c} from your paper.");
-        self.launcher(
+        self.frame(
             LauncherScreen {
                 id: "recovery-check",
                 tight: false,
-                figure: Figure::Card,
                 caption: "Twenty-four words, on paper.".into(),
                 back: None,
                 label: "Recovery key · check".into(),

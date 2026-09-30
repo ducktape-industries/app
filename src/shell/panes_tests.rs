@@ -495,7 +495,7 @@ fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
     native.update(|window, cx| {
         assert!(
             view.read(cx)
-                .screens()
+                .dialogs()
                 .read(cx)
                 .modal
                 .contains_focused(window, cx),
@@ -555,7 +555,7 @@ fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
         native.update(|window, cx| {
             assert!(
                 view.read(cx)
-                    .screens()
+                    .dialogs()
                     .read(cx)
                     .modal
                     .contains_focused(window, cx),
@@ -575,8 +575,13 @@ fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn an_empty_window_opens_what_its_field_finds(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = console(cx);
-    model.update(&mut native, |model, _| {
-        model.state.roster = crate::runtime::Roster::listing(&["cmdtest-alpha", "cmdtest-beta"]);
+    model.update(&mut native, |model, cx| {
+        let roster = crate::runtime::Roster::listing(&["cmdtest-alpha", "cmdtest-beta"]);
+        model.state.roster = roster.clone();
+        model
+            .entities
+            .rail
+            .update(cx, |rail, cx| rail.read_off(roster, cx));
     });
     native.update(|window, cx| {
         draw(window, cx);
@@ -1088,6 +1093,32 @@ fn an_empty_pane_stops_its_figure_when_motion_goes_off_without_a_frame_loop(
     );
 }
 
+/// The bare desk reads the programs off the `Rail`, not the model: a
+/// roster change draws it once, with no dispatch between.
+#[gpui_kit::test]
+fn a_roster_change_redraws_the_bare_desk(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (model, key, view, mut native) = console(cx);
+    model.update(&mut native, |model, cx| {
+        // a still figure: its frames are not the roster's
+        model.dispatch(Message::SetMotion(false), cx);
+        model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx);
+    });
+    native.run_until_parked();
+    assert_eq!(panes(&mut native, &view).0, 0, "the desk is bare");
+    let drawn = window_count(key, "renders.empty");
+    let rail = model.read_with(&native, |model, _| model.entities.rail.clone());
+    rail.update(&mut native, |rail, cx| {
+        rail.read_off(crate::runtime::Roster::listing(&["bare-desk-view"]), cx)
+    });
+    native.run_until_parked();
+    assert_eq!(
+        window_count(key, "renders.empty"),
+        drawn + 1,
+        "the roster moved and the bare desk did not draw once"
+    );
+}
+
 /// The keys going to an empty window's own box (a press on its
 /// background, or the keys coming back to it with the window) go on to its
 /// field, so typing starts at once: in front, and again when the window
@@ -1175,7 +1206,7 @@ fn help_greets_a_new_account_and_titles_otherwise(cx: &mut TestAppContext) {
     // a new account lands on it greeted (`open_help(true)`)
     model.update(&mut native, |model, cx| {
         model.state.welcome = true;
-        cx.notify();
+        model.bridge(false, cx);
     });
     assert_eq!(title(&mut native), "Welcome to Ducktape");
     // asked for again, it is just help
@@ -1222,7 +1253,7 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
     native.update(|window, cx| {
         assert!(
             view.read(cx)
-                .screens()
+                .dialogs()
                 .read(cx)
                 .modal
                 .contains_focused(window, cx),

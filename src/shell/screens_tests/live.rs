@@ -46,7 +46,7 @@ fn every_shell_status_and_alert_is_live_with_its_words_as_name_and_value(cx: &mu
         (
             "connect-connecting",
             Role::Status,
-            "Connecting to 127.0.0.1:9000…",
+            "Reaching 127.0.0.1:9000…",
         ),
         ("connect-error-and-recent", Role::Alert, "no route to host"),
         ("sign-in-old-password-error", Role::Alert, "wrong password"),

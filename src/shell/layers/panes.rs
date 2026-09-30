@@ -88,10 +88,7 @@ impl PaneLayer {
     ) -> Self {
         let WindowEntities { desk, overlays, .. } = own;
         let seats = model.read(cx).seats.clone();
-        let empty_desk = {
-            let model = model.clone();
-            cx.new(|cx| EmptyPane::desk(model, key, kind, root, window, cx))
-        };
+        let empty_desk = cx.new(|cx| EmptyPane::desk(&model, key, kind, root, window, cx));
         let subscriptions = [
             cx.observe_in(&desk, window, |this, _, window, cx| {
                 this.reconcile(window, cx)
@@ -169,9 +166,13 @@ impl PaneLayer {
                 self.desk.clone(),
                 self.model.read(cx).entities.rail.clone(),
             );
-            let (notifications, prefs) = {
+            let (notifications, prefs, account) = {
                 let entities = &model.read(cx).entities;
-                (entities.notifications.clone(), entities.prefs.clone())
+                (
+                    entities.notifications.clone(),
+                    entities.prefs.clone(),
+                    entities.account.clone(),
+                )
             };
             let (layer, desk_window) = (cx.weak_entity(), self.window.clone());
             let (module, instance) = (pane.module, pane.instance);
@@ -194,12 +195,12 @@ impl PaneLayer {
                 let body = match seat {
                     Some(seat) => Body::Seat(Observed::new(&seat, cx)),
                     None if module == layout::HELP => {
-                        Body::Help(cx.new(|cx| HelpPane::new(&model, key, cx)))
+                        Body::Help(cx.new(|cx| HelpPane::new(&account, &prefs, key, cx)))
                     }
                     None if pane.is_view() => Body::Missing,
                     None => Body::Empty(cx.new(|cx| {
                         EmptyPane::window(
-                            model.clone(),
+                            &model,
                             key,
                             instance,
                             desk_window.clone(),
@@ -233,12 +234,8 @@ impl PaneLayer {
     /// take and release, and each pane remembering what in it had them, are
     /// read off the frame just drawn, as they were when this ran at the
     /// draw. After the draw, so a pane's first control is in the frame
-    /// `focus_next` walks. Search closing gives the keys back to what had
-    /// them after this (`Screens` draws at prepaint and defers it past the
-    /// draw; until s8): the hold takes that give-back over (`sync_hold`),
-    /// and a pane coming to the front clears it (`keys_move`). A frame the
-    /// model has moved on from is left alone: the draw that shows the move
-    /// follows, and this runs after it.
+    /// `focus_next` walks. A frame the model has moved on from is left
+    /// alone: the draw that shows the move follows, and this runs after it.
     fn drawn(&mut self, shown: &layout::Layout, window: &mut Window, cx: &mut Context<Self>) {
         let layout = self.layout(cx);
         if *shown != layout {

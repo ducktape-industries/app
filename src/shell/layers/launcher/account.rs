@@ -2,83 +2,65 @@
 //! to one that exists through a passkey (`passkey_waiting`) or another
 //! device (`link_waiting`). See launcher.rs for key vs account.
 
-use super::ink::{self, *};
-use super::launcher::LauncherScreen;
-use super::launcher::{buttons, closing, node_caption};
-use super::layers::TextField;
-use super::*;
-use facts::Facts;
-use figure::Figure;
+use super::super::super::Message;
+use super::super::super::ink::{self, *};
+use super::super::fields::TextField;
+use super::{LauncherLayer, LauncherScreen, buttons, closing};
+use crate::a11y::Control as _;
+use gpui_kit::*;
 
 /// What the device that waits for approval is told: a security instruction,
 /// so a `Status` a screen reader hears.
 const LINK_WAITING: &str = "On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Approve there only if it shows the same four-and-four. The code lasts five minutes.";
 
-impl Screens {
+impl LauncherLayer {
     /// CreateAccount: name the account this key signs for, or add this
     /// device to one that exists.
-    pub(super) fn account_step(
-        &mut self,
-        state: &Facts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use gpui_kit::*;
-        if state.passkey_waiting {
-            return self.passkey_waiting(state, window, cx);
+    pub(super) fn account_step(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let account = self.account.read(cx).get();
+        if account.passkey_waiting {
+            return self.passkey_waiting(window, cx);
         }
-        if !state.link_code.is_empty() {
-            return self.link_waiting(state, window, cx);
+        if !account.link_code.is_empty() {
+            return self.link_waiting(window, cx);
         }
-        let ink = Ink::of(state.dark);
-        let name = self.input(
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let name = self.fields.name.input(
+            "create-account-name",
             TextField {
-                key: "create-account-name",
-                placeholder: "",
-                masked: false,
-                value: |state| match &state.stage {
-                    crate::Stage::Account(step) => &step.name,
-                    _ => "",
-                },
-                on_change: Message::AccountNameTyped,
-                on_enter: || Message::CreateAccountSubmit,
-                label: Some("Account name".into()),
+                label: "Account name".into(),
                 private: false,
-                error: (!state.unlock_error.is_empty()).then(|| state.unlock_error.clone()),
+                error: (!account.error.is_empty()).then(|| account.error.clone()),
                 size: 22.,
             },
-            window,
             cx,
         );
-        let focused = self.field_focused("create-account-name", window, cx);
-        let below = match state.unlock_error.is_empty() {
+        let focused = self.fields.name.focused(window, cx);
+        let below = match account.error.is_empty() {
             true => ink::note(
                 "account-name-note",
                 "The account number is given when it's created. Change the name later in Account.",
                 ink.muted,
             )
             .into_any_element(),
-            false => self.alert("create-account-error", state.unlock_error.clone(), &ink),
+            false => alert("create-account-error", account.error.clone(), &ink),
         };
-        let busy = state.unlock_busy;
+        let busy = account.busy;
         let form = div()
             .flex()
             .flex_col()
             .gap(px(16.))
-            .child(
-                self.field(
-                    "account-name-label",
-                    "Name",
-                    sans(400, 22.)
-                        .child(
-                            field_box(name, focused, ink.field, 56., &ink)
-                                .text_size(px(super::ink::fit(22.))),
-                        )
-                        .into_any_element(),
-                    Some(below),
-                    &ink,
-                ),
-            )
+            .child(field(
+                "account-name-label",
+                "Name",
+                sans(400, 22.)
+                    .child(
+                        field_box(name, focused, ink.field, 56., &ink).text_size(px(ink::fit(22.))),
+                    )
+                    .into_any_element(),
+                Some(below),
+                &ink,
+            ))
             .child(
                 buttons([
                     self.button(
@@ -116,7 +98,10 @@ impl Screens {
                 sans(500, 14.)
                     .child(words(
                         "join-question",
-                        format!("Already have an account on {}?", state.network),
+                        format!(
+                            "Already have an account on {}?",
+                            self.session.read(cx).get().network
+                        ),
                     ))
                     .into_any_element(),
                 self.link(
@@ -154,18 +139,17 @@ impl Screens {
         .id("join-account")
         .role(Role::Group)
         .aria_label("Already have an account");
-        self.launcher(
+        self.frame(
             LauncherScreen {
                 id: "account-step",
                 tight: false,
-                figure: Figure::Pair,
-                caption: node_caption(state),
+                caption: self.node_caption(cx),
                 back: None,
                 label: "[03 / 03] Account".into(),
                 headline: "What should people call you?".into(),
                 lead: Some(format!(
                 "Your account is the name beside everything you write on {}. This device's key signs for it.",
-                state.network
+                self.session.read(cx).get().network
             )),
                 body: vec![form.into_any_element(), join.into_any_element()],
             },
@@ -175,15 +159,10 @@ impl Screens {
     }
 
     /// Passkey: the ceremony is in the browser, or on a phone through the QR.
-    fn passkey_waiting(
-        &mut self,
-        state: &Facts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let (title, hint) = match state.passkey_qr {
+    fn passkey_waiting(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let account = self.account.read(cx).get();
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let (title, hint) = match account.passkey_qr {
             Some(_) => (
                 "Scan with your phone",
                 "Point its camera at the code. It asks for your passkey twice; this screen moves on by itself.",
@@ -193,7 +172,7 @@ impl Screens {
                 "Your browser asks for your passkey twice. This screen moves on by itself.",
             ),
         };
-        let row = state.passkey_qr.as_ref().map(|url| {
+        let row = account.passkey_qr.as_ref().map(|url| {
             let copy = {
                 let url = url.clone();
                 crate::a11y::keyboard(
@@ -262,7 +241,7 @@ impl Screens {
         });
         let links = closing(
             [
-                match state.passkey_qr {
+                match account.passkey_qr {
                     Some(_) => None,
                     None => Some(self.link(
                         "passkey-use-phone",
@@ -284,12 +263,11 @@ impl Screens {
             .flatten(),
             &ink,
         );
-        self.launcher(
+        self.frame(
             LauncherScreen {
                 id: "passkey-waiting",
                 tight: false,
-                figure: Figure::Pair,
-                caption: node_caption(state),
+                caption: self.node_caption(cx),
                 back: None,
                 label: "[03 / 03] Account · passkey".into(),
                 headline: title.into(),
@@ -303,15 +281,10 @@ impl Screens {
 
     /// This device waits under a short code for one already on the account
     /// to approve it; the fingerprint is compared on both screens.
-    fn link_waiting(
-        &mut self,
-        state: &Facts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let fingerprint = crate::backend::hex_decode(&state.signer_key)
+    fn link_waiting(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let account = self.account.read(cx).get();
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let fingerprint = crate::backend::hex_decode(&account.signer_key)
             .map(|key| crate::backend::join::fingerprint(&key))
             .unwrap_or_default();
         let big = |id: &'static str, name: &'static str, text: String| {
@@ -332,7 +305,7 @@ impl Screens {
             div()
                 .flex()
                 .gap(px(40.))
-                .child(big("link-code", "Code", state.link_code.clone()))
+                .child(big("link-code", "Code", account.link_code.clone()))
                 .child(big("link-fingerprint", "This device", fingerprint))
                 .into_any_element(),
             // a note's look; its words are the live region's own
@@ -352,17 +325,16 @@ impl Screens {
                 .flex_col()
                 .gap(px(16.))
                 .children(
-                    (!state.unlock_error.is_empty())
-                        .then(|| self.alert("link-error", state.unlock_error.clone(), &ink)),
+                    (!account.error.is_empty())
+                        .then(|| alert("link-error", account.error.clone(), &ink)),
                 )
                 .into_any_element(),
         ];
-        self.launcher(
+        self.frame(
             LauncherScreen {
                 id: "link-waiting",
                 tight: false,
-                figure: Figure::Pair,
-                caption: node_caption(state),
+                caption: self.node_caption(cx),
                 // the step back reads as recovery's: the same way to the account
                 back: Some(("link-back", "← Back", || Message::LinkCancel)),
                 label: "[03 / 03] Account · another device".into(),

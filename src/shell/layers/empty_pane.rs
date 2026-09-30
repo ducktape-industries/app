@@ -6,6 +6,7 @@
 //! with a switch beside it for what the field searches, Module | Chat;
 //! until agent chat is built, [`CHAT_READY`], Tab there moves focus).
 
+use super::super::entities::{Desk, Overlays, Prefs, Rail, Slice};
 use super::super::figure::Figure;
 use super::super::ink::{self, Ink};
 use super::super::spin::{self, Spin};
@@ -73,7 +74,7 @@ enum Place {
     /// The desk while no window is on it. `root` is the window's own focus,
     /// which takes the keys when the last window leaves; an overlay covers
     /// the desk only in the `console`; `bare` is whether the desk was bare
-    /// when the model was last read uncovered.
+    /// when its observers last looked.
     Desk {
         spin: Entity<Spin>,
         root: FocusHandle,
@@ -88,9 +89,9 @@ enum Place {
     },
 }
 
-/// What its body draws from the model, as it last drew it: its observer
-/// compares the model against it, so a dispatch that moves none of it
-/// leaves the cached body alone.
+/// What its body draws from the entities, as it last drew it: its
+/// observers compare them against it, so a move of none of it leaves the
+/// cached body alone.
 #[derive(Default, PartialEq)]
 struct Shown {
     dark: bool,
@@ -101,31 +102,25 @@ struct Shown {
 }
 
 /// A pane the app draws when no program is in it: the desk's own, or an
-/// empty window's. It observes the model (the bridge until `Rail` and
-/// `Prefs` are entities) and reads it at its draw, as a view reads a slice
-/// it observes.
+/// empty window's. It observes its window's `Desk`, the `Rail` and the
+/// `Prefs`, and reads them at its draw; what is open over the desk it reads
+/// without observing (`moved`).
 pub(in crate::shell) struct EmptyPane {
-    model: Entity<Desktop>,
     key: WindowKey,
+    desk: Entity<Desk>,
+    overlays: Entity<Overlays>,
+    rail: Entity<Rail>,
+    prefs: Entity<Slice<Prefs>>,
     place: Place,
     shown: Shown,
-    _observing: Subscription,
-}
-
-/// No window is on the desk of window `key`.
-fn bare(model: &Desktop, key: WindowKey) -> bool {
-    model
-        .state
-        .layouts
-        .get(&key)
-        .is_none_or(|layout| layout.panes.is_empty())
+    _observing: [Subscription; 3],
 }
 
 impl EmptyPane {
     /// The desk of window `key` (a `kind` window), for as long as the
     /// window lives: drawn while no window is on it.
     pub(in crate::shell) fn desk(
-        model: Entity<Desktop>,
+        model: &Entity<Desktop>,
         key: WindowKey,
         kind: WindowKind,
         root: FocusHandle,
@@ -133,12 +128,10 @@ impl EmptyPane {
         cx: &mut Context<Self>,
     ) -> Self {
         let (dark, motion, bare) = {
-            let desktop = model.read(cx);
-            (
-                desktop.state.dark(),
-                desktop.state.motion,
-                bare(desktop, key),
-            )
+            let entities = &model.read(cx).entities;
+            let prefs = entities.prefs.read(cx).get();
+            let layout = entities.by_window[&key].desk.read(cx).get();
+            (prefs.dark(), prefs.motion, layout.panes.is_empty())
         };
         let spin = cx.new(|cx| Spin::new(Figure::Roll, motion, Ink::of(dark).figure, cx));
         let console = kind == WindowKind::Console;
@@ -154,7 +147,7 @@ impl EmptyPane {
     /// Empty window `instance` on the desk of `desk`, whose box holds the
     /// keys by `own` when nothing inside it does.
     pub(in crate::shell) fn window(
-        model: Entity<Desktop>,
+        model: &Entity<Desktop>,
         key: WindowKey,
         instance: u64,
         desk: WeakEntity<WindowRoot>,
@@ -189,17 +182,30 @@ impl EmptyPane {
         Self::made(model, key, place, window, cx)
     }
 
+    /// Over the entities of `model` (read here, never kept) and window
+    /// `key`'s own.
     fn made(
-        model: Entity<Desktop>,
+        model: &Entity<Desktop>,
         key: WindowKey,
         place: Place,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let observing = cx.observe_in(&model, window, |this, _, window, cx| this.moved(window, cx));
+        let entities = &model.read(cx).entities;
+        let own = &entities.by_window[&key];
+        let (desk, overlays) = (own.desk.clone(), own.overlays.clone());
+        let (rail, prefs) = (entities.rail.clone(), entities.prefs.clone());
+        let observing = [
+            cx.observe_in(&desk, window, |this, _, window, cx| this.moved(window, cx)),
+            cx.observe_in(&rail, window, |this, _, window, cx| this.moved(window, cx)),
+            cx.observe_in(&prefs, window, |this, _, window, cx| this.moved(window, cx)),
+        ];
         let mut this = Self {
-            model,
             key,
+            desk,
+            overlays,
+            rail,
+            prefs,
             place,
             shown: Shown::default(),
             _observing: observing,
@@ -209,11 +215,11 @@ impl EmptyPane {
     }
 
     fn shown(&self, cx: &App) -> Shown {
-        let state = &self.model.read(cx).state;
+        let rail = self.rail.read(cx);
         Shown {
-            dark: state.dark(),
-            rail: state.roster.rail(),
-            badges: state.badges.clone(),
+            dark: self.prefs.read(cx).get().dark(),
+            rail: rail.rows().to_vec(),
+            badges: rail.badges().clone(),
             at: self.at(cx),
         }
     }
@@ -223,7 +229,7 @@ impl EmptyPane {
         let Place::Window { instance, .. } = &self.place else {
             return None;
         };
-        let layout = self.model.read(cx).state.layouts.get(&self.key)?;
+        let layout = self.desk.read(cx).get();
         let index = layout
             .panes
             .iter()
@@ -231,18 +237,18 @@ impl EmptyPane {
         Some((index, index == layout.focused))
     }
 
-    /// The model moved: the figure takes the motion switch and the ink,
-    /// the keys go to the window itself once its last pane leaves, and the
-    /// body draws again only if what it shows moved.
+    /// The desk, the rail or the preferences moved: the figure takes the
+    /// motion switch and the ink, the keys go to the window itself once its
+    /// last pane leaves, and the body draws again only if what it shows
+    /// moved.
     fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (dark, motion, now_bare, overlay) = {
-            let desktop = self.model.read(cx);
-            let covered = desktop.entities.by_window.get(&self.key);
+            let prefs = self.prefs.read(cx).get();
             (
-                desktop.state.dark(),
-                desktop.state.motion,
-                bare(desktop, self.key),
-                covered.is_some_and(|own| own.overlays.read(cx).get().is_some()),
+                prefs.dark(),
+                prefs.motion,
+                self.desk.read(cx).get().panes.is_empty(),
+                self.overlays.read(cx).get().is_some(),
             )
         };
         if let Place::Desk {
@@ -259,13 +265,13 @@ impl EmptyPane {
             // close gives them back (`OverlayLayer::moved`), and to the root
             // when what had them left with the last window (`focus_lost`).
             // This reads `Overlays` without observing it, so `bare` moves
-            // either way: a close is no model notify.
+            // either way: a close moves no desk.
             if now_bare && !*bare && !(*console && overlay) {
                 root.focus(window, cx);
             }
             *bare = now_bare;
             if !now_bare {
-                // not drawn: it reads the model afresh when it is
+                // not drawn: it reads the entities afresh when it is
                 return;
             }
         }
@@ -287,9 +293,7 @@ impl EmptyPane {
         else {
             return;
         };
-        let Some(layout) = self.model.read(cx).state.layouts.get(&self.key) else {
-            return;
-        };
+        let layout = self.desk.read(cx).get();
         let front = layout
             .panes
             .get(layout.focused)

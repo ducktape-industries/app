@@ -106,7 +106,6 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
                 let mut state = booted(Stage::Connect, false);
                 state.endpoint = "127.0.0.1:9000".into();
                 state.connecting = true;
-                state.status = "Connecting to 127.0.0.1:9000…".into();
                 state
             }),
         ),

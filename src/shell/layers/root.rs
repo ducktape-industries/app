@@ -1,9 +1,9 @@
 //! The root view of one OS window: thin, uncached, laying the window's
 //! layers out as siblings. On the desk: the bar (`Chrome`, console only),
-//! the panes (`PaneLayer`), the dialog open over them (`OverlayLayer`;
-//! "Add a device…" still `Screens`'), the node's breath (`StatusDot`) and
-//! the footer (`ToastView`). Before the desk the console draws its
-//! launcher screen (`Screens`) and the footer.
+//! the panes (`PaneLayer`), the dialog open over them (`OverlayLayer`),
+//! the node's breath (`StatusDot`) and the footer (`ToastView`). Before the
+//! desk the console draws its launcher screen (`LauncherLayer`, uncached)
+//! and the footer.
 //! Every cached layer under it hits while nothing it observes moved (P6):
 //! a pulse of the dot draws the dot, this root and the uncached pane layer
 //! and pane views under it, and no cached layer redraws.
@@ -13,10 +13,10 @@
 //! window answers (`keys.rs`), the pane messages the layers send through
 //! it (`panes.rs`, `pane_hold.rs`), and the switch timer.
 
-use super::super::entities::{Desk, Observed, Overlay, Overlays, Prefs, Screen, Slice};
+use super::super::entities::{Desk, Observed, Overlays, Prefs, Screen, Slice};
 use super::super::{Desktop, WindowKey, WindowKind, ink, layout, theme};
 use super::{
-    BAR, Chrome, OverlayLayer, PaneLayer, Screens, StatusDot, ToastView, cached_unless_a11y,
+    BAR, Chrome, LauncherLayer, OverlayLayer, PaneLayer, StatusDot, ToastView, cached_unless_a11y,
 };
 use crate::AppMessage as Message;
 use gpui_kit::{
@@ -41,11 +41,11 @@ pub(in crate::shell) struct WindowRoot {
     /// The panes, drawn: one `PaneView` per pane, the keys' handoff between
     /// them, the pointer's and the keyboard's hold on one.
     pub(in crate::shell) panes: Entity<PaneLayer>,
-    /// Spotlight and Settings over the desk, and where the keys go as
-    /// anything opens or closes over it (the console only).
+    /// Spotlight, Settings and "Add a device…" over the desk, and where the
+    /// keys go as anything opens or closes over it (the console only).
     pub(in crate::shell) overlay_layer: Option<Entity<OverlayLayer>>,
-    /// The launcher screens, and "Add a device…" (the console only).
-    pub(in crate::shell) screens: Option<Entity<Screens>>,
+    /// The launcher screens (the console only).
+    launcher: Option<Entity<LauncherLayer>>,
     toast: Entity<ToastView>,
     /// The node's breath over the bar's well (the console only).
     dot: Option<Entity<StatusDot>>,
@@ -86,9 +86,9 @@ impl WindowRoot {
             let model = model.clone();
             cx.new(|cx| OverlayLayer::new(model, key, &own, menu, window, cx))
         });
-        let screens = overlay_layer.as_ref().map(|layer| {
-            let (model, modal) = (model.clone(), layer.read(cx).modal.clone());
-            cx.new(|cx| Screens::new(model, key, &own, modal, cx))
+        let launcher = console.then(|| {
+            let model = model.clone();
+            cx.new(|cx| LauncherLayer::new(model, key, window, cx))
         });
         let dot = console.then(|| {
             let model = model.clone();
@@ -132,7 +132,7 @@ impl WindowRoot {
             chrome,
             panes,
             overlay_layer,
-            screens,
+            launcher,
             toast,
             dot,
             menu,
@@ -225,10 +225,18 @@ impl WindowRoot {
         self.focus.focus(window, cx);
     }
 
-    /// The console's screens: a test's way to its fields.
+    /// The console's launcher: a test's way to its fields and figure.
     #[cfg(test)]
-    pub(in crate::shell) fn screens(&self) -> &Entity<Screens> {
-        self.screens.as_ref().expect("the console has screens")
+    pub(in crate::shell) fn launcher(&self) -> &Entity<LauncherLayer> {
+        self.launcher.as_ref().expect("the console has a launcher")
+    }
+
+    /// The console's dialogs: a test's way to where their keys go.
+    #[cfg(test)]
+    pub(in crate::shell) fn dialogs(&self) -> &Entity<OverlayLayer> {
+        self.overlay_layer
+            .as_ref()
+            .expect("the console has dialogs")
     }
 
     /// What is open over this window's desk: a test's way to open or close
@@ -254,17 +262,22 @@ impl Render for WindowRoot {
             // was presented: an upper bound, high by one frame interval
             window.on_next_frame(move |_, _| drop(switching));
         }
-        let full = || StyleRefinement::default().size_full();
         let layer = || StyleRefinement::default().absolute().inset_0();
         let cached =
             |view: gpui_kit::AnyView, size, window: &Window| cached_unless_a11y(view, size, window);
         // the footer, over an open menu (deferred too) as it paints today
         let toast = deferred(cached(self.toast.clone().into(), layer(), window)).with_priority(2);
         let launcher = self.kind == WindowKind::Console && !self.on_desk(cx);
-        let content = match (launcher, &self.screens) {
-            (true, Some(screens)) => div()
+        let content = match (launcher, &self.launcher) {
+            // The launcher (the sign-in and unlock screens) is drawn
+            // uncached, against the spec's cached `size_full` (chief,
+            // 2026-09-30): a cached launcher moves the unlock screen's
+            // pixels by 1 LSB (GPU sprite order within one draw order),
+            // which the look rule forbids, and these screens gain nothing
+            // from the cache.
+            (true, Some(launcher)) => div()
                 .size_full()
-                .child(cached(screens.clone().into(), full(), window))
+                .child(launcher.clone())
                 .child(toast)
                 .into_any_element(),
             _ => {
@@ -283,13 +296,6 @@ impl Render for WindowRoot {
                     .overlay_layer
                     .clone()
                     .map(|layer_view| cached(layer_view.into(), layer(), window));
-                // "Add a device…", while it is open (s9 moves it to the overlays)
-                let approve = *self.overlays.read(cx).get() == Some(Overlay::Approve);
-                let screens = self
-                    .screens
-                    .clone()
-                    .filter(|_| approve)
-                    .map(|screens| cached(screens.into(), layer(), window));
                 div()
                     .id("console")
                     .size_full()
@@ -306,7 +312,6 @@ impl Render for WindowRoot {
                             .child(self.panes.clone()),
                     )
                     .children(overlays)
-                    .children(screens)
                     .children(self.dot.clone())
                     .child(toast)
                     .into_any_element()

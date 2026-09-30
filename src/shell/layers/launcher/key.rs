@@ -1,37 +1,31 @@
 //! The launcher's key screen: this device's key opening, locked, failed, or
 //! behind a password from before. See launcher.rs for key vs account.
 
-use super::ink::{self, *};
-use super::launcher::LauncherScreen;
-use super::launcher::{buttons, closing, node_caption};
-use super::layers::TextField;
-use super::*;
-use facts::Facts;
-use figure::Figure;
+use super::super::super::Message;
+use super::super::super::ink::{self, *};
+use super::super::fields::TextField;
+use super::{LauncherLayer, LauncherScreen, buttons, closing};
+use gpui_kit::*;
 
-impl Screens {
+impl LauncherLayer {
     /// SignIn: this device's key, opening, locked, failed, or (from before
     /// keys moved into the system) behind a password asked once.
-    pub(super) fn unlock(
-        &mut self,
-        state: &Facts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let failed = !state.unlock_error.is_empty();
-        let (label, headline, lead) = match (state.key_exists, state.locked, failed) {
+    pub(super) fn unlock(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let (session, account) = (self.session.read(cx).get(), self.account.read(cx).get());
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let network = &session.network;
+        let failed = !account.error.is_empty();
+        let (label, headline, lead) = match (account.key_exists, account.locked, failed) {
             (true, _, _) => (
-                format!("{} · locked", state.network),
-                format!("Sign in to {}", state.network),
+                format!("{network} · locked"),
+                format!("Sign in to {network}"),
                 Some(
                     "This device's key still has a password from before. Type it once; the system keeps the key after that.",
                 ),
             ),
             (false, true, _) => (
-                format!("{} · locked", state.network),
-                format!("Sign in to {}", state.network),
+                format!("{network} · locked"),
+                format!("Sign in to {network}"),
                 None,
             ),
             (false, false, true) => (
@@ -47,12 +41,11 @@ impl Screens {
                 ),
             ),
         };
-        let other_chain = state.other_chain.then(|| {
+        let other_chain = session.other_chain.then(|| {
             ink::note(
                 "words",
                 format!(
-                    "This is a different network also called {}. It gets its own key on this device.",
-                    state.network
+                    "This is a different network also called {network}. It gets its own key on this device."
                 ),
                 ink.muted,
             )
@@ -60,42 +53,33 @@ impl Screens {
             .role(Role::Note)
             .into_any_element()
         });
-        let password = state.key_exists.then(|| {
-            let field = self.input(
+        let password = account.key_exists.then(|| {
+            let input = self.fields.password.input(
+                "password",
                 TextField {
-                    key: "password",
-                    placeholder: "",
-                    masked: true,
-                    value: |state| match &state.stage {
-                        crate::Stage::Unlock(step) => step.password.as_str(),
-                        _ => "",
-                    },
-                    on_change: Message::PasswordTyped,
-                    on_enter: || Message::UnlockSubmit,
-                    label: Some("Password".into()),
+                    label: "Password".into(),
                     private: false,
-                    error: failed.then(|| state.unlock_error.clone()),
+                    error: failed.then(|| account.error.clone()),
                     size: 15.,
                 },
-                window,
                 cx,
             );
-            let focused = self.field_focused("password", window, cx);
+            let focused = self.fields.password.focused(window, cx);
             let border = match failed {
                 true => ink.danger,
                 false => ink.field,
             };
-            self.field(
+            field(
                 "password-label",
                 "Password for this device's key",
-                field_box(field, focused, border, 44., &ink).into_any_element(),
-                failed.then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink)),
+                field_box(input, focused, border, 44., &ink).into_any_element(),
+                failed.then(|| alert("unlock-error", account.error.clone(), &ink)),
                 &ink,
             )
             .into_any_element()
         });
-        let busy = state.unlock_busy || state.seating;
-        let primary = match (state.key_exists || state.locked, failed) {
+        let busy = account.busy || account.seating;
+        let primary = match (account.key_exists || account.locked, failed) {
             (true, _) => Some("Unlock"),
             (false, true) => Some("Try again"),
             (false, false) => None,
@@ -111,8 +95,8 @@ impl Screens {
             )])
             .into_any_element()
         });
-        let loose_error = (failed && !state.key_exists)
-            .then(|| self.alert("unlock-error", state.unlock_error.clone(), &ink));
+        let loose_error = (failed && !account.key_exists)
+            .then(|| alert("unlock-error", account.error.clone(), &ink));
         let form = div()
             .flex()
             .flex_col()
@@ -131,12 +115,11 @@ impl Screens {
             )],
             &ink,
         );
-        self.launcher(
+        self.frame(
             LauncherScreen {
                 id: "sign-in",
                 tight: false,
-                figure: Figure::Ring,
-                caption: node_caption(state),
+                caption: self.node_caption(cx),
                 back: Some(("disconnect", "Other networks", || Message::Disconnect)),
                 label,
                 headline,
