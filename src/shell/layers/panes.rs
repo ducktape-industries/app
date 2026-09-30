@@ -45,8 +45,7 @@ pub(in crate::shell) struct PaneLayer {
     /// What is open over this window's desk: the keys and the pointer's
     /// presses leave the panes alone while something is. Read at a press
     /// and after a draw, never at one.
-    pub(in crate::shell) overlays: Entity<Overlays>,
-    rail: Entity<Rail>,
+    pub(in crate::shell) overlays: Observed<Overlays>,
     seats: Entity<Seats>,
     /// The window this layer draws in: pane messages and the overlay's
     /// `refocus` are its.
@@ -66,7 +65,7 @@ pub(in crate::shell) struct PaneLayer {
     pub(in crate::shell) holding: Option<pane_hold::Holding>,
     /// The pointer holds a pane: see `pane_drag.rs`.
     pub(in crate::shell) drag: Option<pane_drag::Drag>,
-    _subscriptions: [Subscription; 4],
+    _subscriptions: [Subscription; 3],
 }
 
 impl EventEmitter<Drawn> for PaneLayer {}
@@ -85,7 +84,6 @@ impl PaneLayer {
     ) -> Self {
         let WindowEntities { desk, overlays, .. } = own;
         let seats = model.read(cx).seats.clone();
-        let rail = model.read(cx).entities.rail.clone();
         let empty_desk = {
             let model = model.clone();
             cx.new(|cx| EmptyPane::desk(model, key, kind, root, window, cx))
@@ -97,9 +95,6 @@ impl PaneLayer {
             cx.observe_in(&seats, window, |this, _, window, cx| {
                 this.reconcile(window, cx)
             }),
-            // an overlay that opened or closed: the next draw's handoff
-            // (`keys_move`) sees it
-            cx.observe(&overlays, |_, _, cx| cx.notify()),
             // every draw of the layer ends in the keys' handoff
             cx.subscribe_in(
                 &cx.entity(),
@@ -112,8 +107,9 @@ impl PaneLayer {
             key,
             kind,
             desk,
-            overlays,
-            rail,
+            // an overlay that opened or closed: the next draw's handoff
+            // (`keys_move`) sees it
+            overlays: Observed::new(&overlays, cx),
             seats,
             window: desk_window,
             empty_desk,
@@ -167,7 +163,7 @@ impl PaneLayer {
                 self.key,
                 self.kind,
                 self.desk.clone(),
-                self.rail.clone(),
+                self.model.read(cx).entities.rail.clone(),
             );
             let (layer, desk_window) = (cx.weak_entity(), self.window.clone());
             let (module, instance) = (pane.module, pane.instance);

@@ -117,8 +117,9 @@ fn changes() -> &'static Mutex<Option<Changes>> {
 
 /// The rail's wake: one message each time the roster or a seat moved in a
 /// way [`Roster::rail`] reads, from whichever thread moved it. Installing
-/// it replaces the one before; the app installs one, a test none (its
-/// rail is refreshed by hand, and no loader thread wakes its scheduler).
+/// it replaces the one before; the app installs one; of the tests only
+/// `a_seat_claimed_or_dropped_wakes_the_rail` does (the others' rails are
+/// refreshed by hand, and no loader thread wakes their scheduler).
 pub(crate) fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
     let (send, receive) = futures::channel::mpsc::unbounded();
     *changes().lock().expect("roster changes") = Some(send);

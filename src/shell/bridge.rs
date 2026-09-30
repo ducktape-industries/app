@@ -278,6 +278,28 @@ mod tests {
         }
     }
 
+    /// A notice setting saved reaches `Prefs` in the dispatch that saved it;
+    /// a beat after it reads nothing off disk and moves nothing.
+    #[gpui_kit::test]
+    fn a_saved_notice_setting_reaches_the_prefs_slice(cx: &mut TestAppContext) {
+        let (model, _, _, mut native) = console(cx);
+        let prefs = model.read_with(&native, |model, _| model.entities.prefs.clone());
+        let burst = |native: &mut VisualTestContext| {
+            prefs.read_with(native, |prefs, _| prefs.get().notify.burst)
+        };
+        let before = burst(&mut native);
+        let next = notify::BURSTS.into_iter().find(|it| *it != before).unwrap();
+        let (seen, _seen) = notifies(&prefs, &mut native);
+        send(&model, Message::SetNotifyBurst(next), &mut native);
+        assert_eq!(
+            burst(&mut native),
+            next,
+            "the saved burst never reached Prefs"
+        );
+        send(&model, Message::WallTick, &mut native);
+        assert_eq!(seen.get(), 1, "the save and the beat after it");
+    }
+
     /// The node answers at the same height twice: the chain moved once,
     /// and the session, which holds no status line, not at all.
     #[gpui_kit::test]

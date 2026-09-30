@@ -376,11 +376,13 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   window handles, the `Seats` entity and the running task streams. It also
   holds `entities::Entities` (`shell/entities/`): the shell's state as
   compared slices the layers read — the session, the chain, the account,
-  the screen, the rail, the notification centre's counts, the toast, the
-  prefs, the program in front, and per window its desk, what is open over
-  it, Spotlight and its front — written from `Ducktape` at the end of every
+  the screen, the rail's badges, the notification centre's counts, the
+  toast, the prefs, the program in front, and per window its desk, what is
+  open over it and Spotlight — written from `Ducktape` at the end of every
   dispatch by `shell/bridge.rs` until each one's own methods take its
-  source over.
+  source over. Neither the rail's rows nor a window's front is bridged:
+  the rows are refreshed off the roster's changes channel, and the front
+  (`Front::of_desk`) is derived from its desk by an observer.
   `DesktopWindow::render` copies the fields a draw needs into `Facts`
   (`shell/screens.rs`) and picks by `Stage`: the launcher screens
   (`shell/launcher.rs` frame with a `spin` figure on the left; `screens.rs`
