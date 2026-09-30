@@ -1,7 +1,6 @@
 //! The layers one OS window stacks: each a view of its own over the
 //! shell's entities, cached where it can be.
 
-mod cached;
 mod chrome;
 #[cfg(test)]
 mod chrome_tests;
@@ -19,7 +18,6 @@ mod root_tests;
 pub(super) mod tests;
 mod toast;
 
-pub(crate) use cached::cached_unless_a11y;
 pub(super) use chrome::{BAR, Chrome, tab_label};
 pub(super) use dot::StatusDot;
 pub(super) use empty_pane::{CHAT_READY, CONTEXT, EmptyPane};

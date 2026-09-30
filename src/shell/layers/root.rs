@@ -15,12 +15,10 @@
 
 use super::super::entities::{Desk, Entities, Observed, Overlays, Prefs, Screen, Slice};
 use super::super::{WindowKey, WindowKind, ink, layout, theme};
-use super::{
-    BAR, Chrome, LauncherLayer, OverlayLayer, PaneLayer, StatusDot, ToastView, cached_unless_a11y,
-};
+use super::{BAR, Chrome, LauncherLayer, OverlayLayer, PaneLayer, StatusDot, ToastView};
 use gpui_kit::{
-    AppContext as _, Context, Entity, FocusHandle, IntoElement, ParentElement as _, Render,
-    StyleRefinement, Styled as _, Subscription, Window, deferred, div, px,
+    AnyView, AppContext as _, Context, Entity, FocusHandle, IntoElement, ParentElement as _,
+    Render, StyleRefinement, Styled as _, Subscription, Window, deferred, div, px,
 };
 
 /// The gpui view at the root of one OS window.
@@ -231,10 +229,8 @@ impl Render for WindowRoot {
             window.on_next_frame(move |_, _| drop(switching));
         }
         let layer = || StyleRefinement::default().absolute().inset_0();
-        let cached =
-            |view: gpui_kit::AnyView, size, window: &Window| cached_unless_a11y(view, size, window);
         // the footer, over an open menu (deferred too) as it paints today
-        let toast = deferred(cached(self.toast.clone().into(), layer(), window)).with_priority(2);
+        let toast = deferred(AnyView::from(self.toast.clone()).cached(layer())).with_priority(2);
         let launcher = self.kind == WindowKind::Console && !self.on_desk(cx);
         let content = match (launcher, &self.launcher) {
             // The launcher (the sign-in and unlock screens) is drawn
@@ -252,19 +248,17 @@ impl Render for WindowRoot {
             _ => {
                 // the bar: a cached view of its own, its menus hanging from it
                 let bar = self.chrome.clone().map(|chrome| {
-                    cached(
-                        chrome.into(),
+                    AnyView::from(chrome).cached(
                         StyleRefinement::default()
                             .w_full()
                             .h(px(BAR))
                             .flex_shrink_0(),
-                        window,
                     )
                 });
                 let overlays = self
                     .overlay_layer
                     .clone()
-                    .map(|layer_view| cached(layer_view.into(), layer(), window));
+                    .map(|layer_view| AnyView::from(layer_view).cached(layer()));
                 div()
                     .id("console")
                     .size_full()

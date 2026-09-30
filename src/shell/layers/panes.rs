@@ -21,7 +21,7 @@ use super::super::{
     PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label, layout, pane_drag, pane_hold,
     panes, theme,
 };
-use super::{EmptyPane, HelpPane, cached_unless_a11y};
+use super::{EmptyPane, HelpPane};
 use crate::a11y::Control as _;
 use crate::runtime::Seat;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -326,7 +326,7 @@ impl PaneLayer {
 }
 
 impl Render for PaneLayer {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.panes", 1);
         let layout = self.layout(cx);
         // an effect, run after this draw: the keys' handoff (`drawn`), once
@@ -366,11 +366,10 @@ impl Render for PaneLayer {
                 .relative()
                 .size_full()
                 .child(canvas)
-                .child(cached_unless_a11y(
-                    self.empty_desk.clone().into(),
-                    StyleRefinement::default().size_full(),
-                    window,
-                ))
+                .child(
+                    AnyView::from(self.empty_desk.clone())
+                        .cached(StyleRefinement::default().size_full()),
+                )
                 .into_any_element();
         }
         let views = layout
@@ -429,7 +428,7 @@ pub(in crate::shell) struct PaneView {
 impl PaneView {
     /// What the pane shows: its seat's tree or standin, or else the app's
     /// own Help or an empty window's finder, each a cached view of its own.
-    fn body(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn body(&self, cx: &mut Context<Self>) -> AnyElement {
         match &self.body {
             Body::Seat(seat) => {
                 let seat = seat.read(cx);
@@ -451,11 +450,8 @@ impl PaneView {
                         standin.element(seat.module(), seat.instance(), seat.ax_mark())
                     }
                     (None, Some(tree)) => {
-                        let guest = cached_unless_a11y(
-                            tree.into(),
-                            StyleRefinement::default().size_full(),
-                            window,
-                        );
+                        let guest =
+                            AnyView::from(tree).cached(StyleRefinement::default().size_full());
                         let mut context = KeyContext::default();
                         context.set("ducktape_guest", format!("view{}", seat.instance()));
                         // A view owns its own inset: a split pane runs to the
@@ -481,16 +477,12 @@ impl PaneView {
                     (None, None) => div().size_full().into_any_element(),
                 }
             }
-            Body::Help(help) => cached_unless_a11y(
-                help.clone().into(),
-                StyleRefinement::default().size_full(),
-                window,
-            ),
-            Body::Empty(empty) => cached_unless_a11y(
-                empty.clone().into(),
-                StyleRefinement::default().size_full(),
-                window,
-            ),
+            Body::Help(help) => AnyView::from(help.clone())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
+            Body::Empty(empty) => AnyView::from(empty.clone())
+                .cached(StyleRefinement::default().size_full())
+                .into_any_element(),
             Body::Missing => div().size_full().into_any_element(),
         }
     }
@@ -582,7 +574,7 @@ impl PaneView {
 }
 
 impl Render for PaneView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let layout = self.desk.read(cx).get().clone();
         let Some(index) = layout
             .panes
@@ -606,7 +598,7 @@ impl Render for PaneView {
             .is_some_and(|held| held.instance == pane.instance)
             && self.kind == WindowKind::Console;
         let rail = self.rail.read(cx).rows().to_vec();
-        let view = self.body(window, cx);
+        let view = self.body(cx);
         // it holds the pane's keys when nothing in the view does; Tab
         // never lands on it, so it offers assistive technology no focus
         // either (as the window's root). On the desk it names the chord
@@ -651,14 +643,14 @@ impl Render for PaneView {
         let asking = pane.is_view() && self.notifications.read(cx).asking(pane.module);
         let strip = match asking {
             true => self.strip.clone().into_any_element(),
-            false => cached_unless_a11y(
-                self.strip.clone().into(),
-                StyleRefinement::default()
-                    .w_full()
-                    .h(px(TITLE))
-                    .flex_shrink_0(),
-                window,
-            ),
+            false => AnyView::from(self.strip.clone())
+                .cached(
+                    StyleRefinement::default()
+                        .w_full()
+                        .h(px(TITLE))
+                        .flex_shrink_0(),
+                )
+                .into_any_element(),
         };
         self.place(
             index,
