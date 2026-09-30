@@ -2,6 +2,14 @@
 //! clock item, a `ViewTree` event, moved props, the theme, a load landing,
 //! a busy frame) ends in one `turn`, never in a draw. What the pane draws
 //! is read off the seat: its `ViewTree`, or the `Standin` to show instead.
+//!
+//! One tick per draw: a turn that ticked the guest holds the seat until its
+//! tree has drawn (`render::Drawn`; every tick dirties the tree); a turn
+//! asked for meanwhile runs right after the draw. So every frame the guest
+//! makes is drawn before it makes the next, as when it ticked on the draw
+//! path: the first draw of a fresh view shows its first frame (the keys a
+//! pane hands its first control go by it), and a reply's chain of ticks
+//! advances one frame per draw.
 use super::standin::{Standin, stage_words};
 use super::*;
 use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
@@ -18,6 +26,11 @@ pub(crate) struct Seat {
     window: Option<AnyWindowHandle>,
     tree: Option<Entity<crate::render::ViewTree>>,
     _tree_events: Option<Subscription>,
+    _tree_drawn: Option<Subscription>,
+    /// A tick the tree has not drawn yet: turns wait for that draw.
+    holding: bool,
+    /// A turn asked for while holding; it runs once the tree has drawn.
+    owed: bool,
     generation: u64,
     alive: Option<Arc<()>>,
     revision: u64,
@@ -84,6 +97,9 @@ impl Seat {
             window: None,
             tree: None,
             _tree_events: None,
+            _tree_drawn: None,
+            holding: false,
+            owed: false,
             generation: 0,
             alive: None,
             revision: 0,
@@ -131,6 +147,11 @@ impl Seat {
     #[cfg(test)]
     pub(super) fn props(&self) -> Option<&[u8]> {
         self.props.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn window(&self) -> Option<AnyWindowHandle> {
+        self.window
     }
 
     /// A turn from a window callback (`on_next_frame`, `observe_in`, a
@@ -195,9 +216,17 @@ impl Seat {
     }
 
     /// Every wake ends here: a reply, a clock item, a `ViewTree` event,
-    /// moved props, the theme, a load landing, a busy frame. Never a draw,
-    /// never a window callback (those go through `wake`).
+    /// moved props, the theme, a load landing, a busy frame, the AX door
+    /// before a read (`Seats::settle`). Never a draw, never a window
+    /// callback (those go through `wake`). While a tick waits for its draw,
+    /// the turn waits too (`Drawn` runs it): one tick per draw, as when the
+    /// guest ticked on the draw path.
     pub(crate) fn turn(&mut self, cx: &mut Context<Self>) {
+        if self.holding {
+            self.owed = true;
+            return;
+        }
+        self.owed = false;
         #[cfg(test)]
         {
             self.turns += 1;
@@ -240,6 +269,9 @@ impl Seat {
         guest.sync_theme(gpui_kit::component::Theme::global(cx).is_dark());
         let again = guest.redraw(props);
         clipboard::mount(guest, cx);
+        // a clipboard answer lands after `redraw` judged the frame: it is
+        // still a reason to turn again
+        let again = again || !guest.pending.is_empty();
         let next_tick = kernel::next_tick(&guest.clocks);
         if let Some(fault) = &guest.fault {
             let standin = Standin::from(&Failure::Trapped(fault.clone()));
@@ -273,6 +305,8 @@ impl Seat {
         let first_tree = ticks == 0 && guest.ticks == 1;
         drop(locked);
 
+        // a pane draws a placed seat's tree; nothing draws an unplaced one
+        self.holding = ticked && self.window.is_some();
         if self.standin.take().is_some() {
             cx.notify();
         }
@@ -284,15 +318,19 @@ impl Seat {
             let _replacing = crate::perf::time(key, "replace");
             self.revision = rev;
             match (&self.tree, adopt) {
+                // the tree's own notify dirties its window; nothing the
+                // pane reads off the seat moved
                 (Some(tree), None) => tree.update(cx, |tree, cx| tree.replace(root, cx)),
-                (_, adopt) => self.mount(root, generation, key, adopt, cx),
+                (_, adopt) => {
+                    self.mount(root, generation, key, adopt, cx);
+                    cx.notify();
+                }
             }
             if first_tree && crate::perf::on() {
                 // a fresh view's first tree: from this turn's start, the
                 // first to find it seated, to its tree mounted
                 crate::perf::record(key, "first_tree", shown.elapsed().as_micros() as u64);
             }
-            cx.notify();
         } else if ticked && let Some(tree) = &self.tree {
             tree.update(cx, |_, cx| cx.notify());
         }
@@ -317,6 +355,8 @@ impl Seat {
     }
 
     fn show_standin(&mut self, standin: Standin, cx: &mut Context<Self>) {
+        // the standin goes over the tree, whose draw would release the hold
+        self.holding = false;
         if self.standin.as_ref() != Some(&standin) {
             self.standin = Some(standin);
             cx.notify();
@@ -382,6 +422,14 @@ impl Seat {
             drop(locked);
             this.turn(cx);
         }));
+        self._tree_drawn = Some(
+            cx.subscribe(&tree, |this, _, _: &crate::render::Drawn, cx| {
+                this.holding = false;
+                if this.owed {
+                    this.turn(cx);
+                }
+            }),
+        );
         self.tree = Some(tree);
         if owed {
             // an answer that landed before the subscription still needs delivery

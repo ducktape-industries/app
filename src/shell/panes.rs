@@ -324,8 +324,8 @@ impl DesktopWindow {
         let seat = self.model.read(cx).seats.read(cx).seat(pane.instance);
         match seat {
             Some(seat) => {
-                // a write at render, compare-only and never a turn; s5
-                // moves it onto `PaneView`'s `Desk` observer
+                // a write at render, never a notify or a turn; s5 moves it
+                // onto `PaneView`'s `Desk` observer
                 seat.update(cx, |seat, _| seat.set_focused(focused));
                 let seat = seat.read(cx);
                 // every draw of the seat; the tree's own `renders` are the
@@ -338,8 +338,14 @@ impl DesktopWindow {
                     "draws",
                     1,
                 );
-                match (seat.tree(), seat.standin()) {
-                    (Some(tree), _) => {
+                // a standin (a load, a failure, a stopped view) goes over
+                // any tree the seat keeps: that tree is stale until the
+                // next live frame, and its presentation carries over then
+                match (seat.standin(), seat.tree()) {
+                    (Some(standin), _) => {
+                        standin.element(seat.module(), seat.instance(), seat.ax_mark())
+                    }
+                    (None, Some(tree)) => {
                         let guest = super::layers::cached_unless_a11y(
                             tree.into(),
                             StyleRefinement::default().size_full(),
@@ -366,9 +372,6 @@ impl DesktopWindow {
                                     .child(guest),
                             )
                             .into_any_element()
-                    }
-                    (None, Some(standin)) => {
-                        standin.element(seat.module(), seat.instance(), seat.ax_mark())
                     }
                     (None, None) => div().size_full().into_any_element(),
                 }

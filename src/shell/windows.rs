@@ -236,11 +236,14 @@ impl Desktop {
             match opened {
                 Ok(handle) => {
                     crate::perf::mark("window");
-                    model.update(cx, |model, _| {
+                    model.update(cx, |model, cx| {
                         model.windows.insert(key, handle.into());
                         if let Some(view) = opened_view {
                             model.views.insert(key, view);
                         }
+                        // the seat of a popped-out pane moves in now, not at
+                        // the next dispatch; s11 moves this
+                        model.reconcile_seats(cx);
                     });
                     let _ = reply.send(key);
                 }

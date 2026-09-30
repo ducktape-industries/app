@@ -207,6 +207,12 @@ pub struct ViewTree {
 
 impl EventEmitter<wire::Event> for ViewTree {}
 
+/// The tree has drawn: every render says so, and the seat that ticked
+/// waits for it before its next turn (one tick per draw).
+pub(crate) struct Drawn;
+
+impl EventEmitter<Drawn> for ViewTree {}
+
 impl ViewTree {
     pub fn new(root: wire::Node) -> Self {
         Self {
@@ -312,6 +318,7 @@ impl Render for ViewTree {
         self.mounted.clear();
         self.authored_path.clear();
         self.render_index = 0;
+        cx.emit(Drawn);
         // a linked text the last render did not draw is gone
         self.links
             .retain(|_, links| std::mem::take(&mut links.drawn));

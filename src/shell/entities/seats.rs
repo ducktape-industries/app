@@ -92,6 +92,18 @@ impl Seats {
         hidden
     }
 
+    /// Every seat turned now. The AX door calls this before a read: a reply
+    /// the guest has answered is then in the tree the read draws (or, with
+    /// a tick still to draw, in the next one), as the draw itself took
+    /// it in before the seat left the draw path. The door's task yields to
+    /// no other between a press and its read, so the seats' own reply wakes
+    /// have not run yet.
+    pub(crate) fn settle(&self, cx: &mut Context<Self>) {
+        for placed in self.map.values() {
+            placed.seat.update(cx, |seat, cx| seat.turn(cx));
+        }
+    }
+
     /// The session's props, to every seat; a seat turns only when its
     /// bytes moved. s10 deletes this: `Seats` observes `Session`, `Account`
     /// and the theme itself.

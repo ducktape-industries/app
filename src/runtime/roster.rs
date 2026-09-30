@@ -256,9 +256,7 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                 .collect::<Vec<_>>()
             {
                 if let Some(retired) = registry.get(&gone) {
-                    let mut retired = retired.lock().expect("module view lock");
-                    retired.generation += 1;
-                    retired.slot = Slot::Empty;
+                    retired.lock().expect("module view lock").retire();
                 }
                 if gone.1 == 0 {
                     registry.remove(&gone);
