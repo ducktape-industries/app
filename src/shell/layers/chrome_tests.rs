@@ -94,9 +94,10 @@ fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext)
 /// A pane dragged to a new frame (the pointer's move on a held title)
 /// moves the desk (`Desk::set_frame`, one notify) and nothing else: no
 /// reducer message (`shell.dispatch` stands still), and nothing the chrome
-/// reads, so the bar stays cached. The press and the release each draw the
-/// chrome once (gpui refreshes the window for the active state); the
-/// frames between them are the drag's.
+/// reads, so the bar stays cached. The press draws the chrome once (gpui's
+/// `div` calls `window.refresh()` for a pending click, and again on the
+/// release that clears its active state); the frames between them are the
+/// drag's, and the move is measured alone.
 #[gpui_kit::test]
 fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
     use crate::shell::layers;
@@ -123,7 +124,7 @@ fn a_drag_frame_moves_the_desk_and_no_reducer_message(cx: &mut TestAppContext) {
     moved.y += 30.;
     let desk = native.update(|_, cx| view.read(cx).desk.clone());
     // the press takes hold of the title (and draws the chrome once, as any
-    // press does: gpui refreshes the window for the active state)
+    // press does: gpui's `div` refreshes the window for the pending click)
     native.update(|window, cx| {
         window.dispatch_event(
             PlatformInput::MouseDown(MouseDownEvent {
