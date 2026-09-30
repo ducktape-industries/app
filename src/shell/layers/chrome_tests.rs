@@ -1,6 +1,7 @@
 //! What draws the bar and the pane strips, counted: the chrome re-renders
 //! for what it observes (a height, the rail, a menu's clock) and stays
-//! cached under everything else (a keystroke in Spotlight, a drag), and its
+//! cached under everything else (a keystroke in Spotlight, root_tests.rs;
+//! a drag), and its
 //! dot slot is committed from the frame's callback (docs/perf.md).
 use crate::shell::panes_tests::{console, window_count};
 use crate::shell::{Message, PaneMessage};
@@ -97,35 +98,6 @@ fn a_roster_change_re_renders_the_chrome_without_a_beat(cx: &mut TestAppContext)
     );
 }
 
-/// A keystroke in Spotlight moves its slice and nothing the chrome reads:
-/// the bar stays cached.
-#[gpui_kit::test]
-fn a_spotlight_keystroke_leaves_the_chrome_cached(cx: &mut TestAppContext) {
-    let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
-    let send = |message: Message, native: &mut VisualTestContext| {
-        model.update(native, |model, cx| model.dispatch(message, cx));
-        native.run_until_parked();
-    };
-    send(Message::OpenSpotlight, &mut native);
-    for _ in 0..3 {
-        frame(&mut native);
-    }
-    let chrome = window_count(key, "renders.chrome");
-    let spotlight = model.read_with(&native, |model, _| {
-        model.entities.by_window[&key].spotlight.clone()
-    });
-    send(Message::SpotlightTyped("al".into()), &mut native);
-    frame(&mut native);
-    let query = native.update(|_, cx| spotlight.read(cx).get().query.clone());
-    assert_eq!(query, "al", "the keystroke never reached the slice");
-    assert_eq!(
-        window_count(key, "renders.chrome"),
-        chrome,
-        "a Spotlight keystroke drew the chrome"
-    );
-}
-
 /// A pane dragged to a new frame moves the desk and nothing the chrome
 /// reads: the bar stays cached.
 #[gpui_kit::test]
@@ -217,9 +189,10 @@ fn the_dot_slot_is_committed_after_the_frame(cx: &mut TestAppContext) {
 /// second passes and nothing draws.
 #[gpui_kit::test]
 fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
-    use crate::{Overlay, Popover};
+    use crate::shell::entities::{Overlay, Popover};
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (model, key, view, mut native) = console(cx);
+    let overlays = native.update(|_, cx| view.read(cx).overlays());
     let send = |message: Message, native: &mut VisualTestContext| {
         model.update(native, |model, cx| model.dispatch(message, cx));
         native.run_until_parked();
@@ -243,7 +216,8 @@ fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
             still,
             "a second passed with every menu shut and the chrome drew"
         );
-        send(Message::TogglePopover(menu), &mut native);
+        overlays.update(&mut native, |it, cx| it.open(Overlay::Menu(menu), cx));
+        native.run_until_parked();
         let open = window_count(key, "renders.chrome");
         second(&mut native);
         assert_eq!(
@@ -251,7 +225,8 @@ fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
             open + 1,
             "a second passed under {menu:?} and the chrome drew other than once"
         );
-        send(Message::CloseOverlay(Overlay::Menu(menu)), &mut native);
+        overlays.update(&mut native, |it, cx| it.close(Overlay::Menu(menu), cx));
+        native.run_until_parked();
     }
     let shut = window_count(key, "renders.chrome");
     second(&mut native);

@@ -4,10 +4,11 @@
 //! Connect. Plus the number, hash and date formatters they read by.
 
 use super::Chrome;
+use crate::AppMessage as Message;
 use crate::a11y::Control as _;
+use crate::shell::entities::{Overlay, Popover};
 use crate::shell::ink::{Ink, mono, sans, words};
 use crate::shell::status_bar::pulse;
-use crate::{AppMessage as Message, Popover};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -145,7 +146,7 @@ impl Chrome {
                     .child(self.menu_row(
                         "node-switch",
                         "Switch node…",
-                        self.dispatching(|| Message::ToggleNetworkMenu),
+                        self.overlaying(|overlays, cx| overlays.open(Overlay::Network, cx)),
                         ink,
                     )),
             );
@@ -172,10 +173,13 @@ impl Chrome {
             None => network,
         };
         // Account shows a key with no account too: its key, and Create account
+        let menu = Overlay::Menu(Popover::Account);
         let mut rows = div().flex().flex_col().child(self.menu_row(
             "account-view",
             "Account",
-            self.dispatching(|| Message::SelectView(crate::runtime::intern(ACCOUNT_VIEW))),
+            self.closing(menu, || {
+                Message::SelectView(crate::runtime::intern(ACCOUNT_VIEW))
+            }),
             ink,
         ));
         if let Some(number) = number {
@@ -191,13 +195,23 @@ impl Chrome {
                 .child(self.menu_row(
                     "add-device",
                     "Add a device…",
-                    self.dispatching(|| Message::ApproveOpen),
+                    {
+                        // the dialog opens in the menu's place, then the model
+                        // forgets the last code
+                        let open =
+                            self.overlaying(|overlays, cx| overlays.open(Overlay::Approve, cx));
+                        let forget = self.dispatching(|| Message::ApproveOpen);
+                        move |cx: &mut App| {
+                            open(cx);
+                            forget(cx);
+                        }
+                    },
                     ink,
                 ))
                 .child(self.menu_row(
                     "recovery-key",
                     "Make a recovery key…",
-                    self.dispatching(|| Message::RecoveryKeyStart),
+                    self.closing(menu, || Message::RecoveryKeyStart),
                     ink,
                 ));
         }
@@ -239,14 +253,14 @@ impl Chrome {
                             .child(self.menu_row(
                                 "lock",
                                 "Lock",
-                                self.dispatching(|| Message::Lock),
+                                self.closing(menu, || Message::Lock),
                                 ink,
                             ))
                             .child(self.menu_row(
                                 "disconnect",
                                 "Switch node…",
                                 // as the node menu's: the networks this device reached
-                                self.dispatching(|| Message::ToggleNetworkMenu),
+                                self.overlaying(|overlays, cx| overlays.open(Overlay::Network, cx)),
                                 ink,
                             )),
                     ),
@@ -266,9 +280,10 @@ impl Chrome {
     ) -> AnyElement {
         let session = self.session.read(cx).get();
         let surface = ink.surface;
-        let model = self.model.clone();
+        let (model, overlays) = (self.model.clone(), self.overlays.entity().clone());
+        // a row closes the switcher, then asks the reducer (s10: `Session`)
         let item = |id: SharedString, role: Role, name: String, message: Message| {
-            let model = model.clone();
+            let (model, overlays) = (model.clone(), overlays.clone());
             let message = std::cell::Cell::new(Some(message));
             crate::a11y::keyboard(
                 div()
@@ -280,6 +295,8 @@ impl Chrome {
                         cx.stop_propagation();
                         // a click after this one finds the menu closed
                         if let Some(message) = message.take() {
+                            overlays
+                                .update(cx, |overlays, cx| overlays.close(Overlay::Network, cx));
                             model.update(cx, |model, cx| model.dispatch(message, cx));
                         }
                     }),

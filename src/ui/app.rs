@@ -21,67 +21,6 @@ pub(crate) enum Appearance {
     Dark,
 }
 
-/// What is open over the desk: one at a time. While it is, the desk's
-/// shortcuts are off and Escape closes it (shell/keys.rs).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Overlay {
-    /// The command palette, ⌘K.
-    Spotlight,
-    /// "Add a device…".
-    Approve,
-    Settings,
-    /// The network switcher.
-    Network,
-    /// A menu off the bar.
-    Menu(Popover),
-}
-
-/// A menu hanging off the menu bar.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(crate) enum Popover {
-    /// Node status, off the breathing dot.
-    Node,
-    /// The account's name: who is signed in, and Lock.
-    Account,
-    /// The notification centre, off the bell.
-    Notifications,
-}
-
-/// The Settings window's sections.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum SettingsPage {
-    Appearance,
-    Notifications,
-    Networks,
-    About,
-}
-
-/// What a Spotlight row does when picked.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum Spot {
-    Open(&'static str),
-    Switch(String),
-    Settings,
-    CreateAccount,
-    Lock,
-    Appearance(Appearance),
-    OtherNetwork,
-    Help,
-    /// The focused window fills the desk (⌘⇧↩).
-    FillWindow,
-    /// The arrows move and size the focused window (⌘⇧M).
-    HoldWindow,
-}
-
-/// One Spotlight row, under its group's heading.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct SpotRow {
-    pub(crate) group: &'static str,
-    pub(crate) title: String,
-    pub(crate) meta: String,
-    pub(crate) spot: Spot,
-}
-
 /// Which screen the console window shows: a launcher step, or the desk.
 /// Stored, and moved only by messages: what a step alone holds (a typed
 /// secret, a task in flight) lives in its variant and goes when it does.
@@ -213,8 +152,8 @@ impl std::fmt::Debug for Account {
 }
 
 /// Everything the app itself knows: the node reached, this device's key
-/// and its account, which screen the console shows, what is open over the
-/// desk, and each native window's panes. The reducer (update.rs and the
+/// and its account, which screen the console shows, and each native
+/// window's panes. The reducer (update.rs and the
 /// files beside it) moves it; the shell draws it. Nothing in here belongs
 /// to a program: a view keeps its own.
 pub struct Ducktape {
@@ -267,15 +206,8 @@ pub struct Ducktape {
     /// The wall second the node last answered its status: "Last heard at
     /// block 4,295, 5s ago", however long the height stood still before.
     pub(crate) heard: i64,
-    /// What is open over the desk.
-    pub(crate) overlay: Option<Overlay>,
-    /// What ⌘K holds: the typed text, the picked row.
-    pub(crate) spotlight_query: String,
-    pub(crate) spotlight_pick: usize,
     /// Help was opened for a new account: it greets rather than titles.
     pub(crate) welcome: bool,
-    /// The Settings page shown, kept while Settings is closed.
-    pub(crate) settings_page: SettingsPage,
     /// Animations: the figures tumble on their own and the status dot
     /// pulses. Off, a figure turns only by hand and the dot holds still.
     pub(crate) motion: bool,
@@ -315,9 +247,6 @@ pub struct Ducktape {
     pub(crate) connect_generation: u64,
     /// The attempt in flight; dropping it aborts the request.
     pub(crate) connect_task: Option<crate::ui::task::Handle>,
-    /// Seconds since launch, one `WallTick` each: the beat an open menu's
-    /// ages were once drawn from (`beat_face`).
-    pub(crate) wall_now: i64,
     /// The notification centre the bell draws: the app's one, which its
     /// views post into.
     pub(crate) center: crate::runtime::notify::CenterHandle,
@@ -376,23 +305,9 @@ pub(crate) enum AppMessage {
         account: Option<(u64, String)>,
     },
     Disconnect,
-    ToggleNetworkMenu,
-    /// A click on its backdrop, Escape, its close button: `Menu(_)` closes
-    /// whichever menu is open.
-    CloseOverlay(Overlay),
-    TogglePopover(Popover),
-    OpenSpotlight,
-    SpotlightTyped(String),
-    /// Up or down a row among `rows` shown.
-    SpotlightMove {
-        down: bool,
-        rows: usize,
-    },
-    /// Enter: the picked row's action.
-    SpotlightSubmit,
-    Spot(Spot),
-    OpenSettings,
-    ShowSettingsPage(SettingsPage),
+    /// A Spotlight row picked (it closed as it was): what it does that the
+    /// reducer still owns. s11 turns each into the entity call it means.
+    Spot(crate::shell::Spot),
     SetMotion(bool),
     /// Another node from the switcher: reached first, and only once it
     /// answers does the console leave the network in hand.
@@ -418,8 +333,6 @@ pub(crate) enum AppMessage {
     NotifyOpen(u64),
     NotifyMarkAllRead,
     NotifyClearRead,
-    /// The centre's footer: Settings, on Notifications.
-    NotifySettings,
     /// A view's permission bar, or its row in Settings.
     NotifyPermission(&'static str, crate::runtime::notify::Permission),
     NotifyNotNow(&'static str),
@@ -443,8 +356,11 @@ pub(crate) enum AppMessage {
     RecoverSubmit,
     /// A join (another device, a recovery key) landed or failed.
     Joined(Result<(), String>),
-    /// The approving side, on a device already on the account.
+    /// The approving side, on a device already on the account: its dialog
+    /// opened (`Overlays`), the last code and its finds forgotten.
     ApproveOpen,
+    /// Its dialog closed, however: what it found and its failure go.
+    ApproveClosed,
     ApproveCodeTyped(String),
     ApproveFind,
     ApproveFound(Result<backend::join::Request, String>),
@@ -519,11 +435,7 @@ impl Ducktape {
             node: None,
             block_seen: 0,
             heard: 0,
-            overlay: None,
-            spotlight_query: String::new(),
-            spotlight_pick: 0,
             welcome: false,
-            settings_page: SettingsPage::Appearance,
             motion: backend::load_motion(),
             error: String::new(),
             signer_key: String::new(),
@@ -537,7 +449,6 @@ impl Ducktape {
             console_win: None,
             connect_generation: 0,
             connect_task: None,
-            wall_now: 0,
             center: crate::runtime::notify::center().clone(),
             roster: crate::runtime::roster().clone(),
         };

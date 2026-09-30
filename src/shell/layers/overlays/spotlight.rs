@@ -1,52 +1,30 @@
 //! ⌘K: search the programs, the networks and the things to do.
 
-use super::text_field::TextField;
-use super::*;
-use crate::Spot;
-use facts::Facts;
+use super::super::super::ink::*;
+use super::super::fields;
+use super::{OverlayLayer, dialog_fit, run, scrim};
+use crate::a11y::Control as _;
+use crate::shell::entities::{Overlay, Spot};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
 
-impl Screens {
+impl OverlayLayer {
     /// ⌘K: one field, and what it finds among the programs, the networks
     /// and the things to do. ↑↓ pick, Enter runs, Escape closes. To
     /// assistive technology the field and its rows are one combo box whose
     /// active row is the picked one.
-    pub(super) fn spotlight(
-        &mut self,
-        state: &Facts,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> gpui_kit::AnyElement {
-        use super::ink::*;
-        use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let (input, field) = self.bare_input(
-            TextField {
-                key: "spotlight",
-                placeholder: "Search programs, networks, actions",
-                masked: false,
-                value: |state| &state.spotlight_query,
-                on_change: Message::SpotlightTyped,
-                on_enter: || Message::SpotlightSubmit,
-                label: None,
-                private: false,
-                error: None,
-                size: 20.,
-            },
-            window,
-            cx,
-        );
-        if !self.spotlight_focused {
-            self.spotlight_focused = true;
-            if let Some(input) = self.inputs.get("spotlight") {
-                let state = input.state.clone();
-                window.defer(cx, move |window, cx| {
-                    state.update(cx, |state, cx| state.focus(window, cx));
-                });
-            }
-        }
-        let rows = self.model.read(cx).state.spotlight_rows();
+    pub(super) fn spotlight(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
+        let input = self.field.clone();
+        let field = fields::bare("spotlight", &input, 20., false, cx);
+        let rows = self.rows(cx);
         let count = rows.len();
-        let pick = state.spotlight_pick.min(count.saturating_sub(1));
+        let pick = self
+            .spotlight
+            .read(cx)
+            .get()
+            .pick
+            .min(count.saturating_sub(1));
         let mut list = div()
             .id("spotlight-rows")
             .control(Role::ListBox, "Results")
@@ -60,7 +38,7 @@ impl Screens {
         let mut children = 0;
         let mut at = Vec::with_capacity(count);
         // a row Help lists with a chord reports it (AX-114)
-        let chords = super::chords();
+        let chords = crate::shell::chords();
         let mut group = "";
         for (nth, row) in rows.into_iter().enumerate() {
             if row.group != group {
@@ -79,7 +57,7 @@ impl Screens {
                         .child(group),
                 );
             }
-            let model = self.model.clone();
+            let (overlays, model) = (self.overlays.entity().clone(), self.model.clone());
             let spot = row.spot.clone();
             let picked = nth == pick;
             let chord = chords
@@ -109,10 +87,7 @@ impl Screens {
                     .py(px(10.))
                     .cursor_pointer()
                     .when(picked, |row| row.bg(ink.surface))
-                    .on_click(move |_, _, cx| {
-                        let spot = spot.clone();
-                        model.update(cx, |model, cx| model.dispatch(Message::Spot(spot), cx));
-                    })
+                    .on_click(move |_, _, cx| run(&overlays, &model, Some(spot.clone()), cx))
                     .child(
                         sans(if picked { 500 } else { 400 }, 15.)
                             .text_color(ink.ink)
@@ -154,7 +129,7 @@ impl Screens {
         .min_h_0();
         // the field's box, which wears its ring
         let header = div()
-            .h(px(super::ink::tall(56.)))
+            .h(px(tall(56.)))
             .flex_shrink_0()
             .px(px(16.))
             .flex()
@@ -169,16 +144,17 @@ impl Screens {
             input.read(cx).focus_handle(cx).is_focused(window),
             ink.ring(false),
         );
-        let keys = self.model.clone();
+        let spotlight = self.spotlight.entity().clone();
         let scroll = self.spotlight_rows.clone();
         // the field, the longest list and the key hints
-        let (top, tall) =
-            super::layers::dialog_fit(f32::from(window.viewport_size().height), 490., 84.);
-        self.overlay(
+        let (top, tall) = dialog_fit(f32::from(window.viewport_size().height), 490., 84.);
+        scrim(
             "spotlight",
             Role::Dialog,
             "Search",
-            crate::Overlay::Spotlight,
+            Overlay::Spotlight,
+            self.overlays.entity(),
+            &self.modal,
             &ink,
             |card| {
                 card.mt(px(top))
@@ -188,26 +164,20 @@ impl Screens {
                     .h_auto()
                     .self_start()
                     .capture_key_down(move |event: &KeyDownEvent, _, cx| {
-                        let message = match event.keystroke.key.as_str() {
-                            "up" => Message::SpotlightMove {
-                                down: false,
-                                rows: count,
-                            },
-                            "down" => Message::SpotlightMove {
-                                down: true,
-                                rows: count,
-                            },
+                        let down = match event.keystroke.key.as_str() {
+                            "up" => false,
+                            "down" => true,
                             _ => return,
                         };
-                        let to = match event.keystroke.key.as_str() {
-                            "up" => pick.saturating_sub(1),
-                            _ => (pick + 1).min(count.saturating_sub(1)),
+                        let to = match down {
+                            false => pick.saturating_sub(1),
+                            true => (pick + 1).min(count.saturating_sub(1)),
                         };
                         if let Some(child) = at.get(to) {
                             scroll.scroll_to_item(*child);
                         }
                         cx.stop_propagation();
-                        keys.update(cx, |model, cx| model.dispatch(message, cx));
+                        spotlight.update(cx, |spotlight, cx| spotlight.move_pick(down, count, cx));
                     })
                     .child(combo.child(header).child(list))
                     .child(

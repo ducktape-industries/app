@@ -19,9 +19,7 @@ fn spotlight_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppC
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    let mut state = gate::desk();
-    state.overlay = Some(crate::Overlay::Spotlight);
-    let (_view, mut native) = open(state, cx);
+    let (_view, mut native) = open((gate::desk(), Overlay::Spotlight), cx);
     let nodes = native.update(draw);
     let combo = find(&nodes, "EditableComboBox", "Search");
     assert_eq!(combo["state"], json!(["expanded"]));

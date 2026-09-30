@@ -102,8 +102,8 @@ impl Ducktape {
                 self.sign_in.unlock_error = error;
                 Task::none()
             }
+            // (the account menu closed as its row was picked: `layers::Chrome`)
             Message::Lock => {
-                self.close_menu();
                 self.sign_in.locked = true;
                 self.signer_key.clear();
                 self.account = None;

@@ -18,10 +18,6 @@ impl Ducktape {
         if launcher && !self.in_launcher() {
             crate::perf::mark("desk");
         }
-        // a window the keyboard held is let go of where an overlay opens
-        if self.overlay.is_some() {
-            self.let_go_of_holds();
-        }
         match launcher == self.in_launcher() {
             true => task,
             false => Task::batch([task, crate::shell::swap_console()]),
@@ -51,23 +47,13 @@ impl Ducktape {
                 let _timed = timed("reducer.connect");
                 self.on_connect(m)
             }
-            m @ (M::ToggleNetworkMenu
-            | M::TogglePopover(_)
-            | M::CloseOverlay(_)
-            | M::OpenSpotlight
-            | M::SpotlightTyped(_)
-            | M::SpotlightMove { .. }
-            | M::SpotlightSubmit
-            | M::Spot(_)
-            | M::OpenSettings
-            | M::ShowSettingsPage(_)) => {
+            M::Spot(spot) => {
                 let _timed = timed("reducer.overlay");
-                self.on_overlay(m)
+                self.on_spot(spot)
             }
             m @ (M::NotifyOpen(_)
             | M::NotifyMarkAllRead
             | M::NotifyClearRead
-            | M::NotifySettings
             | M::NotifyPermission(..)
             | M::NotifyNotNow(_)
             | M::SetNotifyBanners(_)
@@ -99,6 +85,7 @@ impl Ducktape {
             | M::LinkCancel
             | M::Joined(_)
             | M::ApproveOpen
+            | M::ApproveClosed
             | M::ApproveCodeTyped(_)
             | M::ApproveFind
             | M::ApproveFound(_)
@@ -159,25 +146,19 @@ impl Ducktape {
     }
 
     /// What a clock's beat ([`Message::is_beat`]) can move on screen: the
-    /// toast; the node's line, height (the bar says it) and answering; the
-    /// time an open panel counts from (the node's ages, the bell's, the
-    /// week in Settings); and the roster and its seats, which load on
-    /// threads of their own and tell no window. A beat that finds it as
-    /// the windows last drew it draws no frame (`Desktop::dispatch`,
+    /// toast; the node's line, height (the bar says it) and answering; and
+    /// the roster and its seats, which load on threads of their own and
+    /// tell no window. (An open panel's ages count on its own clock: the
+    /// node's and the bell's menus, `layers::Chrome`.) A beat that finds it
+    /// as the windows last drew it draws no frame (`Desktop::dispatch`,
     /// docs/perf.md).
     pub(crate) fn beat_face(&self) -> BeatFace {
-        use crate::{Overlay, Popover};
-        let counting = matches!(
-            self.overlay,
-            Some(Overlay::Menu(Popover::Node | Popover::Notifications) | Overlay::Settings)
-        );
         (
             self.toast.clone(),
             self.status.clone(),
             self.height,
             self.node.clone(),
             self.reconnecting(),
-            counting.then_some((self.wall_now, self.block_seen, self.heard)),
             self.roster.changes(),
         )
     }
@@ -190,7 +171,6 @@ pub(crate) type BeatFace = (
     i64,
     Option<crate::backend::NodeStatus>,
     bool,
-    Option<(i64, i64, i64)>,
     u64,
 );
 

@@ -1,7 +1,8 @@
-//! Links, badges and what opens over the desk (desk.rs, overlay.rs).
+//! Links, badges, and what the model keeps for the dialog over the desk
+//! (desk.rs, sign_in/approve.rs).
 
 use super::test_support::on_testkit;
-use super::{AppMessage as Message, Ducktape, Overlay};
+use super::{AppMessage as Message, Ducktape};
 use crate::runtime::Intent;
 
 #[test]
@@ -73,28 +74,21 @@ fn a_view_event_sets_its_badge_and_opens_its_link() {
     );
 }
 
+/// "Add a device…" closing, however it closed (`Overlays` tells the model,
+/// `ApproveClosed`), forgets what it found and its failure; one opening
+/// forgets the last code too.
 #[test]
-fn closing_an_overlay_lets_go_of_what_it_held() {
-    use super::Popover;
+fn the_approve_dialog_closing_lets_go_of_what_it_found() {
     let mut state = on_testkit();
-    let _ = state.update(Message::OpenSpotlight);
-    let _ = state.update(Message::SpotlightTyped("chat".into()));
-    let _ = state.update(Message::CloseOverlay(Overlay::Spotlight));
-    assert!(state.overlay.is_none() && state.spotlight_query.is_empty());
-    // Escape on the account menu closes it whichever menu is named
-    let _ = state.update(Message::TogglePopover(Popover::Account));
-    let _ = state.update(Message::CloseOverlay(Overlay::Menu(Popover::Node)));
-    assert!(state.overlay.is_none());
-    // picking a view from a menu closes the menu
-    let _ = state.update(Message::TogglePopover(Popover::Account));
-    let _ = state.update(Message::SelectView("module-registry"));
-    assert!(state.overlay.is_none());
-    // one overlay's close leaves another open
-    let _ = state.update(Message::OpenSettings);
-    let _ = state.update(Message::CloseOverlay(Overlay::Network));
-    assert_eq!(state.overlay, Some(Overlay::Settings));
     let _ = state.update(Message::ApproveOpen);
+    let _ = state.update(Message::ApproveCodeTyped("ABCD-EFGH".into()));
     state.sign_in.unlock_error = "no such code".into();
-    let _ = state.update(Message::CloseOverlay(Overlay::Approve));
-    assert!(state.overlay.is_none() && state.sign_in.unlock_error.is_empty());
+    state.sign_in.approve_found = Some(crate::backend::join::Request {
+        network: "testkit".into(),
+        key: vec![7; 32],
+    });
+    let _ = state.update(Message::ApproveClosed);
+    assert!(state.sign_in.unlock_error.is_empty() && state.sign_in.approve_found.is_none());
+    let _ = state.update(Message::ApproveOpen);
+    assert!(state.sign_in.approve_code.is_empty());
 }

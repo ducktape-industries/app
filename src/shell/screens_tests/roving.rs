@@ -5,7 +5,6 @@
 //! its radios open or pick what the arrows reach, as a view's do; the
 //! Programs rail only moves the keys, and Return opens the program.
 use super::*;
-use crate::Overlay;
 
 fn keyed(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -80,9 +79,8 @@ fn under<'a>(stops: &'a [String], prefix: &str) -> Vec<&'a str> {
 #[gpui_kit::test]
 fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppContext) {
     keyed(cx);
-    let mut state = gate::desk();
-    state.overlay = Some(Overlay::Settings);
-    let (_view, mut native) = open(state, cx);
+    let settings = Overlay::Settings(SettingsPage::Appearance);
+    let (_view, mut native) = open((gate::desk(), settings), cx);
     native.update(draw);
     let stops = tab_round(&mut native);
     assert_eq!(
@@ -113,10 +111,10 @@ fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppCo
 fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppContext) {
     keyed(cx);
     let mut state = gate::desk();
-    state.overlay = Some(Overlay::Settings);
     state.appearance = crate::Appearance::Dark;
     state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
-    let (view, mut native) = open(state, cx);
+    let settings = Overlay::Settings(SettingsPage::Appearance);
+    let (view, mut native) = open((state, settings), cx);
     native.update(draw);
     let stops = tab_round(&mut native);
     assert_eq!(under(&stops, "theme/"), ["shell:theme/Dark"], "{stops:?}");

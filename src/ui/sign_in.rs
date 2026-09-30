@@ -50,6 +50,7 @@ impl Ducktape {
             | M::CreateAccountSubmit
             | M::AccountCreated(_)) => self.on_account(m),
             m @ (M::ApproveOpen
+            | M::ApproveClosed
             | M::ApproveCodeTyped(_)
             | M::ApproveFind
             | M::ApproveFound(_)

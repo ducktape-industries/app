@@ -92,10 +92,10 @@ impl PaneLayer {
 
     /// Brings the keys in line with the model: to the held window's box
     /// when a window is taken, and back to what had them when it is let go.
-    /// After a draw (`PaneLayer::drawn`), before Search closing gives the
-    /// keys back to what had them (`Screens::dialog` defers that past the
-    /// draw): a hold run from Search takes that give-back as what it keeps,
-    /// not Search's field.
+    /// After a draw (`PaneLayer::drawn`), after Search closing gave the keys
+    /// back to what had them (the overlay layer's observer, before the
+    /// draw): a hold run from Search keeps that give-back, not Search's
+    /// field.
     pub(super) fn sync_hold(
         &mut self,
         layout: &layout::Layout,
@@ -112,21 +112,9 @@ impl PaneLayer {
             (None, None) => {}
             (None, Some(_)) => self.give_back(window, cx),
             (Some(own), None) => {
-                let pending = match self.overlays.read(cx).get().is_none() {
-                    true => self
-                        .window
-                        .update(cx, |root, cx| {
-                            root.screens.as_ref().and_then(|screens| {
-                                screens.update(cx, |screens, _| screens.refocus.take())
-                            })
-                        })
-                        .ok()
-                        .flatten(),
-                    false => None,
-                };
                 self.holding = Some(Holding {
                     own: own.clone(),
-                    previous: pending.or_else(|| window.focused(cx)),
+                    previous: window.focused(cx),
                 });
                 own.focus(window, cx);
             }
@@ -153,13 +141,13 @@ impl PaneLayer {
             previous.focus(window, cx);
         }
         // something that opened over the desk as the hold ended took the box
-        // for what had them (its own keys came first, `Screens::dialog`):
-        // they go back to `previous` when it closes
+        // for what had them (its observer ran before this draw,
+        // `OverlayLayer::moved`): they go back to `previous` when it closes
         let _ = self.window.update(cx, |root, cx| {
-            if let Some(screens) = &root.screens {
-                screens.update(cx, |screens, _| {
-                    if screens.refocus.as_ref() == Some(&own) {
-                        screens.refocus = Some(previous);
+            if let Some(layer) = &root.overlay_layer {
+                layer.update(cx, |layer, _| {
+                    if layer.refocus.as_ref() == Some(&own) {
+                        layer.refocus = Some(previous);
                     }
                 });
             }

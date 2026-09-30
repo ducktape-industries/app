@@ -1,7 +1,7 @@
 //! Reaching a node, keeping up with it, and leaving it.
 
 use super::update::STATUS_EVERY;
-use super::{AppMessage as Message, Ducktape, Overlay, Stage, Unlock};
+use super::{AppMessage as Message, Ducktape, Stage, Unlock};
 use crate::backend;
 use crate::ui::task::Task;
 
@@ -188,9 +188,9 @@ impl Ducktape {
             }
             // The console stays on the network in hand while the other is
             // reached: the status reads "Reaching …", and a node that does not
-            // answer leaves everything as it was (`ConnectFailed`).
+            // answer leaves everything as it was (`ConnectFailed`). (The
+            // switcher closed as its row was picked: `layers::Chrome`.)
             Message::SwitchNetwork(origin) => {
-                self.close(Overlay::Network);
                 if origin == self.connected_rpc && !self.connecting {
                     return Task::none();
                 }
@@ -270,7 +270,8 @@ impl Ducktape {
             layout.clear();
         }
         self.badges.clear();
-        self.overlay = None;
+        // (what is open over each desk closes as it sees the network go:
+        // `Overlays::new`)
         self.node = None;
         self.keyring.clear();
         self.other_chain = false;

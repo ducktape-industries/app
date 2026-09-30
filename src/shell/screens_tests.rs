@@ -13,6 +13,7 @@ mod names;
 mod overlays;
 mod roving;
 mod text;
+use super::entities::{Overlay, Popover, SettingsPage};
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};
@@ -107,11 +108,30 @@ fn find<'a>(nodes: &'a serde_json::Value, role: &str, name: &str) -> &'a serde_j
         .unwrap_or_else(|| panic!("missing {role} {name:?} in {nodes}"))
 }
 
+/// A screen state, and what is open over its desk.
+pub(super) struct Scene(Ducktape, Option<Overlay>);
+
+impl From<Ducktape> for Scene {
+    fn from(state: Ducktape) -> Self {
+        Self(state, None)
+    }
+}
+
+impl From<(Ducktape, Overlay)> for Scene {
+    fn from((state, overlay): (Ducktape, Overlay)) -> Self {
+        Self(state, Some(overlay))
+    }
+}
+
 pub(super) fn open(
-    state: Ducktape,
+    scene: impl Into<Scene>,
     cx: &mut TestAppContext,
 ) -> (Entity<WindowRoot>, VisualTestContext) {
-    let (_, _, view, native) = super::layers::tests::open_console(state, cx);
+    let Scene(state, overlay) = scene.into();
+    let (_, _, view, mut native) = super::layers::tests::open_console(state, cx);
+    if let Some(overlay) = overlay {
+        super::layers::tests::show(&view, Some(overlay), &mut native);
+    }
     (view, native)
 }
 
@@ -512,8 +532,7 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
             other_chain: true,
         },
     ];
-    state.overlay = Some(crate::Overlay::Network);
-    let (_view, mut native) = open(state, cx);
+    let (_view, mut native) = open((state, Overlay::Network), cx);
     let nodes = native.update(draw);
     let switcher = find(&nodes, "Button", "Network: testkit");
     assert_eq!(switcher["id"], "shell:network-switcher");
@@ -529,7 +548,7 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
 
 /// The bell's panel: calm when there is nothing, and once notices land a
 /// row each (a fold's count in its name), the unread count on the bell and
-/// in the header, and Settings opening on Notifications.
+/// in the header.
 #[gpui_kit::test]
 fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     use crate::runtime::notify::{CenterHandle, Permission, Settings};
@@ -545,8 +564,8 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     state.stage = Stage::Desk;
     state.connected = true;
     state.network = "testkit".into();
-    state.overlay = Some(crate::Overlay::Menu(crate::Popover::Notifications));
-    let (view, mut native) = open(state, cx);
+    let bell = Overlay::Menu(Popover::Notifications);
+    let (view, mut native) = open((state, bell), cx);
 
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications");
@@ -619,17 +638,13 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     assert!(!nodes.to_string().contains("all caught up"));
     // the panel opened on them: its keys at its first control, as the bell
     // gives them, and a Tab past its last closes it (a menu)
-    for overlay in [
-        None,
-        Some(crate::Overlay::Menu(crate::Popover::Notifications)),
-    ] {
-        view.update(&mut native, |view, cx| {
-            view.model.update(cx, |model, cx| {
-                model.state.overlay = overlay;
-                model.bridge(false, cx);
-                cx.notify();
-            })
-        });
+    let overlays = native.update(|_, cx| view.read(cx).overlays());
+    for open in [false, true] {
+        native.update(|_, cx| overlays.update(cx, |it, cx| it.toggle(bell, cx)));
+        assert_eq!(
+            native.update(|_, cx| *overlays.read(cx).get()),
+            open.then_some(bell)
+        );
         native.update(draw);
         native.update(draw);
     }
@@ -642,14 +657,6 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     });
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications");
-    // Settings is modal: the snapshot is its subtree, the bell is behind it
-    view.update(&mut native, |view, cx| {
-        view.model
-            .update(cx, |model, cx| model.dispatch(Message::NotifySettings, cx))
-    });
-    let nodes = native.update(draw);
-    find(&nodes, "Switch", "Desktop banners");
-    find(&nodes, "RadioGroup", "Burst limit");
 }
 
 /// A press inside an overlay's card stays inside: the card offers no press
@@ -662,12 +669,10 @@ fn a_click_inside_an_overlay_card_leaves_it_open(cx: &mut TestAppContext) {
     });
     // one under a scrim, one hanging from the bar
     for (overlay, name) in [
-        (crate::Overlay::Settings, "Settings"),
-        (crate::Overlay::Menu(crate::Popover::Node), "Node status"),
+        (Overlay::Settings(SettingsPage::Appearance), "Settings"),
+        (Overlay::Menu(Popover::Node), "Node status"),
     ] {
-        let mut state = gate::desk();
-        state.overlay = Some(overlay);
-        let (view, mut native) = open(state, cx);
+        let (view, mut native) = open((gate::desk(), overlay), cx);
         let nodes = native.update(|window, cx| {
             draw(window, cx);
             serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
@@ -679,7 +684,7 @@ fn a_click_inside_an_overlay_card_leaves_it_open(cx: &mut TestAppContext) {
             gpui_kit::point(px(at(0) + 8.), px(at(1) + 8.)),
             gpui_kit::Modifiers::none(),
         );
-        let open = native.update(|_, cx| view.read(cx).model.read(cx).state.overlay);
+        let open = native.update(|_, cx| *view.read(cx).overlays().read(cx).get());
         assert_eq!(open, Some(overlay), "a click inside {name} closed it");
     }
 }

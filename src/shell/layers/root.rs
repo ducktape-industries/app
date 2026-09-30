@@ -1,8 +1,9 @@
 //! The root view of one OS window: thin, uncached, laying the window's
 //! layers out as siblings. On the desk: the bar (`Chrome`, console only),
-//! the panes (`PaneLayer`), the dialog open over them (`Screens`), the
-//! node's breath (`StatusDot`) and the footer (`ToastView`). Before the
-//! desk the console draws its launcher screen (`Screens`, uncached) and the footer.
+//! the panes (`PaneLayer`), the dialog open over them (`OverlayLayer`;
+//! "Add a device…" still `Screens`'), the node's breath (`StatusDot`) and
+//! the footer (`ToastView`). Before the desk the console draws its
+//! launcher screen (`Screens`, uncached) and the footer.
 //! Every cached layer under it hits while nothing it observes moved (P6):
 //! a pulse of the dot draws the dot, this root and the uncached pane layer
 //! and pane views under it, and no cached layer redraws.
@@ -12,9 +13,11 @@
 //! window answers (`keys.rs`), the pane messages the layers send through
 //! it (`panes.rs`, `pane_hold.rs`), and the switch timer.
 
-use super::super::entities::{Desk, Observed, Overlays, Prefs, Screen, Slice};
+use super::super::entities::{Desk, Observed, Overlay, Overlays, Prefs, Screen, Slice};
 use super::super::{Desktop, WindowKey, WindowKind, ink, layout, theme};
-use super::{BAR, Chrome, PaneLayer, Screens, StatusDot, ToastView, cached_unless_a11y};
+use super::{
+    BAR, Chrome, OverlayLayer, PaneLayer, Screens, StatusDot, ToastView, cached_unless_a11y,
+};
 use crate::AppMessage as Message;
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, IntoElement, ParentElement as _, Render,
@@ -38,18 +41,17 @@ pub(in crate::shell) struct WindowRoot {
     /// The panes, drawn: one `PaneView` per pane, the keys' handoff between
     /// them, the pointer's and the keyboard's hold on one.
     pub(in crate::shell) panes: Entity<PaneLayer>,
-    /// The launcher screens and the dialogs (the console only).
+    /// Spotlight and Settings over the desk, and where the keys go as
+    /// anything opens or closes over it (the console only).
+    pub(in crate::shell) overlay_layer: Option<Entity<OverlayLayer>>,
+    /// The launcher screens, and "Add a device…" (the console only).
     pub(in crate::shell) screens: Option<Entity<Screens>>,
     toast: Entity<ToastView>,
     /// The node's breath over the bar's well (the console only).
     dot: Option<Entity<StatusDot>>,
-    /// A menu hanging from the bar (Node, Account, the bell, Networks): the
-    /// keys go into it when it opens (`Screens`), the box its card hangs
-    /// from holds them (`Chrome`), and it closes when they leave it
-    /// (`menu_left_by_keys`).
-    /// Not `Screens::modal`: gpui-base keeps a focus trap for as long as
-    /// its handle lives, so a menu on it would trap Tab once a dialog had.
-    menu: FocusHandle,
+    /// The handle the box a bar menu's card hangs from holds the keys by
+    /// (`Chrome`'s; the console only).
+    menu: Option<FocusHandle>,
     /// A pane or window switch under way: started where it was asked for,
     /// ended on the frame after the one that shows it (docs/perf.md).
     switching: Option<crate::perf::Timer>,
@@ -70,19 +72,23 @@ impl WindowRoot {
     ) -> Self {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let own = model.update(cx, |model, cx| model.window_entities(key, kind, cx));
+        let own = model.update(cx, |model, cx| model.window_entities(key, cx));
         let entities = &model.read(cx).entities;
         let (screen, prefs) = (entities.screen.clone(), entities.prefs.clone());
         let (desk, overlays) = (own.desk.clone(), own.overlays.clone());
-        let menu = cx.focus_handle();
         let console = kind == WindowKind::Console;
         let chrome = console.then(|| {
-            let (model, menu, this) = (model.clone(), menu.clone(), cx.weak_entity());
-            cx.new(|cx| Chrome::new(model, key, &own, menu, this, window, cx))
+            let (model, this) = (model.clone(), cx.weak_entity());
+            cx.new(|cx| Chrome::new(model, key, &own, this, window, cx))
         });
-        let screens = console.then(|| {
-            let (model, menu) = (model.clone(), menu.clone());
-            cx.new(|cx| Screens::new(model, key, &own, menu, cx))
+        let menu = chrome.as_ref().map(|chrome| chrome.read(cx).menu.clone());
+        let overlay_layer = menu.clone().map(|menu| {
+            let model = model.clone();
+            cx.new(|cx| OverlayLayer::new(model, key, &own, menu, window, cx))
+        });
+        let screens = overlay_layer.as_ref().map(|layer| {
+            let (model, modal) = (model.clone(), layer.read(cx).modal.clone());
+            cx.new(|cx| Screens::new(model, key, &own, modal, cx))
         });
         let dot = console.then(|| {
             let model = model.clone();
@@ -125,6 +131,7 @@ impl WindowRoot {
             prefs: Observed::new(&prefs, cx),
             chrome,
             panes,
+            overlay_layer,
             screens,
             toast,
             dot,
@@ -206,8 +213,10 @@ impl WindowRoot {
     /// menu giving way to the next): the keys stay in the menu, at its first
     /// control, and it stays open.
     fn focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if window.focus_lost_restore_target(cx).as_ref() == Some(&self.menu) {
-            self.menu.focus(window, cx);
+        if let Some(menu) = &self.menu
+            && window.focus_lost_restore_target(cx).as_ref() == Some(menu)
+        {
+            menu.focus(window, cx);
             window.focus_next(cx);
             // gpui draws no frame for a move made here: the ring shows now
             cx.notify();
@@ -216,27 +225,17 @@ impl WindowRoot {
         self.focus.focus(window, cx);
     }
 
-    /// The keys left the open menu (Tab past its end, a click elsewhere;
-    /// `layers::Chrome`): it closes, and the keys stay where they went
-    /// (owner, 2026-09-28) rather than going back to what had them before
-    /// it opened.
-    pub(in crate::shell) fn menu_left_by_keys(
-        &mut self,
-        menu: crate::Overlay,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some(screens) = &self.screens {
-            screens.update(cx, |screens, _| screens.menu_left_by_keys());
-        }
-        self.model.update(cx, |model, cx| {
-            model.dispatch(Message::CloseOverlay(menu), cx)
-        });
-    }
-
     /// The console's screens: a test's way to its fields.
     #[cfg(test)]
     pub(in crate::shell) fn screens(&self) -> &Entity<Screens> {
         self.screens.as_ref().expect("the console has screens")
+    }
+
+    /// What is open over this window's desk: a test's way to open or close
+    /// it as the bar and the keys do.
+    #[cfg(test)]
+    pub(in crate::shell) fn overlays(&self) -> Entity<Overlays> {
+        self.overlays.entity().clone()
     }
 
     /// This window's panes, as the model has them (the `Desk` slice).
@@ -286,9 +285,16 @@ impl Render for WindowRoot {
                         window,
                     )
                 });
+                let overlays = self
+                    .overlay_layer
+                    .clone()
+                    .map(|layer_view| cached(layer_view.into(), layer(), window));
+                // "Add a device…", while it is open (s9 moves it to the overlays)
+                let approve = *self.overlays.read(cx).get() == Some(Overlay::Approve);
                 let screens = self
                     .screens
                     .clone()
+                    .filter(|_| approve)
                     .map(|screens| cached(screens.into(), layer(), window));
                 div()
                     .id("console")
@@ -305,6 +311,7 @@ impl Render for WindowRoot {
                             .w_full()
                             .child(self.panes.clone()),
                     )
+                    .children(overlays)
                     .children(screens)
                     .children(self.dot.clone())
                     .child(toast)

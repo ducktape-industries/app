@@ -3,6 +3,7 @@
 use super::Chrome;
 use crate::AppMessage as Message;
 use crate::a11y::Control as _;
+use crate::shell::entities::{Overlay, Popover, SettingsPage};
 use crate::shell::ink::{Ink, mono, sans, tall};
 use crate::shell::layers::BAR;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -29,8 +30,7 @@ impl Chrome {
         let notifications = self.notifications.read(cx);
         let unread = notifications.unread();
         let entries = notifications.entries();
-        let small_link = |id: &'static str, text: &'static str, message: fn() -> Message| {
-            let model = self.model.clone();
+        let small_link = |id: &'static str, text: &'static str, run: Box<dyn Fn(&mut App)>| {
             let hover = ink.ink;
             crate::a11y::keyboard(
                 sans(400, 13.)
@@ -41,7 +41,7 @@ impl Chrome {
                     .hover(move |style| style.text_color(hover))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        model.update(cx, |model, cx| model.dispatch(message(), cx))
+                        run(cx)
                     }),
                 ink.ink,
             )
@@ -64,9 +64,11 @@ impl Chrome {
             )
             .when(unread > 0, |header| {
                 header.child(
-                    small_link("notif-mark-all", "Mark all read", || {
-                        Message::NotifyMarkAllRead
-                    })
+                    small_link(
+                        "notif-mark-all",
+                        "Mark all read",
+                        Box::new(self.dispatching(|| Message::NotifyMarkAllRead)),
+                    )
                     .child("Mark all read")
                     .text_color(ink.ink)
                     .underline(),
@@ -96,7 +98,7 @@ impl Chrome {
                         .child(if today { "Today" } else { "Earlier" }),
                 );
             }
-            let model = self.model.clone();
+            let (model, overlays) = (self.model.clone(), self.overlays.entity().clone());
             let id = entry.id;
             let surface = ink.surface;
             let initial: String = entry
@@ -139,8 +141,12 @@ impl Chrome {
                     .border_color(ink.line)
                     .cursor_pointer()
                     .hover(move |style| style.bg(surface))
+                    // the bell closes, then the notice opens what it is about
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
+                        overlays.update(cx, |overlays, cx| {
+                            overlays.close(Overlay::Menu(Popover::Notifications), cx)
+                        });
                         model.update(cx, |model, cx| model.dispatch(Message::NotifyOpen(id), cx))
                     })
                     .child(
@@ -252,16 +258,23 @@ impl Chrome {
             // only while something read is there to clear
             .when(entries.iter().any(|entry| entry.read), |footer| {
                 footer.child(
-                    small_link("notif-clear-read", "Clear read", || {
-                        Message::NotifyClearRead
-                    })
+                    small_link(
+                        "notif-clear-read",
+                        "Clear read",
+                        Box::new(self.dispatching(|| Message::NotifyClearRead)),
+                    )
                     .child("Clear read"),
                 )
             })
             .child(
-                small_link("notif-settings", "Notification settings", || {
-                    Message::NotifySettings
-                })
+                // Settings in the bell's place, on its Notifications page
+                small_link(
+                    "notif-settings",
+                    "Notification settings",
+                    Box::new(self.overlaying(|overlays, cx| {
+                        overlays.open(Overlay::Settings(SettingsPage::Notifications), cx)
+                    })),
+                )
                 .ml_auto()
                 .flex()
                 .items_center()
@@ -278,7 +291,7 @@ impl Chrome {
             .child(header)
             .child(list)
             .child(footer);
-        self.popover(crate::Popover::Notifications, width, body, ink, window, cx)
+        self.popover(Popover::Notifications, width, body, ink, window, cx)
     }
 }
 

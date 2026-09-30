@@ -46,6 +46,12 @@ impl Notifications {
         self.center.lock().entries().cloned().collect()
     }
 
+    /// How many notices `module` posted this week, as of the wall second
+    /// `wall` (Settings' Notifications page).
+    pub(crate) fn this_week(&self, module: &str, wall: i64) -> u32 {
+        self.center.lock().this_week(module, wall)
+    }
+
     /// Read off the centre again; notifies only when something moved.
     pub(crate) fn refresh(&mut self, cx: &mut Context<Self>) -> bool {
         let (unread, asking, entries_rev) = Self::read(&self.center);

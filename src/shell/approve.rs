@@ -1,6 +1,7 @@
 //! "Add a device…": approving another device onto the account.
 
-use super::text_field::TextField;
+use super::entities::Overlay;
+use super::layers::{TextField, scrim};
 use super::*;
 use facts::Facts;
 
@@ -90,18 +91,23 @@ impl Screens {
                     ))),
             ),
         };
-        let cancel = self.link(
-            "approve-cancel",
-            "Cancel",
-            || Message::CloseOverlay(crate::Overlay::Approve),
-            false,
-            &ink,
-        );
-        self.overlay(
+        let cancel = {
+            let overlays = self.overlays.entity().clone();
+            link_running(
+                "approve-cancel",
+                "Cancel",
+                move |cx| overlays.update(cx, |overlays, cx| overlays.close(Overlay::Approve, cx)),
+                false,
+                &ink,
+            )
+        };
+        scrim(
             "approve",
             Role::Dialog,
             "Add a device",
-            crate::Overlay::Approve,
+            Overlay::Approve,
+            self.overlays.entity(),
+            &self.modal,
             &ink,
             |card| {
                 card.mt(px(84.))

@@ -3,10 +3,12 @@
 //! window's kind and screen say (docs/perf.md).
 use super::BAR;
 use super::tests::open_console;
+use crate::runtime::WindowKey;
+use crate::shell::entities::{Overlay, Popover};
 use crate::shell::panes_tests::{console, draw, settle, window_count};
-use crate::shell::{Message, PaneMessage, WindowKind};
+use crate::shell::{Desktop, Message, PaneMessage, WindowKind, WindowRoot};
 use crate::ui::test_support::status;
-use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px};
+use gpui_kit::{AnyWindowHandle, Entity, Styled as _, TestAppContext, VisualTestContext, px};
 use view_wire as wire;
 
 /// A frame as the platform delivers one: what asked for it runs, then
@@ -176,58 +178,67 @@ fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
     );
 }
 
-/// A keystroke in Spotlight draws the screens (its dialog) once, and
-/// neither the bar nor a pane's tree.
+/// Typing in Spotlight's field draws the overlay layer (the field is its
+/// child: each of the field's own notifies draws it too) and no other
+/// cached layer: neither the bar, nor the footer, nor a pane's tree. (The
+/// root and the pane layer under it are not cached: they draw with it.)
 #[gpui_kit::test]
-fn a_shell_keystroke_renders_one_layer(cx: &mut TestAppContext) {
+fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     const MODULE: &str = "root-keystroke-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (model, key, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
     model.update(&mut native, |model, cx| {
         model.dispatch(Message::SetMotion(false), cx);
         model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx);
-        model.dispatch(Message::OpenSpotlight, cx);
     });
+    super::tests::show(&view, Some(Overlay::Spotlight), &mut native);
+    // the first key: the window's input turns to the keyboard, which gpui
+    // answers with a full redraw
+    native.simulate_input("a");
     for _ in 0..8 {
         frame(&mut native);
     }
-    let (chrome, overlays, tree) = (
-        window_count(key, "renders.chrome"),
-        window_count(key, "renders.overlays"),
-        tree_renders(MODULE),
+    let counts = || {
+        (
+            window_count(key, "renders.chrome"),
+            window_count(key, "renders.toast"),
+            tree_renders(MODULE),
+        )
+    };
+    let (still, overlays) = (counts(), window_count(key, "renders.overlays"));
+    assert!(
+        still.0 > 0 && still.1 > 0 && still.2 > 0 && overlays > 0,
+        "every layer drew"
     );
-    assert!(chrome > 0 && overlays > 0 && tree > 0, "every layer drew");
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SpotlightTyped("al".into()), cx)
-    });
+    native.simulate_input("l");
     frame(&mut native);
-    assert_eq!(
-        window_count(key, "renders.overlays"),
-        overlays + 1,
-        "the keystroke drew the dialog other than once"
+    let spotlight = model.read_with(&native, |model, _| {
+        model.entities.by_window[&key].spotlight.clone()
+    });
+    let query = native.update(|_, cx| spotlight.read(cx).get().query.clone());
+    assert_eq!(query, "al", "the keystrokes never reached the slice");
+    assert!(
+        window_count(key, "renders.overlays") > overlays,
+        "the keystrokes drew no overlay layer"
     );
     assert_eq!(
-        window_count(key, "renders.chrome"),
-        chrome,
-        "a Spotlight keystroke drew the bar"
-    );
-    assert_eq!(
-        tree_renders(MODULE),
-        tree,
-        "a Spotlight keystroke drew a pane's tree"
+        counts(),
+        still,
+        "a Spotlight keystroke drew the bar, the footer or a pane's tree"
     );
 }
 
-/// A pane popped out to a window of its own: that window's root draws the
-/// panes and the footer, and no bar.
-#[gpui_kit::test]
-fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
-    let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
-    settle(&mut native);
+/// The console's front pane popped out to a window of its own: its key
+/// and handle.
+fn pop_out(
+    model: &Entity<Desktop>,
+    key: WindowKey,
+    view: &Entity<WindowRoot>,
+    native: &mut VisualTestContext,
+) -> (WindowKey, AnyWindowHandle) {
     let index = native.update(|_, cx| view.read(cx).layout(cx).focused);
-    model.update(&mut native, |model, cx| {
+    model.update(native, |model, cx| {
         model.dispatch(
             Message::Pane(key, PaneMessage::PopOut { index, at: None }),
             cx,
@@ -257,7 +268,7 @@ fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
         });
     });
     native.run_until_parked();
-    let (popped_key, popped_handle) = native.update(|_, cx| {
+    native.update(|_, cx| {
         let model = model.read(cx);
         let (&key, _) = model
             .views
@@ -265,7 +276,17 @@ fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
             .find(|(candidate, _)| **candidate != key)
             .expect("popout opened a view window");
         (key, model.windows[&key])
-    });
+    })
+}
+
+/// A pane popped out to a window of its own: that window's root draws the
+/// panes and the footer, and no bar.
+#[gpui_kit::test]
+fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (model, key, view, mut native) = console(cx);
+    settle(&mut native);
+    let (popped_key, popped_handle) = pop_out(&model, key, &view, &mut native);
     let nodes = native.update(|_, cx| {
         popped_handle
             .update(cx, |_, window, cx| {
@@ -301,6 +322,42 @@ fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
         0,
         "the pop-out drew a dot"
     );
+}
+
+/// The View menu's Search goes to whichever window is in front: from a
+/// pop-out it opens Spotlight over the console, where it draws, and leaves
+/// the pop-out's panes uncovered.
+#[gpui_kit::test]
+fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext) {
+    let (model, key, view, mut native) = console(cx);
+    settle(&mut native);
+    let (popped_key, popped_handle) = pop_out(&model, key, &view, &mut native);
+    native.update(|_, cx| {
+        popped_handle
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(crate::shell::keys::ToggleSpotlight), cx)
+            })
+            .unwrap()
+    });
+    native.run_until_parked();
+    native.update(|_, cx| {
+        let open = |key| {
+            *model.read(cx).entities.by_window[&key]
+                .overlays
+                .read(cx)
+                .get()
+        };
+        assert_eq!(
+            open(key),
+            Some(Overlay::Spotlight),
+            "the console shows no Spotlight"
+        );
+        assert_eq!(
+            open(popped_key),
+            None,
+            "the pop-out holds a Spotlight it cannot draw"
+        );
+    });
 }
 
 /// Before the desk the console's root draws the launcher's screen alone:
@@ -372,9 +429,9 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
 /// node comes after the menu's in the tree.
 #[gpui_kit::test]
 fn a_toast_paints_over_an_open_menu(cx: &mut TestAppContext) {
-    let (model, _, _, mut native) = console(cx);
+    let (model, _, view, mut native) = console(cx);
+    super::tests::show(&view, Some(Overlay::Menu(Popover::Node)), &mut native);
     model.update(&mut native, |model, cx| {
-        model.dispatch(Message::TogglePopover(crate::Popover::Node), cx);
         model.dispatch(Message::ShowToast("Saved".into()), cx);
     });
     settle(&mut native);
@@ -449,11 +506,12 @@ fn quads(native: &mut VisualTestContext) -> Vec<gpui_kit::Quad> {
 /// A dialog open over the desk, drawn cached (no reader on): its scrim
 /// paints below the bar, the window wide and high, over the panes. The
 /// cached view is a layout root of its own, where its height is its
-/// content's unless it says `size_full`.
+/// content's unless it says `size_full`: Spotlight is `OverlayLayer`'s,
+/// "Add a device…" still `Screens`'.
 #[gpui_kit::test]
 fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
     const MODULE: &str = "root-scrim-view";
-    let (model, key, _, mut native) = console(cx);
+    let (model, key, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
     model.update(&mut native, |model, cx| {
         model.dispatch(Message::SetMotion(false), cx);
@@ -462,45 +520,47 @@ fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
     for _ in 0..4 {
         frame(&mut native);
     }
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenSpotlight, cx);
-    });
-    // a miss (Spotlight opened), then hits
-    for _ in 0..3 {
+    for overlay in [Overlay::Spotlight, Overlay::Approve] {
+        super::tests::show(&view, Some(overlay), &mut native);
+        // a miss (the dialog opened), then hits
+        for _ in 0..3 {
+            frame(&mut native);
+            let quads = quads(&mut native);
+            let scale = native.update(|window, _| window.scale_factor());
+            let scrim = quads
+                .iter()
+                .find(|quad| {
+                    quad.background
+                        .as_solid()
+                        .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
+                })
+                .unwrap_or_else(|| panic!("{overlay:?}'s scrim paints"));
+            assert_eq!(
+                (
+                    scrim.bounds.origin.y.0,
+                    scrim.bounds.size.width.0,
+                    scrim.bounds.size.height.0,
+                ),
+                (BAR * scale, 1280. * scale, (800. - BAR) * scale),
+                "{overlay:?}'s scrim fills the window under the bar"
+            );
+            // the pane's box: a 1px border, taller than the dialog's rows
+            let pane = quads
+                .iter()
+                .filter(|quad| {
+                    quad.border_widths.top.0 == scale && quad.bounds.size.height.0 > 400. * scale
+                })
+                .map(|quad| quad.order)
+                .max()
+                .expect("a pane paints");
+            assert!(
+                scrim.order > pane,
+                "{overlay:?}'s scrim {} under a pane {pane}",
+                scrim.order
+            );
+        }
+        super::tests::show(&view, None, &mut native);
         frame(&mut native);
-        let quads = quads(&mut native);
-        let scale = native.update(|window, _| window.scale_factor());
-        let scrim = quads
-            .iter()
-            .find(|quad| {
-                quad.background
-                    .as_solid()
-                    .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
-            })
-            .expect("the dialog's scrim paints");
-        assert_eq!(
-            (
-                scrim.bounds.origin.y.0,
-                scrim.bounds.size.width.0,
-                scrim.bounds.size.height.0,
-            ),
-            (BAR * scale, 1280. * scale, (800. - BAR) * scale),
-            "the scrim fills the window under the bar"
-        );
-        // the pane's box: a 1px border, taller than the dialog's rows
-        let pane = quads
-            .iter()
-            .filter(|quad| {
-                quad.border_widths.top.0 == scale && quad.bounds.size.height.0 > 400. * scale
-            })
-            .map(|quad| quad.order)
-            .max()
-            .expect("a pane paints");
-        assert!(
-            scrim.order > pane,
-            "the scrim {} under a pane {pane}",
-            scrim.order
-        );
     }
 }
 

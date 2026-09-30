@@ -109,10 +109,8 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
     );
 
     // Settings › About
-    let mut state = gate::desk();
-    state.overlay = Some(crate::Overlay::Settings);
-    state.settings_page = crate::ui::SettingsPage::About;
-    let (_view, mut native) = open(state, cx);
+    let about = Overlay::Settings(SettingsPage::About);
+    let (_view, mut native) = open((gate::desk(), about), cx);
     let nodes = native.update(draw);
     reads(
         &nodes,
@@ -121,7 +119,6 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
 
     // the node's status, in its menu
     let mut state = gate::desk();
-    state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node));
     state.node = Some(crate::backend::NodeStatus {
         network: "testkit".into(),
         time: 0,
@@ -135,7 +132,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         contract: 1,
         genesis: [0; 32],
     });
-    let (_view, mut native) = open(state, cx);
+    let (_view, mut native) = open((state, Overlay::Menu(Popover::Node)), cx);
     let nodes = native.update(draw);
     reads(
         &nodes,
@@ -144,9 +141,8 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
 
     // the account menu's header
     let mut state = gate::desk();
-    state.overlay = Some(crate::Overlay::Menu(crate::Popover::Account));
     state.account = Some(Some((7, "Ada Lovelace".into())));
-    let (_view, mut native) = open(state, cx);
+    let (_view, mut native) = open((state, Overlay::Menu(Popover::Account)), cx);
     let nodes = native.update(draw);
     reads(
         &nodes,
@@ -154,9 +150,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
     );
 
     // Approve's instruction
-    let mut state = gate::desk();
-    state.overlay = Some(crate::Overlay::Approve);
-    let (_view, mut native) = open(state, cx);
+    let (_view, mut native) = open((gate::desk(), Overlay::Approve), cx);
     let nodes = native.update(draw);
     reads(
         &nodes,

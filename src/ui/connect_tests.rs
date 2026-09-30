@@ -1,7 +1,7 @@
 //! Reaching a node, its polls, a switch, and leaving (connect.rs).
 
 use super::test_support::{on_testkit, signing_in, status};
-use super::{AppMessage as Message, Ducktape, Overlay, Stage};
+use super::{AppMessage as Message, Ducktape, Stage};
 use crate::backend;
 
 #[test]
@@ -54,10 +54,8 @@ fn switching_node_leaves_no_key_seated() {
 #[test]
 fn a_switch_keeps_the_network_in_hand_until_the_other_answers() {
     let mut state = on_testkit();
-    let _ = state.update(Message::ToggleNetworkMenu);
-    assert_eq!(state.overlay, Some(Overlay::Network));
     let _ = state.update(Message::SwitchNetwork("http://b".into()));
-    assert!(state.overlay.is_none() && state.connecting);
+    assert!(state.connecting);
     assert_eq!(state.status, "Reaching http://b…");
     assert_eq!(state.signer_key, "ab", "still signed in while reaching");
     // A's poll lands mid-switch: the status keeps saying where it is going
