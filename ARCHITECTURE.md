@@ -394,8 +394,9 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   from the cache),
   which reads `Screen`, `Session`, `Account` and `Prefs` and picks by
   `Screen`: the frame with a `spin` figure on the left (written from its
-  observers), then `launcher/connect.rs`, `key.rs`, `recovery.rs`,
-  `account.rs`. Its fields own what is typed and send each change to the
+  observers, or a frame after a screen change from a next-frame callback,
+  as the unlock screen's pixels need; never from a draw), then
+  `launcher/connect.rs`, `key.rs`, `recovery.rs`, `account.rs`. Its fields own what is typed and send each change to the
   reducer; what the reducer resets without typing (a step's secrets as it
   goes, the address the session moved to) the layer writes into them from
   its observers. On the desk: `layers::Chrome`

@@ -13,7 +13,8 @@
 //!
 //! `LauncherLayer` is the console's view of it, over the entities it reads
 //! (`Screen`, `Session`, `Account`, `Prefs`). Its fields own what is typed;
-//! its figure is written from its observers, never from a draw. What a
+//! its figure is written from its observers and, a frame after a screen
+//! change, from a next-frame callback; never from a draw. What a
 //! screen asks of the app still goes to the reducer (`send`, `dispatching`;
 //! s10 moves those flows into `Session` and `Account`).
 
@@ -272,10 +273,16 @@ impl LauncherLayer {
     /// brings it back).
     fn screen_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = *self.screen.read(cx).get();
-        if std::mem::replace(&mut self.shown, now) == now {
+        let was = std::mem::replace(&mut self.shown, now);
+        if was == now {
             return;
         }
-        self.draw_figure(cx);
+        // from the desk the figure is drawn afresh (no last frame of it to
+        // keep), so it comes with its screen; between launcher screens it
+        // follows a frame late (`render`)
+        if was == Screen::Desk {
+            self.draw_figure(cx);
+        }
         let fields = &self.fields;
         for field in [&fields.password, &fields.restore]
             .into_iter()
@@ -451,7 +458,8 @@ impl LauncherLayer {
 impl Render for LauncherLayer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         crate::perf::count(crate::perf::Key::Window(self.key), "renders.launcher", 1);
-        let screen = match *self.screen.read(cx).get() {
+        let shown = *self.screen.read(cx).get();
+        let screen = match shown {
             Screen::Connect => self.connect(window, cx),
             Screen::Unlock { .. } => self.unlock(window, cx),
             Screen::Phrase { quiz: None } => self.phrase(window, cx),
@@ -461,6 +469,19 @@ impl Render for LauncherLayer {
             // the root draws the desk instead
             Screen::Desk => return div(),
         };
+        // A new screen's first frame keeps the last screen's figure; the new
+        // one is written after that frame. Its glyphs then enter the atlas
+        // after the screen's text, as they always have: within one draw
+        // order gpui sorts sprites by atlas tile, so a figure written with
+        // its screen moves the unlock screen's pixels by 1 LSB (the look
+        // rule). Asked for here, the callback runs after this frame (asked
+        // from an observer, before it); it writes, the draw does not.
+        if self.spin.read(cx).figure() != figure(shown) {
+            let this = cx.weak_entity();
+            window.on_next_frame(move |_, cx| {
+                let _ = this.update(cx, |this, cx| this.draw_figure(cx));
+            });
+        }
         div().size_full().child(screen)
     }
 }

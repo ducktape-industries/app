@@ -274,7 +274,8 @@ impl Render for WindowRoot {
             // 2026-09-30): a cached launcher moves the unlock screen's
             // pixels by 1 LSB (GPU sprite order within one draw order),
             // which the look rule forbids, and these screens gain nothing
-            // from the cache.
+            // from the cache. For the same reason its figure follows a new
+            // screen a frame late (`LauncherLayer::render`).
             (true, Some(launcher)) => div()
                 .size_full()
                 .child(launcher.clone())
