@@ -7,8 +7,8 @@
 //! node button's 12px well was laid out, read at prepaint and committed
 //! after the frame when it moved.
 //!
-//! Each open menu is its bar button's deferred child, anchored to the
-//! button's corner 4px under the bar; the backdrop under it (a click on it
+//! Each open menu hangs beside its bar button (`footed`), deferred and
+//! anchored to the button's corner 4px under the bar; the backdrop under it (a click on it
 //! closes the menu, and presses stay off the desk) is a deferred child of
 //! the bar drawn first. A menu's keys: the arrows step its rows; Tab past
 //! its ends, or anything else that takes the keys out of it, closes it and
@@ -279,15 +279,16 @@ impl Chrome {
             .shadow_lg()
             .w(px(width))
             .child(body);
-        // the corner: a point-sized box at the bottom corner of the
-        // button's foot that the anchored card takes its x from (`BarFoot`
-        // sets its y). It holds the menu handle and hears the rows' keys (no
-        // id, no role: the card is the node assistive technology sees, and
-        // it offers no focus of its own)
+        // the corner: a point-sized box 5px under the button's foot
+        // (`Chrome::footed`, whose bottom is the bar's inside edge at 35)
+        // that the anchored card hangs from, so its top lands on 40 (the
+        // canvas's menus: `top: 40px`). It holds the menu handle and hears
+        // the rows' keys (no id, no role: the card is the node assistive
+        // technology sees, and it offers no focus of its own)
         let menu = self.menu.clone();
         let corner = div()
             .absolute()
-            .bottom_0()
+            .bottom(px(-5.))
             .size_0()
             .track_focus(&self.menu)
             .capture_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -322,13 +323,12 @@ impl Chrome {
             _ => corner.right_0(),
         };
         deferred(
-            corner.child(BarFoot(
+            corner.child(
                 anchored()
                     .anchor(anchor)
                     .snap_to_window_with_margin(px(8.))
-                    .child(card)
-                    .into_any_element(),
-            )),
+                    .child(card),
+            ),
         )
         .with_priority(1)
         .into_any_element()
@@ -341,8 +341,8 @@ impl Chrome {
     /// whole pixels. Layout snaps each edge to the device grid where it lies
     /// (gpui's `layout_bounds`), so a card laid out half a pixel off has
     /// some of its rows land a pixel from where the same card on a whole
-    /// pixel has them. `BarFoot` moves the card by whole pixels only; the
-    /// half has to stay out of its layout.
+    /// pixel has them. The corner hangs 5px under the box, so the card is
+    /// laid out on a whole pixel.
     fn footed(button: Stateful<Div>, menu: AnyElement) -> AnyElement {
         div()
             .relative()
@@ -902,72 +902,6 @@ impl Render for Chrome {
             .child(node)
             .child(who)
             .child(gear)
-    }
-}
-
-/// The anchored card, its top put on `BAR + 4` (the canvas's menus:
-/// `top: 40px`) whatever its corner box laid out to: the corner gives the
-/// card its x, the bar gives it its y. The corner hangs from the button's
-/// foot (`Chrome::footed`), whose bottom is the bar's inside edge at 35,
-/// so the move is whole pixels; the button itself is centred half a pixel
-/// up, and a corner on it would carry the half into the card's layout,
-/// where the snap to device pixels lands a row a pixel off.
-struct BarFoot(AnyElement);
-
-impl IntoElement for BarFoot {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-
-impl Element for BarFoot {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.0.request_layout(window, cx), ())
-    }
-
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        bounds: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        let down = px(BAR + 4.) - bounds.origin.y;
-        window.with_element_offset(point(px(0.), down), |window| {
-            self.0.prepaint(window, cx);
-        });
-    }
-
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        self.0.paint(window, cx);
     }
 }
 
