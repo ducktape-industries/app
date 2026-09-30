@@ -1,5 +1,5 @@
-//! Which screen the console shows: a launcher step, or the desk. Bridged
-//! from the model's `Stage` until s10's methods write it.
+//! Which screen the console shows: a launcher step, or the desk. Written
+//! by `Session`'s and `Account`'s methods.
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum Screen {

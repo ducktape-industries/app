@@ -19,12 +19,14 @@ fn names_say_which_one(cx: &mut TestAppContext) {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    let mut state = gate::desk();
-    state.roster = crate::runtime::Roster::listing(&["names-test"]);
-    state.active = Some(crate::runtime::intern("names-test"));
-    state.badges.insert(crate::runtime::intern("names-test"), 3);
-    state.height = 6230;
-    let (_view, mut native) = open(state, cx);
+    let mut seed = gate::desk();
+    seed.state.roster = crate::runtime::Roster::listing(&["names-test"]);
+    seed.state.active = Some(crate::runtime::intern("names-test"));
+    seed.state
+        .badges
+        .insert(crate::runtime::intern("names-test"), 3);
+    seed.chain.height = 6230;
+    let (_view, mut native) = open(seed, cx);
     let nodes = native.update(draw);
 
     let tab = &node(&nodes, "shell:rail/names-test")["name"];
@@ -47,9 +49,9 @@ fn names_say_which_one(cx: &mut TestAppContext) {
     }
 
     // a key, and no account on this network yet
-    let mut state = gate::desk();
-    state.account = Some(None);
-    let (_view, mut native) = open(state, cx);
+    let mut seed = gate::desk();
+    seed.account.account = Some(None);
+    let (_view, mut native) = open(seed, cx);
     let nodes = native.update(draw);
     find(&nodes, "Button", "Create account");
 }
@@ -64,9 +66,9 @@ fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
         keys::bind(cx);
     });
     // a program to open, so the empty desk offers its buttons
-    let mut state = gate::desk();
-    state.roster = crate::runtime::Roster::listing(&["chords-test"]);
-    let (_view, mut native) = open(state, cx);
+    let mut seed = gate::desk();
+    seed.state.roster = crate::runtime::Roster::listing(&["chords-test"]);
+    let (_view, mut native) = open(seed, cx);
     let nodes = native.update(draw);
     for (id, popup) in [
         ("shell:network-switcher", "menu"),

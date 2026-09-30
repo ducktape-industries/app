@@ -87,8 +87,8 @@ impl WindowRoot {
             cx.new(|cx| OverlayLayer::new(model, key, &own, menu, window, cx))
         });
         let launcher = console.then(|| {
-            let model = model.clone();
-            cx.new(|cx| LauncherLayer::new(model, key, window, cx))
+            let entities = model.read(cx).entities.clone();
+            cx.new(|cx| LauncherLayer::new(&entities, key, window, cx))
         });
         let dot = console.then(|| {
             let model = model.clone();

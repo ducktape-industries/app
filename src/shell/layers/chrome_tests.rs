@@ -3,6 +3,7 @@
 //! cached under everything else (a keystroke in Spotlight, root_tests.rs;
 //! a drag), and its
 //! dot slot is committed from the frame's callback (docs/perf.md).
+use crate::shell::layers::tests::polled;
 use crate::shell::panes_tests::{console, window_count};
 use crate::shell::{Message, PaneMessage};
 use crate::ui::test_support::status;
@@ -54,13 +55,13 @@ fn a_beat_that_moves_a_height_re_renders_the_chrome_once_and_no_pane(cx: &mut Te
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
     send(Message::SetMotion(false), &mut native);
     send(Message::Pane(key, PaneMessage::Select(MODULE)), &mut native);
-    send(Message::StatusPushed(status(7)), &mut native);
+    polled(&model, status(7), &mut native);
     for _ in 0..8 {
         frame(&mut native);
     }
     let (chrome, tree) = (window_count(key, "renders.chrome"), tree_renders(MODULE));
     assert!(chrome > 0 && tree > 0, "the bar and the tree drew");
-    send(Message::StatusPushed(status(8)), &mut native);
+    polled(&model, status(8), &mut native);
     for _ in 0..3 {
         frame(&mut native);
     }
@@ -204,7 +205,7 @@ fn a_menus_ages_tick_only_while_it_is_open(cx: &mut TestAppContext) {
         native.run_until_parked();
     };
     send(Message::SetMotion(false), &mut native);
-    send(Message::StatusPushed(status(7)), &mut native);
+    polled(&model, status(7), &mut native);
     // the beats' first second after a status settles the bar
     second(&mut native);
     second(&mut native);

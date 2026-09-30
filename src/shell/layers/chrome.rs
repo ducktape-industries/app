@@ -40,9 +40,9 @@ pub(in crate::shell) struct Chrome {
     key: WindowKey,
     /// Its window: a tab's click opens the program through it.
     window: WeakEntity<WindowRoot>,
-    session: Observed<Slice<Session>>,
+    session: Observed<Session>,
     chain: Observed<Chain>,
-    account: Observed<Slice<Account>>,
+    account: Observed<Account>,
     rail: Observed<Rail>,
     notifications: Observed<Notifications>,
     overlays: Observed<Overlays>,
@@ -186,13 +186,35 @@ impl Chrome {
     }
 
     /// A row of the menu `menu` that is done with it: the menu closes,
-    /// then `message` goes to the reducer (s9-s11 move those arms).
-    fn closing(&self, menu: Overlay, message: fn() -> Message) -> impl Fn(&mut App) + 'static {
-        let (overlays, model) = (self.overlays.entity().clone(), self.model.clone());
+    /// then `run` runs.
+    fn closing(
+        &self,
+        menu: Overlay,
+        run: impl Fn(&mut App) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let overlays = self.overlays.entity().clone();
         move |cx| {
             overlays.update(cx, |overlays, cx| overlays.close(menu, cx));
-            model.update(cx, |model, cx| model.dispatch(message(), cx))
+            run(cx)
         }
+    }
+
+    /// What a press does: `call` on the session.
+    fn on_session(
+        &self,
+        call: impl Fn(&mut Session, &mut Context<Session>) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let session = self.session.entity().clone();
+        move |cx| session.update(cx, |session, cx| call(session, cx))
+    }
+
+    /// What a press does: `call` on the account.
+    fn on_account(
+        &self,
+        call: impl Fn(&mut Account, &mut Context<Account>) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let account = self.account.entity().clone();
+        move |cx| account.update(cx, |account, cx| call(account, cx))
     }
 
     /// What is open over the desk, moved by `change`.
@@ -785,7 +807,7 @@ impl Render for Chrome {
                 "Sign in".into(),
                 false,
                 None,
-                Box::new(self.dispatching(|| Message::SignIn)),
+                Box::new(self.on_account(Account::sign_in)),
             )
             .child(div().underline().child("Sign in"))
             .into_any_element(),
@@ -795,7 +817,7 @@ impl Render for Chrome {
                 "Create account".into(),
                 false,
                 None,
-                Box::new(self.dispatching(|| Message::ShowCreateAccount)),
+                Box::new(self.on_account(Account::create_account)),
             )
             .child(div().underline().child("Create account"))
             .into_any_element(),

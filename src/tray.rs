@@ -1,13 +1,14 @@
 //! The status item (macOS): the network and the block, Open, Appearance,
 //! Quit. Elsewhere the tray is a no-op that still answers the shell.
 
-use crate::{AppMessage as Message, Appearance, Ducktape};
+use crate::shell::entities::{Chain, SessionState};
+use crate::{AppMessage as Message, Appearance};
 use futures::channel::mpsc::{UnboundedReceiver, unbounded};
 use gpui_kit::App;
 
 /// What the item shows, diffed before each native update.
 #[derive(Clone, Debug, PartialEq, Eq)]
-struct Snapshot {
+pub(crate) struct Snapshot {
     /// picks the icon: online or offline
     connected: bool,
     tooltip: String,
@@ -38,13 +39,24 @@ const TOP_LEVEL: [usize; 7] = [NETWORK, STATUS, 2, OPEN, 4, APPEARANCE, 9];
 const STATUS_ROWS: [usize; 2] = [NETWORK, STATUS];
 
 impl Snapshot {
-    fn of(state: &Ducktape) -> Self {
+    /// The session's line, as the connect screen and the footer say it:
+    /// "Not connected", "Reaching …", "Connected · block N", "Reconnecting…".
+    fn status_line(session: &SessionState, chain: &Chain) -> String {
+        match (session.connecting, session.connected, session.reconnecting) {
+            (true, _, _) => format!("Reaching {}…", session.endpoint),
+            (false, false, _) => "Not connected".into(),
+            (false, true, true) => "Reconnecting…".into(),
+            (false, true, false) => format!("Connected · block {}", chain.height),
+        }
+    }
+
+    pub(crate) fn of(session: &SessionState, chain: &Chain, appearance: Appearance) -> Self {
         let mut labels: [String; ROWS] = std::array::from_fn(|_| String::new());
-        labels[NETWORK] = match state.network.is_empty() {
+        labels[NETWORK] = match session.network.is_empty() {
             true => "No network".into(),
-            false => state.network.clone(),
+            false => session.network.clone(),
         };
-        labels[STATUS] = state.status.clone();
+        labels[STATUS] = Self::status_line(session, chain);
         labels[OPEN] = "Open Ducktape".into();
         labels[APPEARANCE] = "Appearance".into();
         for (row, label, mode) in [
@@ -52,14 +64,14 @@ impl Snapshot {
             (LIGHT, "Light", Appearance::Light),
             (DARK, "Dark", Appearance::Dark),
         ] {
-            labels[row] = match state.appearance == mode {
+            labels[row] = match appearance == mode {
                 true => format!("✓ {label}"),
                 false => label.into(),
             };
         }
         labels[QUIT] = "Quit Ducktape".into();
         Self {
-            connected: state.connected,
+            connected: session.connected,
             tooltip: format!("{} — {}", labels[NETWORK], labels[STATUS]),
             labels,
         }
@@ -106,8 +118,7 @@ pub fn init(_: &mut App) -> (Tray, UnboundedReceiver<usize>) {
 }
 
 impl Tray {
-    pub fn sync(&mut self, state: &Ducktape) {
-        let next = Snapshot::of(state);
+    pub fn sync(&mut self, next: Snapshot) {
         if self.snapshot.as_ref() == Some(&next) {
             return;
         }
@@ -270,10 +281,28 @@ mod tests {
         for row in [NETWORK, STATUS, 2, 4, APPEARANCE, 9] {
             assert!(message(row).is_none());
         }
-        let (mut app, _) = Ducktape::boot();
-        app.network = "dognet".into();
-        let snapshot = Snapshot::of(&app);
+        let mut session = SessionState {
+            network: "dognet".into(),
+            ..SessionState::default()
+        };
+        let chain = Chain::default();
+        let snapshot = Snapshot::of(&session, &chain, Appearance::System);
         assert_eq!(snapshot.labels[NETWORK], "dognet");
+        assert_eq!(snapshot.labels[STATUS], "Not connected");
         assert!(!snapshot.connected);
+        session.connected = true;
+        let chain = Chain {
+            height: 7,
+            ..Chain::default()
+        };
+        let snapshot = Snapshot::of(&session, &chain, Appearance::System);
+        assert_eq!(snapshot.labels[STATUS], "Connected · block 7");
+        session.reconnecting = true;
+        let snapshot = Snapshot::of(&session, &chain, Appearance::System);
+        assert_eq!(snapshot.labels[STATUS], "Reconnecting…");
+        session.connecting = true;
+        session.endpoint = "http://b".into();
+        let snapshot = Snapshot::of(&session, &chain, Appearance::System);
+        assert_eq!(snapshot.labels[STATUS], "Reaching http://b…");
     }
 }

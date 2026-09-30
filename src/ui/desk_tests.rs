@@ -1,18 +1,14 @@
-//! Links, badges, and what the model keeps for the dialog over the desk
-//! (desk.rs, sign_in/approve.rs).
+//! Links and badges (desk.rs).
 
-use super::test_support::on_testkit;
 use super::{AppMessage as Message, Ducktape};
 use crate::runtime::Intent;
 
 #[test]
 fn a_link_on_this_chain_hands_its_view_the_route() {
-    let (mut state, _) = Ducktape::boot();
-    state.chain = "testkit#0a1b2c3d".into();
+    let mut state = Ducktape::boot();
+    let chain = "testkit#0a1b2c3d";
     state.roster = crate::runtime::Roster::listing(&["link-test-here", "link-test-away"]);
-    let _ = state.update(Message::OpenLink(
-        "duck://testkit-0a1b2c3d/link-test-here/tx/00ff".into(),
-    ));
+    let _ = state.open_link("duck://testkit-0a1b2c3d/link-test-here/tx/00ff", chain);
     assert_eq!(state.active, Some("link-test-here"));
     assert!(state.toast.is_empty(), "the view coming forward says it");
     assert_eq!(
@@ -20,24 +16,20 @@ fn a_link_on_this_chain_hands_its_view_the_route() {
         Some("tx/00ff")
     );
     // another chain's link opens the seat, routes nothing, and says why
-    let _ = state.update(Message::OpenLink(
-        "duck://othernet-0a1b2c3d/link-test-away/tx/00ff".into(),
-    ));
+    let _ = state.open_link("duck://othernet-0a1b2c3d/link-test-away/tx/00ff", chain);
     assert_eq!(state.active, Some("link-test-away"));
     assert_eq!(crate::runtime::take_route("link-test-away"), None);
     assert!(state.toast.contains("othernet"));
     // a view nobody lists opens nothing
     state.toast.clear();
-    let _ = state.update(Message::OpenLink(
-        "duck://testkit-0a1b2c3d/link-test-nowhere/x".into(),
-    ));
+    let _ = state.open_link("duck://testkit-0a1b2c3d/link-test-nowhere/x", chain);
     assert_eq!(state.active, Some("link-test-away"));
     assert!(state.toast.contains("link-test-nowhere"));
 }
 
 #[test]
 fn opening_a_view_keeps_its_badge_until_the_view_clears_it() {
-    let (mut state, _) = Ducktape::boot();
+    let mut state = Ducktape::boot();
     let _ = state.update(Message::ViewEvent("chat", Intent::Badge(3)));
     let _ = state.update(Message::SelectView("chat"));
     assert_eq!(state.badges.get("chat"), Some(&3));
@@ -45,7 +37,7 @@ fn opening_a_view_keeps_its_badge_until_the_view_clears_it() {
 
 #[test]
 fn a_view_event_sets_its_badge_and_opens_its_link() {
-    let (mut state, _) = Ducktape::boot();
+    let mut state = Ducktape::boot();
     let _ = state.update(Message::ViewEvent("chat", Intent::Badge(3)));
     assert_eq!(state.badges.get("chat"), Some(&3));
     let _ = state.update(Message::ViewEvent("chat", Intent::Badge(0)));
@@ -58,10 +50,18 @@ fn a_view_event_sets_its_badge_and_opens_its_link() {
     state.roster = crate::runtime::Roster::listing(&["view-event-link"]);
     let console = crate::shell::WindowKey::unique();
     state.console_win = Some(console);
-    let _ = state.update(Message::ViewEvent(
+    // a view's link comes back as a message, for `Desktop::dispatch` to
+    // read against the chain in hand
+    let task = state.update(Message::ViewEvent(
         "chat",
         Intent::OpenLink("duck://view-event-link/room/7".into()),
     ));
+    let Some(Message::OpenLink(link)) =
+        futures::executor::block_on(futures::StreamExt::next(&mut task.into_stream()))
+    else {
+        panic!("a view's link did not come back as a message");
+    };
+    let _ = state.open_link(&link, "");
     assert_eq!(state.active, Some("view-event-link"));
     assert_eq!(
         state.layouts[&console].shown(),
@@ -72,23 +72,4 @@ fn a_view_event_sets_its_badge_and_opens_its_link() {
         crate::runtime::take_route("view-event-link").as_deref(),
         Some("room/7")
     );
-}
-
-/// "Add a device…" closing, however it closed (`Overlays` tells the model,
-/// `ApproveClosed`), forgets what it found and its failure; one opening
-/// forgets the last code too.
-#[test]
-fn the_approve_dialog_closing_lets_go_of_what_it_found() {
-    let mut state = on_testkit();
-    let _ = state.update(Message::ApproveOpen);
-    let _ = state.update(Message::ApproveCodeTyped("ABCD-EFGH".into()));
-    state.sign_in.unlock_error = "no such code".into();
-    state.sign_in.approve_found = Some(crate::backend::join::Request {
-        network: "testkit".into(),
-        key: vec![7; 32],
-    });
-    let _ = state.update(Message::ApproveClosed);
-    assert!(state.sign_in.unlock_error.is_empty() && state.sign_in.approve_found.is_none());
-    let _ = state.update(Message::ApproveOpen);
-    assert!(state.sign_in.approve_code.is_empty());
 }

@@ -32,17 +32,17 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
 
 use crate::ui::layout::{self, PaneMessage};
-use crate::{AppMessage as Message, Ducktape, Stage};
+use crate::{AppMessage as Message, Ducktape};
 
 #[cfg(debug_assertions)]
 mod fixtures;
 #[cfg(debug_assertions)]
 pub(crate) use fixtures::render_tree_fixture;
 mod bridge;
-mod entities;
+pub(crate) mod entities;
 mod figure;
 mod help;
-pub(crate) use entities::Spot;
+pub(crate) use entities::{Screen, Spot};
 pub(crate) use help::chords;
 pub(crate) use layers::Kept;
 mod ink;
@@ -117,9 +117,6 @@ pub(crate) enum NativeCommand {
     Close(WindowKey),
     /// The appearance the model holds, onto the app's theme.
     SyncAppearance,
-    /// The console window to the launcher's size or the desk's, as the
-    /// stage now is.
-    SwapConsole,
     /// A link pressed off the window thread: the reducer reads it.
     OpenLink(String),
     /// A web page, for the system browser.
@@ -207,10 +204,6 @@ pub(crate) fn raise<M: 'static>(key: WindowKey) -> Task<M> {
 
 pub(crate) fn close<M: 'static>(key: WindowKey) -> Task<M> {
     effect(NativeCommand::Close(key))
-}
-
-pub(crate) fn swap_console<M: 'static>() -> Task<M> {
-    effect(NativeCommand::SwapConsole)
 }
 
 pub(crate) fn sync_appearance<M: 'static>() -> Task<M> {
@@ -323,6 +316,9 @@ struct Desktop {
     /// What a clock's beat can move on screen, as the windows were last
     /// told to draw it (`Ducktape::beat_face`).
     drawn: crate::BeatFace,
+    /// The entities' events and moves the reducer still acts on
+    /// (`windows.rs`, `Desktop::new`).
+    _subscriptions: Vec<gpui_kit::Subscription>,
 }
 
 impl Desktop {
@@ -367,20 +363,40 @@ impl Desktop {
                 | Message::SetNotifyBurst(_)
                 | Message::NotifyPermission(..)
         );
-        let approved = matches!(message, Message::ApproveDone(Ok(())));
-        let task = self.state.handle(message);
-        if approved {
-            self.approved(cx);
-        }
-        // both bridges: s11 moves reconcile onto `Windows.desks` observers,
-        // s10 has `Seats` encode the props from `Session` and `Account`
+        let task = match message {
+            // a link is read against the chain in hand, which is `Session`'s
+            Message::OpenLink(link) => {
+                let chain = self.entities.session.read(cx).get().chain.clone();
+                self.state.open_link(&link, &chain)
+            }
+            // Help asked for is just help: it greets a new account only
+            // until then (`Account.welcome`)
+            Message::OpenHelp => {
+                self.entities
+                    .account
+                    .update(cx, |account, cx| account.help_asked(cx));
+                self.state.handle(message)
+            }
+            message => self.state.handle(message),
+        };
+        self.settle(task, beat, notify_saved, cx);
+    }
+
+    /// After the state moved: the seats, the bridged slices, the tray and
+    /// `task` follow it; the windows draw unless a clock's `beat` moved
+    /// nothing on screen.
+    fn settle(
+        &mut self,
+        task: Task<Message>,
+        beat: bool,
+        notify_saved: bool,
+        cx: &mut Context<Self>,
+    ) {
+        // s11 moves reconcile onto `Windows.desks` observers
         self.reconcile_seats(cx);
-        let props = self.state.view_props();
-        self.seats
-            .update(cx, |seats, cx| seats.set_props(props, cx));
         // after the seats: a pane's view finds its seat when its desk moves
         self.bridge(notify_saved, cx);
-        self.tray.sync(&self.state);
+        self.sync_tray(cx);
         self.start(task, cx).detach();
         self.subscriptions(cx);
         // a clock's beat that finds nothing moved on screen draws no frame
@@ -389,6 +405,21 @@ impl Desktop {
             cx.notify();
         }
         self.drawn = face;
+    }
+
+    /// The status item follows the session, the chain and the appearance.
+    fn sync_tray(&mut self, cx: &Context<Self>) {
+        let snapshot = crate::tray::Snapshot::of(
+            self.entities.session.read(cx).get(),
+            self.entities.chain.read(cx),
+            self.state.appearance,
+        );
+        self.tray.sync(snapshot);
+    }
+
+    /// Before the desk: the console window is the launcher's size.
+    fn in_launcher(&self, cx: &Context<Self>) -> bool {
+        *self.entities.screen.read(cx).get() != Screen::Desk
     }
 
     /// The launcher and the desk are one window: crossing from one to
@@ -412,7 +443,7 @@ impl Desktop {
         else {
             return;
         };
-        let launcher = self.state.in_launcher();
+        let launcher = self.in_launcher(cx);
         let desk = self.desk_bounds;
         // deferred: the crossing is often dispatched from inside this very
         // window's update (a click on Lock), where it can't be updated again
@@ -578,7 +609,6 @@ impl Desktop {
                     remove(*handle, cx);
                 }
             }
-            NativeCommand::SwapConsole => self.swap_console(cx),
             NativeCommand::SyncAppearance => {
                 self.sync_appearance(cx);
                 cx.notify();

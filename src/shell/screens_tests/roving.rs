@@ -110,11 +110,11 @@ fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppCo
 #[gpui_kit::test]
 fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppContext) {
     keyed(cx);
-    let mut state = gate::desk();
-    state.appearance = crate::Appearance::Dark;
-    state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
+    let mut seed = gate::desk();
+    seed.state.appearance = crate::Appearance::Dark;
+    seed.state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
     let settings = Overlay::Settings(SettingsPage::Appearance);
-    let (view, mut native) = open((state, settings), cx);
+    let (view, mut native) = open((seed, settings), cx);
     native.update(draw);
     let stops = tab_round(&mut native);
     assert_eq!(under(&stops, "theme/"), ["shell:theme/Dark"], "{stops:?}");
@@ -159,9 +159,9 @@ fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppCont
 #[gpui_kit::test]
 fn the_programs_rail_is_one_tab_stop_whose_arrows_move_the_keys(cx: &mut TestAppContext) {
     keyed(cx);
-    let mut state = gate::desk();
-    state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b", "gate-c"]);
-    let (view, mut native) = open(state, cx);
+    let mut seed = gate::desk();
+    seed.state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b", "gate-c"]);
+    let (view, mut native) = open(seed, cx);
     // gpui reports focus moves only in the active window: the rail hears
     // the keys leave it from one
     super::activate(&mut native);

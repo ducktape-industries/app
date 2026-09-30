@@ -67,30 +67,29 @@ impl<T: 'static> Observed<T> {
     }
 }
 
-/// Runs `work` on the window thread with the views kernel's tokio runtime
-/// entered for every poll (as `Desktop::start` runs the reducer's tasks),
-/// then hands its output to `land` on the entity. Dropping the task drops
-/// the work; an entity already gone takes nothing.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the shell's entities run their tasks through this from s10 on"
-    )
-)]
+/// Polls `work` with the views kernel's tokio runtime entered (as
+/// `Desktop::start` runs the reducer's tasks): its timers and sockets
+/// need the runtime, and the window thread is not one of its threads.
+pub(crate) async fn on_runtime<R>(work: impl Future<Output = R>) -> R {
+    let runtime = crate::runtime::handle();
+    let mut work = std::pin::pin!(work);
+    std::future::poll_fn(|context| {
+        let _runtime = runtime.enter();
+        work.as_mut().poll(context)
+    })
+    .await
+}
+
+/// Runs `work` on the window thread inside the kernel's runtime
+/// (`on_runtime`), then hands its output to `land` on the entity.
+/// Dropping the task drops the work; an entity already gone takes nothing.
 pub(crate) fn spawn_on_runtime<E: 'static, R: 'static>(
     cx: &mut Context<E>,
     work: impl Future<Output = R> + 'static,
     land: impl FnOnce(&mut E, R, &mut Context<E>) + 'static,
 ) -> gpui_kit::Task<()> {
-    let runtime = crate::runtime::handle();
     cx.spawn(async move |this, cx| {
-        let mut work = std::pin::pin!(work);
-        let output = std::future::poll_fn(|context| {
-            let _runtime = runtime.enter();
-            work.as_mut().poll(context)
-        })
-        .await;
+        let output = on_runtime(work).await;
         let _ = this.update(cx, |this, cx| land(this, output, cx));
     })
 }

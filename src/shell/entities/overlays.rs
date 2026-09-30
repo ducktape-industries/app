@@ -3,7 +3,7 @@
 //! bar's menus. Only the console's opens anything; a pop-out's stays shut.
 //! Its methods are the one writer; what the reducer still owns follows it
 //! from observers (`Desktop::window_entities`).
-use super::{Session, Slice};
+use super::{Session, SessionState};
 use gpui_kit::{Context, Entity, Subscription};
 
 /// One thing open over the desk. Settings carries its page, so a page
@@ -87,8 +87,8 @@ impl Overlays {
     /// Nothing open, closing again whenever the network in hand is left:
     /// the connection dropped, or another network (or another chain of the
     /// same name) was taken up.
-    pub(crate) fn new(session: &Entity<Slice<Session>>, cx: &mut Context<Self>) -> Self {
-        let on = |session: &Session| {
+    pub(crate) fn new(session: &Entity<Session>, cx: &mut Context<Self>) -> Self {
+        let on = |session: &SessionState| {
             (
                 session.connected,
                 session.network.clone(),
@@ -205,14 +205,18 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
-    fn overlays(cx: &mut TestAppContext) -> (Entity<Slice<Session>>, Entity<Overlays>) {
-        let session = cx.new(|_| {
-            Slice::new(Session {
-                connected: true,
-                network: "testkit".into(),
-                chain: "testkit#1".into(),
-                ..Session::default()
-            })
+    fn overlays(cx: &mut TestAppContext) -> (Entity<Session>, Entity<Overlays>) {
+        let session = cx.update(super::super::tests::session);
+        session.update(cx, |session, cx| {
+            session.seed(
+                SessionState {
+                    connected: true,
+                    network: "testkit".into(),
+                    chain: "testkit#1".into(),
+                    ..SessionState::default()
+                },
+                cx,
+            )
         });
         let overlays = cx.new(|cx| Overlays::new(&session, cx));
         (session, overlays)
@@ -281,9 +285,11 @@ mod tests {
         let count = seen.clone();
         let _observing =
             cx.update(|cx| cx.observe(&overlays, move |_, _| count.set(count.get() + 1)));
-        let edit = |cx: &mut TestAppContext, edit: fn(&mut Session)| {
+        let edit = |cx: &mut TestAppContext, edit: fn(&mut SessionState)| {
             session.update(cx, |session, cx| {
-                session.edit(edit, cx);
+                let mut state = session.get().clone();
+                edit(&mut state);
+                session.seed(state, cx);
             });
         };
         overlays.update(cx, |it, cx| {

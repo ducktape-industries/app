@@ -20,15 +20,17 @@ pub(crate) fn run() {
         initialize_rendering(cx);
         crate::perf::mark("fonts");
         let mut commands = commands();
-        let (state, initial) = Ducktape::boot();
+        let state = Ducktape::boot();
         crate::perf::mark("boot");
-        let (mut tray, mut tray_events) = crate::tray::init(cx);
-        tray.sync(&state);
+        let (tray, mut tray_events) = crate::tray::init(cx);
         let desktop = cx.new(|cx| {
             let entities = entities::Entities::new(&state, crate::runtime::changes_channel(), cx);
             Desktop::new(state, tray, entities, cx)
         });
-        desktop.update(cx, |desktop, cx| desktop.sync_appearance(cx));
+        desktop.update(cx, |desktop, cx| {
+            desktop.sync_appearance(cx);
+            desktop.sync_tray(cx);
+        });
         let quitting = desktop.downgrade();
         cx.on_action(move |_: &keys::Quit, cx| {
             let _ = quitting.update(cx, |desktop, cx| desktop.dispatch(Message::TrayQuit, cx));
@@ -89,8 +91,14 @@ pub(crate) fn run() {
             desktop
                 .start(opened.map(Message::ConsoleOpened), cx)
                 .detach();
-            desktop.start(initial, cx).detach();
             desktop.subscriptions(cx);
+            // the first thing to do: reach the node last used, if there was one
+            if let Some(target) = entities::Session::boot_target() {
+                desktop
+                    .entities
+                    .session
+                    .update(cx, |session, cx| session.connect(target, cx));
+            }
         });
         first_present(cx);
         if let Some(calls) = crate::ax::open() {

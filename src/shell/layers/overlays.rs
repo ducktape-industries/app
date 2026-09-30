@@ -47,8 +47,8 @@ pub(in crate::shell) struct OverlayLayer {
     spotlight: Observed<Slice<Spotlight>>,
     rail: Observed<Rail>,
     notifications: Observed<Notifications>,
-    session: Observed<Slice<Session>>,
-    account: Observed<Slice<Account>>,
+    session: Observed<Session>,
+    account: Observed<Account>,
     prefs: Observed<Slice<Prefs>>,
     /// The window in front on the desk has a frame: Spotlight offers to fill
     /// or move it. Read off the window's `Desk` by an observer that tells
@@ -57,8 +57,8 @@ pub(in crate::shell) struct OverlayLayer {
     /// Spotlight's field: it owns what is typed, and each change writes
     /// `Spotlight.query`.
     field: Entity<InputState>,
-    /// "Add a device…"'s code: each change goes to the reducer (s10:
-    /// `Account`), which empties it as the dialog opens; so does this.
+    /// "Add a device…"'s code: the field owns it, and it goes in the
+    /// `Account::approve_find` call; emptied as the dialog opens.
     approve_code: NativeInput,
     /// Spotlight's list: ↑↓ scroll the picked row into it.
     spotlight_rows: gpui_kit::ScrollHandle,
@@ -109,8 +109,17 @@ impl OverlayLayer {
         let approve_code = NativeInput::new(
             "XXXX-XXXX",
             false,
-            |this: &mut Self, text, cx| this.send(Message::ApproveCodeTyped(text), cx),
-            |this: &mut Self, cx| this.send(Message::ApproveFind, cx),
+            |this: &mut Self, _, cx| {
+                this.account
+                    .entity()
+                    .update(cx, |account, cx| account.clear_error(cx));
+            },
+            |this: &mut Self, cx| {
+                let code = this.approve_code.state.read(cx).value().to_string();
+                this.account
+                    .entity()
+                    .update(cx, |account, cx| account.approve_find(code, cx));
+            },
             window,
             cx,
         );
@@ -205,7 +214,7 @@ impl OverlayLayer {
             return;
         };
         if open == Overlay::Approve {
-            // what the last one typed went as it opened (`ApproveOpen`)
+            // what the last one typed went as it opened (`Account::approve_open`)
             self.approve_code.wipe(window, cx);
         }
         if open == Overlay::Spotlight {
@@ -234,13 +243,6 @@ impl OverlayLayer {
             into.focus(window, cx);
             window.focus_next(cx);
         }
-    }
-
-    /// `message` to the reducer, which still owns what "Add a device…" asks
-    /// for (s10 moves it into `Account`).
-    fn send(&self, message: Message, cx: &mut gpui_kit::App) {
-        self.model
-            .update(cx, |model, cx| model.dispatch(message, cx));
     }
 
     /// Enter in Spotlight's field: the picked row runs.
@@ -288,8 +290,23 @@ pub(super) fn run(
     picked: Option<Spot>,
     cx: &mut gpui_kit::App,
 ) {
+    let entity = |cx: &gpui_kit::App| {
+        let entities = &model.read(cx).entities;
+        (entities.session.clone(), entities.account.clone())
+    };
     match overlays.update(cx, |overlays, cx| overlays.submit(picked, cx)) {
         Some(Spot::Settings) => overlays.update(cx, |overlays, cx| overlays.open_settings(cx)),
+        // the session's and the account's rows: one call each
+        Some(Spot::Switch(url)) => entity(cx)
+            .0
+            .update(cx, |session, cx| session.switch(url, cx)),
+        Some(Spot::OtherNetwork) => entity(cx)
+            .0
+            .update(cx, |session, cx| session.disconnect(cx)),
+        Some(Spot::CreateAccount) => entity(cx)
+            .1
+            .update(cx, |account, cx| account.create_account(cx)),
+        Some(Spot::Lock) => entity(cx).1.update(cx, |account, cx| account.lock(cx)),
         Some(spot) => model.update(cx, |model, cx| model.dispatch(Message::Spot(spot), cx)),
         None => {}
     }

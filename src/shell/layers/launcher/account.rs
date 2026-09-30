@@ -2,7 +2,7 @@
 //! to one that exists through a passkey (`passkey_waiting`) or another
 //! device (`link_waiting`). See launcher.rs for key vs account.
 
-use super::super::super::Message;
+use super::super::super::entities::Account;
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen, buttons, closing};
@@ -70,7 +70,7 @@ impl LauncherLayer {
                             false => "Create account",
                         },
                         Kind::Primary,
-                        || Message::CreateAccountSubmit,
+                        self.with_field(&self.fields.name, Account::create_submit),
                         Press::busy(busy),
                         &ink,
                     ),
@@ -78,14 +78,14 @@ impl LauncherLayer {
                         "passkey-create",
                         "Create with a passkey",
                         Kind::Secondary,
-                        || Message::PasskeyCreateSubmit,
+                        self.with_field(&self.fields.name, Account::passkey_create),
                         busy,
                         &ink,
                     ),
                     self.link(
                         "create-account-later",
                         "Not now",
-                        || Message::CreateAccountLater,
+                        self.on_account(Account::create_later),
                         true,
                         &ink,
                     ),
@@ -107,7 +107,7 @@ impl LauncherLayer {
                 self.link(
                     "link-device",
                     "Add this device from another device",
-                    || Message::LinkStart,
+                    self.on_account(Account::link_start),
                     false,
                     &ink,
                 ),
@@ -120,7 +120,7 @@ impl LauncherLayer {
                     .child(self.link(
                         "passkey-sign-in",
                         "a passkey",
-                        || Message::PasskeySignInSubmit,
+                        self.on_account(Account::passkey_sign_in),
                         true,
                         &ink,
                     ))
@@ -128,7 +128,7 @@ impl LauncherLayer {
                     .child(self.link(
                         "recover",
                         "a recovery key",
-                        || Message::RecoverShow,
+                        self.on_account(Account::recover_show),
                         true,
                         &ink,
                     ))
@@ -246,7 +246,7 @@ impl LauncherLayer {
                     None => Some(self.link(
                         "passkey-use-phone",
                         "Use a phone instead",
-                        || Message::PasskeyUsePhone,
+                        self.on_account(Account::passkey_use_phone),
                         false,
                         &ink,
                     )),
@@ -254,7 +254,7 @@ impl LauncherLayer {
                 Some(self.link(
                     "passkey-cancel",
                     "Cancel",
-                    || Message::PasskeyCancel,
+                    self.on_account(Account::passkey_cancel),
                     false,
                     &ink,
                 )),
@@ -336,7 +336,11 @@ impl LauncherLayer {
                 tight: false,
                 caption: self.node_caption(cx),
                 // the step back reads as recovery's: the same way to the account
-                back: Some(("link-back", "← Back", || Message::LinkCancel)),
+                back: Some((
+                    "link-back",
+                    "← Back",
+                    Box::new(self.on_account(Account::link_cancel)),
+                )),
                 label: "[03 / 03] Account · another device".into(),
                 headline: "Approve this device".into(),
                 lead: None,

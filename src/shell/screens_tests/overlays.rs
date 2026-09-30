@@ -249,9 +249,9 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     });
 
     // the bell's panel, one notice unread: Mark all read goes as it works
-    let mut state = gate::desk();
+    let mut seed = gate::desk();
     let center = CenterHandle::default();
-    state.center = center.clone();
+    seed.state.center = center.clone();
     let silent = Settings {
         banners: true,
         in_front: false,
@@ -271,7 +271,7 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
         std::time::Instant::now(),
         crate::runtime::notify::wall(),
     );
-    let (view, mut native) = open((state, bell), cx);
+    let (view, mut native) = open((seed, bell), cx);
     native.update(draw);
     native.update(draw);
     native.update(|window, cx| press("notifications", "notif-mark-all", window, cx));

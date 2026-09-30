@@ -1,9 +1,10 @@
 //! The chain as the node last told it: its height, when that last moved,
 //! the node's whole answer. Times are wall seconds (`notify::wall()`), so
-//! the open node menu ages them from its own clock. Bridged from the model
-//! until s10's poll writes it.
+//! the open node menu ages them from its own clock. Written by
+//! `Session`'s poll.
 use gpui_kit::Context;
 
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Chain {
     /// The node's height; -1 until one answered.
     pub(crate) height: i64,
@@ -14,6 +15,18 @@ pub(crate) struct Chain {
     /// stood: taken without a notify, since it moves on every answered
     /// poll and only an open node menu's own clock reads it.
     pub(crate) heard: i64,
+}
+
+impl Default for Chain {
+    /// No node answered yet.
+    fn default() -> Self {
+        Self {
+            height: -1,
+            block_seen: 0,
+            node: None,
+            heard: 0,
+        }
+    }
 }
 
 impl Chain {

@@ -37,72 +37,68 @@ fn drawn_ids(window: &mut Window, cx: &mut gpui_kit::App) -> std::collections::B
 /// is not the desk.
 #[gpui_kit::test]
 fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
-    use crate::ui::{Account, Phrase, Unlock};
+    use crate::shell::entities::{AccountStep, Screen};
+    use crate::shell::layers::tests::Seed;
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    type Build = fn() -> Stage;
-    let stages: Vec<(Build, &str)> = vec![
-        (|| Stage::Connect, "connect"),
-        (|| Stage::Unlock(Unlock::default()), "sign-in"),
+    let words = || {
+        Some(crate::shell::entities::Secret::from(String::from(
+            "canoe pond forest",
+        )))
+    };
+    let screens: Vec<(Screen, &str)> = vec![
+        (Screen::Connect, "connect"),
+        (Screen::Unlock { awaiting: false }, "sign-in"),
+        (Screen::Unlock { awaiting: true }, "sign-in"),
+        (Screen::Phrase { quiz: None }, "recovery"),
         (
-            || {
-                Stage::Unlock(Unlock {
-                    awaiting: true,
-                    ..Default::default()
-                })
-            },
-            "sign-in",
-        ),
-        (
-            || {
-                Stage::Phrase(Phrase {
-                    words: String::from("canoe pond forest").into(),
-                    ..Default::default()
-                })
-            },
-            "recovery",
-        ),
-        (
-            || {
-                Stage::Phrase(Phrase {
-                    words: String::from("canoe pond forest").into(),
-                    quiz: Some([0, 1, 2]),
-                    ..Default::default()
-                })
+            Screen::Phrase {
+                quiz: Some([0, 1, 2]),
             },
             "recovery-check",
         ),
-        (|| Stage::Recover(Default::default()), "recover"),
-        (|| Stage::Account(Account::default()), "account-step"),
+        (Screen::Recover, "recover"),
         (
-            || {
-                Stage::Account(Account {
-                    link_code: "ABCD-EFGH".into(),
-                    ..Default::default()
-                })
+            Screen::Account {
+                step: AccountStep::Name,
+            },
+            "account-step",
+        ),
+        (
+            Screen::Account {
+                step: AccountStep::Link,
             },
             "link-waiting",
         ),
-        (|| Stage::Desk, "menubar"),
+        (Screen::Desk, "menubar"),
     ];
-    let screens: std::collections::BTreeSet<&str> = stages.iter().map(|(_, id)| *id).collect();
-    for (stage, id) in &stages {
+    let names: std::collections::BTreeSet<&str> = screens.iter().map(|(_, id)| *id).collect();
+    for (screen, id) in &screens {
         // the key seated or not, locked or not, an old password key or not:
         // none of it picks the screen
         for bits in 0..8u8 {
-            let (mut state, _) = Ducktape::boot();
-            state.stage = stage();
-            if bits & 1 != 0 {
-                state.signer_key = "ab".into();
+            let mut seed = Seed::boot();
+            seed.screen = *screen;
+            if matches!(screen, Screen::Phrase { .. }) {
+                seed.phrase = words();
             }
-            state.sign_in.locked = bits & 2 != 0;
-            state.key_exists = bits & 4 != 0;
-            let launcher = state.in_launcher();
-            let (_view, mut native) = open(state, cx);
+            if let Screen::Account {
+                step: AccountStep::Link,
+            } = screen
+            {
+                seed.account.link_code = "ABCD-EFGH".into();
+            }
+            if bits & 1 != 0 {
+                seed.account.signer_key = "ab".into();
+            }
+            seed.account.locked = bits & 2 != 0;
+            seed.account.key_exists = bits & 4 != 0;
+            let launcher = *screen != Screen::Desk;
+            let (_view, mut native) = open(seed, cx);
             let ids = native.update(drawn_ids);
-            let drawn: Vec<_> = screens
+            let drawn: Vec<_> = names
                 .iter()
                 .filter(|screen| ids.contains(**screen))
                 .collect();

@@ -2,7 +2,7 @@
 //! text finds. The text is written from Spotlight's field as it changes
 //! (the field owns what is typed); only the overlay layer reads it, so a
 //! keystroke draws Spotlight and nothing else.
-use super::{Account, Rail, Session, Slice, Spot, SpotRow};
+use super::{AccountState, Rail, SessionState, Slice, Spot, SpotRow};
 use gpui_kit::Context;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -43,8 +43,8 @@ impl Spotlight {
     pub(crate) fn rows(
         &self,
         rail: &Rail,
-        session: &Session,
-        account: &Account,
+        session: &SessionState,
+        account: &AccountState,
         framed: bool,
     ) -> Vec<SpotRow> {
         let row = |group, title: String, meta: String, spot| SpotRow {

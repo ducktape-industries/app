@@ -10,7 +10,7 @@ use gpui_kit::{App, Context, Entity, IntoElement, Render, Subscription, Window};
 /// that leaves both be draws nothing.
 pub(in crate::shell) struct HelpPane {
     key: WindowKey,
-    account: Entity<Slice<Account>>,
+    account: Entity<Account>,
     prefs: Entity<Slice<Prefs>>,
     shown: (bool, bool),
     _observing: [Subscription; 2],
@@ -18,7 +18,7 @@ pub(in crate::shell) struct HelpPane {
 
 impl HelpPane {
     pub(in crate::shell) fn new(
-        account: &Entity<Slice<Account>>,
+        account: &Entity<Account>,
         prefs: &Entity<Slice<Prefs>>,
         key: WindowKey,
         cx: &mut Context<Self>,

@@ -16,7 +16,7 @@ use gpui_kit::{
 pub(in crate::shell) struct StatusDot {
     key: WindowKey,
     slot: Observed<DotSlot>,
-    session: Observed<Slice<Session>>,
+    session: Observed<Session>,
     prefs: Observed<Slice<Prefs>>,
 }
 

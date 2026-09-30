@@ -217,21 +217,19 @@ pub(super) enum Kind {
 
 /// `<button>`: `height 44px; padding 0 18px; border 1.5px solid ink;
 /// font 500 15px`, filled for [`Kind::Primary`]. Off or busy, it reads at
-/// 0.3 ([`Press`]). Pressed, it dispatches `message` through `model`.
+/// 0.3 ([`Press`]). Pressed, it runs `run`.
 #[allow(clippy::too_many_arguments, reason = "one button, seven facts")]
 pub(super) fn button(
-    model: &Entity<Desktop>,
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
     kind: Kind,
-    message: fn() -> Message,
+    run: impl Fn(&mut App) + 'static,
     press: impl Into<Press>,
     ink: &Ink,
 ) -> AnyElement {
     let press = press.into();
     let disabled = press != Press::Ready;
     let text = text.into();
-    let model = model.clone();
     let (bg, fg) = match kind {
         Kind::Primary => (ink.ink, ink.bg),
         Kind::Secondary | Kind::Small => (gpui_kit::transparent_black(), ink.ink),
@@ -257,7 +255,7 @@ pub(super) fn button(
         .when(!disabled, |button| {
             button.cursor_pointer().on_click(move |_, _, cx| {
                 cx.stop_propagation();
-                model.update(cx, |model, cx| model.dispatch(message(), cx))
+                run(cx)
             })
         })
         .child(text);
@@ -451,28 +449,25 @@ mod tests {
     fn a_keyboard_focused_button_wears_an_ink_ring_that_inverts_on_ink(
         cx: &mut gpui_kit::TestAppContext,
     ) {
-        use super::{Desktop, Kind, Message, Press, button};
+        use super::{Kind, Press, button};
         use gpui_kit::test::TestWindowExt as _;
         use gpui_kit::{
-            BoxShadow, Context, Div, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-            Modifiers, Render, Stateful, Styled as _, VisualTestContext, Window, div, point, px,
-            size,
+            BoxShadow, Context, Div, FocusHandle, InteractiveElement as _, IntoElement, Modifiers,
+            Render, Stateful, Styled as _, VisualTestContext, Window, div, point, px, size,
         };
         use std::{cell::RefCell, rc::Rc};
         type Seen = Rc<RefCell<Vec<(Vec<BoxShadow>, Option<Hsla>)>>>;
-        struct Buttons(Entity<Desktop>, Ink, [FocusHandle; 2], Seen);
+        struct Buttons(Ink, [FocusHandle; 2], Seen);
         impl Render for Buttons {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                let (desktop, ink) = (self.0.clone(), self.1);
-                let (focus, seen) = (self.2.clone(), self.3.clone());
+                let ink = self.0;
+                let (focus, seen) = (self.1.clone(), self.2.clone());
                 gpui_kit::canvas(
                     move |_, window, cx| {
                         let mut both = Vec::new();
                         for (nth, kind) in [Kind::Secondary, Kind::Primary].into_iter().enumerate()
                         {
-                            let message = || Message::DismissToast;
-                            let mut button =
-                                button(&desktop, nth, "Go", kind, message, Press::Ready, &ink);
+                            let mut button = button(nth, "Go", kind, |_| {}, Press::Ready, &ink);
                             let button = button
                                 .downcast_mut::<Stateful<Div>>()
                                 .expect("a shell button is a Stateful<Div>");
@@ -491,15 +486,13 @@ mod tests {
             }
         }
         cx.update(gpui_kit::init);
-        let (root, _) = crate::shell::screens_tests::open(crate::Ducktape::boot().0, cx);
-        let desktop = cx.update(|cx| root.read(cx).model.clone());
         for dark in [false, true] {
             let ink = Ink::of(dark);
             let seen = Seen::default();
             let focus = cx.update(|cx| [cx.focus_handle(), cx.focus_handle()]);
             let window = cx.open_window(size(px(200.), px(200.)), {
-                let (desktop, focus, seen) = (desktop.clone(), focus.clone(), seen.clone());
-                move |_, _| Buttons(desktop, ink, focus, seen)
+                let (focus, seen) = (focus.clone(), seen.clone());
+                move |_, _| Buttons(ink, focus, seen)
             });
             let mut native = VisualTestContext::from_window(window.into(), cx);
             let shown = |native: &mut VisualTestContext| {

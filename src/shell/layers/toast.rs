@@ -16,7 +16,7 @@ pub(in crate::shell) struct ToastView {
     model: Entity<Desktop>,
     key: WindowKey,
     toast: Observed<Toast>,
-    session: Observed<Slice<Session>>,
+    session: Observed<Session>,
     screen: Observed<Slice<Screen>>,
     prefs: Observed<Slice<Prefs>>,
 }
@@ -94,11 +94,13 @@ impl Render for ToastView {
             .child(pulse(false, prefs.motion, &ink))
             .child(text(said))
             .child(button(
-                &self.model,
                 "reconnect",
                 "Retry now",
                 Kind::Small,
-                || Message::Tick,
+                {
+                    let session = self.session.entity().clone();
+                    move |cx| session.update(cx, |session, cx| session.poll_now(cx))
+                },
                 Press::Ready,
                 &ink,
             ))
@@ -111,11 +113,15 @@ impl Render for ToastView {
             )
             .child(text(toast))
             .child(button(
-                &self.model,
                 "toast-dismiss",
                 "Dismiss",
                 Kind::Small,
-                || Message::DismissToast,
+                {
+                    let model = self.model.clone();
+                    move |cx| {
+                        model.update(cx, |model, cx| model.dispatch(Message::DismissToast, cx))
+                    }
+                },
                 Press::Ready,
                 &ink,
             ))

@@ -2,7 +2,7 @@
 //! this device (`recover`); a new key's words shown once (`phrase`), then
 //! three of them asked back (`phrase_check`).
 
-use super::super::super::Message;
+use super::super::super::entities::Account;
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen, buttons};
@@ -54,7 +54,7 @@ impl LauncherLayer {
                     false => "Add this device",
                 },
                 Kind::Primary,
-                || Message::RecoverSubmit,
+                self.with_field(&self.fields.restore, Account::recover_submit),
                 Press::busy(account.busy),
                 &ink,
             )]));
@@ -63,7 +63,11 @@ impl LauncherLayer {
                 id: "recover",
                 tight: false,
                 caption: self.node_caption(cx),
-                back: Some(("recover-back", "← Back", || Message::RecoverCancel)),
+                back: Some((
+                    "recover-back",
+                    "← Back",
+                    Box::new(self.on_account(Account::recover_cancel)),
+                )),
                 label: "[03 / 03] Account · recovery key".into(),
                 headline: format!("Your {} recovery key", self.session.read(cx).get().network),
                 lead: Some("The 24 words you wrote down for this account. They add this device; nothing else changes.".into()),
@@ -124,7 +128,7 @@ impl LauncherLayer {
                 "phrase-done",
                 "I wrote them down",
                 Kind::Primary,
-                || Message::PhraseWrittenDown,
+                self.on_account(Account::phrase_written_down),
                 false,
                 &ink,
             ))
@@ -136,7 +140,7 @@ impl LauncherLayer {
             .child(self.link(
                 "phrase-cancel",
                 "Not now",
-                || Message::PhraseCancel,
+                self.on_account(Account::phrase_cancel),
                 false,
                 &ink,
             ));
@@ -213,14 +217,14 @@ impl LauncherLayer {
                         "phrase-check",
                         "Confirm",
                         Kind::Primary,
-                        || Message::PhraseCheckSubmit,
+                        self.check_phrase(),
                         account.busy,
                         &ink,
                     ))
                     .child(self.link(
                         "phrase-show",
                         "See the words again",
-                        || Message::PhraseShowAgain,
+                        self.on_account(Account::phrase_show_again),
                         false,
                         &ink,
                     )),
