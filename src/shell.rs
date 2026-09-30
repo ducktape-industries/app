@@ -8,8 +8,9 @@
 //! as siblings: the launcher (connect, key, account, recovery screens;
 //! `layers::Screens`) until sign-in, then the desk: the menu bar
 //! (`layers::Chrome`), the panes floating under it (`layers::PaneLayer`),
-//! the open dialog (⌘K, Settings; `Screens`), the node's breath
-//! (`layers::StatusDot`) and the footer (`layers::ToastView`).
+//! the open dialog (⌘K, Settings: `layers::OverlayLayer`; "Add a device…":
+//! `Screens`), the node's breath (`layers::StatusDot`) and the footer
+//! (`layers::ToastView`).
 //!
 //! The reducer's tasks run without `&mut App`, so they cannot touch a
 //! window. They ask for a native effect through the `NativeCommand` channel
@@ -44,8 +45,9 @@ mod entities;
 mod facts;
 mod figure;
 mod help;
+pub(crate) use entities::Spot;
 pub(crate) use help::chords;
-pub(crate) use settings::Kept;
+pub(crate) use layers::Kept;
 mod ink;
 mod keys;
 mod launch;
@@ -62,16 +64,13 @@ pub(in crate::shell) mod panes_tests;
 mod screens;
 #[cfg(test)]
 mod screens_tests;
-mod spotlight;
 mod status_bar;
-mod text_field;
 mod windows;
 
 pub(crate) use launch::run;
 mod account_screens;
 mod key_screen;
 mod recovery_screens;
-mod settings;
 mod spin;
 mod theme;
 
@@ -375,7 +374,11 @@ impl Desktop {
                 | Message::SetNotifyBurst(_)
                 | Message::NotifyPermission(..)
         );
+        let approved = matches!(message, Message::ApproveDone(Ok(())));
         let task = self.state.handle(message);
+        if approved {
+            self.approved(cx);
+        }
         // both bridges: s11 moves reconcile onto `Windows.desks` observers,
         // s10 has `Seats` encode the props from `Session` and `Account`
         self.reconcile_seats(cx);

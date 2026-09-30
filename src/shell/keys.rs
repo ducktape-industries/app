@@ -14,6 +14,7 @@
 //! (`layers::CONTEXT`), and until then moves focus. A desk window is a
 //! pane; an OS window's root is a `WindowRoot`.
 
+use super::entities::{Overlay, Popover};
 use super::*;
 use gpui_kit::{Action, KeyBinding, KeyContext, Menu, MenuItem};
 
@@ -178,25 +179,24 @@ impl WindowRoot {
                 }),
             )
             .on_action(cx.listener(|this, _: &ToggleSpotlight, _, cx| {
-                let message = match this.model.read(cx).state.overlay {
-                    Some(crate::Overlay::Spotlight) => {
-                        Message::CloseOverlay(crate::Overlay::Spotlight)
-                    }
-                    _ => Message::OpenSpotlight,
-                };
-                this.model
-                    .update(cx, |model, cx| model.dispatch(message, cx));
+                this.overlays
+                    .entity()
+                    .update(cx, |overlays, cx| overlays.toggle(Overlay::Spotlight, cx));
             }))
             .on_action(cx.listener(|this, _: &OpenHelp, _, cx| {
+                // a menu it was asked from (the app menu's Help) is done
+                this.overlays.entity().update(cx, |overlays, cx| {
+                    overlays.close(Overlay::Menu(Popover::Node), cx)
+                });
                 this.model
                     .update(cx, |model, cx| model.dispatch(Message::OpenHelp, cx));
             }))
             .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| {
-                if let Some(overlay) = this.model.read(cx).state.overlay {
-                    this.model.update(cx, |model, cx| {
-                        model.dispatch(Message::CloseOverlay(overlay), cx)
-                    });
-                }
+                this.overlays.entity().update(cx, |overlays, cx| {
+                    if let Some(open) = *overlays.get() {
+                        overlays.close(open, cx);
+                    }
+                });
             }))
     }
 }

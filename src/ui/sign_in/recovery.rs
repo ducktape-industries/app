@@ -9,8 +9,8 @@ use crate::ui::{Account, AppMessage as Message, Ducktape, Phrase, Recover, Stage
 impl Ducktape {
     pub(super) fn on_recovery(&mut self, message: Message) -> Task<Message> {
         match message {
+            // (the account menu closed as its row was picked: `layers::Chrome`)
             Message::RecoveryKeyStart => {
-                self.close_menu();
                 self.sign_in.unlock_error.clear();
                 self.stage = Stage::Phrase(Phrase {
                     words: backend::join::new_recovery_phrase().into(),

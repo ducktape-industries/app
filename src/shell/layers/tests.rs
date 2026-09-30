@@ -1,6 +1,7 @@
 //! The layers' fixture: a console window drawn from a `Ducktape` state, as
 //! `panes_tests::console` and `screens_tests::open` build theirs.
-use super::super::{Desktop, WindowKey, WindowKind, entities, keys};
+use super::super::entities::{self, Overlay};
+use super::super::{Desktop, WindowKey, WindowKind, keys};
 use super::WindowRoot;
 use crate::Ducktape;
 use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext, px, size};
@@ -49,4 +50,42 @@ pub(in crate::shell) fn open_console(
         view,
         VisualTestContext::from_window(handle.into(), cx),
     )
+}
+
+/// `overlay` open over `view`'s desk, or whatever is open closed, the way
+/// the bar and the keys do it.
+pub(in crate::shell) fn show(
+    view: &Entity<WindowRoot>,
+    overlay: Option<Overlay>,
+    native: &mut VisualTestContext,
+) {
+    native.update(|_, cx| {
+        let overlays = view.read(cx).overlays();
+        overlays.update(cx, |it, cx| match (overlay, *it.get()) {
+            (Some(overlay), _) => it.open(overlay, cx),
+            (None, Some(open)) => it.close(open, cx),
+            (None, None) => {}
+        });
+    });
+}
+
+/// What is open over `view`'s desk.
+pub(in crate::shell) fn open_now(
+    view: &Entity<WindowRoot>,
+    native: &mut VisualTestContext,
+) -> Option<Overlay> {
+    native.update(|_, cx| *view.read(cx).overlays().read(cx).get())
+}
+
+/// `spot` run from Search over `view`'s desk, as its row's click runs it:
+/// Search closes, and what it picked runs.
+pub(in crate::shell) fn run_spot(
+    view: &Entity<WindowRoot>,
+    spot: entities::Spot,
+    native: &mut VisualTestContext,
+) {
+    native.update(|_, cx| {
+        let (overlays, model) = (view.read(cx).overlays(), view.read(cx).model.clone());
+        super::overlays::run(&overlays, &model, Some(spot), cx);
+    });
 }

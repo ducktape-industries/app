@@ -3,12 +3,13 @@
 //! few writes the `Desktop` makes outside one). While bridged a slice has
 //! no other writer, and each write compares first, so a dispatch that
 //! moved nothing notifies no slice. Each write goes with the step that
-//! moves its source: `Overlays` and `Spotlight` in s8; `Session`, `Chain`,
-//! `Account` and `Screen` in s10; the rest in s11.
+//! moves its source: `Session`, `Chain`, `Account` and `Screen` in s10;
+//! the rest in s11. (`Overlays` and `Spotlight` have their own methods;
+//! what the model still keeps for them follows them from here.)
 
 use super::entities::{
-    AccountStep, Chain, Entities, Front, Notifications, Overlay, Prefs, Rail, Screen, Session,
-    Slice, Spotlight, WindowEntities,
+    AccountStep, Chain, Entities, Front, Notifications, Overlay, Overlays, Prefs, Rail, Screen,
+    Session, Slice, Spotlight, WindowEntities,
 };
 use super::*;
 use crate::runtime::notify;
@@ -49,25 +50,55 @@ impl Desktop {
     pub(super) fn window_entities(
         &mut self,
         key: WindowKey,
-        kind: WindowKind,
         cx: &mut Context<Self>,
     ) -> WindowEntities {
         if let Some(own) = self.entities.by_window.get(&key) {
             return own.clone();
         }
-        let (state, console) = (&self.state, kind == WindowKind::Console);
-        let layout = state.layouts.get(&key).cloned().unwrap_or_default();
+        let layout = self.state.layouts.get(&key).cloned().unwrap_or_default();
         let desk = cx.new(|_| Slice::new(layout));
+        let session = self.entities.session.clone();
         let own = WindowEntities {
-            console,
             front: Front::of_desk(&desk, cx),
             desk,
-            overlays: cx.new(|_| Slice::new(overlay(state, console))),
-            spotlight: cx.new(|_| Slice::new(spotlight(state, console))),
+            overlays: cx.new(|cx| Overlays::new(&session, cx)),
+            spotlight: cx.new(|_| Slice::new(Spotlight::default())),
             dot: cx.new(|_| Slice::new(None)),
         };
+        self.follow_overlays(key, &own, cx);
         self.entities.by_window.insert(key, own.clone());
         own
+    }
+
+    /// What the model still keeps for what opens over window `key`'s desk
+    /// follows it: the keyboard lets go of a window it held as anything
+    /// opens (s11: `Desk` does), and "Add a device…" closing, however it
+    /// did, forgets what it found (s10: `Account` does).
+    fn follow_overlays(&self, key: WindowKey, own: &WindowEntities, cx: &mut Context<Self>) {
+        let desk = own.desk.clone();
+        let mut was = None;
+        cx.observe(&own.overlays, move |desktop, overlays, cx| {
+            let open = *overlays.read(cx).get();
+            let before = std::mem::replace(&mut was, open);
+            if before == Some(Overlay::Approve) && open != before {
+                desktop.dispatch(Message::ApproveClosed, cx);
+            }
+            if open.is_some() && desk.read(cx).get().held.is_some() {
+                let release = PaneMessage::Release { keep: true };
+                desktop.dispatch(Message::Pane(key, release), cx);
+            }
+        })
+        .detach();
+    }
+
+    /// A device approved: its dialog closes (the reducer has no `cx`; s10's
+    /// `Account::approve_done` closes it itself).
+    pub(super) fn approved(&self, cx: &mut Context<Self>) {
+        let console = self.state.console_win;
+        if let Some(own) = console.and_then(|key| self.entities.by_window.get(&key)) {
+            own.overlays
+                .update(cx, |overlays, cx| overlays.close(Overlay::Approve, cx));
+        }
     }
 
     /// One write per bridged entity from the state as it stands. The
@@ -98,8 +129,6 @@ impl Desktop {
         for (key, own) in &entities.by_window {
             let layout = state.layouts.get(key).cloned().unwrap_or_default();
             set(&own.desk, layout, cx);
-            set(&own.overlays, overlay(state, own.console), cx);
-            set(&own.spotlight, spotlight(state, own.console), cx);
         }
     }
 }
@@ -183,27 +212,6 @@ fn prefs(state: &Ducktape, notify: notify::Settings) -> Prefs {
     }
 }
 
-/// What is open over the desk, on the console; a pop-out's stays shut.
-fn overlay(state: &Ducktape, console: bool) -> Option<Overlay> {
-    Some(match state.overlay.filter(|_| console)? {
-        crate::Overlay::Spotlight => Overlay::Spotlight,
-        crate::Overlay::Approve => Overlay::Approve,
-        crate::Overlay::Settings => Overlay::Settings(state.settings_page),
-        crate::Overlay::Network => Overlay::Network,
-        crate::Overlay::Menu(menu) => Overlay::Menu(menu),
-    })
-}
-
-fn spotlight(state: &Ducktape, console: bool) -> Spotlight {
-    match console {
-        true => Spotlight {
-            query: state.spotlight_query.clone(),
-            pick: state.spotlight_pick,
-        },
-        false => Spotlight::default(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::panes_tests::console;
@@ -228,6 +236,54 @@ mod tests {
     fn send(model: &Entity<Desktop>, message: Message, native: &mut VisualTestContext) {
         model.update(native, |model, cx| model.dispatch(message, cx));
         native.run_until_parked();
+    }
+
+    /// What the reducer still keeps follows what opens over a window's
+    /// desk, with no window drawing to move the keys: anything opening lets
+    /// go of the desk's hold; a device approved closes "Add a device…",
+    /// and its closing forgets what it found.
+    #[gpui_kit::test]
+    fn the_model_follows_what_opens_over_a_window(cx: &mut TestAppContext) {
+        use crate::ui::layout::{EMPTY, Layout, PaneMessage};
+        let (mut state, _) = Ducktape::boot();
+        state.roster = Default::default();
+        state.center = Default::default();
+        state.stage = crate::Stage::Desk;
+        let key = WindowKey::unique();
+        let mut layout = Layout::default();
+        layout.split(EMPTY);
+        layout.measure((1280., 764.));
+        layout.settle();
+        layout.initialized = true;
+        state.console_win = Some(key);
+        state.layouts.insert(key, layout);
+        let model = cx.new(|cx| {
+            let entities = Entities::for_test(&state, cx);
+            Desktop::new(state, crate::tray::init(cx).0, entities, cx)
+        });
+        let own = model.update(cx, |model, cx| model.window_entities(key, cx));
+        let dispatch = |message: Message, cx: &mut TestAppContext| {
+            model.update(cx, |model, cx| model.dispatch(message, cx))
+        };
+        let held = |cx: &mut TestAppContext| own.desk.read_with(cx, |desk, _| desk.get().held);
+        dispatch(Message::Pane(key, PaneMessage::Hold(0)), cx);
+        assert!(held(cx).is_some());
+        own.overlays
+            .update(cx, |it, cx| it.open(Overlay::Spotlight, cx));
+        assert_eq!(held(cx), None, "Search opened over a hold");
+
+        own.overlays
+            .update(cx, |it, cx| it.open(Overlay::Approve, cx));
+        model.update(cx, |model, _| {
+            model.state.sign_in.approve_found = Some(crate::backend::join::Request {
+                network: "testkit".into(),
+                key: vec![7; 32],
+            })
+        });
+        dispatch(Message::ApproveDone(Ok(())), cx);
+        assert_eq!(own.overlays.read_with(cx, |it, _| *it.get()), None);
+        let found = model.read_with(cx, |model, _| model.state.sign_in.approve_found.clone());
+        assert_eq!(found, None, "Approve closed and kept what it found");
     }
 
     /// The clock beats on a still app: the bridge writes every slice, and

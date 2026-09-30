@@ -29,13 +29,6 @@ impl<T: PartialEq + 'static> Slice<T> {
     }
 
     /// A field-wise edit, compared as a whole once `edit` has run.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the desk's resize and seed edit the layout in place from s11"
-        )
-    )]
     pub(crate) fn edit(&mut self, edit: impl FnOnce(&mut T), cx: &mut Context<Self>) -> bool
     where
         T: Clone,

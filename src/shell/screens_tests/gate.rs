@@ -4,11 +4,22 @@
 use super::*;
 use crate::Secret;
 use crate::ax::audit::{self, Violation};
+use crate::shell::entities::{Overlay, Popover, SettingsPage};
 use crate::ui::{Account, Phrase, Recover, Unlock};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{TestAppContext, VisualTestContext};
 
-pub(super) type Build = Box<dyn Fn() -> Ducktape>;
+pub(super) type Build = Box<dyn Fn() -> Scene>;
+
+/// A screen state with nothing open over it.
+fn plain(build: impl Fn() -> Ducktape + 'static) -> Build {
+    Box::new(move || build().into())
+}
+
+/// A screen state with `overlay` open over its desk.
+fn over(overlay: Overlay, build: impl Fn() -> Ducktape + 'static) -> Build {
+    Box::new(move || (build(), overlay).into())
+}
 
 fn booted(stage: Stage, key: bool) -> Ducktape {
     let (mut state, _) = Ducktape::boot();
@@ -39,12 +50,8 @@ pub(super) fn desk() -> Ducktape {
     state
 }
 
-fn on_desk(overlay: crate::Overlay) -> Build {
-    Box::new(move || {
-        let mut state = desk();
-        state.overlay = Some(overlay);
-        state
-    })
+fn on_desk(overlay: Overlay) -> Build {
+    over(overlay, desk)
 }
 
 /// A desk that lists two programs: the bar's rail is a tab list the
@@ -56,7 +63,7 @@ fn two_programs() -> Ducktape {
     state
 }
 
-/// Search open over a desk with a window on it: its rows for the window
+/// A desk with a window on it, which Search opens over: its rows for the window
 /// (Fill, Move or size) are there, each reporting its chord (AX-114).
 pub(super) fn spotlight_over_window() -> Ducktape {
     let mut state = desk();
@@ -68,7 +75,6 @@ pub(super) fn spotlight_over_window() -> Ducktape {
     layout.initialized = true;
     state.console_win = Some(key);
     state.layouts.insert(key, layout);
-    state.overlay = Some(crate::Overlay::Spotlight);
     state
 }
 
@@ -77,11 +83,11 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
     let words = || Secret::from(String::from("canoe pond forest"));
     let passkey = || crate::ui::task::Task::<()>::none().abortable().1;
     vec![
-        ("connect", true, Box::new(|| booted(Stage::Connect, false))),
+        ("connect", true, plain(|| booted(Stage::Connect, false))),
         (
             "connect-error-and-recent",
             true,
-            Box::new(|| {
+            plain(|| {
                 let mut state = booted(Stage::Connect, false);
                 state.endpoint = "127.0.0.1:9000".into();
                 state.endpoint_error = "no route to host".into();
@@ -96,7 +102,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "connect-connecting",
             true,
-            Box::new(|| {
+            plain(|| {
                 let mut state = booted(Stage::Connect, false);
                 state.endpoint = "127.0.0.1:9000".into();
                 state.connecting = true;
@@ -107,12 +113,12 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "sign-in",
             true,
-            Box::new(|| booted(Stage::Unlock(Unlock::default()), false)),
+            plain(|| booted(Stage::Unlock(Unlock::default()), false)),
         ),
         (
             "sign-in-old-password-error",
             true,
-            Box::new(|| {
+            plain(|| {
                 let mut state = booted(Stage::Unlock(Unlock::default()), false);
                 state.key_exists = true;
                 state.sign_in.unlock_error = "wrong password".into();
@@ -122,7 +128,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "sign-in-awaiting",
             true,
-            Box::new(|| {
+            plain(|| {
                 booted(
                     Stage::Unlock(Unlock {
                         awaiting: true,
@@ -135,7 +141,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "recovery",
             true,
-            Box::new(move || {
+            plain(move || {
                 booted(
                     Stage::Phrase(Phrase {
                         words: words(),
@@ -148,7 +154,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "recovery-check",
             true,
-            Box::new(move || {
+            plain(move || {
                 booted(
                     Stage::Phrase(Phrase {
                         words: words(),
@@ -162,12 +168,12 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "recover",
             true,
-            Box::new(|| booted(Stage::Recover(Recover::default()), true)),
+            plain(|| booted(Stage::Recover(Recover::default()), true)),
         ),
         (
             "recover-adding",
             true,
-            Box::new(|| {
+            plain(|| {
                 let mut state = booted(Stage::Recover(Recover::default()), true);
                 state.sign_in.unlock_busy = true;
                 state
@@ -176,12 +182,12 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "account-step",
             true,
-            Box::new(|| booted(Stage::Account(Account::default()), true)),
+            plain(|| booted(Stage::Account(Account::default()), true)),
         ),
         (
             "account-creating",
             true,
-            Box::new(|| {
+            plain(|| {
                 let mut state = booted(Stage::Account(Account::default()), true);
                 state.sign_in.unlock_busy = true;
                 state
@@ -190,7 +196,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "account-passkey-waiting",
             true,
-            Box::new(move || {
+            plain(move || {
                 booted(
                     Stage::Account(Account {
                         passkey_task: Some(passkey()),
@@ -203,7 +209,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "account-passkey-qr",
             true,
-            Box::new(move || {
+            plain(move || {
                 let step = Account {
                     passkey_task: Some(passkey()),
                     passkey_qr: "https://example.test/passkey".into(),
@@ -217,7 +223,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "link-waiting",
             true,
-            Box::new(|| {
+            plain(|| {
                 booted(
                     Stage::Account(Account {
                         link_code: "ABCD-EFGH".into(),
@@ -227,21 +233,21 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
                 )
             }),
         ),
-        ("desk-empty", false, Box::new(desk)),
+        ("desk-empty", false, plain(desk)),
         (
             "desk-empty-a-program",
             false,
-            Box::new(|| {
+            plain(|| {
                 let mut state = desk();
                 state.roster = crate::runtime::Roster::listing(&["gate-program"]);
                 state
             }),
         ),
-        ("desk-two-programs", false, Box::new(two_programs)),
+        ("desk-two-programs", false, plain(two_programs)),
         (
             "desk-toast",
             false,
-            Box::new(|| {
+            plain(|| {
                 let mut state = desk();
                 state.toast = "Copied".into();
                 state
@@ -250,25 +256,24 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "desk-reconnecting",
             false,
-            Box::new(|| {
+            plain(|| {
                 let mut state = desk();
                 state.status_misses = crate::ui::LOST_AFTER;
                 state
             }),
         ),
-        ("spotlight", false, on_desk(crate::Overlay::Spotlight)),
+        ("spotlight", false, on_desk(Overlay::Spotlight)),
         (
             "spotlight-over-window",
             false,
-            Box::new(spotlight_over_window),
+            over(Overlay::Spotlight, spotlight_over_window),
         ),
-        ("approve-code", false, on_desk(crate::Overlay::Approve)),
+        ("approve-code", false, on_desk(Overlay::Approve)),
         (
             "approve-confirm",
             false,
-            Box::new(|| {
+            over(Overlay::Approve, || {
                 let mut state = desk();
-                state.overlay = Some(crate::Overlay::Approve);
                 state.sign_in.approve_found = Some(crate::backend::join::Request {
                     network: "testkit".into(),
                     key: vec![7; 32],
@@ -279,58 +284,39 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
         (
             "settings-appearance",
             false,
-            on_desk(crate::Overlay::Settings),
+            on_desk(Overlay::Settings(SettingsPage::Appearance)),
         ),
         (
             "settings-notifications",
             false,
-            Box::new(|| {
-                let mut state = two_programs();
-                state.overlay = Some(crate::Overlay::Settings);
-                state.settings_page = crate::ui::SettingsPage::Notifications;
-                state
-            }),
+            over(Overlay::Settings(SettingsPage::Notifications), two_programs),
         ),
         (
             "settings-networks",
             false,
-            Box::new(|| {
-                let mut state = desk();
-                state.overlay = Some(crate::Overlay::Settings);
-                state.settings_page = crate::ui::SettingsPage::Networks;
-                state
-            }),
+            on_desk(Overlay::Settings(SettingsPage::Networks)),
         ),
         (
             "settings-about",
             false,
-            Box::new(|| {
-                let mut state = desk();
-                state.overlay = Some(crate::Overlay::Settings);
-                state.settings_page = crate::ui::SettingsPage::About;
-                state
-            }),
+            on_desk(Overlay::Settings(SettingsPage::About)),
         ),
-        ("network-menu", false, on_desk(crate::Overlay::Network)),
-        (
-            "node-menu",
-            false,
-            on_desk(crate::Overlay::Menu(crate::Popover::Node)),
-        ),
+        ("network-menu", false, on_desk(Overlay::Network)),
+        ("node-menu", false, on_desk(Overlay::Menu(Popover::Node))),
         (
             "account-menu",
             false,
-            on_desk(crate::Overlay::Menu(crate::Popover::Account)),
+            on_desk(Overlay::Menu(Popover::Account)),
         ),
         (
             "notifications-menu",
             false,
-            on_desk(crate::Overlay::Menu(crate::Popover::Notifications)),
+            on_desk(Overlay::Menu(Popover::Notifications)),
         ),
         (
             "desk-asking",
             false,
-            Box::new(|| {
+            plain(|| {
                 let mut state = desk();
                 state.center.lock().ask_for_test("gate-asking");
                 state.active = Some("gate-asking");
@@ -460,12 +446,12 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
         .iter()
         .find(|(name, ..)| *name == "settings-notifications")
         .unwrap();
-    let state = build();
-    state.center.lock().ask_for_test("gate-a");
-    let center = state.center.clone();
+    let scene = build();
+    scene.0.center.lock().ask_for_test("gate-a");
+    let center = scene.0.center.clone();
     let prefs = crate::backend::read_prefs();
     assert_eq!(prefs, serde_json::json!({}));
-    let (_view, native) = open(state, cx);
+    let (_view, native) = open(scene, cx);
     let window = gpui_kit::VisualContext::window_handle(&native);
     let report = crate::ax::audit::tests::door_audit(window, None, cx).await;
     // the four radio groups and the page tabs were probed
@@ -488,9 +474,8 @@ fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppCo
         keys::bind(cx);
     });
     // narrowed to the window rows: programs other tests list share the list
-    let mut state = spotlight_over_window();
-    state.spotlight_query = "window".into();
-    let (_view, mut native) = open(state, cx);
+    let (_view, mut native) = open((spotlight_over_window(), Overlay::Spotlight), cx);
+    native.update(|window, cx| type_into("spotlight/search", "window", window, cx));
     let nodes = native.update(draw);
     for (name, key) in [("Fill window", "⇧↩"), ("Move or size window", "⇧M")] {
         assert_eq!(
@@ -521,7 +506,7 @@ fn the_walk_presses_no_escape_under_a_modal(cx: &mut TestAppContext) {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    let (_view, mut native) = open(on_desk(crate::Overlay::Spotlight)(), cx);
+    let (_view, mut native) = open(on_desk(Overlay::Spotlight)(), cx);
     native.update(snap);
     let reading =
         native.update(|window, cx| audit::observe(window, cx, "shell", true, |_| true, snap));

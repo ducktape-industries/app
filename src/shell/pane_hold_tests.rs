@@ -1,6 +1,8 @@
 //! The pane keyboard operations: ⌘⇧↩ fills, ⌘⇧M holds a window for the
 //! arrows, Search offers both, and Shift+Return on a bar tab shows its
 //! program in the window in front.
+use super::entities::{Overlay, Popover, Spot};
+use super::layers::tests::{run_spot, show};
 use super::panes_tests::{console, draw, in_front, key, panes, settle};
 use super::*;
 use gpui_kit::{Keystroke, TestAppContext, VisualTestContext};
@@ -330,12 +332,9 @@ fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppCon
 /// context (macOS).
 #[gpui_kit::test]
 fn the_chords_and_the_menu_do_nothing_under_an_overlay(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = desk_of_two(cx);
+    let (_, _, view, mut native) = desk_of_two(cx);
     let before = frame(&mut native, &view, 1);
-    model.update(&mut native, |model, cx| {
-        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node));
-        model.bridge(false, cx);
-    });
+    show(&view, Some(Overlay::Menu(Popover::Node)), &mut native);
     stroke(&mut native, "secondary-shift-m");
     stroke(&mut native, "secondary-shift-enter");
     native.update(|window, cx| {
@@ -457,35 +456,30 @@ fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
 /// running them is the chords' messages.
 #[gpui_kit::test]
 fn search_rows_fill_and_hold_the_window_in_front(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = desk_of_two(cx);
-    let rows = |native: &mut VisualTestContext| {
-        native.update(|_, cx| {
-            model
-                .read(cx)
-                .state
-                .spotlight_rows()
-                .into_iter()
-                .map(|row| row.title)
-                .collect::<Vec<_>>()
-        })
-    };
-    let titles = rows(&mut native);
+    let (_, _, view, mut native) = desk_of_two(cx);
+    show(&view, Some(Overlay::Spotlight), &mut native);
+    let nodes = native.update(draw);
+    let titles: Vec<_> = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["role"] == "ListBoxOption")
+        .map(|node| node["name"].as_str().unwrap().to_owned())
+        .collect();
     assert!(titles.contains(&"Fill window".to_owned()), "{titles:?}");
     assert!(
         titles.contains(&"Move or size window".to_owned()),
         "{titles:?}"
     );
     let before = frame(&mut native, &view, 1);
-    let run = |native: &mut VisualTestContext, spot: crate::ui::Spot| {
-        model.update(native, |model, cx| {
-            model.dispatch(Message::OpenSpotlight, cx);
-            model.dispatch(Message::Spot(spot), cx)
-        });
+    let run = |native: &mut VisualTestContext, spot: Spot| {
+        show(&view, Some(Overlay::Spotlight), native);
+        run_spot(&view, spot, native);
         settle(native);
     };
-    run(&mut native, crate::ui::Spot::FillWindow);
+    run(&mut native, Spot::FillWindow);
     assert_ne!(frame(&mut native, &view, 1), before, "filled");
-    run(&mut native, crate::ui::Spot::HoldWindow);
+    run(&mut native, Spot::HoldWindow);
     assert!(held(&mut native, &view));
     assert!(in_front(&mut native, &view), "the window has the arrows");
     let filled = frame(&mut native, &view, 1);
@@ -500,15 +494,11 @@ fn search_rows_fill_and_hold_the_window_in_front(cx: &mut TestAppContext) {
 /// to keep, not to take the hold apart with.
 #[gpui_kit::test]
 fn a_hold_run_from_a_drawn_search_keeps_the_keys(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = desk_of_two(cx);
+    let (_, _, view, mut native) = desk_of_two(cx);
     let before = frame(&mut native, &view, 1);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenSpotlight, cx)
-    });
+    show(&view, Some(Overlay::Spotlight), &mut native);
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Spot(crate::ui::Spot::HoldWindow), cx)
-    });
+    run_spot(&view, Spot::HoldWindow, &mut native);
     settle(&mut native);
     assert!(held(&mut native, &view), "Search closing ended the hold");
     stroke(&mut native, "right");
@@ -525,15 +515,11 @@ fn a_hold_run_from_a_drawn_search_keeps_the_keys(cx: &mut TestAppContext) {
 /// front keeps the keys once Search has closed.
 #[gpui_kit::test]
 fn a_fill_run_from_a_drawn_search_leaves_the_keys_in_front(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = desk_of_two(cx);
+    let (_, _, view, mut native) = desk_of_two(cx);
     let before = frame(&mut native, &view, 1);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenSpotlight, cx)
-    });
+    show(&view, Some(Overlay::Spotlight), &mut native);
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Spot(crate::ui::Spot::FillWindow), cx)
-    });
+    run_spot(&view, Spot::FillWindow, &mut native);
     settle(&mut native);
     assert_ne!(frame(&mut native, &view, 1), before, "filled");
     assert!(

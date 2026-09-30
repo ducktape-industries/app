@@ -237,11 +237,12 @@ impl EmptyPane {
     fn moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (dark, motion, now_bare, overlay) = {
             let desktop = self.model.read(cx);
+            let covered = desktop.entities.by_window.get(&self.key);
             (
                 desktop.state.dark(),
                 desktop.state.motion,
                 bare(desktop, self.key),
-                desktop.state.overlay.is_some(),
+                covered.is_some_and(|own| own.overlays.read(cx).get().is_some()),
             )
         };
         if let Place::Desk {

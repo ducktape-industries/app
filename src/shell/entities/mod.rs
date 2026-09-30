@@ -25,7 +25,7 @@ pub(crate) use desk::Desk;
 pub(crate) use dot::DotSlot;
 pub(crate) use front::Front;
 pub(crate) use notifications::Notifications;
-pub(crate) use overlays::{Overlay, Overlays};
+pub(crate) use overlays::{Overlay, Overlays, Popover, SettingsPage, Spot, SpotRow};
 pub(crate) use prefs::Prefs;
 pub(crate) use rail::Rail;
 pub(crate) use screen::{AccountStep, Screen};
@@ -60,9 +60,9 @@ pub(crate) struct Entities {
 /// One OS window's own entities.
 #[derive(Clone)]
 pub(crate) struct WindowEntities {
-    /// The console: the one window things open over.
-    pub(crate) console: bool,
     pub(crate) desk: Entity<Desk>,
+    /// What is open over it (only the console's opens anything), and ⌘K's
+    /// text: their methods write them.
     pub(crate) overlays: Entity<Overlays>,
     pub(crate) spotlight: Entity<Slice<Spotlight>>,
     /// Derived from `desk` (`Front::of_desk`); never bridged.

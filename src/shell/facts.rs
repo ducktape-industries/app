@@ -34,12 +34,6 @@ pub(crate) struct Facts {
     pub(crate) passkey_qr: Option<String>,
     pub(crate) phrase_quiz: Option<[usize; 3]>,
     pub(crate) motion: bool,
-    pub(crate) appearance: crate::Appearance,
-    pub(crate) overlay: Option<crate::Overlay>,
-    pub(crate) spotlight_pick: usize,
-    pub(crate) settings_page: crate::SettingsPage,
-    pub(crate) center: crate::runtime::notify::CenterHandle,
-    pub(crate) roster: crate::runtime::Roster,
 }
 
 impl Ducktape {
@@ -72,12 +66,6 @@ impl Ducktape {
                 _ => None,
             },
             motion: self.motion,
-            appearance: self.appearance,
-            overlay: self.overlay,
-            spotlight_pick: self.spotlight_pick,
-            settings_page: self.settings_page,
-            center: self.center.clone(),
-            roster: self.roster.clone(),
         }
     }
 }

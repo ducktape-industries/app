@@ -3,14 +3,21 @@
 
 use crate::backend;
 use crate::ui::task::Task;
-use crate::ui::{AppMessage as Message, Ducktape, Overlay};
+use crate::ui::{AppMessage as Message, Ducktape};
 
 impl Ducktape {
     pub(super) fn on_approve(&mut self, message: Message) -> Task<Message> {
         match message {
+            // the dialog is open already (`Overlays::open`, by the account
+            // menu's row); what the last one held goes
             Message::ApproveOpen => {
-                self.overlay = Some(Overlay::Approve);
                 self.sign_in.approve_code.clear();
+                self.sign_in.approve_found = None;
+                self.sign_in.unlock_error.clear();
+                Task::none()
+            }
+            // the dialog closed (`Desktop` hears it from `Overlays`)
+            Message::ApproveClosed => {
                 self.sign_in.approve_found = None;
                 self.sign_in.unlock_error.clear();
                 Task::none()
@@ -61,12 +68,11 @@ impl Ducktape {
             Message::ApproveDone(done) => {
                 self.sign_in.unlock_busy = false;
                 match done {
-                    Ok(()) => {
-                        self.close(Overlay::Approve);
-                        self.update(Message::ShowToast(
-                            "Approved. The new device finishes on its own.".into(),
-                        ))
-                    }
+                    // the dialog closes (`Desktop::dispatch`), which clears
+                    // what it found (`ApproveClosed`)
+                    Ok(()) => self.update(Message::ShowToast(
+                        "Approved. The new device finishes on its own.".into(),
+                    )),
                     Err(error) => {
                         self.sign_in.unlock_error = error;
                         Task::none()

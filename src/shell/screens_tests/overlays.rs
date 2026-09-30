@@ -2,8 +2,8 @@
 //! back as it closes (docs/ax.md §4 gap 5): the dialogs on a scrim and the
 //! menus hanging from the bar alike, and one giving way to the next. A menu
 //! the keys leave closes, and leaves them where they went.
+use super::super::layers::tests::open_now;
 use super::*;
-use crate::{Overlay, Popover};
 use gpui_kit::{Pixels, Role};
 
 /// Whether `window`'s focused node is the `role` named `name`, or inside it.
@@ -37,15 +37,11 @@ fn focused_node(window: &Window) -> Option<(Role, String)> {
         .map(|(_, node)| (node.role(), node.label().unwrap_or_default().to_owned()))
 }
 
+/// `overlay` open over the desk, or whatever is open closed, the way the
+/// bar and the keys do it.
 fn show(view: &Entity<WindowRoot>, native: &mut VisualTestContext, overlay: Option<Overlay>) {
-    view.update(native, |view, cx| {
-        view.model.update(cx, |model, cx| {
-            model.state.overlay = overlay;
-            model.bridge(false, cx);
-            cx.notify();
-        })
-    });
-    // the draw that sees it open or shut, then the one after its deferred focus
+    super::super::layers::tests::show(view, overlay, native);
+    // the draw that sees it open or shut, then the one after the keys enter
     native.update(draw);
     native.update(draw);
 }
@@ -59,7 +55,11 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
     let overlays = [
         (Overlay::Spotlight, Role::Dialog, "Search"),
         (Overlay::Approve, Role::Dialog, "Add a device"),
-        (Overlay::Settings, Role::Dialog, "Settings"),
+        (
+            Overlay::Settings(SettingsPage::Appearance),
+            Role::Dialog,
+            "Settings",
+        ),
         (Overlay::Network, Role::Menu, "Networks"),
         (Overlay::Menu(Popover::Node), Role::Dialog, "Node status"),
         (Overlay::Menu(Popover::Account), Role::Dialog, "Account"),
@@ -109,7 +109,11 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
         &mut native,
         Some(Overlay::Menu(Popover::Notifications)),
     );
-    show(&view, &mut native, Some(Overlay::Settings));
+    show(
+        &view,
+        &mut native,
+        Some(Overlay::Settings(SettingsPage::Appearance)),
+    );
     native.update(|window, _| assert!(focus_inside(window, Role::Dialog, "Settings")));
     native.simulate_keystrokes("escape");
     native.update(draw);
@@ -131,10 +135,6 @@ const MENUS: [(Overlay, Role, &str); 4] = [
     ),
 ];
 
-fn open_now(view: &Entity<WindowRoot>, native: &mut VisualTestContext) -> Option<Overlay> {
-    native.update(|_, cx| view.read(cx).model.read(cx).state.overlay)
-}
-
 /// A menu closes when the keys leave it, whichever way (the menu pattern;
 /// owner, 2026-09-28): Shift+Tab before its first control, Tab past its
 /// last. The keys stay where they went. It is no focus trap, also once a
@@ -149,7 +149,11 @@ fn a_menu_closes_when_the_keys_leave_it(cx: &mut TestAppContext) {
         for (out, presses) in [("shift-tab", 1), ("tab", 30)] {
             let (view, mut native) = open(gate::desk(), cx);
             native.update(draw);
-            show(&view, &mut native, Some(Overlay::Settings));
+            show(
+                &view,
+                &mut native,
+                Some(Overlay::Settings(SettingsPage::Appearance)),
+            );
             show(&view, &mut native, None);
             show(&view, &mut native, Some(overlay));
             native.update(|window, _| {
@@ -234,8 +238,8 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     native.update(|window, cx| press("menubar", "rail-notifications", window, cx));
     native.update(draw);
     native.update(draw);
-    let bell = Some(Overlay::Menu(Popover::Notifications));
-    assert_eq!(open_now(&view, &mut native), bell);
+    let bell = Overlay::Menu(Popover::Notifications);
+    assert_eq!(open_now(&view, &mut native), Some(bell));
     native.update(|window, _| {
         assert!(
             focus_inside(window, Role::Dialog, "Notifications"),
@@ -267,14 +271,13 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
         std::time::Instant::now(),
         crate::runtime::notify::wall(),
     );
-    state.overlay = bell;
-    let (view, mut native) = open(state, cx);
+    let (view, mut native) = open((state, bell), cx);
     native.update(draw);
     native.update(draw);
     native.update(|window, cx| press("notifications", "notif-mark-all", window, cx));
     native.update(draw);
     native.update(draw);
-    assert_eq!(open_now(&view, &mut native), bell);
+    assert_eq!(open_now(&view, &mut native), Some(bell));
     native.update(|window, _| {
         assert!(
             focus_inside(window, Role::Dialog, "Notifications"),
@@ -287,7 +290,10 @@ fn a_menu_keeps_the_keys_that_move_inside_it(cx: &mut TestAppContext) {
     native.update(|window, cx| press("notifications", "notif-settings", window, cx));
     native.update(draw);
     native.update(draw);
-    assert_eq!(open_now(&view, &mut native), Some(Overlay::Settings));
+    assert_eq!(
+        open_now(&view, &mut native),
+        Some(Overlay::Settings(SettingsPage::Notifications))
+    );
     native.update(|window, _| {
         assert!(
             focus_inside(window, Role::Dialog, "Settings"),
@@ -307,12 +313,7 @@ fn tab_scrolls_a_settings_row_below_the_fold_into_view(cx: &mut TestAppContext) 
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    let notifications = || {
-        let mut state = gate::desk();
-        state.overlay = Some(Overlay::Settings);
-        state.settings_page = crate::ui::SettingsPage::Notifications;
-        state
-    };
+    let notifications = || (gate::desk(), Overlay::Settings(SettingsPage::Notifications));
     let (_view, mut native) = open(notifications(), cx);
     native.simulate_resize(size(px(1280.), px(360.)));
     gate::passes(&mut native, "settings-notifications", false);
@@ -359,7 +360,7 @@ fn bar_button(native: &mut VisualTestContext, id: &str) -> gpui_kit::Point<Pixel
 /// Tab took them: the next control in the walk, not what had them before
 /// the menu opened (the window itself, here).
 #[gpui_kit::test]
-fn tab_past_a_menus_end_closes_it_and_keeps_the_keys_where_they_went(cx: &mut TestAppContext) {
+fn a_menu_left_by_tab_does_not_pull_the_keys_back(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
@@ -463,11 +464,12 @@ fn a_press_on_the_menus_own_button_toggles_it_once(cx: &mut TestAppContext) {
     );
 }
 
-/// The bell's Settings row opens Settings as the bell closes: the keys
-/// leave the bell's subtree, and the belt, seeing the bell no longer open,
-/// leaves Settings alone.
+/// The bell's Settings row opens Settings on its Notifications page,
+/// whichever page it showed last, as the bell closes: the keys leave the
+/// bell's subtree, and the belt, seeing the bell no longer open, leaves
+/// Settings alone.
 #[gpui_kit::test]
-fn the_bells_settings_row_opens_settings_and_the_belt_leaves_it_open(cx: &mut TestAppContext) {
+fn the_bells_settings_row_opens_the_notifications_page(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
@@ -478,13 +480,22 @@ fn the_bells_settings_row_opens_settings_and_the_belt_leaves_it_open(cx: &mut Te
     show(
         &view,
         &mut native,
+        Some(Overlay::Settings(SettingsPage::About)),
+    );
+    show(&view, &mut native, None);
+    show(
+        &view,
+        &mut native,
         Some(Overlay::Menu(Popover::Notifications)),
     );
     native.update(|window, cx| press("notifications", "notif-settings", window, cx));
     native.update(draw);
     native.run_until_parked();
     native.update(draw);
-    assert_eq!(open_now(&view, &mut native), Some(Overlay::Settings));
+    assert_eq!(
+        open_now(&view, &mut native),
+        Some(Overlay::Settings(SettingsPage::Notifications))
+    );
     native.update(|window, _| {
         assert!(
             focus_inside(window, Role::Dialog, "Settings"),
@@ -492,4 +503,7 @@ fn the_bells_settings_row_opens_settings_and_the_belt_leaves_it_open(cx: &mut Te
             focused_node(window)
         )
     });
+    let nodes = native.update(draw);
+    find(&nodes, "Switch", "Desktop banners");
+    find(&nodes, "RadioGroup", "Burst limit");
 }

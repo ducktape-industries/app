@@ -2,9 +2,16 @@
 //! board). The account's settings are the network's, in its program;
 //! these are this device's.
 
-use super::*;
-use crate::SettingsPage;
-use ink::{Ink, mono, sans, words};
+use super::super::super::Desktop;
+use super::super::super::ink::{self, Ink, mono, sans, words};
+use super::{OverlayLayer, dialog_fit, scrim};
+use crate::AppMessage as Message;
+use crate::a11y::Control as _;
+use crate::shell::entities::{Overlay, SettingsPage};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::{Context, Window};
+use std::cell::Cell;
+use std::rc::Rc;
 
 /// Settings' page as it scrolls: a handle on each row, never a Tab stop
 /// itself, so the row that takes the keys scrolls into view.
@@ -12,8 +19,8 @@ use ink::{Ink, mono, sans, words};
 pub(super) struct Page {
     scroll: gpui_kit::ScrollHandle,
     rows: Vec<gpui_kit::FocusHandle>,
-    /// The row that held the keys when the page was last drawn.
-    held: Option<usize>,
+    /// The row that held the keys when the page was last laid out.
+    held: Rc<Cell<Option<usize>>>,
 }
 
 /// What Settings' picks change, as it stood: the prefs, and what they
@@ -37,7 +44,7 @@ impl Kept {
             .read(cx)
             .view()
             .clone()
-            .downcast::<super::layers::WindowRoot>();
+            .downcast::<super::super::WindowRoot>();
         let desktop = view.ok()?.read(cx).model.clone();
         let state = &desktop.read(cx).state;
         Some(Self {
@@ -68,20 +75,21 @@ impl Kept {
     }
 }
 
-impl Screens {
-    /// The dialog: `760 × 680; border: 1.5px solid ink` (the board's 540,
-    /// taller so every view's row fits), a 34px title strip with its close, on a scrim below the bar. A click on the scrim, or
+impl OverlayLayer {
+    /// The dialog on `shown`: `760 × 680; border: 1.5px solid ink` (the
+    /// board's 540, taller so every view's row fits), a 34px title strip
+    /// with its close, on a scrim below the bar. A click on the scrim, or
     /// Escape, closes it.
     pub(super) fn settings(
         &mut self,
-        state: &facts::Facts,
+        shown: SettingsPage,
         window: &Window,
-        cx: &gpui_kit::App,
+        cx: &mut Context<Self>,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
         // the Settings board: nav `padding: 12px 8px; gap: 2px`, each
         // entry `padding: 8px 14px; font: 400 14px`; the page `24px 32px`
-        let ink = Ink::of(state.dark);
+        let ink = Ink::of(self.prefs.read(cx).get().dark());
         let pages = [
             (
                 "settings/appearance",
@@ -96,14 +104,14 @@ impl Screens {
             ("settings/networks", "Networks", SettingsPage::Networks),
             ("settings/about", "About", SettingsPage::About),
         ];
-        let shown = pages
+        let at = pages
             .iter()
-            .position(|(_, _, page)| *page == state.settings_page)
+            .position(|(_, _, page)| *page == shown)
             .unwrap_or_default();
         let stop = self.stop("settings-nav", cx);
         let nav = pages.map(|(id, label, page)| {
-            let model = self.model.clone();
-            let on = state.settings_page == page;
+            let overlays = self.overlays.entity().clone();
+            let on = shown == page;
             crate::a11y::roving_item(
                 sans(400, 14.)
                     .id(id)
@@ -120,8 +128,8 @@ impl Screens {
                     // a press leaves the keys where they were
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(move |_, _, cx| {
-                        model.update(cx, |model, cx| {
-                            model.dispatch(Message::ShowSettingsPage(page), cx)
+                        overlays.update(cx, |overlays, cx| {
+                            overlays.open(Overlay::Settings(page), cx)
                         })
                     })
                     .child(label),
@@ -129,38 +137,52 @@ impl Screens {
                 ink.ink,
             )
         });
-        let rows = match state.settings_page {
-            SettingsPage::Appearance => self.appearance_page(state, cx),
-            SettingsPage::Notifications => self.notifications_page(state, cx),
-            SettingsPage::Networks => self.networks_page(state),
+        let rows = match shown {
+            SettingsPage::Appearance => self.appearance_page(&ink, cx),
+            SettingsPage::Notifications => self.notifications_page(&ink, cx),
+            SettingsPage::Networks => self.networks_page(&ink, cx),
             SettingsPage::About => about_page(&ink),
         };
         let page = &mut self.settings_rows;
         while page.rows.len() < rows.len() {
             page.rows.push(cx.focus_handle().tab_stop(false));
         }
-        let held = page.rows[..rows.len()]
-            .iter()
-            .position(|row| row.contains_focused(window, cx));
-        if held != page.held
-            && let Some(row) = held
-        {
-            page.scroll.scroll_to_item(row);
-        }
-        page.held = held;
+        // the row that has the keys scrolls into view when it is another
+        // than last time: found at prepaint, ahead of the page's own (the
+        // door reads the frame a Tab draws, so the row shows in that one)
+        let held = {
+            let (handles, held) = (page.rows[..rows.len()].to_vec(), page.held.clone());
+            let scroll = page.scroll.clone();
+            canvas(
+                move |_, window, cx| {
+                    let now = handles
+                        .iter()
+                        .position(|row| row.contains_focused(window, cx));
+                    if now != held.replace(now)
+                        && let Some(row) = now
+                    {
+                        scroll.scroll_to_item(row);
+                    }
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .size_0()
+        };
         let rows = rows.into_iter().zip(&page.rows).map(|(row, handle)| {
             // a press on a row's words leaves the keys where they were
             row.flex_shrink_0()
                 .track_focus(handle)
                 .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         });
-        let picked = self.model.clone();
+        let picked = self.overlays.entity().clone();
         let body = div()
             .id("settings-body")
             .flex_1()
             .min_h_0()
             .flex()
             .text_size(px(ink::fit(14.)))
+            .child(held)
             .child(
                 crate::a11y::roving(
                     div()
@@ -168,12 +190,12 @@ impl Screens {
                         .control(Role::TabList, "Settings pages"),
                     &stop,
                     accesskit::Orientation::Vertical,
-                    [shown, pages.len()],
+                    [at, pages.len()],
                     // the arrows open the page, as a view's settings do
                     move |to, _, cx| {
                         let page = pages[to].2;
-                        picked.update(cx, |model, cx| {
-                            model.dispatch(Message::ShowSettingsPage(page), cx)
+                        picked.update(cx, |overlays, cx| {
+                            overlays.open(Overlay::Settings(page), cx)
                         })
                     },
                 )
@@ -203,7 +225,7 @@ impl Screens {
                     .py(px(24.))
                     .children(rows),
             );
-        let shut = self.model.clone();
+        let shut = self.overlays.entity().clone();
         let surface = ink.surface;
         let title = div()
             .h(px(34.))
@@ -229,8 +251,8 @@ impl Screens {
                     .hover(move |style| style.bg(surface))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        shut.update(cx, |model, cx| {
-                            model.dispatch(Message::CloseOverlay(crate::Overlay::Settings), cx)
+                        shut.update(cx, |overlays, cx| {
+                            overlays.close(Overlay::Settings(shown), cx)
                         })
                     })
                     .child(
@@ -238,13 +260,14 @@ impl Screens {
                     ),
                 ink.ink,
             ));
-        let (top, tall) =
-            super::layers::dialog_fit(f32::from(window.viewport_size().height), 680., 74.);
-        self.overlay(
+        let (top, tall) = dialog_fit(f32::from(window.viewport_size().height), 680., 74.);
+        scrim(
             "settings-window",
             Role::Dialog,
             "Settings",
-            crate::Overlay::Settings,
+            Overlay::Settings(shown),
+            self.overlays.entity(),
+            &self.modal,
             &ink,
             |card| {
                 card.mt(px(top))
@@ -260,9 +283,12 @@ impl Screens {
         )
     }
 
-    fn appearance_page(&mut self, state: &facts::Facts, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
+    fn appearance_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use crate::Appearance;
-        let ink = Ink::of(state.dark);
+        let (appearance, motion) = {
+            let prefs = self.prefs.read(cx).get();
+            (prefs.appearance, prefs.motion)
+        };
         // one look for every choice in Settings: the segmented row
         let theme = self.segmented(
             "theme",
@@ -273,48 +299,38 @@ impl Screens {
                 ("System", Appearance::System),
             ]
             .map(|(label, mode)| {
-                (label.into(), state.appearance == mode, move || {
+                (label.into(), appearance == mode, move || {
                     Message::SetAppearance(mode)
                 })
             }),
-            &ink,
+            ink,
             cx,
         );
-        let motion = self.switch(
-            "motion",
-            "Moving figures",
-            state.motion,
-            Message::SetMotion,
-            &ink,
-        );
+        let motion = self.switch("motion", "Moving figures", motion, Message::SetMotion, ink);
         vec![
-            heading("Appearance", &ink),
+            heading("Appearance", ink),
             setting(
                 "Theme",
                 "Follows the system unless you pick one.",
                 theme,
-                &ink,
+                ink,
             ),
             setting(
                 "Moving figures",
                 "The drawings in characters turn slowly, and the node's dot breathes. Off keeps them still.",
                 motion,
-                &ink,
+                ink,
             ),
         ]
     }
 
     /// The NotifSettings board: the device's say over banners, then each
     /// view's.
-    fn notifications_page(
-        &mut self,
-        state: &facts::Facts,
-        cx: &gpui_kit::App,
-    ) -> Vec<gpui_kit::Div> {
+    fn notifications_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use crate::runtime::notify::{self, Permission};
         use gpui_kit::*;
-        let ink = Ink::of(state.dark);
-        let settings = notify::Settings::load();
+        let ink = *ink;
+        let settings = self.prefs.read(cx).get().notify.clone();
         let banners = self.switch(
             "notify/banners",
             "Desktop banners",
@@ -356,16 +372,21 @@ impl Screens {
                     .child(words("burst-unit", "a minute")),
             );
         let now = notify::wall();
-        let views = state
-            .roster
-            .rail()
-            .into_iter()
+        let listed: Vec<_> = self
+            .rail
+            .read(cx)
+            .rows()
+            .iter()
             .filter(|row| !row.empty)
+            .cloned()
+            .collect();
+        let views: Vec<_> = listed
+            .into_iter()
             .map(|row| {
                 let module = row.module;
-                let name = super::layers::tab_label(&row);
+                let name = super::super::tab_label(&row);
                 let chosen = settings.views.get(module).copied();
-                let week = state.center.lock().this_week(module, now);
+                let week = self.notifications.read(cx).this_week(module, now);
                 let hint = match week {
                     0 => "None yet".to_owned(),
                     week => format!("{week} this week"),
@@ -408,7 +429,8 @@ impl Screens {
                             ))),
                     )
                     .child(div().flex_shrink_0().child(control))
-            });
+            })
+            .collect();
         [
             heading("Notifications", &ink),
             ink::note(
@@ -563,15 +585,16 @@ impl Screens {
         }))
     }
 
-    fn networks_page(&self, state: &facts::Facts) -> Vec<gpui_kit::Div> {
+    fn networks_page(&self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use gpui_kit::*;
-        let ink = Ink::of(state.dark);
+        let ink = *ink;
         let (muted, danger) = (ink.muted, ink.danger);
+        let session = self.session.read(cx).get();
         let rows =
-            state.recent_endpoints.iter().map(|entry| {
+            session.recent_endpoints.iter().map(|entry| {
                 let model = self.model.clone();
                 let url = entry.url.clone();
-                let current = entry.url == state.connected_rpc;
+                let current = entry.url == session.connected_rpc;
                 let name = entry.name();
                 div()
                     .flex()

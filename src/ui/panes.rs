@@ -113,13 +113,6 @@ impl Ducktape {
         pane.frame.map(|_| (key, layout.focused))
     }
 
-    /// The keyboard lets go of every window it holds, each where it is.
-    pub(super) fn let_go_of_holds(&mut self) {
-        for layout in self.layouts.values_mut() {
-            layout.held = None;
-        }
-    }
-
     /// Help on the desk: into the focused window if it is empty, else
     /// where it already is, else a window of its own. A new account starts
     /// here, greeted (`welcome`).

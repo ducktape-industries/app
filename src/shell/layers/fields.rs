@@ -1,13 +1,17 @@
-//! The native text field every screen types into: the model owns the
-//! text, the field mirrors it (`Screens::input`), and its state
-//! lives as long as its window (`NativeInput`).
+//! The native text fields the shell's layers type into, as an element over
+//! a field's state (`bare`). The overlay layer's field (Spotlight's) owns
+//! what is typed and tells its entity on each change. The launcher's still
+//! mirror the model's copy (`Screens::input`), their states kept as long as
+//! their window (`NativeInput`), until s9 gives them the typed text too.
 
-use super::*;
+use super::super::{Ducktape, Message};
+use super::Screens;
+use gpui_kit::{AppContext as _, Context, Entity, IntoElement as _, Styled as _, Window};
 
 /// One native text field's state, kept for as long as its window lives
 /// (see `Screens::input`).
-pub(super) struct NativeInput {
-    pub(super) state: Entity<gpui_kit::component::input::InputState>,
+pub(in crate::shell) struct NativeInput {
+    pub(in crate::shell) state: Entity<gpui_kit::component::input::InputState>,
     /// A digest of the model text the field last agreed with — what it
     /// sent on its last change, or what the model last pushed into it.
     mirrored: std::rc::Rc<std::cell::Cell<u64>>,
@@ -24,28 +28,28 @@ fn digest(text: &str) -> u64 {
 }
 
 /// What a screen asks of its text field (`Screens::input`).
-pub(super) struct TextField {
+pub(in crate::shell) struct TextField {
     /// Its element id, and what its state is kept under in the window.
-    pub(super) key: &'static str,
-    pub(super) placeholder: &'static str,
+    pub(in crate::shell) key: &'static str,
+    pub(in crate::shell) placeholder: &'static str,
     /// Its accessible name; the placeholder when `None`.
-    pub(super) label: Option<gpui_kit::SharedString>,
+    pub(in crate::shell) label: Option<gpui_kit::SharedString>,
     /// Drawn as dots, with the password role.
-    pub(super) masked: bool,
+    pub(in crate::shell) masked: bool,
     /// Sensitive without being masked (the recovery phrase): its value is
     /// read aloud, and the test door masks it (`a11y::AX_PRIVATE`).
-    pub(super) private: bool,
+    pub(in crate::shell) private: bool,
     /// The error the screen draws with it: the field reports it invalid,
     /// and says the error as its description (AX-108).
-    pub(super) error: Option<String>,
+    pub(in crate::shell) error: Option<String>,
     /// The text size, in the canvas's px (`ink::fit` scales it).
-    pub(super) size: f32,
+    pub(in crate::shell) size: f32,
     /// The model's copy of the text, which the field mirrors.
-    pub(super) value: fn(&Ducktape) -> &str,
+    pub(in crate::shell) value: fn(&Ducktape) -> &str,
     /// What every change dispatches, with the text.
-    pub(super) on_change: fn(String) -> Message,
+    pub(in crate::shell) on_change: fn(String) -> Message,
     /// What Enter dispatches.
-    pub(super) on_enter: fn() -> Message,
+    pub(in crate::shell) on_enter: fn() -> Message,
 }
 
 impl Screens {
@@ -75,7 +79,7 @@ impl Screens {
     /// `private` marks a field (the recovery phrase) that is sensitive
     /// without being visually masked [`crate::a11y::AX_PRIVATE`]: assistive
     /// technology reads the text on the screen; the test door masks it.
-    pub(super) fn input(
+    pub(in crate::shell) fn input(
         &mut self,
         field: TextField,
         window: &mut Window,
@@ -112,18 +116,21 @@ impl Screens {
 
     /// Whether the field `key` holds focus, for the box drawn around it
     /// ([`crate::a11y::around_field`]).
-    pub(super) fn field_focused(&self, key: &str, window: &Window, cx: &gpui_kit::App) -> bool {
+    pub(in crate::shell) fn field_focused(
+        &self,
+        key: &str,
+        window: &Window,
+        cx: &gpui_kit::App,
+    ) -> bool {
         use gpui_kit::Focusable as _;
         self.inputs
             .get(key)
             .is_some_and(|input| input.state.read(cx).focus_handle(cx).is_focused(window))
     }
 
-    /// [`Self::input`]'s field with no node of its own, and its state: no
-    /// role, name or value. It takes Tab; the box drawn around it wears the
-    /// ring ([`crate::a11y::around_field`]), and a
-    /// [`crate::a11y::combo_box`] around it and its list speaks for it.
-    pub(super) fn bare_input(
+    /// [`Self::input`]'s field with no node of its own ([`bare`]), and its
+    /// state.
+    pub(in crate::shell) fn bare_input(
         &mut self,
         field: TextField,
         window: &mut Window,
@@ -142,7 +149,7 @@ impl Screens {
             on_enter,
             ..
         } = field;
-        use gpui_kit::component::input::{Input, InputContentType, InputEvent, InputState};
+        use gpui_kit::component::input::{InputEvent, InputState};
         if !self.inputs.contains_key(key) {
             let state = cx.new(|cx| {
                 InputState::new(window, cx)
@@ -175,7 +182,6 @@ impl Screens {
                 },
             );
         }
-        use gpui_kit::Focusable as _;
         let NativeInput {
             state, mirrored, ..
         } = &self.inputs[key];
@@ -186,33 +192,49 @@ impl Screens {
             let text = value(&self.model.read(cx).state).to_owned();
             state.update(cx, |state, cx| state.set_value(text, window, cx));
         }
-        // bare: the canvas's box around it is `ink::field_box`; its text
-        // is `size` (the canvas's `15px`, the account name's `22px`)
-        // the kit fixes an input's line at `1.25rem` (20px) inside `8px`
-        // padding: a larger face is clipped top and bottom. The line follows
-        // the face; the canvas's box around it sets height and inset.
-        let input = Input::new(state)
-            .id(key)
-            .appearance(false)
-            .text_size(gpui_kit::px(super::ink::fit(size)))
-            .line_height(gpui_kit::relative(1.4))
-            .py_0()
-            .px_0();
-        let input = match masked {
-            true => input.content_type(InputContentType::Password),
-            false => input,
-        };
-        let field = crate::a11y::text_field(
-            gpui_kit::SharedString::from(format!("{key}/field")),
-            &state.read(cx).focus_handle(cx),
-            {
-                let state = state.clone();
-                move |value, window, cx| {
-                    state.update(cx, |state, cx| state.replace_all(value, window, cx))
-                }
-            },
-            input.role(gpui_kit::component::RoleOverride::Presentational),
-        );
-        (state.clone(), field)
+        (state.clone(), bare(key, state, size, masked, cx))
     }
+}
+
+/// The field over `state` with no node of its own: no role, name or value.
+/// It takes Tab; the box drawn around it wears the ring
+/// ([`crate::a11y::around_field`]), and a label or a
+/// [`crate::a11y::combo_box`] around it speaks for it. Its id is `key`;
+/// the door sets its value through `"{key}/field"`.
+pub(in crate::shell) fn bare(
+    key: &'static str,
+    state: &Entity<gpui_kit::component::input::InputState>,
+    size: f32,
+    masked: bool,
+    cx: &gpui_kit::App,
+) -> gpui_kit::Stateful<gpui_kit::Div> {
+    use gpui_kit::Focusable as _;
+    use gpui_kit::component::input::{Input, InputContentType};
+    // bare: the canvas's box around it is `ink::field_box`; its text
+    // is `size` (the canvas's `15px`, the account name's `22px`)
+    // the kit fixes an input's line at `1.25rem` (20px) inside `8px`
+    // padding: a larger face is clipped top and bottom. The line follows
+    // the face; the canvas's box around it sets height and inset.
+    let input = Input::new(state)
+        .id(key)
+        .appearance(false)
+        .text_size(gpui_kit::px(super::super::ink::fit(size)))
+        .line_height(gpui_kit::relative(1.4))
+        .py_0()
+        .px_0();
+    let input = match masked {
+        true => input.content_type(InputContentType::Password),
+        false => input,
+    };
+    crate::a11y::text_field(
+        gpui_kit::SharedString::from(format!("{key}/field")),
+        &state.read(cx).focus_handle(cx),
+        {
+            let state = state.clone();
+            move |value, window, cx| {
+                state.update(cx, |state, cx| state.replace_all(value, window, cx))
+            }
+        },
+        input.role(gpui_kit::component::RoleOverride::Presentational),
+    )
 }

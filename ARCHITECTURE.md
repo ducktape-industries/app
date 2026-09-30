@@ -66,7 +66,7 @@ view's tree lowers onto GPUI elements one to one.
 | Module | Owns | Runs on |
 |---|---|---|
 | `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), `app.log` + panic hook, fd limit, `DUCKTAPE_VIEWS_DIR`, then `shell::run` | process start |
-| `shell.rs`, `shell/` | the native chrome: `Desktop` (the one model entity), `layers::WindowRoot` (one per OS window, laying its layers out: `Chrome`, `PaneLayer`, `Screens`, `StatusDot`, `ToastView`), `Command` effects, launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
+| `shell.rs`, `shell/` | the native chrome: `Desktop` (the one model entity), `layers::WindowRoot` (one per OS window, laying its layers out: `Chrome`, `PaneLayer`, `OverlayLayer`, `Screens`, `StatusDot`, `ToastView`), `Command` effects, launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
 | `ui.rs`, `ui/` | `Ducktape` state, `AppMessage`, the reducer (`Ducktape::handle` → sub-reducers), the pure pane geometry (`ui/layout.rs`) | window thread (called from `Desktop::dispatch`) |
 | `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
@@ -341,7 +341,7 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
                                    ├─ tray.sync            (polled by Desktop::start,
                                    ├─ start(task)           each yield re-dispatched)
                                    ├─ subscriptions (timers)
-                                   └─ cx.notify() ─► every `Screens` (the launcher/dialog layer) re-renders
+                                   └─ cx.notify() ─► every `Screens` (the launcher; Approve until s9) re-renders
 ```
 
 - **State.** `Ducktape` (`ui/app.rs`): appearance, `stage` (which screen
@@ -349,8 +349,8 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   `Desk`), the endpoint being typed and the recent ones, the node reached
   (`connected_rpc`, `network`, `chain`, `node`, `height`, `status_misses`),
   `keyring` (this network's key directory) and `other_chain`, `signer_key`
-  and `account`, `sign_in` (the step's busy/error/approval state), `overlay`
-  and Spotlight fields, `layouts` (per `WindowKey`, the panes), `active`,
+  and `account`, `sign_in` (the step's busy/error/approval state),
+  `layouts` (per `WindowKey`, the panes), `active`,
   `badges`, the toast, window keys. Per-step secrets live inside the
   `Stage` variant and go with it.
 - **Messages.** `AppMessage` is the one enum everything arrives as: shell
@@ -360,7 +360,7 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   `PasskeyDone`, …).
 - **Reducer.** `Ducktape::handle` (`ui/update.rs`) routes by variant to
   `on_connect` (`ui/connect.rs`), `on_sign_in` (`ui/sign_in.rs`),
-  `on_overlay` (`ui/overlay.rs`), `on_notify` (`ui/notify.rs`), `on_desk`
+  `on_notify` (`ui/notify.rs`), `on_desk`
   (`ui/desk.rs`) and the pane reducer (`ui/panes.rs`); a message that crosses
   between launcher and desk batches `shell::swap_console`. Each returns a
   `view_wire::Task<AppMessage>` — the view SDK's task type reused for the
@@ -382,7 +382,11 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   dispatch by `shell/bridge.rs` until each one's own methods take its
   source over. Neither the rail's rows nor a window's front is bridged:
   the rows are refreshed off the roster's changes channel, and the front
-  (`Front::of_desk`) is derived from its desk by an observer.
+  (`Front::of_desk`) is derived from its desk by an observer. Nor is what
+  is open over a window or its Spotlight: `Overlays` and `Spotlight` are
+  written by their own methods, called from the controls, and what the
+  reducer still owns follows them from observers
+  (`Desktop::window_entities`).
   `layers::WindowRoot` (`layers/root.rs`, one thin uncached view per OS
   window) lays the window's layers out as siblings. Before the desk the
   console draws `layers::Screens` (`layers/screens.rs`, cached over the
@@ -395,8 +399,12 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   `chrome/bell.rs`), `layers/panes.rs` drawing each pane's seat (its tree or
   standin) or the app's own body (`layers::EmptyPane`: the bare desk's figure
   or an empty window's finder; `layers::HelpPane`) under a cached
-  `layers::Strip`, `Screens` again for the one dialog at a time
-  (`spotlight.rs`, `settings.rs`, `approve.rs`), the node's breath
+  `layers::Strip`, `layers::OverlayLayer` (`layers/overlays.rs`, cached over
+  `Overlays`, `Spotlight` and the slices its dialogs read) for Spotlight and
+  Settings (`overlays/spotlight.rs`, `overlays/settings.rs`, their fields in
+  `layers/fields.rs`) and the keys' handoff as anything opens over the desk
+  or closes, `Screens` again only while "Add a device…" is open
+  (`approve.rs`, until s9), the node's breath
   (`layers::StatusDot`, `layers/dot.rs`, a root sibling over the bar's empty
   well at `DotSlot`) and the footer (`layers::ToastView`, `layers/toast.rs`,
   cached over `Toast`, `Session` and `Prefs`, drawn deferred over an open
@@ -554,14 +562,16 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   those two steps. The reducer's own `Task`s are
   polled on the window thread (HTTP bodies decode there). Every
   `Desktop::dispatch` ends in `cx.notify()`, and the console's `Screens`
-  layer observes the model, so each message re-renders it (and the root over
-  it; the cached layers beside it hit); a clock's beat that moves nothing
-  notifies nothing (`beat_face`). `Roster::rail()`,
+  layer observes the model: before the desk, and on it while Approve is
+  open, each message re-renders it (and the root over it; the cached layers
+  beside it hit). Otherwise on the desk a message draws only the layers
+  whose slices it moved. A clock's beat that moves nothing notifies nothing
+  (`beat_face`). `Roster::rail()`,
   which locks every seat, runs once per roster or seat change
   (`entities::Rail`), not per render of a desk whose panes all hold
-  programs; still per draw of Spotlight and Settings › Notifications while
-  open, and of an empty pane (a bare desk, an empty window: its render and
-  its model observer) until s9.
+  programs, nor per draw of Spotlight or Settings; still per draw of an
+  empty pane (a bare desk, an empty window: its render and its model
+  observer) until s9.
 - **Off-thread.** View loads, roster reads, node I/O, describe, banners and
   key opening are off the window thread (§2).
 - **Measured.** A `view_load` info line per network load
@@ -748,11 +758,14 @@ House words, and where one word means several things.
   subscription writes through `Items`. Add the method to the module doc in
   `kernel.rs` and a case in `kernel/tests.rs`, which stands up a loopback
   `TcpListener` as the node.
-- **Add a native screen or overlay.** State and messages in `ui/app.rs`
-  (a `Stage` variant or an `Overlay` variant), the reducer arm in the
-  matching `ui/*.rs`, the drawing as a `Screens` method in `shell/`
-  built from `ink` pieces, routed from `Screens::render`
-  (`shell/layers/screens.rs`: stages and overlays alike). Give every control a role and name through
+- **Add a native screen or overlay.** A screen: state and messages in
+  `ui/app.rs` (a `Stage` variant), the reducer arm in the matching
+  `ui/*.rs`, the drawing as a `Screens` method in `shell/` built from
+  `ink` pieces, routed from `Screens::render` (`shell/layers/screens.rs`).
+  An overlay: an `Overlay` variant (`shell/entities/overlays.rs`), opened
+  and closed by `Overlays` methods from the control that opens it, drawn
+  as an `OverlayLayer` method (`shell/layers/overlays/`, routed from its
+  render). Give every control a role and name through
   `a11y` and an element id the door can address; add a walk to
   `shell/screens_tests.rs` or `panes_tests.rs`.
 - **Debug a view that will not load.** Read `app.log` (path from

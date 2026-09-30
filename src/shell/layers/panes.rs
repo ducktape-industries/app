@@ -258,8 +258,8 @@ impl PaneLayer {
     /// Whether the keys go to the pane in front on this draw: another came
     /// there, whoever brought it (a key, the bar, the model), or this
     /// window moved its panes. Not while something open over the desk
-    /// holds them; once it closes, and then to the new front, not back to
-    /// what had them when it opened.
+    /// holds them; once it closes, and then to the new front (its close
+    /// gave the keys back first, before the draw, `OverlayLayer::moved`).
     fn keys_move(&mut self, layout: &layout::Layout, cx: &mut App) -> bool {
         let covered = self.overlays.read(cx).get().is_some();
         if covered {
@@ -267,13 +267,6 @@ impl PaneLayer {
         }
         let front = layout.panes.get(layout.focused).map(|pane| pane.instance);
         let turned = std::mem::replace(&mut self.front, front) != front;
-        if turned {
-            let _ = self.window.update(cx, |root, cx| {
-                if let Some(screens) = &root.screens {
-                    screens.update(cx, |screens, _| screens.refocus = None);
-                }
-            });
-        }
         std::mem::take(&mut self.panes_moved) || turned
     }
 

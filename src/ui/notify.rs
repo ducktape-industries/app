@@ -7,8 +7,8 @@ impl Ducktape {
     /// The notification centre's rows, and the policy Settings sets.
     pub(super) fn on_notify(&mut self, message: Message) -> Task<Message> {
         match message {
+            // (the bell closed as its row was picked: `layers::Chrome`)
             Message::NotifyOpen(id) => {
-                self.close_menu();
                 let entry = self.center.lock().open(id);
                 match entry {
                     Some(entry) if !entry.link.is_empty() => {
@@ -28,10 +28,6 @@ impl Ducktape {
             Message::NotifyClearRead => {
                 self.center.lock().clear_read();
                 Task::none()
-            }
-            Message::NotifySettings => {
-                self.settings_page = super::SettingsPage::Notifications;
-                self.update(Message::OpenSettings)
             }
             Message::NotifyPermission(module, permission) => {
                 crate::runtime::notify::set_permission(&mut self.center.lock(), module, permission);

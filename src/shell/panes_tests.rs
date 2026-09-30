@@ -1,4 +1,6 @@
 //! Real pane controls exercised through the same AccessKit actions as the AX door.
+use super::entities::{Overlay, Popover, SettingsPage, Spot};
+use super::layers::tests::{open_now, run_spot, show};
 use super::*;
 use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
@@ -164,7 +166,7 @@ fn pane_strip_ax_actions_split_close_and_move_instances(cx: &mut TestAppContext)
 
 #[gpui_kit::test]
 fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
+    let (_, _, view, mut native) = console(cx);
     native.update(|window, cx| press("pane/0/split", window, cx));
     let first = native.update(|window, cx| {
         draw(window, cx);
@@ -176,10 +178,7 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     // top-left corner stays uncovered
     let behind = gpui_kit::point(px(first.x + 14.), px(layers::BAR + first.y + 14.));
     // over a menu's backdrop the press closes the menu, and raises nothing
-    model.update(&mut native, |model, cx| {
-        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Account));
-        model.bridge(false, cx);
-    });
+    show(&view, Some(Overlay::Menu(Popover::Account)), &mut native);
     native.update(|window, cx| {
         draw(window, cx);
     });
@@ -187,8 +186,8 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     native.update(|window, cx| {
         draw(window, cx);
         assert_eq!(view.read(cx).layout(cx).focused, 1, "raised under a menu");
-        assert_eq!(model.read(cx).state.overlay, None);
     });
+    assert_eq!(open_now(&view, &mut native), None);
     native.simulate_click(behind, gpui_kit::Modifiers::none());
     native.update(|window, cx| {
         draw(window, cx);
@@ -256,7 +255,7 @@ pub(super) fn panes(native: &mut VisualTestContext, view: &Entity<WindowRoot>) -
 /// minimizes, which the test platform can't).
 #[gpui_kit::test]
 fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
+    let (_, _, view, mut native) = console(cx);
     native.update(|window, cx| {
         draw(window, cx);
     });
@@ -267,10 +266,7 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
     assert_eq!(panes(&mut native, &view), (2, 0), "⌘1 focuses the first");
 
     for name in ALL_OVERLAYS {
-        model.update(&mut native, |model, cx| {
-            model.state.overlay = Some(name);
-            model.bridge(false, cx);
-        });
+        show(&view, Some(name), &mut native);
         assert_eq!(
             native.update(|_, cx| view.read(cx).command_w_pane(cx)),
             None,
@@ -284,10 +280,7 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
                 "{stroke} reached the desk under {name:?}"
             );
         }
-        model.update(&mut native, |model, cx| {
-            model.state.overlay = None;
-            model.bridge(false, cx);
-        });
+        show(&view, None, &mut native);
     }
 
     assert_eq!(
@@ -309,38 +302,32 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
     );
 }
 
-const ALL_OVERLAYS: [crate::Overlay; 7] = [
-    crate::Overlay::Spotlight,
-    crate::Overlay::Approve,
-    crate::Overlay::Settings,
-    crate::Overlay::Network,
-    crate::Overlay::Menu(crate::Popover::Node),
-    crate::Overlay::Menu(crate::Popover::Account),
-    crate::Overlay::Menu(crate::Popover::Notifications),
+const ALL_OVERLAYS: [Overlay; 7] = [
+    Overlay::Spotlight,
+    Overlay::Approve,
+    Overlay::Settings(SettingsPage::Appearance),
+    Overlay::Network,
+    Overlay::Menu(Popover::Node),
+    Overlay::Menu(Popover::Account),
+    Overlay::Menu(Popover::Notifications),
 ];
 
 /// ⌘K opens and closes Spotlight; Escape closes whatever is open, and a
 /// click on its backdrop does too.
 #[gpui_kit::test]
 fn command_k_toggles_spotlight_and_escape_closes_any_overlay(cx: &mut TestAppContext) {
-    let (model, _, _, mut native) = console(cx);
-    let open = |native: &mut VisualTestContext| native.update(|_, cx| model.read(cx).state.overlay);
+    let (_, _, view, mut native) = console(cx);
+    let open = |native: &mut VisualTestContext| open_now(&view, native);
     key(&mut native, "secondary-k");
-    assert_eq!(open(&mut native), Some(crate::Overlay::Spotlight));
+    assert_eq!(open(&mut native), Some(Overlay::Spotlight));
     key(&mut native, "secondary-k");
     assert_eq!(open(&mut native), None);
     for overlay in ALL_OVERLAYS {
-        model.update(&mut native, |model, cx| {
-            model.state.overlay = Some(overlay);
-            model.bridge(false, cx);
-        });
+        show(&view, Some(overlay), &mut native);
         key(&mut native, "escape");
         assert_eq!(open(&mut native), None, "Escape left {overlay:?} open");
         // a click outside its card, low on the window: on its backdrop
-        model.update(&mut native, |model, cx| {
-            model.state.overlay = Some(overlay);
-            model.bridge(false, cx);
-        });
+        show(&view, Some(overlay), &mut native);
         native.update(|window, cx| {
             draw(window, cx);
         });
@@ -360,7 +347,7 @@ fn command_k_toggles_spotlight_and_escape_closes_any_overlay(cx: &mut TestAppCon
 /// once it closes, however it closed: typing carries on where it was.
 #[gpui_kit::test]
 fn closing_an_overlay_gives_the_keys_back_to_what_had_them(cx: &mut TestAppContext) {
-    let (model, _, _, mut native) = console(cx);
+    let (_, _, view, mut native) = console(cx);
     let focused = |native: &mut VisualTestContext| native.update(|window, cx| window.focused(cx));
     key(&mut native, "tab");
     let before = focused(&mut native);
@@ -378,20 +365,12 @@ fn closing_an_overlay_gives_the_keys_back_to_what_had_them(cx: &mut TestAppConte
         draw(window, cx);
     });
     assert_eq!(focused(&mut native), before, "Escape");
-    // a bar menu, closed by the model (a click outside, a pick)
-    model.update(&mut native, |model, cx| {
-        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node));
-        model.bridge(false, cx);
-    });
+    // a bar menu, closed by a click outside or a pick
+    show(&view, Some(Overlay::Menu(Popover::Node)), &mut native);
     native.update(|window, cx| {
         draw(window, cx);
     });
-    model.update(&mut native, |model, cx| {
-        model.dispatch(
-            Message::CloseOverlay(crate::Overlay::Menu(crate::Popover::Node)),
-            cx,
-        )
-    });
+    show(&view, None, &mut native);
     native.run_until_parked();
     native.update(|window, cx| {
         draw(window, cx);
@@ -502,10 +481,11 @@ fn help_the_model_opens_has_the_keys(cx: &mut TestAppContext) {
 fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = console(cx);
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.state.overlay = Some(crate::Overlay::Settings);
-        model.bridge(false, cx);
-    });
+    show(
+        &view,
+        Some(Overlay::Settings(SettingsPage::Appearance)),
+        &mut native,
+    );
     settle(&mut native);
     model.update(&mut native, |model, cx| {
         model.dispatch(Message::OpenHelp, cx)
@@ -522,9 +502,7 @@ fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
             "Help took the keys from Settings"
         )
     });
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::CloseOverlay(crate::Overlay::Settings), cx)
-    });
+    show(&view, None, &mut native);
     settle(&mut native);
     assert!(in_front(&mut native, &view), "Settings closed");
 }
@@ -552,9 +530,7 @@ fn a_view_the_model_selects_has_the_keys(cx: &mut TestAppContext) {
     // back to what had them when it opened
     key(&mut native, "secondary-k");
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Spot(crate::Spot::Open("pane-ax-other")), cx)
-    });
+    run_spot(&view, Spot::Open("pane-ax-other"), &mut native);
     settle(&mut native);
     assert_eq!(panes(&mut native, &view), (2, 1));
     assert!(in_front(&mut native, &view), "Spotlight");
@@ -564,11 +540,12 @@ fn a_view_the_model_selects_has_the_keys(cx: &mut TestAppContext) {
 /// and never reach the bar behind it.
 #[gpui_kit::test]
 fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
-    model.update(&mut native, |model, cx| {
-        model.state.overlay = Some(crate::Overlay::Settings);
-        model.bridge(false, cx);
-    });
+    let (_, _, view, mut native) = console(cx);
+    show(
+        &view,
+        Some(Overlay::Settings(SettingsPage::Appearance)),
+        &mut native,
+    );
     native.update(|window, cx| {
         draw(window, cx);
     });
@@ -736,9 +713,9 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
     assert_eq!(width(&mut native), 1002.);
 }
 
-/// Every dispatch that moves something ends in the model's notify, and
-/// every window answers with a redraw. With nothing in the pane changed
-/// that redraw must not render a seated view's tree again: the counts of
+/// A window redraws for whatever moved around its panes (a menu, the bar,
+/// the toast). With nothing in the pane changed that redraw must not
+/// render a seated view's tree again: the counts of
 /// `GET /perf`, on the cached path (no a11y reader, so no `draw` helper
 /// here). Times are flaky under the test scheduler; counts are not.
 #[gpui_kit::test]
@@ -747,7 +724,7 @@ fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppConte
     use view_wire as wire;
     const MODULE: &str = "pane-desk-redraw-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (model, key, view, mut native) = console(cx);
     // a frame as the platform delivers one: what asked for it runs, then
     // whatever that dirtied draws
     let frame = |native: &mut VisualTestContext| {
@@ -784,7 +761,7 @@ fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppConte
     assert!(settled > 0, "the view drew its tree once");
     let desk = window_count(key, "renders");
     for _ in 0..3 {
-        model.update(&mut native, |_, cx| cx.notify());
+        view.update(&mut native, |_, cx| cx.notify());
         for _ in 0..3 {
             frame(&mut native);
         }
@@ -808,9 +785,10 @@ pub(super) fn window_count(key: WindowKey, stage: &str) -> u64 {
 }
 
 /// The clocks beat whatever happens. A beat that moves nothing on screen
-/// draws no frame, and one that moves something draws it: a roster that
-/// changed on its own thread, the ages an open node menu counts, a toast
-/// running out (docs/perf.md).
+/// draws no frame and tells the model's observers nothing, and one that
+/// moves something does: a roster that changed on its own thread (the
+/// empty desk lists the programs from the model), a toast running out
+/// (docs/perf.md).
 #[gpui_kit::test]
 fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
     use crate::ui::test_support::status;
@@ -830,6 +808,11 @@ fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
     send(Message::Pane(key, PaneMessage::Select(MODULE)), &mut native);
     send(Message::StatusPushed(status(7)), &mut native);
     let still = window_count(key, "renders");
+    let told = std::rc::Rc::new(std::cell::Cell::new(0));
+    let _told = native.update(|_, cx| {
+        let told = told.clone();
+        cx.observe(&model, move |_, _| told.set(told.get() + 1))
+    });
     for message in [
         Message::WallTick,
         Message::ToastTick,
@@ -844,26 +827,19 @@ fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
         still,
         "a beat that moved nothing drew the window"
     );
+    assert_eq!(
+        told.get(),
+        0,
+        "a beat that moved nothing told the model's observers"
+    );
 
     // a roster read or a seat load landed on its own thread
     model.read_with(&native, |model, _| model.state.roster.changed());
     send(Message::WallTick, &mut native);
-    assert!(
-        window_count(key, "renders") > still,
-        "the roster moved under the beat and the rail still said the last"
-    );
-
-    // the node menu counts the seconds since the last block
-    send(Message::TogglePopover(crate::Popover::Node), &mut native);
-    let open = window_count(key, "renders");
-    send(Message::WallTick, &mut native);
-    assert!(
-        window_count(key, "renders") > open,
-        "a second passed under an open node menu and it still said the last"
-    );
-    send(
-        Message::CloseOverlay(crate::Overlay::Menu(crate::Popover::Node)),
-        &mut native,
+    assert_eq!(
+        told.get(),
+        1,
+        "the roster moved under the beat and the model told no one"
     );
 
     // a toast shows for twelve beats, and goes on the thirteenth
@@ -1233,9 +1209,11 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
     // Settings open over the desk when its last pane leaves
     self::key(&mut native, "secondary-n");
     settle(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::OpenSettings, cx)
-    });
+    show(
+        &view,
+        Some(Overlay::Settings(SettingsPage::Appearance)),
+        &mut native,
+    );
     settle(&mut native);
     model.update(&mut native, |model, cx| {
         model.dispatch(Message::Pane(key, PaneMessage::Close(0)), cx)
@@ -1251,9 +1229,7 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
             "the last pane leaving took the keys from Settings"
         )
     });
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::CloseOverlay(crate::Overlay::Settings), cx)
-    });
+    show(&view, None, &mut native);
     settle(&mut native);
     assert!(
         root_has_them(&mut native),
@@ -1394,14 +1370,12 @@ fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestApp
         secure: false,
         style: gpui_kit::div().w(px(200.)).h(px(24.)).style().clone(),
     };
-    let (model, _, view, mut native) = console(cx);
+    let (_, _, view, mut native) = console(cx);
     settle(&mut native);
     key(&mut native, "secondary-k");
     settle(&mut native);
     crate::runtime::seat_frames_for_test(MODULE, 200, view_wire::Node::empty(), field);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Spot(crate::Spot::Open(MODULE)), cx)
-    });
+    run_spot(&view, Spot::Open(MODULE), &mut native);
     settle(&mut native);
     let nodes = native.update(draw);
     assert!(
@@ -1533,9 +1507,12 @@ fn an_overlay_moving_draws_the_panes_by_its_slice_alone(cx: &mut TestAppContext)
     let overlays = model.read_with(&native, |model, _| {
         model.entities.by_window[&key].overlays.clone()
     });
-    for overlay in [Some(entities::Overlay::Spotlight), None] {
+    for overlay in [Some(Overlay::Spotlight), None] {
         let before = window_count(key, "renders.panes");
-        overlays.update(&mut native, |overlays, cx| overlays.set(overlay, cx));
+        overlays.update(&mut native, |overlays, cx| match overlay {
+            Some(overlay) => overlays.open(overlay, cx),
+            None => overlays.close(Overlay::Spotlight, cx),
+        });
         native.run_until_parked();
         assert!(
             window_count(key, "renders.panes") > before,

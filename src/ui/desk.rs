@@ -1,8 +1,10 @@
 //! The desk itself: the open view, links, toasts, the windows and the tray.
 
+use super::layout::PaneMessage;
 use super::{AppMessage as Message, Ducktape};
 use crate::backend;
 use crate::runtime::Intent;
+use crate::shell::Spot;
 use crate::ui::task::Task;
 
 impl Ducktape {
@@ -19,18 +21,12 @@ impl Ducktape {
                 backend::save_motion(on);
                 Task::none()
             }
+            // (a menu that asked for it closed as it did: its row, `WindowRoot`)
             Message::OpenHelp => {
-                if matches!(self.overlay, Some(super::Overlay::Menu(_))) {
-                    self.overlay = None;
-                }
                 self.open_help(false);
                 Task::none()
             }
             Message::SelectView(module) => {
-                // a menu that opened the view (the account menu's Account) is done
-                if matches!(self.overlay, Some(super::Overlay::Menu(_))) {
-                    self.overlay = None;
-                }
                 // a pick (⌘K's, a menu's) opens as the bar's click does, not
                 // in place of what the focused window shows
                 self.open_seat(module, None);
@@ -107,10 +103,9 @@ impl Ducktape {
                 }
                 Task::none()
             }
-            Message::WallTick => {
-                self.wall_now += 1;
-                Task::none()
-            }
+            // moves nothing any more: an open menu's ages count on its own
+            // clock (`layers::Chrome`); s12 deletes the beats
+            Message::WallTick => Task::none(),
             Message::ConsoleOpened(key) => {
                 self.console_win = Some(key);
                 Task::none()
@@ -136,6 +131,35 @@ impl Ducktape {
             Message::TrayQuit => crate::shell::quit(),
             _ => unreachable!("routed by `update`"),
         }
+    }
+
+    /// A Spotlight row picked, Spotlight already closed (`Overlays::submit`):
+    /// what it does that the reducer still owns. Settings is the overlays'
+    /// own and never comes here.
+    pub(super) fn on_spot(&mut self, spot: Spot) -> Task<Message> {
+        let message = match spot {
+            Spot::Open(module) => Message::SelectView(module),
+            Spot::Switch(url) => Message::SwitchNetwork(url),
+            Spot::CreateAccount => Message::ShowCreateAccount,
+            Spot::Lock => Message::Lock,
+            Spot::Appearance(mode) => Message::SetAppearance(mode),
+            Spot::OtherNetwork => Message::Disconnect,
+            Spot::Help => Message::OpenHelp,
+            Spot::FillWindow | Spot::HoldWindow => {
+                let Some((key, index)) = self.framed_pane() else {
+                    return Task::none();
+                };
+                Message::Pane(
+                    key,
+                    match spot {
+                        Spot::FillWindow => PaneMessage::Fill(index),
+                        _ => PaneMessage::Hold(index),
+                    },
+                )
+            }
+            Spot::Settings => unreachable!("Settings opens as an overlay (`OverlayLayer::run`)"),
+        };
+        self.update(message)
     }
 
     pub(super) fn open_seat(&mut self, module: &'static str, route: Option<String>) {

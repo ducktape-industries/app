@@ -275,29 +275,10 @@ impl Screens {
         small: bool,
         ink: &Ink,
     ) -> AnyElement {
-        let text = text.into();
         let model = self.model.clone();
-        let (size, color) = match small {
-            true => (13., ink.muted),
-            false => (15., ink.ink),
-        };
-        let hover = ink.muted;
-        crate::a11y::keyboard(
-            sans(400, size)
-                .id(id)
-                .control(Role::Button, text.clone())
-                .text_color(color)
-                .underline()
-                .cursor_pointer()
-                .hover(move |style| style.text_color(hover))
-                .on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    model.update(cx, |model, cx| model.dispatch(message(), cx))
-                })
-                .child(text),
-            ink.ink,
-        )
-        .into_any_element()
+        let dispatch =
+            move |cx: &mut App| model.update(cx, |model, cx| model.dispatch(message(), cx));
+        link_running(id, text, dispatch, small, ink)
     }
 
     /// `<span role=alert>`: `400 13px/1.5` in danger, read out at once as
@@ -312,6 +293,38 @@ impl Screens {
             .child(said)
             .into_any_element()
     }
+}
+
+/// [`Screens::link`] that runs `run` when pressed.
+pub(super) fn link_running(
+    id: &'static str,
+    text: impl Into<SharedString>,
+    run: impl Fn(&mut App) + 'static,
+    small: bool,
+    ink: &Ink,
+) -> AnyElement {
+    let text = text.into();
+    let (size, color) = match small {
+        true => (13., ink.muted),
+        false => (15., ink.ink),
+    };
+    let hover = ink.muted;
+    crate::a11y::keyboard(
+        sans(400, size)
+            .id(id)
+            .control(Role::Button, text.clone())
+            .text_color(color)
+            .underline()
+            .cursor_pointer()
+            .hover(move |style| style.text_color(hover))
+            .on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                run(cx)
+            })
+            .child(text),
+        ink.ink,
+    )
+    .into_any_element()
 }
 
 /// `<input>`'s box around a bare field: `height 44px; padding 0 12px;
@@ -469,7 +482,7 @@ mod tests {
                         let mut both = Vec::new();
                         for (nth, kind) in [Kind::Secondary, Kind::Primary].into_iter().enumerate()
                         {
-                            let message = || Message::ToggleNetworkMenu;
+                            let message = || Message::DismissToast;
                             let mut button =
                                 button(&desktop, nth, "Go", kind, message, Press::Ready, &ink);
                             let button = button

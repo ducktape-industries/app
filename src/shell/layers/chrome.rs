@@ -15,15 +15,14 @@
 //! leaves them where they went (`keys_left`; owner, 2026-09-28).
 
 use super::super::entities::{
-    Account, Chain, DotSlot, Front, Notifications, Observed, Overlay, Overlays, Prefs, Rail,
-    Session, Slice, WindowEntities,
+    Account, Chain, DotSlot, Front, Notifications, Observed, Overlay, Overlays, Popover, Prefs,
+    Rail, Session, Slice, WindowEntities,
 };
 use super::super::ink::{Ink, mono, sans};
 use super::super::{
     Desktop, Message, PaneMessage, WindowKey, WindowRoot, chord_label, keys, pane_hold, screens,
     theme,
 };
-use crate::Popover;
 use crate::a11y::Control as _;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -36,11 +35,10 @@ pub(in crate::shell) const BAR: f32 = 36.;
 
 /// The menu bar and its menus, one per console window.
 pub(in crate::shell) struct Chrome {
-    /// The reducer, until the arms the rows dispatch move (s8-s11).
+    /// The reducer, until the arms the rows dispatch move (s9-s11).
     model: Entity<Desktop>,
     key: WindowKey,
-    /// Its window: a tab's click opens the program through it, and a menu
-    /// the keys left closes through it.
+    /// Its window: a tab's click opens the program through it.
     window: WeakEntity<WindowRoot>,
     session: Observed<Slice<Session>>,
     chain: Observed<Chain>,
@@ -51,9 +49,9 @@ pub(in crate::shell) struct Chrome {
     front: Observed<Slice<Front>>,
     prefs: Observed<Slice<Prefs>>,
     dot: Observed<DotSlot>,
-    /// The open menu's card holds the keys by this (the window's own: it
-    /// puts them in when the menu opens).
-    menu: FocusHandle,
+    /// The open menu's card holds the keys by this; the overlay layer puts
+    /// them in when the menu opens (`OverlayLayer::moved`).
+    pub(in crate::shell) menu: FocusHandle,
     /// The Programs rail's one Tab stop (`a11y::roving`).
     stop: FocusHandle,
     /// The program tab the arrows moved to while the rail has the keys:
@@ -79,7 +77,6 @@ impl Chrome {
         model: Entity<Desktop>,
         key: WindowKey,
         own: &WindowEntities,
-        menu: FocusHandle,
         desk_window: WeakEntity<WindowRoot>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -93,7 +90,7 @@ impl Chrome {
             entities.notifications.clone(),
             entities.prefs.clone(),
         );
-        let stop = cx.focus_handle().tab_stop(true);
+        let (stop, menu) = (cx.focus_handle().tab_stop(true), cx.focus_handle());
         let subscriptions = [
             // the rail's cursor lasts as long as the rail has the keys
             cx.on_blur(&stop, window, |this, _, cx| {
@@ -139,10 +136,10 @@ impl Chrome {
     }
 
     /// The keys are outside the open menu: it closes, and they stay where
-    /// they went (`WindowRoot::menu_left_by_keys`, now: the audit's walk
-    /// and the door read the window in the same update, and an event would
-    /// land after them). A no-op while they are in it (a row that went while
-    /// the menu stays put them back at its first control, `focus_lost`), and
+    /// they went (`Overlays::close_by_keys`, now: the audit's walk and the
+    /// door read the window in the same update, and an event would land
+    /// after them). A no-op while they are in it (a row that went while the
+    /// menu stays put them back at its first control, `focus_lost`), and
     /// when nothing hanging from the bar is open (a normal close moved them
     /// too; the bell's Settings row opened Settings, which stays).
     fn keys_left(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -150,13 +147,12 @@ impl Chrome {
             return;
         }
         let open = match *self.overlays.read(cx).get() {
-            Some(Overlay::Network) => crate::Overlay::Network,
-            Some(Overlay::Menu(which)) => crate::Overlay::Menu(which),
+            Some(open @ (Overlay::Network | Overlay::Menu(_))) => open,
             _ => return,
         };
-        let _ = self
-            .window
-            .update(cx, |desk, cx| desk.menu_left_by_keys(open, cx));
+        self.overlays
+            .entity()
+            .update(cx, |overlays, cx| overlays.close_by_keys(open, cx));
     }
 
     /// The ages clock runs while the node menu or the bell is open, and
@@ -187,6 +183,25 @@ impl Chrome {
     fn dispatching(&self, message: fn() -> Message) -> impl Fn(&mut App) + 'static {
         let model = self.model.clone();
         move |cx| model.update(cx, |model, cx| model.dispatch(message(), cx))
+    }
+
+    /// A row of the menu `menu` that is done with it: the menu closes,
+    /// then `message` goes to the reducer (s9-s11 move those arms).
+    fn closing(&self, menu: Overlay, message: fn() -> Message) -> impl Fn(&mut App) + 'static {
+        let (overlays, model) = (self.overlays.entity().clone(), self.model.clone());
+        move |cx| {
+            overlays.update(cx, |overlays, cx| overlays.close(menu, cx));
+            model.update(cx, |model, cx| model.dispatch(message(), cx))
+        }
+    }
+
+    /// What is open over the desk, moved by `change`.
+    fn overlaying(
+        &self,
+        change: impl Fn(&mut Overlays, &mut Context<Overlays>) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let overlays = self.overlays.entity().clone();
+        move |cx| overlays.update(cx, &change)
     }
 
     /// A menu item: `height: 36px; padding: 0 16px; font: 400 14px`.
@@ -223,8 +238,8 @@ impl Chrome {
     /// the backdrop starts under the bar). Drawn first among the deferred
     /// children, so the menu's card lies over it. Invisible, and nothing
     /// about focus or keys: the card holds those.
-    fn backdrop(&self, id: &'static str, closes: crate::Overlay, window: &Window) -> AnyElement {
-        let model = self.model.clone();
+    fn backdrop(&self, id: &'static str, closes: Overlay, window: &Window) -> AnyElement {
+        let close = self.overlaying(move |overlays, cx| overlays.close(closes, cx));
         let viewport = window.viewport_size();
         deferred(
             div()
@@ -235,11 +250,7 @@ impl Chrome {
                 .w(viewport.width)
                 .h((viewport.height - px(BAR)).max(px(0.)))
                 .occlude()
-                .on_click(move |_, _, cx| {
-                    model.update(cx, |model, cx| {
-                        model.dispatch(Message::CloseOverlay(closes), cx)
-                    });
-                }),
+                .on_click(move |_, _, cx| close(cx)),
         )
         .with_priority(0)
         .into_any_element()
@@ -576,13 +587,11 @@ impl Render for Chrome {
             })
             .collect();
         // `popup`: what its press opens, which it says (AX-113)
-        let model = self.model.clone();
         let item = |id: &'static str,
                     name: SharedString,
                     open: bool,
                     popup: Option<accesskit::HasPopup>,
-                    message: fn() -> Message| {
-            let model = model.clone();
+                    run: Box<dyn Fn(&mut App)>| {
             let surface = ink.surface;
             let patch = crate::a11y::Patch::default();
             let patch = match popup {
@@ -605,10 +614,13 @@ impl Render for Chrome {
                     .hover(move |style| style.bg(surface))
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        model.update(cx, |model, cx| model.dispatch(message(), cx));
+                        run(cx);
                     }),
                 ink.ink,
             ))
+        };
+        let toggle = |menu: Overlay| -> Box<dyn Fn(&mut App)> {
+            Box::new(self.overlaying(move |overlays, cx| overlays.toggle(menu, cx)))
         };
         use accesskit::HasPopup::{Dialog, Menu};
         let network_open = bar.open == Some(Overlay::Network);
@@ -617,7 +629,7 @@ impl Render for Chrome {
             SharedString::from(format!("Network: {}", bar.network)),
             network_open,
             Some(Menu),
-            || Message::ToggleNetworkMenu,
+            toggle(Overlay::Network),
         )
         .aria_expanded(network_open)
         .relative()
@@ -627,9 +639,13 @@ impl Render for Chrome {
             item.child(self.network_menu(narrow, &ink, cx))
         });
         let chord = chord_label("K");
-        let search = item("rail-search", "Search".into(), false, Some(Dialog), || {
-            Message::OpenSpotlight
-        })
+        let search = item(
+            "rail-search",
+            "Search".into(),
+            false,
+            Some(Dialog),
+            Box::new(self.overlaying(|overlays, cx| overlays.open(Overlay::Spotlight, cx))),
+        )
         .aria_keyshortcuts(chord.clone())
         .when(!narrow, |item| {
             item.child(div().text_color(ink.muted).child("Search"))
@@ -653,7 +669,7 @@ impl Render for Chrome {
             }),
             bell_open,
             Some(Dialog),
-            || Message::TogglePopover(Popover::Notifications),
+            toggle(Overlay::Menu(Popover::Notifications)),
         )
         .aria_expanded(bell_open)
         .relative()
@@ -732,7 +748,7 @@ impl Render for Chrome {
             said.into(),
             node_open,
             Some(Dialog),
-            || Message::TogglePopover(Popover::Node),
+            toggle(Overlay::Menu(Popover::Node)),
         )
         .aria_description(format!("Block {}", bar.height))
         .aria_expanded(node_open)
@@ -744,15 +760,23 @@ impl Render for Chrome {
         });
         let account_open = bar.open == Some(Overlay::Menu(Popover::Account));
         let who = match (&bar.account, bar.unlocked) {
-            (_, false) => item("sign-in", "Sign in".into(), false, None, || Message::SignIn)
-                .child(div().underline().child("Sign in")),
+            (_, false) => item(
+                "sign-in",
+                "Sign in".into(),
+                false,
+                None,
+                Box::new(self.dispatching(|| Message::SignIn)),
+            )
+            .child(div().underline().child("Sign in")),
             // named by what it says
-            (Some(None), true) => {
-                item("rail-account", "Create account".into(), false, None, || {
-                    Message::ShowCreateAccount
-                })
-                .child(div().underline().child("Create account"))
-            }
+            (Some(None), true) => item(
+                "rail-account",
+                "Create account".into(),
+                false,
+                None,
+                Box::new(self.dispatching(|| Message::ShowCreateAccount)),
+            )
+            .child(div().underline().child("Create account")),
             (account, true) => {
                 let name = match account {
                     Some(Some((_, name))) => name.clone(),
@@ -767,7 +791,7 @@ impl Render for Chrome {
                     SharedString::from(format!("Account: {name}")),
                     account_open,
                     Some(Dialog),
-                    || Message::TogglePopover(Popover::Account),
+                    toggle(Overlay::Menu(Popover::Account)),
                 )
                 .aria_expanded(account_open)
                 .relative()
@@ -784,7 +808,7 @@ impl Render for Chrome {
             "Ducktape settings".into(),
             false,
             Some(Dialog),
-            || Message::OpenSettings,
+            Box::new(self.overlaying(|overlays, cx| overlays.open_settings(cx))),
         )
         .px(px(8.))
         .child(
@@ -810,16 +834,14 @@ impl Render for Chrome {
             });
         // the backdrop under whichever menu is open, drawn before its card
         let backdrop = match bar.open {
-            Some(Overlay::Network) => {
-                Some(self.backdrop("network-menu", crate::Overlay::Network, window))
-            }
+            Some(Overlay::Network) => Some(self.backdrop("network-menu", Overlay::Network, window)),
             Some(Overlay::Menu(which)) => {
                 let id = match which {
                     Popover::Node => "node-status",
                     Popover::Account => "account-menu",
                     Popover::Notifications => "notifications",
                 };
-                Some(self.backdrop(id, crate::Overlay::Menu(which), window))
+                Some(self.backdrop(id, Overlay::Menu(which), window))
             }
             _ => None,
         };

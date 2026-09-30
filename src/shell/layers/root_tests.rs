@@ -2,6 +2,7 @@
 //! nothing else (P1, P6 in the app), and the root lays them out as the
 //! window's kind and screen say (docs/perf.md).
 use super::tests::open_console;
+use crate::shell::entities::{Overlay, Popover};
 use crate::shell::panes_tests::{console, draw, settle, window_count};
 use crate::shell::{Message, PaneMessage, WindowKind};
 use crate::ui::test_support::status;
@@ -175,46 +176,54 @@ fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
     );
 }
 
-/// A keystroke in Spotlight draws the screens (its dialog) once, and
-/// neither the bar nor a pane's tree.
+/// Typing in Spotlight's field draws the overlay layer (the field is its
+/// child: each of the field's own notifies draws it too) and no other
+/// cached layer: neither the bar, nor the footer, nor a pane's tree. (The
+/// root and the pane layer under it are not cached: they draw with it.)
 #[gpui_kit::test]
-fn a_shell_keystroke_renders_one_layer(cx: &mut TestAppContext) {
+fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     const MODULE: &str = "root-keystroke-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (model, key, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
     model.update(&mut native, |model, cx| {
         model.dispatch(Message::SetMotion(false), cx);
         model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx);
-        model.dispatch(Message::OpenSpotlight, cx);
     });
+    super::tests::show(&view, Some(Overlay::Spotlight), &mut native);
+    // the first key: the window's input turns to the keyboard, which gpui
+    // answers with a full redraw
+    native.simulate_input("a");
     for _ in 0..8 {
         frame(&mut native);
     }
-    let (chrome, overlays, tree) = (
-        window_count(key, "renders.chrome"),
-        window_count(key, "renders.overlays"),
-        tree_renders(MODULE),
+    let counts = || {
+        (
+            window_count(key, "renders.chrome"),
+            window_count(key, "renders.toast"),
+            tree_renders(MODULE),
+        )
+    };
+    let (still, overlays) = (counts(), window_count(key, "renders.overlays"));
+    assert!(
+        still.0 > 0 && still.1 > 0 && still.2 > 0 && overlays > 0,
+        "every layer drew"
     );
-    assert!(chrome > 0 && overlays > 0 && tree > 0, "every layer drew");
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SpotlightTyped("al".into()), cx)
-    });
+    native.simulate_input("l");
     frame(&mut native);
-    assert_eq!(
-        window_count(key, "renders.overlays"),
-        overlays + 1,
-        "the keystroke drew the dialog other than once"
+    let spotlight = model.read_with(&native, |model, _| {
+        model.entities.by_window[&key].spotlight.clone()
+    });
+    let query = native.update(|_, cx| spotlight.read(cx).get().query.clone());
+    assert_eq!(query, "al", "the keystrokes never reached the slice");
+    assert!(
+        window_count(key, "renders.overlays") > overlays,
+        "the keystrokes drew no overlay layer"
     );
     assert_eq!(
-        window_count(key, "renders.chrome"),
-        chrome,
-        "a Spotlight keystroke drew the bar"
-    );
-    assert_eq!(
-        tree_renders(MODULE),
-        tree,
-        "a Spotlight keystroke drew a pane's tree"
+        counts(),
+        still,
+        "a Spotlight keystroke drew the bar, the footer or a pane's tree"
     );
 }
 
@@ -371,9 +380,9 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
 /// node comes after the menu's in the tree.
 #[gpui_kit::test]
 fn a_toast_paints_over_an_open_menu(cx: &mut TestAppContext) {
-    let (model, _, _, mut native) = console(cx);
+    let (model, _, view, mut native) = console(cx);
+    super::tests::show(&view, Some(Overlay::Menu(Popover::Node)), &mut native);
     model.update(&mut native, |model, cx| {
-        model.dispatch(Message::TogglePopover(crate::Popover::Node), cx);
         model.dispatch(Message::ShowToast("Saved".into()), cx);
     });
     settle(&mut native);
