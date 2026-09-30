@@ -101,7 +101,7 @@ quit) are `Windows`' methods.
 
 | Thread | What runs there | Where it is made |
 |---|---|---|
-| **window / main** (GPUI foreground) | every entity method and the timers the entities own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
+| **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn`, `live`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
 | **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
