@@ -493,3 +493,41 @@ fn the_bells_settings_row_opens_settings_and_the_belt_leaves_it_open(cx: &mut Te
         )
     });
 }
+
+/// A menu's card hangs 4px under the bar (`top: 40px`) on a 1x display as
+/// on a 2x one: its button is centred in the bar half a pixel up, and the
+/// snap to device pixels must not carry that half into the card.
+#[gpui_kit::test]
+fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        keys::bind(cx);
+    });
+    for (overlay, role, name) in [
+        (Overlay::Network, Role::Menu, "Networks"),
+        (Overlay::Menu(Popover::Node), Role::Dialog, "Node status"),
+        (
+            Overlay::Menu(Popover::Notifications),
+            Role::Dialog,
+            "Notifications",
+        ),
+    ] {
+        let mut state = gate::desk();
+        state.overlay = Some(overlay);
+        let (_view, mut native) = open(state, cx);
+        for scale in [1., 2.] {
+            let window = native.windows()[0];
+            native.simulate_window_scale_factor_change(window, scale);
+            let nodes = native.update(|window, cx| {
+                draw(window, cx);
+                serde_json::to_value(crate::ax::snapshot("shell", window, true)).unwrap()
+            });
+            let card = find(&nodes, &format!("{role:?}"), name);
+            assert_eq!(
+                card["bounds"][1], 40,
+                "{name} at {scale}x: {}",
+                card["bounds"]
+            );
+        }
+    }
+}

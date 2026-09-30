@@ -279,17 +279,15 @@ impl Chrome {
             .shadow_lg()
             .w(px(width))
             .child(body);
-        // the corner: a point-sized box at the button's corner, 4px under
-        // the bar, that the anchored card takes its position from (the
-        // button is centred in the bar's 35px inside its border line, half a
-        // pixel up: the extra half puts the card's top on a whole pixel). It holds
+        // the corner: a point-sized box at the button's bottom corner that
+        // the anchored card takes its x from (`BarFoot` sets its y). It holds
         // the menu handle and hears the rows' keys (no id, no role: the card
         // is the node assistive technology sees, and it offers no focus of
         // its own)
         let menu = self.menu.clone();
         let corner = div()
             .absolute()
-            .bottom(px(-4.5))
+            .bottom_0()
             .size_0()
             .track_focus(&self.menu)
             .capture_key_down(move |event: &KeyDownEvent, window, cx| {
@@ -324,12 +322,13 @@ impl Chrome {
             _ => corner.right_0(),
         };
         deferred(
-            corner.child(
+            corner.child(BarFoot(Some(
                 anchored()
                     .anchor(anchor)
                     .snap_to_window_with_margin(px(8.))
-                    .child(card),
-            ),
+                    .child(card)
+                    .into_any_element(),
+            ))),
         )
         .with_priority(1)
         .into_any_element()
@@ -880,6 +879,75 @@ impl Render for Chrome {
             .child(node)
             .child(who)
             .child(gear)
+    }
+}
+
+/// The anchored card, its top put on `BAR + 4` (the canvas's menus:
+/// `top: 40px`) whatever its corner box laid out to. The button the corner
+/// hangs from is centred in the bar's 35px inside its border line, half a
+/// pixel up, and the snap to device pixels puts that half on one side of a
+/// whole pixel or the other by scale (39 at 1x, 40 at 2x): the corner
+/// gives the card its x, the bar gives it its y.
+struct BarFoot(Option<AnyElement>);
+
+impl IntoElement for BarFoot {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for BarFoot {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        let child = self.0.as_mut().expect("the card is laid out once");
+        (child.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        bounds: Bounds<Pixels>,
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let child = self.0.as_mut().expect("the card is prepainted once");
+        let down = px(BAR + 4.) - bounds.origin.y;
+        window.with_element_offset(point(px(0.), down), |window| {
+            child.prepaint(window, cx);
+        });
+    }
+
+    fn paint(
+        &mut self,
+        _: Option<&GlobalElementId>,
+        _: Option<&InspectorElementId>,
+        _: Bounds<Pixels>,
+        _: &mut (),
+        _: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if let Some(child) = self.0.as_mut() {
+            child.paint(window, cx);
+        }
     }
 }
 
