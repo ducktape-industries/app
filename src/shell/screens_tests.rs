@@ -17,7 +17,7 @@ use super::entities::{Account, AccountStep, Overlay, Popover, Screen, SettingsPa
 use super::layers::tests::{Seed, entities, set_screen};
 use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
-use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, px, size};
+use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, Window, px, size};
 
 fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
     window.activate_a11y();
@@ -471,7 +471,7 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
 
     // reading without a key wipes it; the key screen comes back (from the
     // desk's account menu)
-    let account = entities(&view, &mut native).account;
+    let account = entities(&view, &mut native).account.clone();
     for call in [Account::browse_without_key, Account::sign_in] {
         account.update(cx, call);
         native.update(draw);
@@ -505,7 +505,7 @@ fn typed_text_reaches_the_entity_on_change_not_on_draw(cx: &mut TestAppContext) 
             .state
             .clone()
     });
-    let session = entities(&view, &mut native).session;
+    let session = entities(&view, &mut native).session.clone();
     let endpoint = |native: &mut VisualTestContext| {
         native.update(|_, cx| session.read(cx).get().endpoint.clone())
     };
@@ -553,7 +553,7 @@ fn the_account_name_goes_only_with_the_account_steps(cx: &mut TestAppContext) {
     };
     let (view, mut native) = open(seed, cx);
     native.update(|window, cx| type_into("create-account-name/field", "duck", window, cx));
-    let account = entities(&view, &mut native).account;
+    let account = entities(&view, &mut native).account.clone();
     let name = |native: &mut VisualTestContext| {
         native.update(|_, cx| {
             let field = &view.read(cx).launcher().read(cx).fields.name;
@@ -589,7 +589,7 @@ fn the_address_field_shows_where_the_session_moved_it(cx: &mut TestAppContext) {
     });
     let (view, mut native) = open(Seed::boot(), cx);
     native.update(|window, cx| type_into("endpoint/field", "10.0.0.5:8844", window, cx));
-    let session = entities(&view, &mut native).session;
+    let session = entities(&view, &mut native).session.clone();
     // a connect attempt puts the address it reaches for in the field
     session.update(cx, |session, cx| {
         let mut state = session.get().clone();
@@ -743,9 +743,10 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
             now - 3 * 86_400,
         );
     }
-    // the bell reads the centre through its slice: as a dispatch would
-    view.update(&mut native, |view, cx| {
-        view.model.update(cx, |model, cx| model.bridge(false, cx))
+    // the bell reads the centre through its slice: as a seat's notice would
+    let app = entities(&view, &mut native);
+    app.notifications.update(&mut native, |it, cx| {
+        it.refresh(cx);
     });
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications, 2 unread");
@@ -780,11 +781,8 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     }
     gate::passes(&mut native, "notifications-menu-unread", false);
 
-    view.update(&mut native, |view, cx| {
-        view.model.update(cx, |model, cx| {
-            model.dispatch(Message::NotifyMarkAllRead, cx)
-        })
-    });
+    app.notifications
+        .update(&mut native, |it, cx| it.mark_all_read(cx));
     let nodes = native.update(draw);
     find(&nodes, "Button", "Notifications");
 }

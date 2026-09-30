@@ -1,14 +1,23 @@
-//! The layers' fixture: a console window drawn from a `Seed` (the
-//! reducer's state and the entities' values), as `panes_tests::console`
-//! and `screens_tests::open` build theirs.
-use super::super::entities::{self, AccountState, Chain, Overlay, Screen, Secret, SessionState};
-use super::super::{Desktop, WindowKey, WindowKind, keys};
+//! The layers' fixture: a console window drawn from a `Seed` (the app's
+//! stores and the entities' values), opened the way the app opens it
+//! (`Windows::open`), as `panes_tests::console` and `screens_tests::open`
+//! build theirs; and the calls the tests make on the entities, as the
+//! controls make them.
+use super::super::entities::{
+    self, AccountState, Chain, Desk, Entities, Overlay, Prefs, Screen, Secret, SessionState,
+};
+use super::super::{PaneMessage, WindowKey, WindowKind, keys};
 use super::WindowRoot;
 use crate::Ducktape;
-use gpui_kit::{AppContext as _, Entity, TestAppContext, VisualTestContext, px, size};
+use crate::ui::layout::Layout;
+use gpui_kit::{
+    AnyWindowHandle, AppContext as _, Bounds, Entity, TestAppContext, VisualTestContext, point, px,
+    size,
+};
 
-/// A screen state to draw: the reducer's state, and what `Session`,
-/// `Chain`, `Account` and `Screen` hold.
+/// A screen state to draw: the app's stores (roster, centre), what
+/// `Session`, `Chain`, `Account`, `Screen`, `Prefs` and `Toast` hold, the
+/// program in front, and the console's desk as it stands.
 pub(in crate::shell) struct Seed {
     pub(in crate::shell) state: Ducktape,
     pub(in crate::shell) session: SessionState,
@@ -19,6 +28,14 @@ pub(in crate::shell) struct Seed {
     pub(in crate::shell) phrase: Option<Secret>,
     /// The request "Add a device…" found.
     pub(in crate::shell) found: Option<crate::backend::join::Request>,
+    /// This device's prefs (a test's file starts empty: System, motion on).
+    pub(in crate::shell) prefs: Prefs,
+    /// The program in front (`Windows.active`): what an untouched desk opens.
+    pub(in crate::shell) active: Option<&'static str>,
+    /// The console's desk as it stands; `None` starts it empty.
+    pub(in crate::shell) layout: Option<Layout>,
+    /// The notice up.
+    pub(in crate::shell) toast: String,
 }
 
 impl Seed {
@@ -38,22 +55,25 @@ impl From<Ducktape> for Seed {
             screen: Screen::Connect,
             phrase: None,
             found: None,
+            prefs: Prefs::load(),
+            active: None,
+            layout: None,
+            toast: String::new(),
         }
     }
 }
 
-/// A console window over `seed`, drawn once, its first frame's callbacks
-/// delivered (the desk's size and its seed reach the model from there,
-/// not from the draw).
+/// The window every test draws in: the desk's size.
+pub(in crate::shell) const WINDOW: (f32, f32) = (1280., 800.);
+
+/// A console window over `seed`, opened as the app opens it
+/// (`Windows::open`), drawn once, its first frame's callbacks delivered
+/// (the desk's size and its seed reach the `Desk` from there, not from
+/// the draw).
 pub(in crate::shell) fn open_console(
     seed: impl Into<Seed>,
     cx: &mut TestAppContext,
-) -> (
-    Entity<Desktop>,
-    WindowKey,
-    Entity<WindowRoot>,
-    VisualTestContext,
-) {
+) -> (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext) {
     let Seed {
         state,
         session,
@@ -62,70 +82,94 @@ pub(in crate::shell) fn open_console(
         screen,
         phrase,
         found,
+        prefs,
+        active,
+        layout,
+        toast,
     } = seed.into();
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);
     });
-    // a state that has a console window (with a desk laid out for it) is drawn in it
-    let key = state.console_win.unwrap_or_else(WindowKey::unique);
-    let model = cx.new(|cx| {
-        let entities = entities::Entities::for_test(&state, cx);
-        entities.session.update(cx, |it, cx| it.seed(session, cx));
-        entities.chain.update(cx, |it, cx| {
+    let app = cx.update(|cx| {
+        let app = entities::Entities::for_test(&state, cx);
+        // a window that closes is forgotten, as `launch::run` wires it
+        let windows = app.windows.downgrade();
+        cx.on_window_closed(move |cx, id| {
+            let windows = windows.clone();
+            cx.defer(move |cx| {
+                let _ = windows.update(cx, |windows, cx| windows.closed_id(id, cx));
+            });
+        })
+        .detach();
+        app.session.update(cx, |it, cx| it.seed(session, cx));
+        app.chain.update(cx, |it, cx| {
             it.set(chain, cx);
         });
-        entities
-            .account
+        app.account
             .update(cx, |it, cx| it.seed(account, phrase, found, cx));
-        entities.screen.update(cx, |it, cx| {
+        app.screen.update(cx, |it, cx| {
             it.set(screen, cx);
         });
-        Desktop::new(state, crate::tray::init(cx).0, entities, cx)
+        app.prefs.update(cx, |it, cx| {
+            it.set(prefs, cx);
+        });
+        if !toast.is_empty() {
+            app.toast.update(cx, |it, cx| it.show(toast, cx));
+        }
+        app.windows.update(cx, |it, _| it.set_active(active));
+        app
     });
-    let mut view = None;
-    let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let root =
-            cx.new(|cx| WindowRoot::new(model.clone(), key, WindowKind::Console, window, cx));
-        view = Some(root.clone());
-        gpui_kit::component::Root::new(root, window, cx)
+    let at = Bounds::new(point(px(0.), px(0.)), size(px(WINDOW.0), px(WINDOW.1)));
+    let key = app.windows.update(cx, |windows, cx| {
+        windows.open(WindowKind::Console, Some(at), cx)
     });
-    let view = view.unwrap();
-    model.update(cx, |model, _| {
-        model.windows.insert(key, handle.into());
-        model.views.insert(key, view.downgrade());
+    if let Some(layout) = layout {
+        let desk = desk_of(&app, key, cx);
+        desk.update(cx, |desk, cx| {
+            desk.set(layout, cx);
+        });
+    }
+    let (handle, view) = app.windows.read_with(cx, |windows, _| {
+        (
+            windows.handles()[&key],
+            windows.views()[&key]
+                .upgrade()
+                .expect("the console's root lives"),
+        )
     });
-    cx.update_window(handle.into(), |_, window, cx| {
+    cx.update_window(handle, |_, window, cx| {
         window.simulate_next_frame(cx);
     })
     .unwrap();
-    (
-        model,
-        key,
-        view,
-        VisualTestContext::from_window(handle.into(), cx),
-    )
+    (app, key, view, VisualTestContext::from_window(handle, cx))
+}
+
+/// Window `key`'s desk.
+fn desk_of(app: &Entities, key: WindowKey, cx: &TestAppContext) -> Entity<Desk> {
+    app.windows.read_with(cx, |windows, _| {
+        windows.own(key).expect("its window").desk.clone()
+    })
 }
 
 /// The node's status poll answered `status`, as `Session`'s poll lands it.
 pub(in crate::shell) fn polled(
-    model: &Entity<Desktop>,
+    app: &Entities,
     status: crate::backend::NodeStatus,
     native: &mut VisualTestContext,
 ) {
-    let session = model.read_with(native, |model, _| model.entities.session.clone());
-    session.update(native, |session, cx| {
+    app.session.update(native, |session, cx| {
         session.status_answered(Ok(status), cx)
     });
     native.run_until_parked();
 }
 
-/// The console's entities, off `view`'s model.
+/// The app's entities, off `view`.
 pub(in crate::shell) fn entities(
     view: &Entity<WindowRoot>,
     native: &mut VisualTestContext,
 ) -> entities::Entities {
-    native.update(|_, cx| view.read(cx).model.read(cx).entities.clone())
+    native.update(|_, cx| view.read(cx).app.clone())
 }
 
 /// `screen` on the console, the way the account's flows put it there.
@@ -175,7 +219,97 @@ pub(in crate::shell) fn run_spot(
     native: &mut VisualTestContext,
 ) {
     native.update(|_, cx| {
-        let (overlays, model) = (view.read(cx).overlays(), view.read(cx).model.clone());
-        super::overlays::run(&overlays, &model, Some(spot), cx);
+        let (overlays, app) = (view.read(cx).overlays(), view.read(cx).app.clone());
+        super::overlays::run(&overlays, &app, Some(spot), cx);
     });
+}
+
+/// `message` on `view`'s desk, the way a control moves it with no window
+/// drawing between (`WindowRoot::pane_message` marks the panes moved too;
+/// this is the desk alone).
+pub(in crate::shell) fn pane(
+    view: &Entity<WindowRoot>,
+    message: PaneMessage,
+    native: &mut VisualTestContext,
+) {
+    native.update(|_, cx| {
+        let desk = view.read(cx).desk.clone();
+        desk.update(cx, |desk, cx| desk.moved_by(message, cx));
+    });
+    native.run_until_parked();
+}
+
+/// A program picked (Spotlight, a menu): `Windows::select_view`.
+pub(in crate::shell) fn select_view(
+    app: &Entities,
+    module: &'static str,
+    native: &mut VisualTestContext,
+) {
+    app.windows
+        .update(native, |windows, cx| windows.select_view(module, cx));
+    native.run_until_parked();
+}
+
+/// Help asked for (⌘/, a menu): `Windows::help_asked`.
+pub(in crate::shell) fn open_help(app: &Entities, native: &mut VisualTestContext) {
+    app.windows
+        .update(native, |windows, cx| windows.help_asked(cx));
+    native.run_until_parked();
+}
+
+/// A notice up: `Toast::show`.
+pub(in crate::shell) fn toast(app: &Entities, said: &str, native: &mut VisualTestContext) {
+    app.toast
+        .update(native, |toast, cx| toast.show(said.to_owned(), cx));
+    native.run_until_parked();
+}
+
+/// Motion on or off: `Prefs::set_motion`.
+pub(in crate::shell) fn set_motion(app: &Entities, on: bool, native: &mut VisualTestContext) {
+    app.prefs
+        .update(native, |prefs, cx| prefs.set_motion(on, cx));
+    native.run_until_parked();
+}
+
+/// The program in front (`Windows.active`).
+pub(in crate::shell) fn active(
+    app: &Entities,
+    native: &mut VisualTestContext,
+) -> Option<&'static str> {
+    app.windows.read_with(native, |windows, _| windows.active())
+}
+
+/// The console's front pane popped out to a window of its own, as its
+/// strip's button does it: the new window's key, handle and root.
+pub(in crate::shell) fn pop_out(
+    app: &Entities,
+    console: WindowKey,
+    view: &Entity<WindowRoot>,
+    native: &mut VisualTestContext,
+) -> (WindowKey, AnyWindowHandle, Entity<WindowRoot>) {
+    let index = native.update(|_, cx| view.read(cx).layout(cx).focused);
+    app.windows.update(native, |windows, cx| {
+        windows.pop_out(console, index, None, cx)
+    });
+    native.run_until_parked();
+    popped(app, console, native)
+}
+
+/// The one window that is not the console: its key, handle and root.
+pub(in crate::shell) fn popped(
+    app: &Entities,
+    console: WindowKey,
+    native: &mut VisualTestContext,
+) -> (WindowKey, AnyWindowHandle, Entity<WindowRoot>) {
+    app.windows.read_with(native, |windows, _| {
+        let (&key, handle) = windows
+            .handles()
+            .iter()
+            .find(|(candidate, _)| **candidate != console)
+            .expect("a window of its own opened");
+        let view = windows.views()[&key]
+            .upgrade()
+            .expect("the pop-out's root lives");
+        (key, *handle, view)
+    })
 }

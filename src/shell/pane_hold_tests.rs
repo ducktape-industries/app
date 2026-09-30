@@ -1,25 +1,20 @@
 //! The pane keyboard operations: ⌘⇧↩ fills, ⌘⇧M holds a window for the
 //! arrows, Search offers both, and Shift+Return on a bar tab shows its
 //! program in the window in front.
-use super::entities::{Overlay, Popover, Spot};
+use super::entities::{Entities, Overlay, Popover, Spot};
 use super::layers::tests::{run_spot, show};
 use super::panes_tests::{console, draw, in_front, key, panes, settle};
 use super::*;
-use gpui_kit::{Keystroke, TestAppContext, VisualTestContext};
+use gpui_kit::{Entity, Keystroke, TestAppContext, VisualTestContext, Window};
 
-type Setup = (
-    Entity<Desktop>,
-    WindowKey,
-    Entity<WindowRoot>,
-    VisualTestContext,
-);
+type Setup = (Entities, WindowKey, Entity<WindowRoot>, VisualTestContext);
 
 /// A console with two windows on a drawn desk, the second in front.
 fn desk_of_two(cx: &mut TestAppContext) -> Setup {
-    let (model, key, view, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     key_split(&mut native);
     settle(&mut native);
-    (model, key, view, native)
+    (app, key, view, native)
 }
 
 /// The keyboard focus on the element with `id`, as the AX door gives it.
@@ -289,7 +284,7 @@ fn a_held_window_sent_back_remembers_what_had_its_keys(cx: &mut TestAppContext) 
 
 #[gpui_kit::test]
 fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = desk_of_two(cx);
+    let (_, _, view, mut native) = desk_of_two(cx);
     let previous = focused(&mut native);
     // a press on the held window's title bar, which takes no keys itself
     let title = frame(&mut native, &view, 1);
@@ -320,9 +315,10 @@ fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppCon
     // the OS window losing the keys
     stroke(&mut native, "secondary-shift-m");
     assert!(held(&mut native, &view));
-    let key = view.read_with(&native, |view, _| view.key);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::WindowUnfocused(key), cx)
+    // the OS window losing the keys: `Windows` drops the desk's hold
+    native.update(|_, cx| {
+        let desk = view.read(cx).desk.clone();
+        desk.update(cx, |desk, cx| desk.drop_hold(cx));
     });
     settle(&mut native);
     assert!(!held(&mut native, &view), "the window lost the keys");
@@ -399,15 +395,10 @@ fn chords_with_shift_are_written_for_the_platform() {
 /// program, and the arrow moves them to the next.
 #[gpui_kit::test]
 fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
-    model.update(&mut native, |model, cx| {
-        let roster = crate::runtime::Roster::listing(&["hold-tab-a", "hold-tab-b"]);
-        model.state.roster = roster.clone();
-        model
-            .entities
-            .rail
-            .update(cx, |rail, cx| rail.read_off(roster, cx));
-    });
+    let (app, _, view, mut native) = console(cx);
+    let roster = crate::runtime::Roster::listing(&["hold-tab-a", "hold-tab-b"]);
+    app.rail
+        .update(&mut native, |rail, cx| rail.read_off(roster, cx));
     native.update(|window, cx| {
         view.update(cx, |view, cx| {
             view.pane_message(PaneMessage::Open("hold-tab-a"), window, cx);

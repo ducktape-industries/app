@@ -1,12 +1,34 @@
 //! The notification centre as the bar and the panes draw it: the unread
 //! count, the views asking for permission, and the log's revision, so a
 //! change that leaves the count alone (clearing read rows) still moves it.
-//! Read off the centre by `refresh`: after every dispatch (the bridge,
-//! which an `Intent::Notified` reaches too) until s11 gives it the
-//! centre's methods.
-use crate::runtime::notify::CenterHandle;
-use gpui_kit::Context;
+//! Read off the centre by `refresh`: after each of the centre's methods
+//! here, on a view's `Intent::Notified` (`Seats`), and after a banner's
+//! click (`Windows`).
+use super::{Prefs, Slice};
+use crate::runtime::notify::{self, CenterHandle, Entry, Permission};
+use gpui_kit::{App, Context, Entity};
 use std::collections::BTreeSet;
+
+/// Timed with the reducer's notify arms it took over (docs/perf.md).
+fn timed() -> Option<crate::perf::Timer> {
+    crate::perf::time(crate::perf::Key::Shell, "reducer.notify")
+}
+
+/// The person answered `module`'s ask: the word is saved and its bar goes.
+/// Two entities move: the centre (`Notifications`) and the saved settings
+/// (`Prefs`, read off disk again), so the answer is one call here.
+pub(crate) fn permission(
+    notifications: &Entity<Notifications>,
+    prefs: &Entity<Slice<Prefs>>,
+    module: &str,
+    permission: Permission,
+    cx: &mut App,
+) {
+    notifications.update(cx, |notifications, cx| {
+        notifications.permission(module, permission, cx)
+    });
+    prefs.update(cx, |prefs, cx| prefs.reload_notify(cx));
+}
 
 pub(crate) struct Notifications {
     unread: usize,
@@ -32,6 +54,11 @@ impl Notifications {
         (center.unread(), center.asking.clone(), center.rev())
     }
 
+    /// The centre itself, for whoever tells it which window is in front.
+    pub(crate) fn center(&self) -> &CenterHandle {
+        &self.center
+    }
+
     pub(crate) fn unread(&self) -> usize {
         self.unread
     }
@@ -50,6 +77,48 @@ impl Notifications {
     /// `wall` (Settings' Notifications page).
     pub(crate) fn this_week(&self, module: &str, wall: i64) -> u32 {
         self.center.lock().this_week(module, wall)
+    }
+
+    /// A row picked in the bell: read, and handed back for the link or
+    /// the seat it is about to open (`Windows::open_notice`).
+    pub(crate) fn open(&mut self, id: u64, cx: &mut Context<Self>) -> Option<Entry> {
+        let _timed = timed();
+        let entry = self.center.lock().open(id);
+        self.refresh(cx);
+        entry
+    }
+
+    pub(crate) fn mark_all_read(&mut self, cx: &mut Context<Self>) {
+        let _timed = timed();
+        self.center.lock().mark_all_read();
+        self.refresh(cx);
+    }
+
+    pub(crate) fn clear_read(&mut self, cx: &mut Context<Self>) {
+        let _timed = timed();
+        self.center.lock().clear_read();
+        self.refresh(cx);
+    }
+
+    /// The person's word on `module`'s notices, saved (see [`permission`]).
+    fn permission(&mut self, module: &str, permission: Permission, cx: &mut Context<Self>) {
+        let _timed = timed();
+        notify::set_permission(&mut self.center.lock(), module, permission);
+        self.refresh(cx);
+    }
+
+    /// "Not now": the bar goes for this run; the view asks again next launch.
+    pub(crate) fn not_now(&mut self, module: &str, cx: &mut Context<Self>) {
+        let _timed = timed();
+        notify::not_now(&mut self.center.lock(), module);
+        self.refresh(cx);
+    }
+
+    /// The views asking, put back as they stood (the door's walk,
+    /// `layers::Kept::restore`).
+    pub(crate) fn restore_asking(&mut self, asking: BTreeSet<String>, cx: &mut Context<Self>) {
+        self.center.lock().asking = asking;
+        self.refresh(cx);
     }
 
     /// Read off the centre again; notifies only when something moved.

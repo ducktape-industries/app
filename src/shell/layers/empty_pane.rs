@@ -6,11 +6,11 @@
 //! with a switch beside it for what the field searches, Module | Chat;
 //! until agent chat is built, [`CHAT_READY`], Tab there moves focus).
 
-use super::super::entities::{Desk, Overlays, Prefs, Rail, Slice};
+use super::super::entities::{Desk, Entities, Overlays, Prefs, Rail, Slice};
 use super::super::figure::Figure;
 use super::super::ink::{self, Ink};
 use super::super::spin::{self, Spin};
-use super::super::{Desktop, PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label};
+use super::super::{PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label};
 use crate::a11y::Control as _;
 use crate::runtime::RailRow;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -120,7 +120,7 @@ impl EmptyPane {
     /// The desk of window `key` (a `kind` window), for as long as the
     /// window lives: drawn while no window is on it.
     pub(in crate::shell) fn desk(
-        model: &Entity<Desktop>,
+        app: &Entities,
         key: WindowKey,
         kind: WindowKind,
         root: FocusHandle,
@@ -128,9 +128,15 @@ impl EmptyPane {
         cx: &mut Context<Self>,
     ) -> Self {
         let (dark, motion, bare) = {
-            let entities = &model.read(cx).entities;
-            let prefs = entities.prefs.read(cx).get();
-            let layout = entities.by_window[&key].desk.read(cx).get();
+            let prefs = app.prefs.read(cx).get();
+            let layout = app
+                .windows
+                .read(cx)
+                .own(key)
+                .expect("its window")
+                .desk
+                .read(cx)
+                .get();
             (prefs.dark(), prefs.motion, layout.panes.is_empty())
         };
         let spin = cx.new(|cx| Spin::new(Figure::Roll, motion, Ink::of(dark).figure, cx));
@@ -141,13 +147,13 @@ impl EmptyPane {
             console,
             bare,
         };
-        Self::made(model, key, place, window, cx)
+        Self::made(app, key, place, window, cx)
     }
 
     /// Empty window `instance` on the desk of `desk`, whose box holds the
     /// keys by `own` when nothing inside it does.
     pub(in crate::shell) fn window(
-        model: &Entity<Desktop>,
+        app: &Entities,
         key: WindowKey,
         instance: u64,
         desk: WeakEntity<WindowRoot>,
@@ -179,22 +185,21 @@ impl EmptyPane {
             desk,
             command,
         };
-        Self::made(model, key, place, window, cx)
+        Self::made(app, key, place, window, cx)
     }
 
-    /// Over the entities of `model` (read here, never kept) and window
-    /// `key`'s own.
+    /// Over the app's entities (read here, never kept) and window `key`'s
+    /// own.
     fn made(
-        model: &Entity<Desktop>,
+        app: &Entities,
         key: WindowKey,
         place: Place,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let entities = &model.read(cx).entities;
-        let own = &entities.by_window[&key];
+        let own = app.windows.read(cx).own(key).expect("its window").clone();
         let (desk, overlays) = (own.desk.clone(), own.overlays.clone());
-        let (rail, prefs) = (entities.rail.clone(), entities.prefs.clone());
+        let (rail, prefs) = (app.rail.clone(), app.prefs.clone());
         let observing = [
             cx.observe_in(&desk, window, |this, _, window, cx| this.moved(window, cx)),
             cx.observe_in(&rail, window, |this, _, window, cx| this.moved(window, cx)),

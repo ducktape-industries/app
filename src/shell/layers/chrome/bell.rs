@@ -1,9 +1,8 @@
 //! The bell's panel: the notification centre's rows.
 
 use super::Chrome;
-use crate::AppMessage as Message;
 use crate::a11y::Control as _;
-use crate::shell::entities::{Overlay, Popover, SettingsPage};
+use crate::shell::entities::{Notifications, Overlay, Popover, SettingsPage};
 use crate::shell::ink::{Ink, mono, sans, tall};
 use crate::shell::layers::BAR;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -67,7 +66,7 @@ impl Chrome {
                     small_link(
                         "notif-mark-all",
                         "Mark all read",
-                        Box::new(self.dispatching(|| Message::NotifyMarkAllRead)),
+                        Box::new(self.on_notifications(Notifications::mark_all_read)),
                     )
                     .child("Mark all read")
                     .text_color(ink.ink)
@@ -98,7 +97,11 @@ impl Chrome {
                         .child(if today { "Today" } else { "Earlier" }),
                 );
             }
-            let (model, overlays) = (self.model.clone(), self.overlays.entity().clone());
+            let (windows, notifications, overlays) = (
+                self.windows.clone(),
+                self.notifications.entity().clone(),
+                self.overlays.entity().clone(),
+            );
             let id = entry.id;
             let surface = ink.surface;
             let initial: String = entry
@@ -147,7 +150,11 @@ impl Chrome {
                         overlays.update(cx, |overlays, cx| {
                             overlays.close(Overlay::Menu(Popover::Notifications), cx)
                         });
-                        model.update(cx, |model, cx| model.dispatch(Message::NotifyOpen(id), cx))
+                        let entry = notifications
+                            .update(cx, |notifications, cx| notifications.open(id, cx));
+                        if let Some(entry) = entry {
+                            windows.update(cx, |windows, cx| windows.open_notice(&entry, cx));
+                        }
                     })
                     .child(
                         div()
@@ -261,7 +268,7 @@ impl Chrome {
                     small_link(
                         "notif-clear-read",
                         "Clear read",
-                        Box::new(self.dispatching(|| Message::NotifyClearRead)),
+                        Box::new(self.on_notifications(Notifications::clear_read)),
                     )
                     .child("Clear read"),
                 )

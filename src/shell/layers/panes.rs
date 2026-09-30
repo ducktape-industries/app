@@ -9,16 +9,17 @@
 //! so a seat's tree draws again only when its seat moves, and a strip only
 //! when what it shows does.
 //!
-//! Where panes sit, stack and which has the keys is the model's
-//! (`ui::layout`, read through the `Desk` slice); this file draws it and
-//! sends `PaneMessage`s through the window (`WindowRoot::pane_message`).
+//! Where panes sit, stack and which has the keys is the window's `Desk`
+//! (`ui::layout`); this file draws it and sends `PaneMessage`s through
+//! the window (`WindowRoot::pane_message`).
 
 use super::super::entities::{
-    Desk, Notifications, Observed, Overlays, Prefs, Rail, Seats, Slice, WindowEntities,
+    Desk, Entities, Notifications, Observed, Overlays, Prefs, Rail, Seats, Slice, WindowEntities,
+    Windows,
 };
 use super::super::{
-    Desktop, Message, PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label, layout,
-    pane_drag, pane_hold, panes, theme,
+    PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label, layout, pane_drag, pane_hold,
+    panes, theme,
 };
 use super::{EmptyPane, HelpPane, cached_unless_a11y};
 use crate::a11y::Control as _;
@@ -42,7 +43,7 @@ struct Drawn(layout::Layout);
 /// panes runs after every draw of the layer (`drawn`), where the frame that
 /// shows a pane is the one its first control is found in.
 pub(in crate::shell) struct PaneLayer {
-    pub(in crate::shell) model: Entity<Desktop>,
+    pub(in crate::shell) app: Entities,
     pub(in crate::shell) key: WindowKey,
     pub(in crate::shell) kind: WindowKind,
     pub(in crate::shell) desk: Entity<Desk>,
@@ -77,7 +78,7 @@ impl EventEmitter<Drawn> for PaneLayer {}
 impl PaneLayer {
     #[allow(clippy::too_many_arguments, reason = "one layer, one window")]
     pub(in crate::shell) fn new(
-        model: Entity<Desktop>,
+        app: Entities,
         key: WindowKey,
         kind: WindowKind,
         own: WindowEntities,
@@ -87,8 +88,8 @@ impl PaneLayer {
         cx: &mut Context<Self>,
     ) -> Self {
         let WindowEntities { desk, overlays, .. } = own;
-        let seats = model.read(cx).seats.clone();
-        let empty_desk = cx.new(|cx| EmptyPane::desk(&model, key, kind, root, window, cx));
+        let seats = app.seats.clone();
+        let empty_desk = cx.new(|cx| EmptyPane::desk(&app, key, kind, root, window, cx));
         let subscriptions = [
             cx.observe_in(&desk, window, |this, _, window, cx| {
                 this.reconcile(window, cx)
@@ -104,7 +105,7 @@ impl PaneLayer {
             ),
         ];
         let mut this = Self {
-            model,
+            app,
             key,
             kind,
             desk,
@@ -126,7 +127,7 @@ impl PaneLayer {
         this
     }
 
-    /// This window's panes, as the model has them.
+    /// This window's panes.
     pub(in crate::shell) fn layout(&self, cx: &App) -> layout::Layout {
         self.desk.read(cx).get().clone()
     }
@@ -159,27 +160,18 @@ impl PaneLayer {
                 .or_insert_with(|| (cx.focus_handle(), None))
                 .0
                 .clone();
-            let (model, key, kind, desk, rail) = (
-                self.model.clone(),
-                self.key,
-                self.kind,
-                self.desk.clone(),
-                self.model.read(cx).entities.rail.clone(),
+            let (app, key, kind, desk) = (self.app.clone(), self.key, self.kind, self.desk.clone());
+            let (rail, notifications, prefs, account) = (
+                app.rail.clone(),
+                app.notifications.clone(),
+                app.prefs.clone(),
+                app.account.clone(),
             );
-            let (notifications, prefs, account) = {
-                let entities = &model.read(cx).entities;
-                (
-                    entities.notifications.clone(),
-                    entities.prefs.clone(),
-                    entities.account.clone(),
-                )
-            };
             let (layer, desk_window) = (cx.weak_entity(), self.window.clone());
             let (module, instance) = (pane.module, pane.instance);
             let view = cx.new(|cx| {
                 let strip = cx.new(|cx| {
                     Strip::new(
-                        model.clone(),
                         key,
                         kind,
                         instance,
@@ -200,7 +192,7 @@ impl PaneLayer {
                     None if pane.is_view() => Body::Missing,
                     None => Body::Empty(cx.new(|cx| {
                         EmptyPane::window(
-                            &model,
+                            &app,
                             key,
                             instance,
                             desk_window.clone(),
@@ -302,23 +294,34 @@ impl PaneLayer {
         }
     }
 
-    /// The desk's size, to the model, from the frame just measured: on the
-    /// console's first draw also `seed`, a program a link opened before the
-    /// desk existed (else it starts empty). Committed from the next frame's
-    /// callback, never from the draw, and only when it moved (`Desk` is
-    /// bridged, so nothing here writes it; s11 calls `Desk::resize` here).
-    fn measured(&self, bounds: Bounds<Pixels>, cx: &App) -> Option<Message> {
+    /// The desk's size, from the frame just measured, when it moved or the
+    /// console's desk is still untouched: committed from the next frame's
+    /// callback (`shown`), never from the draw.
+    fn measured(&self, bounds: Bounds<Pixels>, cx: &App) -> Option<(f32, f32)> {
         let desk = (f32::from(bounds.size.width), f32::from(bounds.size.height));
         let layout = self.desk.read(cx).get();
         let console = self.kind == WindowKind::Console;
-        let seed = (console && !layout.initialized)
-            .then(|| self.model.read(cx).state.active)
-            .flatten();
-        (layout.desk != Some(desk) || seed.is_some()).then_some(Message::DeskShown {
-            window: self.key,
-            desk,
-            seed,
-        })
+        (layout.desk != Some(desk) || (console && !layout.initialized)).then_some(desk)
+    }
+
+    /// The desk measured `size` (the next frame's callback): the `Desk`
+    /// takes the size, and an untouched console desk opens the active
+    /// program (`Windows.active`: one a link opened before the desk
+    /// existed, else it starts empty), read now, not at the draw.
+    fn shown(
+        desk: &Entity<Desk>,
+        windows: &Entity<Windows>,
+        console: bool,
+        size: (f32, f32),
+        cx: &mut App,
+    ) {
+        desk.update(cx, |desk, cx| desk.resize(size, cx));
+        if !console || desk.read(cx).get().initialized {
+            return;
+        }
+        if let Some(module) = windows.read(cx).active() {
+            desk.update(cx, |desk, cx| desk.seed(module, cx));
+        }
     }
 }
 
@@ -337,14 +340,15 @@ impl Render for PaneLayer {
             cx.emit(Drawn(layout.clone()));
         }
         let this = cx.entity();
-        let (measure, model) = (this.clone(), self.model.clone());
+        let (measure, desk, windows) = (this.clone(), self.desk.clone(), self.app.windows.clone());
+        let console = self.kind == WindowKind::Console;
         // `follow` listens on every frame, not only once a hold is drawn:
         // the moves after a press may come before the next frame does
         let canvas = canvas(
             move |bounds, window, cx| {
-                if let Some(message) = measure.read(cx).measured(bounds, cx) {
+                if let Some(size) = measure.read(cx).measured(bounds, cx) {
                     window.on_next_frame(move |_, cx| {
-                        model.update(cx, |model, cx| model.dispatch(message, cx))
+                        Self::shown(&desk, &windows, console, size, cx)
                     });
                 }
             },
@@ -710,7 +714,6 @@ impl Shown {
 /// name), the notifications (the ask), the prefs (dark, the burst) and
 /// reads its desk through a compared `Shown`.
 pub(in crate::shell) struct Strip {
-    model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
     layer: WeakEntity<PaneLayer>,
@@ -765,7 +768,6 @@ impl PaneAction {
 impl Strip {
     #[allow(clippy::too_many_arguments, reason = "one strip, one pane")]
     fn new(
-        model: Entity<Desktop>,
         key: WindowKey,
         kind: WindowKind,
         instance: u64,
@@ -786,7 +788,6 @@ impl Strip {
         });
         Self {
             shown: Shown::of(desk.read(cx).get(), instance, kind),
-            model,
             key,
             kind,
             layer,
@@ -953,33 +954,34 @@ impl Strip {
         use crate::runtime::notify::Permission;
         let name = panes::label(self.rail.read(cx).rows(), module);
         let burst = self.prefs.read(cx).get().notify.burst;
-        let button = |id: &'static str, text: &'static str, filled: bool, message: Message| {
-            let model = self.model.clone();
-            let message = std::cell::RefCell::new(Some(message));
-            crate::a11y::keyboard(
-                sans(500, 14.)
-                    .id(SharedString::from(format!("notify-ask/{module}/{id}")))
-                    .control(Role::Button, text)
-                    .h(px(tall(30.)))
-                    .px(px(12.))
-                    .flex()
-                    .flex_shrink_0()
-                    .items_center()
-                    .cursor_pointer()
-                    .border(px(1.5))
-                    .border_color(ink.ink)
-                    .when(filled, |button| button.bg(ink.ink).text_color(ink.bg))
-                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_click(move |_, _, cx| {
-                        cx.stop_propagation();
-                        if let Some(message) = message.borrow_mut().take() {
-                            model.update(cx, |model, cx| model.dispatch(message, cx));
-                        }
-                    })
-                    .child(text),
-                ink.ring(filled),
-            )
-        };
+        let (notifications, prefs) = (
+            self.notifications.entity().clone(),
+            self.prefs.entity().clone(),
+        );
+        let button =
+            |id: &'static str, text: &'static str, filled: bool, answer: Box<dyn Fn(&mut App)>| {
+                crate::a11y::keyboard(
+                    sans(500, 14.)
+                        .id(SharedString::from(format!("notify-ask/{module}/{id}")))
+                        .control(Role::Button, text)
+                        .h(px(tall(30.)))
+                        .px(px(12.))
+                        .flex()
+                        .flex_shrink_0()
+                        .items_center()
+                        .cursor_pointer()
+                        .border(px(1.5))
+                        .border_color(ink.ink)
+                        .when(filled, |button| button.bg(ink.ink).text_color(ink.bg))
+                        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .on_click(move |_, _, cx| {
+                            cx.stop_propagation();
+                            answer(cx);
+                        })
+                        .child(text),
+                    ink.ring(filled),
+                )
+            };
         // announced as it appears: nothing else says a view is waiting
         crate::a11y::live(
             div()
@@ -1020,17 +1022,25 @@ impl Strip {
                     ink.muted,
                 )),
         )
-        .child(button(
-            "allow",
-            "Allow",
-            true,
-            Message::NotifyPermission(module, Permission::Allow),
-        ))
+        .child(button("allow", "Allow", true, {
+            let (notifications, prefs) = (notifications.clone(), prefs.clone());
+            Box::new(move |cx| {
+                super::super::entities::permission(
+                    &notifications,
+                    &prefs,
+                    module,
+                    Permission::Allow,
+                    cx,
+                )
+            })
+        }))
         .child(button(
             "not-now",
             "Not now",
             false,
-            Message::NotifyNotNow(module),
+            Box::new(move |cx| {
+                notifications.update(cx, |notifications, cx| notifications.not_now(module, cx))
+            }),
         ))
         .into_any_element()
     }

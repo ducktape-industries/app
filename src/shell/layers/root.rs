@@ -13,12 +13,11 @@
 //! window answers (`keys.rs`), the pane messages the layers send through
 //! it (`panes.rs`, `pane_hold.rs`), and the switch timer.
 
-use super::super::entities::{Desk, Observed, Overlays, Prefs, Screen, Slice};
-use super::super::{Desktop, WindowKey, WindowKind, ink, layout, theme};
+use super::super::entities::{Desk, Entities, Observed, Overlays, Prefs, Screen, Slice};
+use super::super::{WindowKey, WindowKind, ink, layout, theme};
 use super::{
     BAR, Chrome, LauncherLayer, OverlayLayer, PaneLayer, StatusDot, ToastView, cached_unless_a11y,
 };
-use crate::AppMessage as Message;
 use gpui_kit::{
     AppContext as _, Context, Entity, FocusHandle, IntoElement, ParentElement as _, Render,
     StyleRefinement, Styled as _, Subscription, Window, deferred, div, px,
@@ -26,11 +25,13 @@ use gpui_kit::{
 
 /// The gpui view at the root of one OS window.
 pub(in crate::shell) struct WindowRoot {
-    pub(in crate::shell) model: Entity<Desktop>,
+    /// The app's entities: every layer draws from them and every control
+    /// calls into them.
+    pub(in crate::shell) app: Entities,
     pub(in crate::shell) key: WindowKey,
     pub(in crate::shell) kind: WindowKind,
-    /// This window's panes, as the model has them (`Desktop::bridge`).
-    desk: Entity<Desk>,
+    /// This window's panes (`Windows::own`).
+    pub(in crate::shell) desk: Entity<Desk>,
     /// Which screen the console shows: the launcher's, or the desk.
     screen: Observed<Slice<Screen>>,
     /// What is open over the desk: the key context says so.
@@ -56,15 +57,15 @@ pub(in crate::shell) struct WindowRoot {
     /// ended on the frame after the one that shows it (docs/perf.md).
     switching: Option<crate::perf::Timer>,
     pub(in crate::shell) focus: FocusHandle,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 2],
 }
 
 impl WindowRoot {
     /// A window of `kind`, focused on its own root (so the first Tab
-    /// reaches the first control), telling the model when it gains or
-    /// loses focus.
+    /// reaches the first control). Its own entities are `Windows`' (made
+    /// as the window was asked for).
     pub(in crate::shell) fn new(
-        model: Entity<Desktop>,
+        app: Entities,
         key: WindowKey,
         kind: WindowKind,
         window: &mut Window,
@@ -72,57 +73,42 @@ impl WindowRoot {
     ) -> Self {
         let focus = cx.focus_handle();
         focus.focus(window, cx);
-        let own = model.update(cx, |model, cx| model.window_entities(key, cx));
-        let entities = &model.read(cx).entities;
-        let (screen, prefs) = (entities.screen.clone(), entities.prefs.clone());
+        let own = app
+            .windows
+            .read(cx)
+            .own(key)
+            .expect("a window's entities are made as it is asked for")
+            .clone();
+        let (screen, prefs) = (app.screen.clone(), app.prefs.clone());
         let (desk, overlays) = (own.desk.clone(), own.overlays.clone());
         let console = kind == WindowKind::Console;
         let chrome = console.then(|| {
-            let (model, this) = (model.clone(), cx.weak_entity());
-            cx.new(|cx| Chrome::new(model, key, &own, this, window, cx))
+            let (app, this) = (app.clone(), cx.weak_entity());
+            cx.new(|cx| Chrome::new(app, key, &own, this, window, cx))
         });
         let menu = chrome.as_ref().map(|chrome| chrome.read(cx).menu.clone());
         let overlay_layer = menu.clone().map(|menu| {
-            let model = model.clone();
-            cx.new(|cx| OverlayLayer::new(model, key, &own, menu, window, cx))
+            let app = app.clone();
+            cx.new(|cx| OverlayLayer::new(app, key, &own, menu, window, cx))
         });
-        let launcher = console.then(|| {
-            let entities = model.read(cx).entities.clone();
-            cx.new(|cx| LauncherLayer::new(&entities, key, window, cx))
-        });
-        let dot = console.then(|| {
-            let model = model.clone();
-            cx.new(|cx| StatusDot::new(&model, key, &own, cx))
-        });
-        let toast = {
-            let model = model.clone();
-            cx.new(|cx| ToastView::new(model, key, cx))
-        };
+        let launcher = console.then(|| cx.new(|cx| LauncherLayer::new(&app, key, window, cx)));
+        let dot = console.then(|| cx.new(|cx| StatusDot::new(&app, key, &own, cx)));
+        let toast = cx.new(|cx| ToastView::new(&app, key, cx));
         let panes = {
-            let (model, root, this) = (model.clone(), focus.clone(), cx.weak_entity());
-            cx.new(|cx| PaneLayer::new(model, key, kind, own, root, this, window, cx))
+            let (app, root, this) = (app.clone(), focus.clone(), cx.weak_entity());
+            cx.new(|cx| PaneLayer::new(app, key, kind, own, root, this, window, cx))
         };
         let subscriptions = [
-            cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
-                this.set_front(window, cx);
-                let message = match window.is_window_active() {
-                    true => {
-                        this.start_switch();
-                        Message::WindowFocused
-                    }
-                    false => Message::WindowUnfocused(key),
-                };
-                let model = this.model.clone();
-                cx.defer(move |cx| model.update(cx, |model, cx| model.dispatch(message, cx)));
-            }),
-            // the notification centre hears which view is focused in the
-            // window in front (s11: a `Windows` observer)
-            cx.observe_in(&desk, window, |this, _, window, cx| {
-                this.set_front(window, cx)
+            // a switch to this window is timed to the frame that shows it
+            // (`Windows` hears the activation too: the front, the hold)
+            cx.observe_window_activation(window, move |this: &mut Self, window, _| {
+                if window.is_window_active() {
+                    this.start_switch();
+                }
             }),
             cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
         ];
-        let this = Self {
+        Self {
             key,
             kind,
             desk,
@@ -138,27 +124,9 @@ impl WindowRoot {
             menu,
             switching: None,
             focus,
-            model,
+            app,
             _subscriptions: subscriptions,
-        };
-        this.set_front(window, cx);
-        this
-    }
-
-    /// Tells the notification centre whether this window is in front and
-    /// which view is focused in it: that view's banners stay away (unless
-    /// asked for).
-    fn set_front(&self, window: &Window, cx: &mut Context<Self>) {
-        let layout = self.desk.read(cx).get();
-        let focused = layout
-            .panes
-            .get(layout.focused)
-            .map_or(layout::EMPTY, |pane| pane.module);
-        self.model.read(cx).state.center.lock().set_front(
-            self.key,
-            window.is_window_active(),
-            focused,
-        );
+        }
     }
 
     /// A switch asked for: timed from here to the frame after the one that
@@ -246,7 +214,7 @@ impl WindowRoot {
         self.overlays.entity().clone()
     }
 
-    /// This window's panes, as the model has them (the `Desk` slice).
+    /// This window's panes (the `Desk` slice).
     pub(in crate::shell) fn layout(&self, cx: &gpui_kit::App) -> layout::Layout {
         self.desk.read(cx).get().clone()
     }

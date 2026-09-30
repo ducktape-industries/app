@@ -57,7 +57,7 @@ impl OverlayLayer {
                         .child(group),
                 );
             }
-            let (overlays, model) = (self.overlays.entity().clone(), self.model.clone());
+            let (overlays, app) = (self.overlays.entity().clone(), self.app.clone());
             let spot = row.spot.clone();
             let picked = nth == pick;
             let chord = chords
@@ -87,7 +87,7 @@ impl OverlayLayer {
                     .py(px(10.))
                     .cursor_pointer()
                     .when(picked, |row| row.bg(ink.surface))
-                    .on_click(move |_, _, cx| run(&overlays, &model, Some(spot.clone()), cx))
+                    .on_click(move |_, _, cx| run(&overlays, &app, Some(spot.clone()), cx))
                     .child(
                         sans(if picked { 500 } else { 400 }, 15.)
                             .text_color(ink.ink)

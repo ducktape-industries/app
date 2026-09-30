@@ -1,8 +1,9 @@
 //! The shell's state as entities the layers observe: app-wide ones and
-//! one set per window, each written by its own methods (until then by the
-//! bridge in `Desktop::dispatch`, one writer per slice). `Session`,
-//! `Chain`, `Account` and `Screen` are written by `Session`'s and
-//! `Account`'s own flows; the rest are bridged until s11.
+//! one set per window (`Windows` holds those), each written by its own
+//! methods and by nothing else. `Session`, `Chain`, `Account` and
+//! `Screen` are written by `Session`'s and `Account`'s flows; `Desk`,
+//! `Windows`, `Toast`, `Prefs`, `Notifications` and `Rail` by the calls
+//! the layers, the keys, the tray and the door make.
 
 mod account;
 mod chain;
@@ -26,7 +27,7 @@ pub(crate) use chain::Chain;
 pub(crate) use desk::Desk;
 pub(crate) use dot::DotSlot;
 pub(crate) use front::Front;
-pub(crate) use notifications::Notifications;
+pub(crate) use notifications::{Notifications, permission};
 pub(crate) use overlays::{Overlay, Overlays, Popover, SettingsPage, Spot, SpotRow};
 pub(crate) use prefs::Prefs;
 pub(crate) use rail::Rail;
@@ -38,20 +39,24 @@ pub(crate) use session::{Session, SessionEvent, SessionState};
 #[cfg(test)]
 mod account_tests;
 #[cfg(test)]
+mod desk_tests;
+#[cfg(test)]
 mod session_tests;
+#[cfg(test)]
+mod windows_tests;
 pub(crate) use slice::{Observed, Slice, on_runtime, spawn_on_runtime};
 pub(crate) use spotlight::Spotlight;
 pub(crate) use toast::Toast;
-pub(crate) use windows::Windows;
+pub(crate) use windows::{Windows, posted};
 
-use crate::runtime::WindowKey;
-use gpui_kit::Entity;
-use std::collections::BTreeMap;
+use crate::Ducktape;
+use futures::channel::mpsc;
+use gpui_kit::{App, AppContext as _, Entity};
 
-/// Every app-wide entity, and each window's own, as the `Desktop` holds
-/// them.
+/// Every app-wide entity but the windows: what `Windows` is made over,
+/// and what every window's root reads (`Entities` derefs to it).
 #[derive(Clone)]
-pub(crate) struct Entities {
+pub(crate) struct Shared {
     pub(crate) session: Entity<Session>,
     pub(crate) chain: Entity<Chain>,
     pub(crate) account: Entity<Account>,
@@ -60,10 +65,68 @@ pub(crate) struct Entities {
     pub(crate) notifications: Entity<Notifications>,
     pub(crate) toast: Entity<Toast>,
     pub(crate) prefs: Entity<Slice<Prefs>>,
+    pub(crate) seats: Entity<Seats>,
+}
+
+/// Every app-wide entity. Each window's own are `Windows`' (`own`).
+#[derive(Clone)]
+pub(crate) struct Entities {
+    shared: Shared,
     pub(crate) windows: Entity<Windows>,
-    /// Each OS window's own, by its key, made with its window. A closed
-    /// window's stay until s11 (`Windows` holds them then).
-    pub(crate) by_window: BTreeMap<WindowKey, WindowEntities>,
+}
+
+impl std::ops::Deref for Entities {
+    type Target = Shared;
+
+    fn deref(&self) -> &Shared {
+        &self.shared
+    }
+}
+
+impl Entities {
+    /// Every app-wide entity, off the app's roster and notification centre
+    /// (`state`) and this device's prefs; the rail's rows read now and
+    /// again on every message `changes` brings.
+    pub(crate) fn new(
+        state: &Ducktape,
+        changes: mpsc::UnboundedReceiver<()>,
+        cx: &mut App,
+    ) -> Self {
+        let chain = cx.new(|_| Chain::default());
+        let screen = cx.new(|_| Slice::new(Screen::Connect));
+        let account = cx.new(|_| Account::new(screen.clone()));
+        let session = {
+            let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());
+            cx.new(|_| Session::new(chain, account, screen, state.center.clone()))
+        };
+        let rail = cx.new(|cx| Rail::new(state.roster.clone(), changes, &session, cx));
+        let notifications = cx.new(|_| Notifications::new(state.center.clone()));
+        let toast = cx.new(|cx| Toast::new(&session, &account, cx));
+        let prefs = cx.new(|_| Slice::new(Prefs::load()));
+        let seats = cx.new(|cx| Seats::new(&session, &account, &prefs, &rail, &notifications, cx));
+        let shared = Shared {
+            session,
+            chain,
+            account,
+            screen,
+            rail,
+            notifications,
+            toast,
+            prefs,
+            seats,
+        };
+        let windows = cx.new(|cx| Windows::new(shared.clone(), cx));
+        shared
+            .seats
+            .update(cx, |seats, cx| seats.follow(&windows, cx));
+        Self { shared, windows }
+    }
+
+    /// As `new`, with a rail no loader thread wakes: a test refreshes it.
+    #[cfg(test)]
+    pub(crate) fn for_test(state: &Ducktape, cx: &mut App) -> Self {
+        Self::new(state, mpsc::unbounded().1, cx)
+    }
 }
 
 /// One OS window's own entities.
@@ -74,7 +137,7 @@ pub(crate) struct WindowEntities {
     /// text: their methods write them.
     pub(crate) overlays: Entity<Overlays>,
     pub(crate) spotlight: Entity<Slice<Spotlight>>,
-    /// Derived from `desk` (`Front::of_desk`); never bridged.
+    /// Derived from `desk` (`Front::of_desk`); never written by hand.
     pub(crate) front: Entity<Slice<Front>>,
     /// Where the bar's status well is: Chrome commits it after each frame.
     pub(crate) dot: Entity<DotSlot>,
@@ -84,7 +147,6 @@ pub(crate) struct WindowEntities {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use gpui_kit::{App, AppContext as _};
 
     /// A session over its own chain, account and screen, on a notification
     /// centre of its own.
@@ -93,5 +155,18 @@ pub(crate) mod tests {
         let screen = cx.new(|_| Slice::new(Screen::Connect));
         let account = cx.new(|_| Account::new(screen.clone()));
         cx.new(|_| Session::new(chain, account, screen, Default::default()))
+    }
+
+    /// Every entity off a roster and a centre of the test's own, on the
+    /// desk with no window open.
+    pub(crate) fn entities(cx: &mut App) -> Entities {
+        let mut state = Ducktape::boot();
+        state.roster = Default::default();
+        state.center = Default::default();
+        let entities = Entities::for_test(&state, cx);
+        entities.screen.update(cx, |screen, cx| {
+            screen.set(Screen::Desk, cx);
+        });
+        entities
     }
 }

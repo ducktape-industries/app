@@ -14,11 +14,11 @@
 //! (`entered`), when its first control is in the frame `focus_next` walks.
 //! Also the scrim and card every dialog on it is dressed in (`scrim`).
 
+use super::super::WindowKey;
 use super::super::entities::{
-    Account, Notifications, Observed, Overlay, Overlays, Prefs, Rail, Session, Slice, Spot,
-    Spotlight, WindowEntities,
+    Account, Entities, Notifications, Observed, Overlay, Overlays, Prefs, Rail, Session, Slice,
+    Spot, Spotlight, WindowEntities,
 };
-use super::super::{Desktop, Message, WindowKey};
 use super::BAR;
 use super::fields::NativeInput;
 use gpui_kit::component::input::{InputEvent, InputState};
@@ -39,9 +39,8 @@ struct Shown;
 
 /// The dialogs on a scrim over one console's desk.
 pub(in crate::shell) struct OverlayLayer {
-    /// The reducer: what a Spotlight row or a Settings switch does that it
-    /// still owns (s11 moves those arms into entities).
-    model: Entity<Desktop>,
+    /// The app's entities: what a Spotlight row or a Settings switch calls.
+    app: Entities,
     key: WindowKey,
     overlays: Observed<Overlays>,
     spotlight: Observed<Slice<Spotlight>>,
@@ -88,20 +87,19 @@ impl EventEmitter<Shown> for OverlayLayer {}
 
 impl OverlayLayer {
     pub(in crate::shell) fn new(
-        model: Entity<Desktop>,
+        app: Entities,
         key: WindowKey,
         own: &WindowEntities,
         menu: FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let entities = &model.read(cx).entities;
         let (rail, notifications, session, account, prefs) = (
-            entities.rail.clone(),
-            entities.notifications.clone(),
-            entities.session.clone(),
-            entities.account.clone(),
-            entities.prefs.clone(),
+            app.rail.clone(),
+            app.notifications.clone(),
+            app.session.clone(),
+            app.account.clone(),
+            app.prefs.clone(),
         );
         let field = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search programs, networks, actions")
@@ -159,7 +157,7 @@ impl OverlayLayer {
             account: Observed::new(&account, cx),
             prefs: Observed::new(&prefs, cx),
             framed: framed(own.desk.read(cx).get()),
-            model,
+            app,
             key,
             field,
             approve_code,
@@ -251,7 +249,7 @@ impl OverlayLayer {
             let spotlight = self.spotlight.read(cx).get();
             spotlight.picked(&self.rows(cx))
         };
-        run(self.overlays.entity(), &self.model, picked, cx);
+        run(self.overlays.entity(), &self.app, picked, cx);
     }
 
     /// Spotlight's rows for the text typed.
@@ -282,32 +280,54 @@ fn framed(layout: &crate::ui::layout::Layout) -> bool {
 }
 
 /// A Spotlight row run (Enter, a click): Spotlight closes, and what the row
-/// means happens. Settings is an overlay of its own; the rest is still the
-/// reducer's until s11.
+/// means happens, one call on the entity it moves.
 pub(super) fn run(
     overlays: &Entity<Overlays>,
-    model: &Entity<Desktop>,
+    app: &Entities,
     picked: Option<Spot>,
     cx: &mut gpui_kit::App,
 ) {
-    let entity = |cx: &gpui_kit::App| {
-        let entities = &model.read(cx).entities;
-        (entities.session.clone(), entities.account.clone())
+    // the console's window in front and its place on the desk: what a
+    // window command (Fill, Move or size) acts on, once it has a frame
+    let framed_pane = |cx: &gpui_kit::App| {
+        let windows = app.windows.read(cx);
+        let desk = windows
+            .console()
+            .and_then(|key| windows.own(key))?
+            .desk
+            .clone();
+        let layout = desk.read(cx).get();
+        let index = layout.focused;
+        layout.panes.get(index)?.frame.map(|_| (desk, index))
     };
     match overlays.update(cx, |overlays, cx| overlays.submit(picked, cx)) {
         Some(Spot::Settings) => overlays.update(cx, |overlays, cx| overlays.open_settings(cx)),
         // the session's and the account's rows: one call each
-        Some(Spot::Switch(url)) => entity(cx)
-            .0
+        Some(Spot::Switch(url)) => app
+            .session
             .update(cx, |session, cx| session.switch(url, cx)),
-        Some(Spot::OtherNetwork) => entity(cx)
-            .0
-            .update(cx, |session, cx| session.disconnect(cx)),
-        Some(Spot::CreateAccount) => entity(cx)
-            .1
+        Some(Spot::OtherNetwork) => app.session.update(cx, |session, cx| session.disconnect(cx)),
+        Some(Spot::CreateAccount) => app
+            .account
             .update(cx, |account, cx| account.create_account(cx)),
-        Some(Spot::Lock) => entity(cx).1.update(cx, |account, cx| account.lock(cx)),
-        Some(spot) => model.update(cx, |model, cx| model.dispatch(Message::Spot(spot), cx)),
+        Some(Spot::Lock) => app.account.update(cx, |account, cx| account.lock(cx)),
+        Some(Spot::Open(module)) => app
+            .windows
+            .update(cx, |windows, cx| windows.select_view(module, cx)),
+        Some(Spot::Appearance(mode)) => app
+            .prefs
+            .update(cx, |prefs, cx| prefs.set_appearance(mode, cx)),
+        Some(Spot::Help) => app.windows.update(cx, |windows, cx| windows.help_asked(cx)),
+        Some(Spot::FillWindow) => {
+            if let Some((desk, index)) = framed_pane(cx) {
+                desk.update(cx, |desk, cx| desk.fill(index, cx));
+            }
+        }
+        Some(Spot::HoldWindow) => {
+            if let Some((desk, index)) = framed_pane(cx) {
+                desk.update(cx, |desk, cx| desk.hold(index, cx));
+            }
+        }
         None => {}
     }
 }

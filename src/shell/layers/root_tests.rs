@@ -2,13 +2,12 @@
 //! nothing else (P1, P6 in the app), and the root lays them out as the
 //! window's kind and screen say (docs/perf.md).
 use super::BAR;
-use super::tests::{Seed, open_console, polled, set_screen};
-use crate::runtime::WindowKey;
+use super::tests::{Seed, open_console, pane, polled, pop_out, set_motion, set_screen, toast};
+use crate::shell::PaneMessage;
 use crate::shell::entities::{Overlay, Popover, Screen};
 use crate::shell::panes_tests::{console, draw, settle, window_count};
-use crate::shell::{Desktop, Message, PaneMessage, WindowKind, WindowRoot};
 use crate::ui::test_support::status;
-use gpui_kit::{AnyWindowHandle, Entity, Styled as _, TestAppContext, VisualTestContext, px};
+use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px};
 use view_wire as wire;
 
 /// A frame as the platform delivers one: what asked for it runs, then
@@ -56,13 +55,11 @@ fn ids(nodes: &serde_json::Value) -> Vec<String> {
 #[gpui_kit::test]
 fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (app, key, _, mut native) = console(cx);
     native.update(|_, cx| cx.set_reduce_motion(false));
     native.update(|window, _| window.activate_window());
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(true), cx);
-    });
-    polled(&model, status(7), &mut native);
+    set_motion(&app, true, &mut native);
+    polled(&app, status(7), &mut native);
     // frames, not `draw`: the door's tree (`activate_a11y`) draws every
     // layer uncached until s15
     for _ in 0..4 {
@@ -107,12 +104,10 @@ fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
 fn a_pane_wake_leaves_the_chrome_alone(cx: &mut TestAppContext) {
     const MODULE: &str = "root-wake-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("first"));
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(false), cx);
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx);
-    });
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     for _ in 0..8 {
         frame(&mut native);
     }
@@ -140,28 +135,24 @@ fn a_pane_wake_leaves_the_chrome_alone(cx: &mut TestAppContext) {
 fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
     const MODULE: &str = "root-toast-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(false), cx);
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx);
-    });
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     for _ in 0..8 {
         frame(&mut native);
     }
-    let (chrome, toast, tree) = (
+    let (chrome, shown, tree) = (
         window_count(key, "renders.chrome"),
         window_count(key, "renders.toast"),
         tree_renders(MODULE),
     );
-    assert!(chrome > 0 && toast > 0 && tree > 0, "every layer drew");
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::ShowToast("Saved".into()), cx)
-    });
+    assert!(chrome > 0 && shown > 0 && tree > 0, "every layer drew");
+    toast(&app, "Saved", &mut native);
     frame(&mut native);
     assert_eq!(
         window_count(key, "renders.toast"),
-        toast + 1,
+        shown + 1,
         "the toast drew its layer other than once"
     );
     assert_eq!(
@@ -186,12 +177,10 @@ fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
 fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     const MODULE: &str = "root-keystroke-view";
     let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(false), cx);
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx);
-    });
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     super::tests::show(&view, Some(Overlay::Spotlight), &mut native);
     // the first key: the window's input turns to the keyboard, which gpui
     // answers with a full redraw
@@ -213,8 +202,8 @@ fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     );
     native.simulate_input("l");
     frame(&mut native);
-    let spotlight = model.read_with(&native, |model, _| {
-        model.entities.by_window[&key].spotlight.clone()
+    let spotlight = app.windows.read_with(&native, |windows, _| {
+        windows.own(key).unwrap().spotlight.clone()
     });
     let query = native.update(|_, cx| spotlight.read(cx).get().query.clone());
     assert_eq!(query, "al", "the keystrokes never reached the slice");
@@ -229,64 +218,14 @@ fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     );
 }
 
-/// The console's front pane popped out to a window of its own: its key
-/// and handle.
-fn pop_out(
-    model: &Entity<Desktop>,
-    key: WindowKey,
-    view: &Entity<WindowRoot>,
-    native: &mut VisualTestContext,
-) -> (WindowKey, AnyWindowHandle) {
-    let index = native.update(|_, cx| view.read(cx).layout(cx).focused);
-    model.update(native, |model, cx| {
-        model.dispatch(
-            Message::Pane(key, PaneMessage::PopOut { index, at: None }),
-            cx,
-        )
-    });
-    // the model put the pane in a window of its own and asked the shell to
-    // open it; the test has no command loop, so it opens it the same way
-    native.update(|_, cx| {
-        let (&popped, own) = model
-            .read(cx)
-            .state
-            .layouts
-            .iter()
-            .find(|(candidate, _)| **candidate != key)
-            .expect("the pane left for a window of its own");
-        let kind = WindowKind::View {
-            module: own.panes[0].module,
-        };
-        model.update(cx, |model, cx| {
-            model.open_window(
-                popped,
-                kind,
-                futures::channel::oneshot::channel().0,
-                None,
-                cx,
-            )
-        });
-    });
-    native.run_until_parked();
-    native.update(|_, cx| {
-        let model = model.read(cx);
-        let (&key, _) = model
-            .views
-            .iter()
-            .find(|(candidate, _)| **candidate != key)
-            .expect("popout opened a view window");
-        (key, model.windows[&key])
-    })
-}
-
 /// A pane popped out to a window of its own: that window's root draws the
 /// panes and the footer, and no bar.
 #[gpui_kit::test]
 fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     settle(&mut native);
-    let (popped_key, popped_handle) = pop_out(&model, key, &view, &mut native);
+    let (popped_key, popped_handle, _) = pop_out(&app, key, &view, &mut native);
     let nodes = native.update(|_, cx| {
         popped_handle
             .update(cx, |_, window, cx| {
@@ -329,9 +268,9 @@ fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
 /// the pop-out's panes uncovered.
 #[gpui_kit::test]
 fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext) {
-    let (model, key, view, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     settle(&mut native);
-    let (popped_key, popped_handle) = pop_out(&model, key, &view, &mut native);
+    let (popped_key, popped_handle, _) = pop_out(&app, key, &view, &mut native);
     native.update(|_, cx| {
         popped_handle
             .update(cx, |_, window, cx| {
@@ -342,7 +281,10 @@ fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext)
     native.run_until_parked();
     native.update(|_, cx| {
         let open = |key| {
-            *model.read(cx).entities.by_window[&key]
+            *app.windows
+                .read(cx)
+                .own(key)
+                .unwrap()
                 .overlays
                 .read(cx)
                 .get()
@@ -435,7 +377,7 @@ fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext)
     seed.state.center = Default::default();
     seed.state.roster = Default::default();
     // a still figure: none of its own frames
-    seed.state.motion = false;
+    seed.prefs.motion = false;
     let (_, key, view, mut native) = open_console(seed, cx);
     frame(&mut native);
     let spin = native.update(|_, cx| view.read(cx).launcher().read(cx).spin.clone());
@@ -477,7 +419,7 @@ fn a_figure_back_from_the_desk_comes_with_its_screen(cx: &mut TestAppContext) {
     let mut seed = Seed::boot();
     seed.state.center = Default::default();
     seed.state.roster = Default::default();
-    seed.state.motion = false;
+    seed.prefs.motion = false;
     let (_, _, view, mut native) = open_console(seed, cx);
     let spin = native.update(|_, cx| view.read(cx).launcher().read(cx).spin.clone());
     let drawn = |native: &mut VisualTestContext| native.update(|_, cx| spin.read(cx).drawn());
@@ -504,11 +446,9 @@ fn a_figure_back_from_the_desk_comes_with_its_screen(cx: &mut TestAppContext) {
 /// node comes after the menu's in the tree.
 #[gpui_kit::test]
 fn a_toast_paints_over_an_open_menu(cx: &mut TestAppContext) {
-    let (model, _, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     super::tests::show(&view, Some(Overlay::Menu(Popover::Node)), &mut native);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::ShowToast("Saved".into()), cx);
-    });
+    toast(&app, "Saved", &mut native);
     settle(&mut native);
     let nodes = native.update(draw);
     let ids = ids(&nodes);
@@ -529,20 +469,101 @@ fn a_toast_paints_over_an_open_menu(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_centre_hears_the_front_pane_without_a_frame(cx: &mut TestAppContext) {
     const MODULE: &str = "root-front-view";
-    let (model, key, _, mut native) = console(cx);
+    let (app, key, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
     native.update(|window, _| window.activate_window());
     settle(&mut native);
     let front = |native: &mut VisualTestContext| {
-        native.update(|_, cx| model.read(cx).state.center.lock().front)
+        native.update(|_, cx| app.notifications.read(cx).center().lock().front)
     };
     assert_ne!(front(&mut native), Some((key, MODULE)));
-    // one message, no frame: the observer alone tells the centre
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx);
+    // one move of the desk, no frame: the observer alone tells the centre
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    assert_eq!(front(&mut native), Some((key, MODULE)));
+}
+
+/// A pane moved between windows (popped out, then back in) keeps its seat
+/// and its drawn tree: two roots, one `Seats`, and the seat's place
+/// follows the window whose desk holds the pane. Each root draws the pane
+/// from the seat it finds by the pane's `instance`.
+#[gpui_kit::test]
+fn a_pane_move_between_windows_keeps_its_seat_and_tree(cx: &mut TestAppContext) {
+    const MODULE: &str = "root-move-view";
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    crate::runtime::seat_drawing_for_test(MODULE, 400, line("kept"));
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    let instance = native.update(|_, cx| view.read(cx).layout(cx).panes[0].instance);
+    let seat = native.update(|_, cx| app.seats.read(cx).seat(instance).expect("seated"));
+    let console_handle = native.update(|_, cx| app.windows.read(cx).handles()[&key]);
+    assert_eq!(
+        seat.read_with(&native, |seat, _| seat.window()),
+        Some(console_handle)
+    );
+    let drawn = tree_renders(MODULE);
+    assert!(drawn > 0, "the tree drew in the console");
+
+    let (popped_key, popped_handle, popped) = pop_out(&app, key, &view, &mut native);
+    native.update(|_, cx| {
+        popped_handle
+            .update(cx, |_, window, cx| {
+                window.simulate_next_frame(cx);
+                draw(window, cx);
+            })
+            .unwrap();
     });
     native.run_until_parked();
-    assert_eq!(front(&mut native), Some((key, MODULE)));
+    native.update(|_, cx| {
+        assert_eq!(
+            popped.read(cx).layout(cx).panes[0].instance,
+            instance,
+            "the pane changed instance on its way out"
+        );
+        assert_eq!(
+            app.seats.read(cx).seat(instance).map(|it| it.entity_id()),
+            Some(seat.entity_id()),
+            "the pop-out got a new seat"
+        );
+        assert_eq!(seat.read(cx).window(), Some(popped_handle));
+    });
+    assert!(
+        window_count(popped_key, "renders.panes") > 0,
+        "the pop-out drew no panes"
+    );
+
+    // back in: the console's desk holds it again, the seat follows
+    app.windows
+        .update(&mut native, |windows, cx| windows.pop_in(popped_key, cx));
+    native.run_until_parked();
+    native.update(|_, cx| {
+        assert!(
+            view.read(cx)
+                .layout(cx)
+                .panes
+                .iter()
+                .any(|pane| pane.instance == instance),
+            "the pane never came back"
+        );
+        assert_eq!(
+            app.seats.read(cx).seat(instance).map(|it| it.entity_id()),
+            Some(seat.entity_id()),
+            "the return got a new seat"
+        );
+        assert_eq!(seat.read(cx).window(), Some(console_handle));
+        assert!(
+            !app.windows.read(cx).handles().contains_key(&popped_key),
+            "the pop-out's window stayed"
+        );
+    });
+    frame(&mut native);
+    assert!(
+        tree_renders(MODULE) > drawn,
+        "the tree never drew again after its moves"
+    );
 }
 
 /// Raising a window that is already active still times the switch to the
@@ -550,7 +571,7 @@ fn the_centre_hears_the_front_pane_without_a_frame(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn raising_an_active_window_closes_its_switch_timer(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
-    let (model, key, _, mut native) = console(cx);
+    let (app, key, _, mut native) = console(cx);
     native.update(|window, _| window.activate_window());
     settle(&mut native);
     let samples = |native: &mut VisualTestContext| {
@@ -560,9 +581,8 @@ fn raising_an_active_window_closes_its_switch_timer(cx: &mut TestAppContext) {
             .unwrap_or(0)
     };
     let before = samples(&mut native);
-    model.update(&mut native, |model, cx| {
-        model.execute(crate::shell::NativeCommand::Raise(key), cx)
-    });
+    app.windows
+        .update(&mut native, |windows, cx| windows.raise(key, cx));
     // the frame the raise asks for, then the one after it
     frame(&mut native);
     frame(&mut native);
@@ -585,12 +605,10 @@ fn quads(native: &mut VisualTestContext) -> Vec<gpui_kit::Quad> {
 #[gpui_kit::test]
 fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
     const MODULE: &str = "root-scrim-view";
-    let (model, key, view, mut native) = console(cx);
+    let (app, _, view, mut native) = console(cx);
     crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(false), cx);
-        model.dispatch(Message::Pane(key, PaneMessage::Select(MODULE)), cx);
-    });
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
     for _ in 0..4 {
         frame(&mut native);
     }
@@ -643,11 +661,9 @@ fn a_cached_dialog_dims_the_panes(cx: &mut TestAppContext) {
 /// window's.
 #[gpui_kit::test]
 fn a_cached_toast_sits_at_the_foot(cx: &mut TestAppContext) {
-    let (model, _, _, mut native) = console(cx);
-    model.update(&mut native, |model, cx| {
-        model.dispatch(Message::SetMotion(false), cx);
-        model.dispatch(Message::ShowToast("Saved".into()), cx);
-    });
+    let (app, _, _, mut native) = console(cx);
+    set_motion(&app, false, &mut native);
+    toast(&app, "Saved", &mut native);
     for _ in 0..3 {
         frame(&mut native);
         let scale = native.update(|window, _| window.scale_factor());

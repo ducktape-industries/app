@@ -70,14 +70,12 @@ fn two_programs() -> Seed {
 /// (Fill, Move or size) are there, each reporting its chord (AX-114).
 pub(super) fn spotlight_over_window() -> Seed {
     let mut seed = desk();
-    let key = WindowKey::unique();
     let mut layout = crate::ui::layout::Layout::default();
     layout.split(crate::ui::layout::EMPTY);
     layout.measure((1280., 764.));
     layout.settle();
     layout.initialized = true;
-    seed.state.console_win = Some(key);
-    seed.state.layouts.insert(key, layout);
+    seed.layout = Some(layout);
     seed
 }
 
@@ -233,7 +231,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             false,
             plain(|| {
                 let mut seed = desk();
-                seed.state.toast = "Copied".into();
+                seed.toast = "Copied".into();
                 seed
             }),
         ),
@@ -305,7 +303,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             plain(|| {
                 let mut seed = desk();
                 seed.state.center.lock().ask_for_test("gate-asking");
-                seed.state.active = Some("gate-asking");
+                seed.active = Some("gate-asking");
                 seed
             }),
         ),

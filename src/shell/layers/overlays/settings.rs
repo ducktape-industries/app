@@ -2,16 +2,17 @@
 //! board). The account's settings are the network's, in its program;
 //! these are this device's.
 
-use super::super::super::Desktop;
 use super::super::super::ink::{self, Ink, mono, sans, words};
 use super::{OverlayLayer, dialog_fit, scrim};
-use crate::AppMessage as Message;
 use crate::a11y::Control as _;
-use crate::shell::entities::{Overlay, SettingsPage};
+use crate::shell::entities::{Entities, Overlay, Prefs, SettingsPage, Slice};
 use gpui_kit::prelude::FluentBuilder as _;
-use gpui_kit::{Context, Window};
+use gpui_kit::{App, Context, Window};
 use std::cell::Cell;
 use std::rc::Rc;
+
+/// What a Settings control does when picked.
+type Pick = Rc<dyn Fn(&mut App)>;
 
 /// Settings' page as it scrolls: a handle on each row, never a Tab stop
 /// itself, so the row that takes the keys scrolls into view.
@@ -28,10 +29,8 @@ pub(super) struct Page {
 /// keeps it before its arrows pick a radio group's choices, and a pick
 /// saves, and puts it back after (docs/ax.md §1.1).
 pub(crate) struct Kept {
-    desktop: gpui_kit::WeakEntity<Desktop>,
+    app: Entities,
     prefs: serde_json::Value,
-    appearance: crate::Appearance,
-    motion: bool,
     asking: std::collections::BTreeSet<String>,
 }
 
@@ -45,32 +44,23 @@ impl Kept {
             .view()
             .clone()
             .downcast::<super::super::WindowRoot>();
-        let desktop = view.ok()?.read(cx).model.clone();
-        let state = &desktop.read(cx).state;
+        let app = view.ok()?.read(cx).app.clone();
         Some(Self {
             prefs: crate::backend::read_prefs(),
-            appearance: state.appearance,
-            motion: state.motion,
-            asking: state.center.lock().asking.clone(),
-            desktop: desktop.downgrade(),
+            asking: app.notifications.read(cx).center().lock().asking.clone(),
+            app,
         })
     }
 
-    /// Back as it stood: the file written only where it differs.
+    /// Back as it stood: the file written only where it differs, then read
+    /// again into `Prefs` (the theme follows), and the views asking put back.
     pub(crate) fn restore(self, cx: &mut gpui_kit::App) {
         if crate::backend::read_prefs() != self.prefs {
             crate::backend::write_prefs(&self.prefs);
         }
-        let _ = self.desktop.update(cx, |desktop, cx| {
-            desktop.state.center.lock().asking = self.asking;
-            desktop.state.motion = self.motion;
-            if desktop.state.appearance != self.appearance {
-                desktop.state.appearance = self.appearance;
-                desktop.sync_appearance(cx);
-            }
-            // the prefs file is back too: the notice settings are read again
-            desktop.bridge(true, cx);
-            cx.notify();
+        self.app.prefs.update(cx, |prefs, cx| prefs.reload(cx));
+        self.app.notifications.update(cx, |notifications, cx| {
+            notifications.restore_asking(self.asking, cx)
         });
     }
 }
@@ -283,6 +273,15 @@ impl OverlayLayer {
         )
     }
 
+    /// What a pick does: `call` on the prefs.
+    fn on_prefs(
+        &self,
+        call: impl Fn(&mut Slice<Prefs>, &mut Context<Slice<Prefs>>) + 'static,
+    ) -> Pick {
+        let prefs = self.prefs.entity().clone();
+        Rc::new(move |cx| prefs.update(cx, |prefs, cx| call(prefs, cx)))
+    }
+
     fn appearance_page(&mut self, ink: &Ink, cx: &gpui_kit::App) -> Vec<gpui_kit::Div> {
         use crate::Appearance;
         let (appearance, motion) = {
@@ -299,14 +298,22 @@ impl OverlayLayer {
                 ("System", Appearance::System),
             ]
             .map(|(label, mode)| {
-                (label.into(), appearance == mode, move || {
-                    Message::SetAppearance(mode)
-                })
+                (
+                    label.into(),
+                    appearance == mode,
+                    self.on_prefs(move |prefs, cx| prefs.set_appearance(mode, cx)),
+                )
             }),
             ink,
             cx,
         );
-        let motion = self.switch("motion", "Moving figures", motion, Message::SetMotion, ink);
+        let motion = self.switch(
+            "motion",
+            "Moving figures",
+            motion,
+            self.on_prefs(move |prefs, cx| prefs.set_motion(!motion, cx)),
+            ink,
+        );
         vec![
             heading("Appearance", ink),
             setting(
@@ -335,16 +342,21 @@ impl OverlayLayer {
             "notify/banners",
             "Desktop banners",
             settings.banners,
-            Message::SetNotifyBanners,
+            self.on_prefs({
+                let on = settings.banners;
+                move |prefs, cx| prefs.set_notify_banners(!on, cx)
+            }),
             &ink,
         );
         let front = self.segmented(
             "notify/front",
             "While Ducktape is in front",
             [("Show", true), ("Hide", false)].map(|(label, show)| {
-                (label.into(), settings.in_front == show, move || {
-                    Message::SetNotifyInFront(show)
-                })
+                (
+                    label.into(),
+                    settings.in_front == show,
+                    self.on_prefs(move |prefs, cx| prefs.set_notify_in_front(show, cx)),
+                )
             }),
             &ink,
             cx,
@@ -360,7 +372,7 @@ impl OverlayLayer {
                     (
                         burst.to_string().into(),
                         settings.burst == burst,
-                        move || Message::SetNotifyBurst(burst),
+                        self.on_prefs(move |prefs, cx| prefs.set_notify_burst(burst, cx)),
                     )
                 }),
                 &ink,
@@ -395,11 +407,20 @@ impl OverlayLayer {
                     &format!("notify/view/{module}"),
                     &format!("{name} notifications"),
                     Permission::ALL.map(|permission| {
-                        (
-                            permission.word().into(),
-                            chosen == Some(permission),
-                            move || Message::NotifyPermission(module, permission),
-                        )
+                        let (notifications, prefs) = (
+                            self.notifications.entity().clone(),
+                            self.prefs.entity().clone(),
+                        );
+                        let pick: Pick = Rc::new(move |cx| {
+                            crate::shell::entities::permission(
+                                &notifications,
+                                &prefs,
+                                module,
+                                permission,
+                                cx,
+                            )
+                        });
+                        (permission.word().into(), chosen == Some(permission), pick)
                     }),
                     &ink,
                     cx,
@@ -479,11 +500,10 @@ impl OverlayLayer {
         id: &'static str,
         name: &'static str,
         on: bool,
-        message: fn(bool) -> Message,
+        flip: Pick,
         ink: &Ink,
     ) -> gpui_kit::AnyElement {
         use gpui_kit::*;
-        let model = self.model.clone();
         crate::a11y::keyboard(
             div()
                 .id(id)
@@ -503,9 +523,7 @@ impl OverlayLayer {
                     false => ink.strong,
                 })
                 .when(on, |track| track.bg(ink.ink))
-                .on_click(move |_, _, cx| {
-                    model.update(cx, |model, cx| model.dispatch(message(!on), cx))
-                })
+                .on_click(move |_, _, cx| flip(cx))
                 .child(div().size(px(12.)).rounded_full().bg(match on {
                     true => ink.bg,
                     false => ink.muted,
@@ -522,7 +540,7 @@ impl OverlayLayer {
         &mut self,
         id: &str,
         name: &str,
-        choices: [(gpui_kit::SharedString, bool, impl Fn() -> Message + 'static); N],
+        choices: [(gpui_kit::SharedString, bool, Pick); N],
         ink: &Ink,
         cx: &gpui_kit::App,
     ) -> gpui_kit::Stateful<gpui_kit::Div> {
@@ -534,13 +552,13 @@ impl OverlayLayer {
             .iter()
             .position(|(_, on, _)| *on)
             .unwrap_or_default();
-        let mut messages = Vec::with_capacity(N);
-        let choices = choices.map(|(label, on, message)| {
-            messages.push(message);
+        let mut picks = Vec::with_capacity(N);
+        let choices = choices.map(|(label, on, pick)| {
+            picks.push(pick);
             (label, on)
         });
-        let messages = std::rc::Rc::new(messages);
-        let (model, picks) = (self.model.clone(), messages.clone());
+        let picks = Rc::new(picks);
+        let arrows = picks.clone();
         crate::a11y::roving(
             div()
                 .id(SharedString::from(id.to_owned()))
@@ -549,14 +567,13 @@ impl OverlayLayer {
             &stop,
             accesskit::Orientation::Horizontal,
             [chosen, N],
-            move |to, _, cx| model.update(cx, |model, cx| model.dispatch(picks[to](), cx)),
+            move |to, _, cx| arrows[to](cx),
         )
         .flex()
         .border_1()
         .border_color(line)
         .children(choices.into_iter().enumerate().map(|(nth, (label, on))| {
-            let model = self.model.clone();
-            let messages = messages.clone();
+            let picks = picks.clone();
             crate::a11y::roving_item(
                 sans(if on { 500 } else { 400 }, 13.)
                     .id(SharedString::from(format!("{id}/{label}")))
@@ -575,9 +592,7 @@ impl OverlayLayer {
                     .when(on, |cell| cell.bg(ink.surface))
                     // a press leaves the keys where they were
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                    .on_click(move |_, _, cx| {
-                        model.update(cx, |model, cx| model.dispatch(messages[nth](), cx))
-                    })
+                    .on_click(move |_, _, cx| picks[nth](cx))
                     .child(label),
                 (nth == chosen).then_some(&stop),
                 ink.ink,

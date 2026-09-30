@@ -111,7 +111,7 @@ fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppCo
 fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppContext) {
     keyed(cx);
     let mut seed = gate::desk();
-    seed.state.appearance = crate::Appearance::Dark;
+    seed.prefs.appearance = crate::Appearance::Dark;
     seed.state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
     let settings = Overlay::Settings(SettingsPage::Appearance);
     let (view, mut native) = open((seed, settings), cx);
@@ -129,7 +129,7 @@ fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppCont
             ("end", "shell:theme/System", true),
         ],
     );
-    let appearance = view.read_with(&native, |view, cx| view.model.read(cx).state.appearance);
+    let appearance = view.read_with(&native, |view, cx| view.app.prefs.read(cx).get().appearance);
     assert_eq!(
         appearance,
         crate::Appearance::System,

@@ -21,12 +21,14 @@ fn names_say_which_one(cx: &mut TestAppContext) {
     });
     let mut seed = gate::desk();
     seed.state.roster = crate::runtime::Roster::listing(&["names-test"]);
-    seed.state.active = Some(crate::runtime::intern("names-test"));
-    seed.state
-        .badges
-        .insert(crate::runtime::intern("names-test"), 3);
+    seed.active = Some(crate::runtime::intern("names-test"));
     seed.chain.height = 6230;
-    let (_view, mut native) = open(seed, cx);
+    let (view, mut native) = open(seed, cx);
+    // a badge, as the view's seat sets it
+    let app = crate::shell::layers::tests::entities(&view, &mut native);
+    app.rail.update(&mut native, |rail, cx| {
+        rail.set_badge(crate::runtime::intern("names-test"), 3, cx)
+    });
     let nodes = native.update(draw);
 
     let tab = &node(&nodes, "shell:rail/names-test")["name"];

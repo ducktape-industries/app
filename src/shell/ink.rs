@@ -3,7 +3,8 @@
 //! values (`font: 500 15px`, `height: 44px`, `border: 1.5px solid`). A
 //! screen is ported from its board by reading the DOM and writing these.
 
-use super::*;
+use crate::a11y::Control as _;
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 /// The canvas's colors for one appearance.

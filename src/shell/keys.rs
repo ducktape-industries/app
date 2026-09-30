@@ -181,9 +181,8 @@ impl WindowRoot {
             .on_action(cx.listener(|this, _: &ToggleSpotlight, _, cx| {
                 // over the console, where it draws: the View menu's Search
                 // comes from whichever window is in front
-                let desktop = this.model.read(cx);
-                let console = desktop.state.console_win;
-                let Some(own) = console.and_then(|key| desktop.entities.by_window.get(&key)) else {
+                let windows = this.app.windows.read(cx);
+                let Some(own) = windows.console().and_then(|key| windows.own(key)) else {
                     return;
                 };
                 own.overlays
@@ -195,8 +194,9 @@ impl WindowRoot {
                 this.overlays.entity().update(cx, |overlays, cx| {
                     overlays.close(Overlay::Menu(Popover::Node), cx)
                 });
-                this.model
-                    .update(cx, |model, cx| model.dispatch(Message::OpenHelp, cx));
+                this.app
+                    .windows
+                    .update(cx, |windows, cx| windows.help_asked(cx));
             }))
             .on_action(cx.listener(|this, _: &CloseOverlay, _, cx| {
                 this.overlays.entity().update(cx, |overlays, cx| {

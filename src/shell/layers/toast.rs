@@ -5,15 +5,13 @@
 //! outside them); the root draws it deferred over an open menu, as it
 //! painted before it was a layer.
 
-use super::super::entities::{Observed, Prefs, Screen, Session, Slice, Toast};
+use super::super::WindowKey;
+use super::super::entities::{Entities, Observed, Prefs, Screen, Session, Slice, Toast};
 use super::super::ink::{Ink, Kind, Press, button, sans, tall};
 use super::super::status_bar::pulse;
-use super::super::{Desktop, WindowKey};
-use crate::AppMessage as Message;
 use gpui_kit::*;
 
 pub(in crate::shell) struct ToastView {
-    model: Entity<Desktop>,
     key: WindowKey,
     toast: Observed<Toast>,
     session: Observed<Session>,
@@ -22,24 +20,12 @@ pub(in crate::shell) struct ToastView {
 }
 
 impl ToastView {
-    pub(in crate::shell) fn new(
-        model: Entity<Desktop>,
-        key: WindowKey,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let entities = &model.read(cx).entities;
-        let (toast, session, screen, prefs) = (
-            entities.toast.clone(),
-            entities.session.clone(),
-            entities.screen.clone(),
-            entities.prefs.clone(),
-        );
+    pub(in crate::shell) fn new(app: &Entities, key: WindowKey, cx: &mut Context<Self>) -> Self {
         Self {
-            toast: Observed::new(&toast, cx),
-            session: Observed::new(&session, cx),
-            screen: Observed::new(&screen, cx),
-            prefs: Observed::new(&prefs, cx),
-            model,
+            toast: Observed::new(&app.toast, cx),
+            session: Observed::new(&app.session, cx),
+            screen: Observed::new(&app.screen, cx),
+            prefs: Observed::new(&app.prefs, cx),
             key,
         }
     }
@@ -117,10 +103,8 @@ impl Render for ToastView {
                 "Dismiss",
                 Kind::Small,
                 {
-                    let model = self.model.clone();
-                    move |cx| {
-                        model.update(cx, |model, cx| model.dispatch(Message::DismissToast, cx))
-                    }
+                    let toast = self.toast.entity().clone();
+                    move |cx| toast.update(cx, |toast, cx| toast.dismiss(cx))
                 },
                 Press::Ready,
                 &ink,
