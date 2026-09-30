@@ -546,7 +546,10 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   observes the model, so each message re-renders every window; the wall and
   toast timers alone make that several times a second. `Roster::rail()`,
   which locks every seat, runs once per roster or seat change
-  (`entities::Rail`), not per desk render.
+  (`entities::Rail`), not per render of a desk whose panes all hold
+  programs; still per draw of Spotlight and Settings › Notifications while
+  open, and of an empty pane (a bare desk, an empty window: its render and
+  its model observer) until s9.
 - **Off-thread.** View loads, roster reads, node I/O, describe, banners and
   key opening are off the window thread (§2).
 - **Measured.** A `view_load` info line per network load

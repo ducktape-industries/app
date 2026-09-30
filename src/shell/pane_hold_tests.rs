@@ -336,8 +336,9 @@ fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppCon
 fn the_chords_and_the_menu_do_nothing_under_an_overlay(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = desk_of_two(cx);
     let before = frame(&mut native, &view, 1);
-    model.update(&mut native, |model, _| {
-        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node))
+    model.update(&mut native, |model, cx| {
+        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node));
+        model.bridge(false, cx);
     });
     stroke(&mut native, "secondary-shift-m");
     stroke(&mut native, "secondary-shift-enter");

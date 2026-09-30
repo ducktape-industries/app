@@ -33,7 +33,8 @@ struct Drawn(layout::Layout);
 
 /// The panes of one window. It observes the window's `Desk` and the app's
 /// `Seats`: a pane that came gets a `PaneView`, one that went loses it, and
-/// the seat of the pane in front is told so. The keys' handoff between
+/// the seat of the pane in front is told so. It observes its `Overlays`
+/// too, whose closing hands the keys back after the draw it asks for. The keys' handoff between
 /// panes runs after every draw of the layer (`drawn`), where the frame that
 /// shows a pane is the one its first control is found in.
 pub(in crate::shell) struct PaneLayer {
@@ -65,7 +66,7 @@ pub(in crate::shell) struct PaneLayer {
     pub(in crate::shell) holding: Option<pane_hold::Holding>,
     /// The pointer holds a pane: see `pane_drag.rs`.
     pub(in crate::shell) drag: Option<pane_drag::Drag>,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 4],
 }
 
 impl EventEmitter<Drawn> for PaneLayer {}
@@ -96,6 +97,9 @@ impl PaneLayer {
             cx.observe_in(&seats, window, |this, _, window, cx| {
                 this.reconcile(window, cx)
             }),
+            // an overlay that opened or closed: the next draw's handoff
+            // (`keys_move`) sees it
+            cx.observe(&overlays, |_, _, cx| cx.notify()),
             // every draw of the layer ends in the keys' handoff
             cx.subscribe_in(
                 &cx.entity(),

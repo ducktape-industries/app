@@ -302,7 +302,10 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
     assert_eq!(panes(&mut native, &view), (2, 0), "⌘1 focuses the first");
 
     for name in ALL_OVERLAYS {
-        model.update(&mut native, |model, _| model.state.overlay = Some(name));
+        model.update(&mut native, |model, cx| {
+            model.state.overlay = Some(name);
+            model.bridge(false, cx);
+        });
         assert_eq!(
             native.update(|_, cx| view.read(cx).command_w_pane(cx)),
             None,
@@ -316,7 +319,10 @@ fn desk_keys_act_on_windows_only_with_no_overlay_open(cx: &mut TestAppContext) {
                 "{stroke} reached the desk under {name:?}"
             );
         }
-        model.update(&mut native, |model, _| model.state.overlay = None);
+        model.update(&mut native, |model, cx| {
+            model.state.overlay = None;
+            model.bridge(false, cx);
+        });
     }
 
     assert_eq!(
@@ -359,11 +365,17 @@ fn command_k_toggles_spotlight_and_escape_closes_any_overlay(cx: &mut TestAppCon
     key(&mut native, "secondary-k");
     assert_eq!(open(&mut native), None);
     for overlay in ALL_OVERLAYS {
-        model.update(&mut native, |model, _| model.state.overlay = Some(overlay));
+        model.update(&mut native, |model, cx| {
+            model.state.overlay = Some(overlay);
+            model.bridge(false, cx);
+        });
         key(&mut native, "escape");
         assert_eq!(open(&mut native), None, "Escape left {overlay:?} open");
         // a click outside its card, low on the window: on its backdrop
-        model.update(&mut native, |model, _| model.state.overlay = Some(overlay));
+        model.update(&mut native, |model, cx| {
+            model.state.overlay = Some(overlay);
+            model.bridge(false, cx);
+        });
         native.update(|window, cx| {
             draw(window, cx);
         });
@@ -402,8 +414,9 @@ fn closing_an_overlay_gives_the_keys_back_to_what_had_them(cx: &mut TestAppConte
     });
     assert_eq!(focused(&mut native), before, "Escape");
     // a bar menu, closed by the model (a click outside, a pick)
-    model.update(&mut native, |model, _| {
-        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node))
+    model.update(&mut native, |model, cx| {
+        model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Node));
+        model.bridge(false, cx);
     });
     native.update(|window, cx| {
         draw(window, cx);
@@ -524,8 +537,9 @@ fn help_the_model_opens_has_the_keys(cx: &mut TestAppContext) {
 fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = console(cx);
     settle(&mut native);
-    model.update(&mut native, |model, _| {
-        model.state.overlay = Some(crate::Overlay::Settings)
+    model.update(&mut native, |model, cx| {
+        model.state.overlay = Some(crate::Overlay::Settings);
+        model.bridge(false, cx);
     });
     settle(&mut native);
     model.update(&mut native, |model, cx| {
@@ -582,8 +596,9 @@ fn a_view_the_model_selects_has_the_keys(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
     let (model, _, view, mut native) = console(cx);
-    model.update(&mut native, |model, _| {
-        model.state.overlay = Some(crate::Overlay::Settings)
+    model.update(&mut native, |model, cx| {
+        model.state.overlay = Some(crate::Overlay::Settings);
+        model.bridge(false, cx);
     });
     native.update(|window, cx| {
         draw(window, cx);
@@ -1528,4 +1543,26 @@ fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppCont
         "a frame at the same size asked for a callback"
     );
     assert_eq!(desk(&mut native), Some((1000., 700. - desk::BAR)));
+}
+
+/// What opens or closes over the desk reaches the panes by their window's
+/// `Overlays` alone: the layer draws again, so the handoff after its draw
+/// (`keys_move`) sees it, with nothing else drawing the window.
+#[gpui_kit::test]
+fn an_overlay_moving_draws_the_panes_by_its_slice_alone(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (model, key, _, mut native) = console(cx);
+    native.run_until_parked();
+    let overlays = model.read_with(&native, |model, _| {
+        model.entities.by_window[&key].overlays.clone()
+    });
+    for overlay in [Some(entities::Overlay::Spotlight), None] {
+        let before = window_count(key, "renders.panes");
+        overlays.update(&mut native, |overlays, cx| overlays.set(overlay, cx));
+        native.run_until_parked();
+        assert!(
+            window_count(key, "renders.panes") > before,
+            "{overlay:?} over the desk and the panes did not draw"
+        );
+    }
 }

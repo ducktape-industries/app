@@ -635,6 +635,7 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
         view.update(&mut native, |view, cx| {
             view.model.update(cx, |model, cx| {
                 model.state.overlay = overlay;
+                model.bridge(false, cx);
                 cx.notify();
             })
         });

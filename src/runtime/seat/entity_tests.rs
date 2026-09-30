@@ -774,3 +774,28 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
         "each fresh frame drew before the next turn replaced it"
     );
 }
+
+/// A seat claimed or dropped moves what `Roster::rail` reads, so each wakes
+/// the rail. The only test that installs the app's channel: another test's
+/// seat may send into it meanwhile, which can pass this by accident but
+/// never fail it.
+#[gpui_kit::test]
+fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
+    cx.update(gpui_kit::init);
+    let mut changes = crate::runtime::changes_channel();
+    let mut woken = move || {
+        let mut n = 0;
+        while changes.try_recv().is_ok() {
+            n += 1;
+        }
+        n
+    };
+    let seat = cx.new(|cx| Seat::new("rail-wake-seat", cx));
+    assert!(woken() > 0, "a claimed seat told the rail nothing");
+    let key = seat.read_with(cx, |seat, _| (seat.module(), seat.instance()));
+    drop(seat);
+    cx.update(|_| {});
+    cx.run_until_parked();
+    assert!(!registry().lock().unwrap().contains_key(&key));
+    assert!(woken() > 0, "a dropped seat told the rail nothing");
+}
