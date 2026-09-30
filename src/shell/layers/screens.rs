@@ -231,7 +231,15 @@ impl Render for Screens {
         };
         crate::perf::count(crate::perf::Key::Window(self.key), counted, 1);
         if !launcher {
-            return div().absolute().inset_0().children(self.dialog(window, cx));
+            // `size_full` too: cached, this view is laid out as a root of
+            // its own, where a block's height is its content's (taffy), and
+            // the dialog's backdrop is absolute. Sized by its insets alone
+            // the root would be 0px high and the scrim culled
+            return div()
+                .absolute()
+                .inset_0()
+                .size_full()
+                .children(self.dialog(window, cx));
         }
         let state = self.model.read(cx).state.facts();
         let screen = match self.model.read(cx).state.stage {
