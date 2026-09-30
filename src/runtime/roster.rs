@@ -126,6 +126,24 @@ pub(crate) fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()>
     receive
 }
 
+/// `programs` in place of what `roster` listed, the one before handed
+/// back. A list that moved counts a change and wakes the rail: a program
+/// that left starts no load, so this is the only word the rail gets of it.
+pub(super) fn relist(
+    roster: &Roster,
+    programs: Vec<crate::backend::views::Program>,
+) -> Vec<crate::backend::views::Program> {
+    let mut listed = roster.lock();
+    let previous = std::mem::replace(&mut *listed, programs);
+    let moved = previous != *listed;
+    drop(listed);
+    if moved {
+        roster.changed();
+        rail_moved();
+    }
+    previous
+}
+
 /// The rows [`Roster::rail`] reads may have moved: the rail is told.
 pub(super) fn rail_moved() {
     if let Some(send) = &*changes().lock().expect("roster changes") {
@@ -287,11 +305,7 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                     registry.remove(&gone);
                 }
             }
-            let previous = std::mem::replace(&mut *roster().lock(), programs.clone());
-            if previous != programs {
-                roster().changed();
-                rail_moved();
-            }
+            let previous = relist(roster(), programs.clone());
             let mut loads = Vec::new();
             for module in &names {
                 if !registry.keys().any(|(name, _)| name == module) {

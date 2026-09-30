@@ -1,6 +1,6 @@
 //! The programs the bar lists, each by the name its view gives itself, and
 //! each view's unread count. The rows are read off the roster once per
-//! change a loader thread (or a seat coming or going) reports on the
+//! change a loader thread, a seat coming or going, or a retry reports on the
 //! roster's channel, never at a draw; the badges are bridged from the model
 //! until s11 routes `Intent::Badge` here.
 use crate::runtime::{RailRow, Roster};
