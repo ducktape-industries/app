@@ -54,14 +54,14 @@ pub(super) fn console(
     Entity<WindowRoot>,
     VisualTestContext,
 ) {
-    let (mut state, _) = Ducktape::boot();
+    let mut seed = super::layers::tests::Seed::boot();
     // its own roster and centre, not the app's ones every test shares
-    state.roster = Default::default();
-    state.center = Default::default();
-    state.stage = crate::Stage::Desk;
-    state.active = Some("pane-ax-test");
-    state.console_win = Some(WindowKey::unique());
-    super::layers::tests::open_console(state, cx)
+    seed.state.roster = Default::default();
+    seed.state.center = Default::default();
+    seed.screen = super::entities::Screen::Desk;
+    seed.state.active = Some("pane-ax-test");
+    seed.state.console_win = Some(WindowKey::unique());
+    super::layers::tests::open_console(seed, cx)
 }
 
 #[gpui_kit::test]
@@ -808,24 +808,26 @@ fn a_beat_that_moves_nothing_draws_nothing(cx: &mut TestAppContext) {
     model.update(&mut native, |model, _| {
         // the breath stands still: its frames are not the beats'
         model.state.motion = false;
-        model.state.height = 7;
     });
     send(Message::Pane(key, PaneMessage::Select(MODULE)), &mut native);
-    send(Message::StatusPushed(status(7)), &mut native);
+    super::layers::tests::polled(&model, status(7), &mut native);
     let still = window_count(key, "renders");
     let told = std::rc::Rc::new(std::cell::Cell::new(0));
     let _told = native.update(|_, cx| {
         let told = told.clone();
         cx.observe(&model, move |_, _| told.set(told.get() + 1))
     });
-    for message in [
-        Message::WallTick,
-        Message::ToastTick,
-        Message::Tick,
-        Message::StatusMissed,
-        Message::StatusPushed(status(7)),
-    ] {
+    for message in [Message::WallTick, Message::ToastTick] {
         send(message, &mut native);
+    }
+    // the poll's answers are `Session`'s, not the reducer's: a miss and
+    // the same height move nothing on screen either
+    let session = model.read_with(&native, |model, _| model.entities.session.clone());
+    for answer in [Err("no".to_owned()), Ok(status(7))] {
+        session.update(&mut native, |session, cx| {
+            session.status_answered(answer, cx)
+        });
+        native.run_until_parked();
     }
     assert_eq!(
         window_count(key, "renders"),
@@ -1203,10 +1205,13 @@ fn help_greets_a_new_account_and_titles_otherwise(cx: &mut TestAppContext) {
         model.dispatch(Message::OpenHelp, cx)
     });
     assert_eq!(title(&mut native), "Ducktape help");
-    // a new account lands on it greeted (`open_help(true)`)
+    // a new account lands on it greeted (`Account::welcome`)
     model.update(&mut native, |model, cx| {
-        model.state.welcome = true;
-        model.bridge(false, cx);
+        model.entities.account.update(cx, |account, cx| {
+            let mut state = account.get().clone();
+            state.welcome = true;
+            account.seed(state, None, None, cx);
+        });
     });
     assert_eq!(title(&mut native), "Welcome to Ducktape");
     // asked for again, it is just help

@@ -132,6 +132,7 @@ fn applying_node_with_a_lost_answer(
 #[tokio::test]
 async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
     let (answer, attempts) = until_answered(NODE_RETRY_BUDGET, unsent, || {
@@ -163,6 +164,7 @@ fn call_registry() -> Vec<u8> {
 #[tokio::test]
 async fn a_submit_whose_sequence_read_was_lost_is_asked_again() {
     use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::GET);
     let (answer, attempts) = until_answered(NODE_RETRY_BUDGET, unsent, || {

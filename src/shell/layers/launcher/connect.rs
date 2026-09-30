@@ -1,8 +1,9 @@
 //! The Connect screen, first in the launcher: a node address, the nodes
 //! reached before, and why the last try did not land.
 
+use super::super::super::entities::Session;
 use super::super::super::ink::*;
-use super::super::super::{Message, theme};
+use super::super::super::theme;
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen};
 use crate::a11y::Control as _;
@@ -72,7 +73,7 @@ impl LauncherLayer {
                     "connect",
                     "Connect",
                     Kind::Primary,
-                    || Message::ConnectSubmit,
+                    self.on_session(Session::submit),
                     session.connecting,
                     &ink,
                 ))
@@ -81,9 +82,9 @@ impl LauncherLayer {
             &ink,
         );
         let rows = session.recent_endpoints.iter().map(|entry| {
-            let pick_model = self.model.clone();
+            let pick_session = self.session.entity().clone();
             let pick_target = entry.url.clone();
-            let forget_model = self.model.clone();
+            let forget_session = self.session.entity().clone();
             let forget_target = entry.url.clone();
             let name = entry.name();
             let danger = ink.danger;
@@ -101,9 +102,7 @@ impl LauncherLayer {
                 .hover(|style| style.opacity(0.7))
                 .on_click(move |_, _, cx| {
                     let target = pick_target.clone();
-                    pick_model.update(cx, |model, cx| {
-                        model.dispatch(Message::ConnectTo(target), cx)
-                    })
+                    pick_session.update(cx, |session, cx| session.connect(target, cx))
                 })
                 .child(
                     div()
@@ -140,10 +139,7 @@ impl LauncherLayer {
                         .child("×"),
                 )
                 .on_click(move |_, _, cx| {
-                    let target = forget_target.clone();
-                    forget_model.update(cx, |model, cx| {
-                        model.dispatch(Message::ForgetEndpoint(target), cx)
-                    })
+                    forget_session.update(cx, |session, cx| session.forget(&forget_target, cx))
                 });
             // Both have a tab stop: a keyboard-only reader reaches a node
             // used before, and can forget it.

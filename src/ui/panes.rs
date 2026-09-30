@@ -114,10 +114,9 @@ impl Ducktape {
     }
 
     /// Help on the desk: into the focused window if it is empty, else
-    /// where it already is, else a window of its own. A new account starts
-    /// here, greeted (`welcome`).
-    pub(super) fn open_help(&mut self, welcome: bool) {
-        self.welcome = welcome;
+    /// where it already is, else a window of its own. (Whether it greets a
+    /// new account is `Account.welcome`.)
+    pub(crate) fn open_help(&mut self) {
         if let Some(desk) = self.desk_layout() {
             desk.open(super::layout::HELP);
             desk.settle();
@@ -143,7 +142,7 @@ mod tests {
 
     /// A desk with `chat` open, measured, as the console first draws it.
     fn desk() -> (Ducktape, WindowKey) {
-        let (mut state, _) = Ducktape::boot();
+        let mut state = Ducktape::boot();
         let console = WindowKey::unique();
         state.console_win = Some(console);
         let _ = state.update(Message::DeskShown {
@@ -318,7 +317,7 @@ mod tests {
             ("seated-console-view", 720., 640, (144., 432.), (78., 642.)),
             ("seated-cramped-view", 600., 680, (120., 360.), (0., 600.)),
         ] {
-            let (mut state, _) = Ducktape::boot();
+            let mut state = Ducktape::boot();
             let console = WindowKey::unique();
             state.console_win = Some(console);
             let _ = state.update(Message::DeskShown {
@@ -344,11 +343,11 @@ mod tests {
         let (mut state, console) = desk();
         state.roster = crate::runtime::Roster::listing(&["pane-link"]);
         let _ = state.update(Message::SelectView("forge"));
-        let _ = state.update(Message::OpenLink("duck://pane-link/x".into()));
+        let _ = state.open_link("duck://pane-link/x", "");
         assert_eq!(modules(&state, console), ["chat", "forge", "pane-link"]);
         assert_eq!(state.active, Some("pane-link"));
         // leaving the network empties every window, keeping its measure
-        let _ = state.update(Message::Disconnect);
+        let _ = state.update(Message::LeftNetwork);
         assert!(modules(&state, console).is_empty());
         assert_eq!(state.layouts[&console].desk, Some(DESK));
         assert!(!state.layouts[&console].initialized);

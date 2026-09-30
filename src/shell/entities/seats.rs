@@ -1,8 +1,13 @@
 //! Every pane's `Seat`, by the pane's layout `instance`: one per view pane
-//! any window holds, placed in that window, told when it left every desk.
+//! any window holds, placed in that window, told when it left every desk,
+//! and handed the session as its props (`Session`, `Account` and the
+//! appearance, observed here; a seat turns only when the bytes moved).
+use super::{Account, Entities, Prefs, Session, Slice};
 use crate::runtime::{Intent, Seat, WindowKey};
 use crate::ui::layout::Layout;
-use gpui_kit::{AnyWindowHandle, AppContext as _, Context, Entity, EventEmitter, Subscription};
+use gpui_kit::{
+    AnyWindowHandle, App, AppContext as _, Context, Entity, EventEmitter, Subscription,
+};
 use std::collections::BTreeMap;
 
 /// A pane's seat and the routes out of it.
@@ -15,14 +20,66 @@ struct Placed {
 
 pub(crate) struct Seats {
     map: BTreeMap<u64, Placed>,
+    session: Entity<Session>,
+    account: Entity<Account>,
+    prefs: Entity<Slice<Prefs>>,
+    /// The session as every seat last heard it, encoded.
+    props: Vec<u8>,
+    _observing: [Subscription; 3],
 }
 
 impl EventEmitter<(&'static str, Intent)> for Seats {}
 
 impl Seats {
-    pub(crate) fn new() -> Self {
-        Self {
+    pub(crate) fn new(entities: &Entities, cx: &mut Context<Self>) -> Self {
+        let (session, account, prefs) = (
+            entities.session.clone(),
+            entities.account.clone(),
+            entities.prefs.clone(),
+        );
+        let mut this = Self {
             map: BTreeMap::new(),
+            props: Vec::new(),
+            _observing: [
+                cx.observe(&session, |this, _, cx| this.props_moved(cx)),
+                cx.observe(&account, |this, _, cx| this.props_moved(cx)),
+                cx.observe(&prefs, |this, _, cx| this.props_moved(cx)),
+            ],
+            session,
+            account,
+            prefs,
+        };
+        this.props = this.encode(cx);
+        this
+    }
+
+    /// What every view is handed as its props: the node the views are on
+    /// (not the address being typed or tried, a switch in flight), the
+    /// chain, the seated key and its account, dark or not.
+    fn encode(&self, cx: &App) -> Vec<u8> {
+        let session = self.session.read(cx).get();
+        let account = self.account.read(cx).get();
+        crate::runtime::props(
+            self.prefs.read(cx).get().dark(),
+            session.connected,
+            &session.chain,
+            &account.signer_key,
+            account.account.clone().flatten().map(|(number, _)| number),
+            &session.connected_rpc,
+        )
+    }
+
+    /// The session moved: the props to every seat, which turns only when
+    /// its bytes did.
+    fn props_moved(&mut self, cx: &mut Context<Self>) {
+        let props = self.encode(cx);
+        if props == self.props {
+            return;
+        }
+        self.props = props;
+        for placed in self.map.values() {
+            let props = self.props.clone();
+            placed.seat.update(cx, |seat, cx| seat.set_props(props, cx));
         }
     }
 
@@ -63,12 +120,15 @@ impl Seats {
             .collect();
         let mut moved = !gone.is_empty();
         for (instance, (module, window)) in wanted {
+            let props = &self.props;
             let placed = self.map.entry(instance).or_insert_with(|| {
                 moved = true;
                 let seat = cx.new(|cx| Seat::new(module, cx));
                 let _intents = cx.subscribe(&seat, move |_, _, intent: &Intent, cx| {
                     cx.emit((module, intent.clone()))
                 });
+                // the session as it stands, before its first turn
+                seat.update(cx, |seat, cx| seat.set_props(props.clone(), cx));
                 Placed {
                     module,
                     seat,
@@ -102,17 +162,6 @@ impl Seats {
     pub(crate) fn settle(&self, cx: &mut Context<Self>) {
         for placed in self.map.values() {
             placed.seat.update(cx, |seat, cx| seat.turn(cx));
-        }
-    }
-
-    /// The session's props, to every seat; a seat turns only when its
-    /// bytes moved. s10 deletes this: `Seats` observes `Session`, `Account`
-    /// and the theme itself.
-    pub(crate) fn set_props(&self, props: Vec<u8>, cx: &mut Context<Self>) {
-        for placed in self.map.values() {
-            placed
-                .seat
-                .update(cx, |seat, cx| seat.set_props(props.clone(), cx));
         }
     }
 }

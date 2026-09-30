@@ -37,6 +37,8 @@ pub(crate) use noded::{Client as RpcClient, Layer, Status as NodeStatus};
 pub(crate) use prefs::{
     load_appearance, load_motion, read_prefs, save_appearance, save_motion, write_prefs,
 };
+#[cfg(test)]
+pub(crate) use session::seat_serial;
 pub(crate) use session::{
     lock_signer, next_seq, query_frame, seat_key, seated_frame, seated_key, seated_sign,
 };

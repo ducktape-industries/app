@@ -1,7 +1,7 @@
 //! The launcher's key screen: this device's key opening, locked, failed, or
 //! behind a password from before. See launcher.rs for key vs account.
 
-use super::super::super::Message;
+use super::super::super::entities::{Account, Session};
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{LauncherLayer, LauncherScreen, buttons, closing};
@@ -89,7 +89,7 @@ impl LauncherLayer {
                 "unlock",
                 text,
                 Kind::Primary,
-                || Message::UnlockSubmit,
+                self.with_field(&self.fields.password, Account::unlock),
                 busy,
                 &ink,
             )])
@@ -109,7 +109,7 @@ impl LauncherLayer {
             [self.link(
                 "browse",
                 "Read without a key",
-                || Message::BrowseWithoutKey,
+                self.on_account(Account::browse_without_key),
                 false,
                 &ink,
             )],
@@ -120,7 +120,11 @@ impl LauncherLayer {
                 id: "sign-in",
                 tight: false,
                 caption: self.node_caption(cx),
-                back: Some(("disconnect", "Other networks", || Message::Disconnect)),
+                back: Some((
+                    "disconnect",
+                    "Other networks",
+                    Box::new(self.on_session(Session::disconnect)),
+                )),
                 label,
                 headline,
                 lead: lead.map(str::to_owned),

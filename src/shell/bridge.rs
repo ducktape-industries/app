@@ -3,12 +3,13 @@
 //! few writes the `Desktop` makes outside one). While bridged a slice has
 //! no other writer, and each write compares first, so a dispatch that
 //! moved nothing notifies no slice. Each write goes with the step that
-//! moves its source: `Session`, `Chain`, `Account` and `Screen` in s10;
-//! the rest in s11. (`Overlays` and `Spotlight` have their own methods;
-//! what the model still keeps for them follows them from here.)
+//! moves its source, s11 for all that are left. (`Session`, `Chain`,
+//! `Account` and `Screen` are their own flows' since s10; `Overlays` and
+//! `Spotlight` have their own methods; what the model still keeps for them
+//! follows them from here.)
 
 use super::entities::{
-    AccountStep, Chain, Entities, Front, Notifications, Overlay, Overlays, Prefs, Rail, Screen,
+    Account, Chain, Entities, Front, Notifications, Overlay, Overlays, Prefs, Rail, Screen,
     Session, Slice, Spotlight, WindowEntities,
 };
 use super::*;
@@ -23,11 +24,18 @@ impl Entities {
         changes: mpsc::UnboundedReceiver<()>,
         cx: &mut App,
     ) -> Self {
+        let chain = cx.new(|_| Chain::default());
+        let screen = cx.new(|_| Slice::new(Screen::Connect));
+        let account = cx.new(|_| Account::new(screen.clone()));
+        let session = {
+            let (chain, account, screen) = (chain.clone(), account.clone(), screen.clone());
+            cx.new(|_| Session::new(chain, account, screen, state.center.clone()))
+        };
         Self {
-            session: cx.new(|_| Slice::new(session(state))),
-            chain: cx.new(|_| chain(state)),
-            account: cx.new(|_| Slice::new(account(state))),
-            screen: cx.new(|_| Slice::new(screen(&state.stage))),
+            session,
+            chain,
+            account,
+            screen,
             rail: cx.new(|cx| Rail::new(state.roster.clone(), state.badges.clone(), changes, cx)),
             notifications: cx.new(|_| Notifications::new(state.center.clone())),
             toast: cx.new(|_| Slice::new(state.toast.clone())),
@@ -70,10 +78,10 @@ impl Desktop {
         own
     }
 
-    /// What the model still keeps for what opens over window `key`'s desk
-    /// follows it: the keyboard lets go of a window it held as anything
-    /// opens (s11: `Desk` does), and "Add a device…" closing, however it
-    /// did, forgets what it found (s10: `Account` does).
+    /// What follows what opens over window `key`'s desk: the keyboard lets
+    /// go of a window it held as anything opens (the model's, until s11:
+    /// `Desk` does), and "Add a device…" closing, however it did, forgets
+    /// what it found (`Account`).
     fn follow_overlays(&self, key: WindowKey, own: &WindowEntities, cx: &mut Context<Self>) {
         let desk = own.desk.clone();
         let mut was = None;
@@ -81,7 +89,10 @@ impl Desktop {
             let open = *overlays.read(cx).get();
             let before = std::mem::replace(&mut was, open);
             if before == Some(Overlay::Approve) && open != before {
-                desktop.dispatch(Message::ApproveClosed, cx);
+                desktop
+                    .entities
+                    .account
+                    .update(cx, |account, cx| account.approve_closed(cx));
             }
             if open.is_some() && desk.read(cx).get().held.is_some() {
                 let release = PaneMessage::Release { keep: true };
@@ -91,8 +102,9 @@ impl Desktop {
         .detach();
     }
 
-    /// A device approved: its dialog closes (the reducer has no `cx`; s10's
-    /// `Account::approve_done` closes it itself).
+    /// A device approved (`AccountEvent::Approved`): its dialog closes.
+    /// `Account` is the app's and the dialog is the console's, so the
+    /// close is here (s11: `Windows`).
     pub(super) fn approved(&self, cx: &mut Context<Self>) {
         let console = self.state.console_win;
         if let Some(own) = console.and_then(|key| self.entities.by_window.get(&key)) {
@@ -106,12 +118,6 @@ impl Desktop {
     /// (a `SetNotify*` or a permission was saved): never on a beat.
     pub(super) fn bridge(&self, notify_saved: bool, cx: &mut Context<Self>) {
         let (state, entities) = (&self.state, &self.entities);
-        set(&entities.session, session(state), cx);
-        entities.chain.update(cx, |slice, cx| {
-            slice.set(chain(state), cx);
-        });
-        set(&entities.account, account(state), cx);
-        set(&entities.screen, screen(&state.stage), cx);
         entities.rail.update(cx, |rail, cx| {
             rail.set_badges(state.badges.clone(), cx);
         });
@@ -139,70 +145,6 @@ fn set<T: PartialEq + 'static>(slice: &Entity<Slice<T>>, value: T, cx: &mut App)
     });
 }
 
-fn session(state: &Ducktape) -> Session {
-    Session {
-        connected: state.connected,
-        connecting: state.connecting,
-        reconnecting: state.reconnecting(),
-        connected_rpc: state.connected_rpc.clone(),
-        network: state.network.clone(),
-        chain: state.chain.clone(),
-        endpoint: state.endpoint.clone(),
-        endpoint_error: state.endpoint_error.clone(),
-        recent_endpoints: state.recent_endpoints.clone(),
-        other_chain: state.other_chain,
-        error: state.error.clone(),
-    }
-}
-
-fn chain(state: &Ducktape) -> Chain {
-    Chain {
-        height: state.height,
-        block_seen: state.block_seen,
-        node: state.node.clone(),
-        heard: state.heard,
-    }
-}
-
-fn account(state: &Ducktape) -> super::entities::Account {
-    super::entities::Account {
-        signer_key: state.signer_key.clone(),
-        account: state.account.clone(),
-        key_exists: state.key_exists,
-        locked: state.sign_in.locked,
-        seating: state.sign_in.seating,
-        busy: state.sign_in.unlock_busy,
-        error: state.sign_in.unlock_error.clone(),
-        approve: state.approve_fingerprint(),
-        link_code: match &state.stage {
-            Stage::Account(step) => step.link_code.clone(),
-            _ => String::new(),
-        },
-        passkey_waiting: matches!(&state.stage, Stage::Account(step) if step.passkey_task.is_some()),
-        passkey_qr: state.passkey_qr_shown(),
-        welcome: state.welcome,
-    }
-}
-
-fn screen(stage: &Stage) -> Screen {
-    match stage {
-        Stage::Connect => Screen::Connect,
-        Stage::Unlock(step) => Screen::Unlock {
-            awaiting: step.awaiting,
-        },
-        Stage::Phrase(step) => Screen::Phrase { quiz: step.quiz },
-        Stage::Recover(_) => Screen::Recover,
-        Stage::Account(step) => Screen::Account {
-            step: match (step.passkey_task.is_some(), step.link_code.is_empty()) {
-                (true, _) => AccountStep::Passkey,
-                (false, false) => AccountStep::Link,
-                (false, true) => AccountStep::Name,
-            },
-        },
-        Stage::Desk => Screen::Desk,
-    }
-}
-
 fn prefs(state: &Ducktape, notify: notify::Settings) -> Prefs {
     Prefs {
         appearance: state.appearance,
@@ -216,7 +158,6 @@ fn prefs(state: &Ducktape, notify: notify::Settings) -> Prefs {
 mod tests {
     use super::super::panes_tests::console;
     use super::*;
-    use crate::ui::test_support::status;
     use gpui_kit::{Subscription, TestAppContext, VisualTestContext};
     use std::cell::Cell;
     use std::rc::Rc;
@@ -245,10 +186,9 @@ mod tests {
     #[gpui_kit::test]
     fn the_model_follows_what_opens_over_a_window(cx: &mut TestAppContext) {
         use crate::ui::layout::{EMPTY, Layout, PaneMessage};
-        let (mut state, _) = Ducktape::boot();
+        let mut state = Ducktape::boot();
         state.roster = Default::default();
         state.center = Default::default();
-        state.stage = crate::Stage::Desk;
         let key = WindowKey::unique();
         let mut layout = Layout::default();
         layout.split(EMPTY);
@@ -259,6 +199,9 @@ mod tests {
         state.layouts.insert(key, layout);
         let model = cx.new(|cx| {
             let entities = Entities::for_test(&state, cx);
+            entities.screen.update(cx, |screen, cx| {
+                screen.set(Screen::Desk, cx);
+            });
             Desktop::new(state, crate::tray::init(cx).0, entities, cx)
         });
         let own = model.update(cx, |model, cx| model.window_entities(key, cx));
@@ -274,16 +217,24 @@ mod tests {
 
         own.overlays
             .update(cx, |it, cx| it.open(Overlay::Approve, cx));
-        model.update(cx, |model, _| {
-            model.state.sign_in.approve_found = Some(crate::backend::join::Request {
+        let account = model.read_with(cx, |model, _| model.entities.account.clone());
+        account.update(cx, |account, cx| {
+            let key = vec![7; 32];
+            let mut state = account.get().clone();
+            state.approve = Some(crate::backend::join::fingerprint(&key));
+            let found = crate::backend::join::Request {
                 network: "testkit".into(),
-                key: vec![7; 32],
-            })
+                key,
+            };
+            account.seed(state, None, Some(found), cx);
         });
-        dispatch(Message::ApproveDone(Ok(())), cx);
+        account.update(cx, |account, cx| account.approve_done(Ok(()), cx));
+        cx.run_until_parked();
         assert_eq!(own.overlays.read_with(cx, |it, _| *it.get()), None);
-        let found = model.read_with(cx, |model, _| model.state.sign_in.approve_found.clone());
+        let found = account.read_with(cx, |account, _| account.get().approve.clone());
         assert_eq!(found, None, "Approve closed and kept what it found");
+        let toast = model.read_with(cx, |model, _| model.state.toast.clone());
+        assert!(toast.starts_with("Approved."), "{toast:?}");
     }
 
     /// The clock beats on a still app: the bridge writes every slice, and
@@ -403,24 +354,6 @@ mod tests {
         assert_eq!(slice_dark, state_dark, "Prefs.system_dark lags the state");
     }
 
-    /// The node answers at the same height twice: the chain moved once,
-    /// and the session, which holds no status line, not at all.
-    #[gpui_kit::test]
-    fn an_unchanged_status_keeps_the_session_slice_still(cx: &mut TestAppContext) {
-        let (model, _, _, mut native) = console(cx);
-        send(&model, Message::StatusPushed(status(6)), &mut native);
-        let (session, chain) = model.read_with(&native, |model, _| {
-            (model.entities.session.clone(), model.entities.chain.clone())
-        });
-        let (session, _session) = notifies(&session, &mut native);
-        let (chain, _chain) = notifies(&chain, &mut native);
-        for _ in 0..2 {
-            send(&model, Message::StatusPushed(status(7)), &mut native);
-        }
-        assert_eq!(session.get(), 0, "a new block moved the session");
-        assert_eq!(chain.get(), 1, "the chain did not move once for one block");
-    }
-
     /// Each bridged source moved: its slice moved with it, once; a view's post
     /// reaches the bell's slice through the dispatch its `Intent::Notified` makes.
     #[gpui_kit::test]
@@ -429,27 +362,18 @@ mod tests {
         let e = model.read_with(&native, |model, _| {
             let e = &model.entities;
             (
-                e.session.clone(),
-                e.account.clone(),
-                e.screen.clone(),
                 e.rail.clone(),
                 e.toast.clone(),
                 e.windows.clone(),
                 e.notifications.clone(),
             )
         });
-        let (session, _a) = notifies(&e.0, &mut native);
-        let (account, _b) = notifies(&e.1, &mut native);
-        let (screen, _c) = notifies(&e.2, &mut native);
-        let (rail, _d) = notifies(&e.3, &mut native);
-        let (toast, _e) = notifies(&e.4, &mut native);
-        let (windows, _f) = notifies(&e.5, &mut native);
-        let (notifications, _g) = notifies(&e.6, &mut native);
+        let (rail, _d) = notifies(&e.0, &mut native);
+        let (toast, _e) = notifies(&e.1, &mut native);
+        let (windows, _f) = notifies(&e.2, &mut native);
+        let (notifications, _g) = notifies(&e.3, &mut native);
         model.update(&mut native, |model, cx| {
             let state = &mut model.state;
-            state.error = "refused".into();
-            state.sign_in.locked = !state.sign_in.locked;
-            state.stage = crate::Stage::Connect;
             state.badges.insert("pane-ax-test", 2);
             state.toast = "said".into();
             state.active = Some("other-view");
@@ -483,9 +407,6 @@ mod tests {
             &mut native,
         );
         for (name, seen) in [
-            ("session", session),
-            ("account", account),
-            ("screen", screen),
             ("rail", rail),
             ("toast", toast),
             ("windows", windows),
@@ -493,22 +414,6 @@ mod tests {
         ] {
             assert_eq!(seen.get(), 1, "{name} did not follow its source");
         }
-    }
-
-    /// A poll at the same height a second later moves only `heard`, which is not compared.
-    #[gpui_kit::test]
-    fn a_poll_that_only_moves_heard_leaves_the_chain_still(cx: &mut TestAppContext) {
-        let (model, _, _, mut native) = console(cx);
-        send(&model, Message::StatusPushed(status(7)), &mut native);
-        let chain = model.read_with(&native, |model, _| model.entities.chain.clone());
-        let (chain, _chain) = notifies(&chain, &mut native);
-        send(&model, Message::WallTick, &mut native);
-        send(&model, Message::StatusPushed(status(7)), &mut native);
-        assert_eq!(
-            chain.get(),
-            0,
-            "a poll that only moved heard notified the chain"
-        );
     }
 
     /// A drag frame moves the desk and leaves the front still; a focus that

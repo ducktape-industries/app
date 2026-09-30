@@ -2,9 +2,9 @@
 //! nothing else (P1, P6 in the app), and the root lays them out as the
 //! window's kind and screen say (docs/perf.md).
 use super::BAR;
-use super::tests::open_console;
+use super::tests::{Seed, open_console, polled, set_screen};
 use crate::runtime::WindowKey;
-use crate::shell::entities::{Overlay, Popover};
+use crate::shell::entities::{Overlay, Popover, Screen};
 use crate::shell::panes_tests::{console, draw, settle, window_count};
 use crate::shell::{Desktop, Message, PaneMessage, WindowKind, WindowRoot};
 use crate::ui::test_support::status;
@@ -61,8 +61,8 @@ fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
     native.update(|window, _| window.activate_window());
     model.update(&mut native, |model, cx| {
         model.dispatch(Message::SetMotion(true), cx);
-        model.dispatch(Message::StatusPushed(status(7)), cx);
     });
+    polled(&model, status(7), &mut native);
     // frames, not `draw`: the door's tree (`activate_a11y`) draws every
     // layer uncached until s15
     for _ in 0..4 {
@@ -365,11 +365,11 @@ fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext)
 #[gpui_kit::test]
 fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
-    let (mut state, _) = crate::Ducktape::boot();
-    state.center = Default::default();
-    state.roster = Default::default();
-    state.key_exists = true;
-    let (model, key, _, mut native) = open_console(state, cx);
+    let mut seed = Seed::boot();
+    seed.state.center = Default::default();
+    seed.state.roster = Default::default();
+    seed.account.key_exists = true;
+    let (_, key, view, mut native) = open_console(seed, cx);
     let nodes = native.update(draw);
     let shown = ids(&nodes);
     assert!(
@@ -387,10 +387,7 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
         0,
         "the bar drew before the desk"
     );
-    model.update(&mut native, |model, cx| {
-        model.state.stage = crate::Stage::Unlock(Default::default());
-        model.bridge(false, cx);
-    });
+    set_screen(&view, Screen::Unlock { awaiting: false }, &mut native);
     frame(&mut native);
     assert_eq!(
         window_count(key, "renders.launcher"),
@@ -407,10 +404,7 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
         0,
         "the bar drew before the desk"
     );
-    model.update(&mut native, |model, cx| {
-        model.state.stage = crate::Stage::Desk;
-        model.bridge(false, cx);
-    });
+    set_screen(&view, Screen::Desk, &mut native);
     frame(&mut native);
     let nodes = native.update(draw);
     assert!(
@@ -432,12 +426,12 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
 fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext) {
     use crate::shell::figure::Figure;
     let _on = crate::perf::on_for_test();
-    let (mut state, _) = crate::Ducktape::boot();
-    state.center = Default::default();
-    state.roster = Default::default();
+    let mut seed = Seed::boot();
+    seed.state.center = Default::default();
+    seed.state.roster = Default::default();
     // a still figure: none of its own frames
-    state.motion = false;
-    let (model, key, view, mut native) = open_console(state, cx);
+    seed.state.motion = false;
+    let (_, key, view, mut native) = open_console(seed, cx);
     frame(&mut native);
     let spin = native.update(|_, cx| view.read(cx).launcher().read(cx).spin.clone());
     let drawn = |native: &mut VisualTestContext| native.update(|_, cx| spin.read(cx).drawn());
@@ -448,10 +442,7 @@ fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext)
     );
     let launcher = window_count(key, "renders.launcher");
 
-    model.update(&mut native, |model, cx| {
-        model.state.stage = crate::Stage::Unlock(Default::default());
-        model.bridge(false, cx);
-    });
+    set_screen(&view, Screen::Unlock { awaiting: false }, &mut native);
     frame(&mut native);
     assert_eq!(
         drawn(&mut native),

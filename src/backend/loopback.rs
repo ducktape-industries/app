@@ -181,4 +181,58 @@ mod tests {
         assert_eq!(answer.status(), 200);
         assert_eq!(waiting.await.unwrap(), Ok(Outcome::Created(key)));
     }
+
+    /// `Session`'s real status source reaches a node over the wire: one
+    /// GET of `/v1/status`, its borsh answer decoded. A node that answers
+    /// otherwise is a failure with a sentence, not a status.
+    #[tokio::test]
+    async fn the_status_source_reads_a_node_over_loopback() {
+        use crate::backend::noded::{NODE_CONTRACT, Status};
+        use crate::shell::entities::Session;
+        let status = Status {
+            network: "loopback".into(),
+            time: 1,
+            block_time_ms: 2,
+            epoch_length: 3,
+            height: 42,
+            tip: [4; 32],
+            root: abi::Root([5; 32]),
+            epoch: 6,
+            identity: vec![7],
+            contract: NODE_CONTRACT,
+            genesis: [8; 32],
+        };
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let served = abi::encode(&status);
+        let (asked, mut paths) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (method, path, _) = read_request(&mut stream).await.unwrap();
+                assert_eq!(method, "GET");
+                let (status, body): (&str, &[u8]) = match path.as_str() {
+                    "/v1/status" => ("200 OK", &served),
+                    _ => ("404 Not Found", b"nothing here"),
+                };
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/octet-stream\r\n\
+                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(body).await.unwrap();
+                stream.flush().await.unwrap();
+                asked.send(path).unwrap();
+            }
+        });
+        let source = Session::status_source(&origin);
+        assert_eq!(source().await, Ok(status));
+        assert_eq!(paths.recv().await.unwrap(), "/v1/status");
+        // a node gone (nothing listens): a sentence for the screen
+        let gone = Session::status_source("http://127.0.0.1:1");
+        assert!(gone().await.unwrap_err().contains("error sending request"));
+    }
 }

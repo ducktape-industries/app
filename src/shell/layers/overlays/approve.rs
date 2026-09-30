@@ -1,6 +1,6 @@
 //! "Add a device…": approving another device onto the account.
 
-use super::super::super::Message;
+use super::super::super::entities::Account;
 use super::super::super::ink::{self, *};
 use super::super::fields::TextField;
 use super::{OverlayLayer, scrim};
@@ -12,8 +12,9 @@ impl OverlayLayer {
     /// to compare, then this device's yes — consent it signs for the
     /// account and hands over the relay. Dressed as the canvas's dialogs:
     /// `border: 1.5px solid ink`, a soft shadow, on a scrim below the bar.
-    /// What it asks still goes to the reducer (s10: `Account`).
+    /// What it asks is one `Account` call, the code from its field.
     pub(super) fn approve(&self, window: &mut Window, cx: &App) -> AnyElement {
+        let entity = self.account.entity().clone();
         let account = self.account.read(cx).get();
         let ink = Ink::of(self.prefs.read(cx).get().dark());
         let failed = (!account.error.is_empty()).then(|| account.error.clone());
@@ -49,11 +50,16 @@ impl OverlayLayer {
                             &ink,
                         ))
                         .child(div().flex().child(button(
-                            &self.model,
                             "approve-find",
                             "Next",
                             Kind::Primary,
-                            || Message::ApproveFind,
+                            {
+                                let code = self.approve_code.state.clone();
+                                move |cx| {
+                                    let code = code.read(cx).value().to_string();
+                                    entity.update(cx, |account, cx| account.approve_find(code, cx))
+                                }
+                            },
                             account.busy,
                             &ink,
                         ))),
@@ -74,11 +80,10 @@ impl OverlayLayer {
                     ))
                     .children(error)
                     .child(div().flex().child(button(
-                        &self.model,
                         "approve-confirm",
                         "Approve",
                         Kind::Primary,
-                        || Message::ApproveConfirm,
+                        move |cx| entity.update(cx, Account::approve_confirm),
                         account.busy,
                         &ink,
                     ))),

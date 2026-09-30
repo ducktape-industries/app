@@ -77,9 +77,9 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
     );
 
     // Help: its lead, a section, every paragraph, the keys table
-    let mut state = gate::desk();
-    state.active = Some(layout::HELP);
-    let (_view, mut native) = open(state, cx);
+    let mut seed = gate::desk();
+    seed.state.active = Some(layout::HELP);
+    let (_view, mut native) = open(seed, cx);
     // tall enough that the door shows the whole page, unscrolled
     native.simulate_resize(size(px(1280.), px(2400.)));
     let nodes = native.update(draw);
@@ -118,8 +118,8 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
     );
 
     // the node's status, in its menu
-    let mut state = gate::desk();
-    state.node = Some(crate::backend::NodeStatus {
+    let mut seed = gate::desk();
+    seed.chain.node = Some(crate::backend::NodeStatus {
         network: "testkit".into(),
         time: 0,
         block_time_ms: 1000,
@@ -132,7 +132,7 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
         contract: 1,
         genesis: [0; 32],
     });
-    let (_view, mut native) = open((state, Overlay::Menu(Popover::Node)), cx);
+    let (_view, mut native) = open((seed, Overlay::Menu(Popover::Node)), cx);
     let nodes = native.update(draw);
     reads(
         &nodes,
@@ -140,9 +140,9 @@ fn the_shells_own_words_are_in_the_tree(cx: &mut TestAppContext) {
     );
 
     // the account menu's header
-    let mut state = gate::desk();
-    state.account = Some(Some((7, "Ada Lovelace".into())));
-    let (_view, mut native) = open((state, Overlay::Menu(Popover::Account)), cx);
+    let mut seed = gate::desk();
+    seed.account.account = Some(Some((7, "Ada Lovelace".into())));
+    let (_view, mut native) = open((seed, Overlay::Menu(Popover::Account)), cx);
     let nodes = native.update(draw);
     reads(
         &nodes,

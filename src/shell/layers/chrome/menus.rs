@@ -6,7 +6,7 @@
 use super::Chrome;
 use crate::AppMessage as Message;
 use crate::a11y::Control as _;
-use crate::shell::entities::{Overlay, Popover};
+use crate::shell::entities::{Account, Overlay, Popover, Session};
 use crate::shell::ink::{Ink, mono, sans, words};
 use crate::shell::status_bar::pulse;
 use gpui_kit::prelude::FluentBuilder as _;
@@ -138,7 +138,7 @@ impl Chrome {
                         self.menu_row(
                             "node-retry",
                             "Retry now",
-                            self.dispatching(|| Message::Tick),
+                            self.on_session(Session::poll_now),
                             ink,
                         )
                     }))
@@ -177,9 +177,10 @@ impl Chrome {
         let mut rows = div().flex().flex_col().child(self.menu_row(
             "account-view",
             "Account",
-            self.closing(menu, || {
-                Message::SelectView(crate::runtime::intern(ACCOUNT_VIEW))
-            }),
+            self.closing(
+                menu,
+                self.dispatching(|| Message::SelectView(crate::runtime::intern(ACCOUNT_VIEW))),
+            ),
             ink,
         ));
         if let Some(number) = number {
@@ -200,7 +201,7 @@ impl Chrome {
                         // forgets the last code
                         let open =
                             self.overlaying(|overlays, cx| overlays.open(Overlay::Approve, cx));
-                        let forget = self.dispatching(|| Message::ApproveOpen);
+                        let forget = self.on_account(Account::approve_open);
                         move |cx: &mut App| {
                             open(cx);
                             forget(cx);
@@ -211,7 +212,7 @@ impl Chrome {
                 .child(self.menu_row(
                     "recovery-key",
                     "Make a recovery key…",
-                    self.closing(menu, || Message::RecoveryKeyStart),
+                    self.closing(menu, self.on_account(Account::recovery_key_start)),
                     ink,
                 ));
         }
@@ -253,7 +254,7 @@ impl Chrome {
                             .child(self.menu_row(
                                 "lock",
                                 "Lock",
-                                self.closing(menu, || Message::Lock),
+                                self.closing(menu, self.on_account(Account::lock)),
                                 ink,
                             ))
                             .child(self.menu_row(
@@ -280,11 +281,11 @@ impl Chrome {
     ) -> AnyElement {
         let session = self.session.read(cx).get();
         let surface = ink.surface;
-        let (model, overlays) = (self.model.clone(), self.overlays.entity().clone());
-        // a row closes the switcher, then asks the reducer (s10: `Session`)
-        let item = |id: SharedString, role: Role, name: String, message: Message| {
-            let (model, overlays) = (model.clone(), overlays.clone());
-            let message = std::cell::Cell::new(Some(message));
+        let overlays = self.overlays.entity().clone();
+        // a row closes the switcher, then asks the session
+        let item = |id: SharedString, role: Role, name: String, run: Box<dyn Fn(&mut App)>| {
+            let overlays = overlays.clone();
+            let run = std::cell::Cell::new(Some(run));
             crate::a11y::keyboard(
                 div()
                     .id(id)
@@ -294,10 +295,10 @@ impl Chrome {
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
                         // a click after this one finds the menu closed
-                        if let Some(message) = message.take() {
+                        if let Some(run) = run.take() {
                             overlays
                                 .update(cx, |overlays, cx| overlays.close(Overlay::Network, cx));
-                            model.update(cx, |model, cx| model.dispatch(message, cx));
+                            run(cx);
                         }
                     }),
                 ink.ink,
@@ -320,7 +321,10 @@ impl Chrome {
                     SharedString::from(format!("network-menu/{}", entry.url)),
                     Role::MenuItemRadio,
                     name,
-                    Message::SwitchNetwork(entry.url.clone()),
+                    Box::new({
+                        let url = entry.url.clone();
+                        self.on_session(move |session, cx| session.switch(url.clone(), cx))
+                    }),
                 )
                 .aria_toggled(current.into())
                 .flex()
@@ -361,7 +365,7 @@ impl Chrome {
             "network-menu/add".into(),
             Role::MenuItem,
             "Add a network".into(),
-            Message::Disconnect,
+            Box::new(self.on_session(Session::disconnect)),
         )
         .child(
             sans(500, 14.)

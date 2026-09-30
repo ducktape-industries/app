@@ -592,7 +592,7 @@ impl OverlayLayer {
         let session = self.session.read(cx).get();
         let rows =
             session.recent_endpoints.iter().map(|entry| {
-                let model = self.model.clone();
+                let entity = self.session.entity().clone();
                 let url = entry.url.clone();
                 let current = entry.url == session.connected_rpc;
                 let name = entry.name();
@@ -628,10 +628,7 @@ impl OverlayLayer {
                             .text_color(muted)
                             .hover(move |style| style.text_color(danger))
                             .on_click(move |_, _, cx| {
-                                let url = url.clone();
-                                model.update(cx, |model, cx| {
-                                    model.dispatch(Message::ForgetEndpoint(url), cx)
-                                })
+                                entity.update(cx, |session, cx| session.forget(&url, cx))
                             })
                             .child("Forget"),
                         ink.ink,

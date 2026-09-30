@@ -19,10 +19,37 @@ struct Signer {
 
 /// The seated key: the one that signs. "Seat" here is the backend's word
 /// for loading this key and "lock" for dropping it — not the runtime's
-/// seat, the slot a program's view is mounted in.
-static SIGNER: tokio::sync::Mutex<Option<Signer>> = tokio::sync::Mutex::const_new(None);
+/// seat, the slot a program's view is mounted in. Never held across an
+/// await: a write takes its copy of the key and lets go before it asks the
+/// node anything, so nothing waits on another's ask (and a task on the
+/// shell's executor is never woken from a runtime thread for it).
+static SIGNER: std::sync::Mutex<Option<Signer>> = std::sync::Mutex::new(None);
+
+fn seat() -> std::sync::MutexGuard<'static, Option<Signer>> {
+    SIGNER
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 const LOCKED: &str = "this device's key is locked; unlock it first";
+
+/// The seat is one for the process: a test that seats a key or locks it
+/// holds this for its whole run, so no other test's lock or seat lands in
+/// the middle of it.
+#[cfg(test)]
+pub(crate) fn seat_serial() -> SeatSerial {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SeatSerial(
+        SERIAL
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
+}
+
+/// One test's hold on the seat ([`seat_serial`]): held across the test's
+/// awaits on purpose, which is what it is for.
+#[cfg(test)]
+pub(crate) struct SeatSerial(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
 
 fn locked_seat() -> Error {
     Error::new("session_locked", LOCKED)
@@ -31,12 +58,12 @@ fn locked_seat() -> Error {
 /// Seats `key` as the one that signs; answers its public key.
 pub(crate) async fn seat_key(key: ed25519::PrivateKey) -> String {
     let pubkey = hex_encode(key.public_key().as_ref());
-    *SIGNER.lock().await = Some(Signer { key });
+    *seat() = Some(Signer { key });
     pubkey
 }
 
 pub(crate) async fn lock_signer() -> bool {
-    SIGNER.lock().await.take().is_some()
+    seat().take().is_some()
 }
 
 /// A write: signed with the seated key at the sequence the node says is
@@ -47,10 +74,12 @@ pub(crate) async fn seated_frame(
     target: &str,
     payload: Vec<u8>,
 ) -> Result<Vec<u8>, Error> {
-    let session = SIGNER.lock().await;
-    let signer = session.as_ref().ok_or_else(locked_seat)?;
-    let seq = next_seq(client, signer.key.public_key().as_ref()).await?;
-    Ok(Frame::sign(&signer.key, network.as_bytes(), seq, target, payload).encode())
+    let key = seat()
+        .as_ref()
+        .map(|signer| signer.key.clone())
+        .ok_or_else(locked_seat)?;
+    let seq = next_seq(client, key.public_key().as_ref()).await?;
+    Ok(Frame::sign(&key, network.as_bytes(), seq, target, payload).encode())
 }
 
 /// The sequence the node expects next from `signer`.
@@ -67,7 +96,7 @@ pub(crate) async fn next_seq(client: &RpcClient, signer: &[u8]) -> Result<u64, E
 
 /// The seated key's public half.
 pub(crate) async fn seated_key() -> Result<Vec<u8>, Error> {
-    let session = SIGNER.lock().await;
+    let session = seat();
     let signer = session.as_ref().ok_or_else(locked_seat)?;
     Ok(signer.key.public_key().as_ref().to_vec())
 }
@@ -78,7 +107,7 @@ pub(crate) async fn seated_sign(
     namespace: &[u8],
     message: &[u8],
 ) -> Result<(Vec<u8>, Vec<u8>), Error> {
-    let session = SIGNER.lock().await;
+    let session = seat();
     let signer = session.as_ref().ok_or_else(locked_seat)?;
     Ok((
         signer.key.public_key().as_ref().to_vec(),
@@ -90,7 +119,7 @@ pub(crate) async fn seated_sign(
 /// asks), but the node checks no sequence on it. Signed with the seated
 /// key, or with this process's reader key while nobody is signed in.
 pub(crate) async fn query_frame(network: &str, target: &str, payload: Vec<u8>) -> Vec<u8> {
-    let session = SIGNER.lock().await;
+    let session = seat();
     let key = match session.as_ref() {
         Some(signer) => &signer.key,
         None => reader_key(),

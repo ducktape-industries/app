@@ -67,7 +67,7 @@ view's tree lowers onto GPUI elements one to one.
 |---|---|---|
 | `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), `app.log` + panic hook, fd limit, `DUCKTAPE_VIEWS_DIR`, then `shell::run` | process start |
 | `shell.rs`, `shell/` | the native chrome: `Desktop` (the one model entity), `layers::WindowRoot` (one per OS window, laying its layers out: `LauncherLayer`, `Chrome`, `PaneLayer`, `OverlayLayer`, `StatusDot`, `ToastView`), `Command` effects, launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
-| `ui.rs`, `ui/` | `Ducktape` state, `AppMessage`, the reducer (`Ducktape::handle` → sub-reducers), the pure pane geometry (`ui/layout.rs`) | window thread (called from `Desktop::dispatch`) |
+| `ui.rs`, `ui/` | `Ducktape` state (the desks, the badges, the toast, the windows), `AppMessage`, the reducer (`Ducktape::handle` → sub-reducers), the pure pane geometry (`ui/layout.rs`); the node in hand and the sign-in are `shell/entities/session.rs` and `account.rs` | window thread (called from `Desktop::dispatch`) |
 | `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
 | `editor.rs`, `editor/` | `EditorStore` (guest-owned documents projected natively) and `TextEditor` (the one multi-line native field; `editor/text.rs` is mounted as `editor::wire::text` by a `#[path]`) | window thread |
@@ -117,14 +117,14 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
  (node)  (cache)   (custom section)  (wasmtime)  (Slot)  (fuel)  (wire)   (ViewTree)  (events)
 ```
 
-1. **Roster.** `ui/connect.rs` on `Connected` calls `runtime::connected`,
+1. **Roster.** `Session::connect_answered` (`shell/entities/session.rs`) calls `runtime::connected`,
    which bumps `Connection.rev` and starts `roster::spawn_roster_read`.
    That thread calls `backend::views::programs` (the `module-registry`
    query), stores the list in the app's `Roster` (`roster::roster`, the
    one `Ducktape.roster` holds), retires seats of programs that left,
    creates a preloaded seat `(module, 0)` for each program and starts a
    load for every seat whose active code moved (or that was never
-   asked of this node). Each new block (`Message::StatusPushed` with a moved
+   asked of this node). Each new block (`Session::status_answered` with a moved
    height → `runtime::deployments_checked`) repeats it, one read in flight
    at a time. A load that finds the drawn view already current
    (`Loaded::Unchanged`) only calls `Guest::reconnect`, which refuses the
@@ -332,7 +332,9 @@ answers `None` on any failure but a transport one, which becomes
 
 ## 5. The app's own state
 
-`ui/` is the model, `shell/` is the view of it. The cycle:
+`ui/` is the model of the desks, `shell/` is the view of it; the node in
+hand and the sign-in are entities of their own (`shell/entities/session.rs`,
+`account.rs`), moved by the controls calling their methods. The cycles:
 
 ```
 shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle ─► sub-reducer
@@ -342,31 +344,50 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
                                    ├─ start(task)           each yield re-dispatched)
                                    ├─ subscriptions (timers)
                                    └─ bridge ─► the slices it moved ─► the layers observing them re-render
+
+shell control ─► Session / Account method ─► its compared state (and Chain, Screen) ─► the layers observing it re-render
+                                   └─ SessionEvent / AccountEvent ─► Desktop (shell/windows.rs) ─► dispatch
 ```
 
-- **State.** `Ducktape` (`ui/app.rs`): appearance, `stage` (which screen
-  the console shows: `Connect`, `Unlock`, `Phrase`, `Recover`, `Account`,
-  `Desk`), the endpoint being typed and the recent ones, the node reached
-  (`connected_rpc`, `network`, `chain`, `node`, `height`, `status_misses`),
-  `keyring` (this network's key directory) and `other_chain`, `signer_key`
-  and `account`, `sign_in` (the step's busy/error/approval state),
-  `layouts` (per `WindowKey`, the panes), `active`,
-  `badges`, the toast, window keys. Per-step secrets live inside the
-  `Stage` variant and go with it.
-- **Messages.** `AppMessage` is the one enum everything arrives as: shell
-  clicks and keys, tray rows, `ViewEvent(module, Intent)` from views,
-  timers (`Tick`, `ToastTick`), and the async results of the reducer's own
-  tasks (`Connected`, `StatusPushed`, `DeviceKey`, `Unlocked`, `Joined`,
-  `PasskeyDone`, …).
+- **State.** `Ducktape` (`ui/app.rs`): appearance, `layouts` (per
+  `WindowKey`, the panes), `active`, `badges`, the toast, window keys, and
+  the handles of the notification centre and the roster.
+- **Session** (`shell/entities/session.rs`). `SessionState`, compared
+  before it notifies: the endpoint being typed and the recent ones, the
+  node reached (`connected_rpc`, `network`, `chain`, `other_chain`),
+  `connecting`, `reconnecting`, the failure under the address field. The
+  entity owns the connect attempt and the status poll as `Task`s (dropping
+  one cancels it: a new attempt drops the last, disconnect drops both), a
+  `StatusSource` (a closure answering `/v1/status`; `Session::status_source`
+  is the real one over `backend::RpcClient`, tests pass their own), writes
+  `Chain` (the node's last status: `height`, `heard`, `block_seen`) and
+  `Screen`, and pushes the network into `Account::take_up`. Strictly one
+  way — Session → Account → Screen — because an entity read under its own
+  `update` panics: `Account` never reads `Session`.
+- **Account** (`shell/entities/account.rs`). `AccountState`: `signer_key`,
+  `account`, `key_exists`, `locked`, `seating`, `busy`, `error`, `approve`,
+  `link_code`, the passkey step, `welcome`. Each sign-in call is a `Task`
+  it owns (`seating`, `call`, `resolving`, `link`, `passkey`), and a step's
+  secrets (the recovery phrase) live in the entity and go with the step.
+- **Events.** What the reducer still acts on arrives as
+  `SessionEvent::{LeftNetwork, Toast, Connected}` and
+  `AccountEvent::{Toast, Welcome, Approved}`, subscribed in `Desktop::new`
+  (`shell/windows.rs`): the desks and badges cleared
+  (`Message::LeftNetwork`), a toast, the console brought forward
+  (`Message::TrayOpen`), Help opened for a new account, "Add a device…"
+  closed.
+- **Messages.** `AppMessage` is what reaches the reducer: shell clicks and
+  keys on the desk, tray rows, `ViewEvent(module, Intent)` from views,
+  `OpenLink` (read against `Session`'s chain in `Desktop::dispatch`), the
+  timers (`WallTick`, `ToastTick`) and the window events.
 - **Reducer.** `Ducktape::handle` (`ui/update.rs`) routes by variant to
-  `on_connect` (`ui/connect.rs`), `on_sign_in` (`ui/sign_in.rs`),
-  `on_notify` (`ui/notify.rs`), `on_desk`
-  (`ui/desk.rs`) and the pane reducer (`ui/panes.rs`); a message that crosses
-  between launcher and desk batches `shell::swap_console`. Each returns a
+  `on_notify` (`ui/notify.rs`), `on_desk` (`ui/desk.rs`) and the pane
+  reducer (`ui/panes.rs`); `Desktop` observes `Screen` for the crossing
+  between launcher and desk (`swap_console`). Each returns a
   `view_wire::Task<AppMessage>` — the view SDK's task type reused for the
   host's reducer. `Ducktape::subscriptions` declares the recurring timers
-  (wall clock, toast, status poll every `STATUS_EVERY`) as `Subscription`
-  recipes the shell diffs.
+  (wall clock, toast) as `Subscription` recipes the shell diffs; the status
+  poll is `Session`'s own, on the executor's timer.
 - **Geometry.** `ui/layout.rs` is pure: `Layout` per window holds `Pane`s
   (frame, `instance`, `module`, z), focus and the desk size; operations
   (`split`, `cycle`, fill/restore, place, measure) are
@@ -378,9 +399,12 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   compared slices the layers read — the session, the chain, the account,
   the screen, the rail's badges, the notification centre's counts, the
   toast, the prefs, the program in front, and per window its desk, what is
-  open over it and Spotlight — written from `Ducktape` at the end of every
-  dispatch by `shell/bridge.rs` until each one's own methods take its
-  source over. Neither the rail's rows nor a window's front is bridged:
+  open over it and Spotlight. The session, the chain, the account and the
+  screen are written by `Session`'s and `Account`'s own methods; the rest
+  is written from `Ducktape` at the end of every dispatch by
+  `shell/bridge.rs` until each one's own methods take its source over.
+  `Seats` observes the session, the account and the prefs and hands every
+  seat its props. Neither the rail's rows nor a window's front is bridged:
   the rows are refreshed off the roster's changes channel, and the front
   (`Front::of_desk`) is derived from its desk by an observer. Nor is what
   is open over a window or its Spotlight: `Overlays` and `Spotlight` are
@@ -394,10 +418,11 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   which reads `Screen`, `Session`, `Account` and `Prefs` and picks by
   `Screen`: the frame with a `spin` figure on the left (written from its
   observers), then `launcher/connect.rs`, `key.rs`, `recovery.rs`,
-  `account.rs`. Its fields own what is typed and send each change to the
-  reducer; what the reducer resets without typing (a step's secrets as it
-  goes, the address the session moved to) the layer writes into them from
-  its observers. On the desk: `layers::Chrome`
+  `account.rs`. Its fields own what is typed: a change clears the step's
+  failure (`Account::clear_error`, `Session::set_endpoint`), Enter and the
+  buttons call the step's method with the field's text; what the entities
+  reset without typing (a step's secrets as it goes, the address the
+  session moved to) the layer writes into them from its observers. On the desk: `layers::Chrome`
   across the top (`layers/chrome.rs`, a cached view of the bar reading the
   entities alone, its menus hanging from their buttons: `chrome/menus.rs`,
   `chrome/bell.rs`), `layers/panes.rs` drawing each pane's seat (its tree or
@@ -435,57 +460,65 @@ new one.
 Connect ─► /v1/status ─► contract check ─► bind_keyring ─► device key ─► account? ─► Desk
 ```
 
-1. **Connect** (`ui/connect.rs`). `ConnectTo(origin)` builds a
-   `backend::RpcClient` and asks `/v1/status`. `Connected` refuses a
+1. **Connect** (`shell/entities/session.rs`). `Session::connect(origin)`
+   builds the status source over `backend::RpcClient` and asks `/v1/status`
+   under `CONNECT_TIMEOUT`. `connect_answered` refuses a
    `status.contract` other than `noded::NODE_CONTRACT`, then
    `backend::bind_keyring(network, founded)` picks the key directory under
    `<ducktape home>/remotes/`: `<network>`, or `<network>+<founded>` when
    another chain already took the name (`other_chain`; the
-   `network-founded` file remembers). `take_up` makes the network current,
-   the chain id becomes `ducklink::ChainId::of(network, genesis)`,
-   `runtime::connected` starts the roster read, and two tasks run in
-   parallel: `open_device_key` and `resolve_account`.
-2. **Device key** (`backend/device_key.rs`, `ui/sign_in.rs`). On the
-   blocking pool: `device_key::load(keyring)` from the OS store (Keychain,
-   Credential Manager, Secret Service via the `keyring` crate; a 0600 file
-   with `DUCKTAPE_DEVICE_KEY_STORE=file`), else `device_key::mint` an
-   ed25519 key — unless a **legacy** password-locked keystore file is here
-   (`key_exists`), in which case nothing is minted and the key screen asks
-   for its password. `backend::seat_key` puts the key in the process-wide
-   `SIGNER` and answers the public key (`signer_key`). No password, no
-   phrase for a device key. The legacy file is opened once on
-   `UnlockSubmit` and moved into the OS store (`device_key::save`). `Lock`
-   calls `lock_signer` and returns to `Stage::Unlock`; `BrowseWithoutKey`
-   opens the desk read-only.
-3. **Account** (`backend/passkey.rs` `account_of_key` → `AccountResolved`).
-   A key with an account goes to `Stage::Desk`; one without goes to
-   `Stage::Account`, which offers:
-   - **Create**: `passkey::create_plain_account` (name only) or the passkey
-     path: `passkey::create_account` opens the auth page
-     (`AUTH_PAGE`, override `DUCKTAPE_AUTH_PAGE`) in the system browser with
-     the request in the URL fragment; the result comes back as a form POST
-     to a one-shot loopback `Listener`. The identity program assigns the
-     account number; the passkey then `AddKey`s itself with the device key's
-     consent. `Phone` offers each touch as a QR URL and polls the auth
-     host's relay slot `/r/<id>` instead. **Sign in with a passkey**
-     (`PasskeySignInSubmit` → `passkey::sign_in`): an existing passkey
-     asserts, then `AddKey`s this device's key to its account.
-   - **Join from another device** (`backend/join.rs`): `new_code` shows a
-     Crockford code; `join_from_device` posts the request to the relay and
-     waits for consent. On a device already on the account, "Add a device…"
-     (`shell/layers/overlays/approve.rs`, `ApproveFind`/`ApproveConfirm`) calls
-     `find_request`, shows `fingerprint` for both sides to compare, and
-     `approve` signs the `Consent`.
-   - **Recovery key**: `join_with_recovery_key` types an existing 24-word
-     phrase whose key consents to this device's. `Stage::Phrase`
-     (`RecoveryKeyStart` from the account menu) makes a new one with
-     `new_recovery_phrase`, quizzes three words, then `add_recovery_key`
-     adds it to the account.
+   `network-founded` file remembers). `Account::take_up` makes the network
+   current (another chain than the last leaves everything of it:
+   `SessionEvent::LeftNetwork`), the chain id becomes
+   `ducklink::ChainId::of(network, genesis)`, `runtime::connected` starts
+   the roster read, `Account::open_device_key` and `Account::resolve` run
+   in parallel, and the status poll starts: every `STATUS_EVERY` on the
+   executor's timer, `LOST_AFTER` misses in a row read reconnecting, one
+   answer recovers.
+2. **Device key** (`backend/device_key.rs`, `Account::open_device_key`).
+   On the blocking pool: `device_key::load(keyring)` from the OS store
+   (Keychain, Credential Manager, Secret Service via the `keyring` crate; a
+   0600 file with `DUCKTAPE_DEVICE_KEY_STORE=file`), else `device_key::mint`
+   an ed25519 key — unless a **legacy** password-locked keystore file is
+   here (`key_exists`), in which case nothing is minted and the key screen
+   asks for its password. `backend::seat_key` puts the key in the
+   process-wide `SIGNER` and answers the public key (`signer_key`). No
+   password, no phrase for a device key. The legacy file is opened once by
+   `Account::unlock(password)` and moved into the OS store
+   (`device_key::save`). `Account::lock` calls `lock_signer` and returns to
+   `Screen::Unlock`; `browse_without_key` opens the desk read-only.
+3. **Account** (`backend/identity.rs` `account_of_key` →
+   `Account::resolved`). A key with an account goes to `Screen::Desk`; one
+   without goes to `Screen::Account`, which offers:
+   - **Create**: `create_submit(name)` (`identity::create_plain_account`)
+     or the passkey path: `passkey_create(name)` → `passkey::create_account`
+     opens the auth page (`AUTH_PAGE`, override `DUCKTAPE_AUTH_PAGE`) in the
+     system browser with the request in the URL fragment; the result comes
+     back as a form POST to a one-shot loopback `Listener`. The identity
+     program assigns the account number; the passkey then `AddKey`s itself
+     with the device key's consent. `Phone` offers each touch as a QR URL
+     and polls the auth host's relay slot `/r/<id>` instead. **Sign in with
+     a passkey** (`passkey_sign_in` → `passkey::sign_in`): an existing
+     passkey asserts, then `AddKey`s this device's key to its account.
+   - **Join from another device** (`backend/join.rs`): `link_start` shows
+     a Crockford code (`new_code`); `join_from_device` posts the request to
+     the relay and waits for consent. On a device already on the account,
+     "Add a device…" (`shell/layers/overlays/approve.rs`,
+     `Account::approve_find`/`approve_confirm`) calls `find_request`, shows
+     `fingerprint` for both sides to compare, and `approve` signs the
+     `Consent`.
+   - **Recovery key**: `recover_submit(phrase)` → `join_with_recovery_key`
+     types an existing 24-word phrase whose key consents to this device's.
+     `Screen::Phrase` (`recovery_key_start` from the account menu) makes a
+     new one with `new_recovery_phrase`, quizzes three words
+     (`phrase_check`), then `add_recovery_key` adds it to the account.
 4. **Signing in use.** From then on every write a view submits is signed by
-   the seated key (§4). `Message::Lock` empties the seat; the reader key
+   the seated key (§4). `Account::lock` empties the seat; the reader key
    signs queries meanwhile.
 
-Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/layers/launcher.rs`
+Files: `shell/entities/session.rs`, `shell/entities/account.rs` (the
+flows; `entities/session_tests.rs`, `account_tests.rs` walk them, the
+account's as one transition table); `shell/layers/launcher.rs`
 and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 `backend/session.rs`, `backend/device_key.rs`,
 `backend/passkey.rs`, `backend/join.rs` (the work).
@@ -562,8 +595,9 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   layout and paint follow in the next frame, lock released. The
   loader thread takes that mutex for `snapshot` and for the install (not
   for compile, `restore` or `first_frame`), so a swap stalls the window for
-  those two steps. The reducer's own `Task`s are
-  polled on the window thread (HTTP bodies decode there). No layer
+  those two steps. The reducer's own `Task`s and the entities'
+  (`spawn_on_runtime`) are polled on the window thread (HTTP bodies decode
+  there). No layer
   observes the model: a message draws only the layers whose slices it
   moved (`Desktop::bridge`), and a clock's beat that moves nothing notifies
   nothing (`beat_face`). `Roster::rail()`,
@@ -667,8 +701,8 @@ House words, and where one word means several things.
 - **link** — a `duck://` URL (`Roster::parse_link`, `Link`), or, in
   sign-in, "link from another device" (`join_from_device`). Unrelated.
 - **standin / stage words** — the native placeholder drawn where a view is
-  not (`seat/standin.rs`, `stage_words`). **Stage** (`ui/app.rs`) is which
-  screen the console shows; `layers::PaneLayer` (`shell/layers/panes.rs`)
+  not (`seat/standin.rs`, `stage_words`). **Screen** (`shell/entities/screen.rs`)
+  is which screen the console shows; `layers::PaneLayer` (`shell/layers/panes.rs`)
   draws the pane area. Unrelated.
 - **override** — `DUCKTAPE_VIEWS_DIR`: a developer's `<module>_view.wasm`
   files replace the network's views, unverified, logged.
@@ -678,7 +712,7 @@ House words, and where one word means several things.
 - **launcher** — every screen before the desk (Connect, key, phrase,
   recover, account), in the console at launcher size; `in_launcher()`.
 - **desk** — the area under the menu bar where panes float
-  (`ui/layout.rs`); also `Stage::Desk` and the `desk` key context.
+  (`ui/layout.rs`); also `Screen::Desk` and the `desk` key context.
 - **pane / window** — `layout::Pane` is one floating frame on the desk
   holding a view, the program finder or Help. User copy, GPUI actions and
   `layout.rs` comments call it a **window**. **window** therefore means
@@ -756,10 +790,10 @@ House words, and where one word means several things.
   subscription writes through `Items`. Add the method to the module doc in
   `kernel.rs` and a case in `kernel/tests.rs`, which stands up a loopback
   `TcpListener` as the node.
-- **Add a native screen or overlay.** A screen: state and messages in
-  `ui/app.rs` (a `Stage` variant, and its `Screen` in
-  `shell/entities/screen.rs`), the reducer arm in the matching `ui/*.rs`,
-  the drawing as a `LauncherLayer` method in `shell/layers/launcher/` built
+- **Add a native screen or overlay.** A screen: a `Screen` variant
+  (`shell/entities/screen.rs`), its state and the methods that move it on
+  `Account` or `Session` (`shell/entities/`), a row in the transition table
+  (`entities/account_tests.rs`), the drawing as a `LauncherLayer` method in `shell/layers/launcher/` built
   from `ink` pieces, routed from its render (`shell/layers/launcher.rs`).
   An overlay: an `Overlay` variant (`shell/entities/overlays.rs`), opened
   and closed by `Overlays` methods from the control that opens it, drawn

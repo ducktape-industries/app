@@ -21,9 +21,10 @@ impl Ducktape {
                 backend::save_motion(on);
                 Task::none()
             }
-            // (a menu that asked for it closed as it did: its row, `WindowRoot`)
+            // (a menu that asked for it closed as it did: its row, `WindowRoot`;
+            // Help greeting a new account or not is `Account.welcome`)
             Message::OpenHelp => {
-                self.open_help(false);
+                self.open_help();
                 Task::none()
             }
             Message::SelectView(module) => {
@@ -41,7 +42,8 @@ impl Ducktape {
                     self.badges.remove(module);
                     Task::none()
                 }
-                Intent::OpenLink(link) => self.update(Message::OpenLink(link)),
+                // read against the chain in hand by `Desktop::dispatch`
+                Intent::OpenLink(link) => Task::done(Message::OpenLink(link)),
                 // the dispatch redraws
                 Intent::Notified => Task::none(),
                 // a window placed before its view came is widened to it
@@ -54,37 +56,17 @@ impl Ducktape {
                     Task::none()
                 }
             },
-            Message::OpenLink(link) => {
-                // `duck://<chain>/<program>/<tail>` on this chain, or the short
-                // `duck://<view>/<route>`: the seat opens and its view is
-                // handed the route. The window coming forward is the answer;
-                // a notice only says what there is nothing to see of.
-                use crate::runtime::Link;
-                match self.roster.parse_link(&link) {
-                    Link::View { module, route } => self.open_seat(module, route),
-                    Link::Chain(parsed) if !self.roster.lists(&parsed.program) => {
-                        self.notice(format!("No view here opens {} links.", parsed.program));
-                    }
-                    Link::Chain(parsed) => {
-                        let module = crate::runtime::intern(&parsed.program);
-                        let route = parsed.tail.join("/");
-                        if parsed.chain.to_string() != self.chain {
-                            // another chain's page is not this chain's to show
-                            self.open_seat(module, None);
-                            self.notice(format!(
-                                "That link is to {}, not this network; opened {module}.",
-                                parsed.chain.label
-                            ));
-                        } else if route.is_empty() || crate::runtime::valid_route(&route) {
-                            self.open_seat(module, (!route.is_empty()).then_some(route));
-                        } else {
-                            self.open_seat(module, None);
-                            self.notice(format!("{module} can't open that part of the link."));
-                        }
-                    }
-                    Link::Web(url) => return crate::shell::open_url(url),
-                    Link::Unknown => self.notice("This link is not one this app opens.".into()),
+            Message::OpenLink(_) => unreachable!("read against the chain by `Desktop::dispatch`"),
+            // the network in hand was left: every window's panes go, each
+            // desk keeping its measure; the badges and the active program
+            // with them (what is open over each desk closes as it sees the
+            // network go: `Overlays::new`)
+            Message::LeftNetwork => {
+                self.active = None;
+                for layout in self.layouts.values_mut() {
+                    layout.clear();
                 }
+                self.badges.clear();
                 Task::none()
             }
             Message::ShowToast(said) => {
@@ -133,17 +115,51 @@ impl Ducktape {
         }
     }
 
+    /// A link, read against the chain in hand:
+    /// `duck://<chain>/<program>/<tail>` on this chain, or the short
+    /// `duck://<view>/<route>`: the seat opens and its view is handed the
+    /// route. The window coming forward is the answer; a notice only says
+    /// what there is nothing to see of.
+    pub(crate) fn open_link(&mut self, link: &str, chain: &str) -> Task<Message> {
+        let _timed = crate::perf::time(crate::perf::Key::Shell, "reducer.desk");
+        use crate::runtime::Link;
+        match self.roster.parse_link(link) {
+            Link::View { module, route } => self.open_seat(module, route),
+            Link::Chain(parsed) if !self.roster.lists(&parsed.program) => {
+                self.notice(format!("No view here opens {} links.", parsed.program));
+            }
+            Link::Chain(parsed) => {
+                let module = crate::runtime::intern(&parsed.program);
+                let route = parsed.tail.join("/");
+                if parsed.chain.to_string() != chain {
+                    // another chain's page is not this chain's to show
+                    self.open_seat(module, None);
+                    self.notice(format!(
+                        "That link is to {}, not this network; opened {module}.",
+                        parsed.chain.label
+                    ));
+                } else if route.is_empty() || crate::runtime::valid_route(&route) {
+                    self.open_seat(module, (!route.is_empty()).then_some(route));
+                } else {
+                    self.open_seat(module, None);
+                    self.notice(format!("{module} can't open that part of the link."));
+                }
+            }
+            Link::Web(url) => return crate::shell::open_url(url),
+            Link::Unknown => self.notice("This link is not one this app opens.".into()),
+        }
+        Task::none()
+    }
+
     /// A Spotlight row picked, Spotlight already closed (`Overlays::submit`):
     /// what it does that the reducer still owns. Settings is the overlays'
-    /// own and never comes here.
+    /// own and never comes here; the session's and the account's rows
+    /// (switch, lock, create account, another network) are their entities'
+    /// (`layers::overlays::run`).
     pub(super) fn on_spot(&mut self, spot: Spot) -> Task<Message> {
         let message = match spot {
             Spot::Open(module) => Message::SelectView(module),
-            Spot::Switch(url) => Message::SwitchNetwork(url),
-            Spot::CreateAccount => Message::ShowCreateAccount,
-            Spot::Lock => Message::Lock,
             Spot::Appearance(mode) => Message::SetAppearance(mode),
-            Spot::OtherNetwork => Message::Disconnect,
             Spot::Help => Message::OpenHelp,
             Spot::FillWindow | Spot::HoldWindow => {
                 let Some((key, index)) = self.framed_pane() else {
@@ -157,7 +173,13 @@ impl Ducktape {
                     },
                 )
             }
-            Spot::Settings => unreachable!("Settings opens as an overlay (`OverlayLayer::run`)"),
+            Spot::Settings
+            | Spot::Switch(_)
+            | Spot::CreateAccount
+            | Spot::Lock
+            | Spot::OtherNetwork => {
+                unreachable!("run by `layers::overlays::run` on the entity it moves")
+            }
         };
         self.update(message)
     }

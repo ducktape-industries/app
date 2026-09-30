@@ -160,8 +160,8 @@ fn two_empty_windows(cx: &mut TestAppContext) -> (Entity<WindowRoot>, VisualTest
 }
 
 /// A desk whose network lists two programs to open.
-fn two_programs() -> Ducktape {
-    let mut state = gate::desk();
-    state.roster = crate::runtime::Roster::listing(&["combotest-alpha", "combotest-beta"]);
-    state
+fn two_programs() -> Seed {
+    let mut seed = gate::desk();
+    seed.state.roster = crate::runtime::Roster::listing(&["combotest-alpha", "combotest-beta"]);
+    seed
 }

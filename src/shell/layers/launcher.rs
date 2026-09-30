@@ -14,14 +14,14 @@
 //! `LauncherLayer` is the console's view of it, over the entities it reads
 //! (`Screen`, `Session`, `Account`, `Prefs`). Its fields own what is typed;
 //! its figure is written from its observers, never from a draw. What a
-//! screen asks of the app still goes to the reducer (`send`, `dispatching`;
-//! s10 moves those flows into `Session` and `Account`).
+//! screen asks of the app is one call on `Session` or `Account`
+//! (`on_session`, `on_account`), a typed secret going in the call.
 
-use super::super::entities::{Account, Observed, Prefs, Screen, Session, Slice};
+use super::super::entities::{Account, Entities, Observed, Prefs, Screen, Secret, Session, Slice};
 use super::super::figure::Figure;
 use super::super::ink::{self, *};
 use super::super::spin::{self, Spin};
-use super::super::{Desktop, Message, Stage, WindowKey, theme};
+use super::super::{WindowKey, theme};
 use super::fields::NativeInput;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
@@ -46,7 +46,7 @@ const FIGURE_W: f32 = 380.;
 const _: () = assert!(LAUNCHER_SIZE.0 >= FIGURE_W + COLUMN_MIN);
 
 /// A quiet link above a screen: its element id, its words, what it does.
-type Back = (&'static str, &'static str, fn() -> Message);
+type Back = (&'static str, &'static str, Box<dyn Fn(&mut App)>);
 
 /// What a launcher screen puts in the frame (`LauncherLayer::frame`).
 struct LauncherScreen {
@@ -91,12 +91,10 @@ pub(in crate::shell) struct Fields {
 
 /// The console's launcher screens.
 pub(in crate::shell) struct LauncherLayer {
-    /// The reducer: where what a screen asks for still goes (s10).
-    model: Entity<Desktop>,
     key: WindowKey,
     screen: Observed<Slice<Screen>>,
-    session: Observed<Slice<Session>>,
-    account: Observed<Slice<Account>>,
+    session: Observed<Session>,
+    account: Observed<Account>,
     prefs: Observed<Slice<Prefs>>,
     /// The figure on the left, written from the observers.
     pub(in crate::shell) spin: Entity<Spin>,
@@ -104,10 +102,9 @@ pub(in crate::shell) struct LauncherLayer {
     /// The address the endpoint field and `Session` last agreed on: what it
     /// sent on its last change, or what the session last put in it.
     endpoint: String,
-    /// A new recovery key's words while its screens show: the reducer's,
-    /// copied as the screen comes and wiped as it goes (s10: `Account`
-    /// holds them, uncompared).
-    phrase: Option<crate::Secret>,
+    /// A new recovery key's words while its screens show: `Account`'s,
+    /// copied as the screen comes and wiped as it goes.
+    phrase: Option<Secret>,
     /// The screen the observers last saw.
     shown: Screen,
     _subscriptions: [Subscription; 3],
@@ -115,12 +112,11 @@ pub(in crate::shell) struct LauncherLayer {
 
 impl LauncherLayer {
     pub(in crate::shell) fn new(
-        model: Entity<Desktop>,
+        entities: &Entities,
         key: WindowKey,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let entities = &model.read(cx).entities;
         let (screen, session, account, prefs) = (
             entities.screen.clone(),
             entities.session.clone(),
@@ -133,20 +129,33 @@ impl LauncherLayer {
             let (motion, ink) = (prefs.motion, Ink::of(prefs.dark()).figure);
             cx.new(|cx| Spin::new(figure(shown), motion, ink, cx))
         };
-        let send = |message: fn(String) -> Message| {
-            move |this: &mut Self, text: String, cx: &mut Context<Self>| {
-                this.send(message(text), cx)
+        // a keystroke in a sign-in field clears the step's failure
+        let typed = |this: &mut Self, _: String, cx: &mut Context<Self>| {
+            this.account
+                .entity()
+                .update(cx, |account, cx| account.clear_error(cx));
+        };
+        // Enter in a field: what its button does, the field's text in the call
+        let enter = |field: fn(&Fields) -> &NativeInput,
+                     submit: fn(&mut Account, String, &mut Context<Account>)| {
+            move |this: &mut Self, cx: &mut Context<Self>| {
+                let text = field(&this.fields).state.read(cx).value().to_string();
+                this.account
+                    .entity()
+                    .update(cx, |account, cx| submit(account, text, cx));
             }
         };
-        let enter = |message: fn() -> Message| {
-            move |this: &mut Self, cx: &mut Context<Self>| this.send(message(), cx)
-        };
-        let word = |nth: usize, window: &mut Window, cx: &mut Context<Self>| {
+        let word = |window: &mut Window, cx: &mut Context<Self>| {
             NativeInput::new(
                 "",
                 false,
-                move |this: &mut Self, text, cx| this.send(Message::PhraseWordTyped(nth, text), cx),
-                enter(|| Message::PhraseCheckSubmit),
+                typed,
+                |this: &mut Self, cx| {
+                    let answers = this.answers(cx);
+                    this.account
+                        .entity()
+                        .update(cx, |account, cx| account.phrase_check(answers, cx));
+                },
                 window,
                 cx,
             )
@@ -157,38 +166,40 @@ impl LauncherLayer {
                 false,
                 |this: &mut Self, text: String, cx| {
                     this.endpoint = text.clone();
-                    this.send(Message::EndpointTyped(text), cx)
+                    this.session
+                        .entity()
+                        .update(cx, |session, cx| session.set_endpoint(text, cx));
                 },
-                enter(|| Message::ConnectSubmit),
+                |this: &mut Self, cx| {
+                    this.session
+                        .entity()
+                        .update(cx, |session, cx| session.submit(cx));
+                },
                 window,
                 cx,
             ),
             password: NativeInput::new(
                 "",
                 true,
-                send(Message::PasswordTyped),
-                enter(|| Message::UnlockSubmit),
+                typed,
+                enter(|fields| &fields.password, Account::unlock),
                 window,
                 cx,
             ),
             restore: NativeInput::new(
                 "24 words, separated by spaces",
                 false,
-                send(Message::RestorePhraseTyped),
-                enter(|| Message::RecoverSubmit),
+                typed,
+                enter(|fields| &fields.restore, Account::recover_submit),
                 window,
                 cx,
             ),
-            words: [
-                word(0, window, cx),
-                word(1, window, cx),
-                word(2, window, cx),
-            ],
+            words: [word(window, cx), word(window, cx), word(window, cx)],
             name: NativeInput::new(
                 "",
                 false,
-                send(Message::AccountNameTyped),
-                enter(|| Message::CreateAccountSubmit),
+                typed,
+                enter(|fields| &fields.name, Account::create_submit),
                 window,
                 cx,
             ),
@@ -209,7 +220,6 @@ impl LauncherLayer {
             session: Observed::new(&session, cx),
             account: Observed::new(&account, cx),
             prefs: Observed::new(&prefs, cx),
-            model,
             key,
             spin,
             fields,
@@ -222,17 +232,51 @@ impl LauncherLayer {
         this
     }
 
-    /// `message` to the reducer, which still owns what the screens ask for
-    /// (s10 moves it into `Session` and `Account`).
-    fn send(&self, message: Message, cx: &mut App) {
-        self.model
-            .update(cx, |model, cx| model.dispatch(message, cx));
+    /// What a press does: `call` on the session.
+    fn on_session(
+        &self,
+        call: impl Fn(&mut Session, &mut Context<Session>) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let session = self.session.entity().clone();
+        move |cx| session.update(cx, |session, cx| call(session, cx))
     }
 
-    /// What a press does: `message` to the reducer (`send`).
-    fn dispatching(&self, message: fn() -> Message) -> impl Fn(&mut App) + 'static {
-        let model = self.model.clone();
-        move |cx| model.update(cx, |model, cx| model.dispatch(message(), cx))
+    /// What a press does: `call` on the account.
+    fn on_account(
+        &self,
+        call: impl Fn(&mut Account, &mut Context<Account>) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let account = self.account.entity().clone();
+        move |cx| account.update(cx, |account, cx| call(account, cx))
+    }
+
+    /// What a press does: `call` on the account, with `field`'s text (a
+    /// typed secret travels in the call, never through an entity).
+    fn with_field(
+        &self,
+        field: &NativeInput,
+        call: impl Fn(&mut Account, String, &mut Context<Account>) + 'static,
+    ) -> impl Fn(&mut App) + 'static {
+        let (account, field) = (self.account.entity().clone(), field.state.clone());
+        move |cx| {
+            let text = field.read(cx).value().to_string();
+            account.update(cx, |account, cx| call(account, text, cx))
+        }
+    }
+
+    /// The three words typed back for the phrase check.
+    fn answers(&self, cx: &App) -> [String; 3] {
+        std::array::from_fn(|nth| self.fields.words[nth].state.read(cx).value().to_string())
+    }
+
+    /// "Confirm": the three words typed back, checked against the phrase.
+    fn check_phrase(&self) -> impl Fn(&mut App) + 'static {
+        let account = self.account.entity().clone();
+        let words: [_; 3] = std::array::from_fn(|nth| self.fields.words[nth].state.clone());
+        move |cx| {
+            let answers = std::array::from_fn(|nth| words[nth].read(cx).value().to_string());
+            account.update(cx, |account, cx| account.phrase_check(answers, cx))
+        }
     }
 
     /// The figure as the screen and the preferences say: compared, so an
@@ -245,10 +289,10 @@ impl LauncherLayer {
             .update(cx, |spin, cx| spin.set(figure, motion, ink, cx));
     }
 
-    /// Another screen: its figure, and the fields the reducer emptied as
-    /// the last one went (a step's secrets go with it; the account's name
-    /// goes only when the account steps do, "← Back" from the recovery key
-    /// brings it back).
+    /// Another screen: its figure, and the fields emptied as the last one
+    /// went (a step's secrets go with it; the account's name goes only when
+    /// the account steps do, "← Back" from the recovery key brings it
+    /// back).
     fn screen_moved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let now = *self.screen.read(cx).get();
         if std::mem::replace(&mut self.shown, now) == now {
@@ -279,37 +323,33 @@ impl LauncherLayer {
     }
 
     /// A new recovery key's words, while its screens show.
-    fn phrase_words(&self, cx: &App) -> Option<crate::Secret> {
-        match &self.model.read(cx).state.stage {
-            Stage::Phrase(step) => Some(step.words.clone()),
-            _ => None,
-        }
+    fn phrase_words(&self, cx: &App) -> Option<Secret> {
+        self.account.read(cx).phrase().cloned()
     }
 
-    /// `<button>` ([`ink::button`]): pressed, `message` goes to the reducer.
+    /// `<button>` ([`ink::button`]): pressed, it runs `run`.
     fn button(
         &self,
         id: impl Into<ElementId>,
         text: impl Into<SharedString>,
         kind: Kind,
-        message: fn() -> Message,
+        run: impl Fn(&mut App) + 'static,
         press: impl Into<Press>,
         ink: &Ink,
     ) -> AnyElement {
-        ink::button(&self.model, id, text, kind, message, press, ink)
+        ink::button(id, text, kind, run, press, ink)
     }
 
-    /// `<a>` ([`ink::link_running`]): pressed, `message` goes to the
-    /// reducer.
+    /// `<a>` ([`ink::link_running`]): pressed, it runs `run`.
     fn link(
         &self,
         id: &'static str,
         text: impl Into<SharedString>,
-        message: fn() -> Message,
+        run: impl Fn(&mut App) + 'static,
         small: bool,
         ink: &Ink,
     ) -> AnyElement {
-        link_running(id, text, self.dispatching(message), small, ink)
+        link_running(id, text, run, small, ink)
     }
 
     /// One launcher screen in the canvas's frame: on the left a 380px panel,
@@ -372,31 +412,30 @@ impl LauncherLayer {
                     .child(spin::drawing(&self.spin)),
             )
             .child(tag("caption", caption, &ink));
-        let reading =
-            div()
-                .id(id)
-                .flex_1()
-                .min_w_0()
-                .overflow_y_scroll()
-                .pt(px(if tight { 24. } else { 32. }))
-                .px(px(40.))
-                .pb(px(32.))
-                .flex()
-                .flex_col()
-                .gap(px(if tight { 16. } else { 22. }))
-                .children(back.map(|(key, text, message)| {
-                    div().child(self.link(key, text, message, true, &ink))
-                }))
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(18.))
-                        .child(tag("step", label, &ink))
-                        .child(h1("headline", headline, &ink))
-                        .children(lead.map(|text| ink::lead("lead", text, &ink))),
-                )
-                .children(body);
+        let reading = div()
+            .id(id)
+            .flex_1()
+            .min_w_0()
+            .overflow_y_scroll()
+            .pt(px(if tight { 24. } else { 32. }))
+            .px(px(40.))
+            .pb(px(32.))
+            .flex()
+            .flex_col()
+            .gap(px(if tight { 16. } else { 22. }))
+            .children(
+                back.map(|(key, text, run)| div().child(self.link(key, text, run, true, &ink))),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(18.))
+                    .child(tag("step", label, &ink))
+                    .child(h1("headline", headline, &ink))
+                    .children(lead.map(|text| ink::lead("lead", text, &ink))),
+            )
+            .children(body);
         div()
             .id("launcher")
             .size_full()

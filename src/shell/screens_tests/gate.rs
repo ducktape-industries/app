@@ -2,52 +2,55 @@
 //! console draws runs through the door's audit, Tab walk included, and any
 //! error-severity violation fails. Nothing is excused.
 use super::*;
-use crate::Secret;
 use crate::ax::audit::{self, Violation};
-use crate::shell::entities::{Overlay, Popover, SettingsPage};
-use crate::ui::{Account, Phrase, Recover, Unlock};
+use crate::shell::entities::{AccountStep, Overlay, Popover, Screen, Secret, SettingsPage};
+use crate::shell::layers::tests::Seed;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{TestAppContext, VisualTestContext};
 
 pub(super) type Build = Box<dyn Fn() -> Scene>;
 
 /// A screen state with nothing open over it.
-fn plain(build: impl Fn() -> Ducktape + 'static) -> Build {
+fn plain(build: impl Fn() -> Seed + 'static) -> Build {
     Box::new(move || build().into())
 }
 
 /// A screen state with `overlay` open over its desk.
-fn over(overlay: Overlay, build: impl Fn() -> Ducktape + 'static) -> Build {
+fn over(overlay: Overlay, build: impl Fn() -> Seed + 'static) -> Build {
     Box::new(move || (build(), overlay).into())
 }
 
-fn booted(stage: Stage, key: bool) -> Ducktape {
-    let (mut state, _) = Ducktape::boot();
+fn booted(screen: Screen, key: bool) -> Seed {
+    let mut seed = Seed::boot();
     // boot reads this machine's recent nodes; the screen states set their own
-    state.recent_endpoints.clear();
+    seed.session.recent_endpoints.clear();
     // and hands over the app's notification centre and roster, which every
     // test shares: a screen state gets its own
-    state.center = Default::default();
-    state.roster = Default::default();
-    state.stage = stage;
+    seed.state.center = Default::default();
+    seed.state.roster = Default::default();
+    seed.screen = screen;
     if key {
-        state.signer_key = "ab".into();
+        seed.account.signer_key = "ab".into();
     }
-    state
+    seed
 }
 
-pub(super) fn desk() -> Ducktape {
-    let mut state = booted(Stage::Desk, true);
-    state.connected = true;
-    state.network = "testkit".into();
-    state.connected_rpc = "http://127.0.0.1:1".into();
-    state.recent_endpoints = vec![crate::backend::RecentEndpoint {
+const ACCOUNT: Screen = Screen::Account {
+    step: AccountStep::Name,
+};
+
+pub(super) fn desk() -> Seed {
+    let mut seed = booted(Screen::Desk, true);
+    seed.session.connected = true;
+    seed.session.network = "testkit".into();
+    seed.session.connected_rpc = "http://127.0.0.1:1".into();
+    seed.session.recent_endpoints = vec![crate::backend::RecentEndpoint {
         url: "http://127.0.0.1:1".into(),
         network: "testkit".into(),
         founded: 1,
         other_chain: false,
     }];
-    state
+    seed
 }
 
 fn on_desk(overlay: Overlay) -> Build {
@@ -57,179 +60,161 @@ fn on_desk(overlay: Overlay) -> Build {
 /// A desk that lists two programs: the bar's rail is a tab list the
 /// arrows move along, and Settings' Notifications page has a radio group
 /// for each.
-fn two_programs() -> Ducktape {
-    let mut state = desk();
-    state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
-    state
+fn two_programs() -> Seed {
+    let mut seed = desk();
+    seed.state.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
+    seed
 }
 
 /// A desk with a window on it, which Search opens over: its rows for the window
 /// (Fill, Move or size) are there, each reporting its chord (AX-114).
-pub(super) fn spotlight_over_window() -> Ducktape {
-    let mut state = desk();
+pub(super) fn spotlight_over_window() -> Seed {
+    let mut seed = desk();
     let key = WindowKey::unique();
     let mut layout = crate::ui::layout::Layout::default();
     layout.split(crate::ui::layout::EMPTY);
     layout.measure((1280., 764.));
     layout.settle();
     layout.initialized = true;
-    state.console_win = Some(key);
-    state.layouts.insert(key, layout);
-    state
+    seed.state.console_win = Some(key);
+    seed.state.layouts.insert(key, layout);
+    seed
 }
 
 /// Every screen state, with whether it is a launcher screen (AX-018).
 pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
     let words = || Secret::from(String::from("canoe pond forest"));
-    let passkey = || crate::ui::task::Task::<()>::none().abortable().1;
     vec![
-        ("connect", true, plain(|| booted(Stage::Connect, false))),
+        ("connect", true, plain(|| booted(Screen::Connect, false))),
         (
             "connect-error-and-recent",
             true,
             plain(|| {
-                let mut state = booted(Stage::Connect, false);
-                state.endpoint = "127.0.0.1:9000".into();
-                state.endpoint_error = "no route to host".into();
-                state.recent_endpoints = vec![crate::backend::RecentEndpoint {
+                let mut seed = booted(Screen::Connect, false);
+                seed.session.endpoint = "127.0.0.1:9000".into();
+                seed.session.endpoint_error = "no route to host".into();
+                seed.session.recent_endpoints = vec![crate::backend::RecentEndpoint {
                     url: "http://127.0.0.1:9000".into(),
                     network: "testkit".into(),
                     ..Default::default()
                 }];
-                state
+                seed
             }),
         ),
         (
             "connect-connecting",
             true,
             plain(|| {
-                let mut state = booted(Stage::Connect, false);
-                state.endpoint = "127.0.0.1:9000".into();
-                state.connecting = true;
-                state
+                let mut seed = booted(Screen::Connect, false);
+                seed.session.endpoint = "127.0.0.1:9000".into();
+                seed.session.connecting = true;
+                seed
             }),
         ),
         (
             "sign-in",
             true,
-            plain(|| booted(Stage::Unlock(Unlock::default()), false)),
+            plain(|| booted(Screen::Unlock { awaiting: false }, false)),
         ),
         (
             "sign-in-old-password-error",
             true,
             plain(|| {
-                let mut state = booted(Stage::Unlock(Unlock::default()), false);
-                state.key_exists = true;
-                state.sign_in.unlock_error = "wrong password".into();
-                state
+                let mut seed = booted(Screen::Unlock { awaiting: false }, false);
+                seed.account.key_exists = true;
+                seed.account.error = "wrong password".into();
+                seed
             }),
         ),
         (
             "sign-in-awaiting",
             true,
-            plain(|| {
-                booted(
-                    Stage::Unlock(Unlock {
-                        awaiting: true,
-                        ..Default::default()
-                    }),
-                    true,
-                )
-            }),
+            plain(|| booted(Screen::Unlock { awaiting: true }, true)),
         ),
         (
             "recovery",
             true,
             plain(move || {
-                booted(
-                    Stage::Phrase(Phrase {
-                        words: words(),
-                        ..Default::default()
-                    }),
-                    true,
-                )
+                let mut seed = booted(Screen::Phrase { quiz: None }, true);
+                seed.phrase = Some(words());
+                seed
             }),
         ),
         (
             "recovery-check",
             true,
             plain(move || {
-                booted(
-                    Stage::Phrase(Phrase {
-                        words: words(),
+                let mut seed = booted(
+                    Screen::Phrase {
                         quiz: Some([0, 1, 2]),
-                        ..Default::default()
-                    }),
+                    },
                     true,
-                )
+                );
+                seed.phrase = Some(words());
+                seed
             }),
         ),
-        (
-            "recover",
-            true,
-            plain(|| booted(Stage::Recover(Recover::default()), true)),
-        ),
+        ("recover", true, plain(|| booted(Screen::Recover, true))),
         (
             "recover-adding",
             true,
             plain(|| {
-                let mut state = booted(Stage::Recover(Recover::default()), true);
-                state.sign_in.unlock_busy = true;
-                state
+                let mut seed = booted(Screen::Recover, true);
+                seed.account.busy = true;
+                seed
             }),
         ),
-        (
-            "account-step",
-            true,
-            plain(|| booted(Stage::Account(Account::default()), true)),
-        ),
+        ("account-step", true, plain(|| booted(ACCOUNT, true))),
         (
             "account-creating",
             true,
             plain(|| {
-                let mut state = booted(Stage::Account(Account::default()), true);
-                state.sign_in.unlock_busy = true;
-                state
+                let mut seed = booted(ACCOUNT, true);
+                seed.account.busy = true;
+                seed
             }),
         ),
         (
             "account-passkey-waiting",
             true,
             plain(move || {
-                booted(
-                    Stage::Account(Account {
-                        passkey_task: Some(passkey()),
-                        ..Default::default()
-                    }),
+                let mut seed = booted(
+                    Screen::Account {
+                        step: AccountStep::Passkey,
+                    },
                     true,
-                )
+                );
+                seed.account.passkey_waiting = true;
+                seed
             }),
         ),
         (
             "account-passkey-qr",
             true,
             plain(move || {
-                let step = Account {
-                    passkey_task: Some(passkey()),
-                    passkey_qr: "https://example.test/passkey".into(),
-                    ..Default::default()
-                };
-                step.passkey_phone
-                    .store(true, std::sync::atomic::Ordering::Relaxed);
-                booted(Stage::Account(step), true)
+                let mut seed = booted(
+                    Screen::Account {
+                        step: AccountStep::Passkey,
+                    },
+                    true,
+                );
+                seed.account.passkey_waiting = true;
+                seed.account.passkey_qr = Some("https://example.test/passkey".into());
+                seed
             }),
         ),
         (
             "link-waiting",
             true,
             plain(|| {
-                booted(
-                    Stage::Account(Account {
-                        link_code: "ABCD-EFGH".into(),
-                        ..Default::default()
-                    }),
+                let mut seed = booted(
+                    Screen::Account {
+                        step: AccountStep::Link,
+                    },
                     true,
-                )
+                );
+                seed.account.link_code = "ABCD-EFGH".into();
+                seed
             }),
         ),
         ("desk-empty", false, plain(desk)),
@@ -237,9 +222,9 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             "desk-empty-a-program",
             false,
             plain(|| {
-                let mut state = desk();
-                state.roster = crate::runtime::Roster::listing(&["gate-program"]);
-                state
+                let mut seed = desk();
+                seed.state.roster = crate::runtime::Roster::listing(&["gate-program"]);
+                seed
             }),
         ),
         ("desk-two-programs", false, plain(two_programs)),
@@ -247,18 +232,18 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             "desk-toast",
             false,
             plain(|| {
-                let mut state = desk();
-                state.toast = "Copied".into();
-                state
+                let mut seed = desk();
+                seed.state.toast = "Copied".into();
+                seed
             }),
         ),
         (
             "desk-reconnecting",
             false,
             plain(|| {
-                let mut state = desk();
-                state.status_misses = crate::ui::LOST_AFTER;
-                state
+                let mut seed = desk();
+                seed.session.reconnecting = true;
+                seed
             }),
         ),
         ("spotlight", false, on_desk(Overlay::Spotlight)),
@@ -272,12 +257,14 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             "approve-confirm",
             false,
             over(Overlay::Approve, || {
-                let mut state = desk();
-                state.sign_in.approve_found = Some(crate::backend::join::Request {
+                let mut seed = desk();
+                let key = vec![7; 32];
+                seed.account.approve = Some(crate::backend::join::fingerprint(&key));
+                seed.found = Some(crate::backend::join::Request {
                     network: "testkit".into(),
-                    key: vec![7; 32],
+                    key,
                 });
-                state
+                seed
             }),
         ),
         (
@@ -316,10 +303,10 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
             "desk-asking",
             false,
             plain(|| {
-                let mut state = desk();
-                state.center.lock().ask_for_test("gate-asking");
-                state.active = Some("gate-asking");
-                state
+                let mut seed = desk();
+                seed.state.center.lock().ask_for_test("gate-asking");
+                seed.state.active = Some("gate-asking");
+                seed
             }),
         ),
     ]
@@ -446,8 +433,8 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
         .find(|(name, ..)| *name == "settings-notifications")
         .unwrap();
     let scene = build();
-    scene.0.center.lock().ask_for_test("gate-a");
-    let center = scene.0.center.clone();
+    scene.0.state.center.lock().ask_for_test("gate-a");
+    let center = scene.0.state.center.clone();
     let prefs = crate::backend::read_prefs();
     assert_eq!(prefs, serde_json::json!({}));
     let (_view, native) = open(scene, cx);

@@ -11,8 +11,9 @@ impl Ducktape {
             Message::NotifyOpen(id) => {
                 let entry = self.center.lock().open(id);
                 match entry {
+                    // read against the chain in hand by `Desktop::dispatch`
                     Some(entry) if !entry.link.is_empty() => {
-                        return self.update(Message::OpenLink(entry.link));
+                        return Task::done(Message::OpenLink(entry.link));
                     }
                     Some(entry) if self.roster.lists(&entry.module) => {
                         self.open_seat(crate::runtime::intern(&entry.module), None);

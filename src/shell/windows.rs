@@ -80,10 +80,56 @@ impl Desktop {
         entities: entities::Entities,
         cx: &mut Context<Self>,
     ) -> Self {
-        let seats = cx.new(|_| entities::Seats::new());
+        let seats = cx.new(|cx| entities::Seats::new(&entities, cx));
         let seat_intents = cx.subscribe(&seats, |desktop, _, (module, intent), cx| {
             desktop.dispatch(Message::ViewEvent(module, intent.clone()), cx)
         });
+        // what the reducer still does for the session and the account
+        let mut launcher = *entities.screen.read(cx).get() != Screen::Desk;
+        let subscriptions = vec![
+            cx.subscribe(
+                &entities.session,
+                |desktop, _, event: &entities::SessionEvent, cx| match event {
+                    entities::SessionEvent::LeftNetwork => {
+                        desktop.dispatch(Message::LeftNetwork, cx)
+                    }
+                    entities::SessionEvent::Toast(said) => {
+                        desktop.dispatch(Message::ShowToast(said.clone()), cx)
+                    }
+                    // the console comes forward, or opens, as the tray's Open
+                    entities::SessionEvent::Connected => desktop.dispatch(Message::TrayOpen, cx),
+                },
+            ),
+            cx.subscribe(
+                &entities.account,
+                |desktop, _, event: &entities::AccountEvent, cx| match event {
+                    entities::AccountEvent::Toast(said) => {
+                        desktop.dispatch(Message::ShowToast(said.clone()), cx)
+                    }
+                    // a new account starts on Help, greeted
+                    entities::AccountEvent::Welcome => {
+                        desktop.state.open_help();
+                        desktop.settle(Task::none(), false, false, cx);
+                    }
+                    entities::AccountEvent::Approved => desktop.approved(cx),
+                },
+            ),
+            // the launcher and the desk are one window: crossing from one to
+            // the other takes the other's size
+            cx.observe(&entities.screen, move |desktop, screen, cx| {
+                let now = *screen.read(cx).get() != Screen::Desk;
+                if now == launcher {
+                    return;
+                }
+                launcher = now;
+                if !now {
+                    crate::perf::mark("desk");
+                }
+                desktop.swap_console(cx);
+            }),
+            cx.observe(&entities.session, |desktop, _, cx| desktop.sync_tray(cx)),
+            cx.observe(&entities.chain, |desktop, _, cx| desktop.sync_tray(cx)),
+        ];
         Self {
             drawn: state.beat_face(),
             state,
@@ -95,6 +141,7 @@ impl Desktop {
             _seat_intents: seat_intents,
             entities,
             desk_bounds: None,
+            _subscriptions: subscriptions,
         }
     }
 
@@ -117,7 +164,7 @@ impl Desktop {
             }
         };
         // the launcher is a small window of a fixed size; the desk grows
-        let launcher = kind == crate::shell::WindowKind::Console && self.state.in_launcher();
+        let launcher = kind == crate::shell::WindowKind::Console && self.in_launcher(cx);
         let extent = match kind {
             crate::shell::WindowKind::Console if launcher => {
                 size(px(layers::LAUNCHER_SIZE.0), px(layers::LAUNCHER_SIZE.1))
@@ -184,8 +231,11 @@ impl Desktop {
                 Err(error) => {
                     tracing::error!(target: "ducktape::app", reason = "native_window_open_failed", %error, "window could not be opened");
                     model.update(cx, |model, cx| {
-                        // said first: the dispatches below bridge it
-                        model.state.error = format!("The window could not be opened: {error}");
+                        let error = format!("The window could not be opened: {error}");
+                        model
+                            .entities
+                            .session
+                            .update(cx, |session, cx| session.note_error(error, cx));
                         // a pane on its way to this window goes back to the desk
                         model.dispatch(Message::Pane(key, PaneMessage::PopIn), cx);
                         model.dispatch(Message::WindowWasClosed(key), cx);
