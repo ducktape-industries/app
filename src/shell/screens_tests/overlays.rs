@@ -496,7 +496,10 @@ fn the_bells_settings_row_opens_settings_and_the_belt_leaves_it_open(cx: &mut Te
 
 /// A menu's card hangs 4px under the bar (`top: 40px`) on a 1x display as
 /// on a 2x one: its button is centred in the bar half a pixel up, and the
-/// snap to device pixels must not carry that half into the card.
+/// snap to device pixels must not carry that half into the card, nor into
+/// what the card holds: the bell's footer row sits where the base drew it
+/// (`notif-settings` at y 221 in a 1280x800 window with nothing to read),
+/// not a pixel lower from a card laid out on a half pixel.
 #[gpui_kit::test]
 fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext) {
     cx.update(|cx| {
@@ -516,7 +519,8 @@ fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext
         state.overlay = Some(overlay);
         let (_view, mut native) = open(state, cx);
         for scale in [1., 2.] {
-            let window = native.windows()[0];
+            // this menu's window: the ones the earlier menus opened stay open
+            let window = native.update(|window, _| window.window_handle());
             native.simulate_window_scale_factor_change(window, scale);
             let nodes = native.update(|window, cx| {
                 draw(window, cx);
@@ -528,6 +532,10 @@ fn a_menu_hangs_four_pixels_under_the_bar_at_every_scale(cx: &mut TestAppContext
                 "{name} at {scale}x: {}",
                 card["bounds"]
             );
+            if overlay == Overlay::Menu(Popover::Notifications) && scale == 1. {
+                let footer = find(&nodes, "Button", "Notification settings");
+                assert_eq!(footer["bounds"][1], 221, "{}", footer["bounds"]);
+            }
         }
     }
 }
