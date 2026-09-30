@@ -180,8 +180,8 @@ impl Seat {
     }
 
     /// Session, Account and the theme land here as encoded props: a turn
-    /// only when the bytes moved. Deferred: until s10 this is called from
-    /// `Desktop::dispatch`, which runs inside window event handlers.
+    /// only when the bytes moved. Called from `Seats`' observers and
+    /// `Seats::reconcile`.
     pub(crate) fn set_props(&mut self, props: Vec<u8>, cx: &mut Context<Self>) {
         if self.props.as_ref() == Some(&props) {
             return;

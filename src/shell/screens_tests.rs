@@ -346,7 +346,7 @@ fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut Test
     }
 }
 
-/// A screen change (Connect → sign-in, the way `ConnectSubmit` does once the
+/// A screen change (Connect → sign-in, the way `Session::submit` does once the
 /// node answers) unmounts whatever the reader had focused. Before the fix,
 /// the window's `on_focus_lost` handler called `window.blur`, dropping
 /// focus for good: every later Tab was silently swallowed (there is no

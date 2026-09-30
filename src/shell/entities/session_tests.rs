@@ -157,16 +157,24 @@ fn an_unchanged_status_poll_notifies_nothing(cx: &mut TestAppContext) {
     assert_eq!(chains.get(), 0, "a still chain moved the chain");
 }
 
-/// A block landing moves the chain once and the session not at all.
+/// A block landing moves the chain once, stamps it seen now, and moves the
+/// session not at all.
 #[gpui_kit::test]
 fn a_moved_height_notifies_the_chain_and_not_the_session(cx: &mut TestAppContext) {
     let (session, _) = connected(|n| Ok(testnet(7 + n as u64)), cx);
     let chain = chain(&session, cx);
     assert_eq!(chain.read_with(cx, |chain, _| chain.height), 7);
+    chain.update(cx, |chain, _| chain.block_seen = 0);
     let (sessions, _a) = notifies(&session, cx);
     let (chains, _b) = notifies(&chain, cx);
+    let before = crate::runtime::notify::wall();
     poll(cx);
-    assert_eq!(chain.read_with(cx, |chain, _| chain.height), 8);
+    let (height, block_seen) = chain.read_with(cx, |chain, _| (chain.height, chain.block_seen));
+    assert_eq!(height, 8);
+    assert!(
+        block_seen >= before,
+        "a new height is a block seen now: {block_seen} < {before}"
+    );
     assert_eq!(chains.get(), 1, "a block did not move the chain once");
     assert_eq!(sessions.get(), 0, "a block moved the session");
 }

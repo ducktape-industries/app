@@ -214,7 +214,7 @@ impl OverlayLayer {
             return;
         };
         if open == Overlay::Approve {
-            // what the last one typed went as it opened (`ApproveOpen`)
+            // what the last one typed went as it opened (`Account::approve_open`)
             self.approve_code.wipe(window, cx);
         }
         if open == Overlay::Spotlight {
@@ -245,8 +245,6 @@ impl OverlayLayer {
         }
     }
 
-    /// `message` to the reducer, which still owns what "Add a device…" asks
-    /// for (s10 moves it into `Account`).
     /// Enter in Spotlight's field: the picked row runs.
     fn submit(&mut self, cx: &mut Context<Self>) {
         let picked = {

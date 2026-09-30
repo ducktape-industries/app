@@ -417,6 +417,31 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
     }
 }
 
+/// The QR shows only while a ceremony runs, the phone is picked and its
+/// URL is known; cancelling the ceremony takes it down.
+#[gpui_kit::test]
+fn the_passkey_qr_needs_the_phone_picked_and_a_running_ceremony(cx: &mut TestAppContext) {
+    let url = "https://example/qr".to_string();
+    let (account, _) = account_step(cx);
+    account.update(cx, |account, cx| {
+        account.passkey_create("ada".into(), cx);
+        account.passkey_qr(url.clone(), cx);
+    });
+    assert_eq!(
+        state(&account, cx).passkey_qr,
+        None,
+        "shown without the phone picked"
+    );
+    account.update(cx, |account, cx| account.passkey_use_phone(cx));
+    assert_eq!(state(&account, cx).passkey_qr, Some(url));
+    account.update(cx, |account, cx| account.passkey_cancel(cx));
+    assert_eq!(
+        state(&account, cx).passkey_qr,
+        None,
+        "shown after the ceremony ended"
+    );
+}
+
 #[gpui_kit::test]
 fn an_empty_password_or_name_is_not_sent(cx: &mut TestAppContext) {
     let (account, _) = unlock(cx);

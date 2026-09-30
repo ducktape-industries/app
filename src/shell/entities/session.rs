@@ -467,7 +467,7 @@ impl Session {
     }
 
     /// Another node from the switcher: reached first, and only once it
-    /// answers does the console leave the network in hand (`ConnectFailed`
+    /// answers does the console leave the network in hand (`connect_failed`
     /// leaves everything as it was).
     pub(crate) fn switch(&mut self, origin: String, cx: &mut Context<Self>) {
         if origin == self.state.connected_rpc && !self.state.connecting {

@@ -96,7 +96,6 @@ pub(crate) struct Account {
     /// account made, an approval (`busy`).
     call: Option<Task<()>>,
     /// The node asked which account the key holds.
-    resolving: Option<Task<()>>,
     /// "From another device", waiting to be approved.
     link: Option<Task<()>>,
     /// A passkey ceremony in the browser; dropping it cancels it.
@@ -124,7 +123,6 @@ impl Account {
             passkey_url: String::new(),
             seating: None,
             call: None,
-            resolving: None,
             link: None,
             passkey: None,
         }
@@ -208,12 +206,13 @@ impl Account {
 
     /// Everything that belonged to the network being left: its seated key
     /// (the seat is one for the whole app), the account it resolved to, and
-    /// any sign-in half done. Dropping the tasks cancels them.
+    /// any sign-in half done. Dropping the tasks cancels them; an account
+    /// lookup in flight lands and is discarded by `resolved`'s node and
+    /// key check.
     pub(crate) fn leave_network(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         self.seating = None;
         self.call = None;
-        self.resolving = None;
         self.link = None;
         self.passkey = None;
         self.phrase = None;
@@ -450,11 +449,14 @@ impl Account {
                 }
             }
         };
-        self.resolving = Some(spawn_on_runtime(cx, work, move |this, account, cx| {
+        // never cancelled: a block landing mid-lookup would otherwise drop
+        // it, and `resolved` discards an answer for another node or key
+        spawn_on_runtime(cx, work, move |this, account, cx| {
             if let Some(account) = account {
                 this.resolved(&node, &signer, account, cx);
             }
-        }));
+        })
+        .detach();
     }
 
     /// The node's word on `key`'s account, asked of `node`: an answer from

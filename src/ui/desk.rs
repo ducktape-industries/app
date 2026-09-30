@@ -56,7 +56,8 @@ impl Ducktape {
                     Task::none()
                 }
             },
-            Message::OpenLink(_) => unreachable!("read against the chain by `Desktop::dispatch`"),
+            // read against the chain by `Desktop::dispatch`, never here
+            Message::OpenLink(_) => Task::none(),
             // the network in hand was left: every window's panes go, each
             // desk keeping its measure; the badges and the active program
             // with them (what is open over each desk closes as it sees the
@@ -177,9 +178,8 @@ impl Ducktape {
             | Spot::Switch(_)
             | Spot::CreateAccount
             | Spot::Lock
-            | Spot::OtherNetwork => {
-                unreachable!("run by `layers::overlays::run` on the entity it moves")
-            }
+            // run by `layers::overlays::run` on the entity it moves, never here
+            | Spot::OtherNetwork => return Task::none(),
         };
         self.update(message)
     }
