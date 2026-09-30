@@ -418,12 +418,14 @@ shell control ─► Session / Account method ─► its compared state (and Cha
   from the cache),
   which reads `Screen`, `Session`, `Account` and `Prefs` and picks by
   `Screen`: the frame with a `spin` figure on the left (written from its
-  observers), then `launcher/connect.rs`, `key.rs`, `recovery.rs`,
-  `account.rs`. Its fields own what is typed: a change clears the step's
-  failure (`Account::clear_error`, `Session::set_endpoint`), Enter and the
-  buttons call the step's method with the field's text; what the entities
-  reset without typing (a step's secrets as it goes, the address the
-  session moved to) the layer writes into them from its observers. On the desk: `layers::Chrome`
+  observers, or a frame after a screen change from a next-frame callback,
+  as the unlock screen's pixels need; never from a draw), then
+  `launcher/connect.rs`, `key.rs`, `recovery.rs`, `account.rs`. Its fields
+  own what is typed: a change clears the step's failure
+  (`Account::clear_error`, `Session::set_endpoint`), Enter and the buttons
+  call the step's method with the field's text; what the entities reset
+  without typing (a step's secrets as it goes, the address the session
+  moved to) the layer writes into them from its observers. On the desk: `layers::Chrome`
   across the top (`layers/chrome.rs`, a cached view of the bar reading the
   entities alone, its menus hanging from their buttons: `chrome/menus.rs`,
   `chrome/bell.rs`), `layers/panes.rs` drawing each pane's seat (its tree or

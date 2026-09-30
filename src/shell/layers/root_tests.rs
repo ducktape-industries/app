@@ -361,7 +361,10 @@ fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext)
 }
 
 /// Before the desk the console's root draws the launcher's screen alone:
-/// each screen change draws it once, and no bar until the desk.
+/// each screen change draws it once, and once more when the screen's
+/// figure follows a frame late
+/// (`the_figure_follows_the_screen_without_a_render_write`); no bar until
+/// the desk.
 #[gpui_kit::test]
 fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
@@ -391,8 +394,8 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     frame(&mut native);
     assert_eq!(
         window_count(key, "renders.launcher"),
-        launcher + 1,
-        "a screen change drew the launcher other than once"
+        launcher + 2,
+        "a screen change and its figure drew the launcher other than twice"
     );
     let nodes = native.update(draw);
     assert!(
@@ -417,11 +420,13 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     );
 }
 
-/// The launcher's figure is written from its observers, never from a
-/// draw: written during the launcher's draw, the figure (a cached view of
-/// its own) would keep last frame's drawing until something else drew it
-/// again (P3). A screen change draws the new figure in the frame that
-/// shows the screen, draws the launcher once, and no frame follows.
+/// The launcher's figure is never written from a draw: written during the
+/// launcher's draw, the figure (a cached view of its own) would keep last
+/// frame's drawing until something else drew it again (P3). A screen
+/// change draws the launcher with the last screen's figure (its glyphs
+/// enter the atlas after the screen's text, which the unlock screen's
+/// pixels depend on), the next frame draws the new figure, and no frame
+/// follows that.
 #[gpui_kit::test]
 fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext) {
     use crate::shell::figure::Figure;
@@ -443,22 +448,55 @@ fn the_figure_follows_the_screen_without_a_render_write(cx: &mut TestAppContext)
     let launcher = window_count(key, "renders.launcher");
 
     set_screen(&view, Screen::Unlock { awaiting: false }, &mut native);
+    native.run_until_parked();
+    assert_eq!(
+        (drawn(&mut native), window_count(key, "renders.launcher")),
+        (Some(Figure::Roll), launcher + 1),
+        "the frame showing the key screen drew other than the last figure, once"
+    );
     frame(&mut native);
+    assert_eq!(
+        (drawn(&mut native), window_count(key, "renders.launcher")),
+        (Some(Figure::Ring), launcher + 2),
+        "the frame after it drew other than the key screen's figure, once"
+    );
+    frame(&mut native);
+    assert_eq!(
+        window_count(key, "renders.launcher"),
+        launcher + 2,
+        "a third frame followed the screen change"
+    );
+}
+
+/// Back from the desk the figure is drawn afresh (the desk kept no frame
+/// of it), so it comes with its screen: the frame that shows the connect
+/// screen draws the roll, not the key screen's ring it last drew.
+#[gpui_kit::test]
+fn a_figure_back_from_the_desk_comes_with_its_screen(cx: &mut TestAppContext) {
+    use crate::shell::figure::Figure;
+    let mut seed = Seed::boot();
+    seed.state.center = Default::default();
+    seed.state.roster = Default::default();
+    seed.state.motion = false;
+    let (_, _, view, mut native) = open_console(seed, cx);
+    let spin = native.update(|_, cx| view.read(cx).launcher().read(cx).spin.clone());
+    let drawn = |native: &mut VisualTestContext| native.update(|_, cx| spin.read(cx).drawn());
+    for screen in [Screen::Unlock { awaiting: false }, Screen::Desk] {
+        set_screen(&view, screen, &mut native);
+        frame(&mut native);
+        frame(&mut native);
+    }
     assert_eq!(
         drawn(&mut native),
         Some(Figure::Ring),
-        "the frame showing the key screen drew the last screen's figure"
+        "the key screen drew"
     );
+    set_screen(&view, Screen::Connect, &mut native);
+    native.run_until_parked();
     assert_eq!(
-        window_count(key, "renders.launcher"),
-        launcher + 1,
-        "the screen change drew the launcher other than once"
-    );
-    frame(&mut native);
-    assert_eq!(
-        window_count(key, "renders.launcher"),
-        launcher + 1,
-        "a second frame followed the screen change"
+        drawn(&mut native),
+        Some(Figure::Roll),
+        "the connect screen came back with the key screen's figure"
     );
 }
 

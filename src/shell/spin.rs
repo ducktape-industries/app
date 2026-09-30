@@ -99,6 +99,11 @@ impl Spin {
         }
     }
 
+    /// The figure its owner last set.
+    pub(super) fn figure(&self) -> Figure {
+        self.figure
+    }
+
     /// The figure its last render drew.
     #[cfg(test)]
     pub(super) fn drawn(&self) -> Option<Figure> {
