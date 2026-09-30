@@ -20,8 +20,8 @@ use super::super::entities::{
 };
 use super::super::ink::{Ink, mono, sans};
 use super::super::{
-    Desktop, DesktopWindow, Message, PaneMessage, WindowKey, chord_label, desk::BAR, keys,
-    pane_hold, screens, status_bar::pulse, theme,
+    Desktop, Message, PaneMessage, WindowKey, WindowRoot, chord_label, keys, pane_hold, screens,
+    theme,
 };
 use crate::Popover;
 use crate::a11y::Control as _;
@@ -31,6 +31,9 @@ use gpui_kit::*;
 mod bell;
 mod menus;
 
+/// The menu bar's height.
+pub(in crate::shell) const BAR: f32 = 36.;
+
 /// The menu bar and its menus, one per console window.
 pub(in crate::shell) struct Chrome {
     /// The reducer, until the arms the rows dispatch move (s8-s11).
@@ -38,7 +41,7 @@ pub(in crate::shell) struct Chrome {
     key: WindowKey,
     /// Its window: a tab's click opens the program through it, and a menu
     /// the keys left closes through it.
-    window: WeakEntity<DesktopWindow>,
+    window: WeakEntity<WindowRoot>,
     session: Observed<Slice<Session>>,
     chain: Observed<Chain>,
     account: Observed<Slice<Account>>,
@@ -77,7 +80,7 @@ impl Chrome {
         key: WindowKey,
         own: &WindowEntities,
         menu: FocusHandle,
-        desk_window: WeakEntity<DesktopWindow>,
+        desk_window: WeakEntity<WindowRoot>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -136,7 +139,7 @@ impl Chrome {
     }
 
     /// The keys are outside the open menu: it closes, and they stay where
-    /// they went (`DesktopWindow::menu_left_by_keys`, now: the audit's walk
+    /// they went (`WindowRoot::menu_left_by_keys`, now: the audit's walk
     /// and the door read the window in the same update, and an event would
     /// land after them). A no-op while they are in it (a row that went while
     /// the menu stays put them back at its first control, `focus_lost`), and
@@ -394,7 +397,6 @@ impl Chrome {
 /// What the bar is drawn from, read off the slices at the top of a render.
 struct Bar {
     dark: bool,
-    motion: bool,
     network: String,
     connecting: bool,
     reconnecting: bool,
@@ -423,7 +425,6 @@ impl Render for Chrome {
             );
             Bar {
                 dark: prefs.dark(),
-                motion: prefs.motion,
                 network: session.network.clone(),
                 connecting: session.connecting,
                 reconnecting: session.reconnecting,
@@ -716,39 +717,35 @@ impl Render for Chrome {
         };
         // the height moves every block: it is the description, so the
         // name holds still
-        let (breath, said) = match (bar.connecting, bar.reconnecting) {
-            (true, _) => (true, "Node: switching"),
-            (_, true) => (false, "Node: not answering"),
-            (false, false) => (true, "Node: in sync"),
+        let said = match (bar.connecting, bar.reconnecting) {
+            (true, _) => "Node: switching",
+            (_, true) => "Node: not answering",
+            (false, false) => "Node: in sync",
         };
         let node_open = bar.open == Some(Overlay::Menu(Popover::Node));
-        // the 12px well the breath sits in: where it is laid out is the
-        // dot's slot, read at prepaint and, when it moved, committed after
-        // the frame (a settled bar asks for nothing)
+        // the 12px well the breath sits in, empty: `layers::StatusDot`
+        // draws the breath over it. Where it is laid out is the dot's
+        // slot, read at prepaint and, when it moved, committed after the
+        // frame (a settled bar asks for nothing)
         let well = {
             let dot = self.dot.entity().clone();
-            div()
-                .size(px(12.))
-                .flex_shrink_0()
-                .relative()
-                .child(
-                    canvas(
-                        move |bounds, window, cx| {
-                            if *dot.read(cx).get() != Some(bounds) {
-                                let dot = dot.clone();
-                                window.on_next_frame(move |_, cx| {
-                                    dot.update(cx, |slot, cx| {
-                                        slot.set(Some(bounds), cx);
-                                    });
+            div().size(px(12.)).flex_shrink_0().relative().child(
+                canvas(
+                    move |bounds, window, cx| {
+                        if *dot.read(cx).get() != Some(bounds) {
+                            let dot = dot.clone();
+                            window.on_next_frame(move |_, cx| {
+                                dot.update(cx, |slot, cx| {
+                                    slot.set(Some(bounds), cx);
                                 });
-                            }
-                        },
-                        |_, _, _, _| {},
-                    )
-                    .absolute()
-                    .inset_0(),
+                            });
+                        }
+                    },
+                    |_, _, _, _| {},
                 )
-                .child(pulse(breath, bar.motion, &ink))
+                .absolute()
+                .inset_0(),
+            )
         };
         let node = item(
             "rail-connection",

@@ -146,7 +146,7 @@ fn a_press_on_a_row_of_a_window_without_the_keys_opens_it_there(cx: &mut TestApp
 }
 
 /// A desk with two empty windows (⌘N twice), the second in front.
-fn two_empty_windows(cx: &mut TestAppContext) -> (Entity<DesktopWindow>, VisualTestContext) {
+fn two_empty_windows(cx: &mut TestAppContext) -> (Entity<WindowRoot>, VisualTestContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         keys::bind(cx);

@@ -66,7 +66,7 @@ view's tree lowers onto GPUI elements one to one.
 | Module | Owns | Runs on |
 |---|---|---|
 | `main.rs` | CLI flags (`--version`, `ax`, debug `--render-tree`), `app.log` + panic hook, fd limit, `DUCKTAPE_VIEWS_DIR`, then `shell::run` | process start |
-| `shell.rs`, `shell/` | the native chrome: `Desktop` (the one model entity), `DesktopWindow` (one per OS window), `Command` effects, launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
+| `shell.rs`, `shell/` | the native chrome: `Desktop` (the one model entity), `layers::WindowRoot` (one per OS window, laying its layers out: `Chrome`, `PaneLayer`, `Screens`, `StatusDot`, `ToastView`), `Command` effects, launcher, desk, menu bar, panes, overlays, keys, theme, fonts glue | window thread |
 | `ui.rs`, `ui/` | `Ducktape` state, `AppMessage`, the reducer (`Ducktape::handle` → sub-reducers), the pure pane geometry (`ui/layout.rs`) | window thread (called from `Desktop::dispatch`) |
 | `runtime.rs`, `runtime/` | seats, guests (wasmtime), the kernel relay, replies, notify, store, clipboard, roster, `Seat` | ticks on the window thread, off the draw path; loads on loader threads; node calls on `views-kernel` |
 | `render.rs`, `render/` | `ViewTree`: one wire tree drawn as GPUI elements, retained native state keyed by `AuthoredPath`, `wire::Event` out, accessibility mapping | window thread |
@@ -100,7 +100,7 @@ node. `backend/` never names a user program.
 
 | Thread | What runs there | Where it is made |
 |---|---|---|
-| **window / main** (GPUI foreground) | `Desktop::dispatch` and the whole reducer; every `DesktopWindow` render; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the app's own `Task` futures (connect, status poll, sign-in) — `Desktop::start` polls them on the GPUI foreground inside `runtime.enter()`, so their HTTP bodies are decoded here | `shell/launch.rs` |
+| **window / main** (GPUI foreground) | `Desktop::dispatch` and the whole reducer; every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the app's own `Task` futures (connect, status poll, sign-in) — `Desktop::start` polls them on the GPUI foreground inside `runtime.enter()`, so their HTTP bodies are decoded here | `shell/launch.rs` |
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn`, `live`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
 | **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
@@ -341,7 +341,7 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
                                    ├─ tray.sync            (polled by Desktop::start,
                                    ├─ start(task)           each yield re-dispatched)
                                    ├─ subscriptions (timers)
-                                   └─ cx.notify() ─► every DesktopWindow re-renders
+                                   └─ cx.notify() ─► every `Screens` (the launcher/dialog layer) re-renders
 ```
 
 - **State.** `Ducktape` (`ui/app.rs`): appearance, `stage` (which screen
@@ -383,17 +383,24 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   source over. Neither the rail's rows nor a window's front is bridged:
   the rows are refreshed off the roster's changes channel, and the front
   (`Front::of_desk`) is derived from its desk by an observer.
-  `DesktopWindow::render` copies the fields a draw needs into `Facts`
-  (`shell/screens.rs`) and picks by `Stage`: the launcher screens
-  (`shell/launcher.rs` frame with a `spin` figure on the left; `screens.rs`
-  Connect; `sign_in.rs` key, phrase, recover, account) or the desk
-  (`shell/desk.rs`): `layers::Chrome` across the top (`layers/chrome.rs`, a
-  cached view of the bar reading the entities alone, its menus hanging from
-  their buttons: `chrome/menus.rs`, `chrome/bell.rs`), `panes.rs` drawing each
-  pane's seat (its tree or standin) or the app's own body (`layers::EmptyPane`:
-  the bare desk's figure or an empty window's finder; `layers::HelpPane`) under
-  a cached `layers::Strip`, and one dialog at a time (`spotlight.rs`,
-  `settings.rs`, `approve.rs`). Native effects the reducer asks for travel as
+  `layers::WindowRoot` (`layers/root.rs`, one thin uncached view per OS
+  window) lays the window's layers out as siblings. Before the desk the
+  console draws `layers::Screens` (`layers/screens.rs`, cached over the
+  model), which copies the fields a draw needs into `Facts` (`shell/facts.rs`)
+  and picks by `Stage`: the launcher screens (`shell/launcher.rs` frame with
+  a `spin` figure on the left; `connect.rs`; `key_screen.rs`,
+  `recovery_screens.rs`, `account_screens.rs`). On the desk: `layers::Chrome`
+  across the top (`layers/chrome.rs`, a cached view of the bar reading the
+  entities alone, its menus hanging from their buttons: `chrome/menus.rs`,
+  `chrome/bell.rs`), `layers/panes.rs` drawing each pane's seat (its tree or
+  standin) or the app's own body (`layers::EmptyPane`: the bare desk's figure
+  or an empty window's finder; `layers::HelpPane`) under a cached
+  `layers::Strip`, `Screens` again for the one dialog at a time
+  (`spotlight.rs`, `settings.rs`, `approve.rs`), the node's breath
+  (`layers::StatusDot`, `layers/dot.rs`, a root sibling over the bar's empty
+  well at `DotSlot`) and the footer (`layers::ToastView`, `layers/toast.rs`,
+  cached over `Toast`, `Session` and `Prefs`, drawn deferred over an open
+  menu). Native effects the reducer asks for travel as
   `shell::Command` through `commands()`'s channel to the pump in
   `shell/launch.rs` and `Desktop::execute`; `shell/windows.rs` decides where
   windows open. Keyboard shortcuts are GPUI actions bound in
@@ -404,7 +411,7 @@ shell control ─ AppMessage ─► Desktop::dispatch ─► Ducktape::handle �
   as `Message::ViewEvent`; a gone pane's seat is told `hide`, its last
   intents routed the same way, and dropped. A pane keeps its seat when it
   pops out to its own OS window (`WindowKind::View`) and back; the
-  `DesktopWindow` observes `Seats` to redraw when a seat moves.
+  `PaneLayer` observes `Seats` to redraw when a seat moves.
 
 ## 6. Sign-in and keys
 
@@ -546,9 +553,10 @@ Files: `ui/connect.rs`, `ui/sign_in.rs` (reducers); `shell/screens.rs`
   for compile, `restore` or `first_frame`), so a swap stalls the window for
   those two steps. The reducer's own `Task`s are
   polled on the window thread (HTTP bodies decode there). Every
-  `Desktop::dispatch` ends in `cx.notify()`, and every `DesktopWindow`
-  observes the model, so each message re-renders every window; the wall and
-  toast timers alone make that several times a second. `Roster::rail()`,
+  `Desktop::dispatch` ends in `cx.notify()`, and the console's `Screens`
+  layer observes the model, so each message re-renders it (and the root over
+  it; the cached layers beside it hit); a clock's beat that moves nothing
+  notifies nothing (`beat_face`). `Roster::rail()`,
   which locks every seat, runs once per roster or seat change
   (`entities::Rail`), not per render of a desk whose panes all hold
   programs; still per draw of Spotlight and Settings › Notifications while
@@ -593,7 +601,7 @@ House words, and where one word means several things.
   `SIGNER` (`seat_key`, `seated_frame`; `SignIn::seating` while it opens).
   (3) "unseated": a pane that left the desk for its own window
   (`shell/windows.rs`). (4) the element id `seat` of the pane area
-  (`shell/desk.rs`).
+  (`shell/layers/root.rs`).
 - **slot** — `seat::Slot`, what a seat holds (Loading … Ready … Failed).
   Also the **slot mask** in `render/`: the pane box a view is clipped to,
   applied to tooltips (`tooltip_containment::SlotMask`).
@@ -666,7 +674,7 @@ House words, and where one word means several things.
 - **pane / window** — `layout::Pane` is one floating frame on the desk
   holding a view, the program finder or Help. User copy, GPUI actions and
   `layout.rs` comments call it a **window**. **window** therefore means
-  three things: an OS window (`DesktopWindow`, `WindowKey`,
+  three things: an OS window (`WindowRoot`, `WindowKey`,
   `WindowKind`), a pane, and the view-wire `events::Window` events
   (`Focused`, `CloseRequested`, `Closed`, …) a guest receives.
 - **instance** — a pane's unique u64 (`Pane.instance`), the key for
@@ -742,9 +750,9 @@ House words, and where one word means several things.
   `TcpListener` as the node.
 - **Add a native screen or overlay.** State and messages in `ui/app.rs`
   (a `Stage` variant or an `Overlay` variant), the reducer arm in the
-  matching `ui/*.rs`, the drawing as a `DesktopWindow` method in `shell/`
-  built from `ink` pieces, routed from `DesktopWindow::render` (stages) or
-  `shell/desk.rs` (overlays). Give every control a role and name through
+  matching `ui/*.rs`, the drawing as a `Screens` method in `shell/`
+  built from `ink` pieces, routed from `Screens::render`
+  (`shell/layers/screens.rs`: stages and overlays alike). Give every control a role and name through
   `a11y` and an element id the door can address; add a walk to
   `shell/screens_tests.rs` or `panes_tests.rs`.
 - **Debug a view that will not load.** Read `app.log` (path from

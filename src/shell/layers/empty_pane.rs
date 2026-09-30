@@ -9,7 +9,7 @@
 use super::super::figure::Figure;
 use super::super::ink::{self, Ink};
 use super::super::spin::{self, Spin};
-use super::super::{Desktop, DesktopWindow, PaneMessage, WindowKey, WindowKind, chord_label};
+use super::super::{Desktop, PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label};
 use crate::a11y::Control as _;
 use crate::runtime::RailRow;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
@@ -83,7 +83,7 @@ enum Place {
     /// The empty window `instance` on the desk of `desk`.
     Window {
         instance: u64,
-        desk: WeakEntity<DesktopWindow>,
+        desk: WeakEntity<WindowRoot>,
         command: CommandLine,
     },
 }
@@ -157,7 +157,7 @@ impl EmptyPane {
         model: Entity<Desktop>,
         key: WindowKey,
         instance: u64,
-        desk: WeakEntity<DesktopWindow>,
+        desk: WeakEntity<WindowRoot>,
         own: &FocusHandle,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -307,18 +307,14 @@ impl EmptyPane {
     }
 
     /// Something done to the desk this window is on, by the desk.
-    fn on_desk(
-        &self,
-        cx: &mut App,
-        act: impl FnOnce(&mut DesktopWindow, &mut Context<DesktopWindow>),
-    ) {
+    fn on_desk(&self, cx: &mut App, act: impl FnOnce(&mut WindowRoot, &mut Context<WindowRoot>)) {
         if let Place::Window { desk, .. } = &self.place {
             let _ = desk.update(cx, act);
         }
     }
 
     /// A press on a row of empty window `index`: that window takes the keys
-    /// first, so the program opens there (`DesktopWindow::open_here`).
+    /// first, so the program opens there (`WindowRoot::open_here`).
     fn open_here(&self, index: usize, module: &'static str, window: &mut Window, cx: &mut App) {
         self.on_desk(cx, |desk, cx| desk.open_here(index, module, window, cx));
     }

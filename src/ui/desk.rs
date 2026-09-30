@@ -123,7 +123,7 @@ impl Ducktape {
                 Task::none()
             }
             // changes no state: its frame is the one a window switch is
-            // timed to (`DesktopWindow::start_switch`)
+            // timed to (`WindowRoot::start_switch`)
             Message::WindowFocused => Task::none(),
             Message::WindowUnfocused(key) => {
                 // the keys left the window: a hold on one of its panes ends

@@ -33,7 +33,7 @@ const _: () = assert!(LAUNCHER_SIZE.0 >= FIGURE_W + COLUMN_MIN);
 /// A quiet link above a screen: its element id, its words, what it does.
 pub(super) type Back = (&'static str, &'static str, fn() -> Message);
 
-/// What a launcher screen puts in the frame (`DesktopWindow::launcher`).
+/// What a launcher screen puts in the frame (`Screens::launcher`).
 pub(super) struct LauncherScreen {
     /// The reading column's element id: the screen's name to the AX tree.
     pub(super) id: &'static str,
@@ -56,7 +56,7 @@ pub(super) struct LauncherScreen {
     pub(super) body: Vec<gpui_kit::AnyElement>,
 }
 
-impl DesktopWindow {
+impl Screens {
     /// One launcher screen in the canvas's frame: on the left a 380px panel,
     /// `padding: 20px; gap: 12px`, the drawing on `surface` and its mono
     /// caption; on the right the reading column, `padding: 32px 40px 0;
@@ -93,7 +93,7 @@ impl DesktopWindow {
         let titlebar = theme::traffic_lights(window).map(|lights| {
             div()
                 .id("launcher-titlebar")
-                .h(px(super::desk::BAR))
+                .h(px(super::layers::BAR))
                 .flex_shrink_0()
                 .flex()
                 .items_center()
@@ -173,7 +173,6 @@ impl DesktopWindow {
                     )
                     .child(reading),
             )
-            .children(self.footer(cx))
             .into_any_element()
     }
 

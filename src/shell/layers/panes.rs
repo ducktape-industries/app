@@ -11,13 +11,13 @@
 //!
 //! Where panes sit, stack and which has the keys is the model's
 //! (`ui::layout`, read through the `Desk` slice); this file draws it and
-//! sends `PaneMessage`s through the window (`DesktopWindow::pane_message`).
+//! sends `PaneMessage`s through the window (`WindowRoot::pane_message`).
 
 use super::super::entities::{
     Desk, Notifications, Observed, Overlays, Prefs, Rail, Seats, Slice, WindowEntities,
 };
 use super::super::{
-    Desktop, DesktopWindow, Message, PaneMessage, WindowKey, WindowKind, chord_label, layout,
+    Desktop, Message, PaneMessage, WindowKey, WindowKind, WindowRoot, chord_label, layout,
     pane_drag, pane_hold, panes, theme,
 };
 use super::{EmptyPane, HelpPane, cached_unless_a11y};
@@ -53,7 +53,7 @@ pub(in crate::shell) struct PaneLayer {
     seats: Entity<Seats>,
     /// The window this layer draws in: pane messages and the overlay's
     /// `refocus` are its.
-    pub(in crate::shell) window: WeakEntity<DesktopWindow>,
+    pub(in crate::shell) window: WeakEntity<WindowRoot>,
     /// The desk's body while no pane is on it.
     empty_desk: Entity<EmptyPane>,
     /// One view per pane, by the pane's instance.
@@ -61,7 +61,7 @@ pub(in crate::shell) struct PaneLayer {
     /// Each pane's own focus (its view's box), by instance, and what in it
     /// last had the keys: a pane that comes to the front gets them back.
     pub(in crate::shell) pane_keys: HashMap<u64, (FocusHandle, Option<FocusHandle>)>,
-    /// Its panes moved (`DesktopWindow::pane_message`): the draw that shows
+    /// Its panes moved (`WindowRoot::pane_message`): the draw that shows
     /// them hands the keys to the focused one.
     pub(in crate::shell) panes_moved: bool,
     front: Option<u64>,
@@ -82,7 +82,7 @@ impl PaneLayer {
         kind: WindowKind,
         own: WindowEntities,
         root: FocusHandle,
-        desk_window: WeakEntity<DesktopWindow>,
+        desk_window: WeakEntity<WindowRoot>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -212,8 +212,8 @@ impl PaneLayer {
                 PaneView {
                     rail: Observed::new(&rail, cx),
                     notifications: Observed::new(&notifications, cx),
+                    prefs: Observed::new(&prefs, cx),
                     strip,
-                    model,
                     key,
                     kind,
                     instance,
@@ -233,10 +233,12 @@ impl PaneLayer {
     /// take and release, and each pane remembering what in it had them, are
     /// read off the frame just drawn, as they were when this ran at the
     /// draw. After the draw, so a pane's first control is in the frame
-    /// `focus_next` walks, and so Search giving the keys back to what had
-    /// them (deferred from the window's render until s8) has gone first. A
-    /// frame the model has moved on from is left alone: the draw that shows
-    /// the move follows, and this runs after it.
+    /// `focus_next` walks. Search closing gives the keys back to what had
+    /// them after this (`Screens` draws at prepaint and defers it past the
+    /// draw; until s8): the hold takes that give-back over (`sync_hold`),
+    /// and a pane coming to the front clears it (`keys_move`). A frame the
+    /// model has moved on from is left alone: the draw that shows the move
+    /// follows, and this runs after it.
     fn drawn(&mut self, shown: &layout::Layout, window: &mut Window, cx: &mut Context<Self>) {
         let layout = self.layout(cx);
         if *shown != layout {
@@ -266,7 +268,11 @@ impl PaneLayer {
         let front = layout.panes.get(layout.focused).map(|pane| pane.instance);
         let turned = std::mem::replace(&mut self.front, front) != front;
         if turned {
-            let _ = self.window.update(cx, |window, _| window.refocus = None);
+            let _ = self.window.update(cx, |root, cx| {
+                if let Some(screens) = &root.screens {
+                    screens.update(cx, |screens, _| screens.refocus = None);
+                }
+            });
         }
         std::mem::take(&mut self.panes_moved) || turned
     }
@@ -407,7 +413,6 @@ impl Body {
 /// desk its frame and grips. Uncached, over its cached body; it observes its
 /// seat, so a seat that moved (a tree, a standin, a minimum) draws it again.
 pub(in crate::shell) struct PaneView {
-    model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
     instance: u64,
@@ -417,6 +422,8 @@ pub(in crate::shell) struct PaneView {
     /// Its view asks to notify: the strip grows a bar, and is not cached
     /// meanwhile (the bar's height is its words').
     notifications: Observed<Notifications>,
+    /// Dark or light, for the frame's ink.
+    prefs: Observed<Slice<Prefs>>,
     /// Its title bar and permission bar, cached.
     strip: Entity<Strip>,
     layer: WeakEntity<PaneLayer>,
@@ -598,7 +605,7 @@ impl Render for PaneView {
                 1,
             );
         }
-        let ink = super::super::ink::Ink::of(self.model.read(cx).state.dark());
+        let ink = super::super::ink::Ink::of(self.prefs.read(cx).get().dark());
         let pane = &layout.panes[index];
         let held = layout
             .held
@@ -717,7 +724,7 @@ pub(in crate::shell) struct Strip {
     key: WindowKey,
     kind: WindowKind,
     layer: WeakEntity<PaneLayer>,
-    window: WeakEntity<DesktopWindow>,
+    window: WeakEntity<WindowRoot>,
     rail: Observed<Rail>,
     notifications: Observed<Notifications>,
     prefs: Observed<Slice<Prefs>>,
@@ -777,7 +784,7 @@ impl Strip {
         notifications: &Entity<Notifications>,
         prefs: &Entity<Slice<Prefs>>,
         layer: WeakEntity<PaneLayer>,
-        window: WeakEntity<DesktopWindow>,
+        window: WeakEntity<WindowRoot>,
         cx: &mut Context<Self>,
     ) -> Self {
         let observing = cx.observe(desk, move |this, desk, cx| {

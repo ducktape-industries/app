@@ -33,7 +33,11 @@ impl Kept {
     /// the shell's.
     pub(crate) fn of(window: &Window, cx: &gpui_kit::App) -> Option<Self> {
         let root = window.root::<gpui_kit::component::Root>().flatten()?;
-        let view = root.read(cx).view().clone().downcast::<DesktopWindow>();
+        let view = root
+            .read(cx)
+            .view()
+            .clone()
+            .downcast::<super::layers::WindowRoot>();
         let desktop = view.ok()?.read(cx).model.clone();
         let state = &desktop.read(cx).state;
         Some(Self {
@@ -64,7 +68,7 @@ impl Kept {
     }
 }
 
-impl DesktopWindow {
+impl Screens {
     /// The dialog: `760 × 680; border: 1.5px solid ink` (the board's 540,
     /// taller so every view's row fits), a 34px title strip with its close, on a scrim below the bar. A click on the scrim, or
     /// Escape, closes it.
@@ -235,7 +239,7 @@ impl DesktopWindow {
                 ink.ink,
             ));
         let (top, tall) =
-            super::desk::dialog_fit(f32::from(window.viewport_size().height), 680., 74.);
+            super::layers::dialog_fit(f32::from(window.viewport_size().height), 680., 74.);
         self.overlay(
             "settings-window",
             Role::Dialog,

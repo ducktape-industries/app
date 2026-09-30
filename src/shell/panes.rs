@@ -19,7 +19,7 @@ pub(super) fn label(rail: &[crate::runtime::RailRow], module: &str) -> String {
         .map_or_else(|| module.to_owned(), |row| row.label.clone())
 }
 
-impl DesktopWindow {
+impl WindowRoot {
     /// Something done to this window's panes: the model moves them, and
     /// the keys go to the focused one (`PaneLayer::drawn`).
     pub(super) fn pane_message(

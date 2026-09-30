@@ -9,7 +9,7 @@ use super::*;
 use facts::Facts;
 use figure::Figure;
 
-impl DesktopWindow {
+impl Screens {
     /// SignIn: this device's key, opening, locked, failed, or (from before
     /// keys moved into the system) behind a password asked once.
     pub(super) fn unlock(

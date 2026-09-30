@@ -37,7 +37,7 @@ fn focused_node(window: &Window) -> Option<(Role, String)> {
         .map(|(_, node)| (node.role(), node.label().unwrap_or_default().to_owned()))
 }
 
-fn show(view: &Entity<DesktopWindow>, native: &mut VisualTestContext, overlay: Option<Overlay>) {
+fn show(view: &Entity<WindowRoot>, native: &mut VisualTestContext, overlay: Option<Overlay>) {
     view.update(native, |view, cx| {
         view.model.update(cx, |model, cx| {
             model.state.overlay = overlay;
@@ -131,7 +131,7 @@ const MENUS: [(Overlay, Role, &str); 4] = [
     ),
 ];
 
-fn open_now(view: &Entity<DesktopWindow>, native: &mut VisualTestContext) -> Option<Overlay> {
+fn open_now(view: &Entity<WindowRoot>, native: &mut VisualTestContext) -> Option<Overlay> {
     native.update(|_, cx| view.read(cx).model.read(cx).state.overlay)
 }
 

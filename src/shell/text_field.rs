@@ -1,11 +1,11 @@
 //! The native text field every screen types into: the model owns the
-//! text, the field mirrors it (`DesktopWindow::input`), and its state
+//! text, the field mirrors it (`Screens::input`), and its state
 //! lives as long as its window (`NativeInput`).
 
 use super::*;
 
 /// One native text field's state, kept for as long as its window lives
-/// (see `DesktopWindow::input`).
+/// (see `Screens::input`).
 pub(super) struct NativeInput {
     pub(super) state: Entity<gpui_kit::component::input::InputState>,
     /// A digest of the model text the field last agreed with — what it
@@ -23,7 +23,7 @@ fn digest(text: &str) -> u64 {
     hasher.finish()
 }
 
-/// What a screen asks of its text field (`DesktopWindow::input`).
+/// What a screen asks of its text field (`Screens::input`).
 pub(super) struct TextField {
     /// Its element id, and what its state is kept under in the window.
     pub(super) key: &'static str,
@@ -48,7 +48,7 @@ pub(super) struct TextField {
     pub(super) on_enter: fn() -> Message,
 }
 
-impl DesktopWindow {
+impl Screens {
     /// A native text field; Enter dispatches `on_enter`, every change
     /// dispatches `on_change` with the text.
     ///

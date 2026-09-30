@@ -14,7 +14,7 @@ use figure::Figure;
 /// so a `Status` a screen reader hears.
 const LINK_WAITING: &str = "On a device already signed in, open the account menu, choose \"Add a device…\" and type the code. Approve there only if it shows the same four-and-four. The code lasts five minutes.";
 
-impl DesktopWindow {
+impl Screens {
     /// CreateAccount: name the account this key signs for, or add this
     /// device to one that exists.
     pub(super) fn account_step(

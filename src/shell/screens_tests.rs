@@ -110,32 +110,9 @@ fn find<'a>(nodes: &'a serde_json::Value, role: &str, name: &str) -> &'a serde_j
 pub(super) fn open(
     state: Ducktape,
     cx: &mut TestAppContext,
-) -> (Entity<DesktopWindow>, VisualTestContext) {
-    // a state that has a console window (with a desk laid out for it) is drawn in it
-    let key = state.console_win.unwrap_or_else(WindowKey::unique);
-    let model = cx.new(|cx| {
-        let entities = entities::Entities::for_test(&state, cx);
-        Desktop::new(state, crate::tray::init(cx).0, entities, cx)
-    });
-    let mut view = None;
-    let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let desktop =
-            cx.new(|cx| DesktopWindow::new(model.clone(), key, WindowKind::Console, window, cx));
-        view = Some(desktop.clone());
-        gpui_kit::component::Root::new(desktop, window, cx)
-    });
-    let view = view.unwrap();
-    model.update(cx, |model, _| {
-        model.windows.insert(key, handle.into());
-        model.views.insert(key, view.downgrade());
-    });
-    // the platform's first frame: the desk's size and its seed reach the
-    // model from the frame's callback, not from the draw
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.simulate_next_frame(cx);
-    })
-    .unwrap();
-    (view, VisualTestContext::from_window(handle.into(), cx))
+) -> (Entity<WindowRoot>, VisualTestContext) {
+    let (_, _, view, native) = super::layers::tests::open_console(state, cx);
+    (view, native)
 }
 
 #[gpui_kit::test]
@@ -439,7 +416,7 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
     native.update(draw);
     let field = |native: &mut VisualTestContext| {
         native.update(|_, cx| {
-            view.read(cx).inputs["password"]
+            view.read(cx).screens().read(cx).inputs["password"]
                 .state
                 .read(cx)
                 .value()
@@ -485,13 +462,15 @@ fn a_draw_leaves_text_the_model_has_not_heard_yet(cx: &mut TestAppContext) {
     let (view, mut native) = open(state, cx);
     native.update(draw);
     native.update(|window, cx| {
-        let field = view.read(cx).inputs["password"].state.clone();
+        let field = view.read(cx).screens().read(cx).inputs["password"]
+            .state
+            .clone();
         // set_value emits no change: the model has not heard of this text.
         field.update(cx, |field, cx| field.set_value("abcdef", window, cx));
     });
     native.update(draw);
     let shown = native.update(|_, cx| {
-        view.read(cx).inputs["password"]
+        view.read(cx).screens().read(cx).inputs["password"]
             .state
             .read(cx)
             .value()

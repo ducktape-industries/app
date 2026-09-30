@@ -63,7 +63,7 @@ pub(crate) struct Center {
     /// Notices past the burst limit since the view's last banner.
     more: HashMap<String, u32>,
     /// The window in front and the view focused in it.
-    pub(super) front: Option<(WindowKey, &'static str)>,
+    pub(crate) front: Option<(WindowKey, &'static str)>,
     /// Views that posted before the person said anything about them.
     pub(crate) asking: BTreeSet<String>,
     pub(super) not_now: BTreeSet<String>,
@@ -290,7 +290,9 @@ impl Center {
             .sum()
     }
 
-    /// A window drew: whether it is in front, and the view focused in it.
+    /// A window came to the front or left it, or its panes moved
+    /// (`WindowRoot`'s activation and `Desk` observers): whether it is in
+    /// front, and the view focused in it.
     pub(crate) fn set_front(&mut self, window: WindowKey, active: bool, focused: &'static str) {
         match active {
             true => self.front = Some((window, focused)),

@@ -3,8 +3,8 @@
 use super::Chrome;
 use crate::AppMessage as Message;
 use crate::a11y::Control as _;
-use crate::shell::desk::BAR;
 use crate::shell::ink::{Ink, mono, sans, tall};
+use crate::shell::layers::BAR;
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 

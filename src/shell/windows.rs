@@ -1,6 +1,6 @@
 //! OS windows: where a new one goes (`cascade`, `centered`, `unseated`),
-//! how a `DesktopWindow` and the `Desktop` are made, and how the model
-//! opens a window (`Desktop::open_window`).
+//! how the `Desktop` is made, and how the model opens a window
+//! (`Desktop::open_window`, whose root is a `layers::WindowRoot`).
 
 use super::*;
 use gpui_kit::{Bounds, Pixels, Size, point, px, size};
@@ -62,7 +62,7 @@ pub(super) fn unseated(
     let extent = size(px(frame.w.max(min_w)), px(frame.h.max(POPOUT_MIN)));
     let mut origin = point(
         source.origin.x + px(frame.x),
-        source.origin.y + px(desk::BAR + frame.y),
+        source.origin.y + px(layers::BAR + frame.y),
     );
     if let Some(display) = display {
         let right = display.origin.x + display.size.width - extent.width;
@@ -71,71 +71,6 @@ pub(super) fn unseated(
         origin.y = origin.y.min(bottom).max(display.origin.y);
     }
     Bounds::new(origin, extent)
-}
-
-impl DesktopWindow {
-    /// A window of `kind`, focused on its own root (so the first Tab
-    /// reaches the first control), telling the model when it gains or
-    /// loses focus.
-    pub(super) fn new(
-        model: Entity<Desktop>,
-        key: WindowKey,
-        kind: WindowKind,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let observer = cx.observe(&model, |_, _, cx| cx.notify());
-        let activation =
-            cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
-                let message = match window.is_window_active() {
-                    true => {
-                        this.start_switch();
-                        Message::WindowFocused
-                    }
-                    false => Message::WindowUnfocused(key),
-                };
-                let model = this.model.clone();
-                cx.defer(move |cx| model.update(cx, |model, cx| model.dispatch(message, cx)));
-            });
-        let focus = cx.focus_handle();
-        focus.focus(window, cx);
-        let own = model.update(cx, |model, cx| model.window_entities(key, kind, cx));
-        let desk = own.desk.clone();
-        let menu = cx.focus_handle();
-        let chrome = (kind == WindowKind::Console).then(|| {
-            let (model, menu, this) = (model.clone(), menu.clone(), cx.weak_entity());
-            cx.new(|cx| layers::Chrome::new(model, key, &own, menu, this, window, cx))
-        });
-        let panes = {
-            let (model, root, this) = (model.clone(), focus.clone(), cx.weak_entity());
-            cx.new(|cx| layers::PaneLayer::new(model, key, kind, own, root, this, window, cx))
-        };
-        let launcher_spin = cx
-            .new(|cx| spin::Spin::new(figure::Figure::Roll, false, gpui_kit::Hsla::default(), cx));
-        Self {
-            model,
-            key,
-            kind,
-            desk,
-            chrome,
-            panes,
-            inputs: HashMap::new(),
-            spotlight_focused: false,
-            spotlight_rows: Default::default(),
-            settings_rows: Default::default(),
-            stops: HashMap::new(),
-            launcher_spin,
-            covered: None,
-            refocus: None,
-            modal: cx.focus_handle(),
-            menu,
-            switching: None,
-            focus,
-            _activation: activation,
-            _observer: observer,
-            _focus_lost: cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
-        }
-    }
 }
 
 impl Desktop {
@@ -224,7 +159,7 @@ impl Desktop {
             let mut opened_view = None;
             let window_model = model.clone();
             let opened = cx.open_window(options, |window, cx| {
-                let view = cx.new(|cx| DesktopWindow::new(window_model, key, kind, window, cx));
+                let view = cx.new(|cx| WindowRoot::new(window_model, key, kind, window, cx));
                 opened_view = Some(view.downgrade());
                 window.on_window_should_close(cx, move |window, cx| {
                     release_window_input(window, cx);
@@ -285,9 +220,9 @@ mod tests {
             Some(display),
             POPOUT_MIN,
         );
-        assert_eq!(at, frame(300., 100. + desk::BAR + 50., 900., 600.));
+        assert_eq!(at, frame(300., 100. + layers::BAR + 50., 900., 600.));
         assert!(
-            at.origin.y >= px(100. + desk::BAR),
+            at.origin.y >= px(100. + layers::BAR),
             "the console's bar stays uncovered"
         );
         // no narrower than its view: a 500 px frame of a view laid out from 680

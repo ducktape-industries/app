@@ -8,7 +8,7 @@ use gpui_kit::{Keystroke, TestAppContext, VisualTestContext};
 type Setup = (
     Entity<Desktop>,
     WindowKey,
-    Entity<DesktopWindow>,
+    Entity<WindowRoot>,
     VisualTestContext,
 );
 
@@ -55,15 +55,11 @@ fn key_split(native: &mut VisualTestContext) {
     key(native, "secondary-n");
 }
 
-fn frame(
-    native: &mut VisualTestContext,
-    view: &Entity<DesktopWindow>,
-    index: usize,
-) -> layout::Frame {
+fn frame(native: &mut VisualTestContext, view: &Entity<WindowRoot>, index: usize) -> layout::Frame {
     native.update(|_, cx| view.read(cx).layout(cx).panes[index].frame.unwrap())
 }
 
-fn held(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> bool {
+fn held(native: &mut VisualTestContext, view: &Entity<WindowRoot>) -> bool {
     native.update(|_, cx| view.read(cx).layout(cx).held.is_some())
 }
 
@@ -300,7 +296,7 @@ fn a_press_something_opening_or_another_window_ends_the_hold(cx: &mut TestAppCon
     native.simulate_click(
         gpui_kit::point(
             gpui_kit::px(title.x + 100.),
-            gpui_kit::px(title.y + desk::BAR + 12.),
+            gpui_kit::px(title.y + layers::BAR + 12.),
         ),
         gpui_kit::Modifiers::none(),
     );
@@ -497,4 +493,51 @@ fn search_rows_fill_and_hold_the_window_in_front(cx: &mut TestAppContext) {
     assert_eq!(frame(&mut native, &view, 1).x, filled.x + 8.);
     stroke(&mut native, "escape");
     assert!(!held(&mut native, &view));
+}
+
+/// Search open and drawn, then "Move or size window" run from it: the keys
+/// Search gives back as it closes (deferred past the draw) are the hold's
+/// to keep, not to take the hold apart with.
+#[gpui_kit::test]
+fn a_hold_run_from_a_drawn_search_keeps_the_keys(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = desk_of_two(cx);
+    let before = frame(&mut native, &view, 1);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::OpenSpotlight, cx)
+    });
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Spot(crate::ui::Spot::HoldWindow), cx)
+    });
+    settle(&mut native);
+    assert!(held(&mut native, &view), "Search closing ended the hold");
+    stroke(&mut native, "right");
+    assert_eq!(frame(&mut native, &view, 1).x, before.x + 8.);
+    stroke(&mut native, "escape");
+    assert!(!held(&mut native, &view));
+    assert!(
+        in_front(&mut native, &view),
+        "the keys went back to the window"
+    );
+}
+
+/// Search open and drawn, then "Fill window" run from it: the window in
+/// front keeps the keys once Search has closed.
+#[gpui_kit::test]
+fn a_fill_run_from_a_drawn_search_leaves_the_keys_in_front(cx: &mut TestAppContext) {
+    let (model, _, view, mut native) = desk_of_two(cx);
+    let before = frame(&mut native, &view, 1);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::OpenSpotlight, cx)
+    });
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::Spot(crate::ui::Spot::FillWindow), cx)
+    });
+    settle(&mut native);
+    assert_ne!(frame(&mut native, &view, 1), before, "filled");
+    assert!(
+        in_front(&mut native, &view),
+        "the window in front has the keys"
+    );
 }

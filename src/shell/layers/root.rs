@@ -1,0 +1,332 @@
+//! The root view of one OS window: thin, uncached, laying the window's
+//! layers out as siblings. On the desk: the bar (`Chrome`, console only),
+//! the panes (`PaneLayer`), the dialog open over them (`Screens`), the
+//! node's breath (`StatusDot`) and the footer (`ToastView`). Before the
+//! desk the console draws its launcher screen (`Screens`, uncached) and the footer.
+//! Every cached layer under it hits while nothing it observes moved (P6):
+//! a pulse of the dot draws the dot, this root and the uncached pane layer
+//! and pane views under it, and no cached layer redraws.
+//!
+//! The root holds what is the window's own and not a layer's: its focus
+//! (the keys' fallback), the key context the keymap reads, the actions a
+//! window answers (`keys.rs`), the pane messages the layers send through
+//! it (`panes.rs`, `pane_hold.rs`), and the switch timer.
+
+use super::super::entities::{Desk, Observed, Overlays, Prefs, Screen, Slice};
+use super::super::{Desktop, WindowKey, WindowKind, ink, layout, theme};
+use super::{BAR, Chrome, PaneLayer, Screens, StatusDot, ToastView, cached_unless_a11y};
+use crate::AppMessage as Message;
+use gpui_kit::{
+    AppContext as _, Context, Entity, FocusHandle, IntoElement, ParentElement as _, Render,
+    StyleRefinement, Styled as _, Subscription, Window, deferred, div, px,
+};
+
+/// The gpui view at the root of one OS window.
+pub(in crate::shell) struct WindowRoot {
+    pub(in crate::shell) model: Entity<Desktop>,
+    pub(in crate::shell) key: WindowKey,
+    pub(in crate::shell) kind: WindowKind,
+    /// This window's panes, as the model has them (`Desktop::bridge`).
+    desk: Entity<Desk>,
+    /// Which screen the console shows: the launcher's, or the desk.
+    screen: Observed<Slice<Screen>>,
+    /// What is open over the desk: the key context says so.
+    pub(in crate::shell) overlays: Observed<Overlays>,
+    prefs: Observed<Slice<Prefs>>,
+    /// The menu bar and its menus (the console only).
+    chrome: Option<Entity<Chrome>>,
+    /// The panes, drawn: one `PaneView` per pane, the keys' handoff between
+    /// them, the pointer's and the keyboard's hold on one.
+    pub(in crate::shell) panes: Entity<PaneLayer>,
+    /// The launcher screens and the dialogs (the console only).
+    pub(in crate::shell) screens: Option<Entity<Screens>>,
+    toast: Entity<ToastView>,
+    /// The node's breath over the bar's well (the console only).
+    dot: Option<Entity<StatusDot>>,
+    /// A menu hanging from the bar (Node, Account, the bell, Networks): the
+    /// keys go into it when it opens (`Screens`), the box its card hangs
+    /// from holds them (`Chrome`), and it closes when they leave it
+    /// (`menu_left_by_keys`).
+    /// Not `Screens::modal`: gpui-base keeps a focus trap for as long as
+    /// its handle lives, so a menu on it would trap Tab once a dialog had.
+    menu: FocusHandle,
+    /// A pane or window switch under way: started where it was asked for,
+    /// ended on the frame after the one that shows it (docs/perf.md).
+    switching: Option<crate::perf::Timer>,
+    pub(in crate::shell) focus: FocusHandle,
+    _subscriptions: [Subscription; 3],
+}
+
+impl WindowRoot {
+    /// A window of `kind`, focused on its own root (so the first Tab
+    /// reaches the first control), telling the model when it gains or
+    /// loses focus.
+    pub(in crate::shell) fn new(
+        model: Entity<Desktop>,
+        key: WindowKey,
+        kind: WindowKind,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let focus = cx.focus_handle();
+        focus.focus(window, cx);
+        let own = model.update(cx, |model, cx| model.window_entities(key, kind, cx));
+        let entities = &model.read(cx).entities;
+        let (screen, prefs) = (entities.screen.clone(), entities.prefs.clone());
+        let (desk, overlays) = (own.desk.clone(), own.overlays.clone());
+        let menu = cx.focus_handle();
+        let console = kind == WindowKind::Console;
+        let chrome = console.then(|| {
+            let (model, menu, this) = (model.clone(), menu.clone(), cx.weak_entity());
+            cx.new(|cx| Chrome::new(model, key, &own, menu, this, window, cx))
+        });
+        let screens = console.then(|| {
+            let (model, menu) = (model.clone(), menu.clone());
+            cx.new(|cx| Screens::new(model, key, &own, menu, cx))
+        });
+        let dot = console.then(|| {
+            let model = model.clone();
+            cx.new(|cx| StatusDot::new(&model, key, &own, cx))
+        });
+        let toast = {
+            let model = model.clone();
+            cx.new(|cx| ToastView::new(model, key, cx))
+        };
+        let panes = {
+            let (model, root, this) = (model.clone(), focus.clone(), cx.weak_entity());
+            cx.new(|cx| PaneLayer::new(model, key, kind, own, root, this, window, cx))
+        };
+        let subscriptions = [
+            cx.observe_window_activation(window, move |this: &mut Self, window, cx| {
+                this.set_front(window, cx);
+                let message = match window.is_window_active() {
+                    true => {
+                        this.start_switch();
+                        Message::WindowFocused
+                    }
+                    false => Message::WindowUnfocused(key),
+                };
+                let model = this.model.clone();
+                cx.defer(move |cx| model.update(cx, |model, cx| model.dispatch(message, cx)));
+            }),
+            // the notification centre hears which view is focused in the
+            // window in front (s11: a `Windows` observer)
+            cx.observe_in(&desk, window, |this, _, window, cx| {
+                this.set_front(window, cx)
+            }),
+            cx.on_focus_lost(window, |this, window, cx| this.focus_lost(window, cx)),
+        ];
+        let this = Self {
+            key,
+            kind,
+            desk,
+            screen: Observed::new(&screen, cx),
+            overlays: Observed::new(&overlays, cx),
+            prefs: Observed::new(&prefs, cx),
+            chrome,
+            panes,
+            screens,
+            toast,
+            dot,
+            menu,
+            switching: None,
+            focus,
+            model,
+            _subscriptions: subscriptions,
+        };
+        this.set_front(window, cx);
+        this
+    }
+
+    /// Tells the notification centre whether this window is in front and
+    /// which view is focused in it: that view's banners stay away (unless
+    /// asked for).
+    fn set_front(&self, window: &Window, cx: &mut Context<Self>) {
+        let layout = self.desk.read(cx).get();
+        let focused = layout
+            .panes
+            .get(layout.focused)
+            .map_or(layout::EMPTY, |pane| pane.module);
+        self.model.read(cx).state.center.lock().set_front(
+            self.key,
+            window.is_window_active(),
+            focused,
+        );
+    }
+
+    /// A switch asked for: timed from here to the frame after the one that
+    /// shows it. One under way already keeps its start.
+    pub(in crate::shell) fn start_switch(&mut self) {
+        if self.switching.is_none() {
+            self.switching = crate::perf::time(crate::perf::Key::Window(self.key), "switch");
+        }
+    }
+
+    /// On the desk: connected, and past the key and account steps.
+    pub(in crate::shell) fn on_desk(&self, cx: &gpui_kit::App) -> bool {
+        *self.screen.read(cx).get() == Screen::Desk
+    }
+
+    /// The desk's own keys reach its windows: the console, on the desk,
+    /// with no overlay (Spotlight, a menu, Settings) keeping its keys.
+    pub(in crate::shell) fn desk_keys(&self, cx: &gpui_kit::App) -> bool {
+        self.kind == WindowKind::Console
+            && self.on_desk(cx)
+            && self.overlays.read(cx).get().is_none()
+    }
+
+    /// What ⌘W closes: the focused desk window, when the desk's keys reach
+    /// it and it has one; `None` is the app's window (`close_by_key`).
+    pub(in crate::shell) fn command_w_pane(&self, cx: &gpui_kit::App) -> Option<usize> {
+        let layout = self.layout(cx);
+        (self.desk_keys(cx) && !layout.panes.is_empty()).then_some(layout.focused)
+    }
+
+    /// ⌘W closes a window, never the app. A pop-out closes as its pane's ×
+    /// does. The console closes too where the status item reopens it
+    /// (macOS); elsewhere there is no tray to bring it back from, and the
+    /// last window closing would quit — so it minimizes instead.
+    pub(in crate::shell) fn close_by_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        match (self.kind, cfg!(target_os = "macos")) {
+            (WindowKind::Console, false) => window.minimize_window(),
+            _ => super::super::remove(window.window_handle(), cx),
+        }
+    }
+
+    /// The window's focused element vanished — most often because the
+    /// screen it was on gave way to another (Connect → sign-in, sign-in →
+    /// recovery phrase, phrase → console, a dialog opening or closing
+    /// mid-form). Refocus the window's own root (the same handle a fresh
+    /// window starts on) so a keyboard-only reader's next Tab still lands
+    /// on the new screen's first control, instead of the window going
+    /// silently blurred with no dispatch path for Tab, Enter or Escape to
+    /// reach at all.
+    ///
+    /// What vanished sat in a menu that still shows (a row it cleared, one
+    /// menu giving way to the next): the keys stay in the menu, at its first
+    /// control, and it stays open.
+    fn focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if window.focus_lost_restore_target(cx).as_ref() == Some(&self.menu) {
+            self.menu.focus(window, cx);
+            window.focus_next(cx);
+            // gpui draws no frame for a move made here: the ring shows now
+            cx.notify();
+            return;
+        }
+        self.focus.focus(window, cx);
+    }
+
+    /// The keys left the open menu (Tab past its end, a click elsewhere;
+    /// `layers::Chrome`): it closes, and the keys stay where they went
+    /// (owner, 2026-09-28) rather than going back to what had them before
+    /// it opened.
+    pub(in crate::shell) fn menu_left_by_keys(
+        &mut self,
+        menu: crate::Overlay,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(screens) = &self.screens {
+            screens.update(cx, |screens, _| screens.menu_left_by_keys());
+        }
+        self.model.update(cx, |model, cx| {
+            model.dispatch(Message::CloseOverlay(menu), cx)
+        });
+    }
+
+    /// The console's screens: a test's way to its fields.
+    #[cfg(test)]
+    pub(in crate::shell) fn screens(&self) -> &Entity<Screens> {
+        self.screens.as_ref().expect("the console has screens")
+    }
+
+    /// This window's panes, as the model has them (the `Desk` slice).
+    pub(in crate::shell) fn layout(&self, cx: &gpui_kit::App) -> layout::Layout {
+        self.desk.read(cx).get().clone()
+    }
+}
+
+impl Render for WindowRoot {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
+        let _timed = crate::perf::time(crate::perf::Key::Window(self.key), "frame.render");
+        crate::perf::count(crate::perf::Key::Window(self.key), "renders", 1);
+        if let Some(switching) = self.switching.take() {
+            // next-frame callbacks run once the frame showing the switch
+            // was presented: an upper bound, high by one frame interval
+            window.on_next_frame(move |_, _| drop(switching));
+        }
+        let layer = || StyleRefinement::default().absolute().inset_0();
+        let cached =
+            |view: gpui_kit::AnyView, size, window: &Window| cached_unless_a11y(view, size, window);
+        // the footer, over an open menu (deferred too) as it paints today
+        let toast = deferred(cached(self.toast.clone().into(), layer(), window)).with_priority(2);
+        let launcher = self.kind == WindowKind::Console && !self.on_desk(cx);
+        let content = match (launcher, &self.screens) {
+            // The launcher (the sign-in and unlock screens) is drawn
+            // uncached, against the spec's cached `size_full` (chief,
+            // 2026-09-30): a cached launcher moves the unlock screen's
+            // pixels by 1 LSB (GPU sprite order within one draw order),
+            // which the look rule forbids, and these screens gain nothing
+            // from the cache. s9's LauncherLayer stays uncached for the
+            // same reason.
+            (true, Some(screens)) => div()
+                .size_full()
+                .child(screens.clone())
+                .child(toast)
+                .into_any_element(),
+            _ => {
+                // the bar: a cached view of its own, its menus hanging from it
+                let bar = self.chrome.clone().map(|chrome| {
+                    cached(
+                        chrome.into(),
+                        StyleRefinement::default()
+                            .w_full()
+                            .h(px(BAR))
+                            .flex_shrink_0(),
+                        window,
+                    )
+                });
+                let screens = self
+                    .screens
+                    .clone()
+                    .map(|screens| cached(screens.into(), layer(), window));
+                div()
+                    .id("console")
+                    .size_full()
+                    .flex()
+                    .flex_col()
+                    .children(bar)
+                    // the panes: a layer of their own, measuring the desk they sit on
+                    .child(
+                        div()
+                            .id("seat")
+                            .flex_1()
+                            .min_h_0()
+                            .w_full()
+                            .child(self.panes.clone()),
+                    )
+                    .children(screens)
+                    .children(self.dot.clone())
+                    .child(toast)
+                    .into_any_element()
+            }
+        };
+        let ink = ink::Ink::of(self.prefs.read(cx).get().dark());
+        let mut root = div();
+        root.text_style().font_fallbacks = Some(crate::fonts::fallback_chain());
+        root.text_style().font_family = Some(theme::FAMILY_UI.into());
+        // the window's root takes the keys whenever nothing inside has them
+        // (a screen gave way, a pane moved): named, so assistive technology
+        // says where the keys are instead of reading the whole window out
+        let root = crate::a11y::Patch::default().keys_fallback().on(root
+            .id("desktop-root")
+            .role(gpui_kit::Role::Group)
+            .aria_label("Ducktape"));
+        self.on_keys(root, cx)
+            .size_full()
+            .bg(ink.bg)
+            .text_color(ink.ink)
+            .track_focus(&self.focus)
+            .child(content)
+    }
+}

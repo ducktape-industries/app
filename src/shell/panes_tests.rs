@@ -49,49 +49,17 @@ pub(super) fn console(
 ) -> (
     Entity<Desktop>,
     WindowKey,
-    Entity<DesktopWindow>,
+    Entity<WindowRoot>,
     VisualTestContext,
 ) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
-    let model = cx.new(|cx| {
-        let (mut state, _) = Ducktape::boot();
-        // its own roster and centre, not the app's ones every test shares
-        state.roster = Default::default();
-        state.center = Default::default();
-        state.stage = crate::Stage::Desk;
-        state.active = Some("pane-ax-test");
-        let entities = entities::Entities::for_test(&state, cx);
-        Desktop::new(state, crate::tray::init(cx).0, entities, cx)
-    });
-    let key = WindowKey::unique();
-    let mut view = None;
-    let handle = cx.open_window(size(px(1280.), px(800.)), |window, cx| {
-        let desktop =
-            cx.new(|cx| DesktopWindow::new(model.clone(), key, WindowKind::Console, window, cx));
-        view = Some(desktop.clone());
-        gpui_kit::component::Root::new(desktop, window, cx)
-    });
-    let view = view.unwrap();
-    model.update(cx, |model, _| {
-        model.windows.insert(key, handle.into());
-        model.views.insert(key, view.downgrade());
-        model.state.console_win = Some(key);
-    });
-    // the platform's first frame: the desk's size and its seed reach the
-    // model from the frame's callback, not from the draw
-    cx.update_window(handle.into(), |_, window, cx| {
-        window.simulate_next_frame(cx);
-    })
-    .unwrap();
-    (
-        model,
-        key,
-        view,
-        VisualTestContext::from_window(handle.into(), cx),
-    )
+    let (mut state, _) = Ducktape::boot();
+    // its own roster and centre, not the app's ones every test shares
+    state.roster = Default::default();
+    state.center = Default::default();
+    state.stage = crate::Stage::Desk;
+    state.active = Some("pane-ax-test");
+    state.console_win = Some(WindowKey::unique());
+    super::layers::tests::open_console(state, cx)
 }
 
 #[gpui_kit::test]
@@ -206,7 +174,7 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     });
     // the second cascades down and right of the first: the first's
     // top-left corner stays uncovered
-    let behind = gpui_kit::point(px(first.x + 14.), px(desk::BAR + first.y + 14.));
+    let behind = gpui_kit::point(px(first.x + 14.), px(layers::BAR + first.y + 14.));
     // over a menu's backdrop the press closes the menu, and raises nothing
     model.update(&mut native, |model, cx| {
         model.state.overlay = Some(crate::Overlay::Menu(crate::Popover::Account));
@@ -235,7 +203,7 @@ fn a_press_on_a_window_behind_brings_it_to_the_front(cx: &mut TestAppContext) {
     );
     let keys = native.update(|window, cx| window.focused(cx));
     // a double press where both title bars lie fills the front window alone
-    let title = gpui_kit::point(px(first.x + 100.), px(desk::BAR + first.y + 30.));
+    let title = gpui_kit::point(px(first.x + 100.), px(layers::BAR + first.y + 30.));
     native.simulate_click(title, gpui_kit::Modifiers::none());
     settle(&mut native);
     assert_eq!(
@@ -275,10 +243,7 @@ pub(super) fn key(native: &mut VisualTestContext, stroke: &str) {
     });
 }
 
-pub(super) fn panes(
-    native: &mut VisualTestContext,
-    view: &Entity<DesktopWindow>,
-) -> (usize, usize) {
+pub(super) fn panes(native: &mut VisualTestContext, view: &Entity<WindowRoot>) -> (usize, usize) {
     native.update(|_, cx| {
         let layout = view.read(cx).layout(cx);
         (layout.panes.len(), layout.focused)
@@ -491,7 +456,7 @@ fn a_window_brought_to_the_front_has_the_keys(cx: &mut TestAppContext) {
 }
 
 /// The window in front has the keys, somewhere in its own box.
-pub(super) fn in_front(native: &mut VisualTestContext, view: &Entity<DesktopWindow>) -> bool {
+pub(super) fn in_front(native: &mut VisualTestContext, view: &Entity<WindowRoot>) -> bool {
     native.update(|window, cx| {
         let view = view.read(cx);
         let layout = view.layout(cx);
@@ -549,7 +514,11 @@ fn a_dialog_keeps_the_keys_until_it_closes(cx: &mut TestAppContext) {
     assert_eq!(panes(&mut native, &view), (2, 1));
     native.update(|window, cx| {
         assert!(
-            view.read(cx).modal.contains_focused(window, cx),
+            view.read(cx)
+                .screens()
+                .read(cx)
+                .modal
+                .contains_focused(window, cx),
             "Help took the keys from Settings"
         )
     });
@@ -608,7 +577,11 @@ fn tab_stays_in_a_modal_dialog(cx: &mut TestAppContext) {
         key(&mut native, stroke);
         native.update(|window, cx| {
             assert!(
-                view.read(cx).modal.contains_focused(window, cx),
+                view.read(cx)
+                    .screens()
+                    .read(cx)
+                    .modal
+                    .contains_focused(window, cx),
                 "{stroke} left Settings"
             );
             let now = window.focused(cx);
@@ -986,7 +959,7 @@ fn help_follows_moves_that_come_before_a_frame(cx: &mut TestAppContext) {
         let layout = view.read(cx).layout(cx);
         (layout.focused, layout.panes[layout.focused].frame.unwrap())
     });
-    let title = gpui_kit::point(px(start.x + 100.), px(desk::BAR + start.y + 15.));
+    let title = gpui_kit::point(px(start.x + 100.), px(layers::BAR + start.y + 15.));
     let to = gpui_kit::point(title.x + px(40.), title.y + px(30.));
     // one update: no frame is drawn between the press and the move
     native.update(|window, cx| {
@@ -1270,7 +1243,11 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
     settle(&mut native);
     native.update(|window, cx| {
         assert!(
-            view.read(cx).modal.contains_focused(window, cx),
+            view.read(cx)
+                .screens()
+                .read(cx)
+                .modal
+                .contains_focused(window, cx),
             "the last pane leaving took the keys from Settings"
         )
     });
@@ -1518,7 +1495,7 @@ fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppCont
     let desk =
         |native: &mut VisualTestContext| native.update(|_, cx| view.read(cx).layout(cx).desk);
     // the fixture delivered the first frame's callback
-    assert_eq!(desk(&mut native), Some((1280., 800. - desk::BAR)));
+    assert_eq!(desk(&mut native), Some((1280., 800. - layers::BAR)));
     native.simulate_resize(size(px(1000.), px(700.)));
     native.run_until_parked();
     // the window drew at its new size; the model still has the old one
@@ -1527,12 +1504,12 @@ fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppCont
     });
     assert_eq!(
         desk(&mut native),
-        Some((1280., 800. - desk::BAR)),
+        Some((1280., 800. - layers::BAR)),
         "the draw itself moved the desk"
     );
     let ran = native.update(|window, cx| window.simulate_next_frame(cx));
     assert!(ran > 0, "the frame asked for no callback");
-    assert_eq!(desk(&mut native), Some((1000., 700. - desk::BAR)));
+    assert_eq!(desk(&mut native), Some((1000., 700. - layers::BAR)));
     // the same size again: nothing to commit, no callback asked for
     native.update(|window, cx| {
         window.render_frame(cx);
@@ -1542,7 +1519,7 @@ fn the_desk_size_is_committed_after_the_frame_not_during_it(cx: &mut TestAppCont
         0,
         "a frame at the same size asked for a callback"
     );
-    assert_eq!(desk(&mut native), Some((1000., 700. - desk::BAR)));
+    assert_eq!(desk(&mut native), Some((1000., 700. - layers::BAR)));
 }
 
 /// What opens or closes over the desk reaches the panes by their window's
