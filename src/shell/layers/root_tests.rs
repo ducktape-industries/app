@@ -361,7 +361,10 @@ fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext)
 }
 
 /// Before the desk the console's root draws the launcher's screen alone:
-/// each screen change draws it once, and no bar until the desk.
+/// each screen change draws it once, and once more when the screen's
+/// figure follows a frame late
+/// (`the_figure_follows_the_screen_without_a_render_write`); no bar until
+/// the desk.
 #[gpui_kit::test]
 fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     let _on = crate::perf::on_for_test();
@@ -394,8 +397,8 @@ fn the_launcher_is_the_console_root_before_the_desk(cx: &mut TestAppContext) {
     frame(&mut native);
     assert_eq!(
         window_count(key, "renders.launcher"),
-        launcher + 1,
-        "a screen change drew the launcher other than once"
+        launcher + 2,
+        "a screen change and its figure drew the launcher other than twice"
     );
     let nodes = native.update(draw);
     assert!(

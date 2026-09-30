@@ -99,7 +99,8 @@ pub(in crate::shell) struct LauncherLayer {
     session: Observed<Slice<Session>>,
     account: Observed<Slice<Account>>,
     prefs: Observed<Slice<Prefs>>,
-    /// The figure on the left, written from the observers.
+    /// The figure on the left, written from the observers and a frame
+    /// after a screen change (`render`).
     pub(in crate::shell) spin: Entity<Spin>,
     pub(in crate::shell) fields: Fields,
     /// The address the endpoint field and `Session` last agreed on: what it
