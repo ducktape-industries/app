@@ -3,11 +3,13 @@
 //!
 //! `Desktop` is the one model entity: it owns the app state (`Ducktape`),
 //! runs the reducer for every message, keeps the tray in step and holds
-//! one live program view per pane. Each OS window is a `DesktopWindow`,
-//! a gpui view that draws the launcher (connect, key, account, recovery
-//! screens) until sign-in, then the desk: the menu bar (`layers::Chrome`)
-//! and the panes floating under it, with the open overlay (⌘K, a menu,
-//! Settings) on top.
+//! one live program view per pane. Each OS window's root is a
+//! `layers::WindowRoot`, a thin gpui view laying the window's layers out
+//! as siblings: the launcher (connect, key, account, recovery screens;
+//! `layers::Screens`) until sign-in, then the desk: the menu bar
+//! (`layers::Chrome`), the panes floating under it (`layers::PaneLayer`),
+//! the open dialog (⌘K, Settings; `Screens`), the node's breath
+//! (`layers::StatusDot`) and the footer (`layers::ToastView`).
 //!
 //! The reducer's tasks run without `&mut App`, so they cannot touch a
 //! window. They ask for a native effect through the `NativeCommand` channel
@@ -22,8 +24,8 @@ use futures::{
 };
 use gpui_kit::prelude::FluentBuilder;
 use gpui_kit::{
-    AppContext as _, AsyncApp, Context, Entity, IntoElement, ParentElement as _, Render,
-    Styled as _, Window,
+    AppContext as _, AsyncApp, Context, Entity, IntoElement, ParentElement as _, Styled as _,
+    Window,
 };
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Mutex, OnceLock};
@@ -38,7 +40,6 @@ pub(crate) use fixtures::render_tree_fixture;
 mod approve;
 mod bridge;
 mod connect;
-mod desk;
 mod entities;
 mod facts;
 mod figure;
@@ -50,6 +51,7 @@ mod keys;
 mod launch;
 mod launcher;
 mod layers;
+pub(in crate::shell) use layers::{Screens, WindowRoot};
 mod pane_drag;
 mod pane_hold;
 #[cfg(test)]
@@ -73,17 +75,12 @@ mod settings;
 mod spin;
 mod theme;
 
+use crate::fonts::BUNDLED_FACES;
 #[cfg(not(target_os = "macos"))]
 use crate::fonts::EMOJI_FACE;
-use crate::fonts::{BUNDLED_FACES, fallback_chain};
 use theme::configure_native_theme;
 
 pub(crate) use crate::runtime::WindowKey;
-
-/// A window's key in the perf registry.
-fn perf_key(key: WindowKey) -> crate::perf::Key {
-    crate::perf::Key::Window(key)
-}
 
 /// What an OS window is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,13 +306,13 @@ async fn left_full_size(
 /// The one model entity. It owns the app state, runs the reducer
 /// (`dispatch`), and keeps what outlives a draw: the tray, every OS
 /// window's handle and view, the subscription streams, and each pane's
-/// live program view. Not a window: `DesktopWindow` is.
+/// live program view. Not a window: `WindowRoot` is.
 struct Desktop {
     state: Ducktape,
     tray: crate::tray::Tray,
     windows: BTreeMap<WindowKey, gpui_kit::AnyWindowHandle>,
-    /// Each OS window's `DesktopWindow` (not a program's view).
-    views: BTreeMap<WindowKey, gpui_kit::WeakEntity<DesktopWindow>>,
+    /// Each OS window's root view (not a program's view).
+    views: BTreeMap<WindowKey, gpui_kit::WeakEntity<WindowRoot>>,
     /// The model's subscriptions (`Ducktape::subscriptions`), by recipe
     /// key: each a task feeding its stream's messages into `dispatch`.
     streams: HashMap<u64, gpui_kit::Task<()>>,
@@ -598,7 +595,11 @@ impl Desktop {
 
     fn raise_window(&mut self, key: WindowKey, cx: &mut Context<Self>) {
         if let Some(view) = self.views.get(&key) {
-            let _ = view.update(cx, |view, _| view.start_switch());
+            // a frame follows even when the window is already active
+            let _ = view.update(cx, |view, cx| {
+                view.start_switch();
+                cx.notify()
+            });
         }
         if let Some(handle) = self.windows.get(&key) {
             let _ = handle.update(cx, |_, window, _| window.activate_window());
@@ -631,197 +632,6 @@ fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
             window.remove_window();
         });
     });
-}
-
-// ---------- the window ----------
-
-/// The gpui view of one OS window. It draws the launcher or the desk from
-/// the model's state (`Render` below), turns clicks and keys into
-/// messages for `Desktop::dispatch`, and keeps what is the window's own:
-/// its native text fields and focus.
-pub(crate) struct DesktopWindow {
-    model: Entity<Desktop>,
-    key: WindowKey,
-    kind: WindowKind,
-    /// This window's panes, as the model has them (`Desktop::bridge`).
-    desk: Entity<entities::Desk>,
-    /// The menu bar and its menus (the console only): a cached view over
-    /// the slices it reads, drawn in the bar slot.
-    chrome: Option<Entity<layers::Chrome>>,
-    /// The panes, drawn: one `PaneView` per pane, the keys' handoff between
-    /// them, the pointer's and the keyboard's hold on one.
-    panes: Entity<layers::PaneLayer>,
-    /// The native text fields drawn in this window, by their element id.
-    inputs: HashMap<&'static str, text_field::NativeInput>,
-    /// ⌘K's field took focus when it opened; it is not taken again while
-    /// Spotlight stays open.
-    spotlight_focused: bool,
-    /// ⌘K's list: ↑↓ scroll the picked row into it.
-    spotlight_rows: gpui_kit::ScrollHandle,
-    /// Settings' page: the row holding the keys scrolls into view.
-    settings_rows: settings::Page,
-    /// The one Tab stop of each tab list and radio group drawn here, by
-    /// the composite's id: its active item tracks it (`a11y::roving`).
-    stops: HashMap<gpui_kit::SharedString, gpui_kit::FocusHandle>,
-    /// The launcher's figure, written at its draw until s9's
-    /// `LauncherLayer` writes it from its observers.
-    launcher_spin: Entity<spin::Spin>,
-    /// What was open over the desk when it was last drawn.
-    covered: Option<crate::Overlay>,
-    /// What had the keys when something opened over the desk: they go back
-    /// to it when it closes, so typing carries on where it was. Not when
-    /// they left a menu, which closed it: they stay where they went.
-    refocus: Option<gpui_kit::FocusHandle>,
-    /// A dialog on a scrim (Spotlight, Settings, Approve): the keys go into
-    /// it when it opens, and Tab and Shift+Tab stay in it.
-    modal: gpui_kit::FocusHandle,
-    /// A menu hanging from the bar (Node, Account, the bell, Networks): the
-    /// keys go into it when it opens (`desk_view`), its card holds them
-    /// (`layers::Chrome`), and it closes when they leave it
-    /// (`menu_left_by_keys`). Not `modal`: gpui-base keeps a focus
-    /// trap for as long as its handle lives, so a menu on it would trap Tab
-    /// once a dialog had.
-    menu: gpui_kit::FocusHandle,
-    /// A pane or window switch under way: started where it was asked for,
-    /// ended on the frame after the one that shows it (docs/perf.md).
-    switching: Option<crate::perf::Timer>,
-    focus: gpui_kit::FocusHandle,
-    _activation: gpui_kit::Subscription,
-    _observer: gpui_kit::Subscription,
-    _focus_lost: gpui_kit::Subscription,
-}
-
-impl DesktopWindow {
-    /// A switch asked for: timed from here to the frame after the one that
-    /// shows it. One under way already keeps its start.
-    fn start_switch(&mut self) {
-        if self.switching.is_none() {
-            self.switching = crate::perf::time(perf_key(self.key), "switch");
-        }
-    }
-
-    /// The one Tab stop of the tab list or radio group `id`
-    /// (`a11y::roving`), made the first time it is drawn.
-    fn stop(&mut self, id: &str, cx: &gpui_kit::App) -> gpui_kit::FocusHandle {
-        self.stops
-            .entry(id.to_owned().into())
-            .or_insert_with(|| cx.focus_handle().tab_stop(true))
-            .clone()
-    }
-
-    /// On the desk: connected, and past the key and account steps.
-    fn on_desk(&self, cx: &gpui_kit::App) -> bool {
-        !self.model.read(cx).state.in_launcher()
-    }
-
-    /// The desk's own keys reach its windows: the console, on the desk,
-    /// with no overlay (Spotlight, a menu, Settings) keeping its keys.
-    fn desk_keys(&self, cx: &gpui_kit::App) -> bool {
-        self.kind == WindowKind::Console
-            && self.on_desk(cx)
-            && self.model.read(cx).state.overlay.is_none()
-    }
-
-    /// What ⌘W closes: the focused desk window, when the desk's keys reach
-    /// it and it has one; `None` is the app's window (`close_by_key`).
-    fn command_w_pane(&self, cx: &gpui_kit::App) -> Option<usize> {
-        let layout = self.layout(cx);
-        (self.desk_keys(cx) && !layout.panes.is_empty()).then_some(layout.focused)
-    }
-
-    /// ⌘W closes a window, never the app. A pop-out closes as its pane's ×
-    /// does. The console closes too where the status item reopens it
-    /// (macOS); elsewhere there is no tray to bring it back from, and the
-    /// last window closing would quit — so it minimizes instead.
-    fn close_by_key(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        match (self.kind, cfg!(target_os = "macos")) {
-            (WindowKind::Console, false) => window.minimize_window(),
-            _ => remove(window.window_handle(), cx),
-        }
-    }
-
-    /// The window's focused element vanished — most often because the
-    /// screen it was on gave way to another (Connect → sign-in, sign-in →
-    /// recovery phrase, phrase → console, a dialog opening or closing
-    /// mid-form). Refocus the window's own root (the same handle a fresh
-    /// window starts on) so a keyboard-only reader's next Tab still lands
-    /// on the new screen's first control, instead of the window going
-    /// silently blurred with no dispatch path for Tab, Enter or Escape to
-    /// reach at all.
-    ///
-    /// What vanished sat in a menu that still shows (a row it cleared, one
-    /// menu giving way to the next): the keys stay in the menu, at its first
-    /// control, and it stays open.
-    fn focus_lost(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if window.focus_lost_restore_target(cx).as_ref() == Some(&self.menu) {
-            self.menu.focus(window, cx);
-            window.focus_next(cx);
-            // gpui draws no frame for a move made here: the ring shows now
-            cx.notify();
-            return;
-        }
-        self.focus.focus(window, cx);
-    }
-
-    /// The keys left the open menu (Tab past its end, a click elsewhere;
-    /// `layers::Chrome`): it closes, and the keys stay where they went
-    /// (owner, 2026-09-28) rather than going back to what had them before
-    /// it opened.
-    pub(super) fn menu_left_by_keys(&mut self, menu: crate::Overlay, cx: &mut Context<Self>) {
-        self.refocus = None;
-        self.model.update(cx, |model, cx| {
-            model.dispatch(Message::CloseOverlay(menu), cx)
-        });
-    }
-
-    /// This window's panes, as the model has them (the `Desk` slice).
-    fn layout(&self, cx: &gpui_kit::App) -> layout::Layout {
-        self.desk.read(cx).get().clone()
-    }
-}
-
-impl Render for DesktopWindow {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        use gpui_kit::{InteractiveElement as _, StatefulInteractiveElement as _};
-        let _timed = crate::perf::time(perf_key(self.key), "frame.render");
-        crate::perf::count(perf_key(self.key), "renders", 1);
-        if let Some(switching) = self.switching.take() {
-            // next-frame callbacks run once the frame showing the switch
-            // was presented: an upper bound, high by one frame interval
-            window.on_next_frame(move |_, _| drop(switching));
-        }
-        let content = match self.kind {
-            WindowKind::View { .. } => self.desk_view(window, cx),
-            WindowKind::Console => {
-                let state = self.model.read(cx).state.facts();
-                match self.model.read(cx).state.stage {
-                    Stage::Connect => self.connect(window, cx),
-                    Stage::Phrase(_) => self.phrase(&state, window, cx),
-                    Stage::Unlock(_) => self.unlock(&state, window, cx),
-                    Stage::Recover(_) => self.recover(&state, window, cx),
-                    Stage::Account(_) => self.account_step(&state, window, cx),
-                    Stage::Desk => self.desk_view(window, cx),
-                }
-            }
-        };
-        let ink = ink::Ink::of(self.model.read(cx).state.dark());
-        let mut root = gpui_kit::div();
-        root.text_style().font_fallbacks = Some(fallback_chain());
-        root.text_style().font_family = Some(theme::FAMILY_UI.into());
-        // the window's root takes the keys whenever nothing inside has them
-        // (a screen gave way, a pane moved): named, so assistive technology
-        // says where the keys are instead of reading the whole window out
-        let root = crate::a11y::Patch::default().keys_fallback().on(root
-            .id("desktop-root")
-            .role(gpui_kit::Role::Group)
-            .aria_label("Ducktape"));
-        self.on_keys(root, cx)
-            .size_full()
-            .bg(ink.bg)
-            .text_color(ink.ink)
-            .track_focus(&self.focus)
-            .child(content)
-    }
 }
 
 #[cfg(test)]

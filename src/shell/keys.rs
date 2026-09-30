@@ -12,7 +12,7 @@
 //! (`layers::EmptyPane` takes them); Tab there is `SwitchMode` once agent chat is built
 //! (`layers::CHAT_READY`), under the empty window's own context
 //! (`layers::CONTEXT`), and until then moves focus. A desk window is a
-//! pane; an OS window is a `DesktopWindow`.
+//! pane; an OS window's root is a `WindowRoot`.
 
 use super::*;
 use gpui_kit::{Action, KeyBinding, KeyContext, Menu, MenuItem};
@@ -124,14 +124,14 @@ pub(crate) fn menus(cx: &mut gpui_kit::App) {
     ]);
 }
 
-impl DesktopWindow {
+impl WindowRoot {
     /// What this window's root tells the keymap about it.
     pub(super) fn key_context(&self, cx: &gpui_kit::App) -> KeyContext {
         let mut context = KeyContext::new_with_defaults();
         context.add(CONTEXT);
         let console = self.kind == WindowKind::Console;
         let on_desk = console && self.on_desk(cx);
-        let overlay = console && self.model.read(cx).state.overlay.is_some();
+        let overlay = console && self.overlays.read(cx).get().is_some();
         if console {
             context.add("console");
         }

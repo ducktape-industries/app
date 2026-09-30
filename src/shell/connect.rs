@@ -5,7 +5,7 @@ use super::launcher::LauncherScreen;
 use super::text_field::TextField;
 use super::*;
 
-impl DesktopWindow {
+impl Screens {
     /// Main (Connect): an address, the nodes reached before, and why the
     /// last try did not land.
     pub(super) fn connect(

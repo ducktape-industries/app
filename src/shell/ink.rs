@@ -197,7 +197,60 @@ pub(super) enum Kind {
     Small,
 }
 
-impl DesktopWindow {
+/// [`Screens::button`] for a view that is not the screens': it dispatches
+/// through `model`.
+#[allow(clippy::too_many_arguments, reason = "one button, seven facts")]
+pub(super) fn button(
+    model: &Entity<Desktop>,
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    kind: Kind,
+    message: fn() -> Message,
+    press: impl Into<Press>,
+    ink: &Ink,
+) -> AnyElement {
+    let press = press.into();
+    let disabled = press != Press::Ready;
+    let text = text.into();
+    let model = model.clone();
+    let (bg, fg) = match kind {
+        Kind::Primary => (ink.ink, ink.bg),
+        Kind::Secondary | Kind::Small => (gpui_kit::transparent_black(), ink.ink),
+    };
+    let filled = matches!(kind, Kind::Primary);
+    let (height, pad, size) = match kind {
+        Kind::Small => (34., 12., 14.),
+        _ => (44., 18., 15.),
+    };
+    let button = sans(500, size)
+        .id(id)
+        .control(Role::Button, text.clone())
+        .h(px(tall(height)))
+        .px(px(pad))
+        .flex()
+        .flex_shrink_0()
+        .items_center()
+        .border(px(1.5))
+        .border_color(ink.ink)
+        .bg(bg)
+        .text_color(fg)
+        .when(disabled, |button| button.opacity(0.3))
+        .when(!disabled, |button| {
+            button.cursor_pointer().on_click(move |_, _, cx| {
+                cx.stop_propagation();
+                model.update(cx, |model, cx| model.dispatch(message(), cx))
+            })
+        })
+        .child(text);
+    let button = crate::a11y::keyboard(button, ink.ring(filled)).aria_disabled(disabled);
+    match press {
+        Press::Busy => crate::a11y::Patch::default().busy().on(button),
+        _ => button,
+    }
+    .into_any_element()
+}
+
+impl Screens {
     /// `<button>`: `height 44px; padding 0 18px; border 1.5px solid ink;
     /// font 500 15px`, filled for [`Kind::Primary`]. Off or busy, it reads
     /// at 0.3 ([`Press`]).
@@ -210,47 +263,8 @@ impl DesktopWindow {
         press: impl Into<Press>,
         ink: &Ink,
     ) -> AnyElement {
-        let press = press.into();
-        let disabled = press != Press::Ready;
-        let text = text.into();
-        let model = self.model.clone();
-        let (bg, fg) = match kind {
-            Kind::Primary => (ink.ink, ink.bg),
-            Kind::Secondary | Kind::Small => (gpui_kit::transparent_black(), ink.ink),
-        };
-        let filled = matches!(kind, Kind::Primary);
-        let (height, pad, size) = match kind {
-            Kind::Small => (34., 12., 14.),
-            _ => (44., 18., 15.),
-        };
-        let button = sans(500, size)
-            .id(id)
-            .control(Role::Button, text.clone())
-            .h(px(tall(height)))
-            .px(px(pad))
-            .flex()
-            .flex_shrink_0()
-            .items_center()
-            .border(px(1.5))
-            .border_color(ink.ink)
-            .bg(bg)
-            .text_color(fg)
-            .when(disabled, |button| button.opacity(0.3))
-            .when(!disabled, |button| {
-                button.cursor_pointer().on_click(move |_, _, cx| {
-                    cx.stop_propagation();
-                    model.update(cx, |model, cx| model.dispatch(message(), cx))
-                })
-            })
-            .child(text);
-        let button = crate::a11y::keyboard(button, ink.ring(filled)).aria_disabled(disabled);
-        match press {
-            Press::Busy => crate::a11y::Patch::default().busy().on(button),
-            _ => button,
-        }
-        .into_any_element()
+        button(&self.model, id, text, kind, message, press, ink)
     }
-
     /// `<a>`: `400 15px`, underlined, in ink; `small` is the back link's
     /// `13px` muted.
     pub(super) fn link(
@@ -428,7 +442,7 @@ mod tests {
         });
     }
 
-    /// What a keyboard-focused shell button (`DesktopWindow::button`'s own)
+    /// What a keyboard-focused shell button (`Screens::button`'s own)
     /// shows, and a mouse-moved one does not: a 2px ink ring and border on
     /// the outline button, the page's colour on the ink-filled Primary, and
     /// nothing once the last input was the mouse.
@@ -436,7 +450,7 @@ mod tests {
     fn a_keyboard_focused_button_wears_an_ink_ring_that_inverts_on_ink(
         cx: &mut gpui_kit::TestAppContext,
     ) {
-        use super::{DesktopWindow, Kind, Message, Press};
+        use super::{Desktop, Kind, Message, Press, button};
         use gpui_kit::test::TestWindowExt as _;
         use gpui_kit::{
             BoxShadow, Context, Div, Entity, FocusHandle, InteractiveElement as _, IntoElement,
@@ -445,7 +459,7 @@ mod tests {
         };
         use std::{cell::RefCell, rc::Rc};
         type Seen = Rc<RefCell<Vec<(Vec<BoxShadow>, Option<Hsla>)>>>;
-        struct Buttons(Entity<DesktopWindow>, Ink, [FocusHandle; 2], Seen);
+        struct Buttons(Entity<Desktop>, Ink, [FocusHandle; 2], Seen);
         impl Render for Buttons {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
                 let (desktop, ink) = (self.0.clone(), self.1);
@@ -456,14 +470,8 @@ mod tests {
                         for (nth, kind) in [Kind::Secondary, Kind::Primary].into_iter().enumerate()
                         {
                             let message = || Message::ToggleNetworkMenu;
-                            let mut button = desktop.read(cx).button(
-                                nth,
-                                "Go",
-                                kind,
-                                message,
-                                Press::Ready,
-                                &ink,
-                            );
+                            let mut button =
+                                button(&desktop, nth, "Go", kind, message, Press::Ready, &ink);
                             let button = button
                                 .downcast_mut::<Stateful<Div>>()
                                 .expect("a shell button is a Stateful<Div>");
@@ -482,7 +490,8 @@ mod tests {
             }
         }
         cx.update(gpui_kit::init);
-        let (desktop, _) = crate::shell::screens_tests::open(crate::Ducktape::boot().0, cx);
+        let (root, _) = crate::shell::screens_tests::open(crate::Ducktape::boot().0, cx);
+        let desktop = cx.update(|cx| root.read(cx).model.clone());
         for dark in [false, true] {
             let ink = Ink::of(dark);
             let seen = Seen::default();

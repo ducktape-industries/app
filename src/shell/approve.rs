@@ -4,7 +4,7 @@ use super::text_field::TextField;
 use super::*;
 use facts::Facts;
 
-impl DesktopWindow {
+impl Screens {
     /// "Add a device…": the code a new device shows, then its fingerprint
     /// to compare, then this device's yes — consent it signs for the
     /// account and hands over the relay. Dressed as the canvas's dialogs:

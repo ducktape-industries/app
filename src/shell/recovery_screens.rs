@@ -18,7 +18,7 @@ fn answer(state: &Ducktape, nth: usize) -> &str {
     }
 }
 
-impl DesktopWindow {
+impl Screens {
     /// The account's recovery key, typed: its 24 words say yes to this
     /// device's key joining. An old device phrase works as one.
     pub(super) fn recover(

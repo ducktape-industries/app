@@ -6,7 +6,7 @@
 //! window is held is the model's (`Layout::held`); this file gives it the
 //! keys while it is, and hands them back to what had them. ⌘⇧↩ fills the
 //! desk with the window in front, as a double press on its title bar does.
-//! The chords are the window's (`DesktopWindow`); the hold on the keys is
+//! The chords are the window's (`WindowRoot`); the hold on the keys is
 //! the `PaneLayer`'s, brought in line with the model after every draw.
 use super::layers::PaneLayer;
 use super::*;
@@ -44,7 +44,7 @@ pub(super) fn keep_key() -> &'static str {
     }
 }
 
-impl DesktopWindow {
+impl WindowRoot {
     /// The window the desk's chords act on: the one in front, when the
     /// desk's keys reach it and it has a frame.
     pub(super) fn desk_pane(&self, cx: &gpui_kit::App) -> Option<usize> {
@@ -92,9 +92,10 @@ impl PaneLayer {
 
     /// Brings the keys in line with the model: to the held window's box
     /// when a window is taken, and back to what had them when it is let go.
-    /// After a draw (`PaneLayer::drawn`): Search giving the keys back to
-    /// what had them (`desk.rs`, deferred from the draw) has gone first,
-    /// and that is what is kept.
+    /// After a draw (`PaneLayer::drawn`), before Search closing gives the
+    /// keys back to what had them (`Screens::dialog` defers that past the
+    /// draw): a hold run from Search takes that give-back as what it keeps,
+    /// not Search's field.
     pub(super) fn sync_hold(
         &mut self,
         layout: &layout::Layout,
@@ -111,9 +112,21 @@ impl PaneLayer {
             (None, None) => {}
             (None, Some(_)) => self.give_back(window, cx),
             (Some(own), None) => {
+                let pending = match self.overlays.read(cx).get().is_none() {
+                    true => self
+                        .window
+                        .update(cx, |root, cx| {
+                            root.screens.as_ref().and_then(|screens| {
+                                screens.update(cx, |screens, _| screens.refocus.take())
+                            })
+                        })
+                        .ok()
+                        .flatten(),
+                    false => None,
+                };
                 self.holding = Some(Holding {
                     own: own.clone(),
-                    previous: window.focused(cx),
+                    previous: pending.or_else(|| window.focused(cx)),
                 });
                 own.focus(window, cx);
             }
@@ -140,11 +153,15 @@ impl PaneLayer {
             previous.focus(window, cx);
         }
         // something that opened over the desk as the hold ended took the box
-        // for what had them (its own keys came first, `desk.rs`): they go
-        // back to `previous` when it closes
-        let _ = self.window.update(cx, |desk, _| {
-            if desk.refocus.as_ref() == Some(&own) {
-                desk.refocus = Some(previous);
+        // for what had them (its own keys came first, `Screens::dialog`):
+        // they go back to `previous` when it closes
+        let _ = self.window.update(cx, |root, cx| {
+            if let Some(screens) = &root.screens {
+                screens.update(cx, |screens, _| {
+                    if screens.refocus.as_ref() == Some(&own) {
+                        screens.refocus = Some(previous);
+                    }
+                });
             }
         });
     }

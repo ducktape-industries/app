@@ -5,7 +5,7 @@ use super::*;
 use crate::Spot;
 use facts::Facts;
 
-impl DesktopWindow {
+impl Screens {
     /// ⌘K: one field, and what it finds among the programs, the networks
     /// and the things to do. ↑↓ pick, Enter runs, Escape closes. To
     /// assistive technology the field and its rows are one combo box whose
@@ -173,7 +173,7 @@ impl DesktopWindow {
         let scroll = self.spotlight_rows.clone();
         // the field, the longest list and the key hints
         let (top, tall) =
-            super::desk::dialog_fit(f32::from(window.viewport_size().height), 490., 84.);
+            super::layers::dialog_fit(f32::from(window.viewport_size().height), 490., 84.);
         self.overlay(
             "spotlight",
             Role::Dialog,
