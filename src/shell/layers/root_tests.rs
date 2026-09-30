@@ -2,11 +2,12 @@
 //! nothing else (P1, P6 in the app), and the root lays them out as the
 //! window's kind and screen say (docs/perf.md).
 use super::tests::open_console;
+use crate::runtime::WindowKey;
 use crate::shell::entities::{Overlay, Popover};
 use crate::shell::panes_tests::{console, draw, settle, window_count};
-use crate::shell::{Message, PaneMessage, WindowKind};
+use crate::shell::{Desktop, Message, PaneMessage, WindowKind, WindowRoot};
 use crate::ui::test_support::status;
-use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px};
+use gpui_kit::{AnyWindowHandle, Entity, Styled as _, TestAppContext, VisualTestContext, px};
 use view_wire as wire;
 
 /// A frame as the platform delivers one: what asked for it runs, then
@@ -227,15 +228,16 @@ fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     );
 }
 
-/// A pane popped out to a window of its own: that window's root draws the
-/// panes and the footer, and no bar.
-#[gpui_kit::test]
-fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
-    let _on = crate::perf::on_for_test();
-    let (model, key, view, mut native) = console(cx);
-    settle(&mut native);
+/// The console's front pane popped out to a window of its own: its key
+/// and handle.
+fn pop_out(
+    model: &Entity<Desktop>,
+    key: WindowKey,
+    view: &Entity<WindowRoot>,
+    native: &mut VisualTestContext,
+) -> (WindowKey, AnyWindowHandle) {
     let index = native.update(|_, cx| view.read(cx).layout(cx).focused);
-    model.update(&mut native, |model, cx| {
+    model.update(native, |model, cx| {
         model.dispatch(
             Message::Pane(key, PaneMessage::PopOut { index, at: None }),
             cx,
@@ -265,7 +267,7 @@ fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
         });
     });
     native.run_until_parked();
-    let (popped_key, popped_handle) = native.update(|_, cx| {
+    native.update(|_, cx| {
         let model = model.read(cx);
         let (&key, _) = model
             .views
@@ -273,7 +275,17 @@ fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
             .find(|(candidate, _)| **candidate != key)
             .expect("popout opened a view window");
         (key, model.windows[&key])
-    });
+    })
+}
+
+/// A pane popped out to a window of its own: that window's root draws the
+/// panes and the footer, and no bar.
+#[gpui_kit::test]
+fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (model, key, view, mut native) = console(cx);
+    settle(&mut native);
+    let (popped_key, popped_handle) = pop_out(&model, key, &view, &mut native);
     let nodes = native.update(|_, cx| {
         popped_handle
             .update(cx, |_, window, cx| {
@@ -309,6 +321,42 @@ fn a_pop_out_draws_panes_and_footer_and_no_bar(cx: &mut TestAppContext) {
         0,
         "the pop-out drew a dot"
     );
+}
+
+/// The View menu's Search goes to whichever window is in front: from a
+/// pop-out it opens Spotlight over the console, where it draws, and leaves
+/// the pop-out's panes uncovered.
+#[gpui_kit::test]
+fn search_from_a_pop_out_opens_spotlight_on_the_console(cx: &mut TestAppContext) {
+    let (model, key, view, mut native) = console(cx);
+    settle(&mut native);
+    let (popped_key, popped_handle) = pop_out(&model, key, &view, &mut native);
+    native.update(|_, cx| {
+        popped_handle
+            .update(cx, |_, window, cx| {
+                window.dispatch_action(Box::new(crate::shell::keys::ToggleSpotlight), cx)
+            })
+            .unwrap()
+    });
+    native.run_until_parked();
+    native.update(|_, cx| {
+        let open = |key| {
+            *model.read(cx).entities.by_window[&key]
+                .overlays
+                .read(cx)
+                .get()
+        };
+        assert_eq!(
+            open(key),
+            Some(Overlay::Spotlight),
+            "the console shows no Spotlight"
+        );
+        assert_eq!(
+            open(popped_key),
+            None,
+            "the pop-out holds a Spotlight it cannot draw"
+        );
+    });
 }
 
 /// Before the desk the console's root draws the launcher's screen alone:

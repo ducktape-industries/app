@@ -1235,6 +1235,18 @@ fn the_window_takes_the_keys_when_its_last_pane_leaves(cx: &mut TestAppContext) 
         root_has_them(&mut native),
         "Settings closed over a bare desk"
     );
+    // and a later model notify leaves them where they went next
+    native
+        .update(|window, cx| super::pane_hold_tests::focus_control("rail-connection", window, cx));
+    settle(&mut native);
+    model.update(&mut native, |model, cx| {
+        model.dispatch(Message::ShowToast("saved".into()), cx)
+    });
+    settle(&mut native);
+    assert!(
+        !root_has_them(&mut native),
+        "a later model notify pulled the keys back to the root"
+    );
 }
 
 /// A pane whose seat holds both a tree and a standin draws the standin: a

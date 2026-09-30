@@ -179,8 +179,15 @@ impl WindowRoot {
                 }),
             )
             .on_action(cx.listener(|this, _: &ToggleSpotlight, _, cx| {
-                this.overlays
-                    .entity()
+                // over the console, where it draws: the View menu's Search
+                // comes from whichever window is in front
+                let desktop = this.model.read(cx);
+                let console = desktop.state.console_win;
+                let Some(own) = console.and_then(|key| desktop.entities.by_window.get(&key)) else {
+                    return;
+                };
+                own.overlays
+                    .clone()
                     .update(cx, |overlays, cx| overlays.toggle(Overlay::Spotlight, cx));
             }))
             .on_action(cx.listener(|this, _: &OpenHelp, _, cx| {

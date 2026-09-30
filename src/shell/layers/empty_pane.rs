@@ -255,14 +255,15 @@ impl EmptyPane {
             spin.update(cx, |spin, cx| {
                 spin.set(Figure::Roll, motion, Ink::of(dark).figure, cx)
             });
-            // Not while something open over the desk keeps the keys; once
-            // it closes, if the last window left meanwhile (`PaneLayer::keys_move`).
-            if !(*console && overlay) {
-                if now_bare && !*bare {
-                    root.focus(window, cx);
-                }
-                *bare = now_bare;
+            // Not while something open over the desk keeps the keys: its
+            // close gives them back (`OverlayLayer::moved`), and to the root
+            // when what had them left with the last window (`focus_lost`).
+            // This reads `Overlays` without observing it, so `bare` moves
+            // either way: a close is no model notify.
+            if now_bare && !*bare && !(*console && overlay) {
+                root.focus(window, cx);
             }
+            *bare = now_bare;
             if !now_bare {
                 // not drawn: it reads the model afresh when it is
                 return;
