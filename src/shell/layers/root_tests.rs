@@ -262,6 +262,189 @@ fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
     );
 }
 
+/// The node in `window`'s last tree that the element with its own id
+/// `name` built.
+fn node_of(window: &gpui_kit::Window, name: &str) -> gpui_kit::accesskit::NodeId {
+    let tree = window.a11y_tree().expect("the window built a tree");
+    tree.nodes
+        .iter()
+        .find_map(|(node, _)| {
+            let own = window.a11y_element_id(*node).and_then(|path| path.last());
+            matches!(own, Some(gpui_kit::ElementId::Name(own)) if own.as_ref() == name)
+                .then_some(*node)
+        })
+        .unwrap_or_else(|| panic!("no {name} node in the tree"))
+}
+
+/// Each named element's node in `window`'s last tree, with its parent's
+/// element path (`None` under the window's root node).
+fn placed(window: &gpui_kit::Window, names: &[&str]) -> Vec<(String, Option<String>)> {
+    let tree = window.a11y_tree().expect("the window built a tree");
+    let parents: std::collections::HashMap<_, _> = tree
+        .nodes
+        .iter()
+        .flat_map(|(id, node)| node.children().iter().map(move |child| (*child, *id)))
+        .collect();
+    names
+        .iter()
+        .map(|name| {
+            let parent = parents
+                .get(&node_of(window, name))
+                .and_then(|parent| window.a11y_element_id(*parent))
+                .map(ToString::to_string);
+            (name.to_string(), parent)
+        })
+        .collect()
+}
+
+/// What the door serves of the console: its node ids, in order.
+fn door_ids(native: &mut VisualTestContext) -> Vec<String> {
+    native.update(|window, _| {
+        crate::ax::snapshot("console", window, false)
+            .into_iter()
+            .map(|node| node.id)
+            .collect()
+    })
+}
+
+/// A cached layer stays cached under a reader, and its nodes stay in the
+/// tree (the fork carries a reused view's nodes, focus ids and listeners):
+/// with a11y on, ten pulses of the dot, each followed by a door read (a
+/// draw, as `ax::actions::current` draws), draw neither the bar, nor the
+/// strip, nor the pane's tree, and the door serves the same nodes after
+/// each: the bar, its tabs, the strip's buttons, the view and its tree's
+/// text, under the parents the first frame gave them. The pane view draws
+/// with every frame and its tree with none: under the door `misses` now
+/// fall short of `draws`. The door's Focus on a bar tab drawn from reuse
+/// still lands, and a menu hanging off a cached bar keeps its nodes too.
+#[gpui_kit::test]
+fn a_cached_layer_keeps_its_nodes_under_a11y(cx: &mut TestAppContext) {
+    use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
+    const MODULE: &str = "root-a11y-view";
+    const TAB: &str = "rail/root-a11y-view";
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
+    app.rail.update(&mut native, |rail, cx| {
+        rail.read_off(crate::runtime::Roster::listing(&[MODULE]), cx)
+    });
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    native.update(|window, _| window.activate_window());
+    set_motion(&app, true, &mut native);
+    polled(&app, status(7), &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    native.update(|window, _| window.activate_a11y());
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    // the strip and the view name no node of their own: their controls
+    // and the guest's text are theirs
+    let names = [
+        "menubar",
+        "rail-rows",
+        TAB,
+        "pane/0/split",
+        "pane/0/close",
+        "pane/0/view",
+        "rich-text",
+    ];
+    let (ids, first) = (
+        door_ids(&mut native),
+        native.update(|window, _| placed(window, &names)),
+    );
+    let draws = || {
+        crate::perf::snapshot(false)["views"][MODULE]["draws"]
+            .as_u64()
+            .expect("the pane counts its draws")
+    };
+    let (chrome, strip, tree, drawn) = (
+        window_count(key, "renders.chrome"),
+        window_count(key, "renders.strip.0"),
+        tree_renders(MODULE),
+        draws(),
+    );
+    assert!(chrome > 0 && strip > 0 && tree > 0, "every layer drew");
+    let pulse_and_read = |native: &mut VisualTestContext| {
+        native
+            .executor()
+            .advance_clock(std::time::Duration::from_millis(40));
+        native.run_until_parked();
+        native.update(|window, cx| window.draw(cx).clear(cx));
+    };
+    for pulse in 0..10 {
+        pulse_and_read(&mut native);
+        assert_eq!(door_ids(&mut native), ids, "after pulse {pulse}");
+        assert_eq!(
+            native.update(|window, _| placed(window, &names)),
+            first,
+            "after pulse {pulse} a node moved"
+        );
+    }
+    assert_eq!(
+        window_count(key, "renders.chrome"),
+        chrome,
+        "a pulse or a read drew the bar"
+    );
+    assert_eq!(
+        window_count(key, "renders.strip.0"),
+        strip,
+        "a pulse or a read drew the strip"
+    );
+    assert_eq!(
+        tree_renders(MODULE),
+        tree,
+        "a pulse or a read drew the tree"
+    );
+    assert!(
+        draws() >= drawn + 20,
+        "the pane view drew {} times in ten pulses and ten reads",
+        draws() - drawn
+    );
+    // the Focus a door `focus` sends, on the tab the last reuse carried
+    native.update(|window, cx| {
+        let target_node = node_of(window, TAB);
+        window.dispatch_a11y_action(
+            ActionRequest {
+                action: Action::Focus,
+                target_tree: TreeId::ROOT,
+                target_node,
+                data: None,
+            },
+            cx,
+        );
+    });
+    frame(&mut native);
+    let focused: Vec<_> = native.update(|window, _| {
+        crate::ax::snapshot("console", window, false)
+            .into_iter()
+            .filter(|node| node.state.contains(&"focused"))
+            .map(|node| node.id)
+            .collect()
+    });
+    assert_eq!(focused, [format!("console:{TAB}")], "the Focus missed");
+    // a menu hangs off the bar (deferred, inside its cache): reuse carries
+    // its nodes as the bar's
+    super::tests::show(&view, Some(Overlay::Network), &mut native);
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    let (ids, chrome) = (door_ids(&mut native), window_count(key, "renders.chrome"));
+    let first = native.update(|window, _| placed(window, &["network-menu"]));
+    for pulse in 0..5 {
+        pulse_and_read(&mut native);
+        assert_eq!(door_ids(&mut native), ids, "menu open, after pulse {pulse}");
+        assert_eq!(
+            native.update(|window, _| placed(window, &["network-menu"])),
+            first
+        );
+    }
+    assert_eq!(
+        window_count(key, "renders.chrome"),
+        chrome,
+        "a pulse drew the bar under its menu"
+    );
+}
+
 /// Typing in Spotlight's field draws the overlay layer (the field is its
 /// child: each of the field's own notifies draws it too) and no other
 /// cached layer: neither the bar, nor the footer, nor a pane's tree. (The
