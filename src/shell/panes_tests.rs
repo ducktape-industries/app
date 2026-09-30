@@ -680,8 +680,8 @@ fn a_view_that_draws_widens_the_window_it_came_to(cx: &mut TestAppContext) {
 /// A window redraws for whatever moved around its panes (a menu, the bar,
 /// the toast). With nothing in the pane changed that redraw must not
 /// render a seated view's tree again: the counts of
-/// `GET /perf`, on the cached path (no a11y reader, so no `draw` helper
-/// here). Times are flaky under the test scheduler; counts are not.
+/// `GET /perf`, with no `draw` helper here (its `activate_a11y` refreshes
+/// the window: every cache misses once). Times are flaky under the test scheduler; counts are not.
 #[gpui_kit::test]
 fn a_desk_redraw_with_nothing_changed_renders_no_view_tree(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;
@@ -1005,7 +1005,7 @@ fn a_views_link_opens_its_seat_on_the_console(cx: &mut TestAppContext) {
 
 /// A frame as the platform delivers one, a figure's tick after the last:
 /// the timers that came due run, whatever they dirtied draws, then the
-/// next-frame callbacks. The cached path: no a11y reader.
+/// next-frame callbacks.
 fn tick_frame(native: &mut VisualTestContext) {
     native
         .executor()
@@ -1377,7 +1377,7 @@ fn a_pane_picked_in_spotlight_hands_the_keys_by_its_first_frame(cx: &mut TestApp
 /// pane's tree again and no other pane's. Each body is cached on its own
 /// under the uncached layer and pane views (P6), so the sibling's tree
 /// hits; the pane views themselves render with the window, so
-/// `renders.pane.1` is not asserted flat. The cached path: no a11y reader.
+/// `renders.pane.1` is not asserted flat.
 #[gpui_kit::test]
 fn a_pane_wake_re_renders_its_tree_and_not_the_siblings(cx: &mut TestAppContext) {
     use gpui_kit::Styled as _;

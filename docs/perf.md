@@ -108,10 +108,10 @@ loop runs on the window thread inside `Seat::turn`
 | Sanitize truncations | a `display_text_truncated` warn (`Guest::report_display_truncation`) | `reports.local` after `guest::shape` | C `truncations` (D) | a3 |
 | Tree merge and replace | nothing | `guest::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone, `Pictures::hydrate`, `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
 | ViewTree render | `ViewTree.renders`, `#[cfg(test)]` only (`src/render.rs`) | `ViewTree::render` (`Render` impl); promote the counter out of `cfg(test)` | C `renders` (D), H `render` (W) | 70 |
-| Cache hit / miss per view | nothing | On the cached path (`layers::PaneView`, `layers::cached_unless_a11y`) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `PaneView` draws of the seat, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
+| Cache hit / miss per view | nothing | On the cached path (`layers::PaneView` draws the seat's tree as a cached `AnyView`, with or without a11y) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `PaneView` draws of the seat, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
 | Full redraws per interaction | nothing (#347 measured it with temporary spans: 57–67 per window switch before, 11–14 after) | the `misses` delta between two door reads around the interaction | derived (D) | 70 |
 | Refresh causes | nothing | every `window.refresh()` caller in `src` is a cache-buster for all cached views in that window (`gpui:src/view.rs`, `!window.refreshing`). Today there are two, both in `src/render/text.rs`: the selection path (post-#347 `refresh_on_change`, only when the shown selection changes; before it, gpui-base's `refresh_window_on_change`) and the drag mouse-up handler (`MouseUpEvent` while `DRAG_CLIP` is set). `Window::activate_a11y` also refreshes. Count per site | C `refresh.<site>` (D) | free (`text.rs`) |
-| gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `input::Observe` (`src/runtime/input.rs`) wraps the guest element: `Observe::prepaint` runs render + layout + prepaint for a cached `AnyView`, `Observe::paint` the paint. Per view only on the cached path; with a11y active `PaneView` renders the tree uncached and taffy layout is window-wide | H `layout`, H `paint` (W) | a3 |
+| gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `input::Observe` (`src/runtime/input.rs`) wraps the guest element: `Observe::prepaint` runs render + layout + prepaint for a cached `AnyView`, `Observe::paint` the paint. Per view only on the cached path, which the tree takes with or without a11y | H `layout`, H `paint` (W) | a3 |
 | Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) is insert-only, never evicts; sum `raster`/`vector` byte lengths when on | G `picture_bytes` (D) | free |
 | Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `Guest::tick` | G `memory` max (D) | a3 |
 | Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
@@ -257,8 +257,9 @@ only when on and only when the tree changed.
 - `POST /key` with `"delta": false` is the one press that reads no tree
   (§4.3), so it leaves `cache_on` as it found it.
 - **It must not draw.** `ax::actions::current` turns a11y on at the first
-  read and calls `window.draw(cx)` on every read; a11y on switches
-  `PaneView` to the uncached tree. `/perf` is answered in
+  read and calls `window.draw(cx)` on every read; each such draw renders
+  the root and the pane views once (`door_draws`), while every cached
+  layer and tree that did not move hits. `/perf` is answered in
   `ax::answer` from `perf::snapshot()`; its one window access reads
   `is_a11y_active` (and, with `perf-deep`, the profiler's histograms) and
   never draws.
@@ -289,7 +290,10 @@ only when on and only when the tree changed.
              "door_draws": 0, "rss.peak": { "max": 400000000 }, "rss.current": { "last": 350000000 } } }
 ```
 
-- `"cache_on"`: true when no served window has a11y active (`Window::is_a11y_active`).
+- `"cache_on"`: true when no served window has a11y active (`Window::is_a11y_active`),
+  so no door read has drawn in any. The layers and trees draw cached with
+  a11y on too (gpui-pre#8): it says the window's counts are free of door
+  draws, not that the cache was off.
   A gate refuses to judge cache metrics (`misses`, `hits`, full redraws per
   switch, idle drawing) from a reply with `cache_on: false` (§4.3).
 - `"gpui"` per window only with `perf-deep` (§3.5), µs from nanosecond
@@ -482,23 +486,39 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
 
 **Caveat on every qa number.** The door turns a11y on at its first read and
 draws on every read (`ax::actions::current`), and a `wait` polls every
-50 ms (`ax::answer`, `POLL`). With a11y on, `PaneView`
-takes the uncached path. So qa's render/layout numbers are for the uncached
-path and are not user numbers; the idle window must contain no door reads;
-`door_draws` is reported so a reviewer can see how much of a window's
-render count is the door's. The sharper consequence is §4.3.
+50 ms (`ax::answer`, `POLL`). With a11y on the window draws cached as it
+does for a person: the pinned fork carries a cached view's nodes, focus
+ids, bounds and action listeners through reuse (gpui-pre#8), so a read's
+draw renders the root, the pane layer and the pane views (each view's
+`draws`), and the bar, the dialogs, the footer, the strips and every
+view's tree only if they moved. So qa's cache metrics (`misses`, `hits`)
+mean the same with the door on as off, and a door-driven run's `misses`
+are real; its root, `renders.panes`, `renders.pane.<n>` and `draws`
+counts carry one render per read. The idle window must still contain no
+door reads, and `door_draws` is reported so a reviewer can see how much of
+a window's render count is the door's. `perf-switch` keeps its no-read
+press: it measures what a person sees.
 
 ### 4.3 The a11y trap, and measuring with the cache on
 
-With a11y active every draw of a guest view is a full `ViewTree::render`:
-`misses == draws` by construction, and the whole #347 class of bug (a cached
-tree that never stays cached) is invisible. A perf gate driven through
-`/tree`, `/act` or `/wait` would have passed before #347 and would pass again
-if it regressed. There is no app-callable way to turn a11y back off:
-`gpui:src/window.rs` has `activate_a11y`, and deactivation belongs to the
-platform adapter. A "keep the cache" door flag is therefore not a flag but a
-launch mode: with a11y off, `/tree`, `/act` and `/wait` have no guest nodes
-to serve.
+Until the fork carried a cached view's nodes through reuse (gpui-pre#8),
+the app drew every layer and guest view uncached while a11y was active, or
+the tree would have lost their nodes: every draw of a guest view was a full
+`ViewTree::render`, `misses == draws` by construction, and the whole #347
+class of bug (a cached tree that never stays cached) was invisible to a
+gate driven through `/tree`, `/act` or `/wait`. Now the layers and trees
+draw cached with a11y on as well, so cache metrics can be judged with the
+door on too: under the door a view's `misses` fall short of its `draws` by
+at least the door's reads minus the tree's own changes, and a #347
+regression shows in a door-driven run (in-process,
+`a_cached_layer_keeps_its_nodes_under_a11y`: ten dot pulses and ten reads
+with a11y on draw the pane view at least 20 times and its tree none, and the tree
+keeps every node under the same parent). What a read still costs is one
+render of the root and the pane views, which the idle window and the
+switch budget must not count; there is no app-callable way to turn a11y
+back off (`gpui:src/window.rs` has `activate_a11y`, and deactivation
+belongs to the platform adapter), so those two keep a door-free window:
+the no-read press below and `cache_on`.
 
 Design:
 

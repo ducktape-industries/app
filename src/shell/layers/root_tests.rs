@@ -60,8 +60,8 @@ fn a_pulse_re_renders_the_dot_and_not_the_chrome(cx: &mut TestAppContext) {
     native.update(|window, _| window.activate_window());
     set_motion(&app, true, &mut native);
     polled(&app, status(7), &mut native);
-    // frames, not `draw`: the door's tree (`activate_a11y`) draws every
-    // layer uncached until s15
+    // frames, not `draw`: its `activate_a11y` refreshes the window, a miss
+    // for every cached layer
     for _ in 0..4 {
         frame(&mut native);
     }
@@ -254,7 +254,7 @@ fn a_toast_re_renders_its_layer_only(cx: &mut TestAppContext) {
         "a toast drew the bar"
     );
     assert_eq!(tree_renders(MODULE), tree, "a toast drew a pane's tree");
-    // the door's tree after the counts: it draws every layer uncached
+    // the door's tree after the counts: activating it refreshes the window
     let nodes = native.update(draw);
     assert!(
         ids(&nodes).iter().any(|id| id == "console:toast"),
