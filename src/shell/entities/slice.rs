@@ -1,11 +1,6 @@
 //! What every shell entity is built from: a value whose one write compares
 //! first, the handle a view reads an entity through, and how an entity runs
 //! work that needs the kernel's tokio runtime.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the shell's layers use these from s3 on")
-)]
-
 use gpui_kit::{App, Context, Entity, Subscription};
 use std::future::Future;
 
@@ -34,6 +29,13 @@ impl<T: PartialEq + 'static> Slice<T> {
     }
 
     /// A field-wise edit, compared as a whole once `edit` has run.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the desk's resize and seed edit the layout in place from s11"
+        )
+    )]
     pub(crate) fn edit(&mut self, edit: impl FnOnce(&mut T), cx: &mut Context<Self>) -> bool
     where
         T: Clone,
@@ -70,6 +72,13 @@ impl<T: 'static> Observed<T> {
 /// entered for every poll (as `Desktop::start` runs the reducer's tasks),
 /// then hands its output to `land` on the entity. Dropping the task drops
 /// the work; an entity already gone takes nothing.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the shell's entities run their tasks through this from s10 on"
+    )
+)]
 pub(crate) fn spawn_on_runtime<E: 'static, R: 'static>(
     cx: &mut Context<E>,
     work: impl Future<Output = R> + 'static,

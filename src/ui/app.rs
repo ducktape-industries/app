@@ -404,8 +404,8 @@ pub(crate) enum AppMessage {
     OpenHelp,
     /// Something done to a window's panes.
     Pane(WindowKey, super::layout::PaneMessage),
-    /// A window drew its desk this size; `seed` is the program an
-    /// untouched desk opens.
+    /// A window's desk measured this size (`layers::PaneLayer`, from the
+    /// frame's callback); `seed` is the program an untouched desk opens.
     DeskShown {
         window: WindowKey,
         desk: (f32, f32),

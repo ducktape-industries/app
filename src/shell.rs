@@ -325,6 +325,10 @@ struct Desktop {
     seats: Entity<entities::Seats>,
     /// The seats' intents, into `dispatch` as `Message::ViewEvent`.
     _seat_intents: gpui_kit::Subscription,
+    /// Each window's panes as its layers read them, written from
+    /// `state.layouts` after every dispatch (`bridge`; s11 gives `Desk`
+    /// its methods and deletes the bridge).
+    desks: BTreeMap<WindowKey, Entity<entities::Desk>>,
     /// Where the desk window was when it last gave way to the launcher:
     /// it comes back there.
     desk_bounds: Option<gpui_kit::WindowBounds>,
@@ -363,6 +367,30 @@ impl Desktop {
         }
     }
 
+    /// The `Desk` of window `key`, made the first time it is asked for.
+    fn desk(&mut self, key: WindowKey, cx: &mut Context<Self>) -> Entity<entities::Desk> {
+        let layout = self.state.layouts.get(&key).cloned().unwrap_or_default();
+        self.desks
+            .entry(key)
+            .or_insert_with(|| cx.new(|_| entities::Slice::new(layout)))
+            .clone()
+    }
+
+    /// One write per bridged slice, from the state the reducer just moved;
+    /// each compares first, so a dispatch that moved no window's panes
+    /// notifies no `Desk`. The one writer while bridged: a layer that wants
+    /// a layout changed dispatches `Message::Pane`, as before. Deleted in
+    /// s11, when `Desk`'s methods take the `Pane(..)` arms. A closed
+    /// window's desk stays in the map until then (a `Layout::default()`).
+    fn bridge(&mut self, cx: &mut Context<Self>) {
+        for (key, desk) in &self.desks {
+            let layout = self.state.layouts.get(key).cloned().unwrap_or_default();
+            desk.update(cx, |desk, cx| {
+                desk.set(layout, cx);
+            });
+        }
+    }
+
     fn dispatch(&mut self, message: Message, cx: &mut Context<Self>) {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "dispatch");
         let runtime = crate::runtime::handle();
@@ -375,6 +403,8 @@ impl Desktop {
         let props = self.state.view_props();
         self.seats
             .update(cx, |seats, cx| seats.set_props(props, cx));
+        // after the seats: a pane's view finds its seat when its desk moves
+        self.bridge(cx);
         self.tray.sync(&self.state);
         self.start(task, cx).detach();
         self.subscriptions(cx);
@@ -630,7 +660,11 @@ pub(crate) struct DesktopWindow {
     model: Entity<Desktop>,
     key: WindowKey,
     kind: WindowKind,
-    drag: Option<pane_drag::Drag>,
+    /// This window's panes, as the model has them (`Desktop::bridge`).
+    desk: Entity<entities::Desk>,
+    /// The panes, drawn: one `PaneView` per pane, the keys' handoff between
+    /// them, the pointer's and the keyboard's hold on one.
+    panes: Entity<layers::PaneLayer>,
     /// The native text fields drawn in this window, by their element id.
     inputs: HashMap<&'static str, text_field::NativeInput>,
     /// ⌘K's field took focus when it opened; it is not taken again while
@@ -648,12 +682,6 @@ pub(crate) struct DesktopWindow {
     /// a load. Tab back into the rail lands on the front window's program
     /// again.
     rail_cursor: Option<&'static str>,
-    /// The desk's body while no window is on it.
-    empty_desk: Entity<layers::EmptyPane>,
-    /// Each empty window's body and each Help window's, by instance (s5
-    /// hands them to `PaneView`).
-    empty_panes: HashMap<u64, Entity<layers::EmptyPane>>,
-    help_panes: HashMap<u64, Entity<layers::HelpPane>>,
     /// The launcher's figure, written at its draw until s9's
     /// `LauncherLayer` writes it from its observers.
     launcher_spin: Entity<spin::Spin>,
@@ -674,15 +702,6 @@ pub(crate) struct DesktopWindow {
     menu: gpui_kit::FocusHandle,
     /// The open menu held the keys when the window was last drawn.
     menu_held: bool,
-    /// Each window's own focus (its view's box), by instance, and what in it
-    /// last had the keys: a window that comes to the front gets them back.
-    pane_keys: HashMap<u64, (gpui_kit::FocusHandle, Option<gpui_kit::FocusHandle>)>,
-    /// Its panes moved: the frame that draws them hands the keys to the
-    /// focused one.
-    panes_moved: bool,
-    front: Option<u64>,
-    /// The keyboard holds the window in front (⌘⇧M): see `pane_hold.rs`.
-    holding: Option<pane_hold::Holding>,
     /// Where the bar's menu buttons were last painted: each menu hangs
     /// under its own.
     bar_buttons: HashMap<crate::Overlay, gpui_kit::Bounds<gpui_kit::Pixels>>,
@@ -701,8 +720,6 @@ pub(crate) struct DesktopWindow {
     focus: gpui_kit::FocusHandle,
     _activation: gpui_kit::Subscription,
     _observer: gpui_kit::Subscription,
-    /// Any seat that moved (s5 deletes this: `PaneView` observes its `Seat`).
-    _seats: gpui_kit::Subscription,
     _focus_lost: gpui_kit::Subscription,
 }
 
@@ -799,15 +816,9 @@ impl DesktopWindow {
         }
     }
 
-    /// This window's panes, as the model has them.
+    /// This window's panes, as the model has them (the `Desk` slice).
     fn layout(&self, cx: &gpui_kit::App) -> layout::Layout {
-        self.model
-            .read(cx)
-            .state
-            .layouts
-            .get(&self.key)
-            .cloned()
-            .unwrap_or_default()
+        self.desk.read(cx).get().clone()
     }
 }
 

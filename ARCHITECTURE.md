@@ -196,7 +196,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    shift every `AuthoredPath`) and either `ViewTree::replace`s the existing
    tree or, for a new guest instance, builds `ViewTree::new(root)
    .with_presentation(old.presentation())` and hands it the guest's
-   `EditorStore`; the seat notifies, and the pane (`panes::pane_body`)
+   `EditorStore`; the seat notifies, and the pane (`layers::PaneView`)
    draws `seat.tree()` cached (`layers::cached_unless_a11y`) inside the
    `view/<module>` mark, laid out from `seat.min_width()`, or its `Standin`
    while it holds one (a load, a failure, a stopped view), over any tree it
@@ -637,8 +637,8 @@ House words, and where one word means several things.
   sign-in, "link from another device" (`join_from_device`). Unrelated.
 - **standin / stage words** — the native placeholder drawn where a view is
   not (`seat/standin.rs`, `stage_words`). **Stage** (`ui/app.rs`) is which
-  screen the console shows; `pane_stage` (`shell/panes.rs`) draws the pane
-  area. Unrelated.
+  screen the console shows; `layers::PaneLayer` (`shell/layers/panes.rs`)
+  draws the pane area. Unrelated.
 - **override** — `DUCKTAPE_VIEWS_DIR`: a developer's `<module>_view.wasm`
   files replace the network's views, unverified, logged.
 - **console** — the main OS window (`WindowKind::Console`, `console_win`):

@@ -1,9 +1,11 @@
 //! A pane held by the pointer: the title bar moves it, the grips around it
 //! size it, and a press anywhere raises it. The pointer is followed
-//! window-wide, so a fast hand cannot slip off what it holds.
+//! window-wide, so a fast hand cannot slip off what it holds. The hold is
+//! the `PaneLayer`'s; the grips are drawn by the `PaneView` they size.
+use super::layers::{PaneLayer, PaneView};
 use super::*;
 
-impl DesktopWindow {
+impl PaneLayer {
     /// Takes hold of window `index` at `at`: `sides` follow the pointer;
     /// none, and the whole window does.
     pub(super) fn hold(
@@ -17,7 +19,9 @@ impl DesktopWindow {
             self.drag = Some(drag);
         }
     }
+}
 
+impl PaneView {
     /// The edges and corners a window is sized by: each reaches `GRAB`
     /// out past the border and `IN` over it, a corner further in.
     pub(super) fn grips(
@@ -241,9 +245,10 @@ impl Drag {
 /// unless something is open over the desk. Registered on the whole OS
 /// window in the capture phase, before anything under the pointer sees it:
 /// a program's view may swallow the pointer, and must not keep its pane
-/// from rising.
+/// from rising. The messages go through the window (`pane_message` marks
+/// the layer's panes moved), so the layer is read, never held, here.
 pub(super) fn raise(
-    this: gpui_kit::Entity<DesktopWindow>,
+    this: gpui_kit::Entity<PaneLayer>,
     desk: gpui_kit::Bounds<gpui_kit::Pixels>,
     window: &mut Window,
 ) {
@@ -256,30 +261,37 @@ pub(super) fn raise(
             f32::from(event.position.x - desk.origin.x),
             f32::from(event.position.y - desk.origin.y),
         );
-        this.update(cx, |this, cx| {
+        let (covered, layout, desk_window) = {
+            let this = this.read(cx);
             // a press on something open over the desk is not on a window
             let covered = this.kind == crate::shell::WindowKind::Console
                 && this.model.read(cx).state.overlay.is_some();
-            // a press ends the hold the keyboard has on a window, as it is
-            let layout = this.layout(cx);
-            if layout.held.is_some() {
-                this.hold_message(PaneMessage::Release { keep: true }, cx);
-            }
-            let Some(index) = layout.under(at).filter(|_| !covered) else {
-                return;
-            };
-            let on_top = layout.stacking().last() == Some(&index);
-            if index != layout.focused || !on_top {
-                this.pane_message(PaneMessage::Focus(index), window, cx);
-            }
-        });
+            (covered, this.layout(cx), this.window.clone())
+        };
+        // a press ends the hold the keyboard has on a window, as it is
+        if layout.held.is_some() {
+            let _ = desk_window.update(cx, |desk, cx| {
+                desk.hold_message(PaneMessage::Release { keep: true }, cx)
+            });
+        }
+        let Some(index) = layout.under(at).filter(|_| !covered) else {
+            return;
+        };
+        let on_top = layout.stacking().last() == Some(&index);
+        if index != layout.focused || !on_top {
+            let _ = desk_window.update(cx, |desk, cx| {
+                desk.pane_message(PaneMessage::Focus(index), window, cx)
+            });
+        }
     });
 }
 
 /// The pointer, window-wide, so a fast one can't slip off the window it
 /// holds: while a window is held, a move carries it and a release lets it
-/// go, a release that comes before the next frame too.
-pub(super) fn follow(this: gpui_kit::Entity<DesktopWindow>, window: &mut Window) {
+/// go, a release that comes before the next frame too. Every move
+/// dispatches `Pane(Frame)`: `Desk` is bridged until s11, so a frame set
+/// on it directly would be snapped back by the next dispatch.
+pub(super) fn follow(this: gpui_kit::Entity<PaneLayer>, window: &mut Window) {
     use gpui_kit::*;
     let held = this.clone();
     window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {

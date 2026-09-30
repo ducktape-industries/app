@@ -4,7 +4,9 @@
 mod cached;
 mod empty_pane;
 mod help_pane;
+mod panes;
 
 pub(crate) use cached::cached_unless_a11y;
 pub(super) use empty_pane::{CHAT_READY, CONTEXT, EmptyPane};
 pub(super) use help_pane::HelpPane;
+pub(super) use panes::{PaneLayer, PaneView};

@@ -1,5 +1,5 @@
 //! The seat, turned off the draw path, under a bare root that draws it as
-//! `panes::pane_body` does: its tree, cached, or its standin.
+//! `layers::PaneView` does: its tree, cached, or its standin.
 use super::entity::native_root;
 use super::*;
 use gpui_kit::{

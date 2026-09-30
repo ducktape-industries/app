@@ -1,7 +1,7 @@
-//! The desk frame of a window: the menu bar (console only), the pane area,
-//! whatever is open over it, and the footer. Here the bar is measured for
-//! folding, the desk's size is reported to the model, and the keys go back
-//! where they were when an overlay closes. Also the pieces every overlay is
+//! The desk frame of a window: the menu bar (console only), the pane area
+//! (`layers::PaneLayer`), whatever is open over it, and the footer. Here the
+//! bar is measured for folding and the keys go back where they were when an
+//! overlay closes. Also the pieces every overlay is
 //! built from: `overlay` (backdrop and card), `hanging` (a menu under its
 //! bar button), `menu_row`, `dialog_fit`.
 
@@ -72,19 +72,6 @@ impl DesktopWindow {
             window.request_animation_frame();
         }
         self.bar_drawn = drawn;
-        // report the desk's size; on the console's first draw also `seed`, a
-        // program a link opened before the desk existed (else it starts empty)
-        let desk = self.desk(window);
-        let layout = self.layout(cx);
-        let seed = (self.kind == crate::shell::WindowKind::Console && !layout.initialized)
-            .then_some(state.active)
-            .flatten();
-        if layout.desk != Some(desk) || seed.is_some() {
-            let window = self.key;
-            self.model.update(cx, |model, cx| {
-                model.dispatch(Message::DeskShown { window, desk, seed }, cx)
-            });
-        }
         // tell the notification centre which window is in front and which
         // view is focused in it: that view's banners stay away (unless asked for)
         let layout = self.layout(cx);
@@ -98,7 +85,6 @@ impl DesktopWindow {
             .set_front(self.key, window.is_window_active(), focused);
         let console = self.kind == crate::shell::WindowKind::Console;
         let bar = console.then(|| self.menubar(&state, &rail, narrow, window, cx));
-        let seat = self.pane_stage(window, cx);
         let overlay = match state.overlay.filter(|_| console) {
             None => None,
             Some(Overlay::Spotlight) => Some(self.spotlight(&state, window, cx)),
@@ -150,7 +136,15 @@ impl DesktopWindow {
             .flex()
             .flex_col()
             .children(bar)
-            .child(div().id("seat").flex_1().min_h_0().w_full().child(seat))
+            // the panes: a layer of their own, measuring the desk they sit on
+            .child(
+                div()
+                    .id("seat")
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    .child(self.panes.clone()),
+            )
             .children(overlay)
             .children(self.footer(cx))
             .into_any_element()
