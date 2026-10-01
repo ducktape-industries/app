@@ -91,6 +91,10 @@ pub(crate) fn is_host_id(id: &ElementId) -> bool {
     matches!(id, ElementId::NamedChild(base, _) if matches!(**base, ElementId::CodeLocation(_)))
 }
 
+/// The name of the host id a seat draws around its view's tree, before the
+/// module (`Seat::ax_mark`): the AX door reads the module off it.
+pub(crate) const VIEW_MARK: &str = "view/";
+
 /// Pushes the node's identity onto `path` when it has one; the caller pops
 /// on the way out when this answers `true`.
 pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {

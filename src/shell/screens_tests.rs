@@ -566,6 +566,30 @@ fn the_address_field_shows_where_the_session_moved_it(cx: &mut TestAppContext) {
     assert_eq!(typed, "10.0.0.6:8844");
 }
 
+/// While a connect is out the screen says where it reaches, and goes on
+/// saying it whatever is typed into the address field meanwhile: the
+/// attempt was started with that address, not with the field's text.
+#[gpui_kit::test]
+fn the_reaching_line_names_the_address_the_connect_was_started_with(cx: &mut TestAppContext) {
+    let (view, mut native) = open(Seed::boot(), cx);
+    let session = entities(&view, &mut native).session.clone();
+    // the attempt stays out: its answer lands when the executor runs, and
+    // nothing below runs it
+    let (node, _) = super::entities::tests::source(|_| Err("error sending request".into()));
+    session.update(cx, |session, cx| {
+        session.connect_through("http://127.0.0.1:1".into(), node, cx)
+    });
+    let nodes = native.update(draw);
+    find(&nodes, "Status", "Reaching http://127.0.0.1:1…");
+    native.update(|window, cx| type_into("endpoint/field", "http://127.0.0.1:19", window, cx));
+    let nodes = native.update(draw);
+    assert_eq!(
+        find(&nodes, "TextInput", "Node address")["value"],
+        "http://127.0.0.1:19"
+    );
+    find(&nodes, "Status", "Reaching http://127.0.0.1:1…");
+}
+
 /// "Add a device…" opens with its code field empty: the field owns the
 /// code, and the layer empties it as the dialog opens.
 #[gpui_kit::test]

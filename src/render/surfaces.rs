@@ -73,6 +73,11 @@ impl ViewTree {
                         }
                     }));
             }
+            // a dialog takes the keyboard when it opens; a popup's view
+            // moves focus itself (widget commands)
+            if let Some(entry) = entry.as_ref().filter(|_| opened) {
+                dialog_entry(entry, window, cx);
+            }
             let content = div()
                 .bg(gpui_kit::component::Theme::global(cx)
                     .color_tokens()
@@ -83,13 +88,6 @@ impl ViewTree {
                         .surface_foreground,
                 )
                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                // a dialog takes the keyboard when it opens; a
-                // popup's view moves focus itself (widget commands)
-                .children(
-                    entry
-                        .as_ref()
-                        .map(|entry| dialog_entry(entry, opened, window, cx)),
-                )
                 .child(self.node(modal, window, cx));
             layer = layer.child(content);
             let layer = if named {
