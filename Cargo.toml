@@ -137,7 +137,9 @@ keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev =
 p256 = "0.13"
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.7" }
+# test-support: its headless renderer, which `render/tests/picture_pixels.rs`
+# reads pixels back from.
+gpui-wgpu = { package = "gpui-pre-wgpu", version = "=0.3.7", features = ["test-support"] }
 
 [patch.crates-io]
 gpui-pre-wgpu = { git = "https://github.com/ducktape-industries/gpui-pre", rev = "ee5c3d721be8265973f87e94522f05151020ef1d" }
