@@ -85,18 +85,16 @@ impl Exports {
 
     /// The view's state, held to `MAX_SNAPSHOT_BYTES` on the length the
     /// guest names, before the host copies a byte of it.
-    pub(super) fn snapshot(
-        &self,
-        store: &mut Store<HostState>,
-    ) -> wasmtime::Result<Result<Vec<u8>, String>> {
+    pub(super) fn snapshot(&self, store: &mut Store<HostState>) -> wasmtime::Result<Snapshot> {
         let packed = self.snapshot.call(&mut *store, ())?;
         // the answer's first byte is its result tag
         if wire::abi::unpack(packed).1 as usize > wire::MAX_SNAPSHOT_BYTES + 1 {
-            return Ok(Err(
-                "the view's state is past the snapshot byte budget".into()
-            ));
+            return Ok(Snapshot::TooLarge);
         }
-        self.result(store, packed)
+        Ok(match self.result(store, packed)? {
+            Ok(state) => Snapshot::Taken(state),
+            Err(refusal) => Snapshot::Refused(refusal),
+        })
     }
 
     pub(super) fn restore(
