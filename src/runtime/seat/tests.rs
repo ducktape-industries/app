@@ -343,7 +343,7 @@ fn an_unopened_program_runs_no_init() {
         .unwrap()
         .join("programs")
         .join(abi::hex(code.digest()));
-    std::fs::remove_file(&kept).unwrap();
+    let _ = std::fs::remove_file(&kept);
 }
 
 /// A pane that claims a seat preloaded only as far as compiled starts its
