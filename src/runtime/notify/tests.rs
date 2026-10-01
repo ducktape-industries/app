@@ -35,7 +35,7 @@ fn a_views_permission_decides_log_bar_or_banner() {
     let mut center = Center::default();
     let (posted, banner) = center.post(&settings(None), "chat", "Chat", post("a", ""), now, 0);
     assert_eq!((posted, banner.is_none()), (Delivery::Logged, true));
-    assert!(center.asking("chat") && center.entries().count() == 1);
+    assert!(center.asking.contains("chat") && center.entries().count() == 1);
 
     let blocked = settings(Some(Permission::Block));
     let (posted, banner) = center.post(&blocked, "chat", "Chat", post("b", ""), now, 0);
@@ -71,7 +71,7 @@ fn a_views_permission_decides_log_bar_or_banner() {
     center.asking.clear();
     center.not_now.insert("chat".into());
     center.post(&settings(None), "chat", "Chat", post("f", ""), now, 0);
-    assert!(!center.asking("chat"));
+    assert!(!center.asking.contains("chat"));
 }
 
 /// The window in front gets no banner unless the person asked for it.
