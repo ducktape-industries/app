@@ -364,7 +364,9 @@ draws nothing.
 - **Session** (`shell/entities/session.rs`). `SessionState`, compared
   before it notifies: the endpoint being typed and the recent ones, the
   node reached (`connected_rpc`, `network`, `chain`, `other_chain`),
-  `connecting`, `reconnecting`, the failure under the address field. The
+  `connecting` and the node it reaches for (`reaching`: the address the
+  attempt was started with, not the field's text), `reconnecting`, the
+  failure under the address field. The
   entity owns the connect attempt and the status poll as `Task`s (dropping
   one cancels it: a new attempt drops the last, disconnect drops both), a
   `StatusSource` (a closure answering `/v1/status`; `Session::status_source`

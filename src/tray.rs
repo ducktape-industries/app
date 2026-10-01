@@ -43,7 +43,7 @@ impl Snapshot {
     /// "Not connected", "Reaching …", "Connected · block N", "Reconnecting…".
     fn status_line(session: &SessionState, chain: &Chain) -> String {
         match (session.connecting, session.connected, session.reconnecting) {
-            (true, _, _) => format!("Reaching {}…", session.endpoint),
+            (true, _, _) => format!("Reaching {}…", session.reaching),
             (false, false, _) => "Not connected".into(),
             (false, true, true) => "Reconnecting…".into(),
             (false, true, false) => format!("Connected · block {}", chain.height),
@@ -336,8 +336,10 @@ mod tests {
         session.reconnecting = true;
         let snapshot = Snapshot::of(&session, &chain, Appearance::System);
         assert_eq!(snapshot.labels[STATUS], "Reconnecting…");
+        // the node the attempt out is for, not what the address field holds
         session.connecting = true;
-        session.endpoint = "http://b".into();
+        session.reaching = "http://b".into();
+        session.endpoint = "http://bx".into();
         let snapshot = Snapshot::of(&session, &chain, Appearance::System);
         assert_eq!(snapshot.labels[STATUS], "Reaching http://b…");
     }
