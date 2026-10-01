@@ -139,3 +139,80 @@ async fn a_submit_whose_sequence_read_was_lost_is_asked_again() {
     assert_eq!(attempts, 2, "the lost read, then the one that went through");
     assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+/// The `module.changes` items `replies` holds for request 7, drained.
+fn heard(replies: &Replies) -> Vec<Option<u64>> {
+    let mut pending = Vec::new();
+    replies.drain_into(&mut pending).unwrap();
+    pending
+        .into_iter()
+        .map(|event| match event {
+            wire::Event::Response {
+                id: 7,
+                result: Ok(bytes),
+                done: false,
+            } => methods::decode::<Option<u64>>(&bytes).unwrap(),
+            other => panic!("{other:?}"),
+        })
+        .collect()
+}
+
+/// A fake node's `changes/<program>` door on `listener`: the one WebSocket
+/// it accepts, held open for as long as it is kept.
+async fn changes_socket(
+    listener: &tokio::net::TcpListener,
+) -> tokio_tungstenite::WebSocketStream<tokio::net::TcpStream> {
+    let (stream, _) = listener.accept().await.unwrap();
+    tokio_tungstenite::accept_async(stream).await.unwrap()
+}
+
+/// A view hears `None` on its `module.changes` subscription once the node's
+/// link is OPEN AGAIN, not when it dropped: the re-read it answers with goes
+/// to a node that is back, instead of spending its retry budget against one
+/// that is away (app#189). A node restarted on the same port is told once.
+#[tokio::test]
+async fn a_changes_subscription_says_reopened_once_the_node_is_back() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let node = Node {
+        client: RpcClient::new(format!("http://{addr}")),
+        network: "test-network".into(),
+    };
+    let replies = std::sync::Arc::new(Replies::default());
+    let items = Items {
+        drained: replies.drains(),
+        replies: replies.clone(),
+        id: 7,
+    };
+    let following = tokio::spawn(follow_changes(node, "chat".into(), items));
+    // up: the socket opens and nothing is said — the view read at its boot
+    let socket = changes_socket(&listener).await;
+    drop(listener);
+    assert!(heard(&replies).is_empty(), "a first open is no reopen");
+    // down: the port is closed and the socket dropped. Nothing is said while
+    // the node is away — the first reopen try (1 s) finds it refused
+    drop(socket);
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    assert!(
+        heard(&replies).is_empty(),
+        "nothing to re-read against while away"
+    );
+    // back on the same port: the next try (2 s on) opens, and the view is
+    // told once, to re-read
+    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let _socket = changes_socket(&listener).await;
+    let said = async {
+        loop {
+            let heard = heard(&replies);
+            if !heard.is_empty() {
+                return heard;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    };
+    let heard = tokio::time::timeout(std::time::Duration::from_secs(5), said)
+        .await
+        .expect("the reopen is said");
+    assert_eq!(heard, [None::<u64>], "one reopen, said once");
+    following.abort();
+}

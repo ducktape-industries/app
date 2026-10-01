@@ -202,10 +202,12 @@ impl Items {
 }
 
 /// A subscription whose items come from a host loop (`chain.heads` polls
-/// the node for them). The body owns whatever it holds open, so dropping
-/// the task releases it: a cancel drops the [`NodeTask`], and so do a
-/// guest's teardown, swap and trap, which drop the whole `tasks` list.
-fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body)
+/// the node for them, `module.changes` holds its socket). The body owns
+/// whatever it holds open, so dropping the task releases it: a cancel
+/// drops the [`NodeTask`], and so do a guest's teardown, swap and trap,
+/// which drop the whole `tasks` list. `false` when the request was refused
+/// at the door ([`start`]).
+fn spawn_subscription<Body, Fut>(guest: &mut Guest, id: u64, body: Body) -> bool
 where
     Body: FnOnce(Items) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
@@ -216,7 +218,7 @@ where
         replies,
         id,
     };
-    start(guest, id, body(items));
+    start(guest, id, body(items))
 }
 
 /// Runs `future` on the kernel runtime and delivers its result as the one
@@ -282,42 +284,51 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     let Some(node) = connected(guest, id) else {
         return;
     };
-    let replies = guest.replies.clone();
     let subscribed = (id, program.clone());
-    let started = start(guest, id, async move {
-        use futures::StreamExt as _;
-        let mut drained = replies.drains();
-        loop {
-            let mut changes = match node.client.changes(&program).await {
-                Ok(changes) => changes,
-                Err(error) => {
-                    tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                    tokio::time::sleep(backend::retry_delay(2)).await;
-                    continue;
-                }
-            };
-            while let Some(change) = changes.next().await {
-                let item = match change {
-                    Ok(change) => Ok(methods::encode(&Some(change.height))),
-                    Err(_) => break,
-                };
-                if !replies.subscription_item(&mut drained, id, item).await {
-                    return;
-                }
+    if spawn_subscription(guest, id, move |items| follow_changes(node, program, items)) {
+        guest.live_subscriptions.push(subscribed);
+    }
+}
+
+/// The socket behind a `module.changes` subscription, opened again at the
+/// app connection's backoff whenever it closes or would not open. The view
+/// hears `None` once per outage, AFTER the link is open again (view-wire's
+/// `Changes` contract): a re-read sent at the close spends its retry budget
+/// against a node that is away, and a node away longer than that budget (an
+/// update closes its port for seconds to minutes, #164) left the failed read
+/// standing until the next block that wrote to the program (app#189).
+async fn follow_changes(node: Node, program: String, mut items: Items) {
+    use futures::StreamExt as _;
+    // the link was lost, or never opened: the next open is a reopen to say
+    let mut reopening = false;
+    loop {
+        let mut changes = match node.client.changes(&program).await {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                reopening = true;
+                tokio::time::sleep(backend::retry_delay(2)).await;
+                continue;
             }
-            // the socket closed: the node restarted or the link dropped. Say
-            // so once (the view re-reads) and open it again.
-            if !replies
-                .subscription_item(&mut drained, id, Ok(methods::encode(&None::<u64>)))
-                .await
-            {
+        };
+        if std::mem::take(&mut reopening)
+            && !items.send(Ok(methods::encode(&None::<u64>))).await
+        {
+            return;
+        }
+        while let Some(change) = changes.next().await {
+            let item = match change {
+                Ok(change) => Ok(methods::encode(&Some(change.height))),
+                Err(_) => break,
+            };
+            if !items.send(item).await {
                 return;
             }
-            tokio::time::sleep(backend::retry_delay(1)).await;
         }
-    });
-    if started {
-        guest.live_subscriptions.push(subscribed);
+        // the socket closed: the node restarted or the link dropped. Open it
+        // again, and say so once it is.
+        reopening = true;
+        tokio::time::sleep(backend::retry_delay(1)).await;
     }
 }
 
