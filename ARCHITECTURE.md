@@ -578,7 +578,9 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `a11y::Patch`. `ViewTree::guest_aria` is the one aria
   mapper for the nodes that carry the guest's own `Interactivity`
   (Container, Image, Svg, UniformList, List, ResizeHandle): gpui's setters,
-  one `a11y::Patch` for the aria gpui has none for, `on_click`. A List the
+  one `a11y::Patch` for the aria gpui has none for, `on_click`, which is
+  AccessKit's Click on the node too (gpui's own is a pointer press at the
+  node's middle, on whatever is drawn there). A List the
   view roled or wired is a box in its place (gpui's list is not
   interactive). `ViewTree::presentation` and
   `with_presentation` (the `NativePresentation` copy across guest
