@@ -133,6 +133,55 @@ fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
     assert_eq!(modules(&app, console, cx), ["chat", "files", EMPTY]);
 }
 
+/// The AX door names a window for its life: the console closing renames
+/// no other window, and the console opening after it is "console" again.
+#[gpui_kit::test]
+fn a_window_keeps_its_door_name(cx: &mut TestAppContext) {
+    let (app, console) = console(cx);
+    let desk = desk_of(&app, console, cx);
+    desk.update(cx, |desk, cx| desk.split("files", cx));
+    app.windows
+        .update(cx, |windows, cx| windows.pop_out(console, 1, None, cx));
+    cx.run_until_parked();
+    let popped_key = popped(&app, console, cx);
+    let names = |cx: &TestAppContext| {
+        app.windows.read_with(cx, |windows, _| {
+            windows
+                .served()
+                .into_iter()
+                .map(|(name, key, _)| (key, name))
+                .collect::<Vec<_>>()
+        })
+    };
+    let before = names(cx);
+    assert_eq!(before.len(), 2);
+    assert_eq!(before[0], (console, "console".to_owned()));
+    let popped_name = before[1].1.clone();
+    assert_ne!(popped_name, "console");
+    let handle = app
+        .windows
+        .read_with(cx, |windows, _| windows.handles()[&console]);
+    cx.update_window(handle, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        names(cx),
+        [(popped_key, popped_name.clone())],
+        "the pop-out kept its name"
+    );
+    app.windows
+        .update(cx, |windows, cx| windows.raise_console(cx));
+    cx.run_until_parked();
+    let reopened = app
+        .windows
+        .read_with(cx, |windows, _| windows.console())
+        .expect("a console");
+    assert_eq!(
+        names(cx),
+        [(popped_key, popped_name), (reopened, "console".to_owned())]
+    );
+}
+
 /// A link, read against the chain in hand: on this chain the seat opens
 /// and its view is handed the route; another chain's link opens the seat,
 /// routes nothing, and says why; a view nobody lists opens nothing.

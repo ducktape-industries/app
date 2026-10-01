@@ -65,14 +65,15 @@ impl ViewTree {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, _, cx| {
+                            // the press outside is a press: a gesture
                             this.user_activation.set(Some(message));
                             cx.emit(wire::Event::Message(message))
                         }),
                     )
-                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                    .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+                        // a dismissal is no gesture, as Escape is not on the web
                         if event.keystroke.key == "escape" {
                             cx.stop_propagation();
-                            this.user_activation.set(Some(message));
                             cx.emit(wire::Event::Message(message));
                         }
                     }));

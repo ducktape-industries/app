@@ -214,6 +214,14 @@ fn apply_mouse<E: StatefulInteractiveElement>(
     element
 }
 
+/// A key the person pressed in the view is a gesture, as a click is;
+/// Escape is not (the web's user-activation rule: a dismissal grants nothing).
+fn mark_key(tree: &ViewTree, handler: u32, event: &KeyDownEvent) {
+    if event.keystroke.key != "escape" {
+        tree.user_activation.set(Some(handler));
+    }
+}
+
 fn apply_keyboard<E: StatefulInteractiveElement>(
     mut element: E,
     interactivity: &wire::Interactivity,
@@ -221,7 +229,7 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
 ) -> E {
     if let Some(handler) = interactivity.on_key_down {
         element = element.on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-            this.user_activation.set(Some(handler));
+            mark_key(this, handler, event);
             cx.emit(wire::Event::KeyDown {
                 handler,
                 phase: wire::DispatchPhase::Bubble,
@@ -232,7 +240,7 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
     if let Some(handler) = interactivity.capture_key_down {
         element =
             element.capture_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
-                this.user_activation.set(Some(handler));
+                mark_key(this, handler, event);
                 cx.emit(wire::Event::KeyDown {
                     handler,
                     phase: wire::DispatchPhase::Capture,

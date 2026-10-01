@@ -26,7 +26,7 @@ impl Guest {
         self.tasks.clear();
         self.clipboard = Default::default();
         for id in ids {
-            self.refuse(id, "stale_connection", "network connection changed");
+            self.refuse(id, refusal::STALE_CONNECTION, "network connection changed");
         }
         self.connection_rev = revision;
     }
@@ -510,6 +510,9 @@ impl Guest {
             gestured: false,
             link_opened: false,
             links: Vec::new(),
+            key_stamp: None,
+            spent_key: None,
+            gesture_used: false,
             module,
             instance: 0,
             name: String::new(),

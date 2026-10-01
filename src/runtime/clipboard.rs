@@ -1,5 +1,5 @@
 //! The clipboard, read and written on the window thread for one guest.
-use super::wire::methods::{self, Capability};
+use super::wire::methods::{self, Capability, refusal};
 use super::{Guest, Seat};
 use gpui_kit::{ClipboardEntry, Context};
 
@@ -37,18 +37,27 @@ pub(super) fn answer(
     // what the person copied elsewhere is read, and replaced, only on
     // their press or key in this view; a view on a clock never sees it
     match request {
-        _ if guest.user_activation.is_none() => {
-            guest.refuse(id, "needs_gesture", "the clipboard needs a press or key")
+        _ if guest.user_activation.is_none() => guest.refuse(
+            id,
+            refusal::NEEDS_GESTURE,
+            "the clipboard needs a press or key",
+        ),
+        Ok(request) => {
+            guest.gesture_used = true;
+            queue(guest, id, request)
         }
-        Ok(request) => queue(guest, id, request),
-        Err(error) => guest.refuse(id, "malformed_request", error),
+        Err(error) => guest.refuse(id, refusal::MALFORMED_REQUEST, error),
     }
     true
 }
 
 fn queue(guest: &mut Guest, id: u64, request: Request) {
     if guest.clipboard.pending.len() >= MAX_PENDING {
-        guest.refuse(id, "in_flight_limit", "too many pending clipboard requests");
+        guest.refuse(
+            id,
+            refusal::IN_FLIGHT_LIMIT,
+            "too many pending clipboard requests",
+        );
         return;
     }
     guest.clipboard.pending.push((id, request));

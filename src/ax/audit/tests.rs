@@ -855,11 +855,12 @@ fn the_walk_ends_on_a_first_press_that_puts_the_focus_nowhere(cx: &mut gpui_kit:
     assert_eq!(presses(&mut native), 1);
 }
 
-/// A `view/x` element at the right of the window, around `inside`.
+/// View `x`'s mark (`Seat::ax_mark`) at the right of the window, around
+/// `inside`.
 fn view_x(inside: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
     use gpui_kit::*;
     div()
-        .id("view/x")
+        .id(crate::render::host_id("view/x"))
         .absolute()
         .left(px(100.))
         .top(px(0.))
@@ -1476,9 +1477,13 @@ mod refused_scope {
     use gpui_kit::{ElementId, GlobalElementId};
 
     /// A `GlobalElementId` is made by the window: every segment on its
-    /// element-id stack, the last one's id read off it.
+    /// element-id stack, the last one's id read off it. A `view/<module>`
+    /// segment is that view's mark (`Seat::ax_mark`).
     fn path(window: &mut gpui_kit::Window, segments: &[&str]) -> GlobalElementId {
-        let name = |segment: &str| ElementId::Name(segment.to_owned().into());
+        let name = |segment: &str| match segment.starts_with("view/") {
+            true => crate::render::host_id(segment.to_owned()),
+            false => ElementId::Name(segment.to_owned().into()),
+        };
         match segments {
             [] => GlobalElementId::default(),
             [last] => window.with_global_id(name(last), |id, _| id.clone()),

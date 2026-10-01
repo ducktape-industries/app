@@ -37,6 +37,14 @@ pub(super) struct Guest {
     /// One gesture admits one `link.open`: set by the one it admitted,
     /// cleared with the gesture.
     pub(crate) link_opened: bool,
+    /// The `input_time_ms` of the native-editor key this redraw's gesture
+    /// came from, if a key; `spent_key` is the last such key whose redraw
+    /// admitted a gated request (one person's key admits one redraw's
+    /// worth, at its delivery or at its commit, never both), and
+    /// `gesture_used` whether this redraw admitted one.
+    pub(crate) key_stamp: Option<u64>,
+    pub(crate) spent_key: Option<u64>,
+    pub(crate) gesture_used: bool,
     /// When each recent `link.open` was admitted, for the per-minute budget.
     pub(crate) links: Vec<std::time::Instant>,
     pub(crate) module: &'static str,
