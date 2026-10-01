@@ -588,7 +588,7 @@ pub(super) fn view_override(module: &str) -> Option<PathBuf> {
 mod entity;
 mod standin;
 
-pub(crate) use entity::{Seat, VIEW_MARK};
+pub(crate) use entity::Seat;
 
 #[cfg(test)]
 mod entity_tests;

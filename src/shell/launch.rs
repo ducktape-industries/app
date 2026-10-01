@@ -100,6 +100,7 @@ pub(crate) fn run() {
                 .update(cx, |session, cx| session.connect(target, cx));
         }
         first_present(cx);
+        #[cfg(feature = "ax-door")]
         if let Some((calls, written)) = crate::ax::open() {
             // the door file goes as the app quits
             let mut written = Some(written);

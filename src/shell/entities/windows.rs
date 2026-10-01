@@ -174,6 +174,7 @@ impl Windows {
     /// window's life: the console "console", any other "console<key>"; in a
     /// run, "console2", "console3", … as they open, a closed one's name
     /// never reused.
+    #[cfg(any(test, feature = "ax-door"))]
     pub(crate) fn served(&self) -> Vec<crate::ax::Served> {
         self.handles
             .iter()

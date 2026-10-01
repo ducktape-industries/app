@@ -74,7 +74,7 @@ view's tree lowers onto GPUI elements one to one.
 | `editor.rs`, `editor/` | `EditorStore` (guest-owned documents projected natively) and `TextEditor` (the one multi-line native field; `editor/text.rs` is mounted as `editor::wire::text` by a `#[path]`) | window thread |
 | `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
-| `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client | `ax-door` accept thread; answers on the window thread |
+| `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
 | `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`) | window thread |
 
 Dependencies, top down (an arrow means "calls into"):
@@ -586,7 +586,9 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `with_presentation` (the `NativePresentation` copy across guest
   instances) also live in this file for now; the struct itself is in
   `render.rs`.
-- **The door** (`src/ax.rs`, `src/ax/{http,tree,actions}.rs`). Off unless
+- **The door** (`src/ax.rs`, `src/ax/{http,tree,actions}.rs`). Built only
+  with the `ax-door` cargo feature (the kit and qa builds); a default build
+  has no door and no `ax` client. Off unless
   `DUCKTAPE_AX_DOOR=<port|0>` is set (0 picks a port). `ax::open`
   binds 127.0.0.1 only, starts the `ax-door` thread, then writes
   `{port, token}` to `$XDG_RUNTIME_DIR/ducktape/ax-door.json` (else the
@@ -604,11 +606,12 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `console2`, … as they open), each name kept for the window's life
   (`Windows::served`, by `WindowKey`), read on every request; a view's
   nodes sit under the `view/<module>` mark `Seat::ax_mark`
-  wraps around each view (`runtime::VIEW_MARK`), a `render::host_id`, so a
+  wraps around each view (`render::VIEW_MARK`), a `render::host_id`, so a
   view's own `view/<other>` id is never taken for one. Answers carry
   `X-Ax-Revision`, which moves when a tree changed. `ducktape-app ax …`
   (`ax::cli`) is the command-line client.
-- **How qa drives it.** The qa repo's rig launches the app with
+- **How qa drives it.** The qa repo builds the app with `--features
+  ax-door`; its rig launches the app with
   `DUCKTAPE_AX_DOOR=0`, reads the door file, and walks scenarios through
   these endpoints; element ids such as `rail/<module>` and `pane/<n>/…` are
   its contract. In-repo, `shell/panes_tests.rs`, `shell/screens_tests.rs`
@@ -875,7 +878,8 @@ House words, and where one word means several things.
   `DUCKTAPE_RPC=<url>` skips the connect screen. Keys go to the OS store;
   `DUCKTAPE_DEVICE_KEY_STORE=file` and XDG variables point a scratch run
   elsewhere (`backend/app_dirs.rs`).
-- **Run the AX door.** `DUCKTAPE_AX_DOOR=0 cargo run -p ducktape-app`, then
+- **Run the AX door.** `DUCKTAPE_AX_DOOR=0 cargo run -p ducktape-app
+  --features ax-door`, then
   `ducktape-app ax tree` (or `actions`, `act <id> <action>`, `key`, `keys`,
   `drag`, `wait`); the client reads the door file for port and
   token. `DUCKTAPE_AX_DOOR_PRIVATE=1` adds `reveal`.

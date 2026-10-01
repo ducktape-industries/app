@@ -32,6 +32,12 @@
 //! controls its Help lists with a chord (AX-114).
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
+//!
+//! Compiled with the `ax-door` feature (the kit and qa builds) and nowhere
+//! else: a release build has no door to open and no client for one. The
+//! tests compile it without the feature for the trees it reads, so its
+//! server half has no caller there.
+#![cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 use futures::StreamExt as _;
 use gpui_kit::accesskit::{
     Action, ActionData, ActionRequest, NodeId, Role, Toggled, TreeId, TreeUpdate,
@@ -51,6 +57,7 @@ mod http;
 mod tree;
 
 use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
+#[cfg(feature = "ax-door")]
 pub(crate) use http::{cli, open};
 pub(crate) use tree::{AxNode, snapshot};
 use tree::{compact, delta, nearest, offers};

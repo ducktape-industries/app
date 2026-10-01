@@ -5,7 +5,7 @@
 //! gives each node its stable id. The rest are the shapes of answers:
 //! [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
-use crate::runtime::VIEW_MARK;
+use crate::render::VIEW_MARK;
 use gpui_kit::accesskit::{HasPopup, Invalid, Live, Orientation};
 
 /// The actions the door offers, each with its word: a node supporting one

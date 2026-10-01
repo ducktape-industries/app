@@ -30,7 +30,7 @@ mod store;
 pub(crate) use kernel::local_offset;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};
-pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat, VIEW_MARK};
+pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat};
 pub use seat::{Loads, override_views_from};
 
 use guest::Guest;
