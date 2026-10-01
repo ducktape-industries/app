@@ -186,7 +186,7 @@ impl Guest {
             fresh.deployed(hash);
             let fresh = match &mut against {
                 Some((alive, ticks)) => {
-                    Self::replacement(fresh, alive, ticks, mounted, &shown, timing)?
+                    Self::replacement(fresh, alive, ticks, mounted, &code, &shown, timing)?
                 }
                 None => {
                     fresh.timed_init(&shown, timing)?;
@@ -198,6 +198,8 @@ impl Guest {
                     fresh: Box::new(fresh),
                     alive,
                     ticks,
+                    code,
+                    shown,
                 },
                 None => Loaded::Fresh(Box::new(fresh)),
             })
@@ -226,21 +228,20 @@ impl Guest {
     }
 
     /// A once-valid view carries its state over to `fresh`, prepared as its
-    /// replacement: its snapshot, taken under the seat's lock against the
-    /// very instance the load saw and held to `MAX_SNAPSHOT_BYTES`, is
-    /// restored — or, when the guest refuses it as not its own, `init` runs
-    /// in its place — and the first tree is verified. `ticks` becomes the
-    /// count the snapshot was taken at; a view that never ticked has no
-    /// state to carry and only `init`s.
-    pub(super) fn replacement(
-        mut fresh: Self,
+    /// replacement: what it hands over ([`Self::handover`]), under the
+    /// seat's lock against the very instance the load saw, is restored, and
+    /// the first tree is verified ([`Self::prepared`]). `ticks` becomes the
+    /// count the handover was taken at.
+    pub(crate) fn replacement(
+        fresh: Self,
         alive: &Arc<()>,
         ticks: &mut u64,
         mounted: &Arc<Mutex<Mounted>>,
+        code: &Module,
         shown: &str,
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
-        let snapshot = {
+        let state = {
             let mut locked = lock(mounted);
             let Slot::Ready(old) = &mut locked.slot else {
                 return Err(Failure::Refused(
@@ -253,53 +254,113 @@ impl Guest {
                 ));
             }
             *ticks = old.ticks;
-            let preserve = *ticks > 0;
-            if preserve && !old.settled() {
-                return Err(Failure::Refused(
-                    "the view has pending work; its replacement waits".into(),
-                ));
-            }
-            if preserve {
-                let taken = Instant::now();
-                let snapshot = old.snapshot();
-                timing.snapshot = taken.elapsed();
-                let key = fresh.perf_key();
-                crate::perf::record(key, "snapshot", timing.snapshot.as_micros() as u64);
-                crate::perf::record(key, "fuel.snapshot", old.fuel_used());
-                let snapshot = snapshot
-                    .map_err(Failure::Trapped)?
-                    .map_err(Failure::Refused)?;
+            old.handover(&fresh, timing)?
+        };
+        Self::prepared(fresh, state, code, shown, timing)
+    }
+
+    /// [`Self::replacement`] once more, on a new instance of `like`'s
+    /// `code`, against `old` as it is now: the seat calls it under its lock
+    /// when the view ticked or took work while `like` was prepared.
+    pub(crate) fn prepared_again(
+        old: &mut Self,
+        like: &Self,
+        code: &Module,
+        shown: &str,
+        timing: &mut LoadTiming,
+    ) -> Result<Self, Failure> {
+        let fresh = like.sibling(code, shown).map_err(Failure::Refused)?;
+        let state = old.handover(&fresh, timing)?;
+        Self::prepared(fresh, state, code, shown, timing)
+    }
+
+    /// What this drawn view hands `to`, its replacement: its snapshot, held
+    /// to `MAX_SNAPSHOT_BYTES`, or none. A view that never ticked has no
+    /// state. One that cannot hand its state over — it stopped, its state
+    /// is past the budget, or its snapshot traps — never will: `to` starts
+    /// clean, with a warn saying why. One with work unfinished refuses the
+    /// replacement until its next turns finish it, and the seat asks again:
+    /// the host's own (an event, a widget command, an editor transfer), or
+    /// the guest's, in its own words (busy, a request in flight).
+    fn handover(&mut self, to: &Self, timing: &mut LoadTiming) -> Result<Option<Vec<u8>>, Failure> {
+        if self.ticks == 0 {
+            return Ok(None);
+        }
+        if let Some(fault) = self.fault.clone().or_else(|| self.replies.fault()) {
+            to.state_dropped("view_stopped", &fault);
+            return Ok(None);
+        }
+        if !self.settled() {
+            return Err(Failure::Refused(
+                "the view has pending work; its replacement waits".into(),
+            ));
+        }
+        let taken = Instant::now();
+        let snapshot = self.snapshot();
+        timing.snapshot = taken.elapsed();
+        let key = to.perf_key();
+        crate::perf::record(key, "snapshot", timing.snapshot.as_micros() as u64);
+        crate::perf::record(key, "fuel.snapshot", self.fuel_used());
+        match snapshot {
+            Ok(Snapshot::Taken(snapshot)) => {
                 timing.snapshot_bytes = snapshot.len();
                 crate::perf::gauge(key, "snapshot_bytes", snapshot.len() as u64);
-                Some(snapshot)
-            } else {
-                None
+                Ok(Some(snapshot))
             }
-        };
-        match snapshot {
-            Some(snapshot) => {
+            Ok(Snapshot::TooLarge) => {
+                to.state_dropped(
+                    "snapshot_too_large",
+                    "the view's state is past the snapshot byte budget",
+                );
+                Ok(None)
+            }
+            Ok(Snapshot::Refused(refusal)) => Err(Failure::Refused(format!(
+                "the view does not hand its state over yet ({refusal}); its replacement waits"
+            ))),
+            Err(trap) => {
+                to.state_dropped("snapshot_trapped", &trap);
+                Ok(None)
+            }
+        }
+    }
+
+    /// `fresh` started from `state`, a drawn view's handover: restored, or
+    /// `init`ed in its place when there is none, when the guest refuses it
+    /// as not its own, or when the restore traps (on a new instance of
+    /// `code` then: a trapped one is not entered again). Its first tree is
+    /// verified.
+    fn prepared(
+        mut fresh: Self,
+        state: Option<Vec<u8>>,
+        code: &Module,
+        shown: &str,
+        timing: &mut LoadTiming,
+    ) -> Result<Self, Failure> {
+        let carried = match state {
+            Some(state) => {
                 let restored = Instant::now();
-                let answered = fresh.restore(&snapshot, shown);
+                let answered = fresh.restore(&state, shown);
                 timing.restore = restored.elapsed();
                 let key = fresh.perf_key();
                 crate::perf::record(key, "restore", timing.restore.as_micros() as u64);
                 crate::perf::record(key, "fuel.restore", fresh.fuel_used());
-                match answered.map_err(Failure::Trapped)? {
-                    Restored::Carried => {}
-                    Restored::Refused(refusal) => {
-                        tracing::warn!(
-                            target: "ducktape::app",
-                            module = fresh.module,
-                            hash = %crate::backend::hex_encode(fresh.hash.as_ref().map_or(&[][..], |hash| hash)),
-                            reason = "snapshot_refused",
-                            refusal = %refusal,
-                            "view_state_dropped"
-                        );
-                        fresh.timed_init(shown, timing)?;
+                match answered {
+                    Ok(Restored::Carried) => true,
+                    Ok(Restored::Refused(refusal)) => {
+                        fresh.state_dropped("snapshot_refused", &refusal);
+                        false
+                    }
+                    Err(trap) => {
+                        fresh.state_dropped("restore_trapped", &trap);
+                        fresh = fresh.sibling(code, shown).map_err(Failure::Refused)?;
+                        false
                     }
                 }
             }
-            None => fresh.timed_init(shown, timing)?,
+            None => false,
+        };
+        if !carried {
+            fresh.timed_init(shown, timing)?;
         }
         let framed = Instant::now();
         let frame = fresh.first_frame(shown);
@@ -312,6 +373,78 @@ impl Guest {
         );
         frame.map_err(Failure::Trapped)?;
         Ok(fresh)
+    }
+
+    /// A new instance of `code`, named and manifested as `load` made this
+    /// one, nothing run in it yet. Every field is named here, so one added
+    /// to `Guest` is a compile error until it says whether a sibling
+    /// carries it: what `load` set (the seat, the manifest, the deployment)
+    /// is carried, and what the instance ran into starts fresh.
+    fn sibling(&self, code: &Module, shown: &str) -> Result<Self, String> {
+        let Self {
+            module,
+            instance,
+            name,
+            capabilities,
+            targets,
+            min_width,
+            hash,
+            connection_rev: _,
+            activation: _,
+            links: _,
+            undeclared_logged: _,
+            store: _,
+            exports: _,
+            pending: _,
+            theme_dark: _,
+            widget_commands: _,
+            frame: _,
+            frame_reports: _,
+            display_diagnostics: _,
+            installed_generation: _,
+            frame_rev: _,
+            ticks: _,
+            inputs: _,
+            pictures: _,
+            props_subscription: _,
+            props_sent: _,
+            visible: _,
+            visibility_change: _,
+            visibility_subscriptions: _,
+            offset_subscriptions: _,
+            offset_sent: _,
+            route_subscriptions: _,
+            intents: _,
+            replies: _,
+            live_subscriptions: _,
+            tasks: _,
+            clipboard: _,
+            clocks: _,
+            fault: _,
+            alive: _,
+            staged: _,
+        } = self;
+        let mut sibling = Self::instantiate(module, code, shown)?;
+        sibling.instance = *instance;
+        sibling.name = name.clone();
+        sibling.capabilities = capabilities.clone();
+        sibling.targets = targets.clone();
+        sibling.min_width = *min_width;
+        sibling.hash = *hash;
+        Ok(sibling)
+    }
+
+    /// The warn a replacement logs when it starts without the drawn view's
+    /// state, `reason` naming why and `refusal` in the words that said so.
+    fn state_dropped(&self, reason: &str, refusal: &str) {
+        tracing::warn!(
+            target: "ducktape::app",
+            module = self.module,
+            hash = %crate::backend::hex_encode(self.hash.as_ref().map_or(&[][..], |hash| hash)),
+            reason,
+            refusal = %refusal,
+            "view_state_dropped"
+        );
     }
 
     /// `init`, timed into `timing` and the registry, as a load runs it.
@@ -336,7 +469,9 @@ impl Guest {
     }
 
     /// Everything this instance was asked to do is done: nothing pending,
-    /// no request the host has yet to route, no trap. A replacement not
+    /// no request the host has yet to route, no trap. Busy (out of budget,
+    /// ticking again soon) is the guest's to weigh: its snapshot says
+    /// whether it can hand its state over mid-work. A replacement not
     /// yet redrawn is settled too: the only requests its first tree
     /// carries are the subscriptions its restore rebuilt, which its own
     /// replacement rebuilds again — a tab not shown between two
@@ -348,14 +483,13 @@ impl Guest {
             && self.widget_commands.is_empty()
             && self.inputs.ready() == Ok(true)
             && !self.inputs.pending()
-            && !self.frame.busy
             && (self.staged || self.frame.requests.is_empty())
     }
 
-    /// The guest's state, or its own word that it cannot hand it over now.
-    /// A trap ends the instance as one in `tick` does: the fault keeps it
-    /// from being entered again.
-    pub(crate) fn snapshot(&mut self) -> Result<Result<Vec<u8>, String>, String> {
+    /// The guest's state, or why it does not hand it over now. A trap ends
+    /// the instance as one in `tick` does: the fault keeps it from being
+    /// entered again.
+    pub(crate) fn snapshot(&mut self) -> Result<Snapshot, String> {
         arm(&mut self.store);
         self.exports.snapshot(&mut self.store).map_err(|error| {
             let reason = panic_message(&mut self.store).unwrap_or_else(|| first_line(&error));
