@@ -1,9 +1,10 @@
 //! `store.get` / `store.set`: what a view keeps on this device between runs.
 //!
 //! One file per view per network, `<config>/store/<chain>/<module>.borsh`:
-//! a borsh map of key → bytes, rewritten whole through `backend::atomic_write`. A view names keys, never paths — the chain and the module come
-//! from the host — so no view reaches another view's file or another
-//! network's.
+//! a borsh map of key → bytes, rewritten whole through
+//! `backend::atomic_write`. A view names keys, never paths — the chain and
+//! the module come from the host — so no view reaches another view's file
+//! or another network's.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};

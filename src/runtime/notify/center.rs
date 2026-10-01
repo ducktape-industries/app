@@ -54,9 +54,11 @@ struct Bucket {
 /// policy remembers between notices.
 #[derive(Default)]
 pub(crate) struct Center {
-    /// The chain id (`<network>#<salt>`) the log is for; none, and nothing
-    /// is written to disk.
+    /// The chain id (`<network>#<salt>`) the log is for.
     network: String,
+    /// Where the log is saved: none with no network in hand, or when its
+    /// file could not be read (nothing then writes over it).
+    log: Option<PathBuf>,
     entries: Vec<Entry>,
     next: u64,
     buckets: HashMap<String, Bucket>,
@@ -303,18 +305,28 @@ impl Center {
 
     /// The network in hand: its log comes off disk, the policy starts over.
     pub(crate) fn set_network(&mut self, network: &str) {
-        if self.network == network {
-            return;
+        if self.network != network {
+            self.open_log(network, log_path(network));
         }
+    }
+
+    /// `network` in hand with its log at `path`. A log that cannot be read
+    /// leaves the centre empty and with no `log`, so no save replaces it.
+    pub(super) fn open_log(&mut self, network: &str, path: Option<PathBuf>) {
         *self = Center {
             network: network.to_owned(),
             front: self.front,
             rev: self.rev + 1,
             ..Center::default()
         };
-        self.entries = log_path(network)
-            .map(|path| read_log(&path))
-            .unwrap_or_default();
+        if let Some(path) = path {
+            match read_log(&path) {
+                Ok(entries) => (self.entries, self.log) = (entries, Some(path)),
+                Err(error) => {
+                    tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "notification log unreadable, not saving over it");
+                }
+            }
+        }
         self.next = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
         self.prune(wall());
     }
@@ -322,8 +334,8 @@ impl Center {
     // ponytail: the whole log rewritten on each change, 500 small rows at most
     fn save(&self) {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
-        if let Some(path) = log_path(&self.network) {
-            self.write_log(&path);
+        if let Some(path) = &self.log {
+            self.write_log(path);
         }
     }
 
@@ -337,16 +349,12 @@ impl Center {
     }
 }
 
-/// The log at `path`; empty when it is missing or unreadable. One that will
-/// not parse is set aside as `.bad`, so the next save does not overwrite it.
-pub(super) fn read_log(path: &Path) -> Vec<Entry> {
+/// The log at `path`; empty when it is missing. One that will not parse is
+/// set aside as `.bad`, so the next save does not overwrite it. Any other
+/// read error stays an error.
+pub(super) fn read_log(path: &Path) -> std::io::Result<Vec<Entry>> {
     crate::backend::read_or_set_aside(path, |bytes| serde_json::from_slice(bytes))
-        .inspect_err(|error| {
-            tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "notification log unreadable, starting empty");
-        })
-        .ok()
-        .flatten()
-        .unwrap_or_default()
+        .map(Option::unwrap_or_default)
 }
 
 /// `<config>/notifications/<chain>.json`, device-local beside the prefs.

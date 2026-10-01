@@ -357,13 +357,37 @@ fn a_log_cut_short_is_set_aside_and_the_next_post_writes_a_fresh_one() {
     let cut = &whole[..whole.len() - 3];
     std::fs::write(&path, cut).unwrap();
 
-    assert!(read_log(&path).is_empty());
+    assert!(read_log(&path).unwrap().is_empty());
     assert_eq!(std::fs::read(dir.path().join("dev.json.bad")).unwrap(), cut);
 
     let mut reopened = Center::default();
     reopened.post(&silent, "chat", "Chat", post("new", ""), Instant::now(), 2);
     reopened.write_log(&path);
-    let kept = read_log(&path);
+    let kept = read_log(&path).unwrap();
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].title, "new");
+}
+
+/// A log this device cannot read is not taken for an empty one: the centre
+/// starts empty, and the next post does not save over the old rows.
+#[test]
+fn an_unreadable_log_is_not_saved_over() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dev.json");
+    let silent = settings(Some(Permission::Silent));
+    let mut center = Center::default();
+    center.post(&silent, "chat", "Chat", post("old", ""), Instant::now(), 1);
+    center.write_log(&path);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+    let mut reopened = Center::default();
+    reopened.open_log("dev", Some(path.clone()));
+    reopened.post(&silent, "chat", "Chat", post("new", ""), Instant::now(), 2);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+    assert_eq!(reopened.entries().count(), 1);
+    let kept = read_log(&path).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].title, "old");
 }
