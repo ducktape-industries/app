@@ -116,16 +116,27 @@ pub(super) fn spawn_retrying_unsent(
 }
 
 /// `op.submit` of an op the person confirms first (`consent::needed`):
-/// refused `session_locked` at once with no key to sign it (no dialog
-/// that cannot lead to a signature), else queued for the person and run
-/// as [`spawn_retrying_unsent`] once they approve, refused
-/// `consent_refused` otherwise.
+/// only the person's activation opens the dialog, taken by the ask as
+/// `link.open` takes it (a view resubmitting after Cancel, or asking on a
+/// clock, gets `needs_gesture` and no second card); refused
+/// `session_locked` at once with no key to sign it (no dialog that cannot
+/// lead to a signature); else queued for the person and run as
+/// [`spawn_retrying_unsent`] once they approve, refused `consent_refused`
+/// otherwise.
 pub(super) fn spawn_consented(
     guest: &mut Guest,
     id: u64,
     payload: &[u8],
     words: super::super::consent::Words,
 ) {
+    if !guest.take_activation() {
+        guest.refuse(
+            id,
+            refusal::NEEDS_GESTURE,
+            "this op asks the person and needs a press or key",
+        );
+        return;
+    }
     if !backend::seated() {
         guest.refuse(
             id,

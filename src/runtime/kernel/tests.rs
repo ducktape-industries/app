@@ -730,8 +730,15 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     guest.targets = vec![identity::MODULE.into()];
     // the card names the program, never the manifest's own word for itself
     guest.name = "Chat".into();
-    // locked: refused before anything is asked
+    // no press behind it: refused before anything is asked, even locked
     handle().block_on(backend::lock_signer());
+    guest.answer(request(1), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some(refusal::NEEDS_GESTURE)
+    );
+    // locked: refused before anything is asked
+    guest.activation = Some(Instant::now());
     guest.answer(request(1), &None);
     assert_eq!(
         refusal_code(&mut guest).as_deref(),
@@ -753,6 +760,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     };
     // the props say the seated key holds account 7, the one the op names
     let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
+    guest.activation = Some(Instant::now());
     guest.answer(request(2), &props);
     assert_eq!(refusal_code(&mut guest), None, "the request waits");
     let (first, words) = consent::front().expect("an ask waits");
@@ -764,6 +772,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     );
     assert!(guest.intents.contains(&Intent::Consent));
     // a second ask while the first waits
+    guest.activation = Some(Instant::now());
     guest.answer(request(3), &None);
     assert_eq!(
         refusal_code(&mut guest).as_deref(),
@@ -781,7 +790,17 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     }
     // Approve: the task goes on to the node (its sequence read is the
     // fake node's one answer, which is no sequence, so the op ends there)
+    // resubmitted after Cancel with no new press: no second card
+    guest.intents.clear();
+    guest.answer(request(5), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some(refusal::NEEDS_GESTURE)
+    );
+    assert!(consent::front().is_none(), "nothing asked");
+    assert!(!guest.intents.contains(&Intent::Consent));
     // with no account resolved the card does not call it the person's own
+    guest.activation = Some(Instant::now());
     guest.answer(request(4), &None);
     let (second, words) = consent::front().expect("an ask waits");
     assert_ne!(first, second);
