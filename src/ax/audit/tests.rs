@@ -855,6 +855,106 @@ fn the_walk_ends_on_a_first_press_that_puts_the_focus_nowhere(cx: &mut gpui_kit:
     assert_eq!(presses(&mut native), 1);
 }
 
+thread_local! {
+    /// Whether what [`changing`] paints shows on this frame.
+    static SHOWS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// `element`, on a frame [`SHOWS`] says it shows on.
+fn changing(element: gpui_kit::AnyElement) -> Option<gpui_kit::AnyElement> {
+    SHOWS.get().then_some(element)
+}
+
+/// Six stops; the fourth, `x`, a row of a list that reads itself again.
+fn reloading() -> Vec<gpui_kit::AnyElement> {
+    [stop("a", 0.), stop("b", 30.), stop("c", 60.)]
+        .into_iter()
+        .chain(changing(stop("x", 90.)))
+        .chain([stop("d", 120.), stop("e", 150.)])
+        .collect()
+}
+
+/// Three stops, then `late`, drawn once its page has loaded.
+fn late() -> Vec<gpui_kit::AnyElement> {
+    [stop("a", 0.), stop("b", 50.), stop("c", 100.)]
+        .into_iter()
+        .chain(changing(stop("late", 150.)))
+        .collect()
+}
+
+/// Three stops, then `aside`, drawn late: a button that offers focus and
+/// is no Tab stop.
+fn aside() -> Vec<gpui_kit::AnyElement> {
+    [stop("a", 0.), stop("b", 50.), stop("c", 100.)]
+        .into_iter()
+        .chain(changing(offer("aside", 150.)))
+        .collect()
+}
+
+/// The walk over `stops` from the box, what [`changing`] paints showing on
+/// the n-th snapshot (the first, where the state opens, is 1) when
+/// `shows(n)`.
+fn walk_changing(
+    cx: &mut gpui_kit::TestAppContext,
+    stops: fn() -> Vec<gpui_kit::AnyElement>,
+    shows: fn(usize) -> bool,
+) -> (Reading, Report) {
+    use gpui_kit::test::TestWindowExt as _;
+    SHOWS.set(shows(1));
+    let mut native = stops_window(cx, stops, 0);
+    let mut taken = 0;
+    let snap = move |window: &mut Window, cx: &mut App| {
+        taken += 1;
+        SHOWS.set(shows(taken));
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("w", window, true)
+    };
+    native.update(|window, cx| {
+        let reading = observe(window, cx, "w", true, |_| true, snap);
+        let report = audit(&reading, false);
+        (reading, report)
+    })
+}
+
+/// The Members walk (hx B): a stop the state opened with is gone while
+/// Tab passes its place (its list reading itself again after the probe)
+/// and back before the walk comes round. The lap owes it a visit, so the
+/// walk goes round once more and AX-021 passes: a, b, c, d (x is back), e,
+/// a, then b, c, x, d, e, a.
+#[gpui_kit::test]
+fn the_walk_goes_round_again_for_a_stop_that_came_back_after_tab_passed_its_place(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    // gone on the frame the 4th Tab (from c) presses on
+    let (_, report) = walk_changing(cx, reloading, |snap| snap != 4);
+    assert!(fails(&report, "AX-021").is_empty(), "{report:?}");
+    assert_eq!(report.presses, 12);
+}
+
+/// A stop the first snapshot does not show, drawn as the walk comes
+/// round, is reached on one more lap: a, b, c, a (late is drawn), then b,
+/// c, late, a.
+#[gpui_kit::test]
+fn the_walk_goes_round_again_for_a_stop_drawn_as_it_came_round(cx: &mut gpui_kit::TestAppContext) {
+    let (reading, report) = walk_changing(cx, late, |snap| snap > 4);
+    let reached = reading.snapshots[1..]
+        .iter()
+        .flatten()
+        .any(|node| node.name == "late" && has(node, "focused"));
+    assert!(reached, "{report:?}");
+    assert_eq!(report.presses, 8);
+}
+
+/// A late stop Tab never reaches buys one more lap and no more: a, b, c,
+/// a (aside is drawn), then b, c, a, and not on to the walk's cap of 20.
+#[gpui_kit::test]
+fn the_walk_goes_round_once_for_a_stop_tab_never_reaches(cx: &mut gpui_kit::TestAppContext) {
+    let (_, report) = walk_changing(cx, aside, |snap| snap > 4);
+    assert_eq!(report.presses, 7);
+}
+
 /// A `view/x` element at the right of the window, around `inside`.
 fn view_x(inside: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
     use gpui_kit::*;
