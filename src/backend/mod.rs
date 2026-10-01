@@ -27,7 +27,7 @@ mod session;
 pub(crate) mod views;
 
 pub use app_dirs::app_log_path;
-pub(crate) use app_dirs::{cache_dir, config_dir, state_dir};
+pub(crate) use app_dirs::{cache_dir, config_dir};
 pub(crate) use endpoints::{
     DEFAULT_ENDPOINT, ENDPOINT_REFUSAL, RecentEndpoint, endpoint_origin, forget_endpoint, host_of,
     note_endpoint, recent_endpoints,
@@ -46,6 +46,8 @@ pub(crate) use session::{
 use std::path::Path;
 use std::time::Duration;
 
+use view_wire::methods::refusal;
+
 /// A refusal the NODE or the PROGRAM authored, carried through with its
 /// own token; a transport failure gets the app's: `rpc_client` when nothing
 /// reached the node, `node_failed` when the request may have and the answer
@@ -58,12 +60,13 @@ pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
             view_wire::Error::new(view_wire::code::UNEXPECTED_REPLY, refusal.sentence)
         }
         Error::Failed { status, sentence } => {
-            view_wire::Error::new("node_failed", format!("{status}: {sentence}"))
+            view_wire::Error::new(refusal::NODE_FAILED, format!("{status}: {sentence}"))
         }
-        Error::Unreachable(sentence) => view_wire::Error::new("rpc_client", sentence),
-        Error::Transport(sentence) => {
-            view_wire::Error::new("node_failed", format!("no answer came back: {sentence}"))
-        }
+        Error::Unreachable(sentence) => view_wire::Error::new(refusal::RPC_CLIENT, sentence),
+        Error::Transport(sentence) => view_wire::Error::new(
+            refusal::NODE_FAILED,
+            format!("no answer came back: {sentence}"),
+        ),
     }
 }
 
@@ -170,6 +173,9 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
+    if !value.is_ascii() {
+        return Err("non-ASCII hex".into());
+    }
     if !value.len().is_multiple_of(2) {
         return Err("odd-length hex".into());
     }
@@ -271,5 +277,13 @@ mod tests {
             vec![0, 255, 16]
         );
         assert!(hex_decode("abc").is_err());
+        assert!(
+            hex_decode("a\u{e9}a").is_err(),
+            "a byte pair splits the \u{e9}"
+        );
+        assert!(
+            hex_decode("\u{e9}\u{e9}").is_err(),
+            "whole characters, not hex"
+        );
     }
 }

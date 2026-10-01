@@ -29,7 +29,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::Instant;
 
 use super::kernel::spawn_reply;
-use super::wire::methods::{self, Capability, Delivery, Notification};
+use super::wire::methods::{self, Capability, Delivery, Notification, refusal};
 use super::{Guest, Intent};
 
 mod center;
@@ -95,7 +95,7 @@ pub(super) fn answer(
     let post = match post.and_then(|post| shortened(post).map_err(str::to_owned)) {
         Ok(post) => post,
         Err(error) => {
-            guest.refuse(id, "malformed_request", error);
+            guest.refuse(id, refusal::MALFORMED_REQUEST, error);
             return true;
         }
     };
@@ -145,7 +145,7 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
     let tag = match methods::decode::<String>(payload) {
         Ok(tag) => tag,
         Err(error) => {
-            guest.refuse(id, "malformed_request", error);
+            guest.refuse(id, refusal::MALFORMED_REQUEST, error);
             return;
         }
     };
