@@ -106,6 +106,7 @@ pub(super) fn matrix() -> Vec<(&'static str, bool, Build)> {
                 let mut seed = booted(Screen::Connect, false);
                 seed.session.endpoint = "127.0.0.1:9000".into();
                 seed.session.connecting = true;
+                seed.session.reaching = "127.0.0.1:9000".into();
                 seed
             }),
         ),
