@@ -320,7 +320,7 @@ fn ax_017_a_press_target_is_24_px_each_way() {
 #[test]
 fn ax_018_a_launcher_screen_has_one_shell_heading_when_the_caller_says_so() {
     let one_heading = vec![node("h", "Heading", "Connect"), button("ok", "Go")];
-    assert!(fails(&audit(&reading(vec![one_heading.clone()]), true), "AX-018").is_empty());
+    assert!(fails(&audit(&reading(vec![one_heading]), true), "AX-018").is_empty());
     let mut view_heading = node("vh", "Heading", "Chat");
     view_heading.scope = "w/chat".into();
     let none = vec![view_heading, button("ok", "Go")];

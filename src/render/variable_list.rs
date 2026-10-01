@@ -143,7 +143,7 @@ impl ViewTree {
 
         if let Some(handler) = *scroll_handler {
             let weak = cx.entity().downgrade();
-            let scroll_key = key.clone();
+            let scroll_key = key;
             state.set_scroll_handler(move |event, _, cx| {
                 let weak = weak.clone();
                 let scroll_key = scroll_key.clone();

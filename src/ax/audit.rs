@@ -1437,7 +1437,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         self.escaped &= stayed;
         let leave = stayed && !self.escaped && !self.reading.modal;
         match self.presses {
-            1 => self.first = now.clone(),
+            1 => self.first = now,
             // a stay the walk is about to leave has not come back round
             _ => self.round |= now == self.first && !leave,
         }
