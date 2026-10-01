@@ -15,15 +15,19 @@
 //! move. One ask waits per view at a time: a second while one waits is
 //! refused at once.
 use std::collections::VecDeque;
+use std::ops::Range;
 use std::sync::{Mutex, OnceLock};
 
 use super::Guest;
 
-/// What the dialog says for one op: the sentence, and the thing it names
-/// (a key's fingerprint, an agent's number) on its own line.
+/// What the dialog says for one op: the sentence, the asking program's id
+/// in it (its bytes, which the card sets in mono; `None` when System asks),
+/// and the thing it names (a key's fingerprint, an agent's number) on its
+/// own line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Words {
     pub(crate) said: String,
+    pub(crate) id: Option<Range<usize>>,
     pub(crate) shown: Option<String>,
 }
 
@@ -143,11 +147,12 @@ pub(crate) fn refuse_all() {
 /// yes, and the words to ask it with. `program` is the requesting view's
 /// program id, the roster's name for it: a view's manifest name is the
 /// view's own word, and a hostile one would pick a name that reads as
-/// someone else's (or carries a bidi override). The id is the one the
-/// chain lists it under; the card says "System" instead when genesis bound
-/// that program to a role the kernel calls (`roles`, as the node's
-/// registry answers them; `None` when it does not, and every program is
-/// named by its id). `own` is the account the seated key holds as the app
+/// someone else's (or carries a bidi override). The card names the asker
+/// in one of two phrasings: "System" when genesis bound that program to a
+/// role the kernel calls (`roles`, as the node's registry answers them;
+/// `None` when it does not), "Program <id>" for any other, the id as the
+/// chain lists it and set in mono. No id reads as the first: a program
+/// named `system` asks as "Program system". `own` is the account the seated key holds as the app
 /// resolved it, `None` until it has: a `RemoveKey` names the account it
 /// strips, which a manager may make an agent's, and the card says which.
 pub(super) fn needed(
@@ -165,43 +170,48 @@ pub(super) fn needed(
             .iter()
             .any(|role| role.as_str() == program)
     });
-    let program = if bound { "System" } else { program };
+    const PROGRAM: &str = "Program ";
+    let (by, id) = match bound {
+        true => ("System".to_owned(), None),
+        false => (
+            format!("{PROGRAM}{program}"),
+            Some(PROGRAM.len()..PROGRAM.len() + program.len()),
+        ),
+    };
+    // every sentence begins with `by`, so `id` is where the id is in it
+    let words = |said: String, shown: Option<String>| Words {
+        said,
+        id: id.clone(),
+        shown,
+    };
     let Ok(op) = abi::decode::<identity::Op>(body) else {
-        return Some(Words {
-            said: format!(
-                "{program} asks your key to sign an identity operation this app cannot read."
-            ),
-            shown: None,
-        });
+        return Some(words(
+            format!("{by} asks your key to sign an identity operation this app cannot read."),
+            None,
+        ));
     };
     match op {
-        identity::Op::RemoveKey { account, key } if own == Some(account) => Some(Words {
-            said: format!(
-                "{program} asks to remove a key from your account. Approve only if you meant to."
+        identity::Op::RemoveKey { account, key } if own == Some(account) => Some(words(
+            format!("{by} asks to remove a key from your account. Approve only if you meant to."),
+            Some(crate::backend::join::fingerprint(&key)),
+        )),
+        identity::Op::RemoveKey { account, key } => Some(words(
+            format!(
+                "{by} asks to remove a key from agent #{account}. Approve only if you meant to."
             ),
-            shown: Some(crate::backend::join::fingerprint(&key)),
-        }),
-        identity::Op::RemoveKey { account, key } => Some(Words {
-            said: format!(
-                "{program} asks to remove a key from agent #{account}. Approve only if you meant to."
-            ),
-            shown: Some(format!(
+            Some(format!(
                 "#{account} · {}",
                 crate::backend::join::fingerprint(&key)
             )),
-        }),
-        identity::Op::Revoke { account } => Some(Words {
-            said: format!(
-                "{program} asks to revoke agent #{account}. Its keys stop working for good."
-            ),
-            shown: Some(format!("#{account}")),
-        }),
-        identity::Op::Suspend { account } => Some(Words {
-            said: format!(
-                "{program} asks to suspend agent #{account}. It stops acting until it is resumed."
-            ),
-            shown: Some(format!("#{account}")),
-        }),
+        )),
+        identity::Op::Revoke { account } => Some(words(
+            format!("{by} asks to revoke agent #{account}. Its keys stop working for good."),
+            Some(format!("#{account}")),
+        )),
+        identity::Op::Suspend { account } => Some(words(
+            format!("{by} asks to suspend agent #{account}. It stops acting until it is resumed."),
+            Some(format!("#{account}")),
+        )),
         identity::Op::RegisterModule { .. }
         | identity::Op::Create { .. }
         | identity::Op::CreateAgent { .. }
@@ -271,7 +281,7 @@ mod tests {
         assert!(
             removed
                 .said
-                .starts_with("chat asks to remove a key from your account"),
+                .starts_with("Program chat asks to remove a key from your account"),
             "{removed:?}"
         );
         assert_eq!(removed.shown.as_deref(), Some(fingerprint.as_str()));
@@ -283,7 +293,7 @@ mod tests {
             assert!(
                 removed
                     .said
-                    .starts_with("chat asks to remove a key from agent #7"),
+                    .starts_with("Program chat asks to remove a key from agent #7"),
                 "{removed:?}"
             );
             assert_eq!(
@@ -346,11 +356,46 @@ mod tests {
             assert_eq!(
                 said(program, Some(&roles)),
                 format!(
-                    "{program} asks to suspend agent #12. It stops acting until it is resumed."
+                    "Program {program} asks to suspend agent #12. It stops acting until it is resumed."
                 )
             );
         }
-        assert!(said("registry-b", None).starts_with("registry-b asks"));
+        assert!(said("registry-b", None).starts_with("Program registry-b asks"));
+    }
+
+    /// Claim: no program id reads as the system. A program named `system`,
+    /// or `System` (landed before the registry refused that spelling), asks
+    /// as "Program <id>", its id the part set in mono; only a program bound
+    /// to a role asks as "System", with no id to set.
+    #[test]
+    fn no_program_id_asks_as_the_system() {
+        let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
+        let roles = abi::Roles {
+            registry: "module-registry".into(),
+            validators: "valset".into(),
+            identity: identity::MODULE.into(),
+        };
+        let asked = |program: &str| {
+            needed(program, Some(&roles), identity::MODULE, &suspend, Some(7)).unwrap()
+        };
+        for program in ["System", "system"] {
+            let words = asked(program);
+            assert_eq!(
+                words.said,
+                format!(
+                    "Program {program} asks to suspend agent #12. It stops acting until it is resumed."
+                )
+            );
+            assert_eq!(words.id.map(|id| &words.said[id]), Some(program));
+        }
+        let system = asked("valset");
+        assert_eq!(
+            (system.said.as_str(), system.id),
+            (
+                "System asks to suspend agent #12. It stops acting until it is resumed.",
+                None
+            )
+        );
     }
 
     /// Claim: an ask is in the queue exactly as long as its request holds
@@ -361,6 +406,7 @@ mod tests {
         let mut woken = changes_channel();
         let words = Words {
             said: "x".into(),
+            id: None,
             shown: None,
         };
         let told = queue("t", 1, words.clone()).expect("queued");

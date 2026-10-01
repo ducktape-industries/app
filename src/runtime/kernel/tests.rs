@@ -895,7 +895,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     assert!(
         words
             .said
-            .starts_with("request-test asks to remove a key from your account"),
+            .starts_with("Program request-test asks to remove a key from your account"),
         "{words:?}"
     );
     assert!(guest.intents.contains(&Intent::Consent));
@@ -948,7 +948,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     assert!(
         words
             .said
-            .starts_with("request-test asks to remove a key from agent #7"),
+            .starts_with("Program request-test asks to remove a key from agent #7"),
         "{words:?}"
     );
     assert!(
