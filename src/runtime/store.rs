@@ -330,6 +330,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(config);
     }
 
+    /// A `set` a view sent right before the app quits is on disk once the
+    /// quit drain is done, though it was still queued when the drain began.
+    #[test]
+    fn the_quit_drain_waits_for_a_queued_set() {
+        let config = scratch();
+        let file = path(&config, "dev#01", "chat");
+        let mut guest = crate::runtime::kernel::tests::guest();
+        let release = crate::runtime::kernel::tests::held(&file.to_string_lossy());
+        let asked = methods::encode(&("last".to_owned(), Some(b"word".to_vec())));
+        ask(&mut guest, 0, file.clone(), ("io.store.set", set), asked);
+        assert!(!file.exists(), "the set waits behind the held job");
+
+        let mut drained = std::pin::pin!(crate::runtime::kernel::drain());
+        assert!(
+            crate::runtime::kernel::tests::waiting(drained.as_mut()),
+            "the drain is done while the set is still queued"
+        );
+        release.send(()).unwrap();
+        futures::executor::block_on(drained);
+        assert_eq!(
+            load(&file).unwrap(),
+            Kept::from([("last".to_owned(), b"word".to_vec())])
+        );
+        let _ = std::fs::remove_dir_all(config);
+    }
+
     /// A store file cut to nothing answers `None` to a view, not a host
     /// fault: it is set aside as `.bad`, and the next `set` lands.
     #[test]

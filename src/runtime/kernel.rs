@@ -151,17 +151,12 @@ pub(super) fn handle() -> tokio::runtime::Handle {
 /// Jobs under one name run one after another, in the order they were
 /// queued, each on the blocking pool (an OS call or a file): a view's
 /// banners (`notify`, under its module), so a burst's "N more" never lands
-/// before the banners it counts, and a view's store file (`store`, under
-/// its path), so a `get` reads the `set` before it. One task per name on
-/// [`handle`] runs them.
+/// before the banners it counts, a view's store file (`store`, under its
+/// path), so a `get` reads the `set` before it, and the notification log
+/// (under its path). One task per name on [`handle`] runs them; [`drain`]
+/// waits on every one of them as the app quits.
 pub(super) fn in_order(name: &str, job: impl FnOnce() + Send + 'static) {
-    type Job = Box<dyn FnOnce() + Send>;
-    static QUEUES: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<Job>>>> =
-        OnceLock::new();
-    let mut queues = QUEUES
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut queues = queues();
     let queue = queues.entry(name.to_owned()).or_insert_with(|| {
         let (queue, mut jobs) = tokio::sync::mpsc::unbounded_channel::<Job>();
         handle().spawn(async move {
@@ -173,6 +168,41 @@ pub(super) fn in_order(name: &str, job: impl FnOnce() + Send + 'static) {
         queue
     });
     let _ = queue.send(Box::new(job));
+}
+
+/// Done once every job queued so far under every [`in_order`] name has
+/// run: one more job behind each queue's last, and they run in order. The
+/// app's quit waits on it (`runtime::quitting`), so a `set` a view was
+/// answered, or a log the centre handed over, is on disk before the
+/// process ends.
+pub(super) fn drain() -> impl Future<Output = ()> {
+    let ran: Vec<_> = queues()
+        .values()
+        .map(|queue| {
+            let (tell, told) = tokio::sync::oneshot::channel::<()>();
+            let _ = queue.send(Box::new(move || {
+                let _ = tell.send(());
+            }));
+            told
+        })
+        .collect();
+    async move {
+        for told in ran {
+            let _ = told.await;
+        }
+    }
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+type Queues = HashMap<String, tokio::sync::mpsc::UnboundedSender<Job>>;
+
+/// [`in_order`]'s queues by name.
+fn queues() -> std::sync::MutexGuard<'static, Queues> {
+    static QUEUES: OnceLock<Mutex<Queues>> = OnceLock::new();
+    QUEUES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 /// Routes one kernel request; `false` when the kind is not the kernel's.

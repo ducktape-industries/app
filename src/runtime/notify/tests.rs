@@ -415,6 +415,57 @@ fn settled(path: &Path) {
     told.recv_timeout(Duration::from_secs(10)).unwrap();
 }
 
+/// A log the centre handed over is on disk once the quit drain is done,
+/// though the write was still queued behind another job when it began.
+#[test]
+fn the_quit_drain_waits_for_a_queued_log_write() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dev.json");
+    let _off = crate::perf::off_for_test();
+    let mut center = Center::default();
+    center.open_log("dev", Some(path.clone()));
+    let release = crate::runtime::kernel::tests::held(&path.to_string_lossy());
+    let silent = settings(Some(Permission::Silent));
+    center.post(&silent, "chat", "Chat", post("last", ""), Instant::now(), 1);
+    center.flush();
+    assert!(!path.exists(), "the write waits behind the held job");
+
+    let mut drained = std::pin::pin!(crate::runtime::kernel::drain());
+    assert!(
+        crate::runtime::kernel::tests::waiting(drained.as_mut()),
+        "the drain is done while the log write is still queued"
+    );
+    release.send(()).unwrap();
+    futures::executor::block_on(drained);
+    let kept = read_log(&path).unwrap();
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].title, "last");
+}
+
+/// The quit hook's order: the centre's rows are handed over before the
+/// drain begins, so the drain waits for them too.
+#[test]
+fn quitting_hands_the_log_over_before_it_drains() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dev.json");
+    let _off = crate::perf::off_for_test();
+    let center = CenterHandle::default();
+    center.lock().open_log("dev", Some(path.clone()));
+    let silent = settings(Some(Permission::Silent));
+    center
+        .lock()
+        .post(&silent, "chat", "Chat", post("last", ""), Instant::now(), 1);
+    let release = crate::runtime::kernel::tests::held(&path.to_string_lossy());
+
+    let mut drained = std::pin::pin!(crate::runtime::quitting(&center, ()));
+    assert!(crate::runtime::kernel::tests::waiting(drained.as_mut()));
+    release.send(()).unwrap();
+    futures::executor::block_on(drained);
+    let kept = read_log(&path).unwrap();
+    assert_eq!(kept.len(), 1, "the redraw's row is on disk when quit ends");
+    assert_eq!(kept[0].title, "last");
+}
+
 /// A view posting 600 notices keeps its newest 100 rows and leaves the
 /// other views' rows where they were; a view the person has not answered
 /// keeps its newest five, however much it posts.
