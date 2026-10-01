@@ -45,17 +45,18 @@ fn file(guest: &Guest) -> Result<PathBuf, wire::Error> {
     let connection = super::connection().lock().expect("views rpc");
     if connection.rev != guest.connection_rev {
         return Err(wire::Error::new(
-            "stale_connection",
+            methods::refusal::STALE_CONNECTION,
             "view belongs to a previous network connection",
         ));
     }
     if connection.chain.is_empty() {
         return Err(wire::Error::new(
-            "not_connected",
+            methods::refusal::NOT_CONNECTED,
             "not connected to a network",
         ));
     }
-    let config = crate::backend::config_dir().map_err(|error| refusal("host_fault", error))?;
+    let config = crate::backend::config_dir()
+        .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
     Ok(path(&config, &connection.chain, guest.module))
 }
 
@@ -83,30 +84,35 @@ fn refusal(reason: &'static str, error: impl std::fmt::Display) -> wire::Error {
 
 fn key(key: &str) -> Result<(), wire::Error> {
     match key.is_empty() {
-        true => Err(refusal("malformed_request", "a store key is not empty")),
+        true => Err(refusal(
+            methods::refusal::MALFORMED_REQUEST,
+            "a store key is not empty",
+        )),
         false => Ok(()),
     }
 }
 
 fn load(path: &Path) -> Result<Kept, wire::Error> {
     match std::fs::read(path) {
-        Ok(bytes) => methods::decode(&bytes).map_err(|error| refusal("host_fault", error)),
+        Ok(bytes) => {
+            methods::decode(&bytes).map_err(|error| refusal(methods::refusal::HOST_FAULT, error))
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Kept::new()),
-        Err(error) => Err(refusal("host_fault", error)),
+        Err(error) => Err(refusal(methods::refusal::HOST_FAULT, error)),
     }
 }
 
 fn get(path: &Path, payload: &[u8]) -> Answer {
-    let asked: String =
-        methods::decode(payload).map_err(|error| refusal("malformed_request", error))?;
+    let asked: String = methods::decode(payload)
+        .map_err(|error| refusal(methods::refusal::MALFORMED_REQUEST, error))?;
     key(&asked)?;
     Ok(methods::encode(&load(path)?.remove(&asked)))
 }
 
 // ponytail: the whole file rewritten on each set; a view keeps a few small keys
 fn set(path: &Path, payload: &[u8]) -> Answer {
-    let (asked, value): (String, Option<Vec<u8>>) =
-        methods::decode(payload).map_err(|error| refusal("malformed_request", error))?;
+    let (asked, value): (String, Option<Vec<u8>>) = methods::decode(payload)
+        .map_err(|error| refusal(methods::refusal::MALFORMED_REQUEST, error))?;
     key(&asked)?;
     let mut kept = load(path)?;
     match value {
@@ -121,7 +127,7 @@ fn set(path: &Path, payload: &[u8]) -> Answer {
         std::fs::write(&temp, methods::encode(&kept))?;
         std::fs::rename(&temp, path)
     };
-    write().map_err(|error| refusal("host_fault", error))?;
+    write().map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
     Ok(methods::encode(&()))
 }
 
@@ -174,7 +180,7 @@ mod tests {
         let file = path(&config, "dev#01", "chat");
         assert_eq!(
             put(&file, "", Some(b"x")).unwrap_err().code,
-            "malformed_request"
+            methods::refusal::MALFORMED_REQUEST
         );
         assert!(get(&file, &methods::encode(&String::new())).is_err());
         put(&file, "a", Some(b"1")).unwrap();

@@ -26,7 +26,10 @@ const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60
 /// A refusal the transport produced is retried; one that is the node's
 /// own word ends the retry loop. For a READ: asking again costs nothing.
 pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
-    matches!(refusal.code.as_str(), "rpc_client" | "node_failed")
+    matches!(
+        refusal.code.as_str(),
+        refusal::RPC_CLIENT | refusal::NODE_FAILED
+    )
 }
 
 /// Only a refusal that proves no frame went out is retried (a connect
@@ -35,7 +38,7 @@ pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
 /// may have applied is not signed and sent again — the sequence moved, so
 /// the node would apply it twice.
 fn unsent(refusal: &wire::Error) -> bool {
-    refusal.code == "rpc_client"
+    refusal.code == refusal::RPC_CLIENT
 }
 
 /// The answer, and how many times the node was asked for it.
@@ -67,7 +70,7 @@ async fn until_answered(
             );
             return (
                 Err(wire::Error::new(
-                    "rpc_client",
+                    refusal::RPC_CLIENT,
                     super::super::NODE_UNREACHABLE,
                 )),
                 u64::from(attempt),
@@ -166,7 +169,11 @@ fn start(
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> bool {
     let Some(counted) = guest.replies.admit() else {
-        guest.refuse(id, "in_flight_limit", "too many in-flight view requests");
+        guest.refuse(
+            id,
+            refusal::IN_FLIGHT_LIMIT,
+            "too many in-flight view requests",
+        );
         return false;
     };
     let task = handle().spawn(async move {
@@ -243,7 +250,7 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
         drop(connection);
         guest.refuse(
             id,
-            "stale_connection",
+            refusal::STALE_CONNECTION,
             "view belongs to a previous network connection",
         );
         return None;
@@ -255,7 +262,7 @@ fn connected(guest: &mut Guest, id: u64) -> Option<Node> {
         }),
         _ => {
             drop(connection);
-            guest.refuse(id, "not_connected", "not connected to a node");
+            guest.refuse(id, refusal::NOT_CONNECTED, "not connected to a node");
             None
         }
     }
@@ -268,13 +275,17 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         .trim()
         .to_owned();
     if program.is_empty() {
-        guest.refuse(id, "malformed_request", "`module.changes` names no program");
+        guest.refuse(
+            id,
+            refusal::MALFORMED_REQUEST,
+            "`module.changes` names no program",
+        );
         return;
     }
     if guest.live_subscriptions.len() >= MAX_SUBSCRIPTIONS {
         guest.refuse(
             id,
-            "subscription_limit",
+            refusal::SUBSCRIPTION_LIMIT,
             "too many `module.changes` subscriptions",
         );
         return;
@@ -287,11 +298,17 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     let started = start(guest, id, async move {
         use futures::StreamExt as _;
         let mut drained = replies.drains();
+        let mut warned = false;
         loop {
             let mut changes = match node.client.changes(&program).await {
                 Ok(changes) => changes,
                 Err(error) => {
-                    tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    if warned {
+                        tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    } else {
+                        warned = true;
+                        tracing::warn!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    }
                     tokio::time::sleep(backend::retry_delay(2)).await;
                     continue;
                 }
@@ -330,7 +347,11 @@ const MAX_BLOCK_PAGE: u32 = 100;
 /// cap); where the archive holds none, the tip alone.
 pub(super) fn heads(guest: &mut Guest, id: u64, payload: &[u8]) {
     if !payload.is_empty() {
-        guest.refuse(id, "malformed_request", "`chain.heads` takes no payload");
+        guest.refuse(
+            id,
+            refusal::MALFORMED_REQUEST,
+            "`chain.heads` takes no payload",
+        );
         return;
     }
     let Some(node) = connected(guest, id) else {
@@ -458,7 +479,7 @@ async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
     let (frame, _turn) = backend::seated_frame(&node.client, &node.network, &target, payload)
         .await
         .map_err(|refusal| match transport_failed(&refusal) {
-            true => wire::Error::new("rpc_client", refusal.message),
+            true => wire::Error::new(refusal::RPC_CLIENT, refusal.message),
             false => refusal,
         })?;
     let receipt = node.client.submit(frame).await.map_err(refused)?;
@@ -488,7 +509,7 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
             backend::noded::unframe(&framed).ok_or_else(|| host_fault("blob has no header"))?;
         if body.len() > MAX_BLOB_BYTES {
             return Err(wire::Error::new(
-                "too_large",
+                refusal::TOO_LARGE,
                 "blob exceeds the view's read limit",
             ));
         }
@@ -528,7 +549,7 @@ pub(super) fn network(node: Node, ask: Vec<u8>) -> Answered {
         }
         let network = node.client.network().await.map_err(|error| match error {
             noded::Error::Failed { status: 404, .. } => wire::Error::new(
-                "unknown_request",
+                refusal::UNKNOWN_REQUEST,
                 "This node doesn't report its validators' votes. Update the node.",
             ),
             error => refused(error),
@@ -561,7 +582,10 @@ pub(super) fn invite(node: Node, ask: Vec<u8>) -> Answered {
         // not something to show a person as-is.
         let refusal = |error: ducktape_rpc::Error| {
             if error.reason() == "http_error" && error.status() == Some(404) {
-                return wire::Error::new("invite_unsupported", "This node doesn't mint invites.");
+                return wire::Error::new(
+                    refusal::INVITE_UNSUPPORTED,
+                    "This node doesn't mint invites.",
+                );
             }
             wire::Error::new(error.reason(), error.message())
         };

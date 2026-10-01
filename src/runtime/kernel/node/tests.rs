@@ -23,7 +23,7 @@ fn too_many_changes_subscriptions_is_the_subscription_limit() {
     assert_eq!(
         refused(&mut guest, 1),
         (
-            "malformed_request".to_owned(),
+            refusal::MALFORMED_REQUEST.to_owned(),
             "`module.changes` names no program".to_owned()
         )
     );
@@ -34,7 +34,7 @@ fn too_many_changes_subscriptions_is_the_subscription_limit() {
     assert_eq!(
         refused(&mut guest, 2),
         (
-            "subscription_limit".to_owned(),
+            refusal::SUBSCRIPTION_LIMIT.to_owned(),
             "too many `module.changes` subscriptions".to_owned()
         )
     );
@@ -102,7 +102,7 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     assert_eq!(attempts, 1);
     assert_eq!(
         answer.unwrap_err().code,
-        "node_failed",
+        refusal::NODE_FAILED,
         "the loss is the answer, named as the node's"
     );
     assert_eq!(

@@ -115,29 +115,26 @@ fn label(guest: &Guest) -> (String, u32) {
     }
 }
 
+/// A response for a request no route in the frame names (here 8, the frame
+/// holding 7) is merged into nothing.
 #[test]
-fn tooltip_response_only_attaches_to_its_current_frame_route() {
+fn a_tooltip_response_for_a_request_not_in_the_frame_attaches_nowhere() {
     let mut held = Some(tooltip_route(7));
-    let tip = wire::Node::Text(view_wire::TextNode {
-        id: None,
-        style: Default::default(),
-        content: "Help".into(),
-    });
     let mut frame = wire::Frame {
         unchanged: true,
         tooltip_responses: vec![wire::TooltipResponse {
-            request: 7,
+            request: 8,
             character_index: None,
-            content: Some(Box::new(tip)),
+            content: Some(Box::new(wire::Node::empty())),
         }],
         ..Default::default()
     };
-    assert!(merge(&mut held, &mut frame).unwrap().0);
-    let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = frame.root.unwrap()
-    else {
-        panic!("container")
-    };
-    assert!(interactivity.tooltip.unwrap().content.is_some());
+    assert!(!merge(&mut held, &mut frame).unwrap().0);
+    assert!(
+        primitive_tooltip(frame.root.as_ref().unwrap())
+            .content
+            .is_none()
+    );
 }
 
 #[test]
@@ -161,39 +158,6 @@ fn tooltip_responses_merge_into_every_interactive_primitive_kind() {
             "{kind}"
         );
     }
-}
-
-#[test]
-fn duplicate_tooltip_routes_across_primitive_kinds_are_refused_before_mutating() {
-    let mut held = Some(wire::Node::Container(view_wire::ContainerNode {
-        id: None,
-        style: Default::default(),
-        interactivity: Default::default(),
-        children: vec![
-            primitive_tooltip_route("uniform-list", 7),
-            primitive_tooltip_route("image", 7),
-            primitive_tooltip_route("svg", 7),
-        ],
-    }));
-    let mut frame = wire::Frame {
-        unchanged: true,
-        tooltip_responses: vec![wire::TooltipResponse {
-            request: 7,
-            character_index: None,
-            content: Some(Box::new(wire::Node::empty())),
-        }],
-        ..Default::default()
-    };
-    assert_eq!(
-        merge(&mut held, &mut frame),
-        Err("duplicate tooltip request route")
-    );
-    assert!(
-        held.unwrap()
-            .children()
-            .iter()
-            .all(|node| primitive_tooltip(node).content.is_none())
-    );
 }
 
 #[test]
@@ -241,13 +205,15 @@ fn rich_tooltip_cache_is_replaced_for_the_exact_character_index() {
     assert!(tooltip.content.is_none());
 }
 
+/// Two authored routes, of different kinds, naming one request: refused,
+/// and neither is written.
 #[test]
 fn tooltip_response_rejects_duplicate_authored_routes_before_mutating() {
     let mut held = Some(wire::Node::Container(view_wire::ContainerNode {
         id: None,
         style: Default::default(),
         interactivity: Default::default(),
-        children: vec![tooltip_route(7), tooltip_route(7)],
+        children: vec![tooltip_route(7), primitive_tooltip_route("svg", 7)],
     }));
     let mut frame = wire::Frame {
         unchanged: true,
@@ -262,18 +228,12 @@ fn tooltip_response_rejects_duplicate_authored_routes_before_mutating() {
         merge(&mut held, &mut frame),
         Err("duplicate tooltip request route")
     );
-    let mut populated = 0;
-    held.unwrap().for_each_mut(&mut |node| {
-        if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = node
-            && interactivity
-                .tooltip
-                .as_ref()
-                .is_some_and(|tooltip| tooltip.content.is_some())
-        {
-            populated += 1;
-        }
-    });
-    assert_eq!(populated, 0);
+    assert!(
+        held.unwrap()
+            .children()
+            .iter()
+            .all(|node| primitive_tooltip(node).content.is_none())
+    );
 }
 
 #[test]
