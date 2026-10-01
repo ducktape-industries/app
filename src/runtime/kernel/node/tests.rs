@@ -221,13 +221,14 @@ async fn a_node_that_hangs_up_is_asked_again_within_the_budget() {
 
 /// `blob.get` from a node streaming more than the view may read is refused
 /// `too_large` as the bytes pass the cap, with what the node streamed past
-/// it left unread: chunked, or declared by a `Content-Length` (refused
-/// before any of the body is read).
+/// it left unread: chunked, or declared by a `Content-Length`, refused
+/// before the body is read (what gets out then is what the two sockets'
+/// buffers hold, a few MiB, short of the cap).
 #[tokio::test]
 async fn a_blob_streamed_past_the_cap_is_refused_unread() {
     let len = 4 * MAX_BLOB_BYTES;
     let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
-    for declared in [false, true] {
+    for (declared, unread) in [(false, len), (true, MAX_BLOB_BYTES)] {
         let mut fake = fake_node(vec![(
             noded::route::BLOB_GET,
             Mode::Stream { len, declared },
@@ -240,8 +241,8 @@ async fn a_blob_streamed_past_the_cap_is_refused_unread() {
                 .expect("the node is still streaming")
                 .unwrap();
         assert!(
-            streamed < len,
-            "declared: {declared}: the whole {len} bytes were read ({streamed})"
+            streamed < unread,
+            "declared: {declared}: {streamed} bytes were read, {unread} or more"
         );
     }
 }
