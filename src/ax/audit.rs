@@ -1029,6 +1029,36 @@ fn holds(node: &AxNode) -> bool {
     has(node, "focused") || node.more.active_descendant.is_some()
 }
 
+/// The ids a Tab press reached: every node that has the keys in a snapshot
+/// taken after a press. A focused node that offers no focus of its own is
+/// the active descendant of the node that has the keys, its nearest
+/// ancestor that offers focus (a rich text's picked link, under the box
+/// around the text): that ancestor was reached.
+fn reached(snapshots: &[Vec<AxNode>]) -> std::collections::HashSet<&str> {
+    let mut reached = std::collections::HashSet::new();
+    for nodes in snapshots.iter().skip(1) {
+        let snapshot = Snapshot::of(nodes);
+        for node in nodes
+            .iter()
+            .filter(|node| has(node, "focused") && !offers(node, "focus"))
+        {
+            reached.extend(
+                snapshot
+                    .ancestors(node)
+                    .find(|above| offers(above, "focus"))
+                    .map(|above| above.id.as_str()),
+            );
+        }
+        reached.extend(
+            nodes
+                .iter()
+                .filter(|node| holds(node))
+                .map(|node| node.id.as_str()),
+        );
+    }
+    reached
+}
+
 /// AX-020 … AX-025 over the sequence, `step N` the snapshot after N
 /// presses, a step whose focus is outside the audited scope left to the
 /// scope it is in; then AX-103, AX-104 and AX-107's arrows. A dialog that
@@ -1067,34 +1097,12 @@ fn walk_rules(reading: &Reading, tally: &mut Tally) {
             .iter()
             .any(|nodes| nodes.iter().all(|other| other.id != id))
     };
-    // a focused node that offers no focus of its own is the active
-    // descendant of the node that has the keys, its nearest ancestor that
-    // offers focus (a rich text's picked link, under the box around the
-    // text): that ancestor was reached
-    let mut through = std::collections::HashSet::new();
-    for nodes in &snapshots[1..] {
-        let snapshot = Snapshot::of(nodes);
-        for node in nodes
-            .iter()
-            .filter(|node| has(node, "focused") && !offers(node, "focus"))
-        {
-            through.extend(
-                snapshot
-                    .ancestors(node)
-                    .find(|above| offers(above, "focus"))
-                    .map(|above| above.id.as_str()),
-            );
-        }
-    }
+    let tabbed = reached(snapshots);
     for node in first.iter().filter(|node| walked && offers(node, "focus")) {
         // a Tab press reached it: where the state opened does not count,
         // but in a dialog that closed when Tab left it: it had the keys as
         // the dialog opened, and no Tab comes back to it
-        let reached = snapshots[1..].iter().any(|nodes| {
-            nodes
-                .iter()
-                .any(|other| other.id == node.id && holds(other))
-        }) || through.contains(node.id.as_str())
+        let reached = tabbed.contains(node.id.as_str())
             || holds(node)
                 && opened.ancestors(node).any(|above| {
                     matches!(above.role.as_str(), "Dialog" | "Menu") && closed(&above.id)
@@ -1262,7 +1270,9 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 /// 2026-09-28), once until the focus moves, and never under a modal:
 /// there `escape` closes the modal (Spotlight, whose one Tab stop Tab
 /// comes back to, would close mid-walk). A stay the walk leaves so is not
-/// the focus coming back round. Where the focus starts, and after each
+/// the focus coming back round, and nor is a lap that owes a stop a visit
+/// ([`Observer::owes`]): one a snapshot did not show as Tab passed its
+/// place, back or drawn since. Where the focus starts, and after each
 /// press, when it sits in a composite with two rows or more (a grid, two
 /// cells) that has the keys and was not probed yet, the arrow probe: an arrow and the arrow
 /// back, `snap` after each ([`Arrows`], [`arrow_pairs`]); an arrow that
@@ -1318,6 +1328,8 @@ pub(crate) struct Observer<K, S> {
     round: bool,
     next: &'static str,
     escaped: bool,
+    /// the stops the walk has gone round again for ([`Self::owes`])
+    again: std::collections::HashSet<String>,
 }
 
 impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observer<K, S> {
@@ -1348,6 +1360,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
             round: false,
             next: "tab",
             escaped: false,
+            again: Default::default(),
         };
         let (nodes, outside, stops) = observer.look(window, cx);
         observer.reading.take(nodes, outside, window, cx);
@@ -1438,14 +1451,45 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         let leave = stayed && !self.escaped && !self.reading.modal;
         match self.presses {
             1 => self.first = now,
-            // a stay the walk is about to leave has not come back round
-            _ => self.round |= now == self.first && !leave,
+            // a stay the walk is about to leave has not come back round,
+            // nor has a lap that owes a stop a visit
+            _ => self.round |= now == self.first && !leave && !self.owes(),
         }
         self.next = match leave {
             true => "escape tab",
             false => "tab",
         };
         true
+    }
+
+    /// The lap that has just come back to the first stop owes a stop a
+    /// visit: the snapshot shows one offering focus that an earlier
+    /// snapshot did not (gone as Tab passed its place and back since, as a
+    /// list that reads itself again is; or drawn since) and that no press
+    /// has reached ([`reached`], as AX-021 judges it). The walk goes round
+    /// once more for it, and once only for each such stop: one Tab never
+    /// reaches does not keep the walk going. A stop that scrolls into view
+    /// as the walk goes on is ahead of the focus, and reached before the
+    /// lap ends: it buys no lap.
+    fn owes(&mut self) -> bool {
+        let Some((last, earlier)) = self.reading.snapshots.split_last() else {
+            return false;
+        };
+        let tabbed = reached(&self.reading.snapshots);
+        let owed: Vec<String> = last
+            .iter()
+            .filter(|node| offers(node, "focus") && !tabbed.contains(node.id.as_str()))
+            .filter(|node| {
+                earlier
+                    .iter()
+                    .any(|nodes| nodes.iter().all(|other| other.id != node.id))
+            })
+            .map(|node| node.id.clone())
+            .filter(|id| !self.again.contains(id))
+            .collect();
+        let owes = !owed.is_empty();
+        self.again.extend(owed);
+        owes
     }
 
     /// The reading, the focus given back where it was.
