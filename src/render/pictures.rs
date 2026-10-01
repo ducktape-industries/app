@@ -236,8 +236,7 @@ impl ViewTree {
                     element.child("Compressed SVG data refused")
                 }
                 Some(bytes) => element.child(guarded_svg_paint(
-                    SvgPaintSource::data(&bytes),
-                    Some(bytes.clone()),
+                    SvgPaintSource::Data(bytes.clone()),
                     svg()
                         .data(&bytes)
                         .with_transformation(native_transform)
@@ -247,8 +246,7 @@ impl ViewTree {
             },
             wire::SvgSource::Asset(path) if safe_asset_path(path) => {
                 element.child(guarded_svg_paint(
-                    SvgPaintSource::asset(path.clone()),
-                    None,
+                    SvgPaintSource::Asset(path.clone().into()),
                     svg()
                         .path(path.clone())
                         .with_transformation(native_transform)
