@@ -21,6 +21,16 @@ pub(super) enum Restored {
     Refused(String),
 }
 
+/// What a drawn view answered when asked for its state: the state, a
+/// state past `MAX_SNAPSHOT_BYTES` (the host's word, before it copied a
+/// byte), or the guest's own word that it cannot hand it over now. A trap
+/// is not one of these: it ends the instance.
+pub(super) enum Snapshot {
+    Taken(Vec<u8>),
+    TooLarge,
+    Refused(String),
+}
+
 /// One instantiated view: its wasm store and exports, the last frame it
 /// sent, and everything the host keeps on its behalf between ticks — the
 /// events owed to it, the live text of its inputs, its pictures, and the

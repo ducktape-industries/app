@@ -467,6 +467,7 @@ impl Load {
                 &self.asked_of,
                 asked_for,
                 loaded,
+                &mut timing,
             )
         }));
         if let Err(panic) = &landed
@@ -531,6 +532,7 @@ fn install(
     asked_of: &Connection,
     asked_for: Option<[u8; 32]>,
     loaded: Result<Loaded, Unloaded>,
+    timing: &mut LoadTiming,
 ) -> bool {
     if locked.generation != generation {
         return false;
@@ -555,7 +557,12 @@ fn install(
             return false;
         }
     };
-    let Mounted { slot, instance, .. } = &mut *locked;
+    let Mounted {
+        slot,
+        instance,
+        retry,
+        ..
+    } = &mut *locked;
     match loaded {
         Loaded::Fresh(mut guest) => {
             guest.instance = *instance;
@@ -576,56 +583,76 @@ fn install(
             return true;
         }
         // the same tab, the same surface handle, the same host-side
-        // input text and pictures: only the instance behind them moves
+        // input text and pictures: only the instance behind them moves. A
+        // swap refused here is asked again, as a failed load is
         Loaded::Swap {
-            mut fresh,
+            fresh,
             alive,
             ticks,
+            code,
+            shown,
         } => {
-            let Slot::Ready(old) = slot else {
-                log_source(
-                    module,
-                    fresh.hash.as_ref(),
-                    "Failed",
-                    generation,
-                    "the view left while its replacement was prepared",
-                );
-                return false;
-            };
-            let still_eligible = old.ticks == ticks && old.settled();
-            if !Arc::ptr_eq(&old.alive, &alive) || !still_eligible {
-                log_source(
-                    module,
-                    fresh.hash.as_ref(),
-                    "Failed",
-                    generation,
-                    "the view moved while its replacement was prepared",
-                );
-                return false;
+            let hash = fresh.hash;
+            match swapped(slot, fresh, &alive, ticks, &code, &shown, timing) {
+                Ok(mut fresh) => {
+                    fresh.instance = *instance;
+                    fresh.installed_generation = Some(generation);
+                    fresh.report_display_truncation();
+                    log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
+                    *slot = Slot::Ready(fresh);
+                }
+                Err(reason) => {
+                    log_source(module, hash.as_ref(), "Failed", generation, &reason);
+                    *retry = Some(Retry::after(held_off.as_ref(), asked_for));
+                }
             }
-            fresh.frame_rev = old.frame_rev + 1;
-            if let Some(root) = &fresh.frame.root
-                && let Err(reason) = fresh.inputs.retain_restored_projections(&old.inputs, root)
-            {
-                log_source(module, fresh.hash.as_ref(), "Failed", generation, &reason);
-                return false;
-            }
-            let mut pictures = std::mem::take(&mut old.pictures);
-            let own = std::mem::take(&mut fresh.pictures);
-            let mut none = wire::Node::empty();
-            let root = fresh.frame.root.as_mut().unwrap_or(&mut none);
-            if pictures.carry(own, root, module) {
-                fresh.pending.push(wire::Event::Resync);
-            }
-            fresh.pictures = pictures;
-            fresh.instance = *instance;
-            fresh.installed_generation = Some(generation);
-            fresh.report_display_truncation();
-            log_source(module, fresh.hash.as_ref(), "Swapped", generation, "");
-            *slot = Slot::Ready(fresh);
         }
     }
     false
+}
+
+/// `fresh`, prepared as the replacement of the drawn view `alive` names
+/// at `ticks`, made ready to take its seat: the view's editor projections
+/// and pictures carried over. A view that ticked, or took work, since the
+/// handover `fresh` was prepared from hands over again, here, into a new
+/// instance of `code`: the seat's lock is held, nothing ticks the view
+/// meanwhile, so that second handover is the view as it is and no tick can
+/// race it. Why there is no replacement, if there is none.
+fn swapped(
+    slot: &mut Slot,
+    mut fresh: Box<Guest>,
+    alive: &Arc<()>,
+    ticks: u64,
+    code: &Module,
+    shown: &str,
+    timing: &mut LoadTiming,
+) -> Result<Box<Guest>, String> {
+    let Slot::Ready(old) = slot else {
+        return Err("the view left while its replacement was prepared".into());
+    };
+    if !Arc::ptr_eq(&old.alive, alive) {
+        return Err("the view changed while its replacement was prepared".into());
+    }
+    if old.ticks != ticks || !old.settled() {
+        fresh = Guest::prepared_again(old, &fresh, code, shown, timing)
+            .map(Box::new)
+            .map_err(|failure| failure.to_string())?;
+    }
+    fresh.frame_rev = old.frame_rev + 1;
+    if let Some(root) = &fresh.frame.root {
+        fresh
+            .inputs
+            .retain_restored_projections(&old.inputs, root)?;
+    }
+    let mut pictures = std::mem::take(&mut old.pictures);
+    let own = std::mem::take(&mut fresh.pictures);
+    let mut none = wire::Node::empty();
+    let root = fresh.frame.root.as_mut().unwrap_or(&mut none);
+    if pictures.carry(own, root, old.module) {
+        fresh.pending.push(wire::Event::Resync);
+    }
+    fresh.pictures = pictures;
+    Ok(fresh)
 }
 
 /// What a load came back with.
@@ -636,11 +663,14 @@ pub(super) enum Loaded {
     Unchanged,
     /// A prepared replacement for the view drawn: restored from its
     /// snapshot, its first tree verified; `alive` and `ticks` name the
-    /// instance it was prepared against.
+    /// instance it was prepared against, and `code`, named `shown`, is what
+    /// it is an instance of.
     Swap {
         fresh: Box<Guest>,
         alive: Arc<()>,
         ticks: u64,
+        code: Arc<Module>,
+        shown: String,
     },
     /// The deployment ships no view.
     Empty,
