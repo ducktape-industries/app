@@ -58,9 +58,23 @@ fn bind_in(remotes: &std::path::Path, network: &str, founded: u64) -> Result<Key
         return Err("the node named no network".into());
     }
     let mark = remotes.join(&name).join(FOUNDED);
-    let known = std::fs::read_to_string(&mark)
-        .ok()
-        .and_then(|text| text.trim().parse::<u64>().ok());
+    // a mark that is there but unreadable names no chain: never claimed, or
+    // the first chain's keys would sign for whichever connects next
+    let damaged = |error: &dyn std::fmt::Display| {
+        format!(
+            "This device can't tell which network its {network} keys belong to: {} is damaged ({error}). Remove it only if this node is the network those keys were made on.",
+            mark.display()
+        )
+    };
+    let known = match std::fs::read_to_string(&mark) {
+        Ok(text) => Some(
+            text.trim()
+                .parse::<u64>()
+                .map_err(|error| damaged(&error))?,
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(damaged(&error)),
+    };
     match known {
         Some(known) if known != founded => Ok(Keyring {
             dir: format!("{name}+{founded}"),
@@ -74,7 +88,7 @@ fn bind_in(remotes: &std::path::Path, network: &str, founded: u64) -> Result<Key
             // An unwritten mark only means the claim is made again next
             // time; the keys themselves are where they always were.
             let written = std::fs::create_dir_all(remotes.join(&name))
-                .and_then(|()| std::fs::write(&mark, founded.to_string()));
+                .and_then(|()| super::atomic_write(&mark, founded.to_string().as_bytes(), false));
             if let Err(error) = written {
                 tracing::warn!(target: "ducktape::app", %error, network, "chain mark not written");
             }
@@ -127,6 +141,27 @@ mod tests {
         assert_eq!(bind_in(remotes.path(), "testkit", 100).unwrap(), first);
         assert!(bind_in(remotes.path(), "", 1).is_err());
         assert!(bind_in(remotes.path(), "..", 1).is_err());
+    }
+
+    /// A mark that is there but names no chain (a cut write, foreign bytes,
+    /// not a file) binds nothing and is left as it is: the keys under it are
+    /// never handed to whichever chain connects next.
+    #[test]
+    fn a_damaged_chain_mark_is_never_claimed() {
+        let remotes = tempfile::tempdir().unwrap();
+        let mark = remotes.path().join("testkit").join(FOUNDED);
+        std::fs::create_dir_all(mark.parent().unwrap()).unwrap();
+        for damaged in ["", "10O", "\u{0}\u{0}"] {
+            std::fs::write(&mark, damaged).unwrap();
+            let refused = bind_in(remotes.path(), "testkit", 100).unwrap_err();
+            assert!(refused.contains(FOUNDED), "{refused}");
+            let left = std::fs::read_to_string(&mark).unwrap();
+            assert_eq!(left, damaged, "the mark was claimed");
+        }
+        std::fs::remove_file(&mark).unwrap();
+        std::fs::create_dir(&mark).unwrap();
+        assert!(bind_in(remotes.path(), "testkit", 100).is_err());
+        assert!(mark.is_dir());
     }
 
     #[test]
