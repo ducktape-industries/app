@@ -138,8 +138,6 @@ mod tests {
     use super::*;
     use crate::runtime::notify::Settings;
     use gpui_kit::{AppContext as _, TestAppContext};
-    use std::cell::Cell;
-    use std::rc::Rc;
 
     #[gpui_kit::test]
     fn clear_read_moves_the_notifications_slice(cx: &mut TestAppContext) {
@@ -160,9 +158,7 @@ mod tests {
         let _ = center.lock().post(&settings, "chat", "Chat", post, now, 0);
         center.lock().mark_all_read();
         let slice = cx.new(|_| Notifications::new(center.clone()));
-        let seen = Rc::new(Cell::new(0));
-        let count = seen.clone();
-        let _observing = cx.update(|cx| cx.observe(&slice, move |_, _| count.set(count.get() + 1)));
+        let (seen, _observing) = crate::shell::entities::tests::notifies(&slice, cx);
         assert!(!slice.update(cx, |slice, cx| slice.refresh(cx)));
         assert_eq!(seen.get(), 0, "a centre that moved nothing notified");
 

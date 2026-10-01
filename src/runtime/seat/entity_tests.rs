@@ -457,11 +457,7 @@ fn a_load_that_lands_wakes_the_seat() {
 fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     const MODULE: &str = "stage-retry-test";
     let (seat, _, mut native) = open(cx, MODULE, false);
-    let notifies = std::rc::Rc::new(std::cell::Cell::new(0));
-    let _watch = native.update(|_, cx| {
-        let notifies = notifies.clone();
-        cx.observe(&seat, move |_, _| notifies.set(notifies.get() + 1))
-    });
+    let (notifies, _watch) = crate::shell::entities::tests::notifies(&seat, &mut native);
     let mounted = mounted_of(&seat, &native);
     let turns = turns_of(&seat, &native);
     let words = |native: &TestAppContext| {

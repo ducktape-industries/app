@@ -7,7 +7,7 @@
 //! machine's, not a unit test's. The sessions here are seeded on a node
 //! already reached (`Session::seed_connected`); the take-up itself is
 //! `Account::take_up`'s row in account_tests.rs and the kit's.
-use super::tests::session;
+use super::tests::{notifies, session};
 use super::{LOST_AFTER, STATUS_EVERY, Screen, Session, SessionEvent, SessionState, StatusSource};
 use crate::backend::NodeStatus;
 use crate::shell::entities::tests::status;
@@ -41,17 +41,6 @@ fn source(
         std::future::ready(answer(n)).boxed_local()
     });
     (source, asked)
-}
-
-/// Counts `entity`'s notifies while the subscription lives.
-fn notifies<T: 'static>(
-    entity: &Entity<T>,
-    cx: &mut TestAppContext,
-) -> (Rc<Cell<usize>>, Subscription) {
-    let seen = Rc::new(Cell::new(0));
-    let count = seen.clone();
-    let observing = cx.update(|cx| cx.observe(entity, move |_, _| count.set(count.get() + 1)));
-    (seen, observing)
 }
 
 /// Every event `session` emits while the subscription lives.

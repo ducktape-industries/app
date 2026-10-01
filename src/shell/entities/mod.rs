@@ -170,6 +170,28 @@ pub(crate) mod tests {
         entities
     }
 
+    /// Window `key`'s desk.
+    pub(crate) fn desk_of(
+        app: &Entities,
+        key: crate::runtime::WindowKey,
+        cx: &gpui_kit::TestAppContext,
+    ) -> Entity<Desk> {
+        app.windows.read_with(cx, |windows, _| {
+            windows.own(key).expect("its window").desk.clone()
+        })
+    }
+
+    /// Counts `entity`'s notifies while the subscription lives.
+    pub(crate) fn notifies<T: 'static>(
+        entity: &Entity<T>,
+        cx: &mut gpui_kit::TestAppContext,
+    ) -> (std::rc::Rc<std::cell::Cell<usize>>, gpui_kit::Subscription) {
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = seen.clone();
+        let observing = cx.update(|cx| cx.observe(entity, move |_, _| count.set(count.get() + 1)));
+        (seen, observing)
+    }
+
     /// The node's answer at `height`, for the tests that feed the session
     /// one.
     pub(crate) fn status(height: u64) -> crate::backend::NodeStatus {

@@ -120,8 +120,6 @@ impl Rail {
 mod tests {
     use super::*;
     use gpui_kit::{AppContext as _, TestAppContext};
-    use std::cell::Cell;
-    use std::rc::Rc;
 
     #[gpui_kit::test]
     fn a_roster_change_recomputes_the_rail_once_and_notifies_only_on_change(
@@ -132,9 +130,7 @@ mod tests {
         let (send, changes) = futures::channel::mpsc::unbounded();
         let session = cx.update(crate::shell::entities::tests::session);
         let rail = cx.new(|cx| Rail::new(roster.clone(), changes, &session, cx));
-        let seen = Rc::new(Cell::new(0));
-        let count = seen.clone();
-        let _observing = cx.update(|cx| cx.observe(&rail, move |_, _| count.set(count.get() + 1)));
+        let (seen, _observing) = crate::shell::entities::tests::notifies(&rail, cx);
         let note = |cx: &mut TestAppContext| rail.read_with(cx, |rail, _| rail.rows()[0].note);
         assert_eq!(note(cx), Some("Loading"));
 

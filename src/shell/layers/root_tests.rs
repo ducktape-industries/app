@@ -2,42 +2,15 @@
 //! nothing else (P1, P6 in the app), and the root lays them out as the
 //! window's kind and screen say (docs/perf.md).
 use super::BAR;
-use super::tests::{Seed, open_console, pane, polled, pop_out, set_motion, set_screen, toast};
+use super::tests::{
+    Seed, frame, line, open_console, pane, polled, pop_out, set_motion, set_screen, toast,
+    tree_renders,
+};
 use crate::shell::PaneMessage;
 use crate::shell::entities::tests::status;
 use crate::shell::entities::{Overlay, Popover, Screen};
 use crate::shell::panes_tests::{console, draw, settle, window_count};
-use gpui_kit::{Styled as _, TestAppContext, VisualTestContext, px};
-use view_wire as wire;
-
-/// A frame as the platform delivers one: what asked for it runs, then
-/// whatever that dirtied draws.
-fn frame(native: &mut VisualTestContext) {
-    native.update(|window, cx| {
-        window.simulate_next_frame(cx);
-    });
-    native.run_until_parked();
-}
-
-fn line(text: &str) -> wire::Node {
-    wire::Node::RichText {
-        id: Some(wire::ElementIdWire::Name("line".into())),
-        style: gpui_kit::div().h(px(20.)).style().clone(),
-        text: text.into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: Vec::new(),
-        on_click: None,
-        on_hover: None,
-        tooltip: None,
-    }
-}
-
-fn tree_renders(module: &str) -> u64 {
-    crate::perf::snapshot(false)["views"][module]["renders"]
-        .as_u64()
-        .unwrap_or_else(|| panic!("{module} counts its renders"))
-}
+use gpui_kit::{TestAppContext, VisualTestContext};
 
 /// The ids in a snapshot, in the tree's order.
 fn ids(nodes: &serde_json::Value) -> Vec<String> {

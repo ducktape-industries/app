@@ -1,10 +1,9 @@
 //! One window's desk moved by its methods (desk.rs): each a compared edit
 //! of the layout, framed and settled.
+use super::tests::notifies;
 use super::{Desk, Slice};
 use crate::ui::layout::{EMPTY, Frame, Layout};
 use gpui_kit::{AppContext as _, Entity, TestAppContext};
-use std::cell::Cell;
-use std::rc::Rc;
 
 const DESK: (f32, f32) = (1280., 764.);
 
@@ -27,17 +26,6 @@ fn modules(desk: &Entity<Desk>, cx: &TestAppContext) -> Vec<&'static str> {
 
 fn layout(desk: &Entity<Desk>, cx: &TestAppContext) -> Layout {
     desk.read_with(cx, |desk, _| desk.get().clone())
-}
-
-/// How many times `desk` notifies from here on.
-fn notifies(
-    desk: &Entity<Desk>,
-    cx: &mut TestAppContext,
-) -> (Rc<Cell<u32>>, gpui_kit::Subscription) {
-    let seen = Rc::new(Cell::new(0));
-    let count = seen.clone();
-    let observing = cx.update(|cx| cx.observe(desk, move |_, _| count.set(count.get() + 1)));
-    (seen, observing)
 }
 
 #[gpui_kit::test]

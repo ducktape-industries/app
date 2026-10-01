@@ -97,20 +97,8 @@ pub(crate) fn spawn_on_runtime<E: 'static, R: 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::entities::tests::notifies;
     use gpui_kit::{AppContext as _, TestAppContext};
-    use std::cell::Cell;
-    use std::rc::Rc;
-
-    /// Counts `entity`'s notifies while the subscription lives.
-    fn notifies<T: 'static>(
-        entity: &Entity<T>,
-        cx: &mut TestAppContext,
-    ) -> (Rc<Cell<usize>>, Subscription) {
-        let seen = Rc::new(Cell::new(0));
-        let count = seen.clone();
-        let observing = cx.update(|cx| cx.observe(entity, move |_, _| count.set(count.get() + 1)));
-        (seen, observing)
-    }
 
     #[gpui_kit::test]
     fn an_equal_value_notifies_nothing_and_a_changed_one_once(cx: &mut TestAppContext) {

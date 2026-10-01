@@ -202,8 +202,6 @@ fn timed() -> Option<crate::perf::Timer> {
 mod tests {
     use super::*;
     use gpui_kit::{AppContext as _, TestAppContext};
-    use std::cell::Cell;
-    use std::rc::Rc;
 
     fn overlays(cx: &mut TestAppContext) -> (Entity<Session>, Entity<Overlays>) {
         let session = cx.update(super::super::tests::session);
@@ -281,10 +279,7 @@ mod tests {
     #[gpui_kit::test]
     fn leaving_the_network_closes_the_overlay(cx: &mut TestAppContext) {
         let (session, overlays) = overlays(cx);
-        let seen = Rc::new(Cell::new(0));
-        let count = seen.clone();
-        let _observing =
-            cx.update(|cx| cx.observe(&overlays, move |_, _| count.set(count.get() + 1)));
+        let (seen, _observing) = crate::shell::entities::tests::notifies(&overlays, cx);
         let edit = |cx: &mut TestAppContext, edit: fn(&mut SessionState)| {
             session.update(cx, |session, cx| {
                 let mut state = session.get().clone();
