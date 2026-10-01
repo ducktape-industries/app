@@ -32,7 +32,7 @@ pub(super) struct Spin {
     /// The app's motion switch.
     switch: bool,
     /// It tumbles on its own: the switch is on and the system does not ask
-    /// for less motion. Read at `new` and on every tick.
+    /// for less motion. Read at `new`, on every tick and on every `run`.
     moving: bool,
     ink: Hsla,
     /// How it is held now.
@@ -206,6 +206,9 @@ impl Spin {
     /// waited (motion switched off, a hand took hold of it), it asks for
     /// none, and its next tick moves one frame.
     fn run(&mut self, cx: &mut Context<Self>) {
+        // the system's ask may have moved since the last tick: a window
+        // drawn again after it stops asking moves again
+        self.moving = moving(self.switch, cx);
         if !self.alive() {
             self.last_tick = None;
             return;

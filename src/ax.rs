@@ -245,6 +245,16 @@ pub(crate) enum Request {
     },
     /// `POST /perf/reset`: the registry's counters back to zero.
     PerfReset,
+    /// `POST /motion {"reduce": bool}`: the system's ask for less motion,
+    /// set as the OS sets it (`App::set_reduce_motion`), so a walk can hold
+    /// the designed animations still and put them back. Once set, gpui no
+    /// longer follows the OS's own ask.
+    Motion(Motion),
+}
+
+#[derive(Debug, Deserialize, PartialEq)]
+pub(crate) struct Motion {
+    reduce: bool,
 }
 
 #[derive(Debug, Deserialize, PartialEq)]
@@ -570,6 +580,10 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
             perf_reply(by_instance, &windows)
         }
         Request::PerfReset => perf_reset_reply(),
+        Request::Motion(Motion { reduce }) => {
+            cx.update(|cx| cx.set_reduce_motion(reduce));
+            Reply::ok(json!({}))
+        }
         Request::Reveal(Reveal { id }) => {
             // a window's tree is switched on by the read
             let _ = read(door, &all, false, seen, cx);
@@ -899,6 +913,18 @@ mod tests {
         assert!(active, "a tree read switches a11y on");
         let perf: serde_json::Value = serde_json::from_str(&perf.body).unwrap();
         assert_eq!(perf["cache_on"], false);
+    }
+
+    /// `POST /motion` sets the system's ask for less motion, as the OS
+    /// would, and takes it back: answered `{}`.
+    #[gpui_kit::test]
+    async fn motion_asks_for_less_motion_and_takes_it_back(cx: &mut gpui_kit::TestAppContext) {
+        for reduce in [true, false] {
+            let ask = move || Request::Motion(Motion { reduce });
+            let (answered, _, _) = served_answer(ask, cx).await;
+            assert_eq!((answered.status, answered.body.as_str()), (200, "{}"));
+            assert_eq!(cx.update(|cx| cx.reduce_motion()), reduce);
+        }
     }
 
     /// A read turns the seats first: what a guest has answered since its

@@ -1249,6 +1249,40 @@ fn a_still_desk_draws_no_frame(cx: &mut TestAppContext) {
     }
 }
 
+/// The system stops asking for less motion: the bare desk's figure
+/// tumbles again, from the frame that redraws the window (AX-122).
+#[gpui_kit::test]
+fn the_figure_moves_again_when_less_motion_is_no_longer_asked(cx: &mut TestAppContext) {
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    set_motion(&app, true, &mut native);
+    pane(&view, PaneMessage::Close(0), &mut native);
+    let second = |native: &mut VisualTestContext| {
+        let drawn = window_count(key, "renders.empty");
+        for _ in 0..25 {
+            native
+                .executor()
+                .advance_clock(std::time::Duration::from_millis(40));
+            native.run_until_parked();
+        }
+        window_count(key, "renders.empty") - drawn
+    };
+    native.update(|_, cx| cx.set_reduce_motion(true));
+    second(&mut native);
+    assert_eq!(
+        second(&mut native),
+        0,
+        "asked for less motion, it holds still"
+    );
+    native.update(|_, cx| cx.set_reduce_motion(false));
+    let moved = second(&mut native);
+    assert!(
+        moved >= 29,
+        "no longer asked, it drew {moved} frames in a second"
+    );
+}
+
 /// The bare desk reads the programs off the `Rail`, not the model: a
 /// roster change draws it once, with no dispatch between.
 #[gpui_kit::test]
