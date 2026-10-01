@@ -41,18 +41,45 @@ pub(super) fn connection() -> &'static Mutex<Connection> {
     CONNECTION.get_or_init(Mutex::default)
 }
 
-/// A roster as a node last listed it, every program and its code, shared
-/// by whoever holds a clone: the app's one ([`roster`]), which the node's
-/// reads fill, its views load from and its windows draw, or a test's own.
-/// A change tells the rail ([`changes_channel`]), never a window.
+/// A roster as a node last listed it, every program and its code, and
+/// which of them fill the roles the kernel calls; shared by whoever holds
+/// a clone: the app's one ([`roster`]), which the node's reads fill, its
+/// views load from and its windows draw, or a test's own. A change tells
+/// the rail ([`changes_channel`]), never a window.
 #[derive(Clone, Default)]
-pub(crate) struct Roster(Arc<Mutex<Vec<crate::backend::views::Program>>>);
+pub(crate) struct Roster {
+    programs: Arc<Mutex<Vec<crate::backend::views::Program>>>,
+    bound: Arc<Mutex<Bound>>,
+}
+
+/// The roles as the registry answered them, and the connection (`rev`)
+/// that was asked: they are asked once per connection, and again when the
+/// roster moved (a registry upgrade is a move), never each block.
+#[derive(Default)]
+struct Bound {
+    asked_of: Option<u64>,
+    roles: Option<abi::Roles>,
+}
 
 impl Roster {
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<crate::backend::views::Program>> {
-        self.0
+        self.programs
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn bound(&self) -> std::sync::MutexGuard<'_, Bound> {
+        self.bound
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The programs genesis bound to the roles the kernel calls (the
+    /// registry, the validators, identity), as the node's registry answers
+    /// them: `None` until read, and from a registry that refuses the
+    /// question (one from before it).
+    pub(crate) fn roles(&self) -> Option<abi::Roles> {
+        self.bound().roles.clone()
     }
 
     /// A roster of its own that lists `modules`, for a test to draw or
@@ -286,10 +313,34 @@ pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Regi
             return;
         }
     };
+    let roles_due = roster.bound().asked_of != Some(asked_of.rev) || *roster.lock() != programs;
+    let roles = if roles_due {
+        match handle().block_on(crate::backend::views::roles(client, &asked_of.network)) {
+            Ok(roles) => Some(roles),
+            // nothing listed either: the next block reads both again
+            Err(error) => {
+                tracing::warn!(
+                    target: "ducktape::app",
+                    reason = "roles_unreadable",
+                    error = %error,
+                    "the node's role bindings were not read"
+                );
+                return;
+            }
+        }
+    } else {
+        None
+    };
     let loads = {
         let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
         if node_since_left {
             return;
+        }
+        if let Some(roles) = roles {
+            *roster.bound() = Bound {
+                asked_of: Some(asked_of.rev),
+                roles,
+            };
         }
         let mut registry = lock(registry);
         let names: Vec<&'static str> = programs.iter().map(|p| intern(&p.name)).collect();

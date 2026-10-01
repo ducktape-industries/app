@@ -304,7 +304,14 @@ pub(super) fn answer(
                 .as_deref()
                 .and_then(|props| wire::methods::decode::<wire::methods::Session>(props).ok())
                 .and_then(|session| session.account);
-            match super::consent::needed(guest.module, &call.target, &call.body, own) {
+            let roles = super::roster().roles();
+            match super::consent::needed(
+                guest.module,
+                roles.as_ref(),
+                &call.target,
+                &call.body,
+                own,
+            ) {
                 None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
                 Some(words) => node::spawn_consented(guest, id, payload, words),
             }
