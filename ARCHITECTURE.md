@@ -199,7 +199,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    tree or, for a new guest instance, builds `ViewTree::new(root)
    .with_presentation(old.presentation())` and hands it the guest's
    `EditorStore`; the seat notifies, and the pane (`layers::PaneView`)
-   draws `seat.tree()` cached (`layers::cached_unless_a11y`) inside the
+   draws `seat.tree()` cached (with a11y on too) inside the
    `view/<module>` mark, laid out from `seat.min_width()`, or its `Standin`
    while it holds one (a load, a failure, a stopped view), over any tree it
    keeps. `ViewTree::node` (`render.rs`) is the dispatcher: one

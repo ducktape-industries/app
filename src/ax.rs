@@ -571,7 +571,7 @@ async fn answer(request: Request, door: &Door<'_>, seen: &mut Seen, cx: &mut Asy
 struct ServedPerf {
     name: String,
     key: crate::runtime::WindowKey,
-    /// The window's a11y tree is on: its guest views draw uncached.
+    /// The window's a11y tree is on: a door read has drawn in it.
     a11y: bool,
     /// gpui's own histograms, with the `perf-deep` feature; else `Null`.
     gpui: serde_json::Value,
@@ -594,8 +594,9 @@ fn perf_reset_reply() -> Reply {
 }
 
 /// The registry as the door gives it: 409 while off, so a gate fails
-/// loudly instead of passing on empty data; `cache_on` says whether every
-/// served window still draws its guest views cached.
+/// loudly instead of passing on empty data; `cache_on` says no served
+/// window's tree is on, so no door read drew in any (the layers draw
+/// cached either way).
 fn perf_reply(by_instance: bool, windows: &[ServedPerf]) -> Reply {
     if !crate::perf::on() {
         return perf_off();
@@ -813,7 +814,7 @@ mod tests {
     }
 
     /// A key press asked to read nothing still reaches the window, and
-    /// leaves its a11y off, so its guest views stay cached and `/perf` says
+    /// leaves its a11y off, so no read drew in it and `/perf` says
     /// `cache_on`; the answer is `{}`, and an unnamed window is the first
     /// served. Any read (here a tree) switches a11y on and `cache_on` off:
     /// the check can tell them apart.
