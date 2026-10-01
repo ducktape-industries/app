@@ -289,6 +289,173 @@ fn tooltip_response_is_sanitized_against_the_combined_held_tree_budget() {
     assert!(frame.root.unwrap().count() <= wire::MAX_NODES);
 }
 
+/// The held tree passed sanitize when it arrived: an `unchanged` frame with
+/// no tooltip response takes it as it is, without another walk. Seen
+/// through a held tree no frame could have brought (twice the node cap),
+/// which a walk would cut.
+#[test]
+fn an_unchanged_frame_takes_the_held_tree_without_walking_it() {
+    let oversized = wire::Node::Container(view_wire::ContainerNode {
+        id: None,
+        style: Default::default(),
+        interactivity: Default::default(),
+        children: (0..2 * wire::MAX_NODES)
+            .map(|_| wire::Node::empty())
+            .collect(),
+    });
+    let mut held = Some(oversized.clone());
+    let mut frame = wire::Frame {
+        unchanged: true,
+        ..Default::default()
+    };
+    assert_eq!(
+        merge(&mut held, &mut frame),
+        Ok((false, Default::default()))
+    );
+    assert_eq!(frame.root, Some(oversized), "the held tree, unwalked");
+}
+
+/// A view in WAT whose every tick answers the frame [`draw`] last wrote
+/// into its memory: the test plays the guest one frame at a time.
+fn scripted_view() -> Guest {
+    let module = wasmtime::Module::new(
+        engine(),
+        r#"(module
+            (memory (export "memory") 40)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) (i64.load (i32.const 8)))
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+    )
+    .unwrap();
+    Guest::instantiate("scripted", &module, "scripted").unwrap()
+}
+
+/// One tick of `guest`, answering with a frame whose tree is `children`.
+fn draw(guest: &mut Guest, children: Vec<wire::Node>) {
+    let frame = wire::encode(&wire::Frame {
+        root: Some(wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: Default::default(),
+            interactivity: Default::default(),
+            children,
+        })),
+        ..Default::default()
+    });
+    let memory = guest.exports.memory;
+    let at = memory.data_size(&guest.store) - frame.len();
+    memory.write(&mut guest.store, at, &frame).unwrap();
+    let answer = wire::abi::pack(at as u32, frame.len() as u32);
+    memory
+        .write(&mut guest.store, 8, &answer.to_le_bytes())
+        .unwrap();
+    guest.tick();
+    assert_eq!(guest.fault, None);
+}
+
+/// An Image under `hash`, bringing `bytes` of picture or naming it alone.
+fn image(hash: u64, bytes: Option<usize>) -> wire::Node {
+    wire::Node::Image {
+        id: None,
+        hash,
+        data: bytes.map(|len| wire::ImageData::Encoded(vec![hash as u8; len])),
+        label: None,
+        image_style: wire::ImageStyle {
+            grayscale: false,
+            object_fit: wire::ImageObjectFit::Contain,
+        },
+        loading: false,
+        fallback: false,
+        state_children: Vec::new(),
+        style: Default::default(),
+        interactivity: Default::default(),
+    }
+}
+
+/// The picture bytes a tree carries in its own nodes.
+fn inline_picture_bytes(mut root: wire::Node) -> usize {
+    let mut bytes = 0;
+    root.for_each_mut(&mut |node| match node {
+        wire::Node::Image {
+            data: Some(data), ..
+        } => bytes += data.byte_len(),
+        wire::Node::Svg {
+            source: wire::SvgSource::Data {
+                bytes: Some(data), ..
+            },
+            ..
+        } => bytes += data.len(),
+        _ => {}
+    });
+    bytes
+}
+
+/// One 1 MiB picture named by 8,000 nodes is held once: the tree the seat
+/// hands its renderer names it by hash, and the bytes behind the hash are
+/// the store's one copy, not one per node (8 GiB).
+#[test]
+fn a_picture_named_by_every_node_is_held_once() {
+    const PICTURE: usize = wire::MAX_PICTURE_BYTES_PER_FRAME;
+    let mut guest = scripted_view();
+    draw(&mut guest, vec![image(1, Some(PICTURE))]);
+    draw(&mut guest, (0..8_000).map(|_| image(1, None)).collect());
+    let (root, held) = guest.drawn();
+    assert_eq!(root.count(), 8_001);
+    assert_eq!(
+        inline_picture_bytes(root),
+        0,
+        "the tree drawn names the picture by hash alone"
+    );
+    assert_eq!(held.raster.len(), 1);
+    assert_eq!(guest.pictures.bytes(), PICTURE as u64);
+    assert!(
+        Arc::ptr_eq(&held, &guest.pictures.held()),
+        "the renderer reads the store's own bytes"
+    );
+}
+
+/// A view drawing a fresh 1 MiB picture on every tick holds no more than
+/// the seat's budget. Past it the pictures its tree no longer names go,
+/// and the view is told to resync: it forgets what it sent, so a picture
+/// it draws again comes with its bytes and is held again.
+#[test]
+fn a_view_drawing_a_fresh_picture_every_tick_stays_in_its_budget() {
+    use crate::runtime::pictures::MAX_PICTURE_BYTES;
+    const PICTURE: usize = wire::MAX_PICTURE_BYTES_PER_FRAME;
+    let mut guest = scripted_view();
+    let mut told = None;
+    for hash in 0..MAX_PICTURE_BYTES / PICTURE as u64 + 2 {
+        draw(&mut guest, vec![image(hash, Some(PICTURE))]);
+        assert!(
+            guest.pictures.bytes() <= MAX_PICTURE_BYTES,
+            "{} bytes held after picture {hash}",
+            guest.pictures.bytes()
+        );
+        if told.is_none() && guest.pending.contains(&wire::Event::Resync) {
+            told = Some(hash);
+        }
+    }
+    let told = told.expect("past the budget the view is told to resync");
+    assert_eq!(
+        told,
+        MAX_PICTURE_BYTES / PICTURE as u64,
+        "the first picture past it"
+    );
+    let held = guest.pictures.held();
+    assert!(held.raster.contains_key(&told), "what the tree names stays");
+    assert!(
+        !held.raster.contains_key(&0),
+        "what it no longer names went"
+    );
+
+    draw(&mut guest, vec![image(0, Some(PICTURE))]);
+    assert!(
+        guest.pictures.held().raster.contains_key(&0),
+        "drawn again, held again"
+    );
+}
+
 /// Every export of a real view, through guest memory and the swap a
 /// deployment takes: the drawn view ticked, its state carried into a fresh
 /// instance of the same code, and that instance's first tree drawn from
@@ -495,4 +662,70 @@ fn a_replacement_takes_the_state_it_is_handed_or_says_why_not() {
         &mounted.lock().unwrap().slot,
         Slot::Ready(old) if old.fault.is_some()
     ));
+}
+
+/// The budget's cost, measured: the process's resident memory around a
+/// view that fills its seat's picture budget (64 pictures, every one named,
+/// the first by 8,000 more nodes), hands the tree to be drawn, then keeps
+/// drawing fresh pictures past the budget. `picture` is each picture's
+/// size: the control run draws the same trees with 1-byte pictures. Run
+/// each alone: `cargo test <name> -- --ignored --exact --nocapture`.
+fn resident_at_the_picture_budget(picture: usize) {
+    use crate::runtime::pictures::MAX_PICTURE_BYTES;
+    fn resident_mib() -> f64 {
+        let status = std::fs::read_to_string("/proc/self/status").unwrap();
+        let line = status.lines().find(|l| l.starts_with("VmRSS:")).unwrap();
+        let kib: f64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+        kib / 1024.
+    }
+    let full = MAX_PICTURE_BYTES / wire::MAX_PICTURE_BYTES_PER_FRAME as u64;
+    let tree = |last: u64| {
+        let mut children: Vec<_> = (0..last).map(|hash| image(hash, None)).collect();
+        children.push(image(last, Some(picture)));
+        children.extend((0..8_000).map(|_| image(0, None)));
+        children
+    };
+    let mut guest = scripted_view();
+    draw(&mut guest, Vec::new());
+    let before = resident_mib();
+    for last in 0..full {
+        draw(&mut guest, tree(last));
+    }
+    let filled = resident_mib();
+    let drawn = guest.drawn();
+    let handed = resident_mib();
+    let (nodes, held) = (
+        drawn.0.count(),
+        drawn
+            .1
+            .raster
+            .values()
+            .map(|data| data.byte_len())
+            .sum::<usize>(),
+    );
+    // the seat hands its tree the store's bytes anew with every frame
+    drop(drawn);
+    for last in full..2 * full {
+        draw(&mut guest, vec![image(last, Some(picture))]);
+    }
+    let churned = resident_mib();
+    println!(
+        "pictures of {picture} B, held {held} B: resident +{:.1} MiB filled, +{:.1} MiB with the tree handed over ({nodes} nodes), +{:.1} MiB after {full} more fresh pictures (held then {} B)",
+        filled - before,
+        handed - before,
+        churned - before,
+        guest.pictures.bytes(),
+    );
+}
+
+#[test]
+#[ignore = "measurement: prints resident memory, asserts nothing of it"]
+fn a_seat_at_its_picture_budget() {
+    resident_at_the_picture_budget(wire::MAX_PICTURE_BYTES_PER_FRAME);
+}
+
+#[test]
+#[ignore = "measurement: the control for a_seat_at_its_picture_budget"]
+fn a_seat_drawing_the_same_trees_with_one_byte_pictures() {
+    resident_at_the_picture_budget(1);
 }

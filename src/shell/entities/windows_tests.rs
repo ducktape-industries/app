@@ -223,6 +223,33 @@ fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
     );
 }
 
+/// The same link notice while it is up is not shown again, so a view
+/// repeating a bad link cannot keep the notice up past its time.
+#[gpui_kit::test]
+fn a_repeated_link_notice_does_not_restart_the_toast(cx: &mut TestAppContext) {
+    let (app, _) = console(cx);
+    listed(&app, &["notice-test"], cx);
+    let toast = |cx: &TestAppContext| app.toast.read_with(cx, |toast, _| toast.get().clone());
+    let open = |cx: &mut TestAppContext| {
+        app.windows.update(cx, |windows, cx| {
+            windows.open_link("duck://testkit-0a1b2c3d/notice-test-nowhere/x", cx)
+        })
+    };
+    open(cx);
+    assert!(toast(cx).contains("notice-test-nowhere"), "{:?}", toast(cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(3000));
+    cx.run_until_parked();
+    open(cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(700));
+    cx.run_until_parked();
+    assert!(
+        toast(cx).is_empty(),
+        "the repeated notice restarted the toast"
+    );
+}
+
 /// A pick and a link both land in the console's desk at once, each of
 /// them; leaving the network empties every window, keeping its measure,
 /// closes what is open over it, and takes the badges and the active

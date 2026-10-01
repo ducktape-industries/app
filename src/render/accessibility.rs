@@ -375,7 +375,7 @@ impl ViewTree {
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                    this.user_activation.set(Some(handler));
+                    this.activate();
                     cx.emit(wire::Event::Click {
                         handler,
                         event: event.into(),
@@ -387,12 +387,14 @@ impl ViewTree {
             // node's middle with no hit test, which lands on whatever is
             // drawn there when the node is scrolled out of its list or lies
             // under another (the shell's rows answer it the same way). It
-            // grants no user activation, as a link's does not.
+            // is the reader's press, so it grants user activation as a
+            // pointer's does (the AX door presses this way too).
             let tree = cx.entity().downgrade();
             let path = self.authored_path.clone();
             element = element.on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, _, cx| {
                 let _ = tree.update(cx, |this, cx| {
                     let event = pressed_at(this.nearest_bounds(&path).center());
+                    this.activate();
                     cx.emit(wire::Event::Click { handler, event });
                 });
             });
@@ -473,7 +475,6 @@ impl ViewTree {
         });
         NativePresentation {
             images: self.images.clone(),
-            vectors: self.vectors.clone(),
             focused_container: self.focus_targets.iter().find_map(|(key, (kind, handle))| {
                 handle.is_focused(window).then(|| (key.clone(), *kind))
             }),
@@ -487,7 +488,6 @@ impl ViewTree {
     /// dropped after it (`Render for ViewTree`).
     pub(crate) fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
         self.images = std::mem::take(&mut presentation.images);
-        self.vectors = std::mem::take(&mut presentation.vectors);
         self.presentation = presentation;
         self
     }

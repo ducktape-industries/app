@@ -585,6 +585,8 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     let handle: gpui_kit::AnyWindowHandle = window.into();
     cx.update(|cx| {
         seat.update(cx, |seat, cx| {
+            // the pane in front, as the pane layer would say
+            seat.set_keys_free(true, cx);
             seat.place(handle, cx);
             seat.turn(cx);
         });
@@ -638,6 +640,255 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     assert!(
         input_focused(&mut native),
         "a turn woken from a window callback still runs its commands"
+    );
+}
+
+/// A guest moves the keys only while its keys are free (`Seat::keys_free`,
+/// as `PaneLayer` says it: its pane in front, nothing open over the desk,
+/// no hold), on the real command path, and is judged as the command RUNS:
+/// a `Focus` or `FocusHandle` asked while the keys were free and run once
+/// Spotlight or Approve opened over the desk takes nothing.
+#[gpui_kit::test]
+fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
+    const MODULE: &str = "focus-gate-test";
+    let field = wire::Node::Input {
+        options: wire::InputOptions {
+            label: "Filter".into(),
+            ..Default::default()
+        },
+        id: wire::ElementIdWire::Name("filter".into()),
+        placeholder: String::new(),
+        value: String::new(),
+        on_input: Some(1),
+        on_submit: None,
+        secure: false,
+        style: div().w(px(200.)).h(px(24.)).style().clone(),
+    };
+    let mut button = view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("button".into())),
+        style: div().w(px(200.)).h(px(24.)).style().clone(),
+        interactivity: Default::default(),
+        children: Vec::new(),
+    };
+    button.interactivity.focus_handle = Some(9);
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("root".into())),
+        style: Default::default(),
+        interactivity: Default::default(),
+        children: vec![field, wire::Node::Container(button)],
+    });
+    crate::runtime::seat_drawing_for_test(MODULE, 320, root);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let queue = |seat: &Entity<Seat>, native: &mut VisualTestContext, command| {
+        let mounted = mounted_of(seat, native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        guest.widget_commands.push((7, command));
+    };
+    let run = |seat: &Entity<Seat>, native: &mut VisualTestContext| {
+        let woken = seat.clone();
+        native.update(|window, _| {
+            window.on_next_frame(move |_, cx| {
+                woken.update(cx, |seat, cx| seat.wake(cx));
+            });
+        });
+        native.update(|window, cx| window.simulate_next_frame(cx));
+        native.run_until_parked();
+        for _ in 0..2 {
+            native.update(|window, cx| window.simulate_next_frame(cx));
+            native.update(|window, cx| window.draw(cx).clear(cx));
+            native.run_until_parked();
+        }
+    };
+    let focus = wire::WidgetCommand::Focus {
+        target: vec![wire::ElementIdWire::Name("filter".into())],
+    };
+    let handle = wire::WidgetCommand::FocusHandle { handle: 9 };
+    let input_focused = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            let tree = seat.read(cx).tree().expect("mounted");
+            let input = tree.read(cx).first_input_for_test().expect("a field");
+            gpui_kit::Focusable::focus_handle(input.read(cx), cx).is_focused(window)
+        })
+    };
+    let button_focused = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            let tree = seat.read(cx).tree().expect("mounted");
+            tree.read(cx)
+                .guest_focus_for_test(9)
+                .expect("drawn")
+                .is_focused(window)
+        })
+    };
+    let keys_free = |native: &mut VisualTestContext, free: bool| {
+        seat.update(native, |seat, cx| seat.set_keys_free(free, cx));
+    };
+    // a fresh seat's keys are not free until the pane layer says so
+    assert!(!seat.read_with(&native, |seat, _| seat.keys_free()));
+    queue(&seat, &mut native, focus.clone());
+    run(&seat, &mut native);
+    assert!(
+        !input_focused(&mut native),
+        "Focus took the keys from a back pane"
+    );
+    queue(&seat, &mut native, handle.clone());
+    run(&seat, &mut native);
+    assert!(
+        !button_focused(&mut native),
+        "FocusHandle took the keys from a back pane"
+    );
+    keys_free(&mut native, true);
+    queue(&seat, &mut native, handle);
+    run(&seat, &mut native);
+    assert!(
+        button_focused(&mut native),
+        "a front pane's FocusHandle was refused"
+    );
+    native.update(|window, cx| window.blur(cx));
+    queue(&seat, &mut native, focus.clone());
+    run(&seat, &mut native);
+    assert!(
+        input_focused(&mut native),
+        "a front pane's Focus was refused"
+    );
+    native.update(|window, cx| window.blur(cx));
+    // asked with the keys free, run after something opened over the desk
+    queue(&seat, &mut native, focus);
+    keys_free(&mut native, false);
+    run(&seat, &mut native);
+    assert!(
+        !input_focused(&mut native),
+        "a Focus asked before Spotlight opened took the keys from it"
+    );
+}
+
+/// The host's stamp reaches the guest: a press or key the tree received
+/// (`ViewTree::activate`) is the guest's activation at its next turn, and
+/// the tree's is taken (one input, one stamp).
+#[gpui_kit::test]
+fn a_trees_activation_reaches_its_guest_on_the_next_turn(cx: &mut TestAppContext) {
+    const MODULE: &str = "activation-carry-test";
+    crate::runtime::seat_for_test(MODULE, 320);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let tree = seat.read_with(&native, |seat, _| seat.tree().expect("mounted"));
+    let guest_activation = |native: &VisualTestContext| {
+        let mounted = mounted_of(&seat, native);
+        let locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &locked.slot else {
+            panic!("seated")
+        };
+        guest.activation
+    };
+    assert!(
+        guest_activation(&native).is_none(),
+        "activated before any input"
+    );
+    tree.update(&mut native, |tree, _| tree.activate());
+    seat.update(&mut native, |seat, cx| seat.wake(cx));
+    native.run_until_parked();
+    assert!(
+        guest_activation(&native).is_some(),
+        "the tree's activation did not reach the guest"
+    );
+    assert!(
+        tree.read_with(&native, |tree, _| tree.take_activation().is_none()),
+        "the tree kept the stamp it handed over"
+    );
+}
+
+/// A view's own `host.widget` cursor command on its editor is no input: the
+/// guest ends its turn with no activation to spend on the clipboard or a link.
+#[gpui_kit::test]
+fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) {
+    use view_wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
+    const MODULE: &str = "self-stamp-test";
+    const TEXT: &[u8] = b"some words";
+    let target = vec![wire::ElementIdWire::Name("document".into())];
+    let root = wire::Node::Editor {
+        id: target[0].clone(),
+        style: div().w(px(240.)).h(px(80.)).style().clone(),
+        label: None,
+        binding: None,
+        placeholder: String::new(),
+        document: wire::editor_document::EditorDocumentRef {
+            document: "doc".into(),
+            reset: 1,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: TEXT.len() as u32,
+        },
+        on_document: 0,
+        editable: true,
+    };
+    crate::runtime::seat_drawing_for_test(MODULE, 320, root);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let with_guest = |native: &VisualTestContext, f: &mut dyn FnMut(&mut Guest)| {
+        let mounted = mounted_of(&seat, native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        f(guest)
+    };
+    // the host asked for the document; the guest delivers it
+    with_guest(&native, &mut |guest| {
+        let mut events = guest.inputs.drain();
+        events.extend(guest.pending.iter().cloned());
+        let (id, target) = events
+            .into_iter()
+            .find_map(|event| match event {
+                wire::Event::EditorDocument {
+                    message: Message::Request { id, target },
+                    ..
+                } => Some((id, target)),
+                _ => None,
+            })
+            .expect("the document was asked for");
+        guest
+            .inputs
+            .frame(&wire::Frame {
+                editor_documents: vec![
+                    Message::Transfer(EditorTransfer::Begin {
+                        id: id.clone(),
+                        target,
+                    }),
+                    Message::Transfer(EditorTransfer::Chunk {
+                        id: id.clone(),
+                        index: 0,
+                        bytes: TEXT.to_vec(),
+                    }),
+                    Message::Transfer(EditorTransfer::Complete { id }),
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+    });
+    native.run_until_parked();
+    let mut activation = None;
+    with_guest(&native, &mut |guest| {
+        guest.widget_commands.push((
+            7,
+            wire::WidgetCommand::SelectAll {
+                target: target.clone(),
+            },
+        ));
+    });
+    seat.update(&mut native, |seat, cx| seat.wake(cx));
+    for _ in 0..3 {
+        native.update(|window, cx| window.simulate_next_frame(cx));
+        native.update(|window, cx| window.draw(cx).clear(cx));
+        native.run_until_parked();
+    }
+    with_guest(&native, &mut |guest| {
+        assert!(guest.widget_commands.is_empty(), "SelectAll was never run");
+        activation = guest.activation;
+    });
+    assert!(
+        activation.is_none(),
+        "the guest's own SelectAll gave it an activation"
     );
 }
 
@@ -767,6 +1018,8 @@ fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
             panic!("seated")
         };
         guest.capabilities.push(Capability::Clipboard);
+        // the read is asked on the first redraw, under a fresh activation
+        guest.activation = Some(std::time::Instant::now());
     }
     let (seat, _, native) = open(cx, MODULE, false);
     native.run_until_parked();

@@ -523,7 +523,8 @@ impl Guest {
             Exports::bind(&mut store, &instance).map_err(|error| format!("{shown}: {error}"))?;
         Ok(Self {
             connection_rev: connection().lock().expect("views rpc").rev,
-            user_activation: None,
+            activation: None,
+            links: Vec::new(),
             module,
             instance: 0,
             name: String::new(),

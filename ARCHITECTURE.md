@@ -200,8 +200,10 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    faults the view; the `tick_limit` refusal in `redraw` is a second guard
    behind it. A patch `merge` refuses does not fault: the held root stays,
    `frame_rev` bumps and `Event::Resync` asks the guest for a full tree.
-6. **Frame → render.** When `frame_rev` moved, `turn` hydrates picture
-   hashes back to bytes (`Pictures::hydrate`), wraps the root in
+6. **Frame → render.** When `frame_rev` moved, `turn` takes the held
+   tree, its pictures named by hash alone, with the seat's picture bytes
+   to resolve them (`Guest::drawn`; the tree draws a hash through
+   `ViewTree::set_pictures`), wraps the root in
    `native_root` (an id-less full-size container: giving it an id would
    shift every `AuthoredPath`) and either `ViewTree::replace`s the existing
    tree or, for a new guest instance, builds `ViewTree::new(root)
@@ -221,11 +223,17 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
 7. **Input back.** Element listeners (`render/interactivity.rs`,
    `render/inputs.rs`, …) `cx.emit(wire::Event)` with the guest's handler
    ids; `Seat` subscribes (`runtime/seat/entity.rs`), drops an event
-   addressed to a generation or revision no longer seated, takes the
-   one-shot **user activation** (`ViewTree::take_user_activation`) onto
-   `guest.user_activation`, pushes the event onto `guest.pending` and
-   turns. A guest hears only what its elements' own listeners emit: no
-   window-wide input (pointer moves, keys, IME, file drops) reaches it.
+   addressed to a generation or revision no longer seated, pushes the event
+   onto `guest.pending` and turns. The listeners also stamp the tree's
+   **transient activation** (`ViewTree::activate`: a press, a key but
+   Escape, typing, an AT press), which the turn carries to
+   `guest.activation`: `link.open` (four a minute) and
+   `clipboard.read`/`write` need it fresh (5 s) and take it, one input
+   admitting one call. Every focus-moving `host.widget` command and a
+   dialog's auto-focus need the pane's keys free instead (`Seat::keys_free`),
+   judged as the command runs. A guest hears only what its elements' own
+   listeners emit: no window-wide input (pointer moves, keys, IME, file
+   drops) reaches it.
    The multi-line editor is its own loop: `Node::Editor` mounts
    a `TextEditor` (`editor/text.rs`) whose edits become `EditorStore`
    transactions (`editor/wire.rs`); claimed key chords go to the guest for
@@ -257,7 +265,7 @@ already in `frame`, so the next redraw routes its requests without a tick.
 Pictures and editor projections move over (`EditorStore::
 retain_restored_projections`). A new instance means a new `generation` on
 `Seat`: handler ids are fresh, and only `NativePresentation`
-(field text, selection, focus, scroll offsets, picture caches) carries
+(field text, selection, focus, scroll offsets, decoded pictures) carries
 across into the new `ViewTree`. A snapshot the new code refuses falls back
 to `init`.
 
@@ -733,12 +741,12 @@ House words, and where one word means several things.
   from a wire id.
 - **handler / message (wire)** — u32 ids the guest attaches to callbacks;
   the host echoes them in `wire::Event`. Fresh per guest instance.
-- **user activation** — a one-shot mark that an event came from a real
-  gesture: the renderer records the handler a pointer pressed
-  (`ViewTree.user_activation`), `take_user_activation` matches it against
-  the emitted event, tooltips forward it to their source tree. The widget
-  copies it onto `guest.user_activation`, which `redraw` clears; nothing in
-  the kernel reads it yet.
+- **activation** — the view's transient user activation, as the web has
+  it: when the host last received a real press or key aimed at its tree
+  (`ViewTree::activate`; tooltips forward it to their source tree), carried
+  to `guest.activation` by the seat's turn, fresh for `ACTIVATION_EXPIRY`
+  (5 s) and taken by the first gated call (`Guest::take_activation`):
+  `link.open` and the clipboard are refused `needs_gesture` without it.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, editor action); its **target** is
   an id suffix matched against mounted authored paths.
@@ -849,9 +857,13 @@ House words, and where one word means several things.
   its commit count), **claim** (a chord the guest wants first),
   **decision** (the guest's answer to a claimed key), **pump**, **mirror**,
   **fault** (a sticky error that stops the store and faults the view).
-- **pictures / hash-only frame** — the per-guest image and SVG byte cache
+- **pictures / hash-only frame** — the seat's image and SVG bytes
   (`runtime/pictures.rs`): bytes cross once, later frames name them by
-  hash; `adopt` remembers, `hydrate` fills back.
+  hash; `adopt` moves them out of the tree into the store, each held once
+  (`Arc`) and shared with every tree the seat draws (`render::PictureBytes`).
+  Past the seat's budget (`MAX_PICTURE_BYTES`, `MAX_PICTURES`) the store
+  keeps what the current tree names and evicts the rest, and the guest is
+  sent `Event::Resync` so it sends what it draws again.
 
 ## 10. Where to start
 

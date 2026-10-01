@@ -610,12 +610,14 @@ fn install(
                 log_source(module, fresh.hash.as_ref(), "Failed", generation, &reason);
                 return false;
             }
-            if let Some(root) = &mut fresh.frame.root {
-                fresh.pictures.hydrate(root);
-                old.pictures.adopt(root);
-                super::pictures::strip(root);
+            let mut pictures = std::mem::take(&mut old.pictures);
+            let own = std::mem::take(&mut fresh.pictures);
+            let mut none = wire::Node::empty();
+            let root = fresh.frame.root.as_mut().unwrap_or(&mut none);
+            if pictures.carry(own, root, module) {
+                fresh.pending.push(wire::Event::Resync);
             }
-            fresh.pictures = std::mem::take(&mut old.pictures);
+            fresh.pictures = pictures;
             fresh.instance = *instance;
             fresh.installed_generation = Some(generation);
             fresh.report_display_truncation();
