@@ -85,9 +85,10 @@ const MAX_IN_FLIGHT: usize = 256;
 /// each one list a view has no reason to grow.
 const MAX_SUBSCRIPTIONS: usize = 256;
 /// Answers waiting in [`Replies`] between two redraws, by count and by
-/// bytes; exceeding either stops the view for good.
+/// bytes; exceeding either stops the view for good. The bytes are what one
+/// node answer may carry at most: a bigger one is refused unread.
 const MAX_REPLY_EVENTS: usize = 1024;
-const MAX_REPLY_BYTES: usize = 32 << 20;
+const MAX_REPLY_BYTES: usize = backend::noded::MAX_BODY_BYTES;
 /// The share of the reply budget SUBSCRIPTIONS may fill before they stop
 /// reading their sources: a request answers once, a subscription forever,
 /// against a queue only a redraw empties.
