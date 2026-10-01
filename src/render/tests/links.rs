@@ -132,7 +132,9 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
 /// The view is drawn again on the frame the keys arrive at the text and on
 /// the one they leave: the box is drawn from whether it has the keys, and a
 /// cached view replays paint until something asks for a redraw. A focus
-/// change refreshes the window, which redraws every cached view.
+/// move redraws the view that drew the old focus and the one that draws the
+/// new, with their ancestors (the pinned fork, gpui-pre#9): here the cached
+/// `ViewTree`, which tracks the links' handle.
 #[gpui_kit::test]
 fn the_keys_arriving_at_the_links_redraw_a_cached_view(cx: &mut gpui_kit::TestAppContext) {
     struct Cached(Entity<ViewTree>);

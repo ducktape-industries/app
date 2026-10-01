@@ -494,6 +494,96 @@ fn typing_in_spotlight_renders_the_overlay_layer_only(cx: &mut TestAppContext) {
     );
 }
 
+/// A focus move draws the two views it moves between, not the window (the
+/// pinned fork, gpui-pre#9: before it, every focus move refreshed the
+/// window and every cached layer missed): Tab from the bar's last control
+/// into the pane draws the bar once (its ring goes) and the pane's strip
+/// once (its first button's comes), with the root and the pane view under
+/// it (neither cached), and neither the pane's tree, nor the dialogs'
+/// layer, nor the footer.
+#[gpui_kit::test]
+fn a_focus_move_re_renders_two_layers_not_the_window(cx: &mut TestAppContext) {
+    use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
+    const MODULE: &str = "root-focus-view";
+    let _on = crate::perf::on_for_test();
+    let (app, key, view, mut native) = console(cx);
+    crate::runtime::seat_drawing_for_test(MODULE, 400, line("a line"));
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    native.update(|window, _| {
+        window.activate_window();
+        window.activate_a11y();
+    });
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    let focused = |native: &mut VisualTestContext| {
+        native.update(|window, _| {
+            crate::ax::snapshot("console", window, false)
+                .into_iter()
+                .find(|node| node.state.contains(&"focused"))
+                .map(|node| node.id)
+        })
+    };
+    // the keys on the bar's last control, the door's way; then a Tab back
+    // and forth in the bar, as the first key turns the window's input to
+    // the keyboard, which gpui answers with a full redraw
+    native.update(|window, cx| {
+        let target_node = node_of(window, "settings");
+        window.dispatch_a11y_action(
+            ActionRequest {
+                action: Action::Focus,
+                target_tree: TreeId::ROOT,
+                target_node,
+                data: None,
+            },
+            cx,
+        );
+    });
+    native.simulate_keystrokes("shift-tab");
+    native.simulate_keystrokes("tab");
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    assert_eq!(focused(&mut native).as_deref(), Some("console:settings"));
+    let counts = || {
+        [
+            "renders",
+            "renders.pane.0",
+            "renders.chrome",
+            "renders.strip.0",
+            "renders.overlays",
+            "renders.toast",
+        ]
+        .map(|name| window_count(key, name))
+    };
+    let (before, tree) = (counts(), tree_renders(MODULE));
+    assert!(
+        before.iter().all(|count| *count > 0) && tree > 0,
+        "every layer drew: {before:?}"
+    );
+    native.simulate_keystrokes("tab");
+    frame(&mut native);
+    let into = focused(&mut native).unwrap_or_default();
+    assert!(
+        into.starts_with("console:pane/0/"),
+        "Tab from the bar's end went to {into:?}"
+    );
+    let drawn: Vec<u64> = counts()
+        .iter()
+        .zip(before)
+        .map(|(after, before)| after - before)
+        .collect();
+    let root = drawn[0];
+    assert!(root > 0, "the focus move drew no frame");
+    assert_eq!(
+        drawn,
+        [root, root, 1, 1, 0, 0],
+        "[root, pane view, bar, strip, dialogs, footer] drawn"
+    );
+    assert_eq!(tree_renders(MODULE), tree, "the focus move drew the tree");
+}
+
 /// A pane popped out to a window of its own: that window's root draws the
 /// panes and the footer, and no bar.
 #[gpui_kit::test]
