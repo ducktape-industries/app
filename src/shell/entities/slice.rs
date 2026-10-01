@@ -33,10 +33,26 @@ impl<T: PartialEq + 'static> Slice<T> {
     where
         T: Clone,
     {
-        let mut next = self.0.clone();
-        edit(&mut next);
-        self.set(next, cx)
+        edit_compared(&mut self.0, edit, cx)
     }
+}
+
+/// Runs `edit` on a copy of `value` and keeps the copy when it differs:
+/// `true`, and a notify of the entity, when it did. A `Slice`'s value and
+/// the state `Session` and `Account` hold are written through it.
+pub(super) fn edit_compared<T: Clone + PartialEq, E: 'static>(
+    value: &mut T,
+    edit: impl FnOnce(&mut T),
+    cx: &mut Context<E>,
+) -> bool {
+    let mut next = value.clone();
+    edit(&mut next);
+    if next == *value {
+        return false;
+    }
+    *value = next;
+    cx.notify();
+    true
 }
 
 /// A view's handle on an entity it reads. Making one subscribes the view,
