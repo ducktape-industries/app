@@ -308,12 +308,15 @@ view ◄─ Event::Response{id, done} ◄── Replies (drained at next redraw)
 4. **Sign.** A read: `backend::query_frame` signs a `Frame` at seq 0 with
    the seated key, or with the process's throwaway `reader_key` while nobody
    is signed in; the program hears who asks, the node checks no sequence.
-   A write (`op.submit`): `backend::seated_frame` asks the node for the
+   A write (`op.submit`): `backend::seated_frame` takes the signer's
+   `Turn` (one write per signer at a time), asks the node for the
    signer's next sequence (`next_seq`: the `$signers` namespace,
    `Layer::Preconfirmed`), then `Frame::sign` builds `Body{scheme: Ed25519,
    signer, network, seq, target, payload}` and signs `abi::encode(body)`
-   under `FRAME_NAMESPACE`; the bytes go to `/v1/submit`. With no seated
-   key the request is refused `session_locked`.
+   under `FRAME_NAMESPACE`; the bytes go to `/v1/submit`, and the turn is
+   held until the receipt is back, so the next write reads the sequence
+   this one moved. With no seated key the request is refused
+   `session_locked`.
 5. **Reply.** The handler pushes into `kernel::Replies`, a per-view queue
    bounded by `MAX_REPLY_EVENTS` / `MAX_REPLY_BYTES`; overflow latches a
    fault that ends the view. `Seat` awaits `Replies::changes`

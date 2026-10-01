@@ -452,8 +452,10 @@ pub(super) fn submit(node: Node, ask: Vec<u8>) -> Answered {
 /// The receipt's output on success, the program's refusal otherwise.
 async fn submitted(node: Node, target: String, payload: Vec<u8>) -> Answer {
     // the sequence read comes before any frame: nothing signed, nothing
-    // sent, so its lost answer is asked again as a read's is
-    let frame = backend::seated_frame(&node.client, &node.network, &target, payload)
+    // sent, so its lost answer is asked again as a read's is. The signer's
+    // turn is held until the receipt: the next write reads the sequence
+    // this one moved. A retry takes a fresh turn, so others go in between.
+    let (frame, _turn) = backend::seated_frame(&node.client, &node.network, &target, payload)
         .await
         .map_err(|refusal| match transport_failed(&refusal) {
             true => wire::Error::new("rpc_client", refusal.message),

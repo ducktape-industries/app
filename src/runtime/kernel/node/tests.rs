@@ -139,3 +139,87 @@ async fn a_submit_whose_sequence_read_was_lost_is_asked_again() {
     assert_eq!(attempts, 2, "the lost read, then the one that went through");
     assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 1);
 }
+
+/// A node that takes its time over a sequence read and a submit (`/v1/get`
+/// answers after `takes`, `/v1/submit` moves the sequence after `takes`),
+/// serves every connection on its own thread, and refuses a frame out of
+/// sequence as the real one does (`reason::SEQUENCE`). Counts the frames
+/// it applied.
+fn slow_node(takes: std::time::Duration) -> (Node, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let node = Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+    };
+    let applied = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = applied.clone();
+    std::thread::spawn(move || {
+        let seq = std::sync::Arc::new(std::sync::Mutex::new(0u64));
+        for mut stream in listener.incoming().flatten() {
+            let (seq, counted) = (seq.clone(), counted.clone());
+            std::thread::spawn(move || {
+                let (line, body) = read_request(&mut stream);
+                let route = line.split(' ').nth(1).unwrap().to_owned();
+                let answer = match route.as_str() {
+                    noded::route::GET => {
+                        let next = *seq.lock().unwrap();
+                        std::thread::sleep(takes);
+                        abi::encode(&Some(abi::encode(&next)))
+                    }
+                    noded::route::SUBMIT => {
+                        let frame: noded::Frame = abi::decode(&body).unwrap();
+                        std::thread::sleep(takes);
+                        let mut next = seq.lock().unwrap();
+                        let outcome = match frame.body.seq == *next {
+                            true => {
+                                *next += 1;
+                                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                abi::Outcome::Applied { output: Vec::new() }
+                            }
+                            false => abi::Outcome::Rejected(abi::Refusal::new(
+                                abi::reason::SEQUENCE,
+                                format!(
+                                    "sequence {} is not the signer's next, {next}",
+                                    frame.body.seq
+                                ),
+                            )),
+                        };
+                        abi::encode(&noded::Receipt {
+                            program: "registry".into(),
+                            outcome,
+                            events: Vec::new(),
+                            nested: Vec::new(),
+                        })
+                    }
+                    other => panic!("{other}"),
+                };
+                respond(&mut stream, "200 OK", &answer);
+            });
+        }
+    });
+    (node, applied)
+}
+
+/// Two `op.submit`s in flight at once (a reaction burst) both land: a
+/// signer's writes take their sequence one after another, the second read
+/// only once the first frame's receipt is back. Without the signer's turn,
+/// or with it let go before the submit, both read the same next sequence
+/// and the node refuses the second.
+#[tokio::test]
+async fn two_submits_in_flight_take_one_sequence_each() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
+    let (node, applied) = slow_node(std::time::Duration::from_millis(300));
+    let (first, second) = tokio::join!(
+        submit(node.clone(), call_registry()),
+        submit(node.clone(), call_registry())
+    );
+    assert_eq!(first, Ok(Vec::new()));
+    assert_eq!(
+        second,
+        Ok(Vec::new()),
+        "signed at the sequence the first moved to"
+    );
+    assert_eq!(applied.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
