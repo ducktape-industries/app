@@ -243,12 +243,14 @@ pub fn deployments_checked() {
 }
 
 /// [`read_roster`] of the app's roster and seats on a thread of its own,
-/// then `then`; `false`, said in app.log, when the OS gives no thread.
+/// then `then`, even after a read that panicked (the panic hook logs it);
+/// `false`, said in app.log, when the OS gives no thread.
 fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static) -> bool {
     let spawned = std::thread::Builder::new()
         .name("roster".into())
         .spawn(move || {
-            read_roster(asked_of, roster(), registry());
+            let read = std::panic::AssertUnwindSafe(|| read_roster(asked_of, roster(), registry()));
+            let _ = std::panic::catch_unwind(read);
             then();
         });
     if let Err(error) = &spawned {
