@@ -15,11 +15,13 @@ use super::*;
 use gpui_kit::TooltipLayer;
 use std::cell::Cell;
 
-/// The host's band, over every priority a guest may ask for (at most
-/// [`GUEST_CEILING`]): the host's layers over the desk (its dialogs, the
-/// bar's menus, the footer) defer at `HOST_BAND + n`, so no guest draw
-/// paints or takes a click above them.
+/// The host's band, over every window's rank and every priority a guest
+/// asks for: each window draws at its rank (`PaneLayer`), and a guest's
+/// draws inside its window's; the host's layers over the desk (its dialogs,
+/// the bar's menus, the footer) defer at `HOST_BAND + n`, so no window and
+/// no guest draw paints or takes a click above them.
 pub(crate) const HOST_BAND: usize = 1000;
+const _: () = assert!(crate::ui::layout::MAX_PANES <= HOST_BAND);
 
 /// The highest priority a guest draw takes: a `Deferred` asks for at most
 /// this, and a guest tooltip draws at it.
