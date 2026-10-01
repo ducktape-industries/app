@@ -3,6 +3,7 @@
 //! receives, read off the tree gpui hands the OS, not off `ax::snapshot`
 //! (which drops half of them).
 use super::*;
+use crate::render::tests::emitted;
 use gpui_kit::accesskit::{self, Action, NodeId, Toggled, TreeUpdate};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{Role, size};
@@ -880,13 +881,7 @@ mod phase_two {
         let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
         let tree = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let seen = events.clone();
-        let _subscription = native.update(|_, cx| {
-            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-                seen.borrow_mut().push(event.clone())
-            })
-        });
+        let (events, _subscription) = emitted(&tree, &mut native);
         // Tab is the app's binding to `focus_next`; a bare window has none
         native.update(|window, cx| {
             window.activate_a11y();
@@ -975,13 +970,7 @@ mod phase_two {
         let window = cx.open_window(size(px(640.), px(240.)), |_, _| ViewTree::new(panes(200.)));
         let tree = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let seen = events.clone();
-        let _subscription = native.update(|_, cx| {
-            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-                seen.borrow_mut().push(event.clone())
-            })
-        });
+        let (events, _subscription) = emitted(&tree, &mut native);
         let wide = |native: &mut gpui_kit::VisualTestContext| {
             native.update(|window, cx| {
                 window.render_frame(cx);

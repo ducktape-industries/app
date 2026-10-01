@@ -208,6 +208,21 @@ pub(crate) mod tests {
         (seen, observing)
     }
 
+    /// A status source answering `answer(n)` to its `n`th ask, counting them.
+    pub(crate) fn source(
+        answer: impl Fn(usize) -> Result<crate::backend::NodeStatus, String> + 'static,
+    ) -> (StatusSource, std::rc::Rc<std::cell::Cell<usize>>) {
+        use futures::FutureExt as _;
+        let asked = std::rc::Rc::new(std::cell::Cell::new(0));
+        let count = asked.clone();
+        let source: StatusSource = std::rc::Rc::new(move || {
+            let n = count.get();
+            count.set(n + 1);
+            std::future::ready(answer(n)).boxed_local()
+        });
+        (source, asked)
+    }
+
     /// The node's answer at `height`, for the tests that feed the session
     /// one.
     pub(crate) fn status(height: u64) -> crate::backend::NodeStatus {

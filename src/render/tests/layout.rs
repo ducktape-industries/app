@@ -206,14 +206,8 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let handle = window.into();
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
     let mut native = gpui_kit::VisualTestContext::from_window(handle, cx);
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| window.click("interactive", cx));
@@ -249,13 +243,7 @@ fn container_interactivity_emits_native_pointer_and_key_payloads(
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| window.click("events", cx));
     native.update(|window, cx| {

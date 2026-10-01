@@ -7,7 +7,7 @@ use super::tests::{
     tree_renders,
 };
 use crate::shell::PaneMessage;
-use crate::shell::entities::tests::status;
+use crate::shell::entities::tests::{source, status};
 use crate::shell::entities::{Overlay, Popover, Screen};
 use crate::shell::panes_tests::{console, draw, settle, window_count};
 use gpui_kit::{TestAppContext, VisualTestContext};
@@ -92,9 +92,7 @@ fn render_counts(key: crate::runtime::WindowKey) -> Vec<(String, u64)> {
 /// timer with it.
 #[gpui_kit::test]
 fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
-    use crate::shell::entities::{STATUS_EVERY, SessionState, StatusSource};
-    use futures::FutureExt as _;
-    use std::{cell::Cell, rc::Rc};
+    use crate::shell::entities::{STATUS_EVERY, SessionState};
     const MODULE: &str = "root-still-view";
     let _on = crate::perf::on_for_test();
     let (app, key, view, mut native) = console(cx);
@@ -102,19 +100,10 @@ fn a_still_chain_draws_no_frame(cx: &mut TestAppContext) {
     set_motion(&app, false, &mut native);
     pane(&view, PaneMessage::Select(MODULE), &mut native);
     // the node answers height 7 to every ask but the fourth
-    let asked = Rc::new(Cell::new(0));
-    let source: StatusSource = {
-        let asked = asked.clone();
-        Rc::new(move || {
-            let n = asked.get();
-            asked.set(n + 1);
-            let answer = match n {
-                3 => Err("no answer".to_owned()),
-                _ => Ok(status(7)),
-            };
-            std::future::ready(answer).boxed_local()
-        })
-    };
+    let (source, asked) = source(|n| match n {
+        3 => Err("no answer".to_owned()),
+        _ => Ok(status(7)),
+    });
     app.session.update(&mut native, |session, cx| {
         let on_node = SessionState {
             connected: true,

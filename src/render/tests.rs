@@ -1,6 +1,7 @@
 use super::*;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{InputEvent as _, Keystroke};
+use std::{cell::RefCell, rc::Rc};
 
 fn named_id(key: &str) -> wire::ElementIdWire {
     wire::ElementIdWire::Name(key.into())
@@ -169,6 +170,37 @@ fn picture(label: Option<&str>) -> [wire::Node; 2] {
             interactivity: Default::default(),
         },
     ]
+}
+
+/// "Read the docs or the code", its two links ("the docs", "the code")
+/// pressing handler 72.
+fn rich() -> wire::Node {
+    wire::Node::RichText {
+        id: Some(named_id("rich")),
+        style: Default::default(),
+        text: "Read the docs or the code".into(),
+        runs: wire::RichTextRuns::Highlights(Vec::new()),
+        font_family_overrides: Vec::new(),
+        clickable_ranges: vec![5..13, 17..25],
+        on_click: Some(72),
+        on_hover: None,
+        tooltip: None,
+    }
+}
+
+/// Every event `tree` emits while the subscription lives.
+pub(super) fn emitted(
+    tree: &Entity<ViewTree>,
+    native: &mut gpui_kit::VisualTestContext,
+) -> (Rc<RefCell<Vec<wire::Event>>>, Subscription) {
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let observed = events.clone();
+    let subscription = native.update(|_, cx| {
+        cx.subscribe(tree, move |_, event: &wire::Event, _| {
+            observed.borrow_mut().push(event.clone());
+        })
+    });
+    (events, subscription)
 }
 
 use crate::editor::wire::seed_editor_text;

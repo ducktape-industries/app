@@ -260,13 +260,7 @@ fn a_click_on_a_container_spelled_like_a_host_id_fires_its_own_handler(
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| window.render_frame(cx));
     // the second button: 24px of the first, an 8px gap, then its own 24px
     let centre = point(px(40.), px(24. + 8. + 12.));

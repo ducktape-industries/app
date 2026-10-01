@@ -2,20 +2,6 @@
 //! it as a pointer would, Tab moves on.
 use super::*;
 
-fn rich() -> wire::Node {
-    wire::Node::RichText {
-        id: Some(named_id("rich")),
-        style: Default::default(),
-        text: "Read the docs or the code".into(),
-        runs: wire::RichTextRuns::Highlights(Vec::new()),
-        font_family_overrides: Vec::new(),
-        clickable_ranges: vec![5..13, 17..25],
-        on_click: Some(72),
-        on_hover: None,
-        tooltip: None,
-    }
-}
-
 /// A Tab stop after the text, a button called `name`.
 fn button(name: &str) -> wire::Node {
     let mut node = container_with_style("next", div().w(px(80.)).h(px(24.)).style().clone(), []);
@@ -60,13 +46,7 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone());
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| {
         window.activate_a11y();
         window.render_frame(cx);

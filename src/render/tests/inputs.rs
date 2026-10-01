@@ -80,13 +80,7 @@ fn typed_input_state_is_scoped_by_its_authored_parent(cx: &mut gpui_kit::TestApp
         });
     });
 
-    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let observed = events.clone();
-    let _subscription = native.update(|_, cx| {
-        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-            observed.borrow_mut().push(event.clone())
-        })
-    });
+    let (events, _subscription) = emitted(&tree, &mut native);
     native.update(|window, cx| left.update(cx, |state, cx| state.focus(window, cx)));
     native.simulate_input("hello");
     native.run_until_parked();
@@ -122,13 +116,7 @@ fn a_read_only_field_takes_no_typing_and_no_set_value(cx: &mut gpui_kit::TestApp
         let window = cx.open_window(size(px(400.), px(200.)), |_, _| ViewTree::new(root));
         let tree = window.root(cx).unwrap();
         let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let observed = events.clone();
-        let _subscription = native.update(|_, cx| {
-            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
-                observed.borrow_mut().push(event.clone())
-            })
-        });
+        let (events, _subscription) = emitted(&tree, &mut native);
         let state = native.update(|window, cx| {
             window.activate_a11y();
             window.render_frame(cx);
