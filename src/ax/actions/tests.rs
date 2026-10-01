@@ -1,6 +1,7 @@
 //! Regression tests for the AX door's editor path: `perform_by_id` on a
-//! nested editor must reach the guest's own document; and an action a view
-//! advertises reaches the view.
+//! nested editor must reach the guest's own document; an action a view
+//! advertises reaches the view; and a press on a view's control is that
+//! control's click, wherever it is drawn.
 
 use super::*;
 use crate::editor::wire::{EditorStore, seed_editor_text};
@@ -196,4 +197,133 @@ fn an_action_a_view_advertises_reaches_the_view(cx: &mut gpui_kit::TestAppContex
         *events.borrow(),
         [(7, None), (8, None), (9, Some(ActionData::CustomAction(4)))]
     );
+}
+
+/// A control a view draws out of a box: `role`, named `name`, sized by
+/// `style`, its click on route `click`.
+fn pressable(
+    key: &str,
+    role: Role,
+    name: String,
+    style: gpui_kit::StyleRefinement,
+    click: u32,
+) -> wire::Node {
+    wire::Node::Container(view_wire::ContainerNode {
+        id: Some(named_id(key)),
+        style,
+        interactivity: wire::Interactivity {
+            role: Some(role),
+            aria: wire::Aria {
+                label: Some(name.into()),
+                ..Default::default()
+            },
+            on_click: Some(click),
+            ..Default::default()
+        },
+        children: Vec::new(),
+    })
+}
+
+/// What the census does to a view: `/act press` on a row scrolled out of
+/// its list is that row's click. Ten 40 px rows in a 100 px scroller put
+/// row 5 at 200..240, outside the list and inside the window, so the door
+/// shows it; a button of the view's lies right there. gpui's own Click was
+/// a pointer press at the row's middle with no hit test: it clicked the
+/// button. The click is a left press at the row's middle, as that one
+/// was, and grants no user activation.
+#[gpui_kit::test]
+fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    use gpui_kit::Styled as _;
+    cx.update(gpui_kit::init);
+    let rows = (0..10).map(|n| {
+        pressable(
+            &format!("row-{n}"),
+            Role::ListBoxOption,
+            format!("Row {n}"),
+            gpui_kit::div().h(px(40.)).flex_shrink_0().style().clone(),
+            10 + n,
+        )
+    });
+    let mut scrolls = gpui_kit::div()
+        .flex()
+        .flex_col()
+        .w(px(200.))
+        .h(px(100.))
+        .style()
+        .clone();
+    scrolls.overflow.y = Some(gpui_kit::Overflow::Scroll);
+    let list = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(named_id("list")),
+        style: scrolls,
+        interactivity: Default::default(),
+        children: rows.collect(),
+    });
+    let over = pressable(
+        "over",
+        Role::Button,
+        "Over".into(),
+        gpui_kit::div()
+            .absolute()
+            .top(px(200.))
+            .left(px(0.))
+            .w(px(200.))
+            .h(px(40.))
+            .style()
+            .clone(),
+        99,
+    );
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(named_id("root")),
+        style: gpui_kit::div().relative().size(px(300.)).style().clone(),
+        interactivity: Default::default(),
+        children: vec![list, over],
+    });
+    let window = cx.open_window(size(px(300.), px(300.)), |_, _| ViewTree::new(root));
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            seen.borrow_mut().push(event.clone());
+        })
+    });
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let nodes = snapshot("t", window, true);
+        let row = nodes
+            .iter()
+            .find(|node| node.name == "Row 5")
+            .expect("the door shows the row scrolled out of its list");
+        let over = nodes
+            .iter()
+            .find(|node| node.name == "Over")
+            .expect("the button is in the tree");
+        assert!(row.actions.contains(&"press"));
+        assert_eq!(row.bounds, Some([0, 200, 200, 240]));
+        assert_eq!(over.bounds, row.bounds);
+        assert!(perform_by_id("t", window, cx, &row.id, "press", ""));
+    });
+    let events = events.borrow();
+    let [
+        wire::Event::Click {
+            handler: 15,
+            event: wire::click::Click::Mouse { down, up, .. },
+        },
+    ] = &events[..]
+    else {
+        panic!("row 5's click alone, not {events:?}");
+    };
+    for press in [down, up] {
+        assert_eq!(press.button, wire::click::MouseButton::Left);
+        assert_eq!(press.click_count, 1);
+        assert_eq!(press.position, gpui_kit::point(px(100.), px(220.)));
+    }
+    tree.read_with(&native, |tree, _| {
+        assert!(tree.take_user_activation(&events[0]).is_none());
+    });
 }

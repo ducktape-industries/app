@@ -124,12 +124,6 @@ impl Replies {
         Some(InFlight(self.clone()))
     }
 
-    /// Whether a query or a submit is still on its way.
-    #[cfg(test)]
-    pub(in crate::runtime) fn any_in_flight(&self) -> bool {
-        self.in_flight.load(Ordering::SeqCst) > 0
-    }
-
     /// WHETHER THE VIEW IS STILL OWED A FRAME, which is the in-flight count
     /// AND the answers already lying here. The two are one fact to a caller
     /// and reading only the count loses a race it loses often: a request is
@@ -219,7 +213,7 @@ fn request_admission_is_bounded_and_drop_returns_capacity() {
     let replacement = replies.admit().expect("dropped request returns capacity");
     drop(replacement);
     drop(admitted);
-    assert!(!replies.any_in_flight());
+    assert!(!replies.answer_owed());
 }
 
 #[cfg(test)]

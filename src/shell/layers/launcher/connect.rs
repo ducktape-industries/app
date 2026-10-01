@@ -42,7 +42,7 @@ impl LauncherLayer {
         let below = match (&note, session.connecting) {
             (Some(note), _) => Some(alert("connect-error", note.clone(), &ink)),
             (None, true) => {
-                let status = format!("Reaching {}…", session.endpoint);
+                let status = format!("Reaching {}…", session.reaching);
                 Some(
                     // a note's look; its words are the live region's own
                     crate::a11y::live(
