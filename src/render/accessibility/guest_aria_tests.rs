@@ -388,16 +388,27 @@ fn a_uniform_list_row_and_an_image_get_the_aria_a_container_gets(
 }
 
 /// A picture the guest labelled and gave no role is an Image named by its
-/// label, as `accessible` says; an unlabelled one stays out of the tree.
+/// label, as `accessible` says, whether the label is on the node and in its
+/// aria (as the SDK sends it) or on the node alone; a blank or missing label
+/// leaves it out of the tree.
 #[gpui_kit::test]
 fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
-    for label in [Some("Ada's avatar"), None] {
+    let rows = [
+        (
+            Some("Ada's avatar"),
+            Some("Ada's avatar"),
+            Some("Ada's avatar"),
+        ),
+        (Some("Ada's avatar"), None, Some("Ada's avatar")),
+        (Some(""), None, None),
+        (None, None, None),
+    ];
+    for (label, aria_label, want) in rows {
         let aria = wire::Interactivity {
             aria: wire::Aria {
                 author_id: Some("picture".into()),
-                // the SDK sends the label on the node and in its aria
-                label: label.map(Into::into),
+                label: aria_label.map(Into::into),
                 ..Default::default()
             },
             ..Default::default()
@@ -439,8 +450,11 @@ fn a_labelled_picture_without_a_role_is_an_image_in_the_tree(cx: &mut gpui_kit::
                 let update = window.a11y_tree().expect("an a11y tree once activated");
                 heard(update, "picture").map(|(_, heard)| (heard.role, heard.name))
             });
-            let want = label.map(|label| (Role::Image, Some(label.to_owned())));
-            assert_eq!(heard, want);
+            let want = want.map(|name| (Role::Image, Some(name.to_owned())));
+            assert_eq!(
+                heard, want,
+                "node label {label:?}, aria label {aria_label:?}"
+            );
         }
     }
 }
@@ -859,59 +873,8 @@ mod phase_two {
         }
     }
 
-    /// A divider as the SDK builds it is a named Splitter Tab reaches, and a
-    /// key pressed on it goes to the view.
-    #[gpui_kit::test]
-    fn a_resize_handle_takes_focus_and_keys(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let divider = wire::Interactivity {
-            role: Some(Role::Splitter),
-            focusable: true,
-            tab_stop: Some(true),
-            on_key_down: Some(9),
-            aria: wire::Aria {
-                author_id: Some("child".into()),
-                label: Some("Resize the list".into()),
-                orientation: Some(accesskit::Orientation::Vertical),
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let root = child(&Site::ResizeHandle, divider);
-        let window = cx.open_window(size(px(300.), px(200.)), |_, _| ViewTree::new(root));
-        let tree = window.root(cx).unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-        let (events, _subscription) = emitted(&tree, &mut native);
-        // Tab is the app's binding to `focus_next`; a bare window has none
-        native.update(|window, cx| {
-            window.activate_a11y();
-            window.render_frame(cx);
-            window.focus_next(cx);
-        });
-        native.simulate_keystrokes("left");
-        native.update(|window, cx| {
-            window.render_frame(cx);
-            let update = window.a11y_tree().expect("an a11y tree once activated");
-            let (id, node) = update
-                .nodes
-                .iter()
-                .find(|(_, node)| node.author_id() == Some("child"))
-                .expect("the divider has a node");
-            assert_eq!(node.role(), Role::Splitter);
-            assert_eq!(node.label(), Some("Resize the list"));
-            assert_eq!(update.focus, *id, "Tab reaches the divider");
-        });
-        assert!(
-            events
-                .borrow()
-                .iter()
-                .any(|event| matches!(event, wire::Event::KeyDown { handler: 9, .. })),
-            "{:?}",
-            events.borrow()
-        );
-    }
-
-    /// A divider's arrows move it, end to end: Tab reaches it, each arrow
+    /// A divider's arrows move it, end to end: Tab reaches it, a named
+    /// Splitter, each arrow
     /// reaches the view's key route as the keystroke the SDK's divider reads,
     /// and the view, stepping as `design::divider` does (8 px, 32 with
     /// shift), draws its pane that much wider or narrower. No built view
@@ -989,7 +952,12 @@ mod phase_two {
                 });
                 (
                     bounds[2].as_i64().unwrap() - bounds[0].as_i64().unwrap(),
-                    focus.map(|node| node["role"].as_str().unwrap().to_owned()),
+                    focus.map(|node| {
+                        (
+                            node["role"].as_str().unwrap().to_owned(),
+                            node["name"].as_str().unwrap().to_owned(),
+                        )
+                    }),
                 )
             })
         };
@@ -1000,7 +968,8 @@ mod phase_two {
             window.focus_next(cx);
         });
         let mut width = 200.;
-        assert_eq!(wide(&mut native), (200, Some("Splitter".into())));
+        let divider = Some(("Splitter".to_owned(), "Resize the list".to_owned()));
+        assert_eq!(wide(&mut native), (200, divider.clone()));
         for (keystroke, moved) in [("right", 208), ("shift-right", 240), ("left", 232)] {
             native.simulate_keystrokes(keystroke);
             for event in events.borrow_mut().drain(..) {
@@ -1027,7 +996,7 @@ mod phase_two {
             }
             assert_eq!(
                 wide(&mut native),
-                (moved, Some("Splitter".into())),
+                (moved, divider.clone()),
                 "after {keystroke}"
             );
         }
@@ -1051,14 +1020,28 @@ mod phase_two {
             let tree = window.root(cx).unwrap();
             let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
             native.update(|window, cx| {
+                window.activate_a11y();
                 window.render_frame(cx);
                 let handle = tree.read(cx).guest_focus_targets[&PARENT_FOCUS].clone();
+                handle.focus(window, cx);
                 tree.update(cx, |tree, cx| tree.replace(again, cx));
+                window.render_frame(cx);
                 window.render_frame(cx);
                 assert!(
                     tree.read(cx).guest_focus_targets[&PARENT_FOCUS] == handle,
                     "{site:?} made its handle anew"
                 );
+                assert!(
+                    handle.is_focused(window),
+                    "{site:?} lost focus on a new frame"
+                );
+                let update = window.a11y_tree().expect("an a11y tree once activated");
+                let (child, _) = update
+                    .nodes
+                    .iter()
+                    .find(|(_, node)| node.author_id() == Some("child"))
+                    .expect("the child has a node");
+                assert_eq!(update.focus, *child, "{site:?}'s node is not the focus");
             });
         }
     }

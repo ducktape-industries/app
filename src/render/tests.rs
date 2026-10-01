@@ -136,42 +136,6 @@ fn input(label: &str, secure: bool, disabled: bool) -> wire::Node {
     }
 }
 
-fn picture(label: Option<&str>) -> [wire::Node; 2] {
-    let label = label.map(str::to_owned);
-    [
-        wire::Node::Image {
-            id: Some(wire::ElementIdWire::Name("img".into())),
-            hash: 1,
-            data: None,
-            label: label.clone(),
-            image_style: wire::ImageStyle {
-                grayscale: false,
-                object_fit: wire::ImageObjectFit::Contain,
-            },
-            loading: false,
-            fallback: false,
-            state_children: vec![],
-            style: Default::default(),
-            interactivity: Default::default(),
-        },
-        wire::Node::Svg {
-            id: Some(wire::ElementIdWire::Name("svg".into())),
-            source: wire::SvgSource::Data {
-                hash: 1,
-                bytes: None,
-            },
-            transformation: wire::SvgTransformation {
-                scale: [1., 1.],
-                translate: [0., 0.],
-                rotate: 0.,
-            },
-            label,
-            style: Default::default(),
-            interactivity: Default::default(),
-        },
-    ]
-}
-
 /// A focusable button Tab reaches.
 fn button(key: &str, name: &str) -> wire::Node {
     let mut node = container_with_style(key, div().w(px(80.)).h(px(24.)).style().clone(), []);

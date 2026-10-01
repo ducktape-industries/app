@@ -128,32 +128,7 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
 }
 
 #[test]
-fn a_labelled_picture_is_an_image_and_an_unlabelled_one_is_decoration() {
-    for node in picture(Some("Ada's avatar")) {
-        assert_eq!(
-            accessible(&node),
-            Accessible {
-                role: Some(gpui_kit::Role::Image),
-                name: Some("Ada's avatar".into()),
-                ..Default::default()
-            }
-        );
-    }
-    for node in picture(None).into_iter().chain(picture(Some(""))) {
-        assert_eq!(accessible(&node), Accessible::default());
-    }
-}
-
-#[test]
-fn layout_is_not_in_the_accessibility_tree() {
-    let space = wire::Node::Space {
-        style: gpui_kit::StyleRefinement::default(),
-    };
-    assert_eq!(accessible(&space), Accessible::default());
-}
-
-#[test]
-fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
+fn a_named_overlay_is_a_dialog_and_layout_is_not_in_the_tree() {
     let overlay = |label: Option<&str>, open| wire::Node::Overlay {
         id: named_id("o"),
         label: label.map(str::to_owned),
@@ -178,6 +153,10 @@ fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
         Accessible::default()
     );
     assert_eq!(accessible(&overlay(None, true)), Accessible::default());
+    let space = wire::Node::Space {
+        style: Default::default(),
+    };
+    assert_eq!(accessible(&space), Accessible::default(), "layout");
 }
 
 /// What the door reads of `root`, drawn in a window with the tree on.
@@ -190,7 +169,8 @@ fn door(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<serde_json::
 
 /// A view's words are what its text is called, through the door as through
 /// the OS adapters, which name a Label by its value: a Text, and a RichText
-/// (gpui's `InteractiveText`, which carries its words only as the value).
+/// (gpui's `InteractiveText`, which carries its words only as the value);
+/// and its words are its value.
 #[gpui_kit::test]
 fn a_view_text_reads_its_words_as_its_name_through_the_door(cx: &mut gpui_kit::TestAppContext) {
     let rich = wire::Node::RichText {
@@ -208,9 +188,15 @@ fn a_view_text_reads_its_words_as_its_name_through_the_door(cx: &mut gpui_kit::T
     let labels: Vec<_> = door(cx, root)
         .into_iter()
         .filter(|node| node["role"] == "Label")
-        .map(|node| node["name"].clone())
+        .map(|node| (node["name"].clone(), node["value"].clone()))
         .collect();
-    assert_eq!(labels, ["Members", "Three online"]);
+    assert_eq!(
+        labels,
+        [
+            ("Members".into(), "Members".into()),
+            ("Three online".into(), "Three online".into())
+        ]
+    );
 }
 
 /// AX-014 through the door: a blank text is no Label (forge's file-row glyph,
@@ -267,32 +253,6 @@ fn a_blank_text_is_no_node_and_a_heading_is_named_by_its_rich_text(
     assert_eq!(of("Label"), ["sandbox", "kept"]);
 }
 
-/// A view Text carries its words as its value, as gpui's own `Text` does:
-/// what a live region announces and what the door reads back.
-#[gpui_kit::test]
-fn a_view_text_carries_its_words_as_its_value_through_the_door(cx: &mut gpui_kit::TestAppContext) {
-    let nodes = door(cx, text("plain", "Members"));
-    let label = nodes
-        .iter()
-        .find(|node| node["role"] == "Label")
-        .expect("the text is in the tree");
-    assert_eq!(label["value"], "Members");
-}
-
-/// A field's placeholder is its placeholder, not its name: the door
-/// reads it back under its own key (AX-111).
-#[gpui_kit::test]
-fn a_fields_placeholder_reaches_the_door(cx: &mut gpui_kit::TestAppContext) {
-    let root = axis_container("root", Axis::Column, [input("Room name", false, false)]);
-    let nodes = door(cx, root);
-    let field = nodes
-        .iter()
-        .find(|node| node["role"] == "TextInput")
-        .expect("the field is in the tree");
-    assert_eq!(field["name"], "Room name");
-    assert_eq!(field["placeholder"], "Type here");
-}
-
 /// A field the view marks invalid, required and read-only says so on its
 /// node, and the door reads each back (AX-108, AX-109). Read-only, it
 /// offers no edit it would refuse; an editable one offers both.
@@ -321,6 +281,7 @@ fn a_field_says_it_is_invalid_required_and_read_only(cx: &mut gpui_kit::TestAppC
     assert_eq!(field["required"], true);
     assert_eq!(field["read_only"], true);
     assert_eq!(field["description"], "Shown to members");
+    assert_eq!(field["placeholder"], "Type here");
     assert_eq!(field["actions"], serde_json::json!(["focus"]));
     assert_eq!(
         named("Topic")["actions"],

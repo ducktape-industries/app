@@ -197,8 +197,9 @@ fn filter_row(width: impl Into<gpui_kit::Length> + Clone, border: gpui_kit::Hsla
 /// a margin and a width in a row a spacer fills (forge's filter) keeps that
 /// box, and its node is that box and no wider: a press in the spacer's room
 /// is not a press on the field. Focused, its border takes the ring's colour
-/// (with the ring, an inset shadow the scene's quads do not show; `a11y`
-/// pins the two together), and the kit's own ring, a border painted round
+/// (with the ring, an inset shadow the scene's quads do not show;
+/// `shell::ink::tests::a_focused_fields_box_wears_the_ring` pins the two
+/// together), and the kit's own ring, a border painted round
 /// the box, is not drawn.
 #[gpui_kit::test]
 fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppContext) {
