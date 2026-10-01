@@ -5,7 +5,7 @@ use super::*;
 const OP_ENVELOPE_BYTES: usize = 256;
 /// Widget commands waiting for a frame that mounts their target: at most
 /// one tick's worth of requests.
-const MAX_PENDING_WIDGET_COMMANDS: usize = MAX_REQUESTS_PER_TICK;
+const MAX_PENDING_WIDGET_COMMANDS: usize = wire::MAX_REQUESTS;
 
 /// Whether `target` is a SUFFIX of some mounted node's authored path (the
 /// ancestry `crate::render::enter_scope` walks). A view names a command's
@@ -99,7 +99,7 @@ impl Guest {
             .into_iter()
             .enumerate()
         {
-            match nth < MAX_REQUESTS_PER_TICK {
+            match nth < wire::MAX_REQUESTS {
                 true => self.answer(request, props),
                 false => self.refuse(
                     request.id,

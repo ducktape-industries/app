@@ -100,7 +100,7 @@ loop runs on the window thread inside `Seat::turn`
 | First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. A preloaded seat (`roster::read_roster`) is only compiled: the pane that claims it loads it again, and that load instantiates and `init`s it, so a first open pays those two; "from load start" is still not what a user feels | end of the first `Guest::tick` (`Guest.ticks == 0` in `Guest::redraw`), measured from the start of the `Seat::turn` that ticks it | H `first_tree` (W, ms) | a3 / 70 |
 | Tick: fuel | `tracing::debug!(target: "ducktape::perf", used, limit)` in `Guest::tick` (`guest/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
 | Tick: wall | nothing | `Guest::tick`: the `arm` → `Exports::tick` → `shape` chain is one expression today and has to be split to time the call and the decode apart | H `tick.call`, H `tick.decode` (W) | a3 |
-| Requests per tick | nothing (only the `MAX_REQUESTS_PER_TICK` refusal) | `Guest::redraw`, the loop over `frame.requests` and `frame.cancels` | H `requests`, H `cancels` (D) | a3 |
+| Requests per tick | nothing (only the `view_wire::MAX_REQUESTS` refusal) | `Guest::redraw`, the loop over `frame.requests` and `frame.cancels` | H `requests`, H `cancels` (D) | a3 |
 | Host-call latency and attempts | nothing (a warn when the 60 s retry budget runs out, `node::until_answered`) | `kernel::node::spawn_call`: `Instant` before the spawned future, record when `replies.item` is called; attempts from `until_answered`; the kind is the `(Capability, operation)` pair `kernel::answer` matched on. Also `node::spawn_device` | H `host_call.<kind>` (W), C `host_call.<kind>.attempts` (D) | free |
 | Reply backlog at drain | nothing | `Replies::drain_into` (`kernel/replies.rs`): `events.len()` before the append | H `backlog` (D) | free |
 | Frame bytes | nothing (the `MAX_FRAME_BYTES` refusal in `guest::shape`) | `Exports::tick` answer length; `wire::encode(&events)` length in `Guest::tick` | H `frame_bytes`, H `events_bytes` (D) | a3 |
@@ -366,7 +366,7 @@ only when on and only when the tree changed.
 | `FUEL_PER_TICK` | 250M | trap → fault, "This view stopped" |
 | `MEMORY_LIMIT` | 64 MiB | trap on grow |
 | `MAX_FRAME_BYTES` | 8 MiB | refused in `guest::shape` → fault |
-| `MAX_REQUESTS_PER_TICK` | 256 | refused in `guest::shape` → fault |
+| `MAX_REQUESTS` (view-wire) | 256 | refused in `guest::shape` → fault |
 | `MAX_NODES` (view-wire) | 8192 | truncation, not a kill |
 | `MAX_PATCHES` (view-wire) | 1024 | patch refused, `Resync` asked |
 | `MAX_SNAPSHOT_BYTES` (view-wire) | 8 MiB | checked by `wire::Snapshot::decode` in `Guest::load` |
