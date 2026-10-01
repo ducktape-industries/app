@@ -100,6 +100,18 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
     Ok(roster)
 }
 
+/// Which programs fill the roles the kernel calls, as genesis bound them
+/// and the registry program answers them. `None` from a registry from
+/// before the question, which refuses it: no program is known by its role.
+pub async fn roles(client: &RpcClient, network: &str) -> Result<Option<abi::Roles>, Fetch> {
+    use module_registry::{Query, Reply};
+    match ask(client, network, Query::Roles).await {
+        Ok(Reply::Roles(roles)) => Ok(Some(roles)),
+        Ok(_) | Err(Fetch::Refused(_)) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
 async fn ask(
     client: &RpcClient,
     network: &str,
