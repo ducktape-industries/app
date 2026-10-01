@@ -1,33 +1,25 @@
 //! Tooltips whose content is a guest node. gpui draws a tooltip as its own
-//! view on a top layer; `build` renders the content in a child `ViewTree`,
-//! clips it to the source view's slot (`SlotMask`, recorded each frame in
-//! `Render for ViewTree`) so it can neither paint nor take clicks outside the
-//! view's box, and re-emits the child's events from the source tree with its
+//! view, in the source view's layer (`deferred::Layer`): under the host's
+//! band, fitted and clipped to the view's pane, so it can neither paint nor
+//! take clicks outside it. `build` renders the content in a child
+//! `ViewTree` and re-emits the child's events from the source tree with its
 //! one-shot user activation, so the runtime accepts a click inside the
 //! tooltip as the user's.
 use super::*;
-use gpui_kit::{ContentMask, Subscription, WeakEntity};
-use std::{cell::Cell, rc::Rc};
-
-/// The source view's clip, shared with the tooltips it opens.
-pub(super) type SlotMask = Rc<Cell<ContentMask<Pixels>>>;
+use gpui_kit::{Subscription, WeakEntity};
 
 pub(super) fn build(
     parent: WeakEntity<ViewTree>,
     content: wire::Node,
     cx: &mut App,
 ) -> gpui_kit::AnyView {
-    // the source view's clip, its pictures and their rasters: a tooltip
-    // names them as its source tree does, and the seat releases them
-    let (mask, pictures, images) = parent
+    // the source view's pictures and their rasters: a tooltip names them
+    // as its source tree does, and the seat releases them
+    let (pictures, images) = parent
         .upgrade()
         .map(|parent| {
             let parent = parent.read(cx);
-            (
-                parent.slot_mask.clone(),
-                parent.pictures.clone(),
-                parent.images.clone(),
-            )
+            (parent.pictures.clone(), parent.images.clone())
         })
         .unwrap_or_default();
     let child = cx.new(|_| {
@@ -48,7 +40,6 @@ pub(super) fn build(
         });
         TooltipHost {
             child,
-            mask,
             _subscription: subscription,
         }
     })
@@ -57,72 +48,11 @@ pub(super) fn build(
 
 struct TooltipHost {
     child: Entity<ViewTree>,
-    mask: SlotMask,
     _subscription: Subscription,
 }
 impl Render for TooltipHost {
     fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-        Contained {
-            child: self.child.clone().into_any_element(),
-            mask: self.mask.clone(),
-        }
-    }
-}
-
-pub(super) struct Contained {
-    pub(super) child: AnyElement,
-    pub(super) mask: SlotMask,
-}
-impl IntoElement for Contained {
-    type Element = Self;
-    fn into_element(self) -> Self {
-        self
-    }
-}
-impl Element for Contained {
-    type RequestLayoutState = ();
-    type PrepaintState = ();
-    fn id(&self) -> Option<ElementId> {
-        None
-    }
-    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
-        None
-    }
-    fn request_layout(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        window: &mut Window,
-        cx: &mut App,
-    ) -> (LayoutId, ()) {
-        (self.child.request_layout(window, cx), ())
-    }
-    fn prepaint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        // gpui prepaints a tooltip after its deferred draws: a `Deferred` in
-        // the content draws in place, not deferred too late to be drawn
-        window.with_content_mask(Some(self.mask.get()), |window| {
-            super::deferred::inside(|| self.child.prepaint(window, cx));
-        });
-    }
-    fn paint(
-        &mut self,
-        _: Option<&GlobalElementId>,
-        _: Option<&InspectorElementId>,
-        _: Bounds<Pixels>,
-        _: &mut (),
-        _: &mut (),
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        window.with_content_mask(Some(self.mask.get()), |window| self.child.paint(window, cx));
+        self.child.clone()
     }
 }
 
@@ -131,7 +61,11 @@ mod tests {
     use super::*;
     use crate::render::tests::emitted;
     use gpui_kit::test::TestWindowExt as _;
-    use std::{cell::RefCell, time::Duration};
+    use std::{
+        cell::{Cell, RefCell},
+        rc::Rc,
+        time::Duration,
+    };
 
     const TOOLTIP_COLOR: u32 = 0xff00ff;
 
@@ -193,11 +127,16 @@ mod tests {
                 .overflow_hidden()
                 .tooltip_show_delay(Duration::from_millis(10))
                 .child(self.parent.clone());
-            if self.hoverable {
+            let source = if self.hoverable {
                 source.hoverable_tooltip(move |_, cx| build(parent.clone(), tooltip.clone(), cx))
             } else {
                 source.tooltip(move |_, cx| build(parent.clone(), tooltip.clone(), cx))
-            }
+            };
+            // the source in its pane's layer, as `Render for ViewTree` draws one
+            div()
+                .size(px(40.))
+                .overflow_hidden()
+                .child(crate::render::deferred::Layer(source.into_any_element()))
         }
     }
 
@@ -351,10 +290,10 @@ mod tests {
         });
     }
 
-    /// A `Deferred` in a guest tooltip's content draws in place, and paints,
-    /// instead of failing the frame.
+    /// A `Deferred` in a guest tooltip's content draws, and paints, instead
+    /// of failing the frame.
     #[gpui_kit::test]
-    fn a_deferred_inside_a_tooltip_draws_in_place(cx: &mut gpui_kit::TestAppContext) {
+    fn a_deferred_inside_a_tooltip_draws(cx: &mut gpui_kit::TestAppContext) {
         struct Slot(Entity<ViewTree>);
         impl Render for Slot {
             fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {

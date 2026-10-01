@@ -571,6 +571,35 @@ fn key(native: &mut VisualTestContext, down: bool, is_held: bool) {
     native.update(draw);
 }
 
+/// Enter held down since before the card opened (pressed on the desk, the
+/// card opening under it and taking the keys, the key repeating, released
+/// on the card) does not approve it: that press did not begin on the card.
+/// A whole press on Approve after it opened does.
+#[gpui_kit::test]
+fn enter_held_from_before_the_card_opened_does_not_approve_it(cx: &mut TestAppContext) {
+    let (view, mut native) = open(gate::desk(), cx);
+    super::activate(&mut native);
+    native.update(draw);
+    key(&mut native, true, false);
+    let mut told = ask(&view, &mut native, "chat", "chat asks to suspend agent #3.");
+    native.update(|window, _| {
+        assert_eq!(
+            focused_node(window),
+            Some((Role::Button, "Approve".to_owned())),
+            "the card took the keys"
+        );
+    });
+    for _ in 0..3 {
+        key(&mut native, true, true);
+    }
+    key(&mut native, false, false);
+    assert!(consent::front().is_some(), "a held key answered the card");
+    assert!(shows(&mut native, "chat asks to suspend agent #3."));
+    key(&mut native, true, false);
+    key(&mut native, false, false);
+    assert!(approved(&mut told), "a press on the card approves it");
+}
+
 /// A mouse press that began before the card opened (down on the desk where
 /// Approve then appears, up on Approve) does not approve it; a whole click
 /// on Approve after it opened does.
