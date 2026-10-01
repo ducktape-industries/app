@@ -408,6 +408,43 @@ fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppC
     }
 }
 
+/// The rail's tab list and its chosen tab both offer focus and are one Tab
+/// stop, so the desk has more nodes offering focus than stops: the walk
+/// still closes the first time the focus is back on the first stop
+/// (docs/ax.md §1.1), one press past the last stop, and never passes the
+/// first stop again.
+#[gpui_kit::test]
+fn the_walk_closes_the_first_time_the_focus_is_back_on_the_first_stop(cx: &mut TestAppContext) {
+    let (_view, mut native) = open(plain(two_programs)(), cx);
+    native.update(snap);
+    let reading =
+        native.update(|window, cx| audit::observe(window, cx, "shell", true, |_| true, snap));
+    let walked: Vec<String> = reading.snapshots[1..]
+        .iter()
+        .map(|nodes| {
+            let ids: Vec<&str> = nodes
+                .iter()
+                .filter(|node| node.state.contains(&"focused"))
+                .map(|node| node.id.as_str())
+                .collect();
+            ids.join(",")
+        })
+        .collect();
+    let offering = reading.snapshots[0]
+        .iter()
+        .filter(|node| node.actions.contains(&"focus"))
+        .count();
+    let stops: std::collections::BTreeSet<&String> = walked.iter().collect();
+    assert!(offering > stops.len(), "{offering} offer focus: {walked:?}");
+    let first = &walked[0];
+    assert_eq!(
+        walked.last(),
+        Some(first),
+        "closes on the first stop: {walked:?}"
+    );
+    assert_eq!(walked.len(), stops.len() + 1, "one lap: {walked:?}");
+}
+
 /// The walk's arrows pick Settings' choices, and a pick saves; the door
 /// puts back what they changed. From no prefs, after a walk of the
 /// Notifications page no view is answered, the one asking still asks, and
