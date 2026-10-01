@@ -523,7 +523,7 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
     overlays.update(cx, |it, cx| it.close(Overlay::Approve, cx));
     cx.run_until_parked();
     assert_eq!(open(cx), Some(Overlay::Consent), "its turn came");
-    assert!(consent::answer(asked, false) == false);
+    assert!(!consent::answer(asked, false));
     cx.run_until_parked();
     // the person's own close refuses it; nothing waits, nothing reopens
     overlays.update(cx, |it, cx| it.close(Overlay::Consent, cx));

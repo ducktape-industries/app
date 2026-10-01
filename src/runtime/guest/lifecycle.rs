@@ -72,7 +72,7 @@ impl Guest {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
                 })?;
                 Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
-                let (name, _, min_width) = manifest_of(&bytes);
+                let (name, _, min_width, _) = manifest_of(&bytes);
                 return Ok(Loaded::Compiled { name, min_width });
             }
             return Self::load_from(module, &path)
