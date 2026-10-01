@@ -154,6 +154,7 @@ pub(super) fn answer(
     operation: &str,
     id: u64,
     payload: &[u8],
+    props: &Option<Vec<u8>>,
 ) -> bool {
     if super::clipboard::answer(guest, capability, operation, id, payload)
         || super::notify::answer(guest, capability, operation, id, payload)
@@ -236,7 +237,14 @@ pub(super) fn answer(
             let Some(call) = node::targeted(guest, id, payload, "op.submit") else {
                 return true;
             };
-            match super::consent::needed(guest.module, &call.target, &call.body) {
+            // the account the seated key holds, as the app resolved it
+            // (`roster::props`): the card tells the person's own account
+            // from an agent's by it
+            let own = props
+                .as_deref()
+                .and_then(|props| wire::methods::decode::<wire::methods::Session>(props).ok())
+                .and_then(|session| session.account);
+            match super::consent::needed(guest.module, &call.target, &call.body, own) {
                 None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
                 Some(words) => node::spawn_consented(guest, id, payload, words),
             }

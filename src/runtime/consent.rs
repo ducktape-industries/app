@@ -81,8 +81,11 @@ pub(crate) fn refuse_all() {
 /// program id, the roster's name for it: a view's manifest name is the
 /// view's own word, and a hostile one would pick a name that reads as
 /// someone else's (or carries a bidi override). The id is the one the
-/// chain lists it under.
-pub(super) fn needed(program: &str, target: &str, body: &[u8]) -> Option<Words> {
+/// chain lists it under. `own` is the account the seated key holds as the
+/// app resolved it, `None` until it has: a `RemoveKey` names the account
+/// it strips, which a manager may make an agent's, and the card says
+/// which.
+pub(super) fn needed(program: &str, target: &str, body: &[u8], own: Option<u64>) -> Option<Words> {
     if target != identity::MODULE {
         return None;
     }
@@ -95,11 +98,20 @@ pub(super) fn needed(program: &str, target: &str, body: &[u8]) -> Option<Words> 
         });
     };
     match op {
-        identity::Op::RemoveKey { key, .. } => Some(Words {
+        identity::Op::RemoveKey { account, key } if own == Some(account) => Some(Words {
             said: format!(
                 "{program} asks to remove a key from your account. Approve only if you meant to."
             ),
             shown: Some(crate::backend::join::fingerprint(&key)),
+        }),
+        identity::Op::RemoveKey { account, key } => Some(Words {
+            said: format!(
+                "{program} asks to remove a key from agent #{account}. Approve only if you meant to."
+            ),
+            shown: Some(format!(
+                "#{account} · {}",
+                crate::backend::join::fingerprint(&key)
+            )),
         }),
         identity::Op::Revoke { account } => Some(Words {
             said: format!(
@@ -168,20 +180,35 @@ mod tests {
     /// program, is not.
     #[test]
     fn the_ops_that_remove_or_suspend_are_asked_and_nothing_else_is() {
-        let asked = |op: &identity::Op| needed("chat", identity::MODULE, &abi::encode(op));
-        let removed = asked(&identity::Op::RemoveKey {
+        let asked = |op: &identity::Op| needed("chat", identity::MODULE, &abi::encode(op), Some(7));
+        let remove = identity::Op::RemoveKey {
             account: 7,
             key: vec![1, 2, 3],
-        })
-        .unwrap();
+        };
+        let fingerprint = crate::backend::join::fingerprint(&[1, 2, 3]);
+        let removed = asked(&remove).unwrap();
         assert!(
-            removed.said.starts_with("chat asks to remove a key"),
+            removed
+                .said
+                .starts_with("chat asks to remove a key from your account"),
             "{removed:?}"
         );
-        assert_eq!(
-            removed.shown.as_deref(),
-            Some(crate::backend::join::fingerprint(&[1, 2, 3]).as_str())
-        );
+        assert_eq!(removed.shown.as_deref(), Some(fingerprint.as_str()));
+        // the signed account is not the seated key's: an agent's, and the
+        // card says whose, beside the key (also while none is resolved yet)
+        for own in [Some(8), None] {
+            let removed = needed("chat", identity::MODULE, &abi::encode(&remove), own).unwrap();
+            assert!(
+                removed
+                    .said
+                    .starts_with("chat asks to remove a key from agent #7"),
+                "{removed:?}"
+            );
+            assert_eq!(
+                removed.shown.as_deref(),
+                Some(format!("#7 · {fingerprint}").as_str())
+            );
+        }
         let revoked = asked(&identity::Op::Revoke { account: 12 }).unwrap();
         assert!(revoked.said.contains("revoke agent #12"), "{revoked:?}");
         assert_eq!(revoked.shown.as_deref(), Some("#12"));
@@ -204,9 +231,9 @@ mod tests {
         ] {
             assert_eq!(asked(&op), None, "{op:?}");
         }
-        let unread = needed("chat", identity::MODULE, &[0xff, 0xff]).unwrap();
+        let unread = needed("chat", identity::MODULE, &[0xff, 0xff], Some(7)).unwrap();
         assert!(unread.said.contains("cannot read"), "{unread:?}");
         assert_eq!(unread.shown, None);
-        assert_eq!(needed("chat", "chat", &[0xff, 0xff]), None);
+        assert_eq!(needed("chat", "chat", &[0xff, 0xff], Some(7)), None);
     }
 }

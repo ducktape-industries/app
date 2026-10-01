@@ -196,7 +196,7 @@ fn node_methods_answer_for_the_missing_node_first() {
         (Capability::Invite, "create", b"not borsh"),
     ] {
         let mut guest = guest();
-        assert!(answer(&mut guest, capability, operation, 7, payload));
+        assert!(answer(&mut guest, capability, operation, 7, payload, &None));
         assert!(
             matches!(guest.pending.pop(), Some(wire::Event::Response {
                 id: 7, result: Err(refusal), done: true
@@ -751,11 +751,15 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         chain: "test-network#1".into(),
         rev: guest.connection_rev,
     };
-    guest.answer(request(2), &None);
+    // the props say the seated key holds account 7, the one the op names
+    let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
+    guest.answer(request(2), &props);
     assert_eq!(refusal_code(&mut guest), None, "the request waits");
     let (first, words) = consent::front().expect("an ask waits");
     assert!(
-        words.said.starts_with("request-test asks to remove a key"),
+        words
+            .said
+            .starts_with("request-test asks to remove a key from your account"),
         "{words:?}"
     );
     assert!(guest.intents.contains(&Intent::Consent));
@@ -777,9 +781,23 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     }
     // Approve: the task goes on to the node (its sequence read is the
     // fake node's one answer, which is no sequence, so the op ends there)
+    // with no account resolved the card does not call it the person's own
     guest.answer(request(4), &None);
-    let (second, _) = consent::front().expect("an ask waits");
+    let (second, words) = consent::front().expect("an ask waits");
     assert_ne!(first, second);
+    assert!(
+        words
+            .said
+            .starts_with("request-test asks to remove a key from agent #7"),
+        "{words:?}"
+    );
+    assert!(
+        words
+            .shown
+            .as_deref()
+            .is_some_and(|shown| shown.starts_with("#7 · ")),
+        "{words:?}"
+    );
     assert!(!consent::answer(second, true));
     match awaited(&mut guest) {
         Some(wire::Event::Response {
