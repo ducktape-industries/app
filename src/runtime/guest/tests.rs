@@ -858,7 +858,9 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
     let (code, alive, load) = counting_seat("ticking-swap");
     let seat = load.seat.clone();
     load.land(|load, timing| {
-        let fresh = Guest::instantiate(load.module, &code, load.module).unwrap();
+        let mut fresh = Guest::instantiate(load.module, &code, load.module).unwrap();
+        // as `load` seats the manifest's targets on what it prepares
+        fresh.targets = vec!["chat".into()];
         let mut ticks = 0;
         let fresh = Guest::replacement(
             fresh,
@@ -893,6 +895,11 @@ fn a_view_ticking_on_a_clock_swaps_to_new_code_with_its_state() {
         count(seated),
         103,
         "with the state the drawn view held at the swap, ticked once"
+    );
+    assert_eq!(
+        seated.targets,
+        ["chat"],
+        "the manifest's targets are seated, so its node methods still reach the program"
     );
     assert!(locked.retry.is_none());
 }

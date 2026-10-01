@@ -376,14 +376,61 @@ impl Guest {
     }
 
     /// A new instance of `code`, named and manifested as `load` made this
-    /// one, nothing run in it yet.
+    /// one, nothing run in it yet. Every field is named here, so one added
+    /// to `Guest` is a compile error until it says whether a sibling
+    /// carries it: what `load` set (the seat, the manifest, the deployment)
+    /// is carried, and what the instance ran into starts fresh.
     fn sibling(&self, code: &Module, shown: &str) -> Result<Self, String> {
-        let mut sibling = Self::instantiate(self.module, code, shown)?;
-        sibling.instance = self.instance;
-        sibling.name = self.name.clone();
-        sibling.capabilities = self.capabilities.clone();
-        sibling.min_width = self.min_width;
-        sibling.hash = self.hash;
+        let Self {
+            module,
+            instance,
+            name,
+            capabilities,
+            targets,
+            min_width,
+            hash,
+            connection_rev: _,
+            activation: _,
+            links: _,
+            undeclared_logged: _,
+            store: _,
+            exports: _,
+            pending: _,
+            theme_dark: _,
+            widget_commands: _,
+            frame: _,
+            frame_reports: _,
+            display_diagnostics: _,
+            installed_generation: _,
+            frame_rev: _,
+            ticks: _,
+            inputs: _,
+            pictures: _,
+            props_subscription: _,
+            props_sent: _,
+            visible: _,
+            visibility_change: _,
+            visibility_subscriptions: _,
+            offset_subscriptions: _,
+            offset_sent: _,
+            route_subscriptions: _,
+            intents: _,
+            replies: _,
+            live_subscriptions: _,
+            tasks: _,
+            clipboard: _,
+            clocks: _,
+            fault: _,
+            alive: _,
+            staged: _,
+        } = self;
+        let mut sibling = Self::instantiate(module, code, shown)?;
+        sibling.instance = *instance;
+        sibling.name = name.clone();
+        sibling.capabilities = capabilities.clone();
+        sibling.targets = targets.clone();
+        sibling.min_width = *min_width;
+        sibling.hash = *hash;
         Ok(sibling)
     }
 
