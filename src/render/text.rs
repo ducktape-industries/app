@@ -7,6 +7,25 @@ use crate::render::native_id;
 
 pub(super) mod links;
 
+fn rich_tooltip_content(
+    node: &wire::Node,
+    request: u32,
+    character_index: u32,
+) -> Option<wire::Node> {
+    if let wire::Node::RichText {
+        tooltip: Some(tooltip),
+        ..
+    } = node
+        && tooltip.request == request
+        && tooltip.character_index == Some(character_index)
+    {
+        return tooltip.content.as_deref().cloned();
+    }
+    node.children()
+        .iter()
+        .find_map(|child| rich_tooltip_content(child, request, character_index))
+}
+
 thread_local! {
     /// The clip a text drag began in, from the press to the release. While
     /// it is held only paragraphs painted in that clip — the list or pane
@@ -65,14 +84,7 @@ pub(super) struct RichParagraph {
     /// drag selects what lies between its ends in reading order, not every
     /// line in the window between their heights.
     pub(super) order: std::rc::Rc<std::cell::Cell<u64>>,
-    /// A paragraph with a tooltip: told on each pointer move the character
-    /// the pointer rests on, `None` off the text, as gpui's own text
-    /// tooltip tells hovered (gpui-pre `text.rs`, `InteractiveText`).
-    pub(super) tooltip_hover: Option<TooltipHover>,
 }
-
-/// What a paragraph tells its tree of the pointer, for its tooltip.
-pub(super) type TooltipHover = std::rc::Rc<dyn Fn(Option<u32>, &mut Window, &mut App)>;
 
 impl IntoElement for RichParagraph {
     type Element = Self;
@@ -154,19 +166,6 @@ impl Element for RichParagraph {
         cx: &mut App,
     ) {
         let (hitbox, clip) = (hitbox.clone(), *clip);
-        if let Some(hover) = self.tooltip_hover.clone() {
-            let (hitbox, layout) = (hitbox.clone(), self.layout.clone());
-            window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                if phase == gpui_kit::DispatchPhase::Bubble {
-                    let index = hitbox
-                        .is_hovered(window)
-                        .then(|| layout.index_for_position(event.position).ok())
-                        .flatten()
-                        .and_then(|index| u32::try_from(index).ok());
-                    hover(index, window, cx);
-                }
-            });
-        }
         window.on_mouse_event(move |event: &MouseDownEvent, phase, window, _| {
             if phase == gpui_kit::DispatchPhase::Capture
                 && event.button == MouseButton::Left
@@ -400,21 +399,26 @@ impl ViewTree {
                 });
             });
         }
-        let tooltip_hover = tooltip.as_ref().map(|tooltip| {
-            let tree = cx.entity().downgrade();
-            let source = (self.authored_path.clone(), tooltip.request);
-            let kind = super::tooltip_containment::Kind {
-                hoverable: false,
-                delay: super::tooltip_containment::RICH_TEXT_DELAY,
-            };
-            std::rc::Rc::new(
-                move |index: Option<u32>, window: &mut Window, cx: &mut App| {
-                    let _ = tree.update(cx, |tree, cx| {
-                        tree.hover_tooltip(source.clone(), kind, index.is_some(), index, window, cx)
-                    });
-                },
-            ) as TooltipHover
-        });
+        if let Some(tooltip) = tooltip {
+            let request = tooltip.request;
+            let parent = cx.entity().downgrade();
+            interactive = interactive.tooltip(move |index, _, cx| {
+                let character_index = u32::try_from(index).ok()?;
+                let content = parent
+                    .update(cx, |this, cx| {
+                        let content = rich_tooltip_content(&this.root, request, character_index);
+                        cx.emit(wire::Event::TooltipRequest {
+                            request,
+                            character_index: Some(character_index),
+                        });
+                        content
+                    })
+                    .ok()
+                    .flatten();
+                content
+                    .map(|content| super::tooltip_containment::build(parent.clone(), content, cx))
+            });
+        }
         let picked = linked
             .as_ref()
             .and_then(|(_, linking)| linking.picked)
@@ -455,7 +459,6 @@ impl ViewTree {
             active_handle: Default::default(),
             selection: selection_range,
             order: self.selection_order.clone(),
-            tooltip_hover,
         }
         .into_any_element()
     }

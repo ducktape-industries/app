@@ -2,7 +2,7 @@
 //! order, key context, tooltips, and one listener per handler the guest
 //! set, each emitting the matching `wire::Event`.
 
-use super::{AuthoredPath, ViewTree, tooltip_containment};
+use super::ViewTree;
 use gpui_kit::{
     Context, FocusHandle, KeyDownEvent, KeyUpEvent, ModifiersChangedEvent, MouseButton,
     MouseDownEvent, MouseExitEvent, MouseMoveEvent, MousePressureEvent, MouseUpEvent, PinchEvent,
@@ -15,7 +15,6 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     mut element: E,
     interactivity: &wire::Interactivity,
     focus_handle: Option<FocusHandle>,
-    path: &AuthoredPath,
     cx: &mut Context<ViewTree>,
 ) -> E {
     if let Some(value) = interactivity.tab_stop {
@@ -53,7 +52,24 @@ pub(super) fn apply<E: StatefulInteractiveElement>(
     }
     element = apply_mouse(element, interactivity, cx);
     element = apply_keyboard(element, interactivity, cx);
-    element = apply_misc(element, interactivity, path, cx);
+    element = apply_misc(element, interactivity, cx);
+    if let Some(tooltip) = &interactivity.tooltip
+        && let Some(content) = &tooltip.content
+    {
+        let parent = cx.entity().downgrade();
+        let content = content.clone();
+        let delay = Duration::from_millis(tooltip.delay_ms);
+        element = element.tooltip_show_delay(delay);
+        if tooltip.hoverable {
+            element = element.hoverable_tooltip(move |_, cx| {
+                super::tooltip_containment::build(parent.clone(), *content.clone(), cx)
+            });
+        } else {
+            element = element.tooltip(move |_, cx| {
+                super::tooltip_containment::build(parent.clone(), *content.clone(), cx)
+            });
+        }
+    }
     element
 }
 
@@ -266,33 +282,26 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
 fn apply_misc<E: StatefulInteractiveElement>(
     mut element: E,
     interactivity: &wire::Interactivity,
-    path: &AuthoredPath,
     cx: &mut Context<ViewTree>,
 ) -> E {
-    let tooltip = interactivity.tooltip.as_ref().map(|tooltip| {
-        let kind = tooltip_containment::Kind {
-            hoverable: tooltip.hoverable,
-            delay: Duration::from_millis(tooltip.delay_ms),
-        };
-        ((path.clone(), tooltip.request), kind)
-    });
-    if interactivity.on_hover.is_some() || tooltip.is_some() {
+    let tooltip_request = interactivity
+        .tooltip
+        .as_ref()
+        .map(|tooltip| tooltip.request);
+    if interactivity.on_hover.is_some() || tooltip_request.is_some() {
         let handler = interactivity.on_hover;
-        element = element.on_hover(cx.listener(move |tree, hovered, window, cx| {
+        element = element.on_hover(cx.listener(move |_, hovered, _, cx| {
             if let Some(handler) = handler {
                 cx.emit(wire::Event::Hover {
                     handler,
                     hovered: *hovered,
                 });
             }
-            if let Some((source, kind)) = &tooltip {
-                if *hovered {
-                    cx.emit(wire::Event::TooltipRequest {
-                        request: source.1,
-                        character_index: None,
-                    });
-                }
-                tree.hover_tooltip(source.clone(), *kind, *hovered, None, window, cx);
+            if *hovered && let Some(request) = tooltip_request {
+                cx.emit(wire::Event::TooltipRequest {
+                    request,
+                    character_index: None,
+                });
             }
         }));
     }

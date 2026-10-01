@@ -371,13 +371,7 @@ impl ViewTree {
                 .or_insert_with(|| cx.focus_handle());
             tabbed(handle.clone(), interactivity)
         });
-        element = super::interactivity::apply(
-            element,
-            interactivity,
-            focus_handle,
-            &self.authored_path,
-            cx,
-        );
+        element = super::interactivity::apply(element, interactivity, focus_handle, cx);
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {

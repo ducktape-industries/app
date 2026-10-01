@@ -39,10 +39,8 @@ impl ViewTree {
         let mut editors = std::collections::HashSet::new();
         let mut sensors = std::collections::HashSet::new();
         let mut mounted = std::collections::HashSet::new();
-        let mut tooltips = std::collections::HashSet::new();
         walk_authored_paths(&root, &mut Vec::new(), &mut |node, path| {
             mounted.insert(path.clone());
-            super::tooltip_containment::sources(node, path, &mut tooltips);
             // a scrolling container with an id keeps its handle; an id-less
             // one has no path of its own to keep it at
             if let wire::Node::Container(view_wire::ContainerNode {
@@ -149,7 +147,6 @@ impl ViewTree {
         });
         self.editors.retain(|key, _| editors.contains(key));
         self.sensors.retain(|key, _| sensors.contains(key));
-        self.retain_tooltip(&tooltips);
         self.root = root;
         cx.notify();
     }

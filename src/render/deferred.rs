@@ -136,7 +136,7 @@ impl Element for SlotDeferred {
 /// Runs `f` inside a guest deferral, then restores the outer state, on
 /// unwind too: a panic caught mid-frame (the gpui test harness catches
 /// one per test) leaves no later frame drawing in place.
-fn inside<R>(f: impl FnOnce() -> R) -> R {
+pub(super) fn inside<R>(f: impl FnOnce() -> R) -> R {
     struct Restore(bool);
     impl Drop for Restore {
         fn drop(&mut self) {
