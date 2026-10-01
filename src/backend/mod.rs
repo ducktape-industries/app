@@ -133,6 +133,9 @@ pub(crate) fn hex_encode(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn hex_decode(value: &str) -> Result<Vec<u8>, String> {
+    if !value.is_ascii() {
+        return Err("non-ASCII hex".into());
+    }
     if !value.len().is_multiple_of(2) {
         return Err("odd-length hex".into());
     }
@@ -186,5 +189,10 @@ mod tests {
             vec![0, 255, 16]
         );
         assert!(hex_decode("abc").is_err());
+        assert!(hex_decode("a\u{e9}a").is_err(), "odd bytes, split mid-char");
+        assert!(
+            hex_decode("\u{e9}\u{e9}").is_err(),
+            "even bytes, split mid-char"
+        );
     }
 }

@@ -102,7 +102,7 @@ view-wire = { workspace = true, features = ["manifest"] }
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true

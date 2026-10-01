@@ -287,11 +287,17 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
     let started = start(guest, id, async move {
         use futures::StreamExt as _;
         let mut drained = replies.drains();
+        let mut warned = false;
         loop {
             let mut changes = match node.client.changes(&program).await {
                 Ok(changes) => changes,
                 Err(error) => {
-                    tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    if warned {
+                        tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    } else {
+                        warned = true;
+                        tracing::warn!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    }
                     tokio::time::sleep(backend::retry_delay(2)).await;
                     continue;
                 }
