@@ -395,10 +395,11 @@ fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Reply> {
         .map_err(|error| Reply::new(400, json!({ "error": error.to_string() })))
 }
 
-/// Longest the CLI waits on the door for one read or write: over the longest
-/// wait the door serves ([`MAX_DEADLINE`]), so a slow answer is not cut off.
+/// Longest the CLI waits on the door for one read or write. An `audit --walk`
+/// is not held to [`MAX_DEADLINE`] (each arrow press may wait for focus), so
+/// this matches the 300 s qa's walk.py gives `/audit`.
 #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
-const CALL_TIMEOUT: Duration = Duration::from_secs(90);
+const CALL_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// One call to the door: its status and body.
 #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
