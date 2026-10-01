@@ -278,6 +278,10 @@ view ─ Request{id, kind, payload} ─► Guest::answer ─► kernel::answer �
 view ◄─ Event::Response{id, done} ◄── Replies (drained at next redraw) ◄─ views-kernel task
 ```
 
+Every code the host refuses a request with below (`unknown_request`,
+`stale_connection`, …) is a const in `view_wire::methods::refusal`, with
+its meaning; the host and the views name the const, never the string.
+
 1. **Ask.** The view's `tick` returns requests in its `Frame`. `Guest::answer`
    (`runtime/guest/requests.rs`) caps the payload (`MAX_PAYLOAD_BYTES`;
    `MAX_OP_BYTES` plus the envelope for `op.submit` and `module.describe`),
