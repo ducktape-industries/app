@@ -3,9 +3,10 @@
 //! it in its notification centre (per network, on this device) and decides
 //! whether a banner reaches the screen:
 //!
-//! - the person's word on the view: none yet → logged, and the view's
-//!   window asks them (the permission bar); Block → dropped, not even
-//!   logged; Silent → logged only; Allow → on to the rest;
+//! - the person's word on the view: none yet → logged, its newest few
+//!   rows only, and the view's window asks them (the permission bar);
+//!   Block → dropped, not even logged; Silent → logged only; Allow → on
+//!   to the rest;
 //! - banners off for the device (`desktop_notifications`) → logged only;
 //! - the view is the window the person is looking at → logged only, unless
 //!   they asked to see banners in front too;
@@ -83,25 +84,31 @@ pub(super) fn answer(
     id: u64,
     payload: &[u8],
 ) -> bool {
-    let post = match (capability, operation) {
-        (Capability::Notify, "post") => methods::decode::<Notification>(payload),
-        (Capability::Notify, "seen") => {
-            seen(guest, id, payload);
-            return true;
-        }
+    match (capability, operation) {
+        (Capability::Notify, "post") => post(guest, center(), id, payload),
+        (Capability::Notify, "seen") => seen(guest, id, payload),
         _ => return false,
-    };
-    let post = match post.and_then(|post| shortened(post).map_err(str::to_owned)) {
+    }
+    true
+}
+
+/// `notify.post` into `center`: judged by the settings as last read
+/// ([`Settings::kept`]), not a prefs read per post; the log is written at
+/// the end of the redraw ([`center::Center::flush`]).
+fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
+    let post = methods::decode::<Notification>(payload)
+        .and_then(|post| shortened(post).map_err(str::to_owned));
+    let post = match post {
         Ok(post) => post,
         Err(error) => {
             guest.refuse(id, refusal::MALFORMED_REQUEST, error);
-            return true;
+            return;
         }
     };
     let (posted, banner, entry) = {
-        let mut center = center().lock();
+        let mut center = center.lock();
         let (posted, banner) = center.post(
-            &Settings::load(),
+            &Settings::kept(),
             guest.module,
             &guest.name,
             post,
@@ -135,7 +142,6 @@ pub(super) fn answer(
         };
         Ok(methods::encode(&posted))
     });
-    true
 }
 
 /// `notify.seen`: the view's rows under the tag read, and its standing

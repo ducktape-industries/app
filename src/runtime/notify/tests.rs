@@ -1,6 +1,10 @@
 use std::time::{Duration, Instant};
 
-use super::center::{Center, MAX_AGE, MAX_ENTRIES, read_log};
+use std::path::Path;
+
+use super::center::{
+    Center, CenterHandle, MAX_AGE, MAX_ENTRIES, UNANSWERED_ENTRIES, VIEW_ENTRIES, read_log,
+};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
 use super::{MAX_TEXT, in_order, shortened};
 use crate::runtime::WindowKey;
@@ -216,24 +220,23 @@ fn reading_a_tag_reads_only_the_views_own_rows_under_it() {
 fn the_log_is_capped_by_count_and_age() {
     let now = Instant::now();
     let mut center = Center::default();
-    let silent = settings(Some(Permission::Silent));
+    // six views, each under its own share of the log
+    let views: Vec<String> = (0..6).map(|nth| format!("view{nth}")).collect();
+    let mut silent = settings(None);
+    for view in &views {
+        silent.views.insert(view.clone(), Permission::Silent);
+    }
     for nth in 0..(MAX_ENTRIES as i64 + 20) {
-        center.post(
-            &silent,
-            "chat",
-            "Chat",
-            post(&nth.to_string(), ""),
-            now,
-            nth,
-        );
+        let view = &views[nth as usize % views.len()];
+        center.post(&silent, view, "View", post(&nth.to_string(), ""), now, nth);
     }
     assert_eq!(center.entries().count(), MAX_ENTRIES);
     assert_eq!(center.entries().last().unwrap().title, "20");
     // thirty days on from the row at 100: everything before it ages out
     center.post(
         &silent,
-        "chat",
-        "Chat",
+        "view0",
+        "View",
         post("late", ""),
         now,
         100 + MAX_AGE,
@@ -350,9 +353,11 @@ fn a_log_cut_short_is_set_aside_and_the_next_post_writes_a_fresh_one() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dev.json");
     let silent = settings(Some(Permission::Silent));
+    let _off = crate::perf::off_for_test();
     let mut center = Center::default();
+    center.open_log("dev", Some(path.clone()));
     center.post(&silent, "chat", "Chat", post("old", ""), Instant::now(), 1);
-    center.write_log(&path);
+    flushed(&mut center, &path);
     let whole = std::fs::read(&path).unwrap();
     let cut = &whole[..whole.len() - 3];
     std::fs::write(&path, cut).unwrap();
@@ -361,8 +366,9 @@ fn a_log_cut_short_is_set_aside_and_the_next_post_writes_a_fresh_one() {
     assert_eq!(std::fs::read(dir.path().join("dev.json.bad")).unwrap(), cut);
 
     let mut reopened = Center::default();
+    reopened.open_log("dev", Some(path.clone()));
     reopened.post(&silent, "chat", "Chat", post("new", ""), Instant::now(), 2);
-    reopened.write_log(&path);
+    flushed(&mut reopened, &path);
     let kept = read_log(&path).unwrap();
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].title, "new");
@@ -376,18 +382,131 @@ fn an_unreadable_log_is_not_saved_over() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("dev.json");
     let silent = settings(Some(Permission::Silent));
+    let _off = crate::perf::off_for_test();
     let mut center = Center::default();
+    center.open_log("dev", Some(path.clone()));
     center.post(&silent, "chat", "Chat", post("old", ""), Instant::now(), 1);
-    center.write_log(&path);
+    flushed(&mut center, &path);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
 
     let mut reopened = Center::default();
     reopened.open_log("dev", Some(path.clone()));
     reopened.post(&silent, "chat", "Chat", post("new", ""), Instant::now(), 2);
+    flushed(&mut reopened, &path);
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
 
     assert_eq!(reopened.entries().count(), 1);
     let kept = read_log(&path).unwrap();
     assert_eq!(kept.len(), 1);
     assert_eq!(kept[0].title, "old");
+}
+
+/// `center`'s turn over: its log handed to the disk, and landed.
+fn flushed(center: &mut Center, path: &Path) {
+    center.flush();
+    settled(path);
+}
+
+/// Every write queued for the log at `path` has landed: they run one after
+/// another, so a job queued behind them runs last.
+fn settled(path: &Path) {
+    let (tell, told) = std::sync::mpsc::channel();
+    in_order(&path.to_string_lossy(), move || tell.send(()).unwrap());
+    told.recv_timeout(Duration::from_secs(10)).unwrap();
+}
+
+/// A view posting 600 notices keeps its newest 100 rows and leaves the
+/// other views' rows where they were; a view the person has not answered
+/// keeps its newest five, however much it posts.
+#[test]
+fn one_views_flood_leaves_the_other_views_rows() {
+    let now = Instant::now();
+    let mut center = Center::default();
+    let mut answered = settings(Some(Permission::Silent));
+    answered.views.insert("forge".into(), Permission::Allow);
+    for nth in 0..3 {
+        center.post(
+            &answered,
+            "forge",
+            "Forge",
+            post(&format!("forge {nth}"), ""),
+            now,
+            nth,
+        );
+    }
+    for nth in 0..600 {
+        center.post(
+            &answered,
+            "chat",
+            "Chat",
+            post(&nth.to_string(), ""),
+            now,
+            10 + nth,
+        );
+    }
+    let rows = |center: &Center, module: &str| {
+        center
+            .entries()
+            .filter(|entry| entry.module == module)
+            .map(|entry| entry.title.clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(rows(&center, "forge"), ["forge 2", "forge 1", "forge 0"]);
+    let chat = rows(&center, "chat");
+    assert_eq!(chat.len(), VIEW_ENTRIES);
+    assert_eq!((chat[0].as_str(), chat[99].as_str()), ("599", "500"));
+
+    for nth in 0..600 {
+        center.post(
+            &answered,
+            "spam",
+            "Spam",
+            post(&nth.to_string(), ""),
+            now,
+            700 + nth,
+        );
+    }
+    assert!(center.asking.contains("spam"), "the bar still asks");
+    assert_eq!(rows(&center, "spam"), ["599", "598", "597", "596", "595"]);
+    assert_eq!(UNANSWERED_ENTRIES, 5);
+    assert_eq!(rows(&center, "forge").len(), 3);
+    assert_eq!(rows(&center, "chat").len(), VIEW_ENTRIES);
+}
+
+/// 256 posts in one redraw: the prefs are read once, not per post, and
+/// the log is written once, at the end of the redraw and off the window
+/// thread, not per post.
+#[test]
+fn a_redraws_posts_read_the_prefs_once_and_write_the_log_once() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dev.json");
+    let center = CenterHandle::default();
+    center.lock().open_log("dev", Some(path.clone()));
+    crate::backend::edit_prefs(|prefs| {
+        prefs[VIEWS_PREF] = serde_json::json!({ "request-test": "Silent" });
+    });
+    let mut guest = crate::runtime::kernel::tests::guest();
+    let _on = crate::perf::on_for_test();
+    let reads = crate::backend::prefs_reads();
+    for id in 0..256 {
+        let notice = methods::encode(&post(&id.to_string(), ""));
+        super::post(&mut guest, &center, id, &notice);
+    }
+    assert_eq!(
+        crate::backend::prefs_reads() - reads,
+        1,
+        "prefs read per post"
+    );
+    assert!(
+        !path.exists(),
+        "the log was written before the redraw ended"
+    );
+    // the end of the redraw (`Guest::redraw`)
+    center.lock().flush();
+    settled(&path);
+    let saves = &crate::perf::snapshot(false)["shell"]["io.notify_save"]["n"];
+    assert_eq!(saves.as_u64(), Some(1), "one write for the redraw's posts");
+    let kept = read_log(&path).unwrap();
+    assert_eq!(kept.len(), VIEW_ENTRIES);
+    assert_eq!(kept.last().unwrap().title, "255");
 }
