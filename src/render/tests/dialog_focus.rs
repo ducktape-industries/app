@@ -120,3 +120,101 @@ fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext)
         "Save, Cancel and round again: the keys stay in the dialog"
     );
 }
+
+/// A screen whose dialog the view wraps around it only once it opens
+/// (chat's Create channel, chat-view `ui/mod.rs` `with_create`): the
+/// opener, a button with no guest focus handle, moves under the overlay,
+/// so its path changes — and its host focus handle dies — as it opens.
+fn wrapped(open: bool) -> wire::Node {
+    let base = container("base", [button("open", "New channel")]);
+    if !open {
+        return sized("root", base, Some(fill()), Some(fill()));
+    }
+    let overlay = wire::Node::Overlay {
+        id: named_id("create"),
+        label: Some("Create channel".into()),
+        on_dismiss: None,
+        children: vec![
+            base,
+            container(
+                "sheet",
+                [
+                    input("Name", false, false),
+                    handled("save", "Save", 2),
+                    handled("cancel", "Cancel", 3),
+                ],
+            ),
+        ],
+        style: div().size_full().style().clone(),
+    };
+    sized("root", overlay, Some(fill()), Some(fill()))
+}
+
+/// Whether the keys are in the one open dialog (its trap's handle contains
+/// the focused element).
+fn inside(tree: &gpui_kit::Entity<ViewTree>, native: &mut gpui_kit::VisualTestContext) -> bool {
+    let entry = tree.read_with(native, |tree, _| {
+        tree.dialogs.values().next().map(|(entry, _)| entry.clone())
+    });
+    native.update(|window, cx| entry.is_some_and(|entry| entry.contains_focused(window, cx)))
+}
+
+/// In a window whose root takes the keys back when the focused element
+/// vanishes (as the app's `WindowRoot::focus_lost` does, shell/layers/root.rs),
+/// a dialog wrapped around its opener as it opens still takes the keyboard:
+/// it opens on its first control and Tab goes round it.
+#[gpui_kit::test]
+fn a_dialog_wrapped_around_its_opener_takes_the_keys(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::AppContext as _;
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |window, cx| {
+        let tree = cx.new(|_| ViewTree::new(wrapped(false)));
+        gpui_kit::component::Root::new(tree, window, cx)
+    });
+    let tree = window
+        .read_with(cx, |root, _| root.view().clone())
+        .unwrap()
+        .downcast::<ViewTree>()
+        .unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let root = native.update(|_, cx| cx.focus_handle());
+    let fallback = native.update(|window, cx| {
+        let root = root.clone();
+        tree.update(cx, |_, cx| {
+            cx.on_focus_lost(window, move |_, window, cx| window.focus(&root, cx))
+        })
+    });
+    native.simulate_click(
+        gpui_kit::point(px(10.), px(10.)),
+        gpui_kit::Modifiers::none(),
+    );
+    let opener = native.update(|window, cx| window.focused(cx));
+    assert!(opener.is_some(), "a press gave the opener the keys");
+    tree.update(&mut native, |tree, cx| tree.replace(wrapped(true), cx));
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    let now = native.update(|window, cx| window.focused(cx));
+    assert!(
+        inside(&tree, &mut native),
+        "the dialog opened with the keys inside it, not on the window's root: focused={now:?} root={root:?}"
+    );
+    let walk: Vec<_> = ["tab", "tab", "tab", "shift-tab"]
+        .into_iter()
+        .map(|key| {
+            native.simulate_keystrokes(key);
+            (holder(&tree, &mut native), inside(&tree, &mut native))
+        })
+        .collect();
+    assert_eq!(
+        walk,
+        [
+            (Some(2), true),
+            (Some(3), true),
+            (None, true),
+            (Some(3), true)
+        ],
+        "Name, Save, Cancel, round to Name and back: the keys stay in the dialog"
+    );
+    drop(fallback);
+}
