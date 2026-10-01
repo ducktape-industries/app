@@ -50,6 +50,8 @@ impl ViewTree {
             element = element.group_active(group.group.clone(), move |_| style);
         }
         element = self.guest_aria(element, node, interactivity, cx);
+        let above = self.keyed;
+        let mut holds = false;
         // Only a container with an id of its own owns its path. An id-less one
         // sits on its nearest named ancestor's path: measuring there, it and
         // the ancestor overwrite each other's bounds and notify every frame,
@@ -74,14 +76,57 @@ impl ViewTree {
                 let handle = super::accessibility::tabbed(handle.clone(), interactivity);
                 element = element.track_focus(&handle);
             }
+            // The handle this container tracks: the Focus command's (tracked
+            // last, so it is the one gpui sees), else the guest's, else, for
+            // a plain focusable, the host's own in place of the one gpui
+            // would keep to itself.
+            let tracked = match (
+                self.focus_targets.get(&path),
+                interactivity
+                    .focus_handle
+                    .and_then(|id| self.guest_focus_targets.get(&id)),
+            ) {
+                (Some((_, handle)), _) | (None, Some(handle)) => Some(handle.clone()),
+                (None, None) if interactivity.focusable => {
+                    let own = self
+                        .focusables
+                        .entry(path.clone())
+                        .or_insert_with(|| cx.focus_handle())
+                        .clone();
+                    let handle = super::accessibility::tabbed(own.clone(), interactivity);
+                    element = element.track_focus(&handle);
+                    Some(own)
+                }
+                (None, None) => None,
+            };
+            // The keys are on this container while that handle shows keyboard
+            // focus, and a claim below counts only then. Focused is the gate
+            // gpui applies before it honours a claim. A view draws every
+            // composite's active row claimed (the SDK has no focus signal),
+            // so without it a second list stacked in a page scroller pulls
+            // the page to its row as the page opens, and again with every
+            // row the chain adds. A key the last input, since a press on a
+            // row gives its list the keys too: scrolling to the active row
+            // then would take the pressed one from under the pointer before
+            // the release.
+            if let Some(handle) = tracked {
+                holds = handle.is_focused(window) && window.last_input_was_keyboard();
+                self.keyed = holds;
+            }
             element = match style.overflow.y == Some(gpui_kit::Overflow::Scroll) {
                 true => element.child(over_padding(&style.padding, self.measure(&path, cx))),
                 false => element.child(self.measure(&path, cx)),
             };
         }
+        let claimed = self.claiming.len();
         for child in children {
             element = element.child(self.node(child, window, cx));
         }
+        // no node below claims the keys: they are on this container itself
+        if holds && self.claiming.len() == claimed {
+            self.claiming.insert(self.authored_path.clone());
+        }
+        self.keyed = above;
         // a view's scroller shows its vertical bar: the bar is absolute, over
         // the scroller's bounds, and the handle keeps the offset across frames.
         // The handle is kept at the scroller's own id: an id-less one would
@@ -106,7 +151,7 @@ impl ViewTree {
 
     /// A zero-paint absolute canvas that records its bounds into
     /// `bounds[path]` and notifies when they change, and, on the first frame
-    /// a claim is on `path`, scrolls to it ([`Self::reveal`]). Only a node
+    /// the keys are on `path`, scrolls to it ([`Self::reveal`]). Only a node
     /// that owns `path` may measure there (see `container`).
     pub(super) fn measure(
         &self,
@@ -139,12 +184,26 @@ impl ViewTree {
 }
 
 impl ViewTree {
+    /// Scrolls to each node the keys have just come to where the last frame
+    /// measured it, ahead of this frame's layout, so the frame that shows
+    /// the keys arriving shows the node too: the door reads that one frame
+    /// after a Tab, and a node still outside the window in it is no node of
+    /// its snapshot. `measure` settles what is left, a node not measured
+    /// yet or one this frame lays out elsewhere.
+    pub(super) fn reveal_measured(&self) {
+        for path in self.claiming.difference(&self.revealed) {
+            if let Some(row) = self.bounds.get(path) {
+                self.reveal(path, *row);
+            }
+        }
+    }
+
     /// Scrolls the scroller nearest above `path` by the least that shows
-    /// `row`, the claimed node's bounds this frame (its top, when it is
-    /// taller than the scroller); the next frame draws it there. True when
-    /// it moved. A row in a virtual list is left to the list, which the
-    /// guest scrolls to the row it claims; only a plain scroller is the
-    /// host's to move, and only vertically.
+    /// `row`, the bounds as last measured of the node the keys are on (its
+    /// top, when it is taller than the scroller); the next layout draws it
+    /// there. True when it moved. A row in a virtual list is left to the
+    /// list, which the guest scrolls to the row it claims; only a plain
+    /// scroller is the host's to move, and only vertically.
     fn reveal(&self, path: &[wire::ElementIdWire], row: Bounds<Pixels>) -> bool {
         let nearest = (0..path.len()).rev().map(|end| &path[..end]).find(|above| {
             self.scrolls.contains_key(*above)

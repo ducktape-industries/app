@@ -404,11 +404,21 @@ fn claiming_list(claim: usize) -> wire::Node {
     list
 }
 
-/// A view opens on a claimed row below the fold (the open room), and its
-/// arrows move the claim; the host scrolls the plain scroller around it by
-/// the least that shows the claimed row, as it opens, up to a row above the
-/// fold and back down to one below it, and leaves the offset alone while
-/// the claim stays (the wheel may move it).
+/// Tab as the app binds it (`focus_next`; a bare window has no binding),
+/// after the key itself, which tells the window a key was the last input.
+fn tab(native: &mut gpui_kit::VisualTestContext) {
+    native.update(|window, cx| {
+        window.dispatch_keystroke(Keystroke::parse("tab").unwrap(), cx);
+        window.focus_next(cx);
+    });
+}
+
+/// A view opens on a claimed row below the fold (the open room); the claim
+/// counts once the list holds the keys, and its arrows move it. The host
+/// scrolls the plain scroller around it by the least that shows the claimed
+/// row: nothing while the list has no keys, then as Tab lands on it, up to
+/// a row above the fold and back down to one below it, and leaves the
+/// offset alone while the claim stays (the wheel may move it).
 #[gpui_kit::test]
 fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
@@ -437,8 +447,14 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
     };
     assert_eq!(
         shown(&mut native, 7),
+        (0., 280., 320.),
+        "opened on row 7 (280..320) without the keys, the list stays at its top"
+    );
+    tab(&mut native);
+    assert_eq!(
+        shown(&mut native, 7),
         (-220., 60., 100.),
-        "opened on row 7 (280..320), it sits on the bottom edge"
+        "with the keys, row 7 sits on the bottom edge"
     );
     let claim = |native: &mut gpui_kit::VisualTestContext, row: usize| {
         tree.update(native, |tree, cx| tree.replace(claiming_list(row), cx));
@@ -462,5 +478,200 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
         shown(&mut native, 8).0,
         -100.,
         "a claim that stays does not pull the scroller back"
+    );
+}
+
+/// The Explorer overview under 960 px, 300 px of its page scroller
+/// showing: a link, a list box, a link, a list box, stacked. Each link is
+/// 40 px and a Tab stop; each list is ten rows of 40 px claiming its row 0,
+/// as the SDK composite does. The second link and list are below the fold.
+fn stacked_lists() -> wire::Node {
+    let link = |id: &str| {
+        let mut link =
+            container_with_style(id, div().h(px(40.)).flex_shrink_0().style().clone(), []);
+        if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut link {
+            interactivity.role = Some(gpui_kit::Role::Link);
+            interactivity.aria.label = Some(id.to_owned().into());
+            interactivity.focusable = true;
+            interactivity.tab_stop = Some(true);
+        }
+        link
+    };
+    let list = |id: &str| {
+        let mut list = claiming_list(0);
+        if let wire::Node::Container(view_wire::ContainerNode { id: key, style, .. }) = &mut list {
+            *key = Some(named_id(id));
+            *style = div()
+                .flex()
+                .flex_col()
+                .w(px(200.))
+                .h(px(400.))
+                .flex_shrink_0()
+                .style()
+                .clone();
+        }
+        list
+    };
+    let mut style = div()
+        .flex()
+        .flex_col()
+        .w(px(200.))
+        .h(px(300.))
+        .style()
+        .clone();
+    style.overflow.y = Some(gpui_kit::Overflow::Scroll);
+    container_with_style(
+        "page",
+        style,
+        [
+            link("all-blocks"),
+            list("blocks"),
+            link("all-transactions"),
+            list("transactions"),
+        ],
+    )
+}
+
+/// The page's offset, and the top and bottom inside the page of its node
+/// at `path`, as the last frame drew them.
+fn stacked(tree: &ViewTree, path: &[&str]) -> (f32, f32, f32) {
+    let page = vec![named_id("page")];
+    let node: Vec<_> = std::iter::once("page")
+        .chain(path.iter().copied())
+        .map(named_id)
+        .collect();
+    let (view, node) = (tree.scrolls[&page].bounds(), tree.bounds[&node]);
+    let offset = f32::from(tree.scrolls[&page].offset().y);
+    let (top, bottom) = (node.top() - view.top(), node.bottom() - view.top());
+    (offset, f32::from(top), f32::from(bottom))
+}
+
+/// Nothing in the stacked overview holds the keys as the page opens, so it
+/// opens at its top, on the newest blocks. A Tab walk then brings what it
+/// lands on into view by the least that shows it, a link itself and a list
+/// by the row it claims, and the one frame the door reads after each Tab
+/// already draws it there. Shift+Tab back onto the first list brings that
+/// list's row 0 back to the top.
+#[gpui_kit::test]
+fn a_page_of_stacked_lists_opens_at_its_top_and_follows_the_keys(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(400.)), |_, cx| {
+        Seat(cx.new(|_| ViewTree::new(stacked_lists())))
+    });
+    let tree = window
+        .root(cx)
+        .unwrap()
+        .read_with(cx, |seat, _| seat.0.clone());
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    // after `frames` more frames, drawn as the door draws one to read it
+    // (`ax::actions::current`): the tree cached in its seat, nothing
+    // refreshed, so only what the focus move made dirty is rendered. With
+    // none, the read is of the first frame after the key: the test
+    // platform draws it as the update that pressed the key ends.
+    let drawn = |native: &mut gpui_kit::VisualTestContext, frames: usize, path: &[&str]| {
+        native.update(|window, cx| {
+            for _ in 0..frames {
+                window.draw(cx).clear(cx);
+            }
+            tree.read_with(cx, |tree, _| stacked(tree, path))
+        })
+    };
+    assert_eq!(
+        drawn(&mut native, 3, &["transactions", "row-0"]),
+        (0., 480., 520.),
+        "the page opens at its top, the second list's row 0 (480..520) below the fold"
+    );
+    tab(&mut native);
+    assert_eq!(
+        drawn(&mut native, 3, &["all-blocks"]),
+        (0., 0., 40.),
+        "the first link is in view: Tab onto it moves nothing"
+    );
+    tab(&mut native);
+    assert_eq!(
+        drawn(&mut native, 3, &["blocks", "row-0"]),
+        (0., 40., 80.),
+        "so is the first list's row 0"
+    );
+    tab(&mut native);
+    let link = drawn(&mut native, 0, &["all-transactions"]);
+    assert_eq!(
+        link,
+        (-180., 260., 300.),
+        "the first frame after Tab draws the second link (440..480) on the bottom edge"
+    );
+    assert_eq!(drawn(&mut native, 3, &["all-transactions"]), link);
+    tab(&mut native);
+    let row = drawn(&mut native, 0, &["transactions", "row-0"]);
+    assert_eq!(
+        row,
+        (-220., 260., 300.),
+        "and the one after the next Tab the second list's row 0"
+    );
+    assert_eq!(drawn(&mut native, 3, &["transactions", "row-0"]), row);
+    native.update(|window, cx| {
+        window.focus_prev(cx);
+        window.focus_prev(cx);
+    });
+    assert_eq!(
+        drawn(&mut native, 3, &["blocks", "row-0"]),
+        (-40., 0., 40.),
+        "the first list, keyed again, brings its row 0 back to the top edge"
+    );
+}
+
+/// A press on a row gives its list the keys as well, and moves nothing: a
+/// scroll to the list's active row, out of view above, would take the
+/// pressed row from under the pointer before the release. The first key
+/// after it is the keyboard's, and brings the active row into view.
+#[gpui_kit::test]
+fn a_press_on_a_row_does_not_scroll_to_the_active_row(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(400.)), |_, _| {
+        ViewTree::new(stacked_lists())
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let drawn = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            for _ in 0..3 {
+                window.render_frame(cx);
+            }
+            tree.read_with(cx, |tree, _| stacked(tree, &["blocks", "row-0"]))
+        })
+    };
+    drawn(&mut native);
+    tree.read_with(&native, |tree, _| {
+        tree.scrolls[&vec![named_id("page")]].set_offset(gpui_kit::point(px(0.), px(-220.)))
+    });
+    assert_eq!(
+        drawn(&mut native),
+        (-220., -180., -140.),
+        "scrolled by the wheel, the first list's row 0 (40..80) is out of view above"
+    );
+    // its row 6 (280..320) is drawn at 60..100
+    let row = point(px(100.), px(80.));
+    native.simulate_mouse_move(row, None, Default::default());
+    native.simulate_mouse_down(row, MouseButton::Left, Default::default());
+    assert_eq!(
+        drawn(&mut native),
+        (-220., -180., -140.),
+        "the press leaves the page where it is"
+    );
+    native.simulate_mouse_up(row, MouseButton::Left, Default::default());
+    let held = native.update(|window, cx| {
+        let blocks = vec![named_id("page"), named_id("blocks")];
+        tree.read(cx).focusables[&blocks].is_focused(window)
+    });
+    assert!(held, "the pressed row's list took the keys");
+    native.update(|window, cx| {
+        window.dispatch_keystroke(Keystroke::parse("down").unwrap(), cx);
+    });
+    assert_eq!(
+        drawn(&mut native),
+        (-40., 0., 40.),
+        "a key on the list brings its active row to the top edge"
     );
 }

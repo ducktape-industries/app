@@ -130,6 +130,7 @@ impl ViewTree {
             .retain(|key, (kind, _)| focusable.get(key) == Some(kind));
         self.guest_focus_targets
             .retain(|id, _| guest_focus_ids.contains(id));
+        self.focusables.retain(|key, _| mounted.contains(key));
         self.fields.retain(|key, _| inputs.contains(key));
         self.scrolls.retain(|key, _| scrolls.contains(key));
         self.uniform_lists.retain(|id, list| {

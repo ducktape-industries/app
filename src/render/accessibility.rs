@@ -334,8 +334,9 @@ impl ViewTree {
         // focusable ancestor, when focused): the sanitizer keeps neither
         if aria.active_descendant {
             element = element.aria_active_descendant();
-            // its bounds are measured, and its scroller brought to it, by path
-            if node.identity().is_some() {
+            // its bounds are measured, and its scroller brought to it, by
+            // path, while its composite shows keyboard focus
+            if node.identity().is_some() && self.keyed {
                 self.claiming.insert(self.authored_path.clone());
             }
         }

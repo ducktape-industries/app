@@ -161,9 +161,11 @@ pub struct ViewTree {
     // Scrolling.
     /// Identified containers with `overflow.y: scroll`; the scroll widget commands' targets.
     scrolls: HashMap<AuthoredPath, ScrollHandle>,
-    /// The identified nodes this render claims as a composite's active
-    /// descendant, and those already scrolled into view: a claim that moves
-    /// onto a node scrolls the plain scroller around it to it, once.
+    /// The identified nodes the keys are on this render, and those already
+    /// scrolled into view. The keys are on the container that shows keyboard
+    /// focus (`keyed`), or on the node below it that claims to be its active
+    /// descendant; as they come to a node, the plain scroller around it
+    /// scrolls to it, once.
     claiming: std::collections::HashSet<AuthoredPath>,
     revealed: std::collections::HashSet<AuthoredPath>,
     uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
@@ -175,6 +177,14 @@ pub struct ViewTree {
     // the guest names by number.
     focus_targets: HashMap<AuthoredPath, (std::mem::Discriminant<wire::Node>, FocusHandle)>,
     guest_focus_targets: HashMap<u64, FocusHandle>,
+    /// The host's handle for an identified container that is focusable and
+    /// names none (a button, a composite): gpui would keep its own inside
+    /// the element, where the host cannot ask it whether it holds the keys.
+    focusables: HashMap<AuthoredPath, FocusHandle>,
+    /// Whether the nearest focusable container above the node being drawn
+    /// shows keyboard focus: it is focused, and a key was the last input.
+    /// A claim counts only under one that does (`claiming`).
+    keyed: bool,
     /// The overlays showing a dialog: where focus enters each, and what
     /// held focus as it opened.
     dialogs: HashMap<AuthoredPath, (FocusHandle, Option<WeakFocusHandle>)>,
@@ -221,6 +231,8 @@ impl ViewTree {
             root,
             focus_targets: HashMap::new(),
             guest_focus_targets: HashMap::new(),
+            focusables: HashMap::new(),
+            keyed: false,
             fields: HashMap::new(),
             links: HashMap::new(),
             authored_path: Vec::new(),
@@ -322,7 +334,7 @@ impl Render for ViewTree {
         // a linked text the last render did not draw is gone
         self.links
             .retain(|_, links| std::mem::take(&mut links.drawn));
-        // a claim the last render did not make is revealed again if it comes back
+        // a node the keys left is revealed again when they come back
         let claimed = std::mem::take(&mut self.claiming);
         self.revealed.retain(|path| claimed.contains(path));
         // Paragraph selection order starts at a base unique to this view (its
@@ -334,6 +346,7 @@ impl Render for ViewTree {
             commands::dialog_exit(opener, window, cx);
         }
         let node = self.node(&self.root.clone(), window, cx);
+        self.reveal_measured();
         // Carried-over state is for the first render of a new tree only:
         // whatever it did not claim is dropped.
         self.presentation = NativePresentation::default();
