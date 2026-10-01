@@ -37,7 +37,7 @@ pub(crate) struct Told(tokio::sync::oneshot::Receiver<bool>);
 
 impl Told {
     /// The person's answer; `None` when nobody can answer any more.
-    pub(super) async fn answer(&mut self) -> Option<bool> {
+    pub(crate) async fn answer(&mut self) -> Option<bool> {
         (&mut self.0).await.ok()
     }
 }
@@ -84,9 +84,22 @@ pub(crate) struct Ask {
 }
 
 /// The asks waiting for the person, oldest first; the shell shows the front.
+/// One queue for the process, as there is one person. Under test, one per
+/// test thread: the tests share the process, and a card one test asks for
+/// would open in another test's window as its dialog closed.
 pub(crate) fn waiting() -> &'static Mutex<VecDeque<Ask>> {
-    static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
-    WAITING.get_or_init(Mutex::default)
+    #[cfg(not(test))]
+    {
+        static WAITING: OnceLock<Mutex<VecDeque<Ask>>> = OnceLock::new();
+        WAITING.get_or_init(Mutex::default)
+    }
+    #[cfg(test)]
+    {
+        thread_local! {
+            static WAITING: &'static Mutex<VecDeque<Ask>> = Box::leak(Box::default());
+        }
+        WAITING.with(|waiting| *waiting)
+    }
 }
 
 /// The queue, less every ask whose request let go of it (`Told`).
@@ -131,14 +144,28 @@ pub(crate) fn refuse_all() {
 /// program id, the roster's name for it: a view's manifest name is the
 /// view's own word, and a hostile one would pick a name that reads as
 /// someone else's (or carries a bidi override). The id is the one the
-/// chain lists it under. `own` is the account the seated key holds as the
-/// app resolved it, `None` until it has: a `RemoveKey` names the account
-/// it strips, which a manager may make an agent's, and the card says
-/// which.
-pub(super) fn needed(program: &str, target: &str, body: &[u8], own: Option<u64>) -> Option<Words> {
+/// chain lists it under; the card says "System" instead when genesis bound
+/// that program to a role the kernel calls (`roles`, as the node's
+/// registry answers them; `None` when it does not, and every program is
+/// named by its id). `own` is the account the seated key holds as the app
+/// resolved it, `None` until it has: a `RemoveKey` names the account it
+/// strips, which a manager may make an agent's, and the card says which.
+pub(super) fn needed(
+    program: &str,
+    roles: Option<&abi::Roles>,
+    target: &str,
+    body: &[u8],
+    own: Option<u64>,
+) -> Option<Words> {
     if target != identity::MODULE {
         return None;
     }
+    let bound = roles.is_some_and(|roles| {
+        [&roles.registry, &roles.validators, &roles.identity]
+            .iter()
+            .any(|role| role.as_str() == program)
+    });
+    let program = if bound { "System" } else { program };
     let Ok(op) = abi::decode::<identity::Op>(body) else {
         return Some(Words {
             said: format!(
@@ -223,16 +250,6 @@ pub(crate) fn queue(module: &'static str, instance: u64, words: Words) -> Option
     Some(Told(told))
 }
 
-/// The queue is one for the process: a test that queues an ask holds this
-/// for its whole run, so no other test's ask lands in the middle of it.
-#[cfg(test)]
-pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
-    static SERIAL: Mutex<()> = Mutex::new(());
-    SERIAL
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,7 +260,8 @@ mod tests {
     /// program, is not.
     #[test]
     fn the_ops_that_remove_or_suspend_are_asked_and_nothing_else_is() {
-        let asked = |op: &identity::Op| needed("chat", identity::MODULE, &abi::encode(op), Some(7));
+        let asked =
+            |op: &identity::Op| needed("chat", None, identity::MODULE, &abi::encode(op), Some(7));
         let remove = identity::Op::RemoveKey {
             account: 7,
             key: vec![1, 2, 3],
@@ -260,7 +278,8 @@ mod tests {
         // the signed account is not the seated key's: an agent's, and the
         // card says whose, beside the key (also while none is resolved yet)
         for own in [Some(8), None] {
-            let removed = needed("chat", identity::MODULE, &abi::encode(&remove), own).unwrap();
+            let removed =
+                needed("chat", None, identity::MODULE, &abi::encode(&remove), own).unwrap();
             assert!(
                 removed
                     .said
@@ -294,10 +313,44 @@ mod tests {
         ] {
             assert_eq!(asked(&op), None, "{op:?}");
         }
-        let unread = needed("chat", identity::MODULE, &[0xff, 0xff], Some(7)).unwrap();
+        let unread = needed("chat", None, identity::MODULE, &[0xff, 0xff], Some(7)).unwrap();
         assert!(unread.said.contains("cannot read"), "{unread:?}");
         assert_eq!(unread.shown, None);
-        assert_eq!(needed("chat", "chat", &[0xff, 0xff], Some(7)), None);
+        assert_eq!(needed("chat", None, "chat", &[0xff, 0xff], Some(7)), None);
+    }
+
+    /// Claim: the card names a program genesis bound to a role the kernel
+    /// calls "System", by the bindings the node answered and no name the
+    /// app assumes; any other program, and every program while no bindings
+    /// are known, by its program id.
+    #[test]
+    fn a_role_program_asks_as_system_and_any_other_by_its_id() {
+        let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
+        let said = |program: &str, roles: Option<&abi::Roles>| {
+            needed(program, roles, identity::MODULE, &suspend, Some(7))
+                .unwrap()
+                .said
+        };
+        let roles = abi::Roles {
+            registry: "registry-b".into(),
+            validators: "valset-b".into(),
+            identity: "identity-b".into(),
+        };
+        for program in ["registry-b", "valset-b", "identity-b"] {
+            assert_eq!(
+                said(program, Some(&roles)),
+                "System asks to suspend agent #12. It stops acting until it is resumed."
+            );
+        }
+        for program in ["chat", identity::MODULE, "module-registry"] {
+            assert_eq!(
+                said(program, Some(&roles)),
+                format!(
+                    "{program} asks to suspend agent #12. It stops acting until it is resumed."
+                )
+            );
+        }
+        assert!(said("registry-b", None).starts_with("registry-b asks"));
     }
 
     /// Claim: an ask is in the queue exactly as long as its request holds
@@ -305,7 +358,6 @@ mod tests {
     /// longer blocks the view's next ask, and the shell is woken to sync.
     #[test]
     fn an_ask_lives_only_as_long_as_its_request() {
-        let _queue = serial();
         let mut woken = changes_channel();
         let words = Words {
             said: "x".into(),

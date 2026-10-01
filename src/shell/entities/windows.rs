@@ -238,9 +238,6 @@ impl Windows {
             }));
         let (desk, account) = (own.desk.clone(), self.shared.account.clone());
         let mut was = None;
-        // the ask the consent dialog showed: closed any way but its own
-        // Approve or Cancel (Escape, the backdrop), it is refused
-        let mut asked = None;
         self.subscriptions
             .push(cx.observe(&own.overlays, move |_, overlays, cx| {
                 let open = *overlays.read(cx).get();
@@ -248,17 +245,18 @@ impl Windows {
                 if before == Some(Overlay::Approve) && open != before {
                     account.update(cx, |account, cx| account.approve_closed(cx));
                 }
-                if open == Some(Overlay::Consent) {
-                    asked = crate::runtime::consent::front().map(|(id, _)| id);
-                } else if before == Some(Overlay::Consent)
-                    && let Some(id) = asked.take()
+                // a consent card closed any way but its own Approve or
+                // Cancel (Escape, the backdrop): its ask is refused
+                if let Some(Overlay::Consent(asked)) = before
+                    && open != before
                 {
-                    crate::runtime::consent::answer(id, false);
+                    crate::runtime::consent::answer(asked, false);
                 }
                 // a view's ask waits its turn behind whatever the person has
-                // open (`ask_consent`): the desk clear, the front ask shows
-                if open.is_none() && crate::runtime::consent::front().is_some() {
-                    overlays.update(cx, |overlays, cx| overlays.open(Overlay::Consent, cx));
+                // open (`sync_consent`): the desk clear, the front ask shows
+                if open.is_none() {
+                    let front = crate::runtime::consent::front().map(|(id, _)| id);
+                    overlays.update(cx, |overlays, cx| overlays.follow_consent(front, cx));
                 }
                 if open.is_some() && desk.read(cx).get().held.is_some() {
                     desk.update(cx, |desk, cx| desk.release(true, cx));
@@ -437,26 +435,21 @@ impl Windows {
 
     /// The console's card follows the consent queue (`runtime::consent`):
     /// a view's op waits on the person, and the console shows the front of
-    /// the queue; the front withdrawn (its request gone), the card follows
-    /// it off. With no console to ask in, every ask is refused at once. A
-    /// view's ask never replaces a dialog the person has open: its card is
-    /// the same frame as "Add a device…"'s second screen, Approve in the
-    /// same spot, and a view in a pop-out window could land it under a
-    /// press meant for that. It opens over a bare desk, or once the open
-    /// dialog closes (`make_own`'s observer).
+    /// the queue; the front withdrawn (its request gone), its card closes
+    /// and the next ask waiting opens as a new card
+    /// (`Overlays::follow_consent`). With no console to ask in, every ask is
+    /// refused at once. A view's ask never replaces a dialog the person has
+    /// open: its card is the same frame as "Add a device…"'s second screen,
+    /// Approve in the same spot, and a view in a pop-out window could land
+    /// it under a press meant for that. It opens over a bare desk, or once
+    /// the open dialog closes (`make_own`'s observer).
     pub(crate) fn sync_consent(&mut self, cx: &mut Context<Self>) {
         let Some(own) = self.console_own() else {
             return crate::runtime::consent::refuse_all();
         };
-        let waiting = crate::runtime::consent::front().is_some();
+        let front = crate::runtime::consent::front().map(|(id, _)| id);
         own.overlays
-            .update(cx, |overlays, cx| match (overlays.get(), waiting) {
-                (None, true) => overlays.open(Overlay::Consent, cx),
-                // on the front, which may have moved
-                (Some(Overlay::Consent), true) => cx.notify(),
-                (Some(Overlay::Consent), false) => overlays.close(Overlay::Consent, cx),
-                _ => {}
-            });
+            .update(cx, |overlays, cx| overlays.follow_consent(front, cx));
     }
 
     /// The OS window `key` off the screen (`closed` follows, from the

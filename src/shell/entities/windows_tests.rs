@@ -460,7 +460,6 @@ fn the_front_follows_focus_and_not_frames(cx: &mut TestAppContext) {
 /// its closing forgets what it found.
 #[gpui_kit::test]
 fn the_windows_follow_what_opens_over_a_desk(cx: &mut TestAppContext) {
-    let _queue = crate::runtime::consent::serial();
     let (app, key) = console(cx);
     let (desk, overlays) = app.windows.read_with(cx, |windows, _| {
         let own = windows.own(key).unwrap();
@@ -503,7 +502,6 @@ fn the_windows_follow_what_opens_over_a_desk(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
     use crate::runtime::consent;
-    let _queue = consent::serial();
     let (app, key) = console(cx);
     let overlays = app
         .windows
@@ -522,25 +520,25 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
     let (asked, _) = consent::front().expect("still waiting");
     overlays.update(cx, |it, cx| it.close(Overlay::Approve, cx));
     cx.run_until_parked();
-    assert_eq!(open(cx), Some(Overlay::Consent), "its turn came");
+    assert_eq!(open(cx), Some(Overlay::Consent(asked)), "its turn came");
     assert!(!consent::answer(asked, false));
     cx.run_until_parked();
     // the person's own close refuses it; nothing waits, nothing reopens
-    overlays.update(cx, |it, cx| it.close(Overlay::Consent, cx));
+    overlays.update(cx, |it, cx| it.close(Overlay::Consent(asked), cx));
     cx.run_until_parked();
     assert_eq!(open(cx), None);
     let _told = consent::queue("chat", 0, words).expect("queued");
     app.windows
         .update(cx, |windows, cx| windows.sync_consent(cx));
     cx.run_until_parked();
+    let (asked, _) = consent::front().unwrap();
     assert_eq!(
         open(cx),
-        Some(Overlay::Consent),
+        Some(Overlay::Consent(asked)),
         "a bare desk shows it at once"
     );
-    let (asked, _) = consent::front().unwrap();
     consent::answer(asked, false);
-    overlays.update(cx, |it, cx| it.close(Overlay::Consent, cx));
+    overlays.update(cx, |it, cx| it.close(Overlay::Consent(asked), cx));
     cx.run_until_parked();
 }
 
@@ -550,7 +548,6 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
     use crate::runtime::consent;
-    let _queue = consent::serial();
     let (app, key) = console(cx);
     let overlays = app
         .windows
@@ -564,12 +561,13 @@ fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
         },
     )
     .expect("queued");
+    let (asked, _) = consent::front().unwrap();
     app.windows
         .update(cx, |windows, cx| windows.sync_consent(cx));
     cx.run_until_parked();
     assert_eq!(
         overlays.read_with(cx, |it, _| *it.get()),
-        Some(Overlay::Consent)
+        Some(Overlay::Consent(asked))
     );
     drop(told);
     app.windows

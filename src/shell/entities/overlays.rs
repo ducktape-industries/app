@@ -14,8 +14,9 @@ pub(crate) enum Overlay {
     Spotlight,
     /// "Add a device…".
     Approve,
-    /// A view's op waiting on the person's yes (`runtime::consent`).
-    Consent,
+    /// A view's op waiting on the person's yes (`runtime::consent`): the
+    /// card for the ask with this id. Another ask is another card.
+    Consent(u64),
     Settings(SettingsPage),
     /// The network switcher.
     Network,
@@ -145,6 +146,19 @@ impl Overlays {
     pub(crate) fn open(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         let _timed = timed();
         self.set(Some(overlay), cx);
+    }
+
+    /// The consent card follows the front of the queue (`runtime::consent`),
+    /// `front` its ask's id: a card opens for it over a bare desk; a card
+    /// whose ask is no longer the front closes, and the one now in front
+    /// opens as a new card. A card never takes another ask's words in place.
+    /// Anything else open stays: a view's ask never replaces a dialog the
+    /// person has open.
+    pub(crate) fn follow_consent(&mut self, front: Option<u64>, cx: &mut Context<Self>) {
+        let _timed = timed();
+        if matches!(self.open, None | Some(Overlay::Consent(_))) {
+            self.set(front.map(Overlay::Consent), cx);
+        }
     }
 
     /// Settings, on the page it last showed.

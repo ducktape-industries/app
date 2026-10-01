@@ -345,7 +345,7 @@ impl Render for OverlayLayer {
             Some(Overlay::Spotlight) => Some(self.spotlight(window, cx)),
             Some(Overlay::Settings(page)) => Some(self.settings(page, window, cx)),
             Some(Overlay::Approve) => Some(self.approve(window, cx)),
-            Some(Overlay::Consent) => Some(self.consent(cx)),
+            Some(Overlay::Consent(ask)) => Some(self.consent(ask, cx)),
             _ => None,
         };
         // `size_full` too: cached, this view is a layout root of its own,
@@ -376,10 +376,11 @@ pub(in crate::shell) fn dialog_fit(high: f32, tall: f32, top: f32) -> (f32, f32)
 /// (bound under the `overlay` context). The backdrop holds `modal`, the
 /// handle the keys enter it by (`OverlayLayer::moved`): Tab and Shift+Tab
 /// go round its controls, never out to the bar. (The bar's menus are
-/// `Chrome`'s.)
+/// `Chrome`'s.) `id` is the dialog's identity: another id is another
+/// dialog, whose controls hold no press, focus or hover from the last.
 #[allow(clippy::too_many_arguments, reason = "one scrim, every dialog")]
 pub(in crate::shell) fn scrim(
-    id: &'static str,
+    id: impl Into<gpui_kit::SharedString>,
     role: gpui_kit::Role,
     name: &'static str,
     closes: Overlay,
@@ -391,9 +392,11 @@ pub(in crate::shell) fn scrim(
     use crate::a11y::Control as _;
     use gpui_kit::component::FocusTrapElement as _;
     use gpui_kit::*;
+    let id = id.into();
+    let backdrop_id = SharedString::from(format!("{id}-backdrop"));
     let overlays = overlays.clone();
     let backdrop = div()
-        .id(SharedString::from(format!("{id}-backdrop")))
+        .id(backdrop_id.clone())
         .absolute()
         .top(px(BAR))
         .left_0()
@@ -427,7 +430,7 @@ pub(in crate::shell) fn scrim(
     // behind the scrim is not reachable
     backdrop
         .child(dress(crate::a11y::modal(card)))
-        .focus_trap(SharedString::from(format!("{id}-backdrop")), modal)
+        .focus_trap(backdrop_id, modal)
         .into_any_element()
 }
 

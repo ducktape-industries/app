@@ -114,10 +114,11 @@ pub(super) fn eventually(what: &str, done: impl Fn() -> bool) {
 }
 
 /// A node on a local socket: it answers the registry's two roster
-/// questions with `programs` and `views`, and a blob among `blobs` (bodies)
-/// with its bytes. Any other blob it holds — the request read, no answer —
-/// until it is dropped, counting the blobs it holds at once and the most it
-/// ever did.
+/// questions with `programs` and `views`, the roles question with `roles`
+/// (refused, as a registry from before it does, when `None`; counted), and
+/// a blob among `blobs` (bodies) with its bytes. Any other blob it holds —
+/// the request read, no answer — until it is dropped, counting the blobs it
+/// holds at once and the most it ever did.
 struct FakeNode {
     asked_of: Connection,
     held: Arc<Mutex<Held>>,
@@ -128,12 +129,14 @@ struct Held {
     now: usize,
     most: usize,
     released: bool,
+    roles_asked: usize,
 }
 
 /// What a fake node answers.
 struct Answers {
     programs: Vec<module_registry::Entry>,
     views: Vec<module_registry::View>,
+    roles: Option<abi::Roles>,
     blobs: Vec<(abi::BlobId, Vec<u8>)>,
 }
 
@@ -143,11 +146,21 @@ impl FakeNode {
         views: Vec<module_registry::View>,
         blobs: Vec<Vec<u8>>,
     ) -> Self {
+        Self::with_roles(programs, views, None, blobs)
+    }
+
+    fn with_roles(
+        programs: Vec<module_registry::Entry>,
+        views: Vec<module_registry::View>,
+        roles: Option<abi::Roles>,
+        blobs: Vec<Vec<u8>>,
+    ) -> Self {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let answers = Arc::new(Answers {
             programs,
             views,
+            roles,
             blobs: blobs
                 .into_iter()
                 .map(|body| (blob_id(&body), framed(&body)))
@@ -195,6 +208,14 @@ fn answer(mut stream: std::net::TcpStream, answers: &Answers, held: &Mutex<Held>
             module_registry::Query::Views(_) => {
                 module_registry::Reply::Views(answers.views.clone())
             }
+            module_registry::Query::Roles => {
+                held.lock().unwrap().roles_asked += 1;
+                let Some(roles) = answers.roles.clone() else {
+                    let refused = abi::Refusal::new("invalid_input", "Query did not decode");
+                    return respond(&mut stream, "400 Bad Request", &abi::encode(&refused));
+                };
+                module_registry::Reply::Roles(roles)
+            }
             _ => module_registry::Reply::Programs(answers.programs.clone()),
         };
         return respond(&mut stream, "200 OK", &abi::encode(&abi::encode(&reply)));
@@ -234,6 +255,50 @@ fn listed(name: &str, seed: &str) -> module_registry::Entry {
         code: blob_id(seed.as_bytes()),
         params: Vec::new(),
     }
+}
+
+/// Claim: a roster read takes the registry's role bindings with the
+/// programs, and asks for them once on a connection, not again while the
+/// roster stands, and again once it moved; a registry from before the
+/// question refuses it, and the roster is still listed, with no bindings
+/// known.
+#[test]
+fn the_roles_come_with_the_roster_and_are_asked_once() {
+    let roles = abi::Roles {
+        registry: "roles-registry".into(),
+        validators: "roles-valset".into(),
+        identity: "roles-identity".into(),
+    };
+    let node = FakeNode::with_roles(
+        vec![listed("roles-registry", "roles")],
+        Vec::new(),
+        Some(roles.clone()),
+        Vec::new(),
+    );
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    assert_eq!(roster.roles(), Some(roles.clone()));
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    let asked = node.held.lock().unwrap().roles_asked;
+    assert_eq!(asked, 1, "not every block");
+    // the roster moved (a registry upgrade moves its code): asked again
+    let upgraded = FakeNode::with_roles(
+        vec![listed("roles-registry", "upgraded")],
+        Vec::new(),
+        Some(roles.clone()),
+        Vec::new(),
+    );
+    read_roster(upgraded.asked_of.clone(), &roster, &registry);
+    let asked = upgraded.held.lock().unwrap().roles_asked;
+    assert_eq!(asked, 1, "asked again once the roster moved");
+
+    let old = FakeNode::new(vec![listed("roles-old", "roles")], Vec::new(), Vec::new());
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(old.asked_of.clone(), &roster, &registry);
+    let asked = old.held.lock().unwrap().roles_asked;
+    assert_eq!(asked, 1);
+    assert_eq!(roster.roles(), None);
+    assert_eq!(roster.lock().len(), 1, "the roster is listed all the same");
 }
 
 /// A node that lists 1,000 programs, none of whose code it answers: the
