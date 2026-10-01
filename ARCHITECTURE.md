@@ -521,16 +521,19 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
    executor's timer, `LOST_AFTER` misses in a row read reconnecting, one
    answer recovers.
 2. **Device key** (`backend/device_key.rs`, `Account::open_device_key`).
-   On the blocking pool: `device_key::load(keyring)` from the OS store
-   (Keychain, Credential Manager, Secret Service via the `keyring` crate; a
-   0600 file with `DUCKTAPE_DEVICE_KEY_STORE=file`), else `device_key::mint`
-   an ed25519 key — unless a **legacy** password-locked keystore file is
-   here (`key_exists`), in which case nothing is minted and the key screen
-   asks for its password. `backend::seat_key` puts the key in the
-   process-wide `SIGNER` and answers the public key (`signer_key`). No
-   password, no phrase for a device key. The legacy file is opened once by
-   `Account::unlock(password)` and moved into the OS store
-   (`device_key::save`). `Account::lock` calls `lock_signer` and returns to
+   On the blocking pool: `device_key::open(keyring, legacy)` reads the OS
+   store (Keychain, Credential Manager, Secret Service via the `keyring`
+   crate; a 0600 file with `DUCKTAPE_DEVICE_KEY_STORE=file`) and makes an
+   ed25519 key only when the store answers that it holds none — unless a
+   **legacy** password-locked keystore file is here (`key_exists`), in
+   which case nothing is made and the key screen asks for its password. A
+   store that errors is never taken for an empty one: its sentence lands on
+   the failed-key screen, and nothing is made or kept over its key.
+   `backend::seat_key` puts the key in the process-wide `SIGNER` and
+   answers the public key (`signer_key`). No password, no phrase for a
+   device key. The legacy file is opened once by `Account::unlock(password)`
+   and moved into the OS store (`device_key::save`, which keeps a key only
+   where none is kept yet). `Account::lock` calls `lock_signer` and returns to
    `Screen::Unlock`; `browse_without_key` opens the desk read-only.
 3. **Account** (`backend/identity.rs` `account_of_key` →
    `Account::resolved`). A key with an account goes to `Screen::Desk`; one
