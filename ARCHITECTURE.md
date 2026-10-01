@@ -278,6 +278,10 @@ view ─ Request{id, kind, payload} ─► Guest::answer ─► kernel::answer �
 view ◄─ Event::Response{id, done} ◄── Replies (drained at next redraw) ◄─ views-kernel task
 ```
 
+Every code the host refuses a request with below (`unknown_request`,
+`stale_connection`, …) is a const in `view_wire::methods::refusal`, with
+its meaning; the host and the views name the const, never the string.
+
 1. **Ask.** The view's `tick` returns requests in its `Frame`. `Guest::answer`
    (`runtime/guest/requests.rs`) caps the payload (`MAX_PAYLOAD_BYTES`;
    `MAX_OP_BYTES` plus the envelope for `op.submit` and `module.describe`),
@@ -364,7 +368,9 @@ draws nothing.
 - **Session** (`shell/entities/session.rs`). `SessionState`, compared
   before it notifies: the endpoint being typed and the recent ones, the
   node reached (`connected_rpc`, `network`, `chain`, `other_chain`),
-  `connecting`, `reconnecting`, the failure under the address field. The
+  `connecting` and the node it reaches for (`reaching`: the address the
+  attempt was started with, not the field's text), `reconnecting`, the
+  failure under the address field. The
   entity owns the connect attempt and the status poll as `Task`s (dropping
   one cancels it: a new attempt drops the last, disconnect drops both), a
   `StatusSource` (a closure answering `/v1/status`; `Session::status_source`
@@ -576,7 +582,9 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `a11y::Patch`. `ViewTree::guest_aria` is the one aria
   mapper for the nodes that carry the guest's own `Interactivity`
   (Container, Image, Svg, UniformList, List, ResizeHandle): gpui's setters,
-  one `a11y::Patch` for the aria gpui has none for, `on_click`. A List the
+  one `a11y::Patch` for the aria gpui has none for, `on_click`, which is
+  AccessKit's Click on the node too (gpui's own is a pointer press at the
+  node's middle, on whatever is drawn there). A List the
   view roled or wired is a box in its place (gpui's list is not
   interactive). `ViewTree::presentation` and
   `with_presentation` (the `NativePresentation` copy across guest

@@ -114,6 +114,33 @@ fn a_node_not_reached_is_said_and_a_new_try_clears_it(cx: &mut TestAppContext) {
     assert!(!refused.connecting, "a refused address was tried");
 }
 
+/// A connect out reaches for the address it was started with: what is
+/// typed meanwhile is the field's, and a node not reached is named by the
+/// address that was tried.
+#[gpui_kit::test]
+fn a_connect_out_reaches_for_the_address_it_was_started_with(cx: &mut TestAppContext) {
+    let session = cx.update(session);
+    let (source, _) = source(|_| Err("error sending request for url".into()));
+    session.update(cx, |session, cx| {
+        session.connect_through(ORIGIN.into(), source, cx)
+    });
+    assert_eq!(state(&session, cx).reaching, ORIGIN);
+    let typed = format!("{ORIGIN}9");
+    session.update(cx, |session, cx| session.set_endpoint(typed.clone(), cx));
+    let out = state(&session, cx);
+    assert!(out.connecting);
+    assert_eq!(out.endpoint, typed);
+    assert_eq!(out.reaching, ORIGIN, "the attempt out followed the typing");
+    cx.run_until_parked();
+    let failed = state(&session, cx);
+    assert!(failed.reaching.is_empty(), "no attempt is out");
+    assert_eq!(
+        failed.error,
+        format!("Can't reach {ORIGIN}. Check the address, or that the node is running."),
+        "the failure named an address that was not tried"
+    );
+}
+
 /// The poll asks every two seconds on the clock; a node at the same height
 /// moves neither the session nor the chain.
 #[gpui_kit::test]

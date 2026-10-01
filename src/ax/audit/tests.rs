@@ -786,8 +786,8 @@ fn six() -> Vec<gpui_kit::AnyElement> {
     ]
 }
 
-/// The first snapshot shows three stops of a Tab cycle of six: N + 1
-/// presses end on the first shown one, and the walk goes on round.
+/// The first snapshot shows three stops of a Tab cycle of six: the walk
+/// goes on past them, round the whole cycle.
 #[gpui_kit::test]
 fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     cx: &mut gpui_kit::TestAppContext,
@@ -806,6 +806,53 @@ fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     });
     assert!(fails(&report, "AX-021").is_empty(), "{report:?}");
     assert_eq!(report.presses, 7);
+}
+
+/// The presses a walk of `native` takes.
+fn presses(native: &mut gpui_kit::VisualTestContext) -> usize {
+    use gpui_kit::test::TestWindowExt as _;
+    let snap = |window: &mut Window, cx: &mut App| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("w", window, true)
+    };
+    native
+        .update(|window, cx| audit(&observe(window, cx, "w", true, |_| true, snap), false).presses)
+}
+
+/// A 40 px button `id` that offers focus and is no Tab stop, as a
+/// composite's chosen row does.
+fn offer(id: &'static str, top: f32) -> gpui_kit::AnyElement {
+    use gpui_kit::*;
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(id)
+        .focusable()
+        .absolute()
+        .left(px(0.))
+        .top(px(top))
+        .size(px(40.))
+        .into_any_element()
+}
+
+/// A window of one stop, the keys on it: Tab stays there, `escape tab`
+/// stays there, and that is the focus back on the first stop. The walk
+/// ends on it, though two nodes offer focus.
+#[gpui_kit::test]
+fn the_walk_ends_on_a_first_stop_that_keeps_the_keys(cx: &mut gpui_kit::TestAppContext) {
+    let mut native = stops_window(cx, || vec![stop("only", 0.), offer("row", 50.)], 1);
+    assert_eq!(presses(&mut native), 2);
+}
+
+/// No stop and the keys nowhere: the first press puts the focus nowhere,
+/// and ends the walk, though a node offers focus.
+#[gpui_kit::test]
+fn the_walk_ends_on_a_first_press_that_puts_the_focus_nowhere(cx: &mut gpui_kit::TestAppContext) {
+    let mut native = stops_window(cx, || vec![offer("row", 0.)], 0);
+    native.update(|window, cx| window.blur(cx));
+    assert_eq!(presses(&mut native), 1);
 }
 
 /// A `view/x` element at the right of the window, around `inside`.
@@ -1265,6 +1312,60 @@ async fn the_probe_skips_a_link_box_inside_a_grid(cx: &mut gpui_kit::TestAppCont
     );
     assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
     assert_eq!(heard, [["down", "up"]]);
+}
+
+/// A view's Button `id`, a Tab stop.
+fn view_button(id: &str) -> view_wire::Node {
+    let view_wire::Node::Container(mut button) =
+        item(id.to_owned(), gpui_kit::Role::Button, false, Vec::new())
+    else {
+        unreachable!()
+    };
+    button.interactivity.focusable = true;
+    button.interactivity.tab_stop = Some(true);
+    view_wire::Node::Container(button)
+}
+
+/// A view's dialog "Pick", open from the first frame, holding two buttons
+/// over the button that opened it.
+fn pick_dialog(_: &[usize]) -> view_wire::Node {
+    use gpui_kit::Styled as _;
+    view_wire::Node::Overlay {
+        id: view_wire::ElementIdWire::Name("pick".into()),
+        label: Some("Pick".to_owned()),
+        style: gpui_kit::div().size_full().style().clone(),
+        on_dismiss: None,
+        children: vec![
+            view_button("opener"),
+            view_wire::Node::Container(view_wire::ContainerNode {
+                id: Some(view_wire::ElementIdWire::Name("sheet".into())),
+                style: Default::default(),
+                interactivity: Default::default(),
+                children: vec![view_button("one"), view_button("two")],
+            }),
+        ],
+    }
+}
+
+/// What the census sees of a view dialog: it opens with the keys on its
+/// first control, and the Tab walk goes round its two controls without
+/// ever leaving it — every snapshot has one focused node in the modal
+/// (AX-020), inside it (AX-023), and the dialog holds the keys (AX-025,
+/// AX-104).
+#[gpui_kit::test]
+async fn the_tab_walk_stays_in_a_view_dialog(cx: &mut gpui_kit::TestAppContext) {
+    let (report, _) = composites_audit(cx, pick_dialog, Vec::new(), Vec::new(), 0).await;
+    assert!(
+        report["applicable"]["AX-023"].as_u64() > Some(2),
+        "the walk went round the dialog: {report}"
+    );
+    for rule in ["AX-020", "AX-023", "AX-025", "AX-104"] {
+        assert_eq!(
+            door_fails(&report, rule),
+            Vec::<String>::new(),
+            "{rule}: {report}"
+        );
+    }
 }
 
 /// A grid of rows of `widths` cells each, under a header row of column
