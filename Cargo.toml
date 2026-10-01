@@ -90,8 +90,8 @@ base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
 rand.workspace = true
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde.workspace = true
+serde_json.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 reqwest.workspace = true
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
@@ -110,9 +110,6 @@ sha1 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tray-icon = { version = "0.24", default-features = false }
-# The screen-share leg (`src/video.rs`): the main display through
-# `CGDisplayCreateImage`. Already in this binary's graph under gpui.
-core-graphics = "0.24"
 block2 = "0.5"
 objc2 = "0.5"
 objc2-foundation = { version = "0.2", default-features = false, features = ["std", "NSBundle", "NSString", "NSError", "NSDictionary", "NSObject"] }
@@ -123,27 +120,11 @@ objc2-user-notifications = { version = "0.2", default-features = false, features
 # under the accessibility stack; this only names it.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 zbus = "5"
-# The screen-share leg (`src/video.rs`): a root-window grab over X11. Already
-# in this binary under winit, and pure Rust — the portal/pipewire route would
-# put a build-time system library on every machine that builds this app. A
-# Wayland session's X root holds X clients only, so the share refuses there
-# rather than grab a black desktop (`ScreenSource::open`).
-# `composite` for the window shares: an unredirected window cannot be named as
-# a pixmap, and reading the window drawable itself returns undefined bytes
-# wherever something overlaps it. `randr` (the heads) and `xfixes` (the pointer)
-# are already on through gpui; naming them here keeps the picker from silently
-# losing them if gpui ever stops asking.
 
 [dev-dependencies]
 # hand-written wasm for the describe method's hostile-section tests
 wat = "1"
 gpui-kit = { version = "=0.7.0", features = ["test-support"] }
-syn = { version = "2", features = ["full", "visit"] }
-quote = "1"
-# the dependency line this app is held to is read off the manifests, not
-# asserted about from memory: `the_app_links_only_what_it_still_speaks_for`
-commonware-cryptography.workspace = true
-commonware-codec.workspace = true
 tempfile.workspace = true
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme", features = ["testkit"] }
 p256 = "0.13"
