@@ -5,7 +5,7 @@
 //! a test builds its own.
 
 use std::collections::{BTreeSet, HashMap};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use std::time::Instant;
 
@@ -313,8 +313,7 @@ impl Center {
             ..Center::default()
         };
         self.entries = log_path(network)
-            .and_then(|path| std::fs::read(path).ok())
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+            .map(|path| read_log(&path))
             .unwrap_or_default();
         self.next = self.entries.iter().map(|entry| entry.id).max().unwrap_or(0);
         self.prune(wall());
@@ -323,16 +322,31 @@ impl Center {
     // ponytail: the whole log rewritten on each change, 500 small rows at most
     fn save(&self) {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
-        let Some(path) = log_path(&self.network) else {
-            return;
-        };
+        if let Some(path) = log_path(&self.network) {
+            self.write_log(&path);
+        }
+    }
+
+    pub(super) fn write_log(&self, path: &Path) {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(bytes) = serde_json::to_vec(&self.entries) {
-            let _ = std::fs::write(path, bytes);
+            let _ = crate::backend::atomic_write(path, &bytes, false);
         }
     }
+}
+
+/// The log at `path`; empty when it is missing or unreadable. One that will
+/// not parse is set aside as `.bad`, so the next save does not overwrite it.
+pub(super) fn read_log(path: &Path) -> Vec<Entry> {
+    crate::backend::read_or_set_aside(path, |bytes| serde_json::from_slice(bytes))
+        .inspect_err(|error| {
+            tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "notification log unreadable, starting empty");
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_default()
 }
 
 /// `<config>/notifications/<chain>.json`, device-local beside the prefs.

@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use super::center::{Center, MAX_AGE, MAX_ENTRIES};
+use super::center::{Center, MAX_AGE, MAX_ENTRIES, read_log};
 use super::settings::{BURST_PREF, FRONT_PREF, NOTIFY_PREF, Permission, Settings, VIEWS_PREF};
 use super::{MAX_TEXT, in_order, shortened};
 use crate::runtime::WindowKey;
@@ -341,4 +341,29 @@ fn a_views_banners_leave_in_order() {
     drop(open);
     drop(tell);
     assert_eq!(told.iter().collect::<Vec<_>>(), (0..10).collect::<Vec<_>>());
+}
+
+/// A log cut short is set aside whole as `.bad`, the centre starts with
+/// no rows, and the next post is saved as a fresh log, not over the old one.
+#[test]
+fn a_log_cut_short_is_set_aside_and_the_next_post_writes_a_fresh_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("dev.json");
+    let silent = settings(Some(Permission::Silent));
+    let mut center = Center::default();
+    center.post(&silent, "chat", "Chat", post("old", ""), Instant::now(), 1);
+    center.write_log(&path);
+    let whole = std::fs::read(&path).unwrap();
+    let cut = &whole[..whole.len() - 3];
+    std::fs::write(&path, cut).unwrap();
+
+    assert!(read_log(&path).is_empty());
+    assert_eq!(std::fs::read(dir.path().join("dev.json.bad")).unwrap(), cut);
+
+    let mut reopened = Center::default();
+    reopened.post(&silent, "chat", "Chat", post("new", ""), Instant::now(), 2);
+    reopened.write_log(&path);
+    let kept = read_log(&path);
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].title, "new");
 }

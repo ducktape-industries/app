@@ -11,28 +11,34 @@ fn prefs_path() -> Option<std::path::PathBuf> {
 #[cfg(not(test))]
 pub(crate) fn read_prefs() -> serde_json::Value {
     let _timed = crate::perf::time(crate::perf::Key::Shell, "io.read_prefs");
-    let Some(path) = prefs_path() else {
-        return serde_json::json!({});
-    };
-    std::fs::read(&path)
-        .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-        .unwrap_or_else(|| serde_json::json!({}))
+    prefs_path().map_or_else(|| serde_json::json!({}), |path| read_prefs_at(&path))
 }
 
 #[cfg(not(test))]
 pub(crate) fn write_prefs(prefs: &serde_json::Value) -> bool {
     let _timed = crate::perf::time(crate::perf::Key::Shell, "io.write_prefs");
-    let Some(path) = prefs_path() else {
-        return false;
-    };
+    prefs_path().is_some_and(|path| write_prefs_at(&path, prefs))
+}
+
+/// What `path` holds; empty when it is missing, unreadable or unparsable
+/// (the last is set aside as `prefs.json.bad`).
+fn read_prefs_at(path: &std::path::Path) -> serde_json::Value {
+    super::read_or_set_aside(path, |bytes| serde_json::from_slice(bytes))
+        .inspect_err(|error| {
+            tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "prefs unreadable, starting empty");
+        })
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+fn write_prefs_at(path: &std::path::Path, prefs: &serde_json::Value) -> bool {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let Ok(bytes) = serde_json::to_vec_pretty(prefs) else {
-        return false;
-    };
-    std::fs::write(&path, bytes).is_ok()
+    serde_json::to_vec_pretty(prefs)
+        .ok()
+        .is_some_and(|bytes| super::atomic_write(path, &bytes, false).is_ok())
 }
 
 #[cfg(test)]
@@ -94,4 +100,27 @@ pub(crate) fn save_motion(on: bool) -> bool {
     let mut prefs = read_prefs();
     prefs["motion"] = serde_json::json!(on);
     write_prefs(&prefs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `prefs.json` cut short is set aside whole as `.bad`, the app
+    /// starts with no prefs, and the next write lands whole.
+    #[test]
+    fn unparsable_prefs_are_set_aside_and_the_next_write_lands_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.json");
+        std::fs::write(&path, br#"{"appearance": "da"#).unwrap();
+        assert_eq!(read_prefs_at(&path), serde_json::json!({}));
+        assert_eq!(
+            std::fs::read(dir.path().join("prefs.json.bad")).unwrap(),
+            br#"{"appearance": "da"#
+        );
+        assert!(!path.exists());
+        let prefs = serde_json::json!({"appearance": "dark", "motion": false});
+        assert!(write_prefs_at(&path, &prefs));
+        assert_eq!(read_prefs_at(&path), prefs);
+    }
 }
