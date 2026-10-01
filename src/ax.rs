@@ -297,8 +297,9 @@ impl Seen {
 /// A request and where its answer goes.
 pub(crate) type Call = (Request, std::sync::mpsc::Sender<Reply>);
 
-/// One window the door serves: its door name (`console`, `console2`, …),
-/// the shell's key for it, and its handle.
+/// One window the door serves: its door name (`console`, `console2`, …,
+/// kept for the window's life: `Windows::served`), the shell's key for it,
+/// and its handle.
 pub(crate) type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
 
 /// What the door serves: the windows, by name, and the seats behind them.

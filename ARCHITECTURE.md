@@ -600,7 +600,8 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   reads the same AccessKit tree GPUI hands the OS (`ax::tree::snapshot`
   over `Window::a11y_tree`); every act goes through GPUI's own a11y action,
   key or mouse dispatch (`ax::actions`). Ids are `<window>:<element id>`;
-  windows are `console`, `console2`, … in the order they opened
+  windows are `console` (the console) and `console<key>` (any other:
+  `console2`, … as they open), each name kept for the window's life
   (`Windows::served`, by `WindowKey`), read on every request; a view's
   nodes sit under the `view/<module>` mark `Seat::ax_mark`
   wraps around each view (`runtime::VIEW_MARK`), a `render::host_id`, so a
