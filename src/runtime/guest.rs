@@ -5,6 +5,7 @@ mod lifecycle;
 mod requests;
 
 use abi::{Exports, HostState, first_line, panic_message};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 // ---------- the guest ----------
 
@@ -246,12 +247,16 @@ pub(super) fn engine() -> &'static Engine {
 
 /// The one wasmtime engine, and a handle on its compile cache: `Cache` is
 /// `Clone`, and the clone reads the hit counters the engine's copy writes.
+/// The engine's epoch is the deadline clock `arm` sets every call against:
+/// its thread, `view-deadlines`, starts with the engine and lives as long
+/// as the process.
 fn runtime() -> &'static (Engine, Option<Cache>) {
     static ENGINE: OnceLock<(Engine, Option<Cache>)> = OnceLock::new();
     ENGINE.get_or_init(|| {
         let mut config = Config::new();
         config.cranelift_opt_level(OptLevel::Speed);
         config.consume_fuel(true);
+        config.epoch_interruption(true);
         let mut disk = None;
         match crate::backend::cache_dir() {
             Ok(directory) => {
@@ -267,13 +272,72 @@ fn runtime() -> &'static (Engine, Option<Cache>) {
             }
             Err(error) => tracing::warn!(reason = "view_cache_directory_unavailable", %error),
         }
-        (Engine::new(&config).expect("wasmtime engine"), disk)
+        let engine = Engine::new(&config).expect("wasmtime engine");
+        // nothing arms a store before this returns, so `arm` always finds
+        // the clock's thread set
+        let ticking = engine.clone();
+        let ticker = std::thread::Builder::new()
+            .name("view-deadlines".into())
+            .spawn(move || {
+                loop {
+                    while IN_FLIGHT.load(Ordering::Acquire) > 0 {
+                        std::thread::sleep(EPOCH_PERIOD);
+                        ticking.increment_epoch();
+                    }
+                    std::thread::park();
+                }
+            })
+            .expect("view deadline clock");
+        TICKER
+            .set(ticker.thread().clone())
+            .expect("one deadline clock");
+        (engine, disk)
     })
 }
 
-/// Reset the instruction allowance before entering the guest.
-fn arm(store: &mut Store<HostState>) {
+/// Calls into views in flight: the deadline clock runs while this is above
+/// zero and parks otherwise, so an idle app is not woken ten times a second
+/// for a deadline nothing is running against.
+static IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+/// The deadline clock's thread, parked between calls; `arm` wakes it.
+static TICKER: OnceLock<std::thread::Thread> = OnceLock::new();
+
+/// The engine `describe::host::run` gets: it owns its store and sets no
+/// epoch deadline, and a store without one traps at once on an epoch
+/// engine, so the describe runner gets the engine its contract names —
+/// fuel, nothing else. Its modules are kilobytes and `describe` keeps them
+/// compiled, so it has no disk cache.
+pub(super) fn describe_engine() -> &'static Engine {
+    static ENGINE: OnceLock<Engine> = OnceLock::new();
+    ENGINE.get_or_init(|| {
+        let mut config = Config::new();
+        config.cranelift_opt_level(OptLevel::Speed);
+        config.consume_fuel(true);
+        Engine::new(&config).expect("wasmtime describe engine")
+    })
+}
+
+/// Reset what one call into the guest may spend, instructions and time,
+/// and run the deadline clock for as long as the call does: the guard.
+#[must_use]
+fn arm(store: &mut Store<HostState>) -> Armed {
     let _ = store.set_fuel(FUEL_PER_TICK);
+    // +1: the clock may be mid-period when the call starts, so the trap
+    // never comes before TICK_DEADLINE
+    let epochs = TICK_DEADLINE.as_nanos().div_ceil(EPOCH_PERIOD.as_nanos()) as u64 + 1;
+    store.set_epoch_deadline(epochs);
+    IN_FLIGHT.fetch_add(1, Ordering::AcqRel);
+    TICKER.get().expect("deadline clock").unpark();
+    Armed
+}
+
+/// One call in flight, for the deadline clock; dropped as the call returns.
+struct Armed;
+
+impl Drop for Armed {
+    fn drop(&mut self) {
+        IN_FLIGHT.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// The tooltip in a node that route `request` builds, if it has one. A

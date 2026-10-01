@@ -355,7 +355,7 @@ impl Guest {
     /// A trap ends the instance as one in `tick` does: the fault keeps it
     /// from being entered again.
     pub(crate) fn snapshot(&mut self) -> Result<Result<Vec<u8>, String>, String> {
-        arm(&mut self.store);
+        let _armed = arm(&mut self.store);
         self.exports.snapshot(&mut self.store).map_err(|error| {
             let reason = panic_message(&mut self.store).unwrap_or_else(|| first_line(&error));
             self.fault = Some(reason.clone());
@@ -364,7 +364,7 @@ impl Guest {
     }
 
     pub(crate) fn restore(&mut self, snapshot: &[u8], shown: &str) -> Result<Restored, String> {
-        arm(&mut self.store);
+        let _armed = arm(&mut self.store);
         let answered = self
             .exports
             .restore(&mut self.store, snapshot)
@@ -380,7 +380,7 @@ impl Guest {
 
     /// The view's `init` export: a fresh start, with no snapshot to restore.
     pub(crate) fn init(&mut self, shown: &str) -> Result<(), String> {
-        arm(&mut self.store);
+        let _armed = arm(&mut self.store);
         if let Err(error) = self.exports.init(&mut self.store) {
             let trap = format!("{shown}: init trapped: {}", first_line(&error));
             return Err(panic_message(&mut self.store).unwrap_or(trap));
@@ -515,12 +515,13 @@ impl Guest {
         linker
             .define_unknown_imports_as_traps(code)
             .map_err(|error| error.to_string())?;
-        arm(&mut store);
+        let armed = arm(&mut store);
         let instance = linker
             .instantiate(&mut store, code)
             .map_err(|error| format!("{shown}: {}", first_line(&error)))?;
         let exports =
             Exports::bind(&mut store, &instance).map_err(|error| format!("{shown}: {error}"))?;
+        drop(armed);
         Ok(Self {
             connection_rev: connection().lock().expect("views rpc").rev,
             activation: None,

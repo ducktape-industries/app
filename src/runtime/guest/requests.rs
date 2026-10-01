@@ -385,13 +385,14 @@ impl Guest {
         let events = std::mem::take(&mut self.pending);
         let bytes = wire::encode(&events);
         perf::record(key, "events_bytes", bytes.len() as u64);
-        arm(&mut self.store);
+        let armed = arm(&mut self.store);
         let called = perf::time(key, "tick.call");
         let answer = self
             .exports
             .tick(&mut self.store, &bytes)
             .map_err(|error| first_line(&error));
         drop(called);
+        drop(armed);
         if perf::on() {
             perf::record(key, "fuel.tick", self.fuel_used());
         }

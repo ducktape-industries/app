@@ -4,8 +4,9 @@
 //! ships beside the binary, and with no node there is no view. A view
 //! developer's `DUCKTAPE_VIEWS_DIR` ([`override_views_from`]) is the one
 //! exception, and says so in app.log for every view it supplies. A view is
-//! ticked inside a fuel budget (`FUEL_PER_TICK`, the one ceiling on a
-//! call), and presented through native gpui-kit controls in its seat.
+//! ticked inside a fuel budget (`FUEL_PER_TICK`) and a wall-clock deadline
+//! (`TICK_DEADLINE`), the two ceilings on a call, and presented through
+//! native gpui-kit controls in its seat.
 //!
 //! The app knows no program by name. The roster's order is the rail's, a
 //! view's manifest names its tab, and what a view asks of the app is the
@@ -68,7 +69,7 @@ use pictures::Pictures;
 use view_wire as wire;
 use wasmtime::{
     Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store,
-    StoreLimits, StoreLimitsBuilder, TypedFunc,
+    StoreLimits, StoreLimitsBuilder, Trap, TypedFunc,
 };
 use wire::methods::{Capability, refusal};
 
@@ -103,8 +104,21 @@ pub enum Intent {
 /// Instruction budget for one call into a view: a ceiling that ends a
 /// runaway, not a cost. `RUST_LOG=ducktape::perf=debug` logs each tick's
 /// fuel; docs/perf.md §4.2 has the heaviest ticks measured and each view's
-/// budget, at most half of this ceiling.
+/// budget, at most half of this ceiling. Fuel counts instructions;
+/// `TICK_DEADLINE` bounds the wall time the same call may take, for the work
+/// fuel cannot see (a memory-bound loop, a starved box).
 const FUEL_PER_TICK: u64 = 250_000_000;
+/// The longest one call into a view (`init`, `tick`, `snapshot`, `restore`,
+/// instantiate) may run before it is trapped like a fuel overrun. Honest
+/// calls measured at the dev head (census runs, 2026-10-01): tick.call max
+/// 26 ms (chat), init max 3.6 ms, on a box at load 26-32 over 24 cores.
+/// ~40x that max, and never under a few hundred ms, so a stalled box does
+/// not fault an honest view.
+const TICK_DEADLINE: Duration = Duration::from_secs(1);
+/// How often the view engine's epoch advances while a call runs: the
+/// deadline's resolution. A call is trapped between `TICK_DEADLINE` and
+/// `TICK_DEADLINE + EPOCH_PERIOD` after it was armed.
+const EPOCH_PERIOD: Duration = Duration::from_millis(100);
 const MEMORY_LIMIT: usize = 64 << 20;
 /// A frame the view sends past this ends it: nothing a screen needs is
 /// megabytes, and the host would decode all of it on the window thread.
@@ -221,6 +235,48 @@ pub(crate) fn wat_frame(frame: &wire::Frame) -> (String, u32) {
     let frame = wire::encode(frame);
     let bytes = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
     (bytes, frame.len() as u32)
+}
+
+/// A WAT view whose tick is slow in wall clock but cheap in fuel: it
+/// chases a pointer around a 32 MiB cycle its start function laid out, a
+/// cache miss for every four instructions, until fuel or the deadline ends
+/// it. Its snapshot and restore answer Ok.
+#[cfg(test)]
+pub(crate) fn slow_code_for_test() -> Module {
+    let ok = wire::abi::pack(0, 1);
+    Module::new(
+        guest::engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 600)
+            (func $cycle (local $i i32)
+                ;; slot i (at 1 MiB + 4i) holds the address of slot
+                ;; (1664525 i + 1013904223) mod 2^23: one cycle through all
+                (loop $again
+                    (i32.store
+                        (i32.add (i32.const 0x100000) (i32.shl (local.get $i) (i32.const 2)))
+                        (i32.add (i32.const 0x100000) (i32.shl
+                            (i32.and
+                                (i32.add (i32.mul (local.get $i) (i32.const 1664525))
+                                    (i32.const 1013904223))
+                                (i32.const 0x7FFFFF))
+                            (i32.const 2))))
+                    (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                    (br_if $again (i32.lt_u (local.get $i) (i32.const 0x800000)))))
+            (start $cycle)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) (local $at i32)
+                (local.set $at (i32.const 0x100000))
+                (loop $chase
+                    (local.set $at (i32.load (local.get $at)))
+                    (br $chase))
+                unreachable)
+            (func (export "snapshot") (result i64) i64.const {ok})
+            (func (export "restore") (param i32 i32) (result i64) i64.const {ok}))"#
+        ),
+    )
+    .unwrap()
 }
 
 /// [`seat_for_test`], its view drawing `root` on every tick.

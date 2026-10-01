@@ -1311,6 +1311,34 @@ fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
     );
 }
 
+/// A view whose tick runs past its wall-clock deadline is stopped like a
+/// trapped one: its pane shows the standin, which says it ran out of time.
+#[gpui_kit::test]
+fn a_view_past_its_deadline_shows_the_standin_with_the_time_words(cx: &mut TestAppContext) {
+    const MODULE: &str = "pane-deadline-view";
+    let (_, _, view, mut native) = console(cx);
+    crate::runtime::seat_code_for_test(MODULE, 400, crate::runtime::slow_code_for_test());
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    native.update(draw);
+    native.run_until_parked();
+    let nodes = native.update(draw);
+    let unavailable = format!("console:{MODULE}/view-unavailable");
+    let standin = nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|node| node["id"] == unavailable.as_str())
+        .unwrap_or_else(|| panic!("no standin: {:?}", ids(&nodes)));
+    assert_eq!(
+        standin["name"],
+        "This view stopped: the view ran past its 1000 ms call deadline"
+    );
+    assert!(
+        ids(&nodes).contains(&format!("console:{MODULE}/view-retry")),
+        "{nodes:?}"
+    );
+}
+
 /// A popped-out pane's seat is placed in the new window as soon as that
 /// window opens, not at the next dispatch: a guest's Focus right after
 /// the pop-out runs in the window the pane is in.

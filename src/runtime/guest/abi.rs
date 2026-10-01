@@ -118,6 +118,15 @@ pub(super) fn panic_message(store: &mut Store<HostState>) -> Option<String> {
 /// Why a call failed: the trap itself, not the wrapper and backtrace
 /// wasmtime prints around it.
 pub(super) fn first_line(error: &wasmtime::Error) -> String {
+    if matches!(
+        error.root_cause().downcast_ref::<Trap>(),
+        Some(Trap::Interrupt)
+    ) {
+        return format!(
+            "the view ran past its {} ms call deadline",
+            TICK_DEADLINE.as_millis()
+        );
+    }
     error
         .root_cause()
         .to_string()

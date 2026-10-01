@@ -729,3 +729,161 @@ fn a_seat_at_its_picture_budget() {
 fn a_seat_drawing_the_same_trees_with_one_byte_pictures() {
     resident_at_the_picture_budget(1);
 }
+
+/// The words a call past `TICK_DEADLINE` ends with.
+fn past_the_deadline() -> String {
+    format!(
+        "the view ran past its {} ms call deadline",
+        TICK_DEADLINE.as_millis()
+    )
+}
+
+/// A tick slow in wall clock but inside its fuel (a pointer chase, a cache
+/// miss every four instructions: its fuel lasts ~60M misses, seconds of
+/// them) ends at the deadline, in words that say time. A fuel trap and a
+/// deadline trap exclude each other, so the words and the time it took are
+/// the proof; fuel read back after an epoch trap is stale and proves
+/// nothing.
+#[test]
+fn a_tick_past_the_deadline_is_trapped_by_time_not_fuel() {
+    let mut guest = Guest::instantiate("slow", &slow_code_for_test(), "slow").unwrap();
+    let started = Instant::now();
+    guest.tick();
+    let took = started.elapsed();
+    assert_eq!(guest.fault, Some(past_the_deadline()));
+    assert!(
+        took >= TICK_DEADLINE && took < TICK_DEADLINE + Duration::from_secs(3),
+        "trapped after {took:?}"
+    );
+}
+
+/// An honest heavy tick, ~20M fuel of arithmetic, answers its frame.
+#[test]
+fn an_honest_heavy_tick_is_not_trapped() {
+    let (bytes, len) = wat_frame(&wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    });
+    let tick = wire::abi::pack(65536, len);
+    let code = wasmtime::Module::new(
+        engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (data (i32.const 65536) "{bytes}")
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) (local $n i32)
+                (loop $again
+                    (local.set $n (i32.add (local.get $n) (i32.const 1)))
+                    (br_if $again (i32.lt_u (local.get $n) (i32.const 2500000))))
+                i64.const {tick})
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
+    )
+    .unwrap();
+    let mut guest = Guest::instantiate("heavy", &code, "heavy").unwrap();
+    guest.tick();
+    assert_eq!(guest.fault, None);
+    assert!(guest.fuel_used() > 10_000_000, "{} fuel", guest.fuel_used());
+    assert!(guest.frame.root.is_some(), "the frame answered");
+}
+
+/// The fuel trap keeps its own words: the deadline names only time.
+#[test]
+fn a_fuel_overrun_is_still_the_fuel_trap() {
+    let module = wasmtime::Module::new(
+        engine(),
+        r#"(module
+            (memory (export "memory") 1)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) (loop (br 0)) i64.const 0)
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+    )
+    .unwrap();
+    let mut guest = Guest::instantiate("spin", &module, "spin").unwrap();
+    guest.store.set_fuel(1_000).unwrap();
+    // set by hand, not `arm`: a store's own deadline is 0, which traps at
+    // the first check, before any fuel could run out
+    guest.store.set_epoch_deadline(u64::MAX / 2);
+    let error = guest.exports.tick(&mut guest.store, &[]).unwrap_err();
+    let words = first_line(&error);
+    assert!(
+        words.contains("fuel") && !words.contains("deadline"),
+        "{words}"
+    );
+}
+
+/// Every entry into a view is armed with a deadline of its own: a store
+/// left with a spent one (deadline 0, a fresh store's own) traps at the
+/// first check, so `init`, `snapshot`, `restore` and instantiate (its start
+/// function) each run only if they armed it first.
+#[test]
+fn every_call_into_a_view_sets_its_own_deadline() {
+    let ok = format!("i64.const {}", wire::abi::pack(0, 1));
+    let mut guest = wat_view(&ok, &ok, None);
+    guest.store.set_epoch_deadline(0);
+    assert_eq!(guest.init("wat"), Ok(()));
+    guest.store.set_epoch_deadline(0);
+    assert!(matches!(guest.snapshot(), Ok(Ok(_))));
+    guest.store.set_epoch_deadline(0);
+    assert!(matches!(
+        guest.restore(b"state", "wat"),
+        Ok(Restored::Carried)
+    ));
+    let started = wasmtime::Module::new(
+        engine(),
+        r#"(module
+            (memory (export "memory") 1)
+            (func $start)
+            (start $start)
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64) unreachable)
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+    )
+    .unwrap();
+    assert!(Guest::instantiate("start", &started, "start").is_ok());
+}
+
+/// The deadline clock runs only while a call does: after a plain tick, a
+/// trapped one, a trapped instantiate and a swap's snapshot and restore,
+/// no call is left in flight. Other tests arm the same clock at once, so
+/// this waits for it to drain rather than reading it once.
+#[test]
+fn the_deadline_clock_is_released_after_every_call() {
+    let frame = wire::encode(&wire::Frame {
+        root: Some(wire::Node::empty()),
+        ..Default::default()
+    });
+    let ok = format!("i64.const {}", wire::abi::pack(0, 1));
+    let mut plain = wat_view(&ok, &ok, Some(&frame));
+    plain.tick();
+    let mut slow = Guest::instantiate("slow", &slow_code_for_test(), "slow").unwrap();
+    slow.tick();
+    assert!(slow.fault.is_some());
+    let trapping = wasmtime::Module::new(
+        engine(),
+        r#"(module
+            (memory (export "memory") 1)
+            (func $start unreachable)
+            (start $start))"#,
+    )
+    .unwrap();
+    assert!(Guest::instantiate("trapping", &trapping, "trapping").is_err());
+    let (swapped, _) = swap(plain, wat_view(&ok, &ok, Some(&frame)));
+    assert!(swapped.is_ok());
+    let drained = Instant::now();
+    while IN_FLIGHT.load(Ordering::Acquire) > 0 {
+        assert!(
+            drained.elapsed() < Duration::from_secs(30),
+            "{} calls left in flight",
+            IN_FLIGHT.load(Ordering::Acquire)
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}

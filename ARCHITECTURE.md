@@ -104,12 +104,14 @@ quit) are `Windows`' methods.
 | **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **`view-loader` threads** (at most `LOADERS`, 4) | each takes the next queued load: fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`), then the install; a pane's load goes ahead of the preloads | `seat::queue` |
+| **`view-deadlines`** | advances the view engine's epoch every `EPOCH_PERIOD` while a call into a view runs; parked otherwise | `guest::runtime` |
 | **`roster` thread** | `/v1/programs` and the seat reconciliation on connect and on each new block; it queues the loads and returns, never waiting on one | `roster::spawn_roster_read` |
 | **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller; a connection has 5 s to send its request, whose head is capped at 16 KiB before the token is read); each request is forwarded to the window thread | `ax/http.rs` |
 | **freedesktop listener** (non-macOS) | banner clicks off the session bus | `runtime/notify/freedesktop.rs` |
 | GPUI background executor | timers only (clock wake-ups, sensor delays, spin, the door's settle polls) | — |
 
-There is no wall-clock budget on a tick. Fuel is the one bound (see §8).
+A call into a view is bounded twice: fuel (`FUEL_PER_TICK`) and wall clock
+(`TICK_DEADLINE`, by epoch interruption; see §8).
 
 ## 3. Life of a view
 
@@ -141,8 +143,9 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    network's bytes. Either way `Guest::compile` reads the manifest
    (upstream `view_wire::manifest::read_manifest`), checks its `wire_id`
    against `view_wire::WIRE_ID`, then `compiled_view` compiles through the one
-   `Engine` (`guest::engine`: `consume_fuel(true)`, opt level Speed, a
-   wasmtime disk cache under `cache_dir()/view-code`); `runtime::manifest_of`
+   `Engine` (`guest::engine`: `consume_fuel(true)`,
+   `epoch_interruption(true)`, opt level Speed, a wasmtime disk cache under
+   `cache_dir()/view-code`); `runtime::manifest_of`
    reads the same manifest again for the tab name and the capabilities.
    Compiled modules are cached by sha256 of the bytes in `ViewCodeCache`
    (16 modules, 32 MiB of source).
@@ -651,7 +654,11 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
 
 - **Fuel.** `FUEL_PER_TICK` (`runtime.rs`, 250M instructions) is armed by
   `guest::arm` before every entry into a view: `init`, `tick`, `snapshot`,
-  `restore`, and instantiate. There is no wall-clock or epoch budget.
+  `restore`, and instantiate. With it `guest::arm` sets an epoch deadline
+  of `TICK_DEADLINE` (1 s): the `view-deadlines` thread advances the
+  engine's epoch every `EPOCH_PERIOD` while a call runs, and a call past
+  the deadline traps (`Trap::Interrupt`) like a fuel overrun, reported as
+  "the view ran past its 1000 ms call deadline".
   `RUST_LOG=ducktape::perf=debug` logs fuel used per tick, and
   `DUCKTAPE_PERF=1` keeps the counters `GET /perf` reads (docs/perf.md).
 - **Limits** (`runtime.rs`, `kernel.rs`), as of this writing: `MEMORY_LIMIT`

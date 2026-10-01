@@ -785,6 +785,9 @@ design, not merged. What still informs:
    **Answered (owner, 2026-09-28): delete the claim.** Fuel
    (`FUEL_PER_TICK`) is the only ceiling; no epoch interruption. The
    module doc says so.
+
+   Superseded 2026-10-01, hub-audit Q9: a wall-clock deadline
+   (`TICK_DEADLINE`) by epoch interruption, trapped like fuel; see R17.
 3. **Do budgets block merges?** Fuel, bytes, nodes and idle counts are
    deterministic enough to gate.
 
