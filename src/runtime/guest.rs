@@ -39,6 +39,9 @@ pub(super) struct Guest {
     /// The capabilities the manifest declares: a method whose capability is
     /// not among them is refused before it is routed.
     pub(crate) capabilities: Vec<Capability>,
+    /// The programs the manifest names as targets: a node method naming
+    /// another is refused before it is routed.
+    pub(crate) targets: Vec<String>,
     /// The manifest's `MIN_WINDOW_WIDTH`: the narrowest the view is laid
     /// out, and so the narrowest a window holding it is sized.
     pub(crate) min_width: u32,

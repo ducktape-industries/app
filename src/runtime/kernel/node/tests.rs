@@ -27,6 +27,7 @@ fn too_many_changes_subscriptions_is_the_subscription_limit() {
             "`module.changes` names no program".to_owned()
         )
     );
+    guest.targets = vec!["chat".into()];
     guest.live_subscriptions = (0..MAX_SUBSCRIPTIONS as u64)
         .map(|id| (id, "chat".to_owned()))
         .collect();

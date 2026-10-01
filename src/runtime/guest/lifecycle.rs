@@ -159,7 +159,7 @@ impl Guest {
                 },
                 1,
             );
-            let (name, capabilities, min_width) = manifest_of(&view_bytes);
+            let (name, capabilities, min_width, targets) = manifest_of(&view_bytes);
             let instantiated = Instant::now();
             let mut fresh = Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
             timing.instantiate = instantiated.elapsed();
@@ -168,6 +168,7 @@ impl Guest {
             crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
             fresh.name = name;
             fresh.capabilities = capabilities;
+            fresh.targets = targets;
             fresh.min_width = min_width;
             fresh.deployed(hash);
             let fresh = match &mut against {
@@ -424,7 +425,12 @@ impl Guest {
     ) -> Result<Self, String> {
         let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
         let mut guest = Self::instantiate(module, &code, shown)?;
-        (guest.name, guest.capabilities, guest.min_width) = manifest_of(bytes);
+        (
+            guest.name,
+            guest.capabilities,
+            guest.min_width,
+            guest.targets,
+        ) = manifest_of(bytes);
         guest.init(shown)?;
         Ok(guest)
     }
@@ -511,6 +517,7 @@ impl Guest {
             instance: 0,
             name: String::new(),
             capabilities: Vec::new(),
+            targets: Vec::new(),
             min_width: 0,
             undeclared_logged: Vec::new(),
             store,

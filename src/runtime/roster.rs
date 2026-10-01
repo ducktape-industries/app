@@ -9,7 +9,6 @@ use super::*;
 /// unlocked in this session as `signer` (hex) and the `account` it holds,
 /// `None` until one is resolved.
 pub fn props(
-    dark: bool,
     connected: bool,
     network: &str,
     key: &str,
@@ -18,7 +17,6 @@ pub fn props(
 ) -> Vec<u8> {
     wire::methods::encode(&wire::methods::Session {
         connected,
-        dark,
         chain_id: network.into(),
         signer: key.into(),
         account,

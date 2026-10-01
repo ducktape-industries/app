@@ -12,7 +12,7 @@ fn call(target: &str, body: &[u8]) -> Vec<u8> {
 /// A node on a local socket that answers `responses` in order, one
 /// connection each, checking every request line against `expected_path`;
 /// joined, it hands back the request bodies it read.
-fn node_server(
+pub(super) fn node_server(
     expected_path: &'static str,
     responses: Vec<(&str, Vec<u8>)>,
 ) -> (node::Node, std::thread::JoinHandle<Vec<Vec<u8>>>) {

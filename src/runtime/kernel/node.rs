@@ -90,7 +90,15 @@ pub(super) fn spawn_retrying(
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, Some(transport_failed), stage);
+    spawn_method(
+        guest,
+        id,
+        payload,
+        method,
+        Some(transport_failed),
+        stage,
+        None,
+    );
 }
 
 /// Runs `method` on the connected node as a task, retrying for
@@ -104,7 +112,43 @@ pub(super) fn spawn_retrying_unsent(
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, Some(unsent), stage);
+    spawn_method(guest, id, payload, method, Some(unsent), stage, None);
+}
+
+/// `op.submit` of an op the person confirms first (`consent::needed`):
+/// refused `session_locked` at once with no key to sign it (no dialog
+/// that cannot lead to a signature), else queued for the person and run
+/// as [`spawn_retrying_unsent`] once they approve, refused
+/// `consent_refused` otherwise.
+pub(super) fn spawn_consented(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    words: super::super::consent::Words,
+) {
+    if !backend::seated() {
+        guest.refuse(
+            id,
+            refusal::SESSION_LOCKED,
+            "this device's key is locked; unlock it first",
+        );
+        return;
+    }
+    if connected(guest, id).is_none() {
+        return;
+    }
+    let Some(told) = super::super::consent::ask(guest, id, words) else {
+        return;
+    };
+    spawn_method(
+        guest,
+        id,
+        payload,
+        submit,
+        Some(unsent),
+        "host_call.op.submit",
+        Some(told),
+    );
 }
 
 /// Runs `method` on the connected node as a task, asking exactly once: a
@@ -116,11 +160,14 @@ pub(super) fn spawn_no_retry(
     method: NodeMethod,
     stage: &'static str,
 ) {
-    spawn_method(guest, id, payload, method, None, stage);
+    spawn_method(guest, id, payload, method, None, stage, None);
 }
 
 /// `stage` names the call in the perf registry (`host_call.<kind>`): its
-/// latency from here to the reply, and the attempts it took.
+/// latency from here to the reply, and the attempts it took. `consent`,
+/// when given, is the person's answer the task waits on before it asks
+/// the node at all: anything but `true` is `consent_refused`.
+#[allow(clippy::too_many_arguments, reason = "one spawn, every node method")]
 fn spawn_method(
     guest: &mut Guest,
     id: u64,
@@ -128,6 +175,7 @@ fn spawn_method(
     method: NodeMethod,
     retry_on: Option<fn(&wire::Error) -> bool>,
     stage: &'static str,
+    consent: Option<tokio::sync::oneshot::Receiver<bool>>,
 ) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
@@ -140,6 +188,19 @@ fn spawn_method(
     let asked = crate::perf::on().then(std::time::Instant::now);
     let attempts_stage = crate::perf::suffixed(stage, ".attempts");
     start(guest, id, async move {
+        if let Some(told) = consent
+            && told.await != Ok(true)
+        {
+            replies.item(
+                id,
+                Err(wire::Error::new(
+                    refusal::CONSENT_REFUSED,
+                    "the person did not confirm",
+                )),
+                true,
+            );
+            return;
+        }
         let (result, attempts) = match retry_on {
             Some(retry_on) => {
                 until_answered(NODE_RETRY_BUDGET, retry_on, || {
@@ -279,6 +340,14 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
             id,
             refusal::MALFORMED_REQUEST,
             "`module.changes` names no program",
+        );
+        return;
+    }
+    if !guest.targets.contains(&program) {
+        guest.refuse(
+            id,
+            refusal::UNDECLARED_TARGET,
+            undeclared("module.changes", &program),
         );
         return;
     }
@@ -433,23 +502,52 @@ impl Drop for NodeTask {
     }
 }
 
-/// The envelope of a node method, its target checked: a program name, not a
+/// The envelope of a node method, its target checked: a program name
+/// (`manifest::program_name`, the rule a manifest's targets follow), not a
 /// path.
 fn call_of(ask: &[u8]) -> Result<methods::Call, wire::Error> {
     let call: methods::Call = methods::decode(ask).map_err(malformed)?;
     let target = call.target.trim();
-    let named = !target.is_empty()
-        && target.len() <= 64
-        && target
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
-    match named {
+    match wire::manifest::program_name(target) {
         true => Ok(methods::Call {
             target: target.to_owned(),
             body: call.body,
         }),
         false => Err(malformed("request names no target")),
     }
+}
+
+fn undeclared(kind: &str, target: &str) -> String {
+    format!("`{kind}` names `{target}`, which this view's manifest does not list among its targets")
+}
+
+/// The envelope of `module.query` or `op.submit` (`kind`) from `guest`, its
+/// target among the view's manifest targets; `None` with the request
+/// refused otherwise (`malformed_request`, `undeclared_target`). The task
+/// decodes the envelope again: a string and the bytes, cheaper than
+/// carrying it.
+pub(super) fn targeted(
+    guest: &mut Guest,
+    id: u64,
+    payload: &[u8],
+    kind: &str,
+) -> Option<methods::Call> {
+    let call = match call_of(payload) {
+        Ok(call) => call,
+        Err(refusal) => {
+            guest.reply(id, Err(refusal));
+            return None;
+        }
+    };
+    if !guest.targets.contains(&call.target) {
+        guest.refuse(
+            id,
+            refusal::UNDECLARED_TARGET,
+            undeclared(kind, &call.target),
+        );
+        return None;
+    }
+    Some(call)
 }
 
 pub(super) fn query(node: Node, ask: Vec<u8>) -> Answered {

@@ -29,6 +29,7 @@ use gpui_kit::{
 use std::collections::HashMap;
 
 mod approve;
+mod consent;
 mod settings;
 mod spotlight;
 
@@ -344,6 +345,7 @@ impl Render for OverlayLayer {
             Some(Overlay::Spotlight) => Some(self.spotlight(window, cx)),
             Some(Overlay::Settings(page)) => Some(self.settings(page, window, cx)),
             Some(Overlay::Approve) => Some(self.approve(window, cx)),
+            Some(Overlay::Consent) => Some(self.consent(cx)),
             _ => None,
         };
         // `size_full` too: cached, this view is a layout root of its own,

@@ -238,12 +238,24 @@ impl Windows {
             }));
         let (desk, account) = (own.desk.clone(), self.shared.account.clone());
         let mut was = None;
+        // the ask the consent dialog showed: closed any way but its own
+        // Approve or Cancel (Escape, the backdrop), it is refused
+        let mut asked = None;
         self.subscriptions
             .push(cx.observe(&own.overlays, move |_, overlays, cx| {
                 let open = *overlays.read(cx).get();
                 let before = std::mem::replace(&mut was, open);
                 if before == Some(Overlay::Approve) && open != before {
                     account.update(cx, |account, cx| account.approve_closed(cx));
+                }
+                if open == Some(Overlay::Consent) {
+                    asked = crate::runtime::consent::front().map(|(id, _, _)| id);
+                } else if before == Some(Overlay::Consent)
+                    && let Some(id) = asked.take()
+                    && crate::runtime::consent::answer(id, false)
+                {
+                    // another waits behind it: shown next
+                    overlays.update(cx, |overlays, cx| overlays.open(Overlay::Consent, cx));
                 }
                 if open.is_some() && desk.read(cx).get().held.is_some() {
                     desk.update(cx, |desk, cx| desk.release(true, cx));
@@ -413,6 +425,18 @@ impl Windows {
 
     /// The console brought forward, or opened if there is none (the tray's
     /// Open; a node answering).
+    /// A view's op waits on the person (`runtime::consent`): the console
+    /// shows the front of the queue. With no console to ask in, every ask
+    /// is refused at once.
+    pub(crate) fn ask_consent(&mut self, cx: &mut Context<Self>) {
+        match self.console_own() {
+            Some(own) => own
+                .overlays
+                .update(cx, |overlays, cx| overlays.open(Overlay::Consent, cx)),
+            None => crate::runtime::consent::refuse_all(),
+        }
+    }
+
     pub(crate) fn raise_console(&mut self, cx: &mut Context<Self>) {
         match self.console {
             Some(key) => self.raise(key, cx),

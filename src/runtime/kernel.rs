@@ -207,7 +207,9 @@ pub(super) fn answer(
             guest.sync_route();
         }
         (Capability::Module, "query") => {
-            spawn_retrying(guest, id, payload, query, "host_call.module.query")
+            if node::targeted(guest, id, payload, "module.query").is_some() {
+                spawn_retrying(guest, id, payload, query, "host_call.module.query")
+            }
         }
         (Capability::Chain, "status") => {
             spawn_retrying(guest, id, payload, status, "host_call.chain.status")
@@ -224,8 +226,16 @@ pub(super) fn answer(
         (Capability::Invite, "create") => {
             spawn_no_retry(guest, id, payload, invite, "host_call.invite.create")
         }
+        // a write: to a declared target, and where the op removes or
+        // suspends a key or an agent, after the person's native yes
         (Capability::Op, "submit") => {
-            spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit")
+            let Some(call) = node::targeted(guest, id, payload, "op.submit") else {
+                return true;
+            };
+            match super::consent::needed(&guest.name, &call.target, &call.body) {
+                None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
+                Some(words) => node::spawn_consented(guest, id, payload, words),
+            }
         }
         (Capability::Blob, "get") => {
             spawn_retrying(guest, id, payload, blob_get, "host_call.blob.get")
