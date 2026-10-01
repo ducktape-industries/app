@@ -30,20 +30,30 @@ mod store;
 pub(crate) use kernel::local_offset;
 pub use roster::{Link, RailRow, connected, deployments_checked, props, valid_route};
 pub(crate) use roster::{Roster, changes_channel, roster};
+pub use seat::override_views_from;
 pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat};
-pub use seat::{Loads, override_views_from};
 
 use guest::Guest;
 use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
-    LoadTiming, Loaded, Mounted, Slot, Unloaded, log_source, registry, spawn_load, view_override,
+    Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, log_source, queue, registry,
+    view_override,
 };
 
 /// Shared HTTP connections need a continuously driven I/O runtime. Loader
-/// threads can compile or join child loads between requests; their own parked
-/// runtimes would strand the pooled sockets another loader reuses.
+/// threads compile between requests; their own parked runtimes would strand
+/// the pooled sockets another loader reuses.
 pub(crate) fn handle() -> tokio::runtime::Handle {
     kernel::handle()
+}
+
+/// A lock the window thread and the loaders share, taken even after a
+/// thread panicked holding it: a panic on a loader never takes the window
+/// thread, and every window with it, down on its next turn.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 use std::collections::{HashMap, VecDeque};
@@ -113,6 +123,10 @@ const MAX_OP_BYTES: usize = 16 << 20;
 /// transport recoverable: nothing is suppressed for good, only spaced out.
 const RETRY_FIRST: Duration = Duration::from_secs(1);
 const RETRY_MAX: Duration = Duration::from_secs(60);
+/// How many view loads run at once, each on a loader thread of its own: a
+/// fetch and a cranelift compile each, so a long roster waits its turn
+/// behind these rather than forking a thread per program.
+const LOADERS: usize = 4;
 
 /// The route a link asked of each module's view, waiting for that view's
 /// first `host.route` subscriber. One per module: a newer link replaces an
@@ -132,13 +146,13 @@ pub(crate) fn route_to(module: &'static str, route: String) {
         .expect("pending routes")
         .insert(module, route);
     // registry, then seat: the order `retry` takes them in
-    let registry = registry().lock().expect("module views");
+    let registry = lock(registry());
     for seat in registry
         .iter()
         .filter(|((name, _), _)| *name == module)
         .map(|(_, seat)| seat)
     {
-        seat.lock().expect("module view lock").wake.send_replace(());
+        lock(seat).wake.send_replace(());
     }
 }
 
@@ -180,18 +194,17 @@ fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32) {
 }
 
 /// The narrowest `module`'s view is laid out, in px, once one of its seats
-/// holds it drawn; `None` while it loads, failed, or has none.
+/// holds it drawn or compiled; `None` while it loads, failed, or has none.
 pub(crate) fn min_width(module: &str) -> Option<f32> {
-    let registry = registry().lock().expect("module views");
+    let registry = lock(registry());
     registry
         .iter()
         .filter(|((name, _), _)| *name == module)
-        .find_map(
-            |(_, seat)| match &seat.lock().expect("module view lock").slot {
-                Slot::Ready(guest) => Some(guest.min_width as f32),
-                _ => None,
-            },
-        )
+        .find_map(|(_, seat)| match &lock(seat).slot {
+            Slot::Ready(guest) => Some(guest.min_width as f32),
+            Slot::Compiled { min_width, .. } => Some(*min_width as f32),
+            _ => None,
+        })
 }
 
 /// Every seat of `module` holds a drawn view whose manifest says

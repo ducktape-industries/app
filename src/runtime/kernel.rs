@@ -400,4 +400,4 @@ pub(super) fn next_tick(clocks: &[Clock]) -> Option<std::time::Instant> {
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;
