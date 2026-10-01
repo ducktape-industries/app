@@ -259,8 +259,9 @@ fn listed(name: &str, seed: &str) -> module_registry::Entry {
 
 /// Claim: a roster read takes the registry's role bindings with the
 /// programs, and asks for them once on a connection, not again while the
-/// roster stands; a registry from before the question refuses it, and the
-/// roster is still listed, with no bindings known.
+/// roster stands, and again once it moved; a registry from before the
+/// question refuses it, and the roster is still listed, with no bindings
+/// known.
 #[test]
 fn the_roles_come_with_the_roster_and_are_asked_once() {
     let roles = abi::Roles {
@@ -276,10 +277,20 @@ fn the_roles_come_with_the_roster_and_are_asked_once() {
     );
     let (roster, registry) = (Roster::default(), Registry::default());
     read_roster(node.asked_of.clone(), &roster, &registry);
-    assert_eq!(roster.roles(), Some(roles));
+    assert_eq!(roster.roles(), Some(roles.clone()));
     read_roster(node.asked_of.clone(), &roster, &registry);
     let asked = node.held.lock().unwrap().roles_asked;
     assert_eq!(asked, 1, "not every block");
+    // the roster moved (a registry upgrade moves its code): asked again
+    let upgraded = FakeNode::with_roles(
+        vec![listed("roles-registry", "upgraded")],
+        Vec::new(),
+        Some(roles.clone()),
+        Vec::new(),
+    );
+    read_roster(upgraded.asked_of.clone(), &roster, &registry);
+    let asked = upgraded.held.lock().unwrap().roles_asked;
+    assert_eq!(asked, 1, "asked again once the roster moved");
 
     let old = FakeNode::new(vec![listed("roles-old", "roles")], Vec::new(), Vec::new());
     let (roster, registry) = (Roster::default(), Registry::default());
