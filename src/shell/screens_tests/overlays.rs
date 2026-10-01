@@ -86,6 +86,23 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
         });
     }
 
+    // a menu closed by a click outside or a pick, not Escape, gives them
+    // back as well
+    let (view, mut native) = open(gate::desk(), cx);
+    native.update(draw);
+    native.simulate_keystrokes("tab");
+    let before = native.update(|window, cx| {
+        draw(window, cx);
+        window.focused(cx)
+    });
+    show(&view, &mut native, Some(Overlay::Menu(Popover::Node)));
+    show(&view, &mut native, None);
+    native.run_until_parked();
+    native.update(|window, cx| {
+        draw(window, cx);
+        assert_eq!(window.focused(cx), before, "a menu closed without Escape");
+    });
+
     // a menu giving way to a dialog hands the keys on; closing gives them
     // back to what had them before the menu
     let (view, mut native) = open(gate::desk(), cx);

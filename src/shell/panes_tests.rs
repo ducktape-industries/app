@@ -6,7 +6,7 @@ use super::layers::tests::{
     tree_renders,
 };
 use super::*;
-use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
+use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, Window, px, size};
 
@@ -31,8 +31,32 @@ pub(super) fn ids(nodes: &serde_json::Value) -> Vec<String> {
 }
 
 fn press(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
+    a11y_act(Named::Any(id), Action::Click, None, window, cx);
+}
+
+/// Where the element a test acts on sits on a node's element path.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum Named<'a> {
+    /// Anywhere on the path.
+    Any(&'a str),
+    /// The path's own element.
+    Last(&'a str),
+    /// The path's own element `.1`, inside the element `.0`.
+    LastIn(&'a str, &'a str),
+}
+
+/// An assistive technology's `action` on the node `named` picks, after a
+/// fresh draw: the path the AX door's `/act` takes.
+pub(super) fn a11y_act(
+    named: Named,
+    action: Action,
+    data: Option<ActionData>,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) {
     draw(window, cx);
-    let node = window
+    let is = |element: &ElementId, want: &str| matches!(element, ElementId::Name(name) if name.as_ref() == want);
+    let target = window
         .a11y_tree()
         .unwrap()
         .nodes
@@ -40,20 +64,23 @@ fn press(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
         .find_map(|(node, _)| {
             window
                 .a11y_element_id(*node)
-                .is_some_and(|path| {
-                    path.iter().any(
-                        |element| matches!(element, ElementId::Name(name) if name.as_ref() == id),
-                    )
+                .is_some_and(|path| match named {
+                    Named::Any(id) => path.iter().any(|element| is(element, id)),
+                    Named::Last(id) => path.last().is_some_and(|element| is(element, id)),
+                    Named::LastIn(within, id) => {
+                        path.last().is_some_and(|element| is(element, id))
+                            && path.iter().any(|element| is(element, within))
+                    }
                 })
                 .then_some(*node)
         })
-        .unwrap_or_else(|| panic!("missing AX control {id}"));
+        .unwrap_or_else(|| panic!("missing AX control {named:?}"));
     window.dispatch_a11y_action(
         ActionRequest {
-            action: Action::Click,
+            action,
             target_tree: TreeId::ROOT,
-            target_node: node,
-            data: None,
+            target_node: target,
+            data,
         },
         cx,
     );
@@ -327,41 +354,6 @@ fn command_k_toggles_spotlight_and_escape_closes_any_overlay(cx: &mut TestAppCon
             "its backdrop left {overlay:?} open"
         );
     }
-}
-
-/// What had the keys before something opened over the desk has them again
-/// once it closes, however it closed: typing carries on where it was.
-#[gpui_kit::test]
-fn closing_an_overlay_gives_the_keys_back_to_what_had_them(cx: &mut TestAppContext) {
-    let (_, _, view, mut native) = console(cx);
-    let focused = |native: &mut VisualTestContext| native.update(|window, cx| window.focused(cx));
-    key(&mut native, "tab");
-    let before = focused(&mut native);
-    assert!(before.is_some());
-    key(&mut native, "secondary-k");
-    native.run_until_parked();
-    assert_ne!(
-        focused(&mut native),
-        before,
-        "Spotlight's field takes the keys"
-    );
-    key(&mut native, "escape");
-    native.run_until_parked();
-    native.update(|window, cx| {
-        draw(window, cx);
-    });
-    assert_eq!(focused(&mut native), before, "Escape");
-    // a bar menu, closed by a click outside or a pick
-    show(&view, Some(Overlay::Menu(Popover::Node)), &mut native);
-    native.update(|window, cx| {
-        draw(window, cx);
-    });
-    show(&view, None, &mut native);
-    native.run_until_parked();
-    native.update(|window, cx| {
-        draw(window, cx);
-    });
-    assert_eq!(focused(&mut native), before, "a menu");
 }
 
 /// The window in front is the model's active program, however it got

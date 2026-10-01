@@ -3,7 +3,7 @@
 //! program in the window in front.
 use super::entities::{Entities, Overlay, Popover, Spot};
 use super::layers::tests::{run_spot, show};
-use super::panes_tests::{console, draw, in_front, key, panes, settle};
+use super::panes_tests::{Named, a11y_act, console, draw, in_front, key, panes, settle};
 use super::*;
 use gpui_kit::{Entity, Keystroke, TestAppContext, VisualTestContext, Window};
 
@@ -19,33 +19,8 @@ fn desk_of_two(cx: &mut TestAppContext) -> Setup {
 
 /// The keyboard focus on the element with `id`, as the AX door gives it.
 pub(super) fn focus_control(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
-    use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
-    draw(window, cx);
-    let node = window
-        .a11y_tree()
-        .unwrap()
-        .nodes
-        .iter()
-        .find_map(|(node, _)| {
-            window
-                .a11y_element_id(*node)
-                .is_some_and(|path| {
-                    path.iter().any(|element| {
-                        matches!(element, gpui_kit::ElementId::Name(name) if name.as_ref() == id)
-                    })
-                })
-                .then_some(*node)
-        })
-        .unwrap_or_else(|| panic!("missing AX control {id}"));
-    window.dispatch_a11y_action(
-        ActionRequest {
-            action: Action::Focus,
-            target_tree: TreeId::ROOT,
-            target_node: node,
-            data: None,
-        },
-        cx,
-    );
+    use gpui_kit::accesskit::Action;
+    a11y_act(Named::Any(id), Action::Focus, None, window, cx);
 }
 
 fn key_split(native: &mut VisualTestContext) {
@@ -86,7 +61,9 @@ fn the_fill_chord_fills_the_window_in_front_and_again_puts_it_back(cx: &mut Test
     let before = frame(&mut native, &view, 1);
     stroke(&mut native, "secondary-shift-enter");
     let filled = frame(&mut native, &view, 1);
+    let desk = native.update(|_, cx| view.read(cx).layout(cx).desk());
     assert_ne!(filled, before);
+    assert_eq!(filled, layout::Frame::fill(desk));
     assert_eq!(
         native.update(|_, cx| view.read(cx).layout(cx).panes[1].restore),
         Some(before)
@@ -444,43 +421,6 @@ fn shift_return_on_a_bar_tab_shows_it_in_this_window(cx: &mut TestAppContext) {
     );
 }
 
-/// Search offers Fill and Move or size while a window has a frame, and
-/// running them is the chords' messages.
-#[gpui_kit::test]
-fn search_rows_fill_and_hold_the_window_in_front(cx: &mut TestAppContext) {
-    let (_, _, view, mut native) = desk_of_two(cx);
-    show(&view, Some(Overlay::Spotlight), &mut native);
-    let nodes = native.update(draw);
-    let titles: Vec<_> = nodes
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|node| node["role"] == "ListBoxOption")
-        .map(|node| node["name"].as_str().unwrap().to_owned())
-        .collect();
-    assert!(titles.contains(&"Fill window".to_owned()), "{titles:?}");
-    assert!(
-        titles.contains(&"Move or size window".to_owned()),
-        "{titles:?}"
-    );
-    let before = frame(&mut native, &view, 1);
-    let run = |native: &mut VisualTestContext, spot: Spot| {
-        show(&view, Some(Overlay::Spotlight), native);
-        run_spot(&view, spot, native);
-        settle(native);
-    };
-    run(&mut native, Spot::FillWindow);
-    assert_ne!(frame(&mut native, &view, 1), before, "filled");
-    run(&mut native, Spot::HoldWindow);
-    assert!(held(&mut native, &view));
-    assert!(in_front(&mut native, &view), "the window has the arrows");
-    let filled = frame(&mut native, &view, 1);
-    stroke(&mut native, "right");
-    assert_eq!(frame(&mut native, &view, 1).x, filled.x + 8.);
-    stroke(&mut native, "escape");
-    assert!(!held(&mut native, &view));
-}
-
 /// Search open and drawn, then "Move or size window" run from it: the keys
 /// Search gives back as it closes (deferred past the draw) are the hold's
 /// to keep, not to take the hold apart with.
@@ -511,6 +451,21 @@ fn a_fill_run_from_a_drawn_search_leaves_the_keys_in_front(cx: &mut TestAppConte
     let before = frame(&mut native, &view, 1);
     show(&view, Some(Overlay::Spotlight), &mut native);
     settle(&mut native);
+    // Search offers both window rows while a window has a frame
+    let titles: Vec<String> = native
+        .update(draw)
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|node| node["role"] == "ListBoxOption")
+        .filter_map(|node| node["name"].as_str().map(str::to_owned))
+        .collect();
+    for row in ["Fill window", "Move or size window"] {
+        assert!(
+            titles.iter().any(|title| title == row),
+            "{row} missing: {titles:?}"
+        );
+    }
     run_spot(&view, Spot::FillWindow, &mut native);
     settle(&mut native);
     assert_ne!(frame(&mut native, &view, 1), before, "filled");

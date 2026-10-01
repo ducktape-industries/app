@@ -15,7 +15,8 @@ mod roving;
 mod text;
 use super::entities::{Account, AccountStep, Overlay, Popover, Screen, SettingsPage};
 use super::layers::tests::{Seed, entities, set_screen};
-use gpui_kit::accesskit::{Action, ActionData, ActionRequest, TreeId};
+use super::panes_tests::{Named, a11y_act};
+use gpui_kit::accesskit::{Action, ActionData};
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{ElementId, Entity, TestAppContext, VisualTestContext, Window, px, size};
 
@@ -31,32 +32,8 @@ fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::Value {
 /// Sends the door's own SetValue action to the node whose element is
 /// `field` (`"{key}/field"`), the way a real AX client types into it.
 fn type_into(field: &str, text: &str, window: &mut Window, cx: &mut gpui_kit::App) {
-    draw(window, cx);
-    let target = window
-        .a11y_tree()
-        .unwrap()
-        .nodes
-        .iter()
-        .find_map(|(node, _)| {
-            window
-                .a11y_element_id(*node)
-                .is_some_and(|path| {
-                    path.last().is_some_and(|element| {
-                        matches!(element, ElementId::Name(name) if name.as_ref() == field)
-                    })
-                })
-                .then_some(*node)
-        })
-        .unwrap_or_else(|| panic!("missing AX control {field}"));
-    window.dispatch_a11y_action(
-        ActionRequest {
-            action: Action::SetValue,
-            target_tree: TreeId::ROOT,
-            target_node: target,
-            data: Some(ActionData::Value(text.into())),
-        },
-        cx,
-    );
+    let value = Some(ActionData::Value(text.into()));
+    a11y_act(Named::Last(field), Action::SetValue, value, window, cx);
 }
 
 /// Activates the test window and waits for it to be so: gpui reports focus
@@ -72,32 +49,7 @@ fn activate(native: &mut VisualTestContext) {
 /// element is `id` inside the element `within`: the path the door's
 /// `/act press` takes.
 fn press(within: &str, id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
-    draw(window, cx);
-    let named = |element: &ElementId, want: &str| matches!(element, ElementId::Name(name) if name.as_ref() == want);
-    let target = window
-        .a11y_tree()
-        .unwrap()
-        .nodes
-        .iter()
-        .find_map(|(node, _)| {
-            window
-                .a11y_element_id(*node)
-                .is_some_and(|path| {
-                    path.last().is_some_and(|element| named(element, id))
-                        && path.iter().any(|element| named(element, within))
-                })
-                .then_some(*node)
-        })
-        .unwrap_or_else(|| panic!("missing AX control {id} in {within}"));
-    window.dispatch_a11y_action(
-        ActionRequest {
-            action: Action::Click,
-            target_tree: TreeId::ROOT,
-            target_node: target,
-            data: None,
-        },
-        cx,
-    );
+    a11y_act(Named::LastIn(within, id), Action::Click, None, window, cx);
 }
 
 fn find<'a>(nodes: &'a serde_json::Value, role: &str, name: &str) -> &'a serde_json::Value {
