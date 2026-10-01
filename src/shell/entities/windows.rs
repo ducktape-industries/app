@@ -425,6 +425,13 @@ impl Windows {
 
     /// The console brought forward, or opened if there is none (the tray's
     /// Open; a node answering).
+    pub(crate) fn raise_console(&mut self, cx: &mut Context<Self>) {
+        match self.console {
+            Some(key) => self.raise(key, cx),
+            None => drop(self.open(WindowKind::Console, None, cx)),
+        }
+    }
+
     /// A view's op waits on the person (`runtime::consent`): the console
     /// shows the front of the queue. With no console to ask in, every ask
     /// is refused at once.
@@ -434,13 +441,6 @@ impl Windows {
                 .overlays
                 .update(cx, |overlays, cx| overlays.open(Overlay::Consent, cx)),
             None => crate::runtime::consent::refuse_all(),
-        }
-    }
-
-    pub(crate) fn raise_console(&mut self, cx: &mut Context<Self>) {
-        match self.console {
-            Some(key) => self.raise(key, cx),
-            None => drop(self.open(WindowKind::Console, None, cx)),
         }
     }
 
