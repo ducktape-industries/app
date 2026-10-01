@@ -74,7 +74,7 @@ view's tree lowers onto GPUI elements one to one.
 | `editor.rs`, `editor/` | `EditorStore` (guest-owned documents projected natively) and `TextEditor` (the one multi-line native field; `editor/text.rs` is mounted as `editor::wire::text` by a `#[path]`) | window thread |
 | `backend/` | everything that crosses the process boundary: `noded` client and signed `Frame`, `session` (seated key, prefs, recent nodes), `device_key`, `passkey`, `join`, `views`, `app_dirs` | async, polled where the caller polls (see below) |
 | `a11y.rs` | role/name/keyboard/state helpers for shell and renderer, plus the class markers the AX door reads | window thread |
-| `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client | `ax-door` accept thread; answers on the window thread |
+| `ax.rs`, `ax/` | the AX test door: loopback HTTP over the AccessKit tree, its CLI client; built with the `ax-door` feature only | `ax-door` accept thread; answers on the window thread |
 | `fonts.rs`, `tray.rs` | bundled faces and fallback chains; the macOS status item (`Tray`, an entity observing `Session`, `Chain` and `Prefs`) | window thread |
 
 Dependencies, top down (an arrow means "calls into"):
@@ -105,7 +105,7 @@ quit) are `Windows`' methods.
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
 | **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
-| **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller); each request is forwarded to the window thread | `ax/http.rs` |
+| **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller; a connection has 5 s to send its request, whose head is capped at 16 KiB before the token is read); each request is forwarded to the window thread | `ax/http.rs` |
 | **freedesktop listener** (non-macOS) | banner clicks off the session bus | `runtime/notify/freedesktop.rs` |
 | GPUI background executor | timers only (clock wake-ups, sensor delays, spin, the door's settle polls) | — |
 
@@ -277,6 +277,10 @@ view ─ Request{id, kind, payload} ─► Guest::answer ─► kernel::answer �
                                         └─ host.widget/session/log locally   ▼
 view ◄─ Event::Response{id, done} ◄── Replies (drained at next redraw) ◄─ views-kernel task
 ```
+
+Every code the host refuses a request with below (`unknown_request`,
+`stale_connection`, …) is a const in `view_wire::methods::refusal`, with
+its meaning; the host and the views name the const, never the string.
 
 1. **Ask.** The view's `tick` returns requests in its `Frame`. `Guest::answer`
    (`runtime/guest/requests.rs`) caps the payload (`MAX_PAYLOAD_BYTES`;
@@ -514,16 +518,19 @@ Connect ─► /v1/status ─► contract check ─► bind_keyring ─► devic
    executor's timer, `LOST_AFTER` misses in a row read reconnecting, one
    answer recovers.
 2. **Device key** (`backend/device_key.rs`, `Account::open_device_key`).
-   On the blocking pool: `device_key::load(keyring)` from the OS store
-   (Keychain, Credential Manager, Secret Service via the `keyring` crate; a
-   0600 file with `DUCKTAPE_DEVICE_KEY_STORE=file`), else `device_key::mint`
-   an ed25519 key — unless a **legacy** password-locked keystore file is
-   here (`key_exists`), in which case nothing is minted and the key screen
-   asks for its password. `backend::seat_key` puts the key in the
-   process-wide `SIGNER` and answers the public key (`signer_key`). No
-   password, no phrase for a device key. The legacy file is opened once by
-   `Account::unlock(password)` and moved into the OS store
-   (`device_key::save`). `Account::lock` calls `lock_signer` and returns to
+   On the blocking pool: `device_key::open(keyring, legacy)` reads the OS
+   store (Keychain, Credential Manager, Secret Service via the `keyring`
+   crate; a 0600 file with `DUCKTAPE_DEVICE_KEY_STORE=file`) and makes an
+   ed25519 key only when the store answers that it holds none — unless a
+   **legacy** password-locked keystore file is here (`key_exists`), in
+   which case nothing is made and the key screen asks for its password. A
+   store that errors is never taken for an empty one: its sentence lands on
+   the failed-key screen, and nothing is made or kept over its key.
+   `backend::seat_key` puts the key in the process-wide `SIGNER` and
+   answers the public key (`signer_key`). No password, no phrase for a
+   device key. The legacy file is opened once by `Account::unlock(password)`
+   and moved into the OS store (`device_key::save`, which keeps a key only
+   where none is kept yet). `Account::lock` calls `lock_signer` and returns to
    `Screen::Unlock`; `browse_without_key` opens the desk read-only.
 3. **Account** (`backend/identity.rs` `account_of_key` →
    `Account::resolved`). A key with an account goes to `Screen::Desk`; one
@@ -586,12 +593,15 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `with_presentation` (the `NativePresentation` copy across guest
   instances) also live in this file for now; the struct itself is in
   `render.rs`.
-- **The door** (`src/ax.rs`, `src/ax/{http,tree,actions}.rs`). Off unless
+- **The door** (`src/ax.rs`, `src/ax/{http,tree,actions}.rs`). Built only
+  with the `ax-door` cargo feature (the kit and qa builds); a default build
+  has no door and no `ax` client. Off unless
   `DUCKTAPE_AX_DOOR=<port|0>` is set (0 picks a port). `ax::open`
-  binds 127.0.0.1 only and writes `{port, token}` to
-  `$XDG_RUNTIME_DIR/ducktape/ax-door.json` (else the state dir) mode 0600;
-  the `ax-door` thread parses HTTP and forwards each `Request` over a
-  channel to `ax::serve` on the window thread. Endpoints: `GET /tree`
+  binds 127.0.0.1 only, starts the `ax-door` thread, then writes
+  `{port, token}` to `$XDG_RUNTIME_DIR/ducktape/ax-door.json` (else the
+  cache dir) mode 0600, and removes it on quit (and a stale one when its
+  port will not bind); the `ax-door` thread parses HTTP and forwards each
+  `Request` over a channel to `ax::serve` on the window thread. Endpoints: `GET /tree`
   (`?compact`, `?bounds`, `?window`, `?view`), `GET /actions`, `POST /act`,
   `POST /key`, `GET /keys`, `POST /drag`, `POST /wait`, and `POST /reveal`
   only with `DUCKTAPE_AX_DOOR_PRIVATE=1`. Every read settles the seats
@@ -599,13 +609,16 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   reads the same AccessKit tree GPUI hands the OS (`ax::tree::snapshot`
   over `Window::a11y_tree`); every act goes through GPUI's own a11y action,
   key or mouse dispatch (`ax::actions`). Ids are `<window>:<element id>`;
-  windows are `console`, `console2`, … in the order they opened
+  windows are `console` (the console) and `console<key>` (any other:
+  `console2`, … as they open), each name kept for the window's life
   (`Windows::served`, by `WindowKey`), read on every request; a view's
   nodes sit under the `view/<module>` mark `Seat::ax_mark`
-  wraps around each view (`tree::VIEW_MARK`). Answers carry
+  wraps around each view (`render::VIEW_MARK`), a `render::host_id`, so a
+  view's own `view/<other>` id is never taken for one. Answers carry
   `X-Ax-Revision`, which moves when a tree changed. `ducktape-app ax …`
   (`ax::cli`) is the command-line client.
-- **How qa drives it.** The qa repo's rig launches the app with
+- **How qa drives it.** The qa repo builds the app with `--features
+  ax-door`; its rig launches the app with
   `DUCKTAPE_AX_DOOR=0`, reads the door file, and walks scenarios through
   these endpoints; element ids such as `rail/<module>` and `pane/<n>/…` are
   its contract. In-repo, `shell/panes_tests.rs`, `shell/screens_tests.rs`
@@ -872,7 +885,8 @@ House words, and where one word means several things.
   `DUCKTAPE_RPC=<url>` skips the connect screen. Keys go to the OS store;
   `DUCKTAPE_DEVICE_KEY_STORE=file` and XDG variables point a scratch run
   elsewhere (`backend/app_dirs.rs`).
-- **Run the AX door.** `DUCKTAPE_AX_DOOR=0 cargo run -p ducktape-app`, then
+- **Run the AX door.** `DUCKTAPE_AX_DOOR=0 cargo run -p ducktape-app
+  --features ax-door`, then
   `ducktape-app ax tree` (or `actions`, `act <id> <action>`, `key`, `keys`,
   `drag`, `wait`); the client reads the door file for port and
   token. `DUCKTAPE_AX_DOOR_PRIVATE=1` adds `reveal`.

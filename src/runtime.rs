@@ -60,7 +60,7 @@ use wasmtime::{
     Cache, CacheConfig, Caller, Config, Engine, Linker, Memory, Module, OptLevel, Store,
     StoreLimits, StoreLimitsBuilder, TypedFunc,
 };
-use wire::methods::Capability;
+use wire::methods::{Capability, refusal};
 
 /// One desktop window, as the shell and the notification policy (which
 /// window is in front) name it.
