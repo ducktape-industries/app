@@ -151,11 +151,6 @@ impl Seat {
     }
 
     #[cfg(test)]
-    pub(super) fn props(&self) -> Option<&[u8]> {
-        self.props.as_deref()
-    }
-
-    #[cfg(test)]
     pub(crate) fn window(&self) -> Option<AnyWindowHandle> {
         self.window
     }

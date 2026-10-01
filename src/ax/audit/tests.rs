@@ -639,9 +639,10 @@ fn coverage_counts_actionable_nodes_clean_of_errors_and_rules_failed_over_applic
         (report.coverage.actionable - 2. / 3.).abs() < 1e-9,
         "{report:#?}"
     );
-    let failed = report.violations.len();
-    let applicable: usize = report.applicable.values().sum();
-    assert!((report.coverage.rule - (1. - failed as f64 / applicable as f64)).abs() < 1e-9);
+    // AX-002 bare, AX-017 thin, AX-014 h, over ok 8, bare 7, thin 8, h 3
+    assert_eq!(report.violations.len(), 3, "{report:#?}");
+    assert_eq!(report.applicable.values().sum::<usize>(), 26);
+    assert!((report.coverage.rule - 23. / 26.).abs() < 1e-9);
     assert_eq!(report.errors().count(), 2);
     assert_eq!(
         one(Vec::new()).coverage,
@@ -996,7 +997,6 @@ async fn arrow_probe(
     use gpui_kit::test::TestWindowExt as _;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    cx.update(gpui_kit::init);
     let window = cx.open_window(
         gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
         |_, _| crate::render::ViewTree::new(members(1)),
@@ -1050,25 +1050,27 @@ async fn arrow_probe(
 /// ended (a key reaches a view as an event the tree emits, and an emit is
 /// delivered when the outermost update ends): the arrow probe of
 /// `GET /audit` presses each arrow in an update of its own and reads after
-/// it, so a list whose arrows move its active row passes AX-107.
+/// it, so a list whose arrows move its active row passes AX-107. A view
+/// that moves its active row a while after it heard the arrow (a guest
+/// ticks on a later draw) passes too: the probe reads again until the row
+/// has moved, before it presses the next arrow.
 #[gpui_kit::test]
-async fn the_arrow_probe_sees_a_views_list_move_its_active_row(cx: &mut gpui_kit::TestAppContext) {
-    let (report, heard) = arrow_probe(cx, None).await;
-    assert_eq!(report["applicable"]["AX-107"], 1, "the probe ran: {report}");
-    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
-    assert_eq!(heard[..2], ["down", "up"]);
-}
-
-/// A view that moves its active row a while after it heard the arrow (a
-/// guest ticks on a later draw) still passes AX-107: the probe reads again
-/// until the row has moved, before it presses the next arrow.
-#[gpui_kit::test]
-async fn the_arrow_probe_waits_for_a_view_that_answers_late(cx: &mut gpui_kit::TestAppContext) {
-    let late = std::time::Duration::from_millis(120);
-    let (report, heard) = arrow_probe(cx, Some(late)).await;
-    assert_eq!(report["applicable"]["AX-107"], 1, "the probe ran: {report}");
-    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
-    assert_eq!(heard[..2], ["down", "up"]);
+async fn the_arrow_probe_sees_a_views_list_move_its_active_row_at_once_or_late(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    for after in [None, Some(std::time::Duration::from_millis(120))] {
+        let (report, heard) = arrow_probe(cx, after).await;
+        assert_eq!(
+            report["applicable"]["AX-107"], 1,
+            "{after:?}: the probe ran: {report}"
+        );
+        assert!(
+            door_fails(&report, "AX-107").is_empty(),
+            "{after:?}: {report}"
+        );
+        assert_eq!(heard[..2], ["down", "up"], "{after:?}");
+    }
 }
 
 /// The first key route of [`composites_audit`]'s composites.

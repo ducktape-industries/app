@@ -76,7 +76,13 @@ fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {
         };
         guest.answer(request, &None);
     }
-    assert!(guest.undeclared_logged.len() <= 1, "{kind} logged twice");
+    let want =
+        Capability::of_kind(kind).map_or(0, |(family, _)| usize::from(!declared.contains(&family)));
+    assert_eq!(
+        guest.undeclared_logged.len(),
+        want,
+        "{kind} logged {want} time(s)"
+    );
     refusal_code(&mut guest)
 }
 
@@ -162,48 +168,25 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
     assert!(guest.pending.is_empty());
 }
 
-/// Every kind in `methods::ALL` has a handler on this side: none of them is
-/// `unknown_request`, whatever else a bare guest with no node refuses it
-/// for. A method added to the list without a handler fails here.
-#[test]
-fn every_method_is_answered() {
-    for (id, kind) in methods::ALL.iter().enumerate() {
-        let mut guest = guest();
-        guest.answer(
-            wire::Request {
-                id: id as u64,
-                kind: (*kind).into(),
-                payload: methods::encode(&methods::Call {
-                    target: "registry".into(),
-                    body: Vec::new(),
-                }),
-            },
-            &None,
-        );
-        assert_ne!(
-            refusal_code(&mut guest).as_deref(),
-            Some(refusal::UNKNOWN_REQUEST),
-            "{kind} has no handler"
-        );
-    }
-}
-
 /// A node method routes to the node handler, which answers for the missing
-/// node before it reads the request; what the request says is judged by
-/// `query` itself, below.
+/// node before it reads the request; chain and invite kinds route there
+/// too. What the request says is judged by `query` itself, below.
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
-    let mut guest = guest();
-    assert!(answer(
-        &mut guest,
-        Capability::Module,
-        "query",
-        7,
-        b"not borsh"
-    ));
-    assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
-        id: 7, result: Err(refusal), done: true
-    }) if refusal.code == refusal::NOT_CONNECTED));
+    for (capability, operation) in [
+        (Capability::Module, "query"),
+        (Capability::Chain, "status"),
+        (Capability::Invite, "create"),
+    ] {
+        let mut guest = guest();
+        assert!(answer(&mut guest, capability, operation, 7, b"not borsh"));
+        assert!(
+            matches!(guest.pending.pop(), Some(wire::Event::Response {
+                id: 7, result: Err(refusal), done: true
+            }) if refusal.code == refusal::NOT_CONNECTED),
+            "{capability:?}.{operation}"
+        );
+    }
 }
 /// `link.open` opens `duck://` and `https://` and refuses every other
 /// scheme at the method, before the app is asked.
@@ -467,20 +450,6 @@ fn a_pasted_keys_activation_reaches_the_clipboard_on_its_commit() {
 }
 
 #[test]
-fn system_kinds_route_to_the_node_handler() {
-    for (capability, operation) in [
-        (Capability::Chain, "status"),
-        (Capability::Invite, "create"),
-    ] {
-        let mut guest = guest();
-        assert!(answer(&mut guest, capability, operation, 19, b"invalid"));
-        assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
-            id: 19, result: Err(refusal), done: true
-        }) if refusal.code == refusal::NOT_CONNECTED));
-    }
-}
-
-#[test]
 fn host_session_is_program_independent_and_tracks_updates() {
     let mut guest = guest();
     let props = Some(super::super::props(
@@ -622,8 +591,9 @@ fn host_id_answers_a_borsh_string_a_view_can_decode() {
 }
 
 /// The kinds this host routes, read from its own `("<cap>", "<op>")` match
-/// arms under `src/runtime`, are exactly `methods::ALL`: `every_method_is_answered`
-/// is the one direction, this the other — nothing is served that is not a method.
+/// arms under `src/runtime`, are exactly `methods::ALL`:
+/// `a_method_is_reached_only_through_its_declared_capability` is the one
+/// direction (every method answered), this the other — nothing is served that is not a method.
 #[test]
 fn the_routed_kinds_are_exactly_the_methods() {
     let mut served = std::collections::BTreeSet::new();
