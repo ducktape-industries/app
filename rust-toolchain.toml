@@ -1,12 +1,8 @@
 # The one toolchain this tree builds with: 1.96.1, the same pin as the
-# modules repository's. Nothing here builds for `targets`: the list came
-# over from the monorepo with ops/macos-preflight.sh, the node's preflight,
-# which checks for the musl pair.
+# modules repository's. Nothing here builds for another triple: `targets`
+# keeps aarch64-unknown-linux-musl only because ops/macos-preflight.sh, the
+# node's preflight, checks for it.
 [toolchain]
 channel = "1.96.1"
 components = ["rustfmt", "clippy"]
-targets = [
-  "wasm32-unknown-unknown",
-  "x86_64-unknown-linux-musl",
-  "aarch64-unknown-linux-musl",
-]
+targets = ["aarch64-unknown-linux-musl"]

@@ -102,7 +102,7 @@ quit) are `Windows`' methods.
 | Thread | What runs there | Where it is made |
 |---|---|---|
 | **window / main** (GPUI foreground) | every entity method and the timers the entities and layers own (`Session`'s status poll, `Toast`'s dismiss, an open menu's ages in `layers::Chrome`, a `Seat`'s clocks); every `WindowRoot` render and its layers'; `Seat::turn`, so every wasm **tick**; `ViewTree` layout and paint; AX door answers (`ax::serve`); the entities' own `Task` futures (connect, status poll, sign-in) — polled on the GPUI foreground inside `runtime.enter()` (`spawn_on_runtime`), so their HTTP bodies are decoded here | `shell/launch.rs` |
-| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn`, `live`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
+| **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
 | **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
 | **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller); each request is forwarded to the window thread | `ax/http.rs` |
@@ -292,15 +292,19 @@ view ◄─ Event::Response{id, done} ◄── Replies (drained at next redraw)
    the kernel and are handled in `Guest::answer` after it returns `false`:
    `host.widget` (the one MessagePack method: a `WidgetCommand`),
    `host.session` (the props subscription) and `host.log`.
-3. **Relay.** `kernel/node.rs` `spawn` first checks the guest still belongs
-   to the current `roster::connection()` (else `stale_connection`, or
-   `not_connected` with no node), admits the call against `MAX_IN_FLIGHT`
-   (`in_flight_limit`) and runs the handler as a tokio task on
-   `views-kernel`, owned by `guest.tasks` as a `NodeTask` that aborts on
-   drop (cancel, swap, teardown). Transport refusals (`rpc_client`,
-   `node_failed`) retry with `backend::retry_delay` backoff for
-   `NODE_RETRY_BUDGET` (60 s), then answer `rpc_client` with the
-   `NODE_UNREACHABLE` sentence; a node's own refusal ends the call at once.
+3. **Relay.** `kernel/node.rs` `spawn_method`, behind `spawn_retrying`,
+   `spawn_retrying_unsent` and `spawn_no_retry`, first checks in `connected`
+   that the guest still belongs to the current `roster::connection()` (else
+   `stale_connection`, or `not_connected` with no node); then `start` admits
+   the call against `MAX_IN_FLIGHT` (`in_flight_limit`) and runs the handler
+   as a tokio task on `views-kernel`, owned by `guest.tasks` as a `NodeTask`
+   that aborts on drop (cancel, swap, teardown). A read (`spawn_retrying`)
+   retries transport refusals (`rpc_client`, `node_failed`) with
+   `backend::retry_delay` backoff for `NODE_RETRY_BUDGET` (60 s), then
+   answers `rpc_client` with the `NODE_UNREACHABLE` sentence; `op.submit`
+   (`spawn_retrying_unsent`) retries only `rpc_client`, which proves nothing
+   was sent, and `invite.create` (`spawn_no_retry`) asks once. A node's own
+   refusal ends the call at once.
 4. **Sign.** A read: `backend::query_frame` signs a `Frame` at seq 0 with
    the seated key, or with the process's throwaway `reader_key` while nobody
    is signed in; the program hears who asks, the node checks no sequence.
