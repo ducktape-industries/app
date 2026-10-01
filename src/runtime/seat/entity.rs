@@ -282,9 +282,8 @@ impl Seat {
                 .as_ref()
                 .is_some_and(|alive| Arc::ptr_eq(alive, &guest.alive));
         let fresh = (!same || self.revision != guest.frame_rev).then(|| {
-            let mut root = native_root(guest.frame.root.clone().unwrap_or_else(wire::Node::empty));
-            guest.pictures.hydrate(&mut root);
-            (root, guest.frame_rev)
+            let (root, pictures) = guest.drawn();
+            (native_root(root), pictures, guest.frame_rev)
         });
         let adopt = (!same).then(|| {
             (
@@ -310,15 +309,18 @@ impl Seat {
             self.min_width = min_width;
             cx.notify();
         }
-        if let Some((root, rev)) = fresh {
+        if let Some((root, pictures, rev)) = fresh {
             let _replacing = crate::perf::time(key, "replace");
             self.revision = rev;
             match (&self.tree, adopt) {
                 // the tree's own notify dirties its window; nothing the
                 // pane reads off the seat moved
-                (Some(tree), None) => tree.update(cx, |tree, cx| tree.replace(root, cx)),
+                (Some(tree), None) => tree.update(cx, |tree, cx| {
+                    tree.set_pictures(pictures);
+                    tree.replace(root, cx)
+                }),
                 (_, adopt) => {
-                    self.mount(root, generation, key, adopt, cx);
+                    self.mount(root, pictures, generation, key, adopt, cx);
                     cx.notify();
                 }
             }
@@ -365,6 +367,7 @@ impl Seat {
     fn mount(
         &mut self,
         root: wire::Node,
+        pictures: Arc<crate::render::PictureBytes>,
         generation: u64,
         key: crate::perf::Key,
         adopt: Option<(Arc<()>, tokio::sync::watch::Receiver<()>, bool, EditorStore)>,
@@ -401,7 +404,10 @@ impl Seat {
                 .with_presentation(presentation)
                 .with_perf_key(key)
         });
-        tree.update(cx, |tree, cx| tree.set_editor_store(inputs, cx));
+        tree.update(cx, |tree, cx| {
+            tree.set_pictures(pictures);
+            tree.set_editor_store(inputs, cx)
+        });
         let seat = self.mounted.clone();
         self._tree_events = Some(cx.subscribe(&tree, move |this, source, event, cx| {
             let activation = source.read(cx).take_user_activation(event);

@@ -119,6 +119,13 @@ impl Guest {
     pub(crate) fn fuel_used(&self) -> u64 {
         FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0)
     }
+
+    /// What the seat hands its tree to draw: the held tree, pictures named
+    /// by hash alone, and the bytes those hashes resolve to, shared.
+    pub(crate) fn drawn(&self) -> (wire::Node, Arc<crate::render::PictureBytes>) {
+        let root = self.frame.root.clone().unwrap_or_else(wire::Node::empty);
+        (root, self.pictures.held())
+    }
 }
 
 /// One `view_perf` line as an installed instance leaves: a swap drops the
@@ -346,10 +353,15 @@ pub(super) fn merge(
     }
     if frame.unchanged {
         frame.root = held.take();
+        // the held tree passed when it arrived; a tooltip response landed
+        // in it is new, and spends the frame's budgets with the tree
+        if !tooltip_changed {
+            return Ok((false, Default::default()));
+        }
         let upstream = frame.upstream_sanitization;
         let report = wire::sanitize(frame)?;
         frame.upstream_sanitization = upstream;
-        return Ok((tooltip_changed, report));
+        return Ok((true, report));
     }
     if frame.root.is_some() {
         return Ok((true, Default::default()));
