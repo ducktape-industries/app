@@ -6,10 +6,6 @@ use serde_json::json;
 
 #[gpui_kit::test]
 fn a_field_drawn_with_an_error_says_so_and_why(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let cases = [
         (
             "connect-error-and-recent",

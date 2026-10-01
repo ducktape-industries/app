@@ -15,10 +15,6 @@ fn node<'a>(nodes: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
 
 #[gpui_kit::test]
 fn names_say_which_one(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = gate::desk();
     seed.roster = crate::runtime::Roster::listing(&["names-test"]);
     seed.active = Some(crate::runtime::intern("names-test"));
@@ -63,10 +59,6 @@ fn names_say_which_one(cx: &mut TestAppContext) {
 /// empty desk's three ways out.
 #[gpui_kit::test]
 fn a_button_says_what_it_opens_and_its_chord(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     // a program to open, so the empty desk offers its buttons
     let mut seed = gate::desk();
     seed.roster = crate::runtime::Roster::listing(&["chords-test"]);

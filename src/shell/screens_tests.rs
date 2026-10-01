@@ -138,10 +138,6 @@ pub(super) fn open(
 
 #[gpui_kit::test]
 fn connect_screen_exposes_the_endpoint_and_names_its_error(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = Seed::boot();
     seed.session.endpoint = "127.0.0.1:9000".to_string();
     seed.session.endpoint_error = "no route to host".to_string();
@@ -169,10 +165,6 @@ fn connect_screen_exposes_the_endpoint_and_names_its_error(cx: &mut TestAppConte
 
 #[gpui_kit::test]
 fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = Seed::boot();
     seed.screen = Screen::Unlock { awaiting: false };
     // a password-locked key from before: its password is asked once
@@ -262,10 +254,6 @@ fn sign_in_screens_keep_secret_fields_out_of_the_ax_value(cx: &mut TestAppContex
 /// is unlocked, offers creating an account or adding this device to one.
 #[gpui_kit::test]
 fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = Seed::boot();
     seed.screen = Screen::Unlock { awaiting: false };
     let (view, mut native) = open(seed, cx);
@@ -315,10 +303,6 @@ fn the_key_step_asks_nothing_about_accounts_and_the_account_step_does(cx: &mut T
 /// (or its "Forget" button) with Tab, only a mouse.
 #[gpui_kit::test]
 fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = Seed::boot();
     seed.session.recent_endpoints = vec![crate::backend::RecentEndpoint {
         url: "http://127.0.0.1:9000".to_string(),
@@ -355,10 +339,6 @@ fn recent_endpoint_rows_and_their_forget_buttons_are_tab_reachable(cx: &mut Test
 /// window starts focused on, so Tab still reaches the new screen.
 #[gpui_kit::test]
 fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (view, mut native) = open(Seed::boot(), cx);
     native.update(draw);
     native.update(|window, cx| {
@@ -398,10 +378,6 @@ fn a_screen_change_that_unmounts_the_focused_control_refocuses_the_window(cx: &m
 /// once, or Shift+Tab lands on the handle's other entry, the field itself.
 #[gpui_kit::test]
 fn shift_tab_leaves_a_text_field_and_tab_comes_back(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (_view, mut native) = open(Seed::boot(), cx);
     native.update(draw);
     let mut press = |keys: &str| {
@@ -444,10 +420,6 @@ fn initials_take_the_first_letter_of_two_words() {
 /// empties the fields of the step it left, in the launcher's observer.
 #[gpui_kit::test]
 fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = Seed::boot();
     seed.screen = Screen::Unlock { awaiting: false };
     seed.account.key_exists = true;
@@ -490,10 +462,6 @@ fn a_password_the_model_wiped_leaves_the_field_empty(cx: &mut TestAppContext) {
 /// draw that put the model's older text back would eat them.
 #[gpui_kit::test]
 fn typed_text_reaches_the_entity_on_change_not_on_draw(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (view, mut native) = open(Seed::boot(), cx);
     native.update(draw);
     let field = native.update(|_, cx| {
@@ -542,10 +510,6 @@ fn typed_text_reaches_the_entity_on_change_not_on_draw(cx: &mut TestAppContext) 
 /// and a new account step starts empty.
 #[gpui_kit::test]
 fn the_account_name_goes_only_with_the_account_steps(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = Seed::boot();
     seed.account.signer_key = "ab".into();
     seed.screen = Screen::Account {
@@ -583,10 +547,6 @@ fn the_account_name_goes_only_with_the_account_steps(cx: &mut TestAppContext) {
 /// typed after goes out as before.
 #[gpui_kit::test]
 fn the_address_field_shows_where_the_session_moved_it(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (view, mut native) = open(Seed::boot(), cx);
     native.update(|window, cx| type_into("endpoint/field", "10.0.0.5:8844", window, cx));
     let session = entities(&view, &mut native).session.clone();
@@ -610,10 +570,6 @@ fn the_address_field_shows_where_the_session_moved_it(cx: &mut TestAppContext) {
 /// code, and the layer empties it as the dialog opens.
 #[gpui_kit::test]
 fn add_a_device_opens_with_its_code_field_empty(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (view, mut native) = open((gate::desk(), Overlay::Approve), cx);
     native.update(|window, cx| type_into("approve-code/field", "ABCD-EFGH", window, cx));
     let nodes = native.update(draw);
@@ -637,10 +593,6 @@ fn add_a_device_opens_with_its_code_field_empty(cx: &mut TestAppContext) {
 fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
     cx: &mut TestAppContext,
 ) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = Seed::boot();
     // its own roster, not the app's one every test shares
     seed.roster = Default::default();
@@ -682,10 +634,6 @@ fn the_network_switcher_names_the_network_and_its_menu_marks_the_current_one(
 #[gpui_kit::test]
 fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
     use crate::runtime::notify::{CenterHandle, Permission, Settings};
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut seed = Seed::boot();
     // its own centre and roster, not the app's ones every test shares
     let center = CenterHandle::default();
@@ -791,10 +739,6 @@ fn the_notification_centre_lists_rows_under_the_bell(cx: &mut TestAppContext) {
 /// of its own (AX-012), and the backdrop's click does not close it.
 #[gpui_kit::test]
 fn a_click_inside_an_overlay_card_leaves_it_open(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     // one under a scrim, one hanging from the bar
     for (overlay, name) in [
         (Overlay::Settings(SettingsPage::Appearance), "Settings"),

@@ -9,18 +9,8 @@ use super::tests::{
 use crate::shell::PaneMessage;
 use crate::shell::entities::tests::{source, status};
 use crate::shell::entities::{Overlay, Popover, Screen};
-use crate::shell::panes_tests::{console, draw, settle, window_count};
+use crate::shell::panes_tests::{console, draw, ids, settle, window_count};
 use gpui_kit::{TestAppContext, VisualTestContext};
-
-/// The ids in a snapshot, in the tree's order.
-fn ids(nodes: &serde_json::Value) -> Vec<String> {
-    nodes
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|node| node["id"].as_str().map(str::to_owned))
-        .collect()
-}
 
 /// The node's breath is a view of its own: with motion on, each of its
 /// pulses draws the dot and the window's root, and the bar (cached, with

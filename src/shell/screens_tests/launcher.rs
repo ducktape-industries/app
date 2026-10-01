@@ -39,10 +39,6 @@ fn drawn_ids(window: &mut Window, cx: &mut gpui_kit::App) -> std::collections::B
 fn the_launcher_size_agrees_with_the_screen_drawn(cx: &mut TestAppContext) {
     use crate::shell::entities::{AccountStep, Screen};
     use crate::shell::layers::tests::Seed;
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let words = || {
         Some(crate::shell::entities::Secret::from(String::from(
             "canoe pond forest",

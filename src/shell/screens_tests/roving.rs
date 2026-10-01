@@ -6,13 +6,6 @@
 //! Programs rail only moves the keys, and Return opens the program.
 use super::*;
 
-fn keyed(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
-}
-
 /// The focused node's door id, and whether it is selected or checked.
 fn focus(native: &mut VisualTestContext) -> (String, bool) {
     let nodes = native.update(draw);
@@ -78,7 +71,6 @@ fn under<'a>(stops: &'a [String], prefix: &str) -> Vec<&'a str> {
 /// and End open the first and the last.
 #[gpui_kit::test]
 fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppContext) {
-    keyed(cx);
     let settings = Overlay::Settings(SettingsPage::Appearance);
     let (_view, mut native) = open((gate::desk(), settings), cx);
     native.update(draw);
@@ -109,7 +101,6 @@ fn settings_pages_are_one_tab_stop_whose_arrows_open_the_next(cx: &mut TestAppCo
 /// and each view's group, on the Notifications page, are one stop each too.
 #[gpui_kit::test]
 fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppContext) {
-    keyed(cx);
     let mut seed = gate::desk();
     seed.prefs.appearance = crate::backend::Appearance::Dark;
     seed.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b"]);
@@ -158,7 +149,6 @@ fn a_settings_radio_group_is_one_tab_stop_whose_arrows_pick(cx: &mut TestAppCont
 /// tab the arrows left.
 #[gpui_kit::test]
 fn the_programs_rail_is_one_tab_stop_whose_arrows_move_the_keys(cx: &mut TestAppContext) {
-    keyed(cx);
     let mut seed = gate::desk();
     seed.roster = crate::runtime::Roster::listing(&["gate-a", "gate-b", "gate-c"]);
     let (view, mut native) = open(seed, cx);

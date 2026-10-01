@@ -351,10 +351,6 @@ pub(super) fn passes(native: &mut VisualTestContext, screen: &str, launcher: boo
 
 #[gpui_kit::test]
 fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let mut failures: Vec<String> = Vec::new();
     for (screen, launcher, build) in matrix() {
         let (_view, mut native) = open(build(), cx);
@@ -368,10 +364,6 @@ fn every_native_screen_state_passes_the_phase_1_audit(cx: &mut TestAppContext) {
 /// once each, and each passes.
 #[gpui_kit::test]
 fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let wanted: [(&str, &[&str]); 3] = [
         ("desk-two-programs", &["shell:rail-rows"]),
         (
@@ -421,10 +413,6 @@ fn the_walk_probes_every_tab_list_and_radio_group_of_the_shell(cx: &mut TestAppC
 /// the prefs are still none.
 #[gpui_kit::test]
 async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let matrix = matrix();
     let (_, _, build) = matrix
         .iter()
@@ -453,10 +441,6 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
 /// the chord Help lists (AX-114), and the audit told the chords passes.
 #[gpui_kit::test]
 fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     // narrowed to the window rows: programs other tests list share the list
     let (_view, mut native) = open((spotlight_over_window(), Overlay::Spotlight), cx);
     native.update(|window, cx| type_into("spotlight/search", "window", window, cx));
@@ -486,10 +470,6 @@ fn search_over_a_window_reports_the_chords_of_its_window_rows(cx: &mut TestAppCo
 /// stays open the whole walk instead of closing on the Esc.
 #[gpui_kit::test]
 fn the_walk_presses_no_escape_under_a_modal(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (_view, mut native) = open(on_desk(Overlay::Spotlight)(), cx);
     native.update(snap);
     let reading =

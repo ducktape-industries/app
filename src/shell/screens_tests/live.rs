@@ -38,10 +38,6 @@ pub(super) fn announced(window: &Window) -> Vec<(Role, String, Option<String>, O
 /// so the check is not vacuous.
 #[gpui_kit::test]
 fn every_shell_status_and_alert_is_live_with_its_words_as_name_and_value(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let expected = [
         (
             "connect-connecting",

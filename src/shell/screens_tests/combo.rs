@@ -15,10 +15,6 @@ fn by_id<'a>(nodes: &'a serde_json::Value, id: &str) -> &'a serde_json::Value {
 
 #[gpui_kit::test]
 fn spotlight_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (_view, mut native) = open((gate::desk(), Overlay::Spotlight), cx);
     let nodes = native.update(draw);
     let combo = find(&nodes, "EditableComboBox", "Search");
@@ -52,10 +48,6 @@ fn spotlight_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppC
 
 #[gpui_kit::test]
 fn an_empty_window_is_a_combo_box_whose_active_row_is_the_picked_one(cx: &mut TestAppContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (_view, mut native) = open(two_programs(), cx);
     native.update(|window, cx| {
         draw(window, cx);
@@ -145,10 +137,6 @@ fn a_press_on_a_row_of_a_window_without_the_keys_opens_it_there(cx: &mut TestApp
 
 /// A desk with two empty windows (⌘N twice), the second in front.
 fn two_empty_windows(cx: &mut TestAppContext) -> (Entity<WindowRoot>, VisualTestContext) {
-    cx.update(|cx| {
-        gpui_kit::init(cx);
-        keys::bind(cx);
-    });
     let (view, mut native) = open(two_programs(), cx);
     for _ in 0..2 {
         native.update(|window, cx| {

@@ -20,6 +20,16 @@ pub(super) fn draw(window: &mut Window, cx: &mut gpui_kit::App) -> serde_json::V
     serde_json::to_value(crate::ax::snapshot("console", window, false)).unwrap()
 }
 
+/// The ids in a snapshot, in the tree's order.
+pub(super) fn ids(nodes: &serde_json::Value) -> Vec<String> {
+    nodes
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|node| node["id"].as_str().map(str::to_owned))
+        .collect()
+}
+
 fn press(id: &str, window: &mut Window, cx: &mut gpui_kit::App) {
     draw(window, cx);
     let node = window
@@ -1218,14 +1228,6 @@ fn a_trapped_view_shows_its_standin(cx: &mut TestAppContext) {
     let (app, _, view, mut native) = console(cx);
     crate::runtime::seat_for_test(MODULE, 400);
     pane(&view, PaneMessage::Select(MODULE), &mut native);
-    let ids = |nodes: &serde_json::Value| -> Vec<String> {
-        nodes
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|node| node["id"].as_str().map(str::to_owned))
-            .collect()
-    };
     let (instance, before) = native.update(|window, cx| {
         let nodes = draw(window, cx);
         let layout = view.read(cx).layout(cx);
