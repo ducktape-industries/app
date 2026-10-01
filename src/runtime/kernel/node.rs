@@ -148,6 +148,11 @@ pub(super) fn spawn_consented(
     if connected(guest, id).is_none() {
         return;
     }
+    // the in-flight slot before the ask: a request refused
+    // `in_flight_limit` never puts a card up that leads nowhere
+    let Some(slot) = admit(guest, id) else {
+        return;
+    };
     let Some(told) = super::super::consent::ask(guest, id, words) else {
         return;
     };
@@ -158,7 +163,7 @@ pub(super) fn spawn_consented(
         submit,
         Some(unsent),
         "host_call.op.submit",
-        Some(told),
+        Some((slot, told)),
     );
 }
 
@@ -186,11 +191,18 @@ fn spawn_method(
     method: NodeMethod,
     retry_on: Option<fn(&wire::Error) -> bool>,
     stage: &'static str,
-    consent: Option<tokio::sync::oneshot::Receiver<bool>>,
+    consent: Option<(InFlight, tokio::sync::oneshot::Receiver<bool>)>,
 ) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
         return;
+    };
+    let (slot, told) = match consent {
+        Some((slot, told)) => (slot, Some(told)),
+        None => match admit(guest, id) {
+            Some(slot) => (slot, None),
+            None => return,
+        },
     };
     let replies = guest.replies.clone();
     let key = guest.perf_key();
@@ -198,8 +210,8 @@ fn spawn_method(
     // `in_flight_limit` or cancelled by the view, which never got a reply
     let asked = crate::perf::on().then(std::time::Instant::now);
     let attempts_stage = crate::perf::suffixed(stage, ".attempts");
-    start(guest, id, async move {
-        if let Some(told) = consent
+    run(guest, id, slot, async move {
+        if let Some(told) = told
             && told.await != Ok(true)
         {
             replies.item(
@@ -231,32 +243,52 @@ fn spawn_method(
     });
 }
 
-/// Every task starts here: an in-flight slot from [`Replies::admit`] — or
-/// the request refused `in_flight_limit`, and `false` — then `task` on
-/// [`handle`] holding the slot, its [`NodeTask`] kept in `guest.tasks`
-/// (finished ones pruned) so it is aborted with the guest.
+/// Every task starts here: an in-flight slot ([`admit`]) — or the request
+/// refused `in_flight_limit`, and `false` — then [`run`].
 fn start(
     guest: &mut Guest,
     id: u64,
     task: impl std::future::Future<Output = ()> + Send + 'static,
 ) -> bool {
-    let Some(counted) = guest.replies.admit() else {
+    match admit(guest, id) {
+        Some(slot) => {
+            run(guest, id, slot, task);
+            true
+        }
+        None => false,
+    }
+}
+
+/// An in-flight slot from [`Replies::admit`] for request `id`, or the
+/// request refused `in_flight_limit` and `None`.
+fn admit(guest: &mut Guest, id: u64) -> Option<InFlight> {
+    let slot = guest.replies.admit();
+    if slot.is_none() {
         guest.refuse(
             id,
             refusal::IN_FLIGHT_LIMIT,
             "too many in-flight view requests",
         );
-        return false;
-    };
+    }
+    slot
+}
+
+/// `task` on [`handle`] holding its `slot`, its [`NodeTask`] kept in
+/// `guest.tasks` (finished ones pruned) so it is aborted with the guest.
+fn run(
+    guest: &mut Guest,
+    id: u64,
+    slot: InFlight,
+    task: impl std::future::Future<Output = ()> + Send + 'static,
+) {
     let task = handle().spawn(async move {
-        let _counted = counted;
+        let _slot = slot;
         task.await;
     });
     guest
         .tasks
         .retain(|(_, pending)| !pending.task.is_finished());
     guest.tasks.push((id, NodeTask { task }));
-    true
 }
 
 /// One SUBSCRIPTION's writing end, handed to the loop that feeds it: every

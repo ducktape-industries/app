@@ -118,6 +118,7 @@ use node::{
     blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
     spawn_retrying, spawn_retrying_unsent, status, submit,
 };
+use replies::InFlight;
 pub(super) use replies::Replies;
 
 /// The one current-thread tokio runtime every async I/O in the app runs

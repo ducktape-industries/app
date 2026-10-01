@@ -790,6 +790,19 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     }
     // Approve: the task goes on to the node (its sequence read is the
     // fake node's one answer, which is no sequence, so the op ends there)
+    // the in-flight budget spent: refused before the card goes up (the ask
+    // is the request's own slot, so Approve could lead nowhere)
+    let held: Vec<_> = (0..MAX_IN_FLIGHT)
+        .map(|_| guest.replies.admit().expect("within budget"))
+        .collect();
+    guest.activation = Some(Instant::now());
+    guest.answer(request(6), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some(refusal::IN_FLIGHT_LIMIT)
+    );
+    assert!(consent::front().is_none(), "nothing asked");
+    drop(held);
     // resubmitted after Cancel with no new press: no second card
     guest.intents.clear();
     guest.answer(request(5), &None);
