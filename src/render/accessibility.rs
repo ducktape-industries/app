@@ -335,7 +335,7 @@ impl ViewTree {
         if aria.active_descendant {
             element = element.aria_active_descendant();
             // its bounds are measured, and its scroller brought to it, by
-            // path, while its composite shows keyboard focus
+            // path, while its composite is focused
             if node.identity().is_some() && self.keyed {
                 self.claiming.insert(self.authored_path.clone());
             }

@@ -483,9 +483,10 @@ fn a_claimed_row_below_the_fold_is_scrolled_into_view(cx: &mut gpui_kit::TestApp
 
 /// The Explorer overview under 960 px, 300 px of its page scroller
 /// showing: a link, a list box, a link, a list box, stacked. Each link is
-/// 40 px and a Tab stop; each list is ten rows of 40 px claiming its row 0,
-/// as the SDK composite does. The second link and list are below the fold.
-fn stacked_lists() -> wire::Node {
+/// 40 px and a Tab stop; each list is ten rows of 40 px claiming its active
+/// row, as the SDK composite does: the first list's `active`, the second's
+/// row 0. The second link and list are below the fold.
+fn stacked_lists(active: usize) -> wire::Node {
     let link = |id: &str| {
         let mut link =
             container_with_style(id, div().h(px(40.)).flex_shrink_0().style().clone(), []);
@@ -497,8 +498,8 @@ fn stacked_lists() -> wire::Node {
         }
         link
     };
-    let list = |id: &str| {
-        let mut list = claiming_list(0);
+    let list = |id: &str, claim: usize| {
+        let mut list = claiming_list(claim);
         if let wire::Node::Container(view_wire::ContainerNode { id: key, style, .. }) = &mut list {
             *key = Some(named_id(id));
             *style = div()
@@ -525,9 +526,9 @@ fn stacked_lists() -> wire::Node {
         style,
         [
             link("all-blocks"),
-            list("blocks"),
+            list("blocks", active),
             link("all-transactions"),
-            list("transactions"),
+            list("transactions", 0),
         ],
     )
 }
@@ -547,7 +548,8 @@ fn stacked(tree: &ViewTree, path: &[&str]) -> (f32, f32, f32) {
 }
 
 /// Nothing in the stacked overview holds the keys as the page opens, so it
-/// opens at its top, on the newest blocks. A Tab walk then brings what it
+/// opens at its top, on the newest blocks, though a key opened it (Enter
+/// on the rail) and so was the last input. A Tab walk then brings what it
 /// lands on into view by the least that shows it, a link itself and a list
 /// by the row it claims, and the one frame the door reads after each Tab
 /// already draws it there. Shift+Tab back onto the first list brings that
@@ -558,13 +560,18 @@ fn a_page_of_stacked_lists_opens_at_its_top_and_follows_the_keys(
 ) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(400.)), |_, cx| {
-        Seat(cx.new(|_| ViewTree::new(stacked_lists())))
+        let opening = container_with_style("page", Default::default(), []);
+        Seat(cx.new(|_| ViewTree::new(opening)))
     });
     let tree = window
         .root(cx)
         .unwrap()
         .read_with(cx, |seat, _| seat.0.clone());
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| {
+        window.dispatch_keystroke(Keystroke::parse("enter").unwrap(), cx);
+    });
+    tree.update(&mut native, |tree, cx| tree.replace(stacked_lists(0), cx));
     // after `frames` more frames, drawn as the door draws one to read it
     // (`ax::actions::current`): the tree cached in its seat, nothing
     // refreshed, so only what the focus move made dirty is rendered. With
@@ -624,30 +631,32 @@ fn a_page_of_stacked_lists_opens_at_its_top_and_follows_the_keys(
 
 /// A press on a row gives its list the keys as well, and moves nothing: a
 /// scroll to the list's active row, out of view above, would take the
-/// pressed row from under the pointer before the release. The first key
-/// after it is the keyboard's, and brings the active row into view.
+/// pressed row from under the pointer before the release. A key after it
+/// that leaves the claim where it is moves nothing either; one that moves
+/// the claim (Down, as the composite answers it) brings the new active row
+/// into view.
 #[gpui_kit::test]
 fn a_press_on_a_row_does_not_scroll_to_the_active_row(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(400.)), |_, _| {
-        ViewTree::new(stacked_lists())
+        ViewTree::new(stacked_lists(0))
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    let drawn = |native: &mut gpui_kit::VisualTestContext| {
+    let drawn = |native: &mut gpui_kit::VisualTestContext, row: &str| {
         native.update(|window, cx| {
             for _ in 0..3 {
                 window.render_frame(cx);
             }
-            tree.read_with(cx, |tree, _| stacked(tree, &["blocks", "row-0"]))
+            tree.read_with(cx, |tree, _| stacked(tree, &["blocks", row]))
         })
     };
-    drawn(&mut native);
+    drawn(&mut native, "row-0");
     tree.read_with(&native, |tree, _| {
         tree.scrolls[&vec![named_id("page")]].set_offset(gpui_kit::point(px(0.), px(-220.)))
     });
     assert_eq!(
-        drawn(&mut native),
+        drawn(&mut native, "row-0"),
         (-220., -180., -140.),
         "scrolled by the wheel, the first list's row 0 (40..80) is out of view above"
     );
@@ -656,7 +665,7 @@ fn a_press_on_a_row_does_not_scroll_to_the_active_row(cx: &mut gpui_kit::TestApp
     native.simulate_mouse_move(row, None, Default::default());
     native.simulate_mouse_down(row, MouseButton::Left, Default::default());
     assert_eq!(
-        drawn(&mut native),
+        drawn(&mut native, "row-0"),
         (-220., -180., -140.),
         "the press leaves the page where it is"
     );
@@ -667,11 +676,76 @@ fn a_press_on_a_row_does_not_scroll_to_the_active_row(cx: &mut gpui_kit::TestApp
     });
     assert!(held, "the pressed row's list took the keys");
     native.update(|window, cx| {
+        window.dispatch_keystroke(Keystroke::parse("a").unwrap(), cx);
+    });
+    assert_eq!(
+        drawn(&mut native, "row-0"),
+        (-220., -180., -140.),
+        "a key that leaves the claim on row 0 leaves the page where it is"
+    );
+    native.update(|window, cx| {
         window.dispatch_keystroke(Keystroke::parse("down").unwrap(), cx);
+    });
+    tree.update(&mut native, |tree, cx| tree.replace(stacked_lists(1), cx));
+    assert_eq!(
+        drawn(&mut native, "row-1"),
+        (-80., 0., 40.),
+        "Down moves the claim to row 1 (80..120), which comes to the top edge"
+    );
+}
+
+/// A click on a link gives it the keys and moves nothing. Wheeled out of
+/// view, it stays out of view through a key that does not move the keys
+/// (a letter, Ctrl+C): only a key that brings them to a node scrolls to it.
+#[gpui_kit::test]
+fn a_key_after_a_click_leaves_the_page_where_the_wheel_put_it(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(400.)), |_, _| {
+        ViewTree::new(stacked_lists(0))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let drawn = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            for _ in 0..3 {
+                window.render_frame(cx);
+            }
+            tree.read_with(cx, |tree, _| stacked(tree, &["all-transactions"]))
+        })
+    };
+    let wheel = |native: &mut gpui_kit::VisualTestContext, y: f32| {
+        tree.read_with(native, |tree, _| {
+            tree.scrolls[&vec![named_id("page")]].set_offset(gpui_kit::point(px(0.), px(y)))
+        });
+    };
+    drawn(&mut native);
+    wheel(&mut native, -180.);
+    assert_eq!(
+        drawn(&mut native),
+        (-180., 260., 300.),
+        "wheeled down, the second link (440..480) is on the bottom edge"
+    );
+    let link = point(px(100.), px(280.));
+    native.simulate_mouse_move(link, None, Default::default());
+    native.simulate_mouse_down(link, MouseButton::Left, Default::default());
+    native.simulate_mouse_up(link, MouseButton::Left, Default::default());
+    let held = native.update(|window, cx| {
+        let link = vec![named_id("page"), named_id("all-transactions")];
+        tree.read(cx).focusables[&link].is_focused(window)
+    });
+    assert!(held, "the clicked link took the keys");
+    wheel(&mut native, 0.);
+    assert_eq!(
+        drawn(&mut native),
+        (0., 440., 480.),
+        "wheeled back up, the link is below the fold"
+    );
+    native.update(|window, cx| {
+        window.dispatch_keystroke(Keystroke::parse("a").unwrap(), cx);
     });
     assert_eq!(
         drawn(&mut native),
-        (-40., 0., 40.),
-        "a key on the list brings its active row to the top edge"
+        (0., 440., 480.),
+        "a key that does not move the keys leaves the page where the wheel put it"
     );
 }

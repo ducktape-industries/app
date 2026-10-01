@@ -99,18 +99,16 @@ impl ViewTree {
                 }
                 (None, None) => None,
             };
-            // The keys are on this container while that handle shows keyboard
-            // focus, and a claim below counts only then. Focused is the gate
-            // gpui applies before it honours a claim. A view draws every
-            // composite's active row claimed (the SDK has no focus signal),
-            // so without it a second list stacked in a page scroller pulls
-            // the page to its row as the page opens, and again with every
-            // row the chain adds. A key the last input, since a press on a
-            // row gives its list the keys too: scrolling to the active row
-            // then would take the pressed one from under the pointer before
-            // the release.
+            // The keys are on this container while that handle is focused,
+            // and a claim below counts only then: the gate gpui applies
+            // before it honours a claim. A view draws every composite's
+            // active row claimed (the SDK has no focus signal), so without
+            // it a second list stacked in a page scroller pulls the page to
+            // its row as the page opens, and again with every row the chain
+            // adds. Keys that came here under the pointer scroll nothing
+            // (`render`).
             if let Some(handle) = tracked {
-                holds = handle.is_focused(window) && window.last_input_was_keyboard();
+                holds = handle.is_focused(window);
                 self.keyed = holds;
             }
             element = match style.overflow.y == Some(gpui_kit::Overflow::Scroll) {
@@ -151,8 +149,8 @@ impl ViewTree {
 
     /// A zero-paint absolute canvas that records its bounds into
     /// `bounds[path]` and notifies when they change, and, on the first frame
-    /// the keys are on `path`, scrolls to it ([`Self::reveal`]). Only a node
-    /// that owns `path` may measure there (see `container`).
+    /// a key brings the keys to `path`, scrolls to it ([`Self::reveal`]).
+    /// Only a node that owns `path` may measure there (see `container`).
     pub(super) fn measure(
         &self,
         path: &[wire::ElementIdWire],

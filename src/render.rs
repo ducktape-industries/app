@@ -162,10 +162,10 @@ pub struct ViewTree {
     /// Identified containers with `overflow.y: scroll`; the scroll widget commands' targets.
     scrolls: HashMap<AuthoredPath, ScrollHandle>,
     /// The identified nodes the keys are on this render, and those already
-    /// scrolled into view. The keys are on the container that shows keyboard
-    /// focus (`keyed`), or on the node below it that claims to be its active
-    /// descendant; as they come to a node, the plain scroller around it
-    /// scrolls to it, once.
+    /// scrolled into view. The keys are on the focused container (`keyed`),
+    /// or on the node below it that claims to be its active descendant; as
+    /// a key brings them to a node, the plain scroller around it scrolls to
+    /// it, once. A node they come to under the pointer counts as shown.
     claiming: std::collections::HashSet<AuthoredPath>,
     revealed: std::collections::HashSet<AuthoredPath>,
     uniform_lists: HashMap<AuthoredPath, UniformListHostState>,
@@ -182,8 +182,7 @@ pub struct ViewTree {
     /// the element, where the host cannot ask it whether it holds the keys.
     focusables: HashMap<AuthoredPath, FocusHandle>,
     /// Whether the nearest focusable container above the node being drawn
-    /// shows keyboard focus: it is focused, and a key was the last input.
-    /// A claim counts only under one that does (`claiming`).
+    /// is focused. A claim counts only under one that is (`claiming`).
     keyed: bool,
     /// The overlays showing a dialog: where focus enters each, and what
     /// held focus as it opened.
@@ -346,6 +345,12 @@ impl Render for ViewTree {
             commands::dialog_exit(opener, window, cx);
         }
         let node = self.node(&self.root.clone(), window, cx);
+        // the keys came to these under the pointer (a press, a wheel then a
+        // letter): they stay where the pointer left them until a key moves
+        // the keys on
+        if !window.last_input_was_keyboard() {
+            self.revealed.extend(self.claiming.iter().cloned());
+        }
         self.reveal_measured();
         // Carried-over state is for the first render of a new tree only:
         // whatever it did not claim is dropped.
