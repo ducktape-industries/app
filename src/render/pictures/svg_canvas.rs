@@ -56,6 +56,7 @@ impl Element for SvgCanvas {
         let svg_bytes = canvas_svg(&self.commands, width, height);
         let mut picture = guarded_svg_paint(
             SvgPaintSource::data(&svg_bytes),
+            Some(Arc::from(svg_bytes.as_slice())),
             img(Arc::new(Image::from_bytes(ImageFormat::Svg, svg_bytes)))
                 .size_full()
                 .object_fit(ObjectFit::Fill),

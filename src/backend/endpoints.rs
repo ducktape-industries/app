@@ -2,7 +2,7 @@
 //! and the eight this device connected to most recently, kept in
 //! prefs.json with the network each reported.
 
-use super::prefs::{read_prefs, write_prefs};
+use super::prefs::{edit_prefs, read_prefs};
 
 pub(crate) const DEFAULT_ENDPOINT: &str = "http://127.0.0.1:8844";
 
@@ -71,7 +71,11 @@ impl RecentEndpoint {
 /// Node URLs this device connected to, most recent first. An entry that
 /// does not read as `{"url", "network", ..}` is dropped; the rest stand.
 pub(crate) fn recent_endpoints() -> Vec<RecentEndpoint> {
-    read_prefs()["endpoints"]
+    endpoints_of(&read_prefs().unwrap_or_default())
+}
+
+fn endpoints_of(prefs: &serde_json::Value) -> Vec<RecentEndpoint> {
+    prefs["endpoints"]
         .as_array()
         .map(|list| list.iter().filter_map(endpoint_of_json).collect())
         .unwrap_or_default()
@@ -88,9 +92,7 @@ fn endpoint_of_json(value: &serde_json::Value) -> Option<RecentEndpoint> {
 
 /// Moves `entry` to the front: its URL, with the network it just reported.
 pub(crate) fn note_endpoint(entry: RecentEndpoint) {
-    let mut recent = recent_endpoints();
-    note(&mut recent, entry);
-    write_endpoints(&recent);
+    edit_endpoints(|recent| note(recent, entry));
 }
 
 fn note(recent: &mut Vec<RecentEndpoint>, entry: RecentEndpoint) {
@@ -101,14 +103,20 @@ fn note(recent: &mut Vec<RecentEndpoint>, entry: RecentEndpoint) {
 
 /// Drops `endpoint` from the recent list — the row's Forget button.
 pub(crate) fn forget_endpoint(endpoint: &str) {
-    let mut recent = recent_endpoints();
-    recent.retain(|known| known.url != endpoint);
-    write_endpoints(&recent);
+    edit_endpoints(|recent| recent.retain(|known| known.url != endpoint));
 }
 
-fn write_endpoints(recent: &[RecentEndpoint]) {
-    let mut prefs = read_prefs();
-    let entries: Vec<serde_json::Value> = recent
+/// The list read, changed and written back in one prefs edit.
+fn edit_endpoints(change: impl FnOnce(&mut Vec<RecentEndpoint>)) {
+    edit_prefs(|prefs| {
+        let mut recent = endpoints_of(prefs);
+        change(&mut recent);
+        prefs["endpoints"] = serde_json::Value::Array(entries_of(&recent));
+    });
+}
+
+fn entries_of(recent: &[RecentEndpoint]) -> Vec<serde_json::Value> {
+    recent
         .iter()
         .map(|entry| {
             serde_json::json!({
@@ -118,9 +126,7 @@ fn write_endpoints(recent: &[RecentEndpoint]) {
                 "other_chain": entry.other_chain,
             })
         })
-        .collect();
-    prefs["endpoints"] = serde_json::Value::Array(entries);
-    write_prefs(&prefs);
+        .collect()
 }
 
 #[cfg(test)]

@@ -1,6 +1,7 @@
 //! The seat, turned off the draw path, under a bare root that draws it as
 //! `layers::PaneView` does: its tree, cached, or its standin.
 use super::entity::native_root;
+use super::tests::eventually;
 use super::*;
 use gpui_kit::{
     Entity, IntoElement, ParentElement as _, Render, Styled as _, Subscription, TestAppContext,
@@ -172,8 +173,26 @@ fn same_module_instances_receive_independent_props(cx: &mut TestAppContext) {
     cx.update(gpui_kit::init);
     let first = cx.new(|cx| Seat::new("independent-props-test", cx));
     let second = cx.new(|cx| Seat::new("independent-props-test", cx));
-    first.update(cx, |seat, cx| seat.set_props(b"channel-one".to_vec(), cx));
-    second.update(cx, |seat, cx| seat.set_props(b"channel-two".to_vec(), cx));
+    // after both: it readies every seat the module has
+    crate::runtime::seat_for_test("independent-props-test", 320);
+    for (seat, props) in [(&first, b"channel-one"), (&second, b"channel-two")] {
+        seat.update(cx, |seat, cx| {
+            seat.set_props(props.to_vec(), cx);
+            seat.turn(cx);
+        });
+    }
+    // what the guest is handed: `Mounted.props`, the slot `redraw` reads
+    let props = |seat: &Entity<Seat>, cx: &TestAppContext| {
+        mounted_of(seat, cx).lock().unwrap().props.clone()
+    };
+    assert_eq!(
+        props(&first, cx).as_deref(),
+        Some(b"channel-one".as_slice())
+    );
+    assert_eq!(
+        props(&second, cx).as_deref(),
+        Some(b"channel-two".as_slice())
+    );
     cx.update(|cx| {
         let (first, second) = (first.read(cx), second.read(cx));
         assert_ne!(first.instance(), second.instance());
@@ -182,14 +201,19 @@ fn same_module_instances_receive_independent_props(cx: &mut TestAppContext) {
             &registry[&(first.module(), first.instance())],
             &registry[&(second.module(), second.instance())]
         ));
-        drop(registry);
-        assert_eq!(first.props(), Some(b"channel-one".as_slice()));
-        assert_eq!(second.props(), Some(b"channel-two".as_slice()));
     });
-    first.update(cx, |seat, cx| seat.set_props(b"channel-three".to_vec(), cx));
-    cx.update(|cx| {
-        assert_eq!(second.read(cx).props(), Some(b"channel-two".as_slice()));
+    first.update(cx, |seat, cx| {
+        seat.set_props(b"channel-three".to_vec(), cx);
+        seat.turn(cx);
     });
+    assert_eq!(
+        props(&first, cx).as_deref(),
+        Some(b"channel-three".as_slice())
+    );
+    assert_eq!(
+        props(&second, cx).as_deref(),
+        Some(b"channel-two".as_slice())
+    );
 }
 
 /// The root a view is drawn in is laid out from the view's own minimum.
@@ -431,10 +455,10 @@ fn a_load_landing_replaces_the_standin_without_a_frame_loop(cx: &mut TestAppCont
     );
 }
 
-/// A load that lands wakes the seat: `spawn_load`'s install signals
+/// A load that lands wakes the seat: `Load::land`'s install signals
 /// `Mounted.wake`, which is what replaces the per-frame redraw loop in the
-/// running app. No gpui task is involved: the load thread's signal is read
-/// off the watch directly.
+/// running app. No gpui task is involved: the loader's signal is read off
+/// the watch directly.
 #[test]
 fn a_load_that_lands_wakes_the_seat() {
     const MODULE: &str = "install-wake-test";
@@ -442,13 +466,16 @@ fn a_load_that_lands_wakes_the_seat() {
     let woke = mounted.lock().unwrap().wake.subscribe();
     let generation = mounted.lock().unwrap().start();
     let snapshot = connection().lock().unwrap().clone();
-    spawn_load(MODULE, &mounted, generation, snapshot)
-        .join()
-        .unwrap();
-    assert!(
-        woke.has_changed().unwrap(),
-        "the install signalled the seat's wake"
-    );
+    queue(Load {
+        module: MODULE,
+        seat: mounted.clone(),
+        generation,
+        asked_of: snapshot,
+        code: None,
+    });
+    eventually("the install signalled the seat's wake", || {
+        woke.has_changed().unwrap()
+    });
 }
 
 /// A stage the loader shows and a Retry each turn the seat once: the
@@ -486,10 +513,10 @@ fn a_stage_change_and_a_retry_each_turn_the_seat_once(cx: &mut TestAppContext) {
     // Retry: the load it starts fails at once (no node), so its signal and
     // the install's coalesce into the one turn the retry is
     let instance = seat.read_with(&native, |seat, _| seat.instance());
-    let loads = retry(MODULE, instance);
-    for thread in loads._threads {
-        thread.join().unwrap();
-    }
+    retry(MODULE, instance);
+    eventually("the retried load failed without a node", || {
+        matches!(lock(&mounted).slot, Slot::Failed(_))
+    });
     native.run_until_parked();
     assert_eq!(
         turns_of(&seat, &native),
@@ -558,6 +585,8 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     let handle: gpui_kit::AnyWindowHandle = window.into();
     cx.update(|cx| {
         seat.update(cx, |seat, cx| {
+            // the pane in front, as the pane layer would say
+            seat.set_keys_free(true, cx);
             seat.place(handle, cx);
             seat.turn(cx);
         });
@@ -614,6 +643,255 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     );
 }
 
+/// A guest moves the keys only while its keys are free (`Seat::keys_free`,
+/// as `PaneLayer` says it: its pane in front, nothing open over the desk,
+/// no hold), on the real command path, and is judged as the command RUNS:
+/// a `Focus` or `FocusHandle` asked while the keys were free and run once
+/// Spotlight or Approve opened over the desk takes nothing.
+#[gpui_kit::test]
+fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
+    const MODULE: &str = "focus-gate-test";
+    let field = wire::Node::Input {
+        options: wire::InputOptions {
+            label: "Filter".into(),
+            ..Default::default()
+        },
+        id: wire::ElementIdWire::Name("filter".into()),
+        placeholder: String::new(),
+        value: String::new(),
+        on_input: Some(1),
+        on_submit: None,
+        secure: false,
+        style: div().w(px(200.)).h(px(24.)).style().clone(),
+    };
+    let mut button = view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("button".into())),
+        style: div().w(px(200.)).h(px(24.)).style().clone(),
+        interactivity: Default::default(),
+        children: Vec::new(),
+    };
+    button.interactivity.focus_handle = Some(9);
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("root".into())),
+        style: Default::default(),
+        interactivity: Default::default(),
+        children: vec![field, wire::Node::Container(button)],
+    });
+    crate::runtime::seat_drawing_for_test(MODULE, 320, root);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let queue = |seat: &Entity<Seat>, native: &mut VisualTestContext, command| {
+        let mounted = mounted_of(seat, native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        guest.widget_commands.push((7, command));
+    };
+    let run = |seat: &Entity<Seat>, native: &mut VisualTestContext| {
+        let woken = seat.clone();
+        native.update(|window, _| {
+            window.on_next_frame(move |_, cx| {
+                woken.update(cx, |seat, cx| seat.wake(cx));
+            });
+        });
+        native.update(|window, cx| window.simulate_next_frame(cx));
+        native.run_until_parked();
+        for _ in 0..2 {
+            native.update(|window, cx| window.simulate_next_frame(cx));
+            native.update(|window, cx| window.draw(cx).clear(cx));
+            native.run_until_parked();
+        }
+    };
+    let focus = wire::WidgetCommand::Focus {
+        target: vec![wire::ElementIdWire::Name("filter".into())],
+    };
+    let handle = wire::WidgetCommand::FocusHandle { handle: 9 };
+    let input_focused = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            let tree = seat.read(cx).tree().expect("mounted");
+            let input = tree.read(cx).first_input_for_test().expect("a field");
+            gpui_kit::Focusable::focus_handle(input.read(cx), cx).is_focused(window)
+        })
+    };
+    let button_focused = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            let tree = seat.read(cx).tree().expect("mounted");
+            tree.read(cx)
+                .guest_focus_for_test(9)
+                .expect("drawn")
+                .is_focused(window)
+        })
+    };
+    let keys_free = |native: &mut VisualTestContext, free: bool| {
+        seat.update(native, |seat, cx| seat.set_keys_free(free, cx));
+    };
+    // a fresh seat's keys are not free until the pane layer says so
+    assert!(!seat.read_with(&native, |seat, _| seat.keys_free()));
+    queue(&seat, &mut native, focus.clone());
+    run(&seat, &mut native);
+    assert!(
+        !input_focused(&mut native),
+        "Focus took the keys from a back pane"
+    );
+    queue(&seat, &mut native, handle.clone());
+    run(&seat, &mut native);
+    assert!(
+        !button_focused(&mut native),
+        "FocusHandle took the keys from a back pane"
+    );
+    keys_free(&mut native, true);
+    queue(&seat, &mut native, handle);
+    run(&seat, &mut native);
+    assert!(
+        button_focused(&mut native),
+        "a front pane's FocusHandle was refused"
+    );
+    native.update(|window, cx| window.blur(cx));
+    queue(&seat, &mut native, focus.clone());
+    run(&seat, &mut native);
+    assert!(
+        input_focused(&mut native),
+        "a front pane's Focus was refused"
+    );
+    native.update(|window, cx| window.blur(cx));
+    // asked with the keys free, run after something opened over the desk
+    queue(&seat, &mut native, focus);
+    keys_free(&mut native, false);
+    run(&seat, &mut native);
+    assert!(
+        !input_focused(&mut native),
+        "a Focus asked before Spotlight opened took the keys from it"
+    );
+}
+
+/// The host's stamp reaches the guest: a press or key the tree received
+/// (`ViewTree::activate`) is the guest's activation at its next turn, and
+/// the tree's is taken (one input, one stamp).
+#[gpui_kit::test]
+fn a_trees_activation_reaches_its_guest_on_the_next_turn(cx: &mut TestAppContext) {
+    const MODULE: &str = "activation-carry-test";
+    crate::runtime::seat_for_test(MODULE, 320);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let tree = seat.read_with(&native, |seat, _| seat.tree().expect("mounted"));
+    let guest_activation = |native: &VisualTestContext| {
+        let mounted = mounted_of(&seat, native);
+        let locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &locked.slot else {
+            panic!("seated")
+        };
+        guest.activation
+    };
+    assert!(
+        guest_activation(&native).is_none(),
+        "activated before any input"
+    );
+    tree.update(&mut native, |tree, _| tree.activate());
+    seat.update(&mut native, |seat, cx| seat.wake(cx));
+    native.run_until_parked();
+    assert!(
+        guest_activation(&native).is_some(),
+        "the tree's activation did not reach the guest"
+    );
+    assert!(
+        tree.read_with(&native, |tree, _| tree.take_activation().is_none()),
+        "the tree kept the stamp it handed over"
+    );
+}
+
+/// A view's own `host.widget` cursor command on its editor is no input: the
+/// guest ends its turn with no activation to spend on the clipboard or a link.
+#[gpui_kit::test]
+fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) {
+    use view_wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
+    const MODULE: &str = "self-stamp-test";
+    const TEXT: &[u8] = b"some words";
+    let target = vec![wire::ElementIdWire::Name("document".into())];
+    let root = wire::Node::Editor {
+        id: target[0].clone(),
+        style: div().w(px(240.)).h(px(80.)).style().clone(),
+        label: None,
+        binding: None,
+        placeholder: String::new(),
+        document: wire::editor_document::EditorDocumentRef {
+            document: "doc".into(),
+            reset: 1,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: TEXT.len() as u32,
+        },
+        on_document: 0,
+        editable: true,
+    };
+    crate::runtime::seat_drawing_for_test(MODULE, 320, root);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let with_guest = |native: &VisualTestContext, f: &mut dyn FnMut(&mut Guest)| {
+        let mounted = mounted_of(&seat, native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        f(guest)
+    };
+    // the host asked for the document; the guest delivers it
+    with_guest(&native, &mut |guest| {
+        let mut events = guest.inputs.drain();
+        events.extend(guest.pending.iter().cloned());
+        let (id, target) = events
+            .into_iter()
+            .find_map(|event| match event {
+                wire::Event::EditorDocument {
+                    message: Message::Request { id, target },
+                    ..
+                } => Some((id, target)),
+                _ => None,
+            })
+            .expect("the document was asked for");
+        guest
+            .inputs
+            .frame(&wire::Frame {
+                editor_documents: vec![
+                    Message::Transfer(EditorTransfer::Begin {
+                        id: id.clone(),
+                        target,
+                    }),
+                    Message::Transfer(EditorTransfer::Chunk {
+                        id: id.clone(),
+                        index: 0,
+                        bytes: TEXT.to_vec(),
+                    }),
+                    Message::Transfer(EditorTransfer::Complete { id }),
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+    });
+    native.run_until_parked();
+    let mut activation = None;
+    with_guest(&native, &mut |guest| {
+        guest.widget_commands.push((
+            7,
+            wire::WidgetCommand::SelectAll {
+                target: target.clone(),
+            },
+        ));
+    });
+    seat.update(&mut native, |seat, cx| seat.wake(cx));
+    for _ in 0..3 {
+        native.update(|window, cx| window.simulate_next_frame(cx));
+        native.update(|window, cx| window.draw(cx).clear(cx));
+        native.run_until_parked();
+    }
+    with_guest(&native, &mut |guest| {
+        assert!(guest.widget_commands.is_empty(), "SelectAll was never run");
+        activation = guest.activation;
+    });
+    assert!(
+        activation.is_none(),
+        "the guest's own SelectAll gave it an activation"
+    );
+}
+
 /// A program that leaves the roster gives up its seat: the pane shows the
 /// "no view" standin, not its frozen tree: the retire itself wakes the
 /// seat, since no clock redraws the window.
@@ -629,6 +907,65 @@ fn a_retired_program_shows_no_view(cx: &mut TestAppContext) {
     assert!(
         words.as_deref().is_some_and(|w| w.contains("has no")),
         "the retired seat still shows its tree: {words:?}"
+    );
+}
+
+/// A load that panics fails as any failed load does: the pane names the
+/// failure and offers Retry, where it showed "Loading" for good, and the
+/// panic stops at the loader, which goes on to the next load.
+#[gpui_kit::test]
+fn a_load_that_panics_shows_the_failure_with_retry(cx: &mut TestAppContext) {
+    const MODULE: &str = "panicking-load-test";
+    let (seat, _, native) = open(cx, MODULE, false);
+    let mounted = mounted_of(&seat, &native);
+    // asked as `retry` asks: the seat's wake is signalled here, on the
+    // test's thread, so the loader's signal finds no waker to run off-thread
+    let generation = {
+        let mut locked = lock(&mounted);
+        locked.wake.send_replace(());
+        locked.start()
+    };
+    let load = Load {
+        module: MODULE,
+        seat: mounted,
+        generation,
+        asked_of: connection().lock().unwrap().clone(),
+        code: None,
+    };
+    let landed = std::thread::spawn(move || load.land(|_, _| panic!("a loader bug"))).join();
+    assert!(landed.is_ok(), "the panic got past the loader");
+    native.run_until_parked();
+    let standin = seat.read_with(&native, |s, _| s.standin().cloned());
+    assert!(
+        standin
+            .as_ref()
+            .is_some_and(|s| s.retry && s.words.contains("a loader bug")),
+        "{standin:?}"
+    );
+}
+
+/// A loader that panics holding a seat's lock poisons it. The window
+/// thread's next turn still takes the lock and draws what the seat holds,
+/// where an `expect` on it panicked, and took every window with it.
+#[gpui_kit::test]
+fn a_poisoned_seat_still_draws(cx: &mut TestAppContext) {
+    const MODULE: &str = "poisoned-seat-test";
+    crate::runtime::seat_for_test(MODULE, 320);
+    let (seat, _, native) = open(cx, MODULE, false);
+    let mounted = mounted_of(&seat, &native);
+    let held = mounted.clone();
+    let _ = std::thread::spawn(move || {
+        let _held = held.lock();
+        panic!("a loader panicked holding the seat");
+    })
+    .join();
+    assert!(mounted.is_poisoned());
+    lock(&mounted).retire();
+    native.run_until_parked();
+    let words = seat.read_with(&native, |s, _| s.standin().map(|s| s.words.clone()));
+    assert!(
+        words.as_deref().is_some_and(|w| w.contains("has no")),
+        "the poisoned seat drew nothing new: {words:?}"
     );
 }
 
@@ -681,6 +1018,8 @@ fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
             panic!("seated")
         };
         guest.capabilities.push(Capability::Clipboard);
+        // the read is asked on the first redraw, under a fresh activation
+        guest.activation = Some(std::time::Instant::now());
     }
     let (seat, _, native) = open(cx, MODULE, false);
     native.run_until_parked();
@@ -767,9 +1106,11 @@ fn a_seat_claimed_or_dropped_wakes_the_rail(cx: &mut TestAppContext) {
     let key = seat.read_with(cx, |seat, _| (seat.module(), seat.instance()));
     // a retry (Loading again) and the load it starts (no node: a failure
     // installed) each tell the rail
-    for thread in retry(key.0, key.1)._threads {
-        thread.join().unwrap();
-    }
+    let mounted = registry().lock().unwrap()[&key].clone();
+    retry(key.0, key.1);
+    eventually("the retried load failed without a node", || {
+        matches!(lock(&mounted).slot, Slot::Failed(_))
+    });
     assert!(
         woken() >= 2,
         "a retry and its load did not both tell the rail"

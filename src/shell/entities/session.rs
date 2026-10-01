@@ -306,11 +306,7 @@ impl Session {
         );
         self.misses = 0;
         self.apply_status(&status, cx);
-        drop(crate::runtime::connected(
-            &backend::RpcClient::new(origin),
-            &network,
-            &chain,
-        ));
+        crate::runtime::connected(&backend::RpcClient::new(origin), &network, &chain);
         if left {
             cx.emit(SessionEvent::LeftNetwork);
         }
@@ -361,7 +357,7 @@ impl Session {
                     i64::try_from(status.height).unwrap_or(-1) != self.chain.read(cx).height;
                 self.apply_status(&status, cx);
                 if moved {
-                    drop(crate::runtime::deployments_checked());
+                    crate::runtime::deployments_checked();
                     self.account.update(cx, |account, cx| account.resolve(cx));
                 }
             }

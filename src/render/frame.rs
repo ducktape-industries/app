@@ -11,6 +11,12 @@ impl ViewTree {
         self.bounds.get(path).copied()
     }
 
+    /// The seat's picture bytes, handed with each root it draws: what a
+    /// node that names a picture by hash alone draws.
+    pub(crate) fn set_pictures(&mut self, pictures: Arc<PictureBytes>) {
+        self.pictures = pictures;
+    }
+
     pub fn set_editor_store(
         &mut self,
         store: crate::editor::wire::EditorStore,
@@ -105,25 +111,16 @@ impl ViewTree {
                 _ => {}
             }
         });
-        root.for_each_mut(&mut |node| match node {
-            wire::Node::Image {
+        self.images.borrow_mut().next_frame();
+        root.for_each_mut(&mut |node| {
+            if let wire::Node::Image {
                 hash,
                 data: Some(data),
                 ..
-            } => {
-                self.remember_image(*hash, data);
+            } = node
+            {
+                self.remember_image(*hash, data, None, cx);
             }
-            wire::Node::Svg {
-                source:
-                    wire::SvgSource::Data {
-                        hash,
-                        bytes: Some(bytes),
-                    },
-                ..
-            } => {
-                self.remember_vector(*hash, bytes);
-            }
-            _ => {}
         });
         self.bounds.retain(|key, _| mounted.contains(key));
         self.focus_targets

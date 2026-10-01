@@ -6,7 +6,7 @@
 use std::collections::BTreeMap;
 
 use super::center::Center;
-use crate::backend::{read_prefs, write_prefs};
+use crate::backend::{edit_prefs, read_prefs};
 
 /// The prefs keys, device-global like `appearance`.
 pub(super) const NOTIFY_PREF: &str = "desktop_notifications";
@@ -56,7 +56,7 @@ pub(crate) struct Settings {
 
 impl Settings {
     pub(crate) fn load() -> Self {
-        Self::of(&read_prefs())
+        Self::of(&read_prefs().unwrap_or_default())
     }
 
     pub(super) fn of(prefs: &serde_json::Value) -> Self {
@@ -77,12 +77,6 @@ impl Settings {
             views,
         }
     }
-}
-
-fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) {
-    let mut prefs = read_prefs();
-    change(&mut prefs);
-    write_prefs(&prefs);
 }
 
 pub(crate) fn save_banners(on: bool) {

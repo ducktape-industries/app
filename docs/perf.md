@@ -82,7 +82,7 @@ and is reported only under Xvfb.
 
 ### 2.1 One view's life
 
-Threads: a load runs on its own OS thread (`seat::spawn_load`); the tick
+Threads: a load runs on one of the loader threads (`seat::queue`); the tick
 loop runs on the window thread inside `Seat::turn`
 (`src/runtime/seat/entity.rs`), off the draw path, which holds the seat mutex while it runs.
 
@@ -96,8 +96,8 @@ loop runs on the window thread inside `Seat::turn`
 | Restore | lumped into `init_ms` | `Guest::restore` → `Exports::restore` | H `restore` (W), H `fuel.restore` (D) | a3 |
 | Init | `init_ms` = instantiate + snapshot + restore + init together | `Guest::init` → `Exports::init` | H `init` (W), H `fuel.init` (D) | a3 |
 | First frame of a swap | `first_frame_ms` | `Guest::first_frame` | H `first_frame` (W) | a3 |
-| Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `spawn_load` | `seat::spawn_load`, the closure after `Guest::load` returns: lock wait, then the match on `Loaded` through `locked.wake.send_replace(())`; a swap also drops the old `Guest` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
-| First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. Seats are preloaded by `spawn_roster_read` before any tab shows them, so "from load start" is not what a user feels | end of the first `Guest::tick` (`Guest.ticks == 0` in `Guest::redraw`), measured from `Mounted.shown` (set in `Seat::turn`) or from install end if later | H `first_tree` (W, ms) | a3 / 70 |
+| Install | nothing: `LoadTiming::log` runs before the loader takes the seat lock in `Load::land` | `seat::Load::land`, after `Guest::load` returns: lock wait, then the match on `Loaded` through `locked.wake.send_replace(())`; a swap also drops the old `Guest` (its `Store`, up to `MEMORY_LIMIT` of memory) under the lock | H `install.lock_wait`, H `install` (W) | free |
+| First tree of a fresh view | nothing. A fresh load only calls `init`; the first `tick` runs on the window thread at the first redraw, after `view_load` was logged. A preloaded seat (`roster::read_roster`) is only compiled: the pane that claims it loads it again, and that load instantiates and `init`s it, so a first open pays those two; "from load start" is still not what a user feels | end of the first `Guest::tick` (`Guest.ticks == 0` in `Guest::redraw`), measured from the start of the `Seat::turn` that ticks it | H `first_tree` (W, ms) | a3 / 70 |
 | Tick: fuel | `tracing::debug!(target: "ducktape::perf", used, limit)` in `Guest::tick` (`guest/requests.rs`) | same site | H `fuel.tick` (D) | a3 |
 | Tick: wall | nothing | `Guest::tick`: the `arm` → `Exports::tick` → `shape` chain is one expression today and has to be split to time the call and the decode apart | H `tick.call`, H `tick.decode` (W) | a3 |
 | Requests per tick | nothing (only the `view_wire::MAX_REQUESTS` refusal) | `Guest::redraw`, the loop over `frame.requests` and `frame.cancels` | H `requests`, H `cancels` (D) | a3 |
@@ -106,16 +106,16 @@ loop runs on the window thread inside `Seat::turn`
 | Frame bytes | nothing (the `MAX_FRAME_BYTES` refusal in `guest::shape`) | `Exports::tick` answer length; `wire::encode(&events)` length in `Guest::tick` | H `frame_bytes`, H `events_bytes` (D) | a3 |
 | Frame kind, busy, node count | nothing | after `guest::shape` in `Guest::tick`: `frame.root.is_some()`, `frame.patches.len()`, `frame.unchanged`, `frame.busy`; the node count from a `root.for_each_mut` walk (view-wire has no `count`), only when `frame_rev` bumps (O(n), so only when on) | C `frame.{full,patch,unchanged}`, C `busy_ticks`, G `nodes` (D) | a3 |
 | Sanitize truncations | a `display_text_truncated` warn (`Guest::report_display_truncation`) | `reports.local` after `guest::shape` | C `truncations` (D) | a3 |
-| Tree merge and replace | nothing | `guest::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone, `Pictures::hydrate`, `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
+| Tree merge and replace | nothing | `guest::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone (`Guest::drawn`; picture bytes are shared, not cloned), `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
 | ViewTree render | `ViewTree.renders`, `#[cfg(test)]` only (`src/render.rs`) | `ViewTree::render` (`Render` impl); promote the counter out of `cfg(test)` | C `renders` (D), H `render` (W) | 70 |
 | Cache hit / miss per view | nothing | On the cached path (`layers::PaneView` draws the seat's tree as a cached `AnyView`, with or without a11y) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `PaneView` draws of the seat, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
 | Full redraws per interaction | nothing (#347 measured it with temporary spans: 57–67 per window switch before, 11–14 after) | the `misses` delta between two door reads around the interaction | derived (D) | 70 |
 | Refresh causes | nothing | every `window.refresh()` caller in `src` is a cache-buster for all cached views in that window (`gpui:src/view.rs`, `!window.refreshing`). Today there are two, both in `src/render/text.rs`: the selection path (post-#347 `refresh_on_change`, only when the shown selection changes; before it, gpui-base's `refresh_window_on_change`) and the drag mouse-up handler (`MouseUpEvent` while `DRAG_CLIP` is set). `Window::activate_a11y` also refreshes, and so does gpui when the input turns from the pointer to the keys or back (the focus ring follows it). A focus move does not: the pinned fork (gpui-pre#9) draws the view that drew the old focus and the one that draws the new, with their ancestors, so a view that reads at its render a focus handle drawn outside its own subtree (neither by it nor by a view under it) stays stale unless it observes focus (`on_focus`/`on_blur`); no view in `src` draws from such a read (audited 2026-10-01). The two views' draw is held by `shell::layers::root_tests::a_focus_move_re_renders_two_layers_not_the_window`. Count per site | C `refresh.<site>` (D) | free (`text.rs`) |
 | gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `input::Observe` (`src/runtime/input.rs`) wraps the guest element: `Observe::prepaint` runs render + layout + prepaint for a cached `AnyView`, `Observe::paint` the paint. Per view only on the cached path, which the tree takes with or without a11y | H `layout`, H `paint` (W) | a3 |
-| Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) is insert-only, never evicts; sum `raster`/`vector` byte lengths when on | G `picture_bytes` (D) | free |
+| Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) keeps a running byte total, held under `MAX_PICTURE_BYTES` (64 MiB) by eviction | G `picture_bytes` (D) | free |
 | Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `Guest::tick` | G `memory` max (D) | a3 |
 | Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
-| Faults | warns `module_view_trapped` (`Guest::tick`), `module_view_unloadable` (`seat::spawn_load`) | same sites | C `faults` (D) | a3 / free |
+| Faults | warns `module_view_trapped` (`Guest::tick`), `module_view_unloadable` (`Mounted::load_failed`) | same sites | C `faults` (D) | a3 / free |
 
 Two findings the table depends on:
 
