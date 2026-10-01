@@ -599,10 +599,12 @@ mod tests {
     }
 
     /// `count` distinct 24px icons drawn by gpui's own SVG element.
+    #[cfg(target_os = "linux")]
     struct RealIcons {
         count: usize,
     }
 
+    #[cfg(target_os = "linux")]
     impl Render for RealIcons {
         fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
             div()
