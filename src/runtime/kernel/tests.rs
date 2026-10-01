@@ -714,6 +714,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     use commonware_codec::DecodeExt as _;
     let _seat = backend::seat_serial();
     let _connection = connection_serial();
+    let _queue = consent::serial();
     let remove = methods::encode(&methods::Call {
         target: identity::MODULE.into(),
         body: abi::encode(&identity::Op::RemoveKey {

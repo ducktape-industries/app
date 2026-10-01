@@ -252,9 +252,12 @@ impl Windows {
                     asked = crate::runtime::consent::front().map(|(id, _)| id);
                 } else if before == Some(Overlay::Consent)
                     && let Some(id) = asked.take()
-                    && crate::runtime::consent::answer(id, false)
                 {
-                    // another waits behind it: shown next
+                    crate::runtime::consent::answer(id, false);
+                }
+                // a view's ask waits its turn behind whatever the person has
+                // open (`ask_consent`): the desk clear, the front ask shows
+                if open.is_none() && crate::runtime::consent::front().is_some() {
                     overlays.update(cx, |overlays, cx| overlays.open(Overlay::Consent, cx));
                 }
                 if open.is_some() && desk.read(cx).get().held.is_some() {
@@ -434,14 +437,22 @@ impl Windows {
 
     /// A view's op waits on the person (`runtime::consent`): the console
     /// shows the front of the queue. With no console to ask in, every ask
-    /// is refused at once.
+    /// is refused at once. A view's ask never replaces a dialog the person
+    /// has open: its card is the same frame as "Add a device…"'s second
+    /// screen, Approve in the same spot, and a view in a pop-out window
+    /// could land it under a press meant for that. It opens over a bare
+    /// desk, or once the open dialog closes (`make_own`'s observer).
     pub(crate) fn ask_consent(&mut self, cx: &mut Context<Self>) {
-        match self.console_own() {
-            Some(own) => own
-                .overlays
-                .update(cx, |overlays, cx| overlays.open(Overlay::Consent, cx)),
-            None => crate::runtime::consent::refuse_all(),
-        }
+        let Some(own) = self.console_own() else {
+            return crate::runtime::consent::refuse_all();
+        };
+        own.overlays
+            .update(cx, |overlays, cx| match overlays.get() {
+                None => overlays.open(Overlay::Consent, cx),
+                // on the front, which may have moved
+                Some(Overlay::Consent) => cx.notify(),
+                Some(_) => {}
+            });
     }
 
     /// The OS window `key` off the screen (`closed` follows, from the

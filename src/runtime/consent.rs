@@ -143,31 +143,52 @@ pub(super) fn ask(
     id: u64,
     words: Words,
 ) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+    let told = queue(guest.module, guest.instance, words);
+    match told {
+        Some(_) => guest.intents.push(super::Intent::Consent),
+        None => guest.refuse(
+            id,
+            super::wire::methods::refusal::CONSENT_REFUSED,
+            "another confirmation for this view is still waiting",
+        ),
+    }
+    told
+}
+
+/// The ask itself, queued for view (`module`, `instance`); `None` while
+/// another of that view's waits. The shell is not told here (`ask` is).
+pub(crate) fn queue(
+    module: &'static str,
+    instance: u64,
+    words: Words,
+) -> Option<tokio::sync::oneshot::Receiver<bool>> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let mut waiting = lock();
     if waiting
         .iter()
-        .any(|ask| ask.module == guest.module && ask.instance == guest.instance)
+        .any(|ask| ask.module == module && ask.instance == instance)
     {
-        drop(waiting);
-        guest.refuse(
-            id,
-            super::wire::methods::refusal::CONSENT_REFUSED,
-            "another confirmation for this view is still waiting",
-        );
         return None;
     }
     let (tell, told) = tokio::sync::oneshot::channel();
     waiting.push_back(Ask {
         id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        module: guest.module,
-        instance: guest.instance,
+        module,
+        instance,
         words,
         tell,
     });
-    drop(waiting);
-    guest.intents.push(super::Intent::Consent);
     Some(told)
+}
+
+/// The queue is one for the process: a test that queues an ask holds this
+/// for its whole run, so no other test's ask lands in the middle of it.
+#[cfg(test)]
+pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: Mutex<()> = Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[cfg(test)]
