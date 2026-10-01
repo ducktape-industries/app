@@ -70,7 +70,10 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
         std::slice::from_ref(&code)
     );
     tree.read_with(&native, |tree, _| {
-        assert!(tree.take_user_activation(&code).is_none());
+        assert!(
+            tree.take_activation().is_some(),
+            "the reader's press is a gesture, as a pointer's is"
+        );
     });
     assert_eq!(press(&mut native, "up").as_deref(), Some("the docs"));
     assert!(events.borrow().is_empty(), "picking presses nothing");
@@ -85,7 +88,7 @@ fn tab_reaches_the_links_the_arrows_pick_one_and_enter_presses_it(
     );
     tree.read_with(&native, |tree, _| {
         assert!(
-            tree.take_user_activation(&pressed[0]).is_some(),
+            tree.take_activation().is_some(),
             "Enter is a real gesture, as a click is"
         );
     });

@@ -71,7 +71,7 @@ impl ViewTree {
             let view = view.clone();
             Rc::new(move |index, cx| {
                 let _ = view.update(cx, |this, cx| {
-                    this.user_activation.set(Some(handler));
+                    this.activate();
                     cx.emit(wire::Event::Select {
                         handler,
                         index: index as u32,
@@ -157,9 +157,10 @@ impl ViewTree {
                     .role(Role::Link)
                     .aria_label(words[picked].clone())
                     .aria_active_descendant()
-                    // a press from assistive technology grants no user activation
+                    // a press from assistive technology is the reader's: a gesture
                     .on_a11y_action(AccessibleAction::Click, move |_, _, cx| {
-                        let _ = view.update(cx, |_, cx| {
+                        let _ = view.update(cx, |this, cx| {
+                            this.activate();
                             cx.emit(wire::Event::Select {
                                 handler,
                                 index: picked as u32,
@@ -261,11 +262,14 @@ impl Element for Linked {
     ) {
         self.text
             .paint(id, inspector_id, bounds, state, prepaint, window, cx);
-        // a press from assistive technology grants no user activation
+        // a press from assistive technology is the reader's: a gesture
         for (index, node) in self.links.borrow_mut().drain(..) {
             let (view, handler) = (self.view.clone(), self.handler);
             window.on_a11y_action(node, Action::Click, move |_, _, cx| {
-                let _ = view.update(cx, |_, cx| cx.emit(wire::Event::Select { handler, index }));
+                let _ = view.update(cx, |this, cx| {
+                    this.activate();
+                    cx.emit(wire::Event::Select { handler, index })
+                });
             });
         }
     }
