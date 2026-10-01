@@ -59,7 +59,12 @@ pub struct TextEditor {
     _keystrokes: Subscription,
 }
 
-impl EventEmitter<()> for TextEditor {}
+/// Emitted when the store has events for the guest (`false`), or when the OS
+/// handed the field an input that activates the view (`true`: a key but
+/// Escape, a press, assistive technology's set-value), as `ViewTree` hears
+/// it. What the field does with the input, or what the view's own commands
+/// do to the caret, carries no activation.
+impl EventEmitter<bool> for TextEditor {}
 
 impl TextEditor {
     pub fn new(
@@ -178,7 +183,11 @@ impl TextEditor {
             self.move_cursor(cursor, cx);
             self.install(window, cx);
         }
-        self.input.read(cx).focus_handle(cx).focus(window, cx);
+        // a cursor command moves the caret where it is; only Focus takes
+        // the keys, and only past the seat's gate
+        if matches!(command, wire::WidgetCommand::Focus { .. }) {
+            self.input.read(cx).focus_handle(cx).focus(window, cx);
+        }
         self.sync(window, cx);
         true
     }
@@ -272,7 +281,7 @@ impl TextEditor {
             .native(&self.key, &self.preview, self.cursor, &text, next, kind);
         self.preview = Arc::from(text);
         self.cursor = next;
-        cx.emit(());
+        cx.emit(false);
         cx.notify();
     }
 
@@ -294,7 +303,7 @@ impl TextEditor {
             wire::EditorEditKind::Cursor,
         );
         self.cursor = cursor;
-        cx.emit(());
+        cx.emit(false);
         cx.notify();
     }
 
@@ -323,6 +332,12 @@ impl TextEditor {
             self.tab_released = false;
             return;
         }
+        // The OS key is the input: it activates the view here, where the host
+        // receives it, whatever the field or the guest makes of it. Escape
+        // leaves things and activates nothing.
+        if keystroke.key != "escape" {
+            cx.emit(true);
+        }
         let released = std::mem::replace(&mut self.tab_released, keystroke.key == "escape");
         let key = wire::keyboard::KeyState::from(keystroke);
         let leaving = released
@@ -348,7 +363,7 @@ impl TextEditor {
                 wire::EditorRequestInput::Key { key, repeat: false },
             );
             cx.stop_propagation();
-            cx.emit(());
+            cx.emit(false);
             return;
         }
         if !released {
@@ -407,6 +422,7 @@ impl TextEditor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        cx.emit(true);
         let on_the_words = self.input.read(cx).input_bounds().contains(&event.position);
         if on_the_words {
             return;
@@ -450,7 +466,10 @@ impl Render for TextEditor {
                     &self.input.read(cx).focus_handle(cx),
                     {
                         let state = self.input.clone();
+                        let editor = cx.entity().downgrade();
                         move |value, window, cx| {
+                            // assistive technology's set-value is input too
+                            let _ = editor.update(cx, |_, cx| cx.emit(true));
                             state.update(cx, |state, cx| state.replace_all(value, window, cx))
                         }
                     },

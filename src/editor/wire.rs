@@ -279,6 +279,22 @@ impl EditorStore {
         );
     }
 
+    /// A key pressed in the editor at `key`, as `TextEditor` sends one.
+    #[cfg(test)]
+    pub(crate) fn key_for_test(
+        &self,
+        key: &[view_wire::ElementIdWire],
+        state: view_wire::keyboard::KeyState,
+    ) {
+        self.request(
+            key,
+            view_wire::EditorRequestInput::Key {
+                key: state,
+                repeat: false,
+            },
+        );
+    }
+
     fn request(&self, key: &[view_wire::ElementIdWire], input: view_wire::EditorRequestInput) {
         let mut store = self.lock();
         store.enqueue(key, InputKind::Request(input));

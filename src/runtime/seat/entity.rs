@@ -35,7 +35,12 @@ pub(crate) struct Seat {
     alive: Option<Arc<()>>,
     revision: u64,
     props: Option<Vec<u8>>,
-    focused: bool,
+    /// Whether a guest here may move the keys: its pane in front, nothing
+    /// open over the desk, no keyboard hold (`PaneLayer` says; `false`
+    /// until it has). The web's rule: a background document takes no focus.
+    /// Every focus-moving widget command is judged by it as it runs, and
+    /// the tree mirrors it for a dialog's auto-focus (`keys_grant`).
+    keys_free: bool,
     /// `MIN_WINDOW_WIDTH` of the seated view; the pane lays out from it.
     min_width: f32,
     standin: Option<Standin>,
@@ -82,7 +87,7 @@ impl Seat {
         let instance = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
         let mounted = mounted(module, instance);
-        let mut woken = mounted.lock().expect("module view lock").wake.subscribe();
+        let mut woken = lock(&mounted).wake.subscribe();
         let wake = cx.spawn(async move |this, cx| {
             while woken.changed().await.is_ok() {
                 if this.update(cx, |this, cx| this.turn(cx)).is_err() {
@@ -104,7 +109,7 @@ impl Seat {
             alive: None,
             revision: 0,
             props: None,
-            focused: true,
+            keys_free: false,
             min_width: 0.,
             standin: None,
             _replies: None,
@@ -169,10 +174,19 @@ impl Seat {
         }
     }
 
-    /// Whether the pane is in front: a `Focus` the guest asks for is
-    /// refused while it is not. Nothing draws from it, so no notify.
-    pub(crate) fn set_focused(&mut self, focused: bool) {
-        self.focused = focused;
+    /// `PaneLayer` says whether a guest here may move the keys (see
+    /// `keys_free`); the tree hears it too. Nothing draws from it, so no
+    /// notify.
+    pub(crate) fn set_keys_free(&mut self, keys_free: bool, cx: &mut Context<Self>) {
+        self.keys_free = keys_free;
+        if let Some(tree) = &self.tree {
+            tree.update(cx, |tree, _| tree.set_keys_grant(keys_free));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn keys_free(&self) -> bool {
+        self.keys_free
     }
 
     /// Session, Account and the theme land here as encoded props: a turn
@@ -193,7 +207,7 @@ impl Seat {
     #[must_use]
     pub(crate) fn hide(&mut self) -> Vec<Intent> {
         let mounted = self.mounted.clone();
-        let mut locked = mounted.lock().expect("module view lock");
+        let mut locked = lock(&mounted);
         let Mounted { slot, props, .. } = &mut *locked;
         let Slot::Ready(guest) = slot else {
             return Vec::new();
@@ -228,9 +242,8 @@ impl Seat {
             self.turns += 1;
         }
         let mounted = self.mounted.clone();
-        let mut locked = mounted.lock().expect("module view lock");
+        let mut locked = lock(&mounted);
         let shown = Instant::now();
-        locked.shown = Some(shown);
         let module = self.module;
         let Mounted { slot, props, .. } = &mut *locked;
         let guest = match slot {
@@ -247,6 +260,7 @@ impl Seat {
                 drop(locked);
                 return self.show_standin(standin, cx);
             }
+            // on its way, or compiled and being started for this pane
             loading => {
                 let standin = Standin {
                     title: None,
@@ -259,6 +273,13 @@ impl Seat {
             }
         };
         guest.instance = self.instance;
+        // the press or key the host last received for this tree is the
+        // view's activation for the requests this redraw answers
+        if let Some(tree) = &self.tree
+            && let Some(at) = tree.read(cx).take_activation()
+        {
+            guest.activation = Some(at);
+        }
         *props = self.props.clone();
         let ticks = guest.ticks;
         guest.set_visible(true);
@@ -282,9 +303,8 @@ impl Seat {
                 .as_ref()
                 .is_some_and(|alive| Arc::ptr_eq(alive, &guest.alive));
         let fresh = (!same || self.revision != guest.frame_rev).then(|| {
-            let mut root = native_root(guest.frame.root.clone().unwrap_or_else(wire::Node::empty));
-            guest.pictures.hydrate(&mut root);
-            (root, guest.frame_rev)
+            let (root, pictures) = guest.drawn();
+            (native_root(root), pictures, guest.frame_rev)
         });
         let adopt = (!same).then(|| {
             (
@@ -310,15 +330,18 @@ impl Seat {
             self.min_width = min_width;
             cx.notify();
         }
-        if let Some((root, rev)) = fresh {
+        if let Some((root, pictures, rev)) = fresh {
             let _replacing = crate::perf::time(key, "replace");
             self.revision = rev;
             match (&self.tree, adopt) {
                 // the tree's own notify dirties its window; nothing the
                 // pane reads off the seat moved
-                (Some(tree), None) => tree.update(cx, |tree, cx| tree.replace(root, cx)),
+                (Some(tree), None) => tree.update(cx, |tree, cx| {
+                    tree.set_pictures(pictures);
+                    tree.replace(root, cx)
+                }),
                 (_, adopt) => {
-                    self.mount(root, generation, key, adopt, cx);
+                    self.mount(root, pictures, generation, key, adopt, cx);
                     cx.notify();
                 }
             }
@@ -365,6 +388,7 @@ impl Seat {
     fn mount(
         &mut self,
         root: wire::Node,
+        pictures: Arc<crate::render::PictureBytes>,
         generation: u64,
         key: crate::perf::Key,
         adopt: Option<(Arc<()>, tokio::sync::watch::Receiver<()>, bool, EditorStore)>,
@@ -400,24 +424,28 @@ impl Seat {
             crate::render::ViewTree::new(root)
                 .with_presentation(presentation)
                 .with_perf_key(key)
+                .with_keys_grant(self.keys_free)
         });
-        tree.update(cx, |tree, cx| tree.set_editor_store(inputs, cx));
+        tree.update(cx, |tree, cx| {
+            tree.set_pictures(pictures);
+            tree.set_editor_store(inputs, cx)
+        });
         let seat = self.mounted.clone();
-        self._tree_events = Some(cx.subscribe(&tree, move |this, source, event, cx| {
-            let activation = source.read(cx).take_user_activation(event);
-            let mut locked = seat.lock().expect("module view lock");
-            let Slot::Ready(guest) = &mut locked.slot else {
-                return;
-            };
-            let current =
-                guest.seated_generation() == generation && Arc::ptr_eq(&alive, &guest.alive);
-            if current && guest.frame_rev == this.revision {
-                guest.user_activation = activation;
-                guest.pending.push(event.clone());
-            }
-            drop(locked);
-            this.turn(cx);
-        }));
+        self._tree_events = Some(
+            cx.subscribe(&tree, move |this, _, event: &wire::Event, cx| {
+                let mut locked = lock(&seat);
+                let Slot::Ready(guest) = &mut locked.slot else {
+                    return;
+                };
+                let current =
+                    guest.seated_generation() == generation && Arc::ptr_eq(&alive, &guest.alive);
+                if current && guest.frame_rev == this.revision {
+                    guest.pending.push(event.clone());
+                }
+                drop(locked);
+                this.turn(cx);
+            }),
+        );
         self._tree_drawn = Some(
             cx.subscribe(&tree, |this, _, _: &crate::render::Drawn, cx| {
                 this.holding = false;
@@ -465,7 +493,7 @@ impl Seat {
             window.on_next_frame(move |window, _| {
                 window.on_next_frame(move |window, cx| {
                     let _ = this.update(cx, |this, cx| {
-                        let mut locked = seat.lock().expect("module view lock");
+                        let mut locked = lock(&seat);
                         let Slot::Ready(guest) = &mut locked.slot else {
                             return;
                         };
@@ -484,9 +512,10 @@ impl Seat {
                         let Some(tree) = &this.tree else {
                             return;
                         };
-                        let focused = this.focused;
+                        // judged as it runs, not as it was asked: a command
+                        // the view held back answers to the desk as it is now
                         guest.execute_widget_commands(|command| {
-                            if !focused && matches!(command, wire::WidgetCommand::Focus { .. }) {
+                            if Guest::moves_keys(&command) && !this.keys_free {
                                 return Err("view is not focused".into());
                             }
                             tree.update(cx, |tree, cx| {
@@ -506,10 +535,7 @@ impl Seat {
 
 impl Drop for Seat {
     fn drop(&mut self) {
-        registry()
-            .lock()
-            .expect("module views")
-            .remove(&(self.module, self.instance));
+        lock(registry()).remove(&(self.module, self.instance));
         // the module's row may now be read off another seat, or say Loading
         rail_moved();
     }
