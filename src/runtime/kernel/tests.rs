@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 mod node_methods;
 
 /// A guest holding every capability, its code doing nothing.
-pub(super) fn guest() -> Guest {
+pub(in crate::runtime) fn guest() -> Guest {
     let code = wasmtime::Module::new(
         super::super::guest::engine(),
         r#"(module
@@ -19,6 +19,22 @@ pub(super) fn guest() -> Guest {
     let mut guest = Guest::instantiate("request-test", &code, "request test").unwrap();
     guest.capabilities = Capability::ALL.to_vec();
     guest
+}
+
+/// The in-order queue `name` held by a job that waits for the returned
+/// sender to send or drop, so every job queued behind it waits too.
+pub(in crate::runtime) fn held(name: &str) -> std::sync::mpsc::Sender<()> {
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    in_order(name, move || {
+        let _ = released.recv();
+    });
+    release
+}
+
+/// Whether `future` is still waiting, polled once.
+pub(in crate::runtime) fn waiting<F: Future>(future: std::pin::Pin<&mut F>) -> bool {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    future.poll(&mut cx).is_pending()
 }
 
 /// One request off `stream` to a fake node: its request line, and the

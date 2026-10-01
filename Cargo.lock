@@ -2365,6 +2365,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "unicode-segmentation",
+ "usvg 0.46.0",
  "view-wire",
  "wasmparser 0.251.0",
  "wasmtime",

@@ -668,8 +668,11 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   256, `MAX_REPLY_EVENTS` 1024 / `MAX_REPLY_BYTES` 32 MiB and their
   half-size stream backlog; `LOADERS` 4 loads at once and
   `views::MAX_PROGRAMS` 256 roster entries; `layout::MAX_PANES` 8; a per-window SVG raster
-  budget (`render/svg_limits.rs`); picture decode size limits
-  (`render/picture_resources.rs`).
+  budget (`render/svg_limits.rs`: 256 MiB charged at each raster's real
+  size, 4096 keys, for the window's life); a per-seat cache of decoded
+  pictures (`render/pictures.rs` `Rasters`: 64 MiB / 4096, evicting the
+  least recently drawn; its atlas tiles leave every window when the seat
+  drops); picture decode size limits (`render/picture_resources.rs`).
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`
   and `ViewTree::replace` run on the window thread inside `Seat::turn`,
   while holding the seat mutex, between draws and never inside one; GPUI

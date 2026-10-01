@@ -48,6 +48,20 @@ pub(crate) fn handle() -> tokio::runtime::Handle {
     kernel::handle()
 }
 
+/// The app's quit hook (`shell::launch`, the one every quit path reaches):
+/// the notification log handed over, then a wait on every in-order queue
+/// (store files, the log, banners), then `kept` dropped. The returned
+/// future is the wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
+pub(crate) fn quitting(
+    center: &notify::CenterHandle,
+    kept: impl Sized,
+) -> impl Future<Output = ()> {
+    center.lock().flush();
+    let drained = kernel::drain();
+    drop(kept);
+    drained
+}
+
 /// A lock the window thread and the loaders share, taken even after a
 /// thread panicked holding it: a panic on a loader never takes the window
 /// thread, and every window with it, down on its next turn.

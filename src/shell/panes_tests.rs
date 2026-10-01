@@ -931,6 +931,72 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
     );
 }
 
+/// Closing a pane drops its seat, and the pictures its view drew leave
+/// the window's GPU atlas with it.
+#[gpui_kit::test]
+fn a_closed_panes_pictures_leave_the_atlas(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    const MODULE: &str = "pane-closed-picture-view";
+    const HASH: u64 = 31;
+    let (app, _, view, mut native) = console(cx);
+    crate::runtime::seat_drawing_for_test(
+        MODULE,
+        400,
+        view_wire::Node::Image {
+            id: Some(view_wire::ElementIdWire::Name("picture".into())),
+            hash: HASH,
+            data: Some(view_wire::ImageData::Rgba {
+                width: 2,
+                height: 2,
+                pixels: [255, 0, 0, 255].repeat(4),
+            }),
+            label: None,
+            image_style: view_wire::ImageStyle {
+                grayscale: false,
+                object_fit: view_wire::ImageObjectFit::Fill,
+            },
+            loading: false,
+            fallback: false,
+            state_children: Vec::new(),
+            style: gpui_kit::div().size(px(30.)).style().clone(),
+            interactivity: Default::default(),
+        },
+    );
+    pane(&view, PaneMessage::Select(MODULE), &mut native);
+    for _ in 0..8 {
+        frame(&mut native);
+    }
+    let (index, image) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let index = layout
+            .panes
+            .iter()
+            .position(|pane| pane.module == MODULE)
+            .expect("the pane opened");
+        let seat = app.seats.read(cx).seat(layout.panes[index].instance);
+        let tree = seat
+            .expect("seated")
+            .read(cx)
+            .tree()
+            .expect("the view drew");
+        let image = tree
+            .read(cx)
+            .image_for_test(HASH)
+            .expect("the picture decoded");
+        (index, image)
+    });
+    assert!(
+        native.update(|window, _| window.has_image_atlas_entry(&image)),
+        "the picture painted"
+    );
+    pane(&view, PaneMessage::Close(index), &mut native);
+    frame(&mut native);
+    assert!(
+        !native.update(|window, _| window.has_image_atlas_entry(&image)),
+        "the closed pane's picture stayed in the atlas"
+    );
+}
+
 /// `Seat::keys_free`, as `PaneLayer` pushes it: a
 /// seat's keys are free only while its pane is in front, nothing is open
 /// over the desk and no hold is on; the back pane's never are.
