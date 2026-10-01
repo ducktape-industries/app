@@ -101,7 +101,11 @@ impl Guest {
         {
             match nth < MAX_REQUESTS_PER_TICK {
                 true => self.answer(request, props),
-                false => self.refuse(request.id, "tick_limit", "too many requests this tick"),
+                false => self.refuse(
+                    request.id,
+                    refusal::TICK_LIMIT,
+                    "too many requests this tick",
+                ),
             }
         }
         self.user_activation = None;
@@ -144,13 +148,17 @@ impl Guest {
         if payload.len() > payload_limit {
             self.refuse(
                 id,
-                "too_large",
+                refusal::TOO_LARGE,
                 format!("`{kind}` carries more than {payload_limit} bytes"),
             );
             return;
         }
         let Some((capability, operation)) = Capability::of_kind(&kind) else {
-            self.refuse(id, "unknown_request", format!("unknown request `{kind}`"));
+            self.refuse(
+                id,
+                refusal::UNKNOWN_REQUEST,
+                format!("unknown request `{kind}`"),
+            );
             return;
         };
         // A view is untrusted code: it reaches only the methods its manifest
@@ -168,7 +176,7 @@ impl Guest {
             }
             self.refuse(
                 id,
-                "undeclared_capability",
+                refusal::UNDECLARED_CAPABILITY,
                 format!("`{kind}` needs the `{name}` capability, which this view does not declare"),
             );
             return;
@@ -194,9 +202,13 @@ impl Guest {
                     );
                     self.reply(id, Ok(Vec::new()));
                 }
-                Err(error) => self.refuse(id, "malformed_request", error),
+                Err(error) => self.refuse(id, refusal::MALFORMED_REQUEST, error),
             },
-            _ => self.refuse(id, "unknown_request", format!("unknown request `{kind}`")),
+            _ => self.refuse(
+                id,
+                refusal::UNKNOWN_REQUEST,
+                format!("unknown request `{kind}`"),
+            ),
         }
     }
 
@@ -262,7 +274,7 @@ impl Guest {
         })();
         match admitted {
             Ok(command) => self.widget_commands.push((id, command)),
-            Err(error) => self.refuse(id, "invalid_widget_command", error),
+            Err(error) => self.refuse(id, refusal::INVALID_WIDGET_COMMAND, error),
         }
     }
 
@@ -293,9 +305,9 @@ impl Guest {
         for (id, command) in commands {
             let result = match self.target_is_mounted(&command) {
                 true => execute(command)
-                    .map_err(|error| wire::Error::new("widget_command_failed", error)),
+                    .map_err(|error| wire::Error::new(refusal::WIDGET_COMMAND_FAILED, error)),
                 false => Err(wire::Error::new(
-                    "widget_unmounted",
+                    refusal::WIDGET_UNMOUNTED,
                     "widget target left the tree",
                 )),
             };

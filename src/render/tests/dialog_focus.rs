@@ -1,16 +1,24 @@
 //! A view dialog gives the keyboard back to what opened it (AX-120).
 use super::*;
 
-/// The opener, which the guest names by focus handle 1, beside an overlay
-/// whose dialog, a Save button, shows when `open`.
-fn screen(open: bool) -> wire::Node {
-    let mut opener = button("open", "Rename");
-    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut opener {
-        interactivity.focus_handle = Some(1);
+/// `button`, which the guest names by focus `handle`.
+fn handled(key: &str, name: &str, handle: u64) -> wire::Node {
+    let mut node = button(key, name);
+    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
+        interactivity.focus_handle = Some(handle);
     }
-    let mut children = vec![container("base", [opener])];
+    node
+}
+
+/// The opener (focus handle 1) beside an overlay whose dialog, Save (2)
+/// and Cancel (3), shows when `open`.
+fn screen(open: bool) -> wire::Node {
+    let mut children = vec![container("base", [handled("open", "Rename", 1)])];
     if open {
-        children.push(container("sheet", [button("save", "Save")]));
+        children.push(container(
+            "sheet",
+            [handled("save", "Save", 2), handled("cancel", "Cancel", 3)],
+        ));
     }
     let overlay = wire::Node::Overlay {
         id: named_id("rename"),
@@ -53,5 +61,62 @@ fn a_closed_dialog_gives_focus_back_to_its_opener(cx: &mut gpui_kit::TestAppCont
         show(&mut native, false).as_ref(),
         Some(&opener),
         "the opener has the keyboard back"
+    );
+}
+
+/// The guest focus handle that has the keys, if one has.
+fn holder(
+    tree: &gpui_kit::Entity<ViewTree>,
+    native: &mut gpui_kit::VisualTestContext,
+) -> Option<u64> {
+    let focused = native.update(|window, cx| window.focused(cx))?;
+    tree.read_with(native, |tree, _| {
+        tree.guest_focus_targets
+            .iter()
+            .find_map(|(handle, focus)| (*focus == focused).then_some(*handle))
+    })
+}
+
+/// Under the kit's root (what answers Tab), a view dialog opens with the
+/// keys on its first control, and Tab and Shift+Tab go round its controls,
+/// never out to the opener behind it.
+#[gpui_kit::test]
+fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::AppContext as _;
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |window, cx| {
+        let tree = cx.new(|_| ViewTree::new(screen(false)));
+        gpui_kit::component::Root::new(tree, window, cx)
+    });
+    let tree = window
+        .read_with(cx, |root, _| root.view().clone())
+        .unwrap()
+        .downcast::<ViewTree>()
+        .unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let opener = tree
+        .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
+        .expect("the opener is drawn");
+    native.update(|window, cx| opener.focus(window, cx));
+    tree.update(&mut native, |tree, cx| tree.replace(screen(true), cx));
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    assert_eq!(
+        holder(&tree, &mut native),
+        Some(2),
+        "the dialog opens on Save"
+    );
+    let walk: Vec<_> = ["tab", "tab", "tab", "shift-tab", "shift-tab"]
+        .into_iter()
+        .map(|key| {
+            native.simulate_keystrokes(key);
+            holder(&tree, &mut native)
+        })
+        .collect();
+    assert_eq!(
+        walk,
+        [Some(3), Some(2), Some(3), Some(2), Some(3)],
+        "Save, Cancel and round again: the keys stay in the dialog"
     );
 }

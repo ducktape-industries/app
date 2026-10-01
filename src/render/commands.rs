@@ -33,28 +33,23 @@ pub(super) fn walk_authored_paths(
     }
 }
 
-/// Where focus enters a dialog: a node-less element drawn first in it,
-/// tracking `entry`. The frame the dialog opens, focus that is still where
-/// it was at the end of that frame moves to the first Tab stop after this
-/// one — the dialog's first control — so a keyboard is in the dialog it
-/// opened, not behind it. Focus the dialog's own content took is left alone.
-pub(crate) fn dialog_entry(
-    entry: &FocusHandle,
-    opened: bool,
-    window: &mut Window,
-    cx: &mut App,
-) -> Stateful<Div> {
-    if opened {
-        let before = window.focused(cx);
-        let entry = entry.clone();
-        window.defer(cx, move |window, cx| {
-            if window.focused(cx) == before {
-                window.focus(&entry, cx);
-                window.focus_next(cx);
-            }
-        });
-    }
-    div().id(host_id("dialog-entry")).track_focus(entry)
+/// Where focus enters a dialog that opens this frame: `entry`, the handle
+/// its focus trap tracks. Focus that is still where it was at the end of
+/// the frame moves to the first Tab stop after the trap's — the dialog's
+/// first control — so a keyboard is in the dialog it opened, not behind it.
+/// Focus the dialog's own content took is left alone. Nothing inside the
+/// dialog tracks `entry` as well: gpui's dispatch tree keys a handle to the
+/// last element that tracks it, so the trap would contain no focused node
+/// and Tab would leave the dialog.
+pub(crate) fn dialog_entry(entry: &FocusHandle, window: &mut Window, cx: &mut App) {
+    let before = window.focused(cx);
+    let entry = entry.clone();
+    window.defer(cx, move |window, cx| {
+        if window.focused(cx) == before {
+            window.focus(&entry, cx);
+            window.focus_next(cx);
+        }
+    });
 }
 
 /// Where focus goes when a dialog closes: back to `opener`, what held it as

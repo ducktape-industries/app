@@ -45,6 +45,8 @@ pub(crate) use session::{
 
 use std::time::Duration;
 
+use view_wire::methods::refusal;
+
 /// A refusal the NODE or the PROGRAM authored, carried through with its
 /// own token; a transport failure gets the app's: `rpc_client` when nothing
 /// reached the node, `node_failed` when the request may have and the answer
@@ -57,12 +59,13 @@ pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
             view_wire::Error::new(view_wire::code::UNEXPECTED_REPLY, refusal.sentence)
         }
         Error::Failed { status, sentence } => {
-            view_wire::Error::new("node_failed", format!("{status}: {sentence}"))
+            view_wire::Error::new(refusal::NODE_FAILED, format!("{status}: {sentence}"))
         }
-        Error::Unreachable(sentence) => view_wire::Error::new("rpc_client", sentence),
-        Error::Transport(sentence) => {
-            view_wire::Error::new("node_failed", format!("no answer came back: {sentence}"))
-        }
+        Error::Unreachable(sentence) => view_wire::Error::new(refusal::RPC_CLIENT, sentence),
+        Error::Transport(sentence) => view_wire::Error::new(
+            refusal::NODE_FAILED,
+            format!("no answer came back: {sentence}"),
+        ),
     }
 }
 
