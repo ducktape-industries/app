@@ -8,25 +8,25 @@ use crate::shell::entities::Overlay;
 use gpui_kit::*;
 
 impl OverlayLayer {
-    /// What the view asks, the thing it names on a line of its own (a key's
-    /// fingerprint, an agent's number), Approve and Cancel: the pieces of
-    /// `approve`'s second screen, with these words. Approve lets the op go
-    /// on to be signed; Cancel, or the dialog closed any other way
-    /// (`Windows`), refuses it.
-    pub(super) fn consent(&self, cx: &App) -> AnyElement {
+    /// The card for ask `ask`: what the view asks, the thing it names on a
+    /// line of its own (a key's fingerprint, an agent's number), Approve
+    /// and Cancel: the pieces of `approve`'s second screen, with these
+    /// words. Approve lets the op go on to be signed; Cancel, or the dialog
+    /// closed any other way (`Windows`), refuses it. The card is the ask's
+    /// own (its id is in the dialog's): it shows no other ask's words, and
+    /// a press that began on another card is not one on it.
+    pub(super) fn consent(&self, ask: u64, cx: &App) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
-        let Some((id, words)) = consent::front() else {
-            // answered already; the layer redraws closed
+        let Some((_, words)) = consent::front().filter(|(front, _)| *front == ask) else {
+            // answered or withdrawn already; the layer redraws without it
             return div().into_any_element();
         };
         let overlays = self.overlays.entity().clone();
         let answer = move |yes: bool, cx: &mut App| {
-            if consent::answer(id, yes) {
-                // another waits behind it: the dialog stays, on it
-                overlays.update(cx, |_, cx| cx.notify());
-            } else {
-                overlays.update(cx, |overlays, cx| overlays.close(Overlay::Consent, cx));
-            }
+            consent::answer(ask, yes);
+            // the card closes; another ask waiting opens as a new one
+            let front = consent::front().map(|(id, _)| id);
+            overlays.update(cx, |overlays, cx| overlays.follow_consent(front, cx));
         };
         let approve = {
             let answer = answer.clone();
@@ -56,10 +56,10 @@ impl OverlayLayer {
             )
         });
         scrim(
-            "consent",
+            format!("consent-{ask}"),
             Role::Dialog,
             "Confirm a change to your account",
-            Overlay::Consent,
+            Overlay::Consent(ask),
             self.overlays.entity(),
             &self.modal,
             &ink,
