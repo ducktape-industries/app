@@ -52,7 +52,7 @@ mod tree;
 
 use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
 pub(crate) use http::{cli, open};
-pub(crate) use tree::{AxNode, VIEW_MARK, snapshot};
+pub(crate) use tree::{AxNode, snapshot};
 use tree::{compact, delta, nearest, offers};
 
 #[derive(Debug, Default, PartialEq)]

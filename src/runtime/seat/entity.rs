@@ -17,6 +17,9 @@ use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
 /// Frame pacing for a busy guest (`frame.busy`): one more turn, a frame later.
 const BUSY_FRAME: Duration = Duration::from_millis(16);
 
+/// What [`Seat::ax_mark`] names before the module.
+pub(crate) const VIEW_MARK: &str = "view/";
+
 pub(crate) struct Seat {
     module: &'static str,
     instance: u64,
@@ -126,10 +129,11 @@ impl Seat {
         self.instance
     }
 
-    /// The id around the view's tree: the AX test door (`ax::tree`) reads
-    /// the module off it.
+    /// The id around the view's tree, `view/<module>`: the AX test door
+    /// (`ax::tree`) reads the module off it. A host id, so no id a view
+    /// sends is one.
     pub(crate) fn ax_mark(&self) -> gpui_kit::ElementId {
-        gpui_kit::ElementId::Name(format!("{}{}", crate::ax::VIEW_MARK, self.module).into())
+        crate::render::host_id(format!("{VIEW_MARK}{}", self.module))
     }
 
     pub(crate) fn tree(&self) -> Option<Entity<crate::render::ViewTree>> {

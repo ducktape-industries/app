@@ -603,7 +603,8 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   windows are `console`, `console2`, … in the order they opened
   (`Windows::served`, by `WindowKey`), read on every request; a view's
   nodes sit under the `view/<module>` mark `Seat::ax_mark`
-  wraps around each view (`tree::VIEW_MARK`). Answers carry
+  wraps around each view (`runtime::VIEW_MARK`), a `render::host_id`, so a
+  view's own `view/<other>` id is never taken for one. Answers carry
   `X-Ax-Revision`, which moves when a tree changed. `ducktape-app ax …`
   (`ax::cli`) is the command-line client.
 - **How qa drives it.** The qa repo's rig launches the app with
