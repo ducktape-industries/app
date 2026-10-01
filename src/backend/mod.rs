@@ -189,10 +189,13 @@ mod tests {
             vec![0, 255, 16]
         );
         assert!(hex_decode("abc").is_err());
-        assert!(hex_decode("a\u{e9}a").is_err(), "odd bytes, split mid-char");
+        assert!(
+            hex_decode("a\u{e9}a").is_err(),
+            "a byte pair splits the \u{e9}"
+        );
         assert!(
             hex_decode("\u{e9}\u{e9}").is_err(),
-            "even bytes, split mid-char"
+            "whole characters, not hex"
         );
     }
 }
