@@ -737,6 +737,40 @@ fn a_view_moves_the_keys_only_while_its_keys_are_free(cx: &mut TestAppContext) {
     );
 }
 
+/// The host's stamp reaches the guest: a press or key the tree received
+/// (`ViewTree::activate`) is the guest's activation at its next turn, and
+/// the tree's is taken (one input, one stamp).
+#[gpui_kit::test]
+fn a_trees_activation_reaches_its_guest_on_the_next_turn(cx: &mut TestAppContext) {
+    const MODULE: &str = "activation-carry-test";
+    crate::runtime::seat_for_test(MODULE, 320);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let tree = seat.read_with(&native, |seat, _| seat.tree().expect("mounted"));
+    let guest_activation = |native: &VisualTestContext| {
+        let mounted = mounted_of(&seat, native);
+        let locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &locked.slot else {
+            panic!("seated")
+        };
+        guest.activation
+    };
+    assert!(
+        guest_activation(&native).is_none(),
+        "activated before any input"
+    );
+    tree.update(&mut native, |tree, _| tree.activate());
+    seat.update(&mut native, |seat, cx| seat.wake(cx));
+    native.run_until_parked();
+    assert!(
+        guest_activation(&native).is_some(),
+        "the tree's activation did not reach the guest"
+    );
+    assert!(
+        tree.read_with(&native, |tree, _| tree.take_activation().is_none()),
+        "the tree kept the stamp it handed over"
+    );
+}
+
 /// A program that leaves the roster gives up its seat: the pane shows the
 /// "no view" standin, not its frozen tree: the retire itself wakes the
 /// seat, since no clock redraws the window.
