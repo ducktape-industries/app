@@ -1,10 +1,20 @@
-//! Image, Svg and Canvas nodes, and the per-view caches behind them:
-//! `images` (decoded rasters) and `vectors` (SVG bytes), both keyed by the
-//! guest's content hash so a later frame can name a picture without
-//! resending it. `qr` is the shell's (sign-in); no wire node draws one.
+//! Image, Svg and Canvas nodes. A picture's bytes cross the wire once;
+//! later frames name it by the guest's content hash, and the tree draws
+//! that hash from the seat's [`PictureBytes`]. Rasters decoded from them
+//! are cached in `images`. `qr` is the shell's (sign-in); no wire node
+//! draws one.
 use super::picture_resources::{cache_fits, decode_image};
 use super::*;
 use crate::render::native_id;
+
+/// A seat's picture bytes by content hash, each held once: the seat's
+/// store (`runtime::pictures`) owns and evicts them, and hands every tree
+/// it draws this map to resolve the hashes it names.
+#[derive(Clone, Default)]
+pub(crate) struct PictureBytes {
+    pub(crate) raster: HashMap<u64, Arc<wire::ImageData>>,
+    pub(crate) vector: HashMap<u64, Arc<[u8]>>,
+}
 
 mod svg_canvas;
 use svg_canvas::SvgCanvas;
@@ -83,21 +93,15 @@ impl ViewTree {
         else {
             unreachable!()
         };
-        let refused_data = matches!(
-            source,
+        // the bytes the node brings, else the seat's under its hash
+        let pictures = self.pictures.clone();
+        let data = match source {
             wire::SvgSource::Data {
-                bytes: Some(bytes),
-                ..
-            } if !svg_data_allowed(bytes)
-        );
-        if let wire::SvgSource::Data {
-            hash,
-            bytes: Some(bytes),
-        } = source
-            && !refused_data
-        {
-            self.remember_vector(*hash, bytes);
-        }
+                bytes: Some(bytes), ..
+            } => Some(bytes.as_slice()),
+            wire::SvgSource::Data { hash, bytes: None } => pictures.vector.get(hash).map(|b| &**b),
+            _ => None,
+        };
         let mut element = div();
         *element.style() = style.clone();
         let native_transform =
@@ -108,10 +112,10 @@ impl ViewTree {
                 ))
                 .with_rotation(radians(transformation.rotate));
         element = match source {
-            wire::SvgSource::Data { .. } if refused_data => {
-                element.child("Compressed SVG data refused")
-            }
-            wire::SvgSource::Data { hash, .. } => match self.vectors.get(hash) {
+            wire::SvgSource::Data { .. } => match data {
+                Some(bytes) if !svg_data_allowed(bytes) => {
+                    element.child("Compressed SVG data refused")
+                }
                 Some(bytes) => element.child(guarded_svg_paint(
                     SvgPaintSource::data(bytes),
                     svg()
@@ -220,20 +224,6 @@ impl ViewTree {
         }
     }
 
-    pub(super) fn remember_vector(&mut self, hash: u64, bytes: &[u8]) {
-        if !svg_data_allowed(bytes) || self.vectors.contains_key(&hash) {
-            return;
-        }
-        let used = self.vectors.values().map(|bytes| bytes.len()).sum();
-        // Never evict: a guest sends an SVG's bytes once and names it by hash
-        // afterwards, so an evicted entry could never come back. When full, a
-        // new SVG is not cached and draws as "SVG data unavailable" (`vector`).
-        if !cache_fits(self.vectors.len(), used, bytes.len()) {
-            return;
-        }
-        self.vectors.insert(hash, Arc::from(bytes));
-    }
-
     pub(super) fn picture(
         &mut self,
         node: &wire::Node,
@@ -253,6 +243,11 @@ impl ViewTree {
         else {
             unreachable!()
         };
+        // the bytes the node brings, else the seat's under its hash
+        let pictures = self.pictures.clone();
+        let data = data
+            .as_ref()
+            .or_else(|| pictures.raster.get(hash).map(|data| &**data));
         if let Some(data) = data {
             self.remember_image(*hash, data);
         }
@@ -269,7 +264,7 @@ impl ViewTree {
                 element = element.child("Host image resource unavailable")
             }
             _ => {
-                if let Some(image) = self.image_frame(*hash, data.as_ref()) {
+                if let Some(image) = self.image_frame(*hash, data) {
                     element = element.child(
                         img(image)
                             .size_full()

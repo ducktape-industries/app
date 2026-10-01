@@ -639,9 +639,10 @@ fn coverage_counts_actionable_nodes_clean_of_errors_and_rules_failed_over_applic
         (report.coverage.actionable - 2. / 3.).abs() < 1e-9,
         "{report:#?}"
     );
-    let failed = report.violations.len();
-    let applicable: usize = report.applicable.values().sum();
-    assert!((report.coverage.rule - (1. - failed as f64 / applicable as f64)).abs() < 1e-9);
+    // AX-002 bare, AX-017 thin, AX-014 h, over ok 8, bare 7, thin 8, h 3
+    assert_eq!(report.violations.len(), 3, "{report:#?}");
+    assert_eq!(report.applicable.values().sum::<usize>(), 26);
+    assert!((report.coverage.rule - 23. / 26.).abs() < 1e-9);
     assert_eq!(report.errors().count(), 2);
     assert_eq!(
         one(Vec::new()).coverage,
@@ -955,11 +956,12 @@ fn the_walk_goes_round_once_for_a_stop_tab_never_reaches(cx: &mut gpui_kit::Test
     assert_eq!(report.presses, 7);
 }
 
-/// A `view/x` element at the right of the window, around `inside`.
+/// View `x`'s mark (`Seat::ax_mark`) at the right of the window, around
+/// `inside`.
 fn view_x(inside: Vec<gpui_kit::AnyElement>) -> gpui_kit::AnyElement {
     use gpui_kit::*;
     div()
-        .id("view/x")
+        .id(crate::render::host_id("view/x"))
         .absolute()
         .left(px(100.))
         .top(px(0.))
@@ -1095,7 +1097,6 @@ async fn arrow_probe(
     use gpui_kit::test::TestWindowExt as _;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
-    cx.update(gpui_kit::init);
     let window = cx.open_window(
         gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
         |_, _| crate::render::ViewTree::new(members(1)),
@@ -1149,25 +1150,27 @@ async fn arrow_probe(
 /// ended (a key reaches a view as an event the tree emits, and an emit is
 /// delivered when the outermost update ends): the arrow probe of
 /// `GET /audit` presses each arrow in an update of its own and reads after
-/// it, so a list whose arrows move its active row passes AX-107.
+/// it, so a list whose arrows move its active row passes AX-107. A view
+/// that moves its active row a while after it heard the arrow (a guest
+/// ticks on a later draw) passes too: the probe reads again until the row
+/// has moved, before it presses the next arrow.
 #[gpui_kit::test]
-async fn the_arrow_probe_sees_a_views_list_move_its_active_row(cx: &mut gpui_kit::TestAppContext) {
-    let (report, heard) = arrow_probe(cx, None).await;
-    assert_eq!(report["applicable"]["AX-107"], 1, "the probe ran: {report}");
-    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
-    assert_eq!(heard[..2], ["down", "up"]);
-}
-
-/// A view that moves its active row a while after it heard the arrow (a
-/// guest ticks on a later draw) still passes AX-107: the probe reads again
-/// until the row has moved, before it presses the next arrow.
-#[gpui_kit::test]
-async fn the_arrow_probe_waits_for_a_view_that_answers_late(cx: &mut gpui_kit::TestAppContext) {
-    let late = std::time::Duration::from_millis(120);
-    let (report, heard) = arrow_probe(cx, Some(late)).await;
-    assert_eq!(report["applicable"]["AX-107"], 1, "the probe ran: {report}");
-    assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
-    assert_eq!(heard[..2], ["down", "up"]);
+async fn the_arrow_probe_sees_a_views_list_move_its_active_row_at_once_or_late(
+    cx: &mut gpui_kit::TestAppContext,
+) {
+    cx.update(gpui_kit::init);
+    for after in [None, Some(std::time::Duration::from_millis(120))] {
+        let (report, heard) = arrow_probe(cx, after).await;
+        assert_eq!(
+            report["applicable"]["AX-107"], 1,
+            "{after:?}: the probe ran: {report}"
+        );
+        assert!(
+            door_fails(&report, "AX-107").is_empty(),
+            "{after:?}: {report}"
+        );
+        assert_eq!(heard[..2], ["down", "up"], "{after:?}");
+    }
 }
 
 /// The first key route of [`composites_audit`]'s composites.
@@ -1325,7 +1328,9 @@ async fn composites_audit(
     let window = cx.open_window(
         gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
         |window, cx| {
-            let tree = cx.new(|_| crate::render::ViewTree::new(screen(&active)));
+            // a front pane with nothing over the desk: its dialogs may take the keys
+            let tree =
+                cx.new(|_| crate::render::ViewTree::new(screen(&active)).with_keys_grant(true));
             gpui_kit::component::Root::new(tree, window, cx)
         },
     );
@@ -1412,6 +1417,60 @@ async fn the_probe_skips_a_link_box_inside_a_grid(cx: &mut gpui_kit::TestAppCont
     );
     assert!(door_fails(&report, "AX-107").is_empty(), "{report}");
     assert_eq!(heard, [["down", "up"]]);
+}
+
+/// A view's Button `id`, a Tab stop.
+fn view_button(id: &str) -> view_wire::Node {
+    let view_wire::Node::Container(mut button) =
+        item(id.to_owned(), gpui_kit::Role::Button, false, Vec::new())
+    else {
+        unreachable!()
+    };
+    button.interactivity.focusable = true;
+    button.interactivity.tab_stop = Some(true);
+    view_wire::Node::Container(button)
+}
+
+/// A view's dialog "Pick", open from the first frame, holding two buttons
+/// over the button that opened it.
+fn pick_dialog(_: &[usize]) -> view_wire::Node {
+    use gpui_kit::Styled as _;
+    view_wire::Node::Overlay {
+        id: view_wire::ElementIdWire::Name("pick".into()),
+        label: Some("Pick".to_owned()),
+        style: gpui_kit::div().size_full().style().clone(),
+        on_dismiss: None,
+        children: vec![
+            view_button("opener"),
+            view_wire::Node::Container(view_wire::ContainerNode {
+                id: Some(view_wire::ElementIdWire::Name("sheet".into())),
+                style: Default::default(),
+                interactivity: Default::default(),
+                children: vec![view_button("one"), view_button("two")],
+            }),
+        ],
+    }
+}
+
+/// What the census sees of a view dialog: it opens with the keys on its
+/// first control, and the Tab walk goes round its two controls without
+/// ever leaving it — every snapshot has one focused node in the modal
+/// (AX-020), inside it (AX-023), and the dialog holds the keys (AX-025,
+/// AX-104).
+#[gpui_kit::test]
+async fn the_tab_walk_stays_in_a_view_dialog(cx: &mut gpui_kit::TestAppContext) {
+    let (report, _) = composites_audit(cx, pick_dialog, Vec::new(), Vec::new(), 0).await;
+    assert!(
+        report["applicable"]["AX-023"].as_u64() > Some(2),
+        "the walk went round the dialog: {report}"
+    );
+    for rule in ["AX-020", "AX-023", "AX-025", "AX-104"] {
+        assert_eq!(
+            door_fails(&report, rule),
+            Vec::<String>::new(),
+            "{rule}: {report}"
+        );
+    }
 }
 
 /// A grid of rows of `widths` cells each, under a header row of column
@@ -1520,9 +1579,13 @@ mod refused_scope {
     use gpui_kit::{ElementId, GlobalElementId};
 
     /// A `GlobalElementId` is made by the window: every segment on its
-    /// element-id stack, the last one's id read off it.
+    /// element-id stack, the last one's id read off it. A `view/<module>`
+    /// segment is that view's mark (`Seat::ax_mark`).
     fn path(window: &mut gpui_kit::Window, segments: &[&str]) -> GlobalElementId {
-        let name = |segment: &str| ElementId::Name(segment.to_owned().into());
+        let name = |segment: &str| match segment.starts_with("view/") {
+            true => crate::render::host_id(segment.to_owned()),
+            false => ElementId::Name(segment.to_owned().into()),
+        };
         match segments {
             [] => GlobalElementId::default(),
             [last] => window.with_global_id(name(last), |id, _| id.clone()),

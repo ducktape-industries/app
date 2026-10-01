@@ -374,6 +374,25 @@ pub fn unframe(framed: &[u8]) -> Option<&[u8]> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn wss_gets_tls_not_a_missing_feature() {
+        // A port that hangs up: the TLS handshake fails, but only after the
+        // connector exists. Without the rustls feature it is refused up front.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("wss://{}/v1/changes/x", port.local_addr().unwrap());
+        std::thread::spawn(move || drop(port.accept()));
+        let error = tokio_tungstenite::connect_async(url).await.unwrap_err();
+        assert!(
+            !matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Url(
+                    tokio_tungstenite::tungstenite::error::UrlError::TlsFeatureNotEnabled
+                )
+            ),
+            "{error}"
+        );
+    }
+
     #[test]
     fn frame_signs_its_body_and_names_the_signer() {
         let key = ed25519::PrivateKey::from_seed(7);

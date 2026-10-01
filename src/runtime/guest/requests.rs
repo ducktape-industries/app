@@ -101,10 +101,13 @@ impl Guest {
         {
             match nth < MAX_REQUESTS_PER_TICK {
                 true => self.answer(request, props),
-                false => self.refuse(request.id, "tick_limit", "too many requests this tick"),
+                false => self.refuse(
+                    request.id,
+                    refusal::TICK_LIMIT,
+                    "too many requests this tick",
+                ),
             }
         }
-        self.user_activation = None;
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);
@@ -130,6 +133,14 @@ impl Guest {
                 || self.inputs.ready() == Ok(false))
     }
 
+    /// Whether this view's activation is fresh, taking it: the gated call
+    /// that asks first is the one the person's input admits.
+    pub(crate) fn take_activation(&mut self) -> bool {
+        self.activation
+            .take()
+            .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
+    }
+
     /// Routes one request: the size cap, the manifest's capability gate,
     /// then the kernel contract (`kernel::answer`), then the three methods
     /// only this side has — `host.widget`, `host.session` answered from the
@@ -144,13 +155,17 @@ impl Guest {
         if payload.len() > payload_limit {
             self.refuse(
                 id,
-                "too_large",
+                refusal::TOO_LARGE,
                 format!("`{kind}` carries more than {payload_limit} bytes"),
             );
             return;
         }
         let Some((capability, operation)) = Capability::of_kind(&kind) else {
-            self.refuse(id, "unknown_request", format!("unknown request `{kind}`"));
+            self.refuse(
+                id,
+                refusal::UNKNOWN_REQUEST,
+                format!("unknown request `{kind}`"),
+            );
             return;
         };
         // A view is untrusted code: it reaches only the methods its manifest
@@ -168,7 +183,7 @@ impl Guest {
             }
             self.refuse(
                 id,
-                "undeclared_capability",
+                refusal::UNDECLARED_CAPABILITY,
                 format!("`{kind}` needs the `{name}` capability, which this view does not declare"),
             );
             return;
@@ -194,9 +209,13 @@ impl Guest {
                     );
                     self.reply(id, Ok(Vec::new()));
                 }
-                Err(error) => self.refuse(id, "malformed_request", error),
+                Err(error) => self.refuse(id, refusal::MALFORMED_REQUEST, error),
             },
-            _ => self.refuse(id, "unknown_request", format!("unknown request `{kind}`")),
+            _ => self.refuse(
+                id,
+                refusal::UNKNOWN_REQUEST,
+                format!("unknown request `{kind}`"),
+            ),
         }
     }
 
@@ -224,6 +243,26 @@ impl Guest {
             | C::SnapEnd { target }
             | C::ScrollTo { target, .. }
             | C::ScrollBy { target, .. } => Some(target),
+        }
+    }
+
+    /// Whether a command moves the keyboard: the ones the seat runs only
+    /// while its keys are free (`Seat::keys_free`). Exhaustive for the same
+    /// reason as `command_target`.
+    pub(crate) fn moves_keys(command: &wire::WidgetCommand) -> bool {
+        use wire::WidgetCommand as C;
+        match command {
+            C::Focus { .. } | C::FocusHandle { .. } | C::FocusNext | C::FocusPrevious => true,
+            C::EditorAction { .. }
+            | C::CursorFront { .. }
+            | C::CursorEnd { .. }
+            | C::Cursor { .. }
+            | C::SelectAll { .. }
+            | C::Select { .. }
+            | C::Snap { .. }
+            | C::SnapEnd { .. }
+            | C::ScrollTo { .. }
+            | C::ScrollBy { .. } => false,
         }
     }
 
@@ -262,7 +301,7 @@ impl Guest {
         })();
         match admitted {
             Ok(command) => self.widget_commands.push((id, command)),
-            Err(error) => self.refuse(id, "invalid_widget_command", error),
+            Err(error) => self.refuse(id, refusal::INVALID_WIDGET_COMMAND, error),
         }
     }
 
@@ -293,9 +332,9 @@ impl Guest {
         for (id, command) in commands {
             let result = match self.target_is_mounted(&command) {
                 true => execute(command)
-                    .map_err(|error| wire::Error::new("widget_command_failed", error)),
+                    .map_err(|error| wire::Error::new(refusal::WIDGET_COMMAND_FAILED, error)),
                 false => Err(wire::Error::new(
-                    "widget_unmounted",
+                    refusal::WIDGET_UNMOUNTED,
                     "widget target left the tree",
                 )),
             };
@@ -398,11 +437,12 @@ impl Guest {
                             if let Err(error) = self.inputs.replace(root) {
                                 self.fault = Some(error);
                             }
-                            self.pictures.adopt(root);
                             // The guest remembers its tree without the
                             // picture bytes; the tree its patches build on
                             // has to be that one.
-                            crate::runtime::pictures::strip(root);
+                            if self.pictures.adopt(root, self.module) {
+                                self.pending.push(wire::Event::Resync);
+                            }
                             // O(n) over the tree: only with perf on, and
                             // only on a tick that changed it
                             if perf::on() {

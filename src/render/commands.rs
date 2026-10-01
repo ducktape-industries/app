@@ -33,28 +33,29 @@ pub(super) fn walk_authored_paths(
     }
 }
 
-/// Where focus enters a dialog: a node-less element drawn first in it,
-/// tracking `entry`. The frame the dialog opens, focus that is still where
-/// it was at the end of that frame moves to the first Tab stop after this
-/// one — the dialog's first control — so a keyboard is in the dialog it
-/// opened, not behind it. Focus the dialog's own content took is left alone.
-pub(crate) fn dialog_entry(
-    entry: &FocusHandle,
-    opened: bool,
-    window: &mut Window,
-    cx: &mut App,
-) -> Stateful<Div> {
-    if opened {
-        let before = window.focused(cx);
-        let entry = entry.clone();
-        window.defer(cx, move |window, cx| {
-            if window.focused(cx) == before {
-                window.focus(&entry, cx);
-                window.focus_next(cx);
-            }
-        });
-    }
-    div().id(host_id("dialog-entry")).track_focus(entry)
+/// Where focus enters a dialog that opens this frame: `entry`, the handle
+/// its focus trap tracks. Focus that is not in the dialog at the end of the
+/// frame moves to the first Tab stop after the trap's — the dialog's first
+/// control — so a keyboard is in the dialog it opened, not behind it. Focus
+/// the dialog's own content took is left alone.
+///
+/// Not "focus still where it was": a view that wraps its screen in the
+/// overlay only while the dialog is open (chat's Create channel) moves every
+/// path under it as it opens, so the opener's host focus handle dies with
+/// its path in that frame, and the window takes the keys back to its own
+/// root before this runs (`WindowRoot::focus_lost`, shell/layers/root.rs) —
+/// focus moved, and nothing in the dialog has it. Nothing inside the dialog
+/// tracks `entry` as well: gpui's dispatch tree keys a handle to the last
+/// element that tracks it, so the trap would contain no focused node and
+/// Tab would leave the dialog.
+pub(crate) fn dialog_entry(entry: &FocusHandle, window: &mut Window, cx: &mut App) {
+    let entry = entry.clone();
+    window.defer(cx, move |window, cx| {
+        if !entry.contains_focused(window, cx) {
+            window.focus(&entry, cx);
+            window.focus_next(cx);
+        }
+    });
 }
 
 /// Where focus goes when a dialog closes: back to `opener`, what held it as
@@ -71,28 +72,27 @@ pub(crate) fn dialog_exit(opener: WeakFocusHandle, window: &mut Window, cx: &mut
 }
 
 impl ViewTree {
-    /// `Some` when `event` came from a real gesture on this tree — a click,
-    /// press or select whose handler is the one the last gesture recorded —
-    /// spending the mark, so an activation is granted once.
-    pub(crate) fn take_user_activation(&self, event: &wire::Event) -> Option<()> {
-        let message = match event {
-            wire::Event::Message(message)
-            | wire::Event::Click {
-                handler: message, ..
-            }
-            | wire::Event::AuxClick {
-                handler: message, ..
-            }
-            | wire::Event::Select {
-                handler: message, ..
-            } => message,
-            _ => return None,
-        };
-        let actual_click = self.user_activation.get() == Some(*message);
-        if !actual_click {
-            return None;
-        }
-        self.user_activation.take().map(|_| ())
+    /// The host received a real press or key aimed at this tree: a click,
+    /// an auxiliary click, a link's press, a key down but Escape, typing in
+    /// a native field or editor, assistive technology's press. Nothing a
+    /// view sends, no timer, no answer, no hover or scroll comes here.
+    pub(crate) fn activate(&self) {
+        self.activation.set(Some(std::time::Instant::now()));
+    }
+
+    /// The activation, taken: the seat moves it to the guest.
+    pub(crate) fn take_activation(&self) -> Option<std::time::Instant> {
+        self.activation.take()
+    }
+
+    /// See `keys_grant`: the seat mirrors its `keys_free` here.
+    pub(crate) fn set_keys_grant(&mut self, keys_grant: bool) {
+        self.keys_grant = keys_grant;
+    }
+
+    pub(crate) fn with_keys_grant(mut self, keys_grant: bool) -> Self {
+        self.keys_grant = keys_grant;
+        self
     }
 
     pub fn execute_widget_command(

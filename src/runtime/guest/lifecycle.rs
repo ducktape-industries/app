@@ -26,7 +26,7 @@ impl Guest {
         self.tasks.clear();
         self.clipboard = Default::default();
         for id in ids {
-            self.refuse(id, "stale_connection", "network connection changed");
+            self.refuse(id, refusal::STALE_CONNECTION, "network connection changed");
         }
         self.connection_rev = revision;
     }
@@ -506,7 +506,8 @@ impl Guest {
             Exports::bind(&mut store, &instance).map_err(|error| format!("{shown}: {error}"))?;
         Ok(Self {
             connection_rev: connection().lock().expect("views rpc").rev,
-            user_activation: None,
+            activation: None,
+            links: Vec::new(),
             module,
             instance: 0,
             name: String::new(),
