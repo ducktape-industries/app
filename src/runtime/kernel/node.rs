@@ -41,18 +41,28 @@ fn unsent(refusal: &wire::Error) -> bool {
     refusal.code == refusal::RPC_CLIENT
 }
 
-/// The answer, and how many times the node was asked for it.
+/// The answer, and how many times the node was asked for it: each ask
+/// given `per_attempt` to answer ([`noded::ANSWER_DEADLINE`], never the
+/// budget's remainder, which would cut a recovering node's held answer
+/// short), asked again while `retry_on` the refusal and `budget` lasts. An
+/// ask cut at its deadline may have reached the node: `node_failed`, which
+/// a submit does not sign again.
 async fn until_answered(
     budget: std::time::Duration,
+    per_attempt: std::time::Duration,
     retry_on: fn(&wire::Error) -> bool,
     mut ask: impl FnMut() -> Answered,
 ) -> (Answer, u64) {
     let deadline = tokio::time::Instant::now() + budget;
     let mut attempt: u32 = 0;
     loop {
-        let refusal = match ask().await {
-            Ok(bytes) => return (Ok(bytes), u64::from(attempt) + 1),
-            Err(refusal) => refusal,
+        let refusal = match tokio::time::timeout(per_attempt, ask()).await {
+            Ok(Ok(bytes)) => return (Ok(bytes), u64::from(attempt) + 1),
+            Ok(Err(refusal)) => refusal,
+            Err(_) => wire::Error::new(
+                refusal::NODE_FAILED,
+                "no answer came back: the node did not answer in time",
+            ),
         };
         if !retry_on(&refusal) {
             return (Err(refusal), u64::from(attempt) + 1);
@@ -226,7 +236,7 @@ fn spawn_method(
         }
         let (result, attempts) = match retry_on {
             Some(retry_on) => {
-                until_answered(NODE_RETRY_BUDGET, retry_on, || {
+                until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, retry_on, || {
                     method(node.clone(), ask.clone())
                 })
                 .await
@@ -333,16 +343,17 @@ where
 /// Runs `future` on the kernel runtime and delivers its result as the one
 /// reply to request `id`; counted in flight, aborted with the guest. For a
 /// host method that waits on something other than the node (`notify.post`
-/// waits on its banner).
+/// waits on its banner, `store.*` on its file). `false` when the request
+/// was refused `in_flight_limit` instead.
 pub(in crate::runtime) fn spawn_reply(
     guest: &mut Guest,
     id: u64,
     future: impl std::future::Future<Output = Answer> + Send + 'static,
-) {
+) -> bool {
     let replies = guest.replies.clone();
     start(guest, id, async move {
         replies.item(id, future.await, true);
-    });
+    })
 }
 
 /// The node to ask, or `None` with the request REFUSED: `stale_connection`
@@ -642,8 +653,11 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
             ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
             _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
         };
-        // absent is `None`, never a refusal: the ask itself did not fail
-        let Some(framed) = node.client.blob(id).await.map_err(refused)? else {
+        // absent is `None`, never a refusal: the ask itself did not fail.
+        // Read no further than the cap and the blob's header (`kind len\0`,
+        // under 32 bytes) in its borsh `Option<Vec<u8>>` (5)
+        let cap = MAX_BLOB_BYTES + 64;
+        let Some(framed) = node.client.blob(id, cap).await.map_err(refused)? else {
             return Ok(methods::encode(&None::<Vec<u8>>));
         };
         let body =

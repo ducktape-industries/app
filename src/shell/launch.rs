@@ -147,10 +147,10 @@ pub(crate) fn run() {
         // until the app quits
         let mut kept = Some((tray, entities));
         cx.on_app_quit(move |_| {
-            drop(kept.take());
             // the one hook every quit path reaches
+            let drained = crate::runtime::quitting(crate::runtime::notify::center(), kept.take());
             crate::perf::summary();
-            async {}
+            drained
         })
         .detach();
     });

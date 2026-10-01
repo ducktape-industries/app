@@ -135,7 +135,12 @@ fn every_onboarding_transition(cx: &mut TestAppContext) {
             "node reached",
             fresh,
             |a, cx| {
-                a.take_up(testkit(), NODE.into(), "testkit".into(), cx);
+                a.take_up(
+                    testkit(),
+                    backend::RpcClient::new(NODE),
+                    "testkit".into(),
+                    cx,
+                );
             },
             "Unlock",
         ),
@@ -587,6 +592,85 @@ fn the_approve_dialog_forgets_what_it_found_when_it_opens_or_closes(cx: &mut Tes
     }
 }
 
+/// Its future, dropped: what a call that never lands holds.
+struct Dropped(std::rc::Rc<std::cell::Cell<bool>>);
+
+impl Drop for Dropped {
+    fn drop(&mut self) {
+        self.0.set(true);
+    }
+}
+
+/// A step left by its back or close while its call is still out (a node
+/// that never answers): the call is dropped and the next try is not
+/// refused as busy. Before, `busy` held until the call landed, and every
+/// other sign-in step with it.
+#[gpui_kit::test]
+fn leaving_a_step_drops_its_call_and_frees_the_next_try(cx: &mut TestAppContext) {
+    type Build = fn(&mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>);
+    type Call = fn(&mut Account, &mut gpui_kit::Context<Account>);
+    fn recover(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
+        let (account, screen) = account_step(cx);
+        account.update(cx, |account, cx| account.recover_show(cx));
+        (account, screen)
+    }
+    fn quiz(cx: &mut TestAppContext) -> (Entity<Account>, Entity<Slice<Screen>>) {
+        let (account, screen) = desk(cx);
+        account.update(cx, |account, cx| {
+            account.recovery_key_start(cx);
+            account.phrase_written_down(cx);
+        });
+        (account, screen)
+    }
+    let table: [(&str, Build, Call, &str); 4] = [
+        (
+            "Create account, then Not now",
+            account_step,
+            |a, cx| a.create_later(cx),
+            "Desk",
+        ),
+        (
+            "a recovery key typed, then Back",
+            recover,
+            |a, cx| a.recover_cancel(cx),
+            "Account",
+        ),
+        (
+            "Add a device, then closed",
+            desk,
+            |a, cx| a.approve_closed(cx),
+            "Desk",
+        ),
+        (
+            "a new recovery key checked, then See the words again and Not now",
+            quiz,
+            |a, cx| {
+                a.phrase_show_again(cx);
+                a.phrase_cancel(cx);
+            },
+            "Desk",
+        ),
+    ];
+    for (step, build, leave, lands) in table {
+        let (account, screen) = build(cx);
+        let dropped = std::rc::Rc::new(std::cell::Cell::new(false));
+        let held = Dropped(dropped.clone());
+        account.update(cx, |account, cx| {
+            let call = cx.spawn(async move |_, _| {
+                let _held = held;
+                futures::future::pending::<()>().await;
+            });
+            account.seed_call(call, cx);
+        });
+        assert!(state(&account, cx).busy, "{step}");
+        account.update(cx, leave);
+        cx.run_until_parked();
+        assert!(dropped.get(), "{step}: the call still waits on the node");
+        assert!(!state(&account, cx).busy, "{step}: the next try is refused");
+        assert_eq!(shown(&screen, cx), lands, "{step}");
+    }
+}
+
 /// A second node of the same network keeps the key, the account and the
 /// screen; another chain leaves everything of the last one and starts at
 /// the key step. An account answer from the node left, or for another
@@ -604,7 +688,12 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
         account.resolved(NODE, "ab", Some((7, "ada".into())), cx);
     });
     let left = account.update(cx, |account, cx| {
-        account.take_up(keyring("testkit", false), NODE.into(), "testkit".into(), cx)
+        account.take_up(
+            keyring("testkit", false),
+            backend::RpcClient::new(NODE),
+            "testkit".into(),
+            cx,
+        )
     });
     assert!(!left, "a second node of one network was a switch");
     let kept = state(&account, cx);
@@ -618,7 +707,7 @@ fn taking_up_another_chain_resets_the_last_ones_state(cx: &mut TestAppContext) {
     let left = account.update(cx, |account, cx| {
         account.take_up(
             keyring("testkit+200", true),
-            NODE.into(),
+            backend::RpcClient::new(NODE),
             "testkit".into(),
             cx,
         )

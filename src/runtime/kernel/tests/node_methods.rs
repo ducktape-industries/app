@@ -309,21 +309,19 @@ async fn blob_get_answers_the_blob_or_none() {
     let mut framed = b"sha256\0".to_vec();
     framed.extend_from_slice(b"blob body bytes");
     let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
-    let (node, server) = node_server(
-        "POST /v1/blob/get HTTP/1.1",
-        vec![("200 OK", abi::encode(&Some(framed)))],
-    );
-    let answer = blob_get(node, ask.clone()).await.unwrap();
+    let held = fake_node(vec![(
+        backend::noded::route::BLOB_GET,
+        Mode::Answer(abi::encode(&Some(framed))),
+    )]);
+    let answer = blob_get(held.node.clone(), ask.clone()).await.unwrap();
     let decoded: Option<Vec<u8>> = methods::decode(&answer).unwrap();
     assert_eq!(decoded.as_deref(), Some(&b"blob body bytes"[..]));
-    server.join().unwrap();
-    let (node, server) = node_server(
-        "POST /v1/blob/get HTTP/1.1",
-        vec![("200 OK", abi::encode(&None::<Vec<u8>>))],
-    );
-    let answer = blob_get(node, ask).await.unwrap();
+    let absent = fake_node(vec![(
+        backend::noded::route::BLOB_GET,
+        Mode::Answer(abi::encode(&None::<Vec<u8>>)),
+    )]);
+    let answer = blob_get(absent.node.clone(), ask).await.unwrap();
     assert_eq!(methods::decode::<Option<Vec<u8>>>(&answer).unwrap(), None);
-    server.join().unwrap();
 }
 
 #[tokio::test]

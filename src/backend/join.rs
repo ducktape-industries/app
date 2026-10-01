@@ -91,11 +91,16 @@ pub(crate) async fn join_from_device(
     let code = normalized(code).ok_or("That code is malformed.")?;
     let device = seated_key().await.map_err(|refusal| refusal.message)?;
     let request = serde_json::json!({ "v": 1, "network": network, "key": hex_encode(&device) });
-    post(&slot(&page, &code, "request")?, request.to_string()).await?;
+    post(
+        client.http(),
+        &slot(&page, &code, "request")?,
+        request.to_string(),
+    )
+    .await?;
     let answer = slot(&page, &code, "consent")?;
     let deadline = tokio::time::Instant::now() + APPROVAL_WAIT;
     let json = loop {
-        if let Some(json) = take(&answer).await? {
+        if let Some(json) = take(client.http(), &answer).await? {
             break json;
         }
         if tokio::time::Instant::now() > deadline {
@@ -135,11 +140,11 @@ fn parse_consent(json: &str) -> Result<Consent, String> {
 
 // ---------- a device already on the account ----------
 
-/// The request a new device put up under `code`. Taking it empties the
-/// slot: one code, one look.
-pub(crate) async fn find_request(code: &str) -> Result<Request, String> {
+/// The request a new device put up under `code`, asked over `client`'s
+/// connection. Taking it empties the slot: one code, one look.
+pub(crate) async fn find_request(client: &RpcClient, code: &str) -> Result<Request, String> {
     let code = normalized(code).ok_or("A code is 8 letters and digits, like KQ4M-9XPT.")?;
-    let json = take(&slot(&auth_page(), &code, "request")?)
+    let json = take(client.http(), &slot(&auth_page(), &code, "request")?)
         .await?
         .ok_or("No device is waiting on that code. Check it, or start again on the new device.")?;
     let value: serde_json::Value =
@@ -189,7 +194,12 @@ pub(crate) async fn approve(
         "expires_at": admission.expires_at,
         "proof": hex_encode(&proof),
     });
-    post(&slot(&auth_page(), &code, "consent")?, consent.to_string()).await
+    post(
+        client.http(),
+        &slot(&auth_page(), &code, "consent")?,
+        consent.to_string(),
+    )
+    .await
 }
 
 // ---------- recovery keys ----------
