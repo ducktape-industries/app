@@ -264,14 +264,6 @@ pub(in crate::shell) fn set_motion(app: &Entities, on: bool, native: &mut Visual
     native.run_until_parked();
 }
 
-/// The program in front (`Windows.active`).
-pub(in crate::shell) fn active(
-    app: &Entities,
-    native: &mut VisualTestContext,
-) -> Option<&'static str> {
-    app.windows.read_with(native, |windows, _| windows.active())
-}
-
 /// The console's front pane popped out to a window of its own, as its
 /// strip's button does it: the new window's key, handle and root.
 pub(in crate::shell) fn pop_out(
