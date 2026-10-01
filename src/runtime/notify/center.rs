@@ -25,6 +25,11 @@ pub(crate) struct Notice {
 /// The centre keeps this many rows, and none older than this.
 pub(super) const MAX_ENTRIES: usize = 500;
 pub(super) const MAX_AGE: i64 = 30 * 86_400;
+/// The rows one view keeps: a fifth of the log, so one view's flood
+/// leaves the other views' rows. A view the person has not answered yet
+/// (no word, or "Not now") keeps a few, enough to show what it posts.
+pub(super) const VIEW_ENTRIES: usize = 100;
+pub(super) const UNANSWERED_ENTRIES: usize = 5;
 
 /// One row of the centre.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -71,6 +76,8 @@ pub(crate) struct Center {
     pub(super) not_now: BTreeSet<String>,
     /// Moves with every change to the log: the bell's list is read again.
     rev: u64,
+    /// The `rev` last handed to the disk ([`Center::flush`]).
+    saved: u64,
 }
 
 /// A notification centre, shared by whoever holds a clone: the app's one
@@ -126,7 +133,11 @@ impl Center {
                 false => format!("{module}/{}", post.tag),
             },
         };
-        self.log(module, view, post, wall);
+        let share = match permission {
+            None => UNANSWERED_ENTRIES,
+            Some(_) => VIEW_ENTRIES,
+        };
+        self.log(module, view, post, wall, share);
         match permission {
             None => {
                 if !self.not_now.contains(module) {
@@ -165,8 +176,10 @@ impl Center {
     }
 
     /// Into the log: a notice under a tag the view already has a row for
-    /// folds into that row and brings it back to the top, unread.
-    fn log(&mut self, module: &str, view: &str, post: Notification, wall: i64) {
+    /// folds into that row and brings it back to the top, unread. Past the
+    /// view's `share` of rows its own oldest go, never another view's.
+    /// Written at the end of the view's redraw ([`Center::flush`]).
+    fn log(&mut self, module: &str, view: &str, post: Notification, wall: i64, share: usize) {
         let folded = (!post.tag.is_empty())
             .then(|| {
                 self.entries
@@ -203,9 +216,19 @@ impl Center {
             }
         };
         self.entries.push(entry);
+        let mut over = self
+            .entries
+            .iter()
+            .filter(|entry| entry.module == module)
+            .count()
+            .saturating_sub(share);
+        self.entries.retain(|entry| {
+            let gone = over > 0 && entry.module == module;
+            over -= usize::from(gone);
+            !gone
+        });
         self.prune(wall);
         self.rev += 1;
-        self.save();
     }
 
     /// At most [`MAX_ENTRIES`] rows, none older than [`MAX_AGE`].
@@ -235,12 +258,13 @@ impl Center {
         entry.read = true;
         let entry = entry.clone();
         self.rev += 1;
-        self.save();
+        self.flush();
         Some(entry)
     }
 
     /// `module` says the reader has seen what it posted under `tag`: its
     /// rows under it are read, and no other view's. Whether any changed.
+    /// Written at the end of the view's redraw ([`Center::flush`]).
     pub(crate) fn read_tag(&mut self, module: &str, tag: &str) -> bool {
         let mut changed = false;
         for entry in &mut self.entries {
@@ -251,7 +275,6 @@ impl Center {
         }
         if changed {
             self.rev += 1;
-            self.save();
         }
         changed
     }
@@ -261,13 +284,13 @@ impl Center {
             entry.read = true;
         }
         self.rev += 1;
-        self.save();
+        self.flush();
     }
 
     pub(crate) fn clear_read(&mut self) {
         self.entries.retain(|entry| !entry.read);
         self.rev += 1;
-        self.save();
+        self.flush();
     }
 
     /// Whether `module`'s window shows the permission bar.
@@ -306,6 +329,8 @@ impl Center {
     /// The network in hand: its log comes off disk, the policy starts over.
     pub(crate) fn set_network(&mut self, network: &str) {
         if self.network != network {
+            // the last network's rows go to its own file first
+            self.flush();
             self.open_log(network, log_path(network));
         }
     }
@@ -317,6 +342,7 @@ impl Center {
             network: network.to_owned(),
             front: self.front,
             rev: self.rev + 1,
+            saved: self.rev + 1,
             ..Center::default()
         };
         if let Some(path) = path {
@@ -331,21 +357,31 @@ impl Center {
         self.prune(wall());
     }
 
-    // ponytail: the whole log rewritten on each change, 500 small rows at most
-    fn save(&self) {
-        let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
-        if let Some(path) = &self.log {
-            self.write_log(path);
+    /// The log handed to the disk if it moved since it last was: once per
+    /// person's action here (open, mark all read, clear read), and once at
+    /// the end of each view redraw for whatever its requests logged
+    /// (`Guest::redraw`), never per post. Written whole through
+    /// `backend::atomic_write` on the blocking pool, one write after
+    /// another (`kernel::in_order` under the log's path).
+    pub(crate) fn flush(&mut self) {
+        if self.saved == self.rev {
+            return;
         }
-    }
-
-    pub(super) fn write_log(&self, path: &Path) {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if let Ok(bytes) = serde_json::to_vec(&self.entries) {
-            let _ = crate::backend::atomic_write(path, &bytes, false);
-        }
+        self.saved = self.rev;
+        let Some(path) = self.log.clone() else {
+            return;
+        };
+        let entries = self.entries.clone();
+        let name = path.to_string_lossy().into_owned();
+        crate::runtime::kernel::in_order(&name, move || {
+            let _timed = crate::perf::time(crate::perf::Key::Shell, "io.notify_save");
+            if let Some(parent) = path.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            if let Ok(bytes) = serde_json::to_vec(&entries) {
+                let _ = crate::backend::atomic_write(&path, &bytes, false);
+            }
+        });
     }
 }
 

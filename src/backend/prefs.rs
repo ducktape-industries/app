@@ -62,8 +62,21 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    /// How many times this test's thread read its prefs.
+    static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
 pub(crate) fn read_prefs() -> std::io::Result<serde_json::Value> {
+    READS.with(|reads| reads.set(reads.get() + 1));
     Ok(PREFS.with(|prefs| prefs.borrow().clone()))
+}
+
+/// How many times this test's thread has read its prefs.
+#[cfg(test)]
+pub(crate) fn prefs_reads() -> usize {
+    READS.with(std::cell::Cell::get)
 }
 
 #[cfg(test)]
