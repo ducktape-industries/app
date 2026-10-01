@@ -5,6 +5,7 @@
 //! gives each node its stable id. The rest are the shapes of answers:
 //! [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
+use crate::render::VIEW_MARK;
 use gpui_kit::accesskit::{HasPopup, Invalid, Live, Orientation};
 
 /// The actions the door offers, each with its word: a node supporting one
@@ -34,9 +35,6 @@ pub(super) const COMPOSITES: [&str; 8] = [
     "TabList",
 ];
 
-/// The element id a module view's host draws around the view's tree
-/// (`runtime.rs`): what follows it in a path is that module's.
-pub(crate) const VIEW_MARK: &str = "view/";
 const MASK: &str = "•••";
 const TEXT_MAX: usize = 120;
 
@@ -454,17 +452,27 @@ pub(super) fn scope_of(name: &str, element: &gpui_kit::GlobalElementId) -> Strin
     }
 }
 
-/// A path's module (after [`VIEW_MARK`]) and its stable segments: the
-/// names call sites pass, not entities, focus handles or the kit's own
-/// type-path ids (`gpui_component::button::button::Button`).
+/// A path's module and its stable segments: the names call sites pass, not
+/// entities, focus handles or the kit's own type-path ids
+/// (`gpui_component::button::button::Button`). The module is what follows
+/// [`VIEW_MARK`] in the host id a seat draws around its view
+/// (`Seat::ax_mark`), the one shape of mark no view can send: a view's own
+/// `view/<other>` id is one more segment of its path.
 fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>, Vec<String>) {
     let mut module = None;
     let mut path = Vec::new();
     for id in ids {
         match id {
-            ElementId::Name(name) if name.starts_with(VIEW_MARK) => {
-                module = Some(name[VIEW_MARK.len()..].to_owned());
-                path.clear();
+            ElementId::NamedChild(_, name) if crate::render::is_host_id(id) => {
+                match name.strip_prefix(VIEW_MARK) {
+                    Some(mark) => {
+                        module = Some(mark.to_owned());
+                        path.clear();
+                    }
+                    // a host id (`render::host_id`): its name, not its code
+                    // location
+                    None => path.push(name.to_string()),
+                }
             }
             ElementId::View(_)
             | ElementId::FocusHandle(_)
@@ -472,10 +480,6 @@ fn element_path<'a>(ids: impl Iterator<Item = &'a ElementId>) -> (Option<String>
             | ElementId::CodeLocation(_)
             | ElementId::OpaqueId(_) => {}
             ElementId::Name(name) if name.contains("::") => {}
-            // a host id (`render::host_id`): its name, not its code location
-            ElementId::NamedChild(_, name) if crate::render::is_host_id(id) => {
-                path.push(name.to_string())
-            }
             id => path.push(id.to_string()),
         }
     }
@@ -711,6 +715,58 @@ mod key_tests {
     }
 }
 #[cfg(test)]
+mod mark_tests {
+    //! The module a node is in comes off the host's mark, never a view's id.
+    use super::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        Context, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+    };
+
+    /// View `chat` under its mark (`Seat::ax_mark`), holding a container it
+    /// named as the mark of another module, `forge`, around a button.
+    struct Forged;
+
+    impl Render for Forged {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let approve = div()
+                .id("approve")
+                .size(px(20.))
+                .role(Role::Button)
+                .aria_label("Approve");
+            div()
+                .id(crate::render::host_id(format!("{VIEW_MARK}chat")))
+                .size(px(200.))
+                .child(div().id("view/forge").size(px(100.)).child(approve))
+        }
+    }
+
+    /// The button is chat's, by scope and by id: a view's `view/forge` is
+    /// one more segment of its path, so `?view=forge` and the census never
+    /// take it for forge's, nor `/act` on `forge/approve` press it.
+    #[gpui_kit::test]
+    fn a_view_cannot_name_its_nodes_another_modules(cx: &mut gpui_kit::TestAppContext) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(300.), px(300.)), |_, _| Forged);
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        let nodes = native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            snapshot("t", window, false)
+        });
+        let approve = nodes
+            .iter()
+            .find(|node| node.name == "Approve")
+            .expect("the button");
+        assert_eq!(
+            (approve.scope.as_str(), approve.id.as_str()),
+            ("t/chat", "t:chat/approve")
+        );
+    }
+}
+
+#[cfg(test)]
 mod modal_tests {
     use super::*;
 
@@ -747,40 +803,6 @@ mod offer_tests {
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
     };
 
-    /// A node that advertises an action `/act` has no arm for.
-    struct Scroller;
-
-    impl Render for Scroller {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .id("scroller")
-                .size(px(100.))
-                .role(Role::ScrollView)
-                .aria_label("Rows")
-                .on_a11y_action(AccessibleAction::ScrollDown, |_, _, _| {})
-        }
-    }
-
-    /// The door offers only what `/act` performs: a node advertising
-    /// ScrollDown is offered nothing for it.
-    #[gpui_kit::test]
-    fn the_door_offers_no_action_it_cannot_perform(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Scroller);
-        let mut native = VisualTestContext::from_window(window.into(), cx);
-        let actions = native.update(|window, cx| {
-            window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
-            snapshot("t", window, false)
-                .into_iter()
-                .find(|node| node.role == "ScrollView")
-                .expect("the scroller is in the tree")
-                .actions
-        });
-        assert!(actions.is_empty(), "{actions:?}");
-    }
-
     /// Every action the door has a word for beyond press, focus and
     /// set_value, and what each performed.
     const MORE: [(AccessibleAction, &str); 6] = [
@@ -802,7 +824,9 @@ mod offer_tests {
                     .id("stepper")
                     .size(px(100.))
                     .role(Role::SpinButton)
-                    .aria_label("Count"),
+                    .aria_label("Count")
+                    // handled, but the door has no word for it
+                    .on_a11y_action(AccessibleAction::ScrollDown, |_, _, _| {}),
                 |element, (action, _)| {
                     let done = self.0.clone();
                     let action = *action;
@@ -814,7 +838,8 @@ mod offer_tests {
 
     /// A node that handles increment, decrement, expand, collapse, a context
     /// menu or scrolling into view is offered each, only while it does, and
-    /// `/act` performs each on it (AX-116).
+    /// `/act` performs each on it (AX-116); one it has no word for
+    /// (ScrollDown) is not offered.
     #[gpui_kit::test]
     fn the_door_offers_and_performs_each_action_a_node_handles(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);

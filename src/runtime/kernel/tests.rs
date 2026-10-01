@@ -69,12 +69,12 @@ pub(super) enum Mode {
     Stall,
     /// Reads the request and closes the connection.
     Close,
+    /// `307 Temporary Redirect` to the URL: a node sending the request on.
+    Redirect(String),
     /// `200 OK` with a blob's borsh `Some(framed)` `len` bytes long, sent
     /// for as long as the client reads, its `Content-Length` declared or
     /// the body chunked. What got out goes to [`FakeNode::streamed`].
     Stream { len: usize, declared: bool },
-    /// A websocket that opens and says nothing, until the client hangs up.
-    Silent,
 }
 
 /// A node on a local socket whose routes each answer one [`Mode`], one
@@ -118,10 +118,7 @@ fn serve(
     streamed: &tokio::sync::mpsc::UnboundedSender<usize>,
 ) {
     use std::io::{Read as _, Write as _};
-    // the request line, peeked: a websocket's handshake reads it itself
-    let mut head = [0; 256];
-    let peeked = stream.peek(&mut head).unwrap_or(0);
-    let line = String::from_utf8_lossy(&head[..peeked]).into_owned();
+    let (line, _) = read_request(&mut stream);
     let path = line.split(' ').nth(1).unwrap_or_default();
     let Some((_, mode)) = routes.iter().find(|(route, _)| path.starts_with(route)) else {
         panic!("no route for {line:?}");
@@ -129,12 +126,6 @@ fn serve(
     // what a held connection waits on: the client hanging up
     let hung_up =
         |stream: &mut std::net::TcpStream| while matches!(stream.read(&mut [0; 64]), Ok(1..)) {};
-    if let Mode::Silent = mode {
-        let mut socket = tokio_tungstenite::tungstenite::accept(stream).unwrap();
-        while socket.read().is_ok() {}
-        return;
-    }
-    read_request(&mut stream);
     match mode {
         Mode::Answer(body) => respond(&mut stream, "200 OK", body),
         Mode::After(hold, body) => {
@@ -143,6 +134,11 @@ fn serve(
         }
         Mode::Stall => hung_up(&mut stream),
         Mode::Close => drop(stream),
+        Mode::Redirect(to) => write!(
+            stream,
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n"
+        )
+        .unwrap(),
         Mode::Stream { len, declared } => {
             let head = match declared {
                 true => format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n"),
@@ -171,7 +167,6 @@ fn serve(
             }
             let _ = streamed.send(sent);
         }
-        Mode::Silent => unreachable!(),
     }
 }
 
@@ -192,7 +187,13 @@ fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {
         };
         guest.answer(request, &None);
     }
-    assert!(guest.undeclared_logged.len() <= 1, "{kind} logged twice");
+    let want =
+        Capability::of_kind(kind).map_or(0, |(family, _)| usize::from(!declared.contains(&family)));
+    assert_eq!(
+        guest.undeclared_logged.len(),
+        want,
+        "{kind} logged {want} time(s)"
+    );
     refusal_code(&mut guest)
 }
 
@@ -278,48 +279,25 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
     assert!(guest.pending.is_empty());
 }
 
-/// Every kind in `methods::ALL` has a handler on this side: none of them is
-/// `unknown_request`, whatever else a bare guest with no node refuses it
-/// for. A method added to the list without a handler fails here.
-#[test]
-fn every_method_is_answered() {
-    for (id, kind) in methods::ALL.iter().enumerate() {
-        let mut guest = guest();
-        guest.answer(
-            wire::Request {
-                id: id as u64,
-                kind: (*kind).into(),
-                payload: methods::encode(&methods::Call {
-                    target: "registry".into(),
-                    body: Vec::new(),
-                }),
-            },
-            &None,
-        );
-        assert_ne!(
-            refusal_code(&mut guest).as_deref(),
-            Some(refusal::UNKNOWN_REQUEST),
-            "{kind} has no handler"
-        );
-    }
-}
-
 /// A node method routes to the node handler, which answers for the missing
-/// node before it reads the request; what the request says is judged by
-/// `query` itself, below.
+/// node before it reads the request; chain and invite kinds route there
+/// too. What the request says is judged by `query` itself, below.
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
-    let mut guest = guest();
-    assert!(answer(
-        &mut guest,
-        Capability::Module,
-        "query",
-        7,
-        b"not borsh"
-    ));
-    assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
-        id: 7, result: Err(refusal), done: true
-    }) if refusal.code == refusal::NOT_CONNECTED));
+    for (capability, operation) in [
+        (Capability::Module, "query"),
+        (Capability::Chain, "status"),
+        (Capability::Invite, "create"),
+    ] {
+        let mut guest = guest();
+        assert!(answer(&mut guest, capability, operation, 7, b"not borsh"));
+        assert!(
+            matches!(guest.pending.pop(), Some(wire::Event::Response {
+                id: 7, result: Err(refusal), done: true
+            }) if refusal.code == refusal::NOT_CONNECTED),
+            "{capability:?}.{operation}"
+        );
+    }
 }
 /// `link.open` opens `duck://` and `https://` and refuses every other
 /// scheme at the method, before the app is asked.
@@ -355,20 +333,6 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
         );
     }
 }
-#[test]
-fn system_kinds_route_to_the_node_handler() {
-    for (capability, operation) in [
-        (Capability::Chain, "status"),
-        (Capability::Invite, "create"),
-    ] {
-        let mut guest = guest();
-        assert!(answer(&mut guest, capability, operation, 19, b"invalid"));
-        assert!(matches!(guest.pending.pop(), Some(wire::Event::Response {
-            id: 19, result: Err(refusal), done: true
-        }) if refusal.code == refusal::NOT_CONNECTED));
-    }
-}
-
 #[test]
 fn host_session_is_program_independent_and_tracks_updates() {
     let mut guest = guest();
@@ -511,8 +475,9 @@ fn host_id_answers_a_borsh_string_a_view_can_decode() {
 }
 
 /// The kinds this host routes, read from its own `("<cap>", "<op>")` match
-/// arms under `src/runtime`, are exactly `methods::ALL`: `every_method_is_answered`
-/// is the one direction, this the other — nothing is served that is not a method.
+/// arms under `src/runtime`, are exactly `methods::ALL`:
+/// `a_method_is_reached_only_through_its_declared_capability` is the one
+/// direction (every method answered), this the other — nothing is served that is not a method.
 #[test]
 fn the_routed_kinds_are_exactly_the_methods() {
     let mut served = std::collections::BTreeSet::new();

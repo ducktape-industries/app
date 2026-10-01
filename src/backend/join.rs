@@ -348,6 +348,15 @@ mod tests {
     }
 
     #[test]
+    fn a_non_ascii_key_is_refused_not_a_crash() {
+        let json = serde_json::json!({
+            "account": 17, "key": "a\u{e9}a", "expires_at": 99, "proof": "00",
+        })
+        .to_string();
+        assert!(parse_consent(&json).is_err());
+    }
+
+    #[test]
     fn a_recovery_phrase_makes_one_key_and_fingerprints_are_short() {
         let phrase = new_recovery_phrase();
         assert_eq!(phrase.split_whitespace().count(), 24);

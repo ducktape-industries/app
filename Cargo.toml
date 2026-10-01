@@ -64,8 +64,8 @@ libc = "0.2"
 # A default build compiles none of it: hdrhistogram is not in its graph.
 perf-deep = ["gpui-kit/profiler"]
 # kit and qa builds only (chief, 2026-10-01, hub audit Q7): the AX door
-# (src/ax). Declared ahead of the gate so the census rigs can pass it first;
-# the next change compiles the door out of a build without it.
+# (src/ax) and its `ducktape-app ax` client. A default build compiles none
+# of it: DUCKTAPE_AX_DOOR does nothing there.
 ax-door = []
 
 [dependencies]
@@ -106,7 +106,7 @@ view-wire = { workspace = true, features = ["manifest"] }
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
-tokio-tungstenite = "0.24"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 wasmtime.workspace = true
 wasmparser = "0.251"
 libc.workspace = true

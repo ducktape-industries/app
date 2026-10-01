@@ -23,15 +23,6 @@ pub(super) struct Node {
 /// How long a view's node request keeps asking a node that does not answer.
 const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// How long a `module.changes` socket may stay silent before it is taken
-/// for dead and opened again (the view told to re-read, as for any reopen).
-/// The node pushes nothing for a block that does not write to the program
-/// and answers no ping (it never reads its end of the socket), so silence is
-/// all there is to go on: a quiet program's socket is reopened once per
-/// this, and a half-open one (a laptop that slept, a link that dropped
-/// without a close) ends no later.
-const CHANGES_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
-
 /// A refusal the transport produced is retried; one that is the node's
 /// own word ends the retry loop. For a READ: asking again costs nothing.
 pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
@@ -313,49 +304,47 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         return;
     };
     let replies = guest.replies.clone();
-    let items = Items {
-        drained: replies.drains(),
-        replies,
-        id,
-    };
     let subscribed = (id, program.clone());
-    if start(
-        guest,
-        id,
-        follow_changes(node, program, items, CHANGES_IDLE),
-    ) {
-        guest.live_subscriptions.push(subscribed);
-    }
-}
-
-/// `module.changes`' loop: the program's socket, opened again whenever it
-/// closes, fails or stays silent for `idle`.
-async fn follow_changes(node: Node, program: String, mut items: Items, idle: std::time::Duration) {
-    use futures::StreamExt as _;
-    loop {
-        let mut changes = match node.client.changes(&program).await {
-            Ok(changes) => changes,
-            Err(error) => {
-                tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                tokio::time::sleep(backend::retry_delay(2)).await;
-                continue;
-            }
-        };
-        while let Ok(Some(change)) = tokio::time::timeout(idle, changes.next()).await {
-            let item = match change {
-                Ok(change) => Ok(methods::encode(&Some(change.height))),
-                Err(_) => break,
+    let started = start(guest, id, async move {
+        use futures::StreamExt as _;
+        let mut drained = replies.drains();
+        let mut warned = false;
+        loop {
+            let mut changes = match node.client.changes(&program).await {
+                Ok(changes) => changes,
+                Err(error) => {
+                    if warned {
+                        tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    } else {
+                        warned = true;
+                        tracing::warn!(target: "ducktape::app", %error, program, "changes stream not opened");
+                    }
+                    tokio::time::sleep(backend::retry_delay(2)).await;
+                    continue;
+                }
             };
-            if !items.send(item).await {
+            while let Some(change) = changes.next().await {
+                let item = match change {
+                    Ok(change) => Ok(methods::encode(&Some(change.height))),
+                    Err(_) => break,
+                };
+                if !replies.subscription_item(&mut drained, id, item).await {
+                    return;
+                }
+            }
+            // the socket closed: the node restarted or the link dropped. Say
+            // so once (the view re-reads) and open it again.
+            if !replies
+                .subscription_item(&mut drained, id, Ok(methods::encode(&None::<u64>)))
+                .await
+            {
                 return;
             }
+            tokio::time::sleep(backend::retry_delay(1)).await;
         }
-        // the socket closed or went silent: the node restarted or the link
-        // dropped. Say so once (the view re-reads) and open it again.
-        if !items.send(Ok(methods::encode(&None::<u64>))).await {
-            return;
-        }
-        tokio::time::sleep(backend::retry_delay(1)).await;
+    });
+    if started {
+        guest.live_subscriptions.push(subscribed);
     }
 }
 

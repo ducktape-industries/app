@@ -160,16 +160,17 @@ fn a_query_to_a_stalled_node_is_refused_at_its_deadline_and_frees_its_slot() {
         .await;
         replies.item(1, answer, true);
     });
-    assert!(guest.replies.any_in_flight());
-    while guest.replies.any_in_flight() {
+    assert!(guest.replies.answer_owed());
+    // answered and drained, and nothing owed: the slot is back
+    let mut answered = Vec::new();
+    while answered.is_empty() || guest.replies.answer_owed() {
         assert!(
             asked.elapsed() < std::time::Duration::from_secs(10),
             "the stalled ask still holds its slot"
         );
         std::thread::sleep(std::time::Duration::from_millis(20));
+        guest.replies.drain_into(&mut answered).unwrap();
     }
-    let mut answered = Vec::new();
-    guest.replies.drain_into(&mut answered).unwrap();
     guest.pending = answered;
     assert_eq!(
         refused(&mut guest, 1),
@@ -201,6 +202,49 @@ async fn a_held_answer_outlasting_the_budget_still_lands() {
     .await;
     assert_eq!(answer, Ok(vec![7]), "the held answer is the answer");
     assert_eq!(attempts, 1);
+}
+
+/// A node that answers a submit with a redirect to another host does not
+/// get the signed frame sent on there: the redirect is the node's answer,
+/// `node_failed`, and the submit is not signed again.
+#[tokio::test]
+async fn a_redirected_submit_goes_nowhere_else() {
+    use commonware_cryptography::Signer as _;
+    let _seat = backend::seat_serial();
+    backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
+    let elsewhere = fake_node(vec![(
+        noded::route::SUBMIT,
+        Mode::Answer(abi::encode(&noded::Receipt {
+            program: "registry".into(),
+            outcome: abi::Outcome::Applied { output: Vec::new() },
+            events: Vec::new(),
+            nested: Vec::new(),
+        })),
+    )]);
+    let to = format!(
+        "{}{}",
+        elsewhere.node.client.endpoint(),
+        noded::route::SUBMIT
+    );
+    let node = fake_node(vec![
+        (
+            noded::route::GET,
+            Mode::Answer(abi::encode(&Some(abi::encode(&0u64)))),
+        ),
+        (noded::route::SUBMIT, Mode::Redirect(to)),
+    ]);
+    let (answer, attempts) =
+        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
+            submit(node.node.clone(), call_registry())
+        })
+        .await;
+    assert_eq!(
+        elsewhere.accepted.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the signed frame went on to the host the redirect named"
+    );
+    assert_eq!(answer.unwrap_err().code, refusal::NODE_FAILED);
+    assert_eq!(attempts, 1, "not signed again");
 }
 
 /// A node that hangs up on a read is asked again within the budget; the
@@ -245,42 +289,4 @@ async fn a_blob_streamed_past_the_cap_is_refused_unread() {
             "declared: {declared}: {streamed} bytes were read, {unread} or more"
         );
     }
-}
-
-/// A `module.changes` socket the node keeps open and says nothing on is
-/// taken for dead once it has been silent `idle`: closed, the view told
-/// once to re-read (`None`), and opened again.
-#[tokio::test]
-async fn a_silent_changes_socket_is_reopened_and_the_view_told_once() {
-    let fake = fake_node(vec![(noded::route::CHANGES, Mode::Silent)]);
-    let replies = std::sync::Arc::new(Replies::default());
-    let items = Items {
-        drained: replies.drains(),
-        replies: replies.clone(),
-        id: 1,
-    };
-    let idle = std::time::Duration::from_secs(1);
-    let following = tokio::spawn(follow_changes(
-        fake.node.clone(),
-        "chat".into(),
-        items,
-        idle,
-    ));
-    // silent from 0 s, torn down at ~1 s, reopened ~1 s later (the retry
-    // delay), silent again until ~3 s
-    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
-    following.abort();
-    let mut heard = Vec::new();
-    replies.drain_into(&mut heard).unwrap();
-    let reopened = wire::Event::Response {
-        id: 1,
-        result: Ok(methods::encode(&None::<u64>)),
-        done: false,
-    };
-    assert_eq!(heard, [reopened], "one re-read, for the one silent socket");
-    assert_eq!(
-        fake.accepted.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "the socket was opened again"
-    );
 }

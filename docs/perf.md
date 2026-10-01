@@ -219,8 +219,9 @@ pub(crate) fn retire(module: &'static str, instance: u64) // one `view_perf` lin
   run before the `Guest` exists. The registry is a leaf lock; reading it
   never takes a seat lock.
 - Windows are keyed by `WindowKey` (`src/runtime.rs`). The door names
-  windows positionally (`console`, `console2`, … in `Windows::served`),
-  which shifts when one closes, so the snapshot carries both.
+  windows `console`, `console2`, … (`Windows::served`: the console
+  `console`, any other `console<key>`), each for its life, and the
+  snapshot carries both.
 
 **Cost when off.** `on()` is an atomic load. `time` returns `None` before
 touching the clock; `count`/`gauge`/`record` return before the lock. ducktape-70 reports that

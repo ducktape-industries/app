@@ -37,10 +37,14 @@ const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const ANSWER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
 
 /// Every HTTP client the app builds: the opening bounded, the answer not
-/// (see [`ANSWER_DEADLINE`]).
+/// (see [`ANSWER_DEADLINE`]), and no redirect followed. A redirect would
+/// send the same signed frame on to whatever host the answer names; it is
+/// the answer instead, a status this client does not read
+/// ([`Error::Failed`], `node_failed`).
 pub(crate) fn http() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("the HTTP client")
 }
@@ -431,6 +435,25 @@ pub fn unframe(framed: &[u8]) -> Option<&[u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn wss_gets_tls_not_a_missing_feature() {
+        // A port that hangs up: the TLS handshake fails, but only after the
+        // connector exists. Without the rustls feature it is refused up front.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("wss://{}/v1/changes/x", port.local_addr().unwrap());
+        std::thread::spawn(move || drop(port.accept()));
+        let error = tokio_tungstenite::connect_async(url).await.unwrap_err();
+        assert!(
+            !matches!(
+                error,
+                tokio_tungstenite::tungstenite::Error::Url(
+                    tokio_tungstenite::tungstenite::error::UrlError::TlsFeatureNotEnabled
+                )
+            ),
+            "{error}"
+        );
+    }
 
     #[test]
     fn frame_signs_its_body_and_names_the_signer() {
