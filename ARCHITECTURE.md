@@ -187,7 +187,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    events, `shape` decodes and bound-checks the returned `Frame`
    (`MAX_FRAME_BYTES`, request and cancel counts, sanitize), `merge`
    applies tooltip replies and patches onto the held root. A changed root
-   bumps `frame_rev`. A frame carrying more than `MAX_REQUESTS_PER_TICK`
+   bumps `frame_rev`. A frame carrying more than `view_wire::MAX_REQUESTS`
    requests (or twice that in cancels) is refused whole by `shape`, which
    faults the view; the `tick_limit` refusal in `redraw` is a second guard
    behind it. A patch `merge` refuses does not fault: the held root stays,
@@ -634,7 +634,7 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `DUCKTAPE_PERF=1` keeps the counters `GET /perf` reads (docs/perf.md).
 - **Limits** (`runtime.rs`, `kernel.rs`), as of this writing: `MEMORY_LIMIT`
   64 MiB per store, `MAX_FRAME_BYTES` 8 MiB (a bigger frame ends the view),
-  `MAX_REQUESTS_PER_TICK` 256, `MAX_PAYLOAD_BYTES` 1 MiB, `MAX_OP_BYTES`
+  `view_wire::MAX_REQUESTS` 256, `MAX_PAYLOAD_BYTES` 1 MiB, `MAX_OP_BYTES`
   16 MiB, `MAX_BLOB_BYTES` 16 MiB, `MAX_IN_FLIGHT` 256, `MAX_SUBSCRIPTIONS`
   256, `MAX_REPLY_EVENTS` 1024 / `MAX_REPLY_BYTES` 32 MiB and their
   half-size stream backlog; `layout::MAX_PANES` 8; a per-window SVG raster

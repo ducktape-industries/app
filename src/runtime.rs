@@ -99,7 +99,6 @@ const MEMORY_LIMIT: usize = 64 << 20;
 /// A frame the view sends past this ends it: nothing a screen needs is
 /// megabytes, and the host would decode all of it on the window thread.
 const MAX_FRAME_BYTES: usize = 8 << 20;
-const MAX_REQUESTS_PER_TICK: usize = 256;
 const MAX_PAYLOAD_BYTES: usize = 1 << 20;
 /// The most one op may carry: the kernel bounds nothing, this host does.
 const MAX_OP_BYTES: usize = 16 << 20;

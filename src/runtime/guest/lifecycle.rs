@@ -388,7 +388,7 @@ impl Guest {
             }
             requests.append(&mut self.frame.requests);
             cancels.append(&mut self.frame.cancels);
-            if requests.len() > MAX_REQUESTS_PER_TICK || cancels.len() > MAX_CANCELS_PER_TICK {
+            if requests.len() > wire::MAX_REQUESTS || cancels.len() > wire::MAX_CANCELS {
                 return Err(format!(
                     "{shown}: replacement requests exceed the first-frame budget"
                 ));
