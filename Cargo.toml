@@ -28,13 +28,15 @@ version = "0.1.0"
 
 [workspace.dependencies]
 
-# --- sdk-line: modules hb/registry-roles @ 06227b04 (modules dev d67022ac + module-registry Query::Roles; d67022ac = modules#234 merge: gpui-pre 0.3.7 at fork 348c9022, gpui-pre#11: the P11 usvg resolver; goldens WIRE_ID be704382 unchanged against cb485723), crates/sdk (abi, view-wire, ducklink, design, describe) ---
-abi = { git = "https://github.com/ducktape-industries/modules", rev = "06227b04bf2407ef987b11089f7390b27cd689c6", package = "abi" }
-view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "06227b04bf2407ef987b11089f7390b27cd689c6", package = "view-wire" }
-ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "06227b04bf2407ef987b11089f7390b27cd689c6", package = "ducklink" }
-design = { git = "https://github.com/ducktape-industries/modules", rev = "06227b04bf2407ef987b11089f7390b27cd689c6", package = "design" }
+# --- sdk-line: modules hb/registry-spelling @ c5f4bc60 (modules dev d67022ac + module-registry Query::Roles + one program id spelling, `program::is_name`; d67022ac = modules#234 merge: gpui-pre 0.3.7 at fork 348c9022, gpui-pre#11: the P11 usvg resolver; goldens WIRE_ID be704382 unchanged against cb485723), crates/sdk (abi, view-wire, program, ducklink, design, describe) ---
+abi = { git = "https://github.com/ducktape-industries/modules", rev = "c5f4bc608d008ea7ac9b7a0223edfaa533e5ba19", package = "abi" }
+view-wire = { git = "https://github.com/ducktape-industries/modules", rev = "c5f4bc608d008ea7ac9b7a0223edfaa533e5ba19", package = "view-wire" }
+# `program::is_name`: the one spelling of a program id a method may address
+program = { git = "https://github.com/ducktape-industries/modules", rev = "c5f4bc608d008ea7ac9b7a0223edfaa533e5ba19", package = "program" }
+ducklink = { git = "https://github.com/ducktape-industries/modules", rev = "c5f4bc608d008ea7ac9b7a0223edfaa533e5ba19", package = "ducklink" }
+design = { git = "https://github.com/ducktape-industries/modules", rev = "c5f4bc608d008ea7ac9b7a0223edfaa533e5ba19", package = "design" }
 # `module.describe`: the runner a program's untrusted describe module goes through
-describe = { git = "https://github.com/ducktape-industries/modules", rev = "06227b04bf2407ef987b11089f7390b27cd689c6", package = "describe", features = ["host"] }
+describe = { git = "https://github.com/ducktape-industries/modules", rev = "c5f4bc608d008ea7ac9b7a0223edfaa533e5ba19", package = "describe", features = ["host"] }
 
 # --- node-side: ducktape-industries/ducktape on the kernel branch ---
 ducktape-home = { git = "https://github.com/ducktape-industries/ducktape", branch = "feat/capable-sandbox", package = "ducktape-home" }
@@ -87,9 +89,9 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "async-
 # pick which passkey signed and to frame its assertion), and the identity
 # program's own types, so a Create/AddKey/Consent is the program's bytes.
 keyscheme = { git = "https://github.com/ducktape-industries/ducktape-sdk", rev = "736865710dcfa7c56f9834747287881c1c25d45d", package = "keyscheme" }
-identity = { git = "https://github.com/ducktape-industries/modules", rev = "06227b04bf2407ef987b11089f7390b27cd689c6", package = "identity" }
+identity = { git = "https://github.com/ducktape-industries/modules", rev = "c5f4bc608d008ea7ac9b7a0223edfaa533e5ba19", package = "identity" }
 # The roster's full query surface: its programs and its view-only entries.
-module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "06227b04bf2407ef987b11089f7390b27cd689c6", package = "module-registry" }
+module-registry = { git = "https://github.com/ducktape-industries/modules", rev = "c5f4bc608d008ea7ac9b7a0223edfaa533e5ba19", package = "module-registry" }
 base64 = "0.22"
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
@@ -106,6 +108,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 zeroize.workspace = true
 view-wire = { workspace = true, features = ["manifest"] }
+program.workspace = true
 abi.workspace = true
 borsh.workspace = true
 ducklink.workspace = true
