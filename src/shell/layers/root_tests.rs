@@ -1342,3 +1342,241 @@ fn a_views_deferred_draw_takes_no_click_outside_its_pane(cx: &mut TestAppContext
         "a click outside the view's pane reached its layer"
     );
 }
+
+/// What a view's tree emits from here on: its click handlers, in order.
+type Clicks = std::rc::Rc<std::cell::RefCell<Vec<u32>>>;
+
+/// The desk of the 28px cascade probe: `back` drawing `tree`, and a view
+/// split over it (a split cascades 28px from the window under it), front
+/// and focused, with a cyan body that takes clicks as handler 2. Returns
+/// the window, the back view's clicks and the front view's.
+fn cascade(
+    back: &'static str,
+    front: &'static str,
+    tree: view_wire::Node,
+    cx: &mut TestAppContext,
+) -> (
+    gpui_kit::Entity<super::WindowRoot>,
+    VisualTestContext,
+    Clicks,
+    Clicks,
+) {
+    use gpui_kit::Styled as _;
+    use view_wire as wire;
+    let mut body = gpui_kit::div().size_full().bg(gpui_kit::rgb(0x00ffff));
+    let body = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("front".into())),
+        style: body.style().clone(),
+        interactivity: wire::Interactivity {
+            on_click: Some(2),
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    crate::runtime::seat_drawing_for_test(back, 400, tree);
+    crate::runtime::seat_drawing_for_test(front, 400, body);
+    let mut seed = Seed::boot();
+    seed.roster = Default::default();
+    seed.center = Default::default();
+    seed.screen = Screen::Desk;
+    let (app, _, view, mut native) = open_console(seed, cx);
+    set_motion(&app, false, &mut native);
+    pane(&view, PaneMessage::Select(back), &mut native);
+    pane(&view, PaneMessage::Split(front), &mut native);
+    for _ in 0..4 {
+        frame(&mut native);
+    }
+    let (frames, top) = native.update(|_, cx| {
+        let layout = view.read(cx).layout(cx);
+        let frame = |module: &str| {
+            let pane = layout.panes.iter().find(|pane| pane.module == module);
+            pane.and_then(|pane| pane.frame).expect("on the desk")
+        };
+        let top = *layout.stacking().last().expect("two windows");
+        ((frame(back), frame(front)), layout.panes[top].module)
+    });
+    assert_eq!(top, front, "the split is the front window");
+    assert_eq!(
+        (frames.1.x - frames.0.x, frames.1.y - frames.0.y),
+        (28., 28.),
+        "the split cascades over the window under it"
+    );
+    let clicks = |module: &str, native: &mut VisualTestContext| {
+        let clicks = Clicks::default();
+        let seen = clicks.clone();
+        native.update(|_, cx| {
+            let layout = view.read(cx).layout(cx);
+            let pane = layout
+                .panes
+                .iter()
+                .find(|pane| pane.module == module)
+                .expect("the pane opened");
+            let tree = app.seats.read(cx).seat(pane.instance).expect("seated");
+            let tree = tree.read(cx).tree().expect("the view drew");
+            cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+                if let wire::Event::Click { handler, .. } = event {
+                    seen.borrow_mut().push(*handler);
+                }
+            })
+            .detach();
+        });
+        clicks
+    };
+    let (back, front) = (clicks(back, &mut native), clicks(front, &mut native));
+    (view, native, back, front)
+}
+
+/// The front window's body (the cascade's cyan), and its middle in window
+/// pixels.
+fn front_body(
+    native: &mut VisualTestContext,
+) -> (gpui_kit::Quad, gpui_kit::Point<gpui_kit::Pixels>) {
+    let scale = native.update(|window, _| window.scale_factor());
+    let body = quads(native)
+        .into_iter()
+        .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(0x00ffff).into()))
+        .expect("the front window paints");
+    let middle = gpui_kit::point(
+        gpui_kit::px((body.bounds.origin.x.0 + body.bounds.size.width.0 / 2.) / scale),
+        gpui_kit::px((body.bounds.origin.y.0 + body.bounds.size.height.0 / 2.) / scale),
+    );
+    (body, middle)
+}
+
+/// A back window's layer stays under the front window (P29a's overlap
+/// probe): its view's `Deferred` as big as the window, anchored at the
+/// window's corner, occluding and taking clicks, and a split cascaded 28px
+/// over it. A click on the front window's middle, inside the back pane's
+/// box, reaches the front view, and the back view's handler never fires.
+#[gpui_kit::test]
+fn a_back_windows_deferred_draw_takes_no_click_on_the_front_window(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    use view_wire as wire;
+    let mut cover = gpui_kit::div()
+        .w(gpui_kit::px(1280.))
+        .h(gpui_kit::px(800.))
+        .bg(gpui_kit::rgb(0xff00ff));
+    let cover = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("cover".into())),
+        style: cover.style().clone(),
+        interactivity: wire::Interactivity {
+            on_click: Some(1),
+            occlude: true,
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    let hostile = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("slot".into())),
+        style: gpui_kit::div().size_full().relative().style().clone(),
+        interactivity: Default::default(),
+        children: vec![wire::Node::Deferred {
+            priority: 16,
+            content: Box::new(wire::Node::Anchored {
+                anchor: wire::Anchor::TopLeft,
+                fit: wire::AnchoredFitMode::SnapToWindow,
+                position: Some([0., 0.]),
+                position_mode: wire::AnchoredPositionMode::Window,
+                offset: None,
+                children: vec![cover],
+            }),
+        }],
+    });
+    let (_, mut native, back, front) = cascade(
+        "root-cascade-hostile-view",
+        "root-cascade-front-view",
+        hostile,
+        cx,
+    );
+    let (_, middle) = front_body(&mut native);
+    native.simulate_click(middle, gpui_kit::Modifiers::none());
+    frame(&mut native);
+    assert_eq!(
+        (front.take(), back.take()),
+        (vec![2], vec![]),
+        "the front window's click reached the back window's layer"
+    );
+}
+
+/// A back window's tooltip stays under the front window: shown from the
+/// strip of the back view the 28px cascade leaves bare, as big as the back
+/// pane and taking clicks, it paints under the front window's body, and a
+/// click on the front window's middle reaches the front view.
+#[gpui_kit::test]
+fn a_back_windows_tooltip_stays_under_the_front_window(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    use view_wire as wire;
+    const MAGENTA: u32 = 0xff00ff;
+    const YELLOW: u32 = 0xffff00;
+    let mut tip = gpui_kit::div()
+        .size(gpui_kit::px(3000.))
+        .bg(gpui_kit::rgb(MAGENTA));
+    let tip = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("tip".into())),
+        style: tip.style().clone(),
+        interactivity: wire::Interactivity {
+            on_click: Some(1),
+            occlude: true,
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    let mut source = gpui_kit::div().size_full().bg(gpui_kit::rgb(YELLOW));
+    let source = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("source".into())),
+        style: source.style().clone(),
+        interactivity: wire::Interactivity {
+            tooltip: Some(wire::Tooltip {
+                request: 7,
+                content: Some(Box::new(tip)),
+                hoverable: true,
+                delay_ms: 10,
+            }),
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    let (_, mut native, back, front) = cascade(
+        "root-cascade-tip-view",
+        "root-cascade-tip-front-view",
+        source,
+        cx,
+    );
+    let scale = native.update(|window, _| window.scale_factor());
+    let painted = |native: &mut VisualTestContext, color: u32| {
+        quads(native)
+            .into_iter()
+            .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(color).into()))
+    };
+    let source = painted(&mut native, YELLOW)
+        .expect("the back view paints")
+        .bounds;
+    // the back view's left strip, 8px in: 20px clear of the front window
+    let bare = gpui_kit::point(
+        gpui_kit::px(source.origin.x.0 / scale + 8.),
+        gpui_kit::px((source.origin.y.0 + source.size.height.0 / 2.) / scale),
+    );
+    native.simulate_mouse_move(bare, None, Default::default());
+    native
+        .executor()
+        .advance_clock(std::time::Duration::from_millis(11));
+    native.run_until_parked();
+    for _ in 0..3 {
+        frame(&mut native);
+    }
+    let tip = painted(&mut native, MAGENTA).expect("the tooltip opened");
+    let (body, middle) = front_body(&mut native);
+    assert!(
+        tip.order < body.order,
+        "the back window's tooltip {} over the front window {}",
+        tip.order,
+        body.order
+    );
+    native.simulate_click(middle, gpui_kit::Modifiers::none());
+    frame(&mut native);
+    assert_eq!(
+        (front.take(), back.take()),
+        (vec![2], vec![]),
+        "the front window's click reached the back window's tooltip"
+    );
+}
