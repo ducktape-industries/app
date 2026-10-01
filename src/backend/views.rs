@@ -112,12 +112,22 @@ pub async fn program_bytes(
     client: &RpcClient,
     code: &BlobId,
 ) -> Result<(Vec<u8>, &'static str), Fetch> {
-    let cached = cache_path(code);
+    fetched(client, code, cache_path(code)).await
+}
+
+/// `code`'s body: out of the cache file at `cached` while its bytes hash to
+/// `code`, else from the node, and kept at `cached` for the next load.
+async fn fetched(
+    client: &RpcClient,
+    code: &BlobId,
+    cached: Option<PathBuf>,
+) -> Result<(Vec<u8>, &'static str), Fetch> {
     if let Some(path) = &cached
-        && let Ok(bytes) = tokio::fs::read(path).await
-        && hashes_to(&bytes, code)
+        && let Ok(framed) = tokio::fs::read(path).await
+        && hashes_to(&framed, code)
+        && let Some(body) = super::noded::unframe(&framed)
     {
-        return Ok((bytes, "disk"));
+        return Ok((body.to_vec(), "disk"));
     }
     let framed = client
         .blob(*code)
@@ -134,7 +144,7 @@ pub async fn program_bytes(
         if let Some(parent) = path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
-        let _ = tokio::fs::write(path, &body).await;
+        let _ = tokio::fs::write(path, framed).await;
     }
     Ok((body, "node"))
 }
@@ -148,20 +158,16 @@ fn cache_path(code: &BlobId) -> Option<PathBuf> {
     )
 }
 
-/// A blob id names the FRAMED bytes (`kind len\0body`), as git's does; the
-/// cache holds the body, which is re-framed as a blob before the check.
-fn hashes_to(bytes: &[u8], code: &BlobId) -> bool {
+/// A blob id names the FRAMED bytes (`kind len\0body`), as git's does, and
+/// the kind is the store's word (code is framed `program`), not the app's:
+/// the cache keeps the framed bytes, so a cached blob is checked exactly as
+/// a fetched one is.
+fn hashes_to(framed: &[u8], code: &BlobId) -> bool {
     use sha2::Digest as _;
-    // The cache holds a bare body, the store a git-framed blob; a body is
-    // not told apart by its bytes (a wasm body opens with a NUL, exactly
-    // where a frame ends), so both readings are hashed and either may match.
-    let mut framed = format!("blob {}\0", bytes.len()).into_bytes();
-    framed.extend_from_slice(bytes);
-    let matches = |candidate: &[u8]| match code.kind() {
-        abi::HashKind::Sha1 => sha1::Sha1::digest(candidate)[..] == *code.digest(),
-        abi::HashKind::Sha256 => sha2::Sha256::digest(candidate)[..] == *code.digest(),
-    };
-    matches(bytes) || matches(&framed)
+    match code.kind() {
+        abi::HashKind::Sha1 => sha1::Sha1::digest(framed)[..] == *code.digest(),
+        abi::HashKind::Sha256 => sha2::Sha256::digest(framed)[..] == *code.digest(),
+    }
 }
 
 /// The bytes of the [`VIEW_SECTION`] custom section, out of a core module or
@@ -206,26 +212,86 @@ mod tests {
         assert_eq!(view_section(b"\0asm\x01\0\0\0"), None);
     }
 
-    #[test]
-    fn a_cached_body_hashes_like_the_framed_blob() {
+    /// `body` framed as the node's store frames code (`program len\0body`),
+    /// and the id that names it.
+    fn program(body: &[u8]) -> (Vec<u8>, BlobId) {
         use sha2::Digest as _;
-        let body = b"hello";
-        let framed = b"blob 5\0hello";
-        let id = BlobId::Sha256(sha2::Sha256::digest(framed).into());
-        assert!(hashes_to(body, &id));
-        assert!(hashes_to(framed, &id));
-        assert!(!hashes_to(b"other", &id));
+        let framed = [format!("program {}\0", body.len()).as_bytes(), body].concat();
+        let code = BlobId::Sha256(sha2::Sha256::digest(&framed).into());
+        (framed, code)
     }
 
-    #[test]
-    fn a_cached_wasm_body_hashes_like_the_framed_blob() {
-        use sha2::Digest as _;
-        // a wasm body opens with a NUL: it must not pass for a framed blob
-        let body = b"\0asm\x01\0\0\0";
-        let mut framed = b"blob 8\0".to_vec();
-        framed.extend_from_slice(body);
-        let id = BlobId::Sha256(sha2::Sha256::digest(&framed).into());
-        assert!(hashes_to(body, &id));
-        assert!(hashes_to(&framed, &id));
+    /// A node that answers every blob request with `framed`, and counts them.
+    async fn node_holding(
+        framed: Vec<u8>,
+    ) -> (RpcClient, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::Ordering;
+        use tokio::io::AsyncWriteExt as _;
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let client = RpcClient::new(format!("http://{}", listener.local_addr().unwrap()));
+        let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = asked.clone();
+        let answer = abi::encode(&Some(framed));
+        tokio::spawn(async move {
+            loop {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let (_, path, _) = crate::backend::loopback::read_request(&mut stream)
+                    .await
+                    .unwrap();
+                assert_eq!(path, crate::backend::noded::route::BLOB_GET);
+                counted.fetch_add(1, Ordering::SeqCst);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    answer.len()
+                );
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(&answer).await.unwrap();
+            }
+        });
+        (client, asked)
+    }
+
+    #[tokio::test]
+    async fn a_program_blob_is_served_from_disk_on_the_second_load() {
+        use std::sync::atomic::Ordering;
+        // a wasm body opens with a NUL, exactly where a frame's header ends
+        let body = b"\0asm\x01\0\0\0".to_vec();
+        let (framed, code) = program(&body);
+        let (client, asked) = node_holding(framed).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cached = Some(dir.path().join("programs").join("code"));
+        let first = fetched(&client, &code, cached.clone()).await;
+        assert_eq!(first, Ok((body.clone(), "node")));
+        let second = fetched(&client, &code, cached).await;
+        assert_eq!(second, Ok((body, "disk")));
+        assert_eq!(asked.load(Ordering::SeqCst), 1, "the node is asked once");
+    }
+
+    #[tokio::test]
+    async fn a_cached_file_that_does_not_hash_to_the_id_is_refused_and_fetched_again() {
+        use std::sync::atomic::Ordering;
+        let body = b"\0asm\x01\0\0\0".to_vec();
+        let (framed, code) = program(&body);
+        let mut corrupt = framed.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        // the body alone is what the cache kept before it kept the frame,
+        // `blob` the kind it then guessed
+        let reframed = [&b"blob 8\0"[..], &body[..]].concat();
+        let (client, asked) = node_holding(framed.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("code");
+        for (nth, stale) in [corrupt, body.clone(), reframed].into_iter().enumerate() {
+            std::fs::write(&path, stale).unwrap();
+            let refetched = fetched(&client, &code, Some(path.clone())).await;
+            assert_eq!(refetched, Ok((body.clone(), "node")));
+            assert_eq!(asked.load(Ordering::SeqCst), nth + 1);
+            // the refetch replaced the file
+            assert_eq!(std::fs::read(&path).unwrap(), framed);
+        }
+        let next = fetched(&client, &code, Some(path)).await;
+        assert_eq!(next, Ok((body, "disk")));
+        assert_eq!(asked.load(Ordering::SeqCst), 3, "the disk asks no node");
     }
 }
