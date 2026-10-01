@@ -34,8 +34,10 @@ pub(crate) use endpoints::{
 };
 pub(crate) use key_dir::{Keyring, bind_keyring, key_exists, keystore_root, session_key_path};
 pub(crate) use noded::{Client as RpcClient, Layer, Status as NodeStatus};
+#[cfg(test)]
+pub(crate) use prefs::prefs_reads;
 pub(crate) use prefs::{
-    Appearance, load_appearance, load_motion, read_prefs, save_appearance, save_motion, write_prefs,
+    Appearance, edit_prefs, load_appearance, load_motion, read_prefs, save_appearance, save_motion,
 };
 #[cfg(test)]
 pub(crate) use session::seat_serial;
@@ -67,6 +69,9 @@ pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
             refusal::NODE_FAILED,
             format!("no answer came back: {sentence}"),
         ),
+        error @ Error::TooLarge { .. } => {
+            view_wire::Error::new(refusal::TOO_LARGE, error.to_string())
+        }
     }
 }
 
@@ -147,6 +152,32 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io:
     )?
     .sync_all()?;
     Ok(())
+}
+
+/// Reads a device file through `parse`. A missing file is `Ok(None)`. A file
+/// that will not parse is not trusted and not deleted: it is renamed to
+/// `<name>.bad` (one kept, a newer one replaces it), warned about once with
+/// its path and the error, and answers `Ok(None)` like a missing one. Any
+/// other read error (permission, IO) stays an `Err`.
+pub(crate) fn read_or_set_aside<T, E: std::fmt::Display>(
+    path: &Path,
+    parse: impl FnOnce(&[u8]) -> Result<T, E>,
+) -> std::io::Result<Option<T>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    match parse(&bytes) {
+        Ok(parsed) => Ok(Some(parsed)),
+        Err(error) => {
+            let mut bad = path.as_os_str().to_owned();
+            bad.push(".bad");
+            std::fs::rename(path, &bad)?;
+            tracing::warn!(target: "ducktape::app", path = %path.display(), %error, "unreadable file set aside as .bad, starting empty");
+            Ok(None)
+        }
+    }
 }
 
 /// One id, unique on this device, for a record a view mints.

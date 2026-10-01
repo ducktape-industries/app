@@ -132,8 +132,8 @@ impl Seats {
 
     /// A seat for every view pane the windows' desks hold, placed in the
     /// window whose desk holds it, and none for a pane they no longer
-    /// hold: that one is told it is hidden first, and the intents its last
-    /// update produced are routed (its subscription is dropped here, so an
+    /// hold: that one is told it is hidden first, its pictures leave the
+    /// windows' atlases, and the intents its last update produced are routed (its subscription is dropped here, so an
     /// emit would be lost). Notifies when a seat came or went, never when
     /// one moved: a pane's view observes its own seat.
     fn reconcile(&mut self, cx: &mut Context<Self>) {
@@ -195,6 +195,10 @@ impl Seats {
             };
             let module = placed.seat.read(cx).module();
             let intents = placed.seat.update(cx, |seat, _| seat.hide());
+            // the seat drops with this entry: its images leave the atlas
+            if let Some(tree) = placed.seat.read(cx).tree() {
+                tree.update(cx, |tree, cx| tree.release(cx));
+            }
             hidden.extend(intents.into_iter().map(|intent| (module, intent)));
         }
         if moved {

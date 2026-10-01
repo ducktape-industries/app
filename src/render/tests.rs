@@ -3,6 +3,14 @@ use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{InputEvent as _, Keystroke};
 use std::{cell::RefCell, rc::Rc};
 
+/// Resident memory, for the render measurements (`--ignored`).
+pub(super) fn resident_mib() -> f64 {
+    let status = std::fs::read_to_string("/proc/self/status").unwrap();
+    let line = status.lines().find(|l| l.starts_with("VmRSS:")).unwrap();
+    let kib: f64 = line.split_whitespace().nth(1).unwrap().parse().unwrap();
+    kib / 1024.
+}
+
 pub(super) fn named_id(key: &str) -> wire::ElementIdWire {
     wire::ElementIdWire::Name(key.into())
 }

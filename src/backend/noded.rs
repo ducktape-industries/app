@@ -21,6 +21,34 @@ use tokio_tungstenite::tungstenite::Message;
 pub const NODE_CONTRACT: u32 = 1;
 pub const FRAME_NAMESPACE: &[u8] = b"ducktape:frame";
 
+/// The most one node answer may carry, unless the call names its own cap
+/// (a blob's): a view's reply budget holds no more, so a bigger body is
+/// refused before it is read, not after.
+pub const MAX_BODY_BYTES: usize = 32 << 20;
+
+/// How long a connection to a node (or the auth host) may take to open.
+const CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// How long a caller waits for one node answer before it stops waiting. Not
+/// the client's own timeout, and above the hold a recovering node puts on a
+/// request: it accepts the connection and answers once it has recovered
+/// (app#189's run held its queries ~94 s: node up 13:14:49.9, recovered
+/// 13:16:22.0, serving 13:16:23.6), so this is that hold and as much again.
+pub const ANSWER_DEADLINE: std::time::Duration = std::time::Duration::from_secs(180);
+
+/// Every HTTP client the app builds: the opening bounded, the answer not
+/// (see [`ANSWER_DEADLINE`]), and no redirect followed. A redirect would
+/// send the same signed frame on to whatever host the answer names; it is
+/// the answer instead, a status this client does not read
+/// ([`Error::Failed`], `node_failed`).
+pub(crate) fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("the HTTP client")
+}
+
 pub mod route {
     pub const STATUS: &str = "/v1/status";
     pub const SUBMIT: &str = "/v1/submit";
@@ -217,6 +245,8 @@ pub enum Error {
     Transport(String),
     /// the body did not decode as the type asked for
     Decode(Refusal),
+    /// the answer is longer than the call reads: refused, never buffered
+    TooLarge { cap: usize },
 }
 
 impl std::fmt::Display for Error {
@@ -227,6 +257,11 @@ impl std::fmt::Display for Error {
             }
             Error::Failed { status, sentence } => write!(f, "node answered {status}: {sentence}"),
             Error::Unreachable(sentence) | Error::Transport(sentence) => write!(f, "{sentence}"),
+            Error::TooLarge { cap } => write!(
+                f,
+                "The node's answer is over the {} MiB this app reads.",
+                cap >> 20
+            ),
         }
     }
 }
@@ -252,14 +287,18 @@ impl Client {
     pub fn new(base: impl Into<String>) -> Client {
         let _timed = crate::perf::time(crate::perf::Key::Shell, "io.rpc_client");
         let base = base.into().trim_end_matches('/').to_owned();
-        Client {
-            http: reqwest::Client::new(),
-            base,
-        }
+        Client { http: http(), base }
     }
 
     pub fn endpoint(&self) -> &str {
         &self.base
+    }
+
+    /// The connection's HTTP client, for a call to another host on its
+    /// behalf (the auth host's relay): one pool per connection, not one per
+    /// call.
+    pub(crate) fn http(&self) -> &reqwest::Client {
+        &self.http
     }
 
     pub async fn status(&self) -> Result<Status> {
@@ -291,9 +330,16 @@ impl Client {
         self.post(route::GET, &get).await
     }
 
-    /// The framed bytes (`kind len\0body`) of a blob the node holds.
-    pub async fn blob(&self, id: BlobId) -> Result<Option<Vec<u8>>> {
-        self.post(route::BLOB_GET, &id).await
+    /// The framed bytes (`kind len\0body`) of a blob the node holds; an
+    /// answer over `cap` bytes is refused [`Error::TooLarge`].
+    pub async fn blob(&self, id: BlobId, cap: usize) -> Result<Option<Vec<u8>>> {
+        answered(
+            self.http
+                .post(self.url(route::BLOB_GET))
+                .body(abi::encode(&id)),
+            cap,
+        )
+        .await
     }
 
     /// Finalized blocks, newest first: below `before` (the tip when
@@ -315,9 +361,11 @@ impl Client {
             self.base.replacen("http", "ws", 1),
             route::CHANGES
         );
-        let (socket, _) = tokio_tungstenite::connect_async(url)
-            .await
-            .map_err(|error| Error::Transport(error.to_string()))?;
+        let (socket, _) =
+            tokio::time::timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url))
+                .await
+                .map_err(|_| Error::Transport("the changes socket did not open in time".into()))?
+                .map_err(|error| Error::Transport(error.to_string()))?;
         Ok(socket.filter_map(|message| {
             let change = match message {
                 Ok(Message::Binary(bytes)) => Some(abi::decode(&bytes).map_err(Error::Decode)),
@@ -333,8 +381,7 @@ impl Client {
     }
 
     async fn fetch<T: BorshDeserialize>(&self, route: &str) -> Result<T> {
-        let response = self.http.get(self.url(route)).send().await?;
-        answered(response).await
+        answered(self.http.get(self.url(route)), MAX_BODY_BYTES).await
     }
 
     async fn post<B: BorshSerialize, T: BorshDeserialize>(
@@ -346,14 +393,29 @@ impl Client {
     }
 
     async fn post_raw<T: BorshDeserialize>(&self, route: &str, body: Vec<u8>) -> Result<T> {
-        let response = self.http.post(self.url(route)).body(body).send().await?;
-        answered(response).await
+        answered(self.http.post(self.url(route)).body(body), MAX_BODY_BYTES).await
     }
 }
 
-async fn answered<T: BorshDeserialize>(response: reqwest::Response) -> Result<T> {
+/// `request`'s answer, read a chunk at a time and never past `cap` bytes:
+/// a `Content-Length` over it is refused before the body is read, a body
+/// that streams past it as soon as it does.
+async fn answered<T: BorshDeserialize>(request: reqwest::RequestBuilder, cap: usize) -> Result<T> {
+    let mut response = request.send().await?;
     let status = response.status();
-    let body = response.bytes().await?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > cap as u64)
+    {
+        return Err(Error::TooLarge { cap });
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        if body.len() + chunk.len() > cap {
+            return Err(Error::TooLarge { cap });
+        }
+        body.extend_from_slice(&chunk);
+    }
     match status {
         StatusCode::OK => abi::decode(&body).map_err(Error::Decode),
         StatusCode::BAD_REQUEST => Err(Error::Refused(abi::decode(&body).map_err(Error::Decode)?)),

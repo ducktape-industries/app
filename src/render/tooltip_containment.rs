@@ -17,18 +17,23 @@ pub(super) fn build(
     content: wire::Node,
     cx: &mut App,
 ) -> gpui_kit::AnyView {
-    // the source view's clip and its pictures: a tooltip names them as
-    // its source tree does
-    let (mask, pictures) = parent
+    // the source view's clip, its pictures and their rasters: a tooltip
+    // names them as its source tree does, and the seat releases them
+    let (mask, pictures, images) = parent
         .upgrade()
         .map(|parent| {
             let parent = parent.read(cx);
-            (parent.slot_mask.clone(), parent.pictures.clone())
+            (
+                parent.slot_mask.clone(),
+                parent.pictures.clone(),
+                parent.images.clone(),
+            )
         })
         .unwrap_or_default();
     let child = cx.new(|_| {
         let mut child = ViewTree::new(content);
         child.set_pictures(pictures);
+        child.images = images;
         child
     });
     cx.new(|cx| {
@@ -101,8 +106,10 @@ impl Element for Contained {
         window: &mut Window,
         cx: &mut App,
     ) {
+        // gpui prepaints a tooltip after its deferred draws: a `Deferred` in
+        // the content draws in place, not deferred too late to be drawn
         window.with_content_mask(Some(self.mask.get()), |window| {
-            self.child.prepaint(window, cx);
+            super::deferred::inside(|| self.child.prepaint(window, cx));
         });
     }
     fn paint(
@@ -341,6 +348,41 @@ mod tests {
                     && mask.origin.x + mask.size.width <= bound
                     && mask.origin.y + mask.size.height <= bound
             }));
+        });
+    }
+
+    /// A `Deferred` in a guest tooltip's content draws in place, and paints,
+    /// instead of failing the frame.
+    #[gpui_kit::test]
+    fn a_deferred_inside_a_tooltip_draws_in_place(cx: &mut gpui_kit::TestAppContext) {
+        struct Slot(Entity<ViewTree>);
+        impl Render for Slot {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().size(px(40.)).overflow_hidden().child(self.0.clone())
+            }
+        }
+        cx.update(gpui_kit::init);
+        let content = wire::Node::Deferred {
+            priority: 16,
+            content: Box::new(node(20., None)),
+        };
+        let window = cx.open_window(size(px(200.), px(200.)), move |_, cx| {
+            Slot(cx.new(|_| ViewTree::new(ordinary_source(93, Some(content)))))
+        });
+        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| window.render_frame(cx));
+        native.simulate_mouse_move(point(px(10.), px(10.)), None, Default::default());
+        native.executor().advance_clock(Duration::from_millis(11));
+        native.run_until_parked();
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window
+                    .painted_quads()
+                    .iter()
+                    .any(|quad| quad.background.as_solid() == Some(rgb(TOOLTIP_COLOR).into())),
+                "the tooltip's deferred content paints"
+            );
         });
     }
 }

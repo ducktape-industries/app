@@ -1,12 +1,13 @@
 //! The person's word on notices: this device's settings in the prefs file
 //! (banners at all, banners in front, the burst limit) and their
-//! per-view [`Permission`], read on every post and saved by the settings
-//! and permission-bar screens.
+//! per-view [`Permission`], read off disk once and kept, and saved by the
+//! settings and permission-bar screens.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use super::center::Center;
-use crate::backend::{read_prefs, write_prefs};
+use crate::backend::{edit_prefs, read_prefs};
 
 /// The prefs keys, device-global like `appearance`.
 pub(super) const NOTIFY_PREF: &str = "desktop_notifications";
@@ -54,9 +55,26 @@ pub(crate) struct Settings {
     pub(crate) views: BTreeMap<String, Permission>,
 }
 
+thread_local! {
+    /// The settings as last read on this thread, the window thread, where
+    /// views post and the shell saves: forgotten when a notice setting is
+    /// saved here, and replaced by every [`Settings::load`].
+    static KEPT: RefCell<Option<Settings>> = const { RefCell::new(None) };
+}
+
 impl Settings {
+    /// Off the prefs file, and kept for [`Settings::kept`].
     pub(crate) fn load() -> Self {
-        Self::of(&read_prefs())
+        let settings = Self::of(&read_prefs().unwrap_or_default());
+        KEPT.with(|kept| *kept.borrow_mut() = Some(settings.clone()));
+        settings
+    }
+
+    /// As last read, or off the prefs file the first time: what each post
+    /// is judged by, without a prefs read per post.
+    pub(crate) fn kept() -> Self {
+        KEPT.with(|kept| kept.borrow().clone())
+            .unwrap_or_else(Self::load)
     }
 
     pub(super) fn of(prefs: &serde_json::Value) -> Self {
@@ -79,27 +97,27 @@ impl Settings {
     }
 }
 
-fn edit_prefs(change: impl FnOnce(&mut serde_json::Value)) {
-    let mut prefs = read_prefs();
-    change(&mut prefs);
-    write_prefs(&prefs);
+/// A notice setting saved: the kept settings are read again on next use.
+fn edit(change: impl FnOnce(&mut serde_json::Value)) {
+    edit_prefs(change);
+    KEPT.with(|kept| *kept.borrow_mut() = None);
 }
 
 pub(crate) fn save_banners(on: bool) {
-    edit_prefs(|prefs| prefs[NOTIFY_PREF] = serde_json::json!(on));
+    edit(|prefs| prefs[NOTIFY_PREF] = serde_json::json!(on));
 }
 
 pub(crate) fn save_in_front(show: bool) {
-    edit_prefs(|prefs| prefs[FRONT_PREF] = serde_json::json!(if show { "show" } else { "hide" }));
+    edit(|prefs| prefs[FRONT_PREF] = serde_json::json!(if show { "show" } else { "hide" }));
 }
 
 pub(crate) fn save_burst(burst: u32) {
-    edit_prefs(|prefs| prefs[BURST_PREF] = serde_json::json!(burst));
+    edit(|prefs| prefs[BURST_PREF] = serde_json::json!(burst));
 }
 
 /// The person answered a view: its bar goes, and the word is kept.
 pub(crate) fn set_permission(center: &mut Center, module: &str, permission: Permission) {
-    edit_prefs(|prefs| {
+    edit(|prefs| {
         if !prefs[VIEWS_PREF].is_object() {
             prefs[VIEWS_PREF] = serde_json::json!({});
         }

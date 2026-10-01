@@ -285,7 +285,7 @@ impl Chrome {
                 .occlude()
                 .on_click(move |_, _, cx| close(cx)),
         )
-        .with_priority(0)
+        .with_priority(crate::render::deferred::HOST_BAND + 1)
         .into_any_element()
     }
 
@@ -377,7 +377,7 @@ impl Chrome {
                     .child(card),
             ),
         )
-        .with_priority(1)
+        .with_priority(crate::render::deferred::HOST_BAND + 2)
         .into_any_element()
     }
 

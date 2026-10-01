@@ -97,6 +97,9 @@ rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+# A guest SVG's own size, which sets the height gpui rasterises it at
+# (`render/svg_limits.rs`): gpui's own parser, already in the graph.
+usvg = { version = "0.46.0", default-features = false }
 reqwest.workspace = true
 tokio = { version = "1", features = ["macros", "net", "rt", "sync", "time"] }
 tracing.workspace = true

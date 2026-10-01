@@ -324,7 +324,11 @@ its meaning; the host and the views name the const, never the string.
    answers `rpc_client` with the `NODE_UNREACHABLE` sentence; `op.submit`
    (`spawn_retrying_unsent`) retries only `rpc_client`, which proves nothing
    was sent, and `invite.create` (`spawn_no_retry`) asks once. A node's own
-   refusal ends the call at once.
+   refusal ends the call at once. Each attempt has `noded::ANSWER_DEADLINE`
+   (180 s, above the hold a recovering node puts on a request) to answer;
+   one cut there is `node_failed`, so a submit is never signed again. The
+   client bounds only the connect (10 s), and reads an answer no further
+   than `noded::MAX_BODY_BYTES` (a blob: its own cap), `too_large` past it.
 4. **Sign.** A read: `backend::query_frame` signs a `Frame` at seq 0 with
    the seated key, or with the process's throwaway `reader_key` while nobody
    is signed in; the program hears who asks, the node checks no sequence.
@@ -661,8 +665,11 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   256, `MAX_REPLY_EVENTS` 1024 / `MAX_REPLY_BYTES` 32 MiB and their
   half-size stream backlog; `LOADERS` 4 loads at once and
   `views::MAX_PROGRAMS` 256 roster entries; `layout::MAX_PANES` 8; a per-window SVG raster
-  budget (`render/svg_limits.rs`); picture decode size limits
-  (`render/picture_resources.rs`).
+  budget (`render/svg_limits.rs`: 256 MiB charged at each raster's real
+  size, 4096 keys, for the window's life); a per-seat cache of decoded
+  pictures (`render/pictures.rs` `Rasters`: 64 MiB / 4096, evicting the
+  least recently drawn; its atlas tiles leave every window when the seat
+  drops); picture decode size limits (`render/picture_resources.rs`).
 - **Window-thread work.** Every wasm tick, frame decode (`shape`), `merge`
   and `ViewTree::replace` run on the window thread inside `Seat::turn`,
   while holding the seat mutex, between draws and never inside one; GPUI

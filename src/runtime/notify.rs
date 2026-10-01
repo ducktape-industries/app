@@ -3,9 +3,10 @@
 //! it in its notification centre (per network, on this device) and decides
 //! whether a banner reaches the screen:
 //!
-//! - the person's word on the view: none yet → logged, and the view's
-//!   window asks them (the permission bar); Block → dropped, not even
-//!   logged; Silent → logged only; Allow → on to the rest;
+//! - the person's word on the view: none yet → logged, its newest few
+//!   rows only, and the view's window asks them (the permission bar);
+//!   Block → dropped, not even logged; Silent → logged only; Allow → on
+//!   to the rest;
 //! - banners off for the device (`desktop_notifications`) → logged only;
 //! - the view is the window the person is looking at → logged only, unless
 //!   they asked to see banners in front too;
@@ -24,11 +25,10 @@
 //! macOS the notification centre's delegate hearing the default action on a
 //! banner that names its row (in its `userInfo`).
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
 
-use super::kernel::spawn_reply;
+use super::kernel::{in_order, spawn_reply};
 use super::wire::methods::{self, Capability, Delivery, Notification, refusal};
 use super::{Guest, Intent};
 
@@ -84,25 +84,31 @@ pub(super) fn answer(
     id: u64,
     payload: &[u8],
 ) -> bool {
-    let post = match (capability, operation) {
-        (Capability::Notify, "post") => methods::decode::<Notification>(payload),
-        (Capability::Notify, "seen") => {
-            seen(guest, id, payload);
-            return true;
-        }
+    match (capability, operation) {
+        (Capability::Notify, "post") => post(guest, center(), id, payload),
+        (Capability::Notify, "seen") => seen(guest, id, payload),
         _ => return false,
-    };
-    let post = match post.and_then(|post| shortened(post).map_err(str::to_owned)) {
+    }
+    true
+}
+
+/// `notify.post` into `center`: judged by the settings as last read
+/// ([`Settings::kept`]), not a prefs read per post; the log is written at
+/// the end of the redraw ([`center::Center::flush`]).
+fn post(guest: &mut Guest, center: &CenterHandle, id: u64, payload: &[u8]) {
+    let post = methods::decode::<Notification>(payload)
+        .and_then(|post| shortened(post).map_err(str::to_owned));
+    let post = match post {
         Ok(post) => post,
         Err(error) => {
             guest.refuse(id, refusal::MALFORMED_REQUEST, error);
-            return true;
+            return;
         }
     };
     let (posted, banner, entry) = {
-        let mut center = center().lock();
+        let mut center = center.lock();
         let (posted, banner) = center.post(
-            &Settings::load(),
+            &Settings::kept(),
             guest.module,
             &guest.name,
             post,
@@ -136,7 +142,6 @@ pub(super) fn answer(
         };
         Ok(methods::encode(&posted))
     });
-    true
 }
 
 /// `notify.seen`: the view's rows under the tag read, and its standing
@@ -158,31 +163,6 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
         in_order(guest.module, move || platform::withdraw(&tag));
     }
     guest.reply(id, Ok(methods::encode(&())));
-}
-
-/// A view's banners reach the desktop one at a time, in the order its
-/// notices came: raised concurrently, a burst's "N more" could land before
-/// the last banners it counts. One task per view on the kernel runtime runs
-/// its jobs one after another, each on the blocking pool (an OS call).
-fn in_order(module: &str, job: impl FnOnce() + Send + 'static) {
-    type Job = Box<dyn FnOnce() + Send>;
-    static QUEUES: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<Job>>>> =
-        OnceLock::new();
-    let mut queues = QUEUES
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let queue = queues.entry(module.to_owned()).or_insert_with(|| {
-        let (queue, mut jobs) = tokio::sync::mpsc::unbounded_channel::<Job>();
-        super::kernel::handle().spawn(async move {
-            while let Some(job) = jobs.recv().await {
-                // a job that panicked is a banner not raised; the next goes on
-                let _ = tokio::task::spawn_blocking(job).await;
-            }
-        });
-        queue
-    });
-    let _ = queue.send(Box::new(job));
 }
 
 /// What opens a clicked banner's link: the shell's, handed over at startup
@@ -214,7 +194,7 @@ fn clicked(entry: u64) {
 
 // Each platform module exposes `post(&Notice, row: Option<u64>) -> raised`
 // and `withdraw(tag)`. Both block on OS calls and run only through
-// `in_order`, on the blocking pool; a click on a banner calls back
+// `in_order` under the view's module, on the blocking pool; a click on a banner calls back
 // `clicked(row)`.
 #[cfg(target_os = "macos")]
 mod macos;

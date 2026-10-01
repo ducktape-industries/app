@@ -28,7 +28,7 @@ mod accessibility;
 mod anchored;
 mod canvas;
 mod commands;
-mod deferred;
+pub(crate) mod deferred;
 mod editor_mount;
 mod frame;
 mod inputs;
@@ -54,6 +54,7 @@ use canvas::{canvas_svg, native_canvas_commands, paint_canvas_commands};
 pub(crate) use commands::dialog_entry;
 use editor_mount::EditorMount;
 use inputs::Field;
+use pictures::SharedRasters;
 pub(crate) use pictures::{PictureBytes, qr};
 use sensors::SensorState;
 use style::{has_named_overlay, named_overlay, native_cursor};
@@ -113,7 +114,8 @@ pub(crate) fn enter_scope(node: &wire::Node, path: &mut AuthoredPath) -> bool {
 /// `ViewTree::presentation`, consumed by the new tree's first render.
 #[derive(Default)]
 pub(crate) struct NativePresentation {
-    images: HashMap<u64, Arc<RenderImage>>,
+    /// The seat's rasters, the cache itself: the new tree draws on in it.
+    images: Option<SharedRasters>,
     focused_container: Option<(AuthoredPath, std::mem::Discriminant<wire::Node>)>,
     inputs: HashMap<AuthoredPath, InputPresentation>,
     /// The focused editors' documents; the field named takes the caret back.
@@ -192,7 +194,7 @@ pub struct ViewTree {
     // Pictures by the guest's content hash: the seat's bytes, which a node
     // that names a hash alone draws from, and the rasters decoded from them.
     pictures: Arc<PictureBytes>,
-    images: HashMap<u64, Arc<RenderImage>>,
+    images: SharedRasters,
 
     // Plumbing.
     /// State carried over from the previous guest instance's tree; emptied by the first render.
@@ -245,7 +247,7 @@ impl ViewTree {
             bounds: HashMap::new(),
             sensors: HashMap::new(),
             pictures: Default::default(),
-            images: HashMap::new(),
+            images: Default::default(),
             editor_store: None,
             editors: HashMap::new(),
             mounted: Default::default(),
