@@ -2,7 +2,8 @@ use super::*;
 
 mod node_methods;
 
-fn guest() -> Guest {
+/// A guest holding every capability, its code doing nothing.
+pub(super) fn guest() -> Guest {
     let code = wasmtime::Module::new(
         super::super::guest::engine(),
         r#"(module
@@ -17,6 +18,44 @@ fn guest() -> Guest {
     let mut guest = Guest::instantiate("request-test", &code, "request test").unwrap();
     guest.capabilities = Capability::ALL.to_vec();
     guest
+}
+
+/// One request off `stream` to a fake node: its request line, and the
+/// body its Content-Length gives.
+pub(super) fn read_request(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
+    use std::io::{BufRead as _, Read as _};
+    let mut reader = std::io::BufReader::new(stream);
+    let mut request = String::new();
+    reader.read_line(&mut request).unwrap();
+    let mut line = String::new();
+    let mut length = 0;
+    loop {
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        if line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':')
+            && name.eq_ignore_ascii_case("content-length")
+        {
+            length = value.trim().parse::<usize>().unwrap();
+        }
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    (request, body)
+}
+
+/// A fake node's answer on `stream`: `status`, then `body`.
+pub(super) fn respond(stream: &mut std::net::TcpStream, status: &str, body: &[u8]) {
+    use std::io::Write as _;
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .unwrap();
+    stream.write_all(body).unwrap();
 }
 
 /// The reason `kind` is refused for, asked by a guest declaring `declared`;

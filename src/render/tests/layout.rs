@@ -99,18 +99,6 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
             children: vec![room],
         })),
     };
-    // Mounted the way a module seat mounts a guest: a cached view under a
-    // full-size div, not as the window root (which gpui stretches).
-    struct Seat(Entity<ViewTree>);
-    impl Render for Seat {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div().size_full().child(
-                self.0
-                    .clone()
-                    .cached(gpui_kit::StyleRefinement::default().size_full()),
-            )
-        }
-    }
     let window = cx.open_window(size(px(800.), px(600.)), |_, cx| {
         Seat(cx.new(|_| ViewTree::new(root)))
     });

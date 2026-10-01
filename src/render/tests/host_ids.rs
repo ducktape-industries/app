@@ -53,19 +53,6 @@ fn button(id: Option<wire::ElementIdWire>, name: &str, handler: u32) -> wire::No
     node
 }
 
-/// Draws `root` with accessibility on and answers the door's nodes.
-fn draw(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<crate::ax::AxNode> {
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| {
-        window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
-        crate::ax::snapshot("t", window, false)
-    })
-}
-
 fn names(nodes: &[crate::ax::AxNode], role: &str) -> Vec<String> {
     nodes
         .iter()

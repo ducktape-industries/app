@@ -1,18 +1,6 @@
 //! A view dialog gives the keyboard back to what opened it (AX-120).
 use super::*;
 
-/// A focusable button Tab reaches.
-fn button(key: &str, name: &str) -> wire::Node {
-    let mut node = container_with_style(key, div().w(px(80.)).h(px(24.)).style().clone(), []);
-    if let wire::Node::Container(view_wire::ContainerNode { interactivity, .. }) = &mut node {
-        interactivity.role = Some(gpui_kit::Role::Button);
-        interactivity.aria.label = Some(name.into());
-        interactivity.focusable = true;
-        interactivity.tab_stop = Some(true);
-    }
-    node
-}
-
 /// The opener, which the guest names by focus handle 1, beside an overlay
 /// whose dialog, a Save button, shows when `open`.
 fn screen(open: bool) -> wire::Node {

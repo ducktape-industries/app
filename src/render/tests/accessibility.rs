@@ -101,15 +101,7 @@ fn a_read_only_editor_reads_its_text_and_is_offered_no_typing(cx: &mut gpui_kit:
             on_document: 0,
             editable,
         };
-        let store = crate::editor::wire::EditorStore::new(91);
-        store.replace(&root).unwrap();
-        seed_editor_text(&store, words);
-        let window = cx.open_window(size(px(400.), px(300.)), |_, cx| {
-            let mut tree = ViewTree::new(root);
-            tree.set_editor_store(store, cx);
-            tree
-        });
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let (_, mut native) = with_editors(root, Some(words), cx);
         let nodes = native.update(|window, cx| {
             window.activate_a11y();
             window.render_frame(cx);
@@ -190,18 +182,10 @@ fn a_named_overlay_is_a_dialog_and_an_unnamed_one_is_layout() {
 
 /// What the door reads of `root`, drawn in a window with the tree on.
 fn door(cx: &mut gpui_kit::TestAppContext, root: wire::Node) -> Vec<serde_json::Value> {
-    cx.update(gpui_kit::init);
-    let window = cx.open_window(size(px(400.), px(300.)), |_, _| ViewTree::new(root));
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| {
-        window.activate_a11y();
-        window.render_frame(cx);
-        window.render_frame(cx);
-        crate::ax::snapshot("t", window, false)
-            .iter()
-            .map(|node| serde_json::to_value(node).unwrap())
-            .collect()
-    })
+    draw(cx, root)
+        .iter()
+        .map(|node| serde_json::to_value(node).unwrap())
+        .collect()
 }
 
 /// A view's words are what its text is called, through the door as through

@@ -61,15 +61,9 @@ fn every_overlay_takes_the_keys_as_it_opens_and_gives_them_back(cx: &mut TestApp
             Role::Dialog,
             "Settings",
         ),
-        (Overlay::Network, Role::Menu, "Networks"),
-        (Overlay::Menu(Popover::Node), Role::Dialog, "Node status"),
-        (Overlay::Menu(Popover::Account), Role::Dialog, "Account"),
-        (
-            Overlay::Menu(Popover::Notifications),
-            Role::Dialog,
-            "Notifications",
-        ),
-    ];
+    ]
+    .into_iter()
+    .chain(MENUS);
     for (overlay, role, name) in overlays {
         let (view, mut native) = open(gate::desk(), cx);
         native.update(draw);

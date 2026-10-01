@@ -1,7 +1,6 @@
 //! The node methods against a fake node: what each hands the node and what
 //! it makes of the answer.
 use super::*;
-use std::io::{BufRead as _, Read as _, Write as _};
 
 fn call(target: &str, body: &[u8]) -> Vec<u8> {
     methods::encode(&methods::Call {
@@ -33,33 +32,10 @@ fn node_server(
             stream
                 .set_read_timeout(Some(std::time::Duration::from_secs(10)))
                 .unwrap();
-            let mut reader = std::io::BufReader::new(&mut stream);
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
+            let (line, received) = read_request(&mut stream);
             assert_eq!(line.trim(), expected_path);
-            let mut length = 0;
-            loop {
-                line.clear();
-                reader.read_line(&mut line).unwrap();
-                if line == "\r\n" {
-                    break;
-                }
-                if let Some((name, value)) = line.split_once(':')
-                    && name.eq_ignore_ascii_case("content-length")
-                {
-                    length = value.trim().parse::<usize>().unwrap();
-                }
-            }
-            let mut received = vec![0; length];
-            reader.read_exact(&mut received).unwrap();
             bodies.push(received);
-            write!(
-                stream,
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                body.len()
-            )
-            .unwrap();
-            stream.write_all(&body).unwrap();
+            respond(&mut stream, &status, &body);
         }
         bodies
     });

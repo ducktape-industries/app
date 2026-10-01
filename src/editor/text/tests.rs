@@ -75,6 +75,40 @@ fn focused_editor(
     (editor, native)
 }
 
+/// The editor with one Tab stop after it, under the kit's Root, whose Tab
+/// moves the focus on.
+struct Host {
+    editor: Entity<TextEditor>,
+    after: gpui_kit::FocusHandle,
+}
+
+impl Render for Host {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .child(self.editor.clone())
+            .child(div().id("after").track_focus(&self.after).size(px(20.)))
+    }
+}
+
+/// `store`'s editor in a [`Host`], in a window of its own.
+fn tab_host(
+    store: &EditorStore,
+    cx: &mut gpui_kit::TestAppContext,
+) -> (Entity<Host>, gpui_kit::VisualTestContext) {
+    let mut host = None;
+    let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
+        let made = cx.new(|cx| Host {
+            editor: cx.new(|cx| TextEditor::new(editor_path(), store.clone(), window, cx)),
+            after: cx.focus_handle().tab_stop(true),
+        });
+        host = Some(made.clone());
+        gpui_kit::component::Root::new(made, window, cx)
+    });
+    let native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    (host.unwrap(), native)
+}
+
 /// Settle every queued edit against the document, the way a guest that accepts
 /// what the field did would.
 fn settle(store: &EditorStore, name: &str) {
@@ -408,21 +442,6 @@ fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
 ) {
     use gpui_kit::test::TestWindowExt as _;
 
-    /// The editor with one Tab stop after it, under the kit's Root, whose
-    /// Tab moves the focus on.
-    struct Host {
-        editor: Entity<TextEditor>,
-        after: gpui_kit::FocusHandle,
-    }
-    impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .child(self.editor.clone())
-                .child(div().id("after").track_focus(&self.after).size(px(20.)))
-        }
-    }
-
     cx.update(gpui_kit::init);
     // Esc the field's (and the view's) own, and Esc a guest claimed
     for claimed in [false, true] {
@@ -435,17 +454,7 @@ fn esc_then_tab_leaves_the_editor_and_any_other_key_takes_tab_back(
             }],
         };
         let store = store_with("tabs", "one", claims, "");
-        let mut host = None;
-        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-            let made = cx.new(|cx| Host {
-                editor: cx.new(|cx| TextEditor::new(editor_path(), store.clone(), window, cx)),
-                after: cx.focus_handle().tab_stop(true),
-            });
-            host = Some(made.clone());
-            gpui_kit::component::Root::new(made, window, cx)
-        });
-        let host = host.unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let (host, mut native) = tab_host(&store, cx);
         let press = |native: &mut gpui_kit::VisualTestContext, keys: &[&str]| {
             native.update(|window, cx| {
                 for key in keys {
@@ -680,18 +689,6 @@ fn the_door_walk_goes_round_after_leaving_the_editor_it_first_reached(
 #[gpui_kit::test]
 fn esc_then_tab_leaves_an_editor_whose_guest_claims_tab(cx: &mut gpui_kit::TestAppContext) {
     use gpui_kit::test::TestWindowExt as _;
-    struct Host {
-        editor: Entity<TextEditor>,
-        after: gpui_kit::FocusHandle,
-    }
-    impl Render for Host {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .size_full()
-                .child(self.editor.clone())
-                .child(div().id("after").track_focus(&self.after).size(px(20.)))
-        }
-    }
     cx.update(gpui_kit::init);
     for (keys, leaves) in [(["escape", "tab"], true), (["a", "tab"], false)] {
         let claims = vec![wire::EditorKeyClaim {
@@ -700,17 +697,7 @@ fn esc_then_tab_leaves_an_editor_whose_guest_claims_tab(cx: &mut gpui_kit::TestA
             command: false,
         }];
         let store = store_with("tabs", "one", claims, "");
-        let mut host = None;
-        let window = cx.open_window(gpui_kit::size(px(400.), px(200.)), |window, cx| {
-            let made = cx.new(|cx| Host {
-                editor: cx.new(|cx| TextEditor::new(editor_path(), store.clone(), window, cx)),
-                after: cx.focus_handle().tab_stop(true),
-            });
-            host = Some(made.clone());
-            gpui_kit::component::Root::new(made, window, cx)
-        });
-        let host = host.unwrap();
-        let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+        let (host, mut native) = tab_host(&store, cx);
         native.update(|window, cx| {
             window.render_frame(cx);
             let editor = host.read(cx).editor.read(cx);
