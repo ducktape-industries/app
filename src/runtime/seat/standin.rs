@@ -118,7 +118,7 @@ impl Standin {
                     .outline()
                     .on_click(move |_, _, cx| {
                         cx.stop_propagation();
-                        drop(retry(module, instance));
+                        retry(module, instance);
                     })
             }));
         #[cfg(test)]

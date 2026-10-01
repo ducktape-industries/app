@@ -111,6 +111,7 @@ impl ViewTree {
                 _ => {}
             }
         });
+        self.images.borrow_mut().next_frame();
         root.for_each_mut(&mut |node| {
             if let wire::Node::Image {
                 hash,
@@ -118,7 +119,7 @@ impl ViewTree {
                 ..
             } = node
             {
-                self.remember_image(*hash, data);
+                self.remember_image(*hash, data, None, cx);
             }
         });
         self.bounds.retain(|key, _| mounted.contains(key));
