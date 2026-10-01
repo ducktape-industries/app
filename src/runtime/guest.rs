@@ -8,6 +8,10 @@ use abi::{Exports, HostState, first_line, panic_message};
 
 // ---------- the guest ----------
 
+/// How long a press or key stays a view's activation: the web's transient
+/// activation duration.
+pub(crate) const ACTIVATION_EXPIRY: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// What a fresh instance did with the state the drawn view left it. A trap
 /// is not one of these — it takes the instance with it and is the load's
 /// error. A refusal is the guest's own word, reported before it builds
@@ -28,7 +32,14 @@ pub(super) enum Restored {
 pub(super) struct Guest {
     /// Node requests belong to the network selected when this instance starts.
     pub(crate) connection_rev: u64,
-    pub(crate) user_activation: Option<()>,
+    /// Transient user activation, as the web has it: when the host last
+    /// received a real press or key aimed at this view's tree
+    /// (`ViewTree::activate`, carried here by the seat's turn). Fresh for
+    /// `ACTIVATION_EXPIRY`; a gated call (`link.open`, the clipboard) takes
+    /// it, so one input admits one call (`take_activation`).
+    pub(crate) activation: Option<std::time::Instant>,
+    /// When each recent `link.open` was admitted, for the per-minute budget.
+    pub(crate) links: Vec<std::time::Instant>,
     pub(crate) module: &'static str,
     /// The seat entity showing this seat (`Seat.instance`;
     /// 0 for a preloaded seat no tab has claimed): with `module`, the key
@@ -118,6 +129,13 @@ impl Guest {
     /// How much of the budget the last call into the view took.
     pub(crate) fn fuel_used(&self) -> u64 {
         FUEL_PER_TICK - self.store.get_fuel().unwrap_or(0)
+    }
+
+    /// What the seat hands its tree to draw: the held tree, pictures named
+    /// by hash alone, and the bytes those hashes resolve to, shared.
+    pub(crate) fn drawn(&self) -> (wire::Node, Arc<crate::render::PictureBytes>) {
+        let root = self.frame.root.clone().unwrap_or_else(wire::Node::empty);
+        (root, self.pictures.held())
     }
 }
 
@@ -346,10 +364,15 @@ pub(super) fn merge(
     }
     if frame.unchanged {
         frame.root = held.take();
+        // the held tree passed when it arrived; a tooltip response landed
+        // in it is new, and spends the frame's budgets with the tree
+        if !tooltip_changed {
+            return Ok((false, Default::default()));
+        }
         let upstream = frame.upstream_sanitization;
         let report = wire::sanitize(frame)?;
         frame.upstream_sanitization = upstream;
-        return Ok((tooltip_changed, report));
+        return Ok((true, report));
     }
     if frame.root.is_some() {
         return Ok((true, Default::default()));

@@ -1,10 +1,10 @@
 //! `store.get` / `store.set`: what a view keeps on this device between runs.
 //!
 //! One file per view per network, `<config>/store/<chain>/<module>.borsh`:
-//! a borsh map of key → bytes, rewritten whole through a temp file and a
-//! rename. A view names keys, never paths — the chain and the module come
-//! from the host — so no view reaches another view's file or another
-//! network's.
+//! a borsh map of key → bytes, rewritten whole through
+//! `backend::atomic_write`. A view names keys, never paths — the chain and
+//! the module come from the host — so no view reaches another view's file
+//! or another network's.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -93,13 +93,9 @@ fn key(key: &str) -> Result<(), wire::Error> {
 }
 
 fn load(path: &Path) -> Result<Kept, wire::Error> {
-    match std::fs::read(path) {
-        Ok(bytes) => {
-            methods::decode(&bytes).map_err(|error| refusal(methods::refusal::HOST_FAULT, error))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Kept::new()),
-        Err(error) => Err(refusal(methods::refusal::HOST_FAULT, error)),
-    }
+    crate::backend::read_or_set_aside(path, methods::decode::<Kept>)
+        .map(Option::unwrap_or_default)
+        .map_err(|error| refusal(methods::refusal::HOST_FAULT, error))
 }
 
 fn get(path: &Path, payload: &[u8]) -> Answer {
@@ -123,9 +119,7 @@ fn set(path: &Path, payload: &[u8]) -> Answer {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let temp = path.with_extension("borsh.tmp");
-        std::fs::write(&temp, methods::encode(&kept))?;
-        std::fs::rename(&temp, path)
+        crate::backend::atomic_write(path, &methods::encode(&kept), false)
     };
     write().map_err(|error| refusal(methods::refusal::HOST_FAULT, error))?;
     Ok(methods::encode(&()))
@@ -189,7 +183,26 @@ mod tests {
         let reopened = load(&file).unwrap();
         assert_eq!(reopened, Kept::from([("b".to_owned(), b"2".to_vec())]));
         assert_eq!(read(&file, "a"), None);
-        assert!(!file.with_extension("borsh.tmp").exists());
+        assert_eq!(
+            std::fs::read_dir(file.parent().unwrap()).unwrap().count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(config);
+    }
+
+    /// A store file cut to nothing answers `None` to a view, not a host
+    /// fault: it is set aside as `.bad`, and the next `set` lands.
+    #[test]
+    fn a_cut_store_file_reads_as_empty_and_is_set_aside() {
+        let config = scratch();
+        let file = path(&config, "dev#01", "chat");
+        put(&file, "a", Some(b"1")).unwrap();
+        std::fs::write(&file, b"").unwrap();
+        assert_eq!(read(&file, "a"), None);
+        assert!(file.with_extension("borsh.bad").exists());
+        assert!(!file.exists());
+        put(&file, "a", Some(b"2")).unwrap();
+        assert_eq!(read(&file, "a").as_deref(), Some(&b"2"[..]));
         let _ = std::fs::remove_dir_all(config);
     }
 }

@@ -10,8 +10,9 @@ pub(super) struct EditorMount {
     pub(super) _subscription: Subscription,
 }
 
-/// `TextEditor` emits `()` when the `EditorStore` has queued guest events:
-/// take them and emit them as this tree's own.
+/// `TextEditor` emits when the `EditorStore` has queued guest events (and
+/// whether the input that queued them activates the view): take them and
+/// emit them as this tree's own.
 pub(super) fn drain_editor(store: &crate::editor::wire::EditorStore, cx: &mut Context<ViewTree>) {
     for event in store.drain() {
         cx.emit(event);
@@ -119,8 +120,12 @@ impl ViewTree {
                 let view = cx.new(|cx| {
                     crate::editor::wire::TextEditor::new(path.clone(), store, window, cx)
                 });
-                let subscription =
-                    cx.subscribe(&view, move |_, _, _: &(), cx| drain_editor(&events, cx));
+                let subscription = cx.subscribe(&view, move |this, _, activates: &bool, cx| {
+                    if *activates {
+                        this.activate();
+                    }
+                    drain_editor(&events, cx)
+                });
                 (EditorView::Text(view), subscription)
             };
             self.editors.insert(

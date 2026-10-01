@@ -81,11 +81,13 @@ impl ViewTree {
                             }
                             field.value = text.clone();
                             if let Some(handler) = field.on_input {
+                                this.activate();
                                 cx.emit(wire::Event::Input { handler, text });
                             }
                         }
                         InputEvent::PressEnter { .. } => {
                             if let Some(message) = field.on_submit {
+                                this.activate();
                                 cx.emit(wire::Event::Message(message));
                             }
                         }

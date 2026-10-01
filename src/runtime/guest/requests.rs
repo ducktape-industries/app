@@ -108,7 +108,6 @@ impl Guest {
                 ),
             }
         }
-        self.user_activation = None;
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);
@@ -132,6 +131,14 @@ impl Guest {
                 || self.inputs.pending()
                 || !self.pending.is_empty()
                 || self.inputs.ready() == Ok(false))
+    }
+
+    /// Whether this view's activation is fresh, taking it: the gated call
+    /// that asks first is the one the person's input admits.
+    pub(crate) fn take_activation(&mut self) -> bool {
+        self.activation
+            .take()
+            .is_some_and(|at| at.elapsed() <= super::ACTIVATION_EXPIRY)
     }
 
     /// Routes one request: the size cap, the manifest's capability gate,
@@ -236,6 +243,26 @@ impl Guest {
             | C::SnapEnd { target }
             | C::ScrollTo { target, .. }
             | C::ScrollBy { target, .. } => Some(target),
+        }
+    }
+
+    /// Whether a command moves the keyboard: the ones the seat runs only
+    /// while its keys are free (`Seat::keys_free`). Exhaustive for the same
+    /// reason as `command_target`.
+    pub(crate) fn moves_keys(command: &wire::WidgetCommand) -> bool {
+        use wire::WidgetCommand as C;
+        match command {
+            C::Focus { .. } | C::FocusHandle { .. } | C::FocusNext | C::FocusPrevious => true,
+            C::EditorAction { .. }
+            | C::CursorFront { .. }
+            | C::CursorEnd { .. }
+            | C::Cursor { .. }
+            | C::SelectAll { .. }
+            | C::Select { .. }
+            | C::Snap { .. }
+            | C::SnapEnd { .. }
+            | C::ScrollTo { .. }
+            | C::ScrollBy { .. } => false,
         }
     }
 
@@ -410,11 +437,12 @@ impl Guest {
                             if let Err(error) = self.inputs.replace(root) {
                                 self.fault = Some(error);
                             }
-                            self.pictures.adopt(root);
                             // The guest remembers its tree without the
                             // picture bytes; the tree its patches build on
                             // has to be that one.
-                            crate::runtime::pictures::strip(root);
+                            if self.pictures.adopt(root, self.module) {
+                                self.pending.push(wire::Event::Resync);
+                            }
                             // O(n) over the tree: only with perf on, and
                             // only on a tick that changed it
                             if perf::on() {

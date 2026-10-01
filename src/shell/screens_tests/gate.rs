@@ -459,7 +459,7 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
     let scene = build();
     scene.0.center.lock().ask_for_test("gate-a");
     let center = scene.0.center.clone();
-    let prefs = crate::backend::read_prefs();
+    let prefs = crate::backend::read_prefs().unwrap();
     assert_eq!(prefs, serde_json::json!({}));
     let (_view, native) = open(scene, cx);
     let window = gpui_kit::VisualContext::window_handle(&native);
@@ -470,7 +470,7 @@ async fn a_door_walk_leaves_the_prefs_as_it_found_them(cx: &mut TestAppContext) 
         "{}",
         report["applicable"]
     );
-    assert_eq!(crate::backend::read_prefs(), prefs);
+    assert_eq!(crate::backend::read_prefs().unwrap(), prefs);
     assert!(crate::runtime::notify::Settings::load().views.is_empty());
     assert!(center.lock().asking("gate-a"));
 }

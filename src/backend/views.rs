@@ -24,6 +24,10 @@ pub const VIEW_SECTION: &str = "ducktape.view";
 /// compiled, so no view is near it.
 const MAX_PROGRAM_BYTES: usize = 64 << 20;
 
+/// The most roster entries the app takes: a node that lists more has the
+/// rest left off the rail and never loaded, said once in app.log.
+pub const MAX_PROGRAMS: usize = 256;
+
 /// One roster entry, as the rail lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
@@ -79,7 +83,21 @@ pub async fn programs(client: &RpcClient, network: &str) -> Result<Vec<Program>,
         code: view.view,
         bare: true,
     });
-    Ok(programs.chain(views).collect())
+    let mut roster: Vec<Program> = programs.chain(views).collect();
+    if roster.len() > MAX_PROGRAMS {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "roster_capped",
+                listed = roster.len(),
+                kept = MAX_PROGRAMS,
+                "the node lists more programs than the app takes"
+            );
+        });
+        roster.truncate(MAX_PROGRAMS);
+    }
+    Ok(roster)
 }
 
 async fn ask(
