@@ -308,7 +308,11 @@ its meaning; the host and the views name the const, never the string.
    answers `rpc_client` with the `NODE_UNREACHABLE` sentence; `op.submit`
    (`spawn_retrying_unsent`) retries only `rpc_client`, which proves nothing
    was sent, and `invite.create` (`spawn_no_retry`) asks once. A node's own
-   refusal ends the call at once.
+   refusal ends the call at once. Each attempt has `noded::ANSWER_DEADLINE`
+   (180 s, above the hold a recovering node puts on a request) to answer;
+   one cut there is `node_failed`, so a submit is never signed again. The
+   client bounds only the connect (10 s), and reads an answer no further
+   than `noded::MAX_BODY_BYTES` (a blob: its own cap), `too_large` past it.
 4. **Sign.** A read: `backend::query_frame` signs a `Frame` at seq 0 with
    the seated key, or with the process's throwaway `reader_key` while nobody
    is signed in; the program hears who asks, the node checks no sequence.
@@ -331,7 +335,9 @@ its meaning; the host and the views name the const, never the string.
    `done: false`. While the reply queue is past half full
    (`MAX_STREAM_BACKLOG_*`) a subscription parks on the `drained` watch
    instead of adding items, so a slow view holds its own backlog on the
-   socket. A cancel drops the task and with it the socket.
+   socket. A cancel drops the task and with it the socket. A `module.changes`
+   socket that closes, or says nothing for `CHANGES_IDLE` (120 s: the node
+   answers no ping), is opened again and the view handed `None` to re-read.
 
 `module.describe` (`kernel/describe.rs`) is the odd one: it fetches the
 program's current code blob, compiles the `ducktape.describe` section once

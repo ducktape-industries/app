@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::kernel::tests::{guest, read_request, respond};
+use crate::runtime::kernel::tests::{Mode, fake_node, guest, read_request, respond};
 
 /// The one refusal `id` got, as (code, message).
 fn refused(guest: &mut Guest, id: u64) -> (String, String) {
@@ -95,10 +95,11 @@ async fn a_submit_whose_answer_was_lost_is_not_submitted_again() {
     let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::SUBMIT);
-    let (answer, attempts) = until_answered(NODE_RETRY_BUDGET, unsent, || {
-        submit(node.clone(), call_registry())
-    })
-    .await;
+    let (answer, attempts) =
+        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
+            submit(node.clone(), call_registry())
+        })
+        .await;
     assert_eq!(attempts, 1);
     assert_eq!(
         answer.unwrap_err().code,
@@ -127,10 +128,11 @@ async fn a_submit_whose_sequence_read_was_lost_is_asked_again() {
     let _seat = backend::seat_serial();
     backend::seat_key(commonware_cryptography::ed25519::PrivateKey::from_seed(41)).await;
     let (node, submits) = applying_node_with_a_lost_answer(noded::route::GET);
-    let (answer, attempts) = until_answered(NODE_RETRY_BUDGET, unsent, || {
-        submit(node.clone(), call_registry())
-    })
-    .await;
+    let (answer, attempts) =
+        until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, unsent, || {
+            submit(node.clone(), call_registry())
+        })
+        .await;
     assert_eq!(
         answer,
         Ok(Vec::new()),
@@ -138,4 +140,146 @@ async fn a_submit_whose_sequence_read_was_lost_is_asked_again() {
     );
     assert_eq!(attempts, 2, "the lost read, then the one that went through");
     assert_eq!(submits.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// A view's `module.query` to a node that takes the request and never
+/// answers is refused once its attempt's deadline passes, and gives its
+/// in-flight slot back: before, it waited for good and held the slot.
+#[test]
+fn a_query_to_a_stalled_node_is_refused_at_its_deadline_and_frees_its_slot() {
+    let fake = fake_node(vec![(noded::route::QUERY, Mode::Stall)]);
+    let mut guest = guest();
+    let replies = guest.replies.clone();
+    let asked = std::time::Instant::now();
+    start(&mut guest, 1, async move {
+        let budget = std::time::Duration::from_secs(1);
+        let per_attempt = std::time::Duration::from_millis(300);
+        let (answer, _) = until_answered(budget, per_attempt, transport_failed, || {
+            query(fake.node.clone(), call_registry())
+        })
+        .await;
+        replies.item(1, answer, true);
+    });
+    assert!(guest.replies.any_in_flight());
+    while guest.replies.any_in_flight() {
+        assert!(
+            asked.elapsed() < std::time::Duration::from_secs(10),
+            "the stalled ask still holds its slot"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let mut answered = Vec::new();
+    guest.replies.drain_into(&mut answered).unwrap();
+    guest.pending = answered;
+    assert_eq!(
+        refused(&mut guest, 1),
+        (
+            refusal::RPC_CLIENT.to_owned(),
+            crate::runtime::NODE_UNREACHABLE.to_owned()
+        )
+    );
+}
+
+/// A recovering node holds a request and answers once it is back, which
+/// can outlast the whole retry budget: the answer still lands. The
+/// deadline is each attempt's own; one taken from the budget's remainder
+/// (`budget - elapsed`) would cut this answer off as a failure.
+#[tokio::test]
+async fn a_held_answer_outlasting_the_budget_still_lands() {
+    let fake = fake_node(vec![(
+        noded::route::QUERY,
+        Mode::After(
+            std::time::Duration::from_millis(1500),
+            abi::encode(&vec![7u8]),
+        ),
+    )]);
+    let budget = std::time::Duration::from_secs(1);
+    let per_attempt = std::time::Duration::from_secs(3);
+    let (answer, attempts) = until_answered(budget, per_attempt, transport_failed, || {
+        query(fake.node.clone(), call_registry())
+    })
+    .await;
+    assert_eq!(answer, Ok(vec![7]), "the held answer is the answer");
+    assert_eq!(attempts, 1);
+}
+
+/// A node that hangs up on a read is asked again within the budget; the
+/// view hears it as unreachable once the budget is spent.
+#[tokio::test]
+async fn a_node_that_hangs_up_is_asked_again_within_the_budget() {
+    let fake = fake_node(vec![(noded::route::QUERY, Mode::Close)]);
+    let budget = std::time::Duration::from_millis(1500);
+    let (answer, attempts) =
+        until_answered(budget, noded::ANSWER_DEADLINE, transport_failed, || {
+            query(fake.node.clone(), call_registry())
+        })
+        .await;
+    assert_eq!(answer.unwrap_err().code, refusal::RPC_CLIENT);
+    assert_eq!(attempts, 2, "asked at once and a second later");
+    assert_eq!(fake.accepted.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// `blob.get` from a node streaming more than the view may read is refused
+/// `too_large` as the bytes pass the cap, with what the node streamed past
+/// it left unread: chunked, or declared by a `Content-Length` (refused
+/// before any of the body is read).
+#[tokio::test]
+async fn a_blob_streamed_past_the_cap_is_refused_unread() {
+    let len = 4 * MAX_BLOB_BYTES;
+    let ask = methods::encode(&format!("sha256:{}", "00".repeat(32)));
+    for declared in [false, true] {
+        let mut fake = fake_node(vec![(
+            noded::route::BLOB_GET,
+            Mode::Stream { len, declared },
+        )]);
+        let refusal = blob_get(fake.node.clone(), ask.clone()).await.unwrap_err();
+        assert_eq!(refusal.code, refusal::TOO_LARGE, "declared: {declared}");
+        let streamed =
+            tokio::time::timeout(std::time::Duration::from_secs(10), fake.streamed.recv())
+                .await
+                .expect("the node is still streaming")
+                .unwrap();
+        assert!(
+            streamed < len,
+            "declared: {declared}: the whole {len} bytes were read ({streamed})"
+        );
+    }
+}
+
+/// A `module.changes` socket the node keeps open and says nothing on is
+/// taken for dead once it has been silent `idle`: closed, the view told
+/// once to re-read (`None`), and opened again.
+#[tokio::test]
+async fn a_silent_changes_socket_is_reopened_and_the_view_told_once() {
+    let fake = fake_node(vec![(noded::route::CHANGES, Mode::Silent)]);
+    let replies = std::sync::Arc::new(Replies::default());
+    let items = Items {
+        drained: replies.drains(),
+        replies: replies.clone(),
+        id: 1,
+    };
+    let idle = std::time::Duration::from_secs(1);
+    let following = tokio::spawn(follow_changes(
+        fake.node.clone(),
+        "chat".into(),
+        items,
+        idle,
+    ));
+    // silent from 0 s, torn down at ~1 s, reopened ~1 s later (the retry
+    // delay), silent again until ~3 s
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    following.abort();
+    let mut heard = Vec::new();
+    replies.drain_into(&mut heard).unwrap();
+    let reopened = wire::Event::Response {
+        id: 1,
+        result: Ok(methods::encode(&None::<u64>)),
+        done: false,
+    };
+    assert_eq!(heard, [reopened], "one re-read, for the one silent socket");
+    assert_eq!(
+        fake.accepted.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "the socket was opened again"
+    );
 }

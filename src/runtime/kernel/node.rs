@@ -23,6 +23,15 @@ pub(super) struct Node {
 /// How long a view's node request keeps asking a node that does not answer.
 const NODE_RETRY_BUDGET: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How long a `module.changes` socket may stay silent before it is taken
+/// for dead and opened again (the view told to re-read, as for any reopen).
+/// The node pushes nothing for a block that does not write to the program
+/// and answers no ping (it never reads its end of the socket), so silence is
+/// all there is to go on: a quiet program's socket is reopened once per
+/// this, and a half-open one (a laptop that slept, a link that dropped
+/// without a close) ends no later.
+const CHANGES_IDLE: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// A refusal the transport produced is retried; one that is the node's
 /// own word ends the retry loop. For a READ: asking again costs nothing.
 pub(super) fn transport_failed(refusal: &wire::Error) -> bool {
@@ -41,18 +50,28 @@ fn unsent(refusal: &wire::Error) -> bool {
     refusal.code == refusal::RPC_CLIENT
 }
 
-/// The answer, and how many times the node was asked for it.
+/// The answer, and how many times the node was asked for it: each ask
+/// given `per_attempt` to answer ([`noded::ANSWER_DEADLINE`], never the
+/// budget's remainder, which would cut a recovering node's held answer
+/// short), asked again while `retry_on` the refusal and `budget` lasts. An
+/// ask cut at its deadline may have reached the node: `node_failed`, which
+/// a submit does not sign again.
 async fn until_answered(
     budget: std::time::Duration,
+    per_attempt: std::time::Duration,
     retry_on: fn(&wire::Error) -> bool,
     mut ask: impl FnMut() -> Answered,
 ) -> (Answer, u64) {
     let deadline = tokio::time::Instant::now() + budget;
     let mut attempt: u32 = 0;
     loop {
-        let refusal = match ask().await {
-            Ok(bytes) => return (Ok(bytes), u64::from(attempt) + 1),
-            Err(refusal) => refusal,
+        let refusal = match tokio::time::timeout(per_attempt, ask()).await {
+            Ok(Ok(bytes)) => return (Ok(bytes), u64::from(attempt) + 1),
+            Ok(Err(refusal)) => refusal,
+            Err(_) => wire::Error::new(
+                refusal::NODE_FAILED,
+                "no answer came back: the node did not answer in time",
+            ),
         };
         if !retry_on(&refusal) {
             return (Err(refusal), u64::from(attempt) + 1);
@@ -142,7 +161,7 @@ fn spawn_method(
     start(guest, id, async move {
         let (result, attempts) = match retry_on {
             Some(retry_on) => {
-                until_answered(NODE_RETRY_BUDGET, retry_on, || {
+                until_answered(NODE_RETRY_BUDGET, noded::ANSWER_DEADLINE, retry_on, || {
                     method(node.clone(), ask.clone())
                 })
                 .await
@@ -294,41 +313,49 @@ pub(super) fn changes(guest: &mut Guest, id: u64, payload: &[u8]) {
         return;
     };
     let replies = guest.replies.clone();
+    let items = Items {
+        drained: replies.drains(),
+        replies,
+        id,
+    };
     let subscribed = (id, program.clone());
-    let started = start(guest, id, async move {
-        use futures::StreamExt as _;
-        let mut drained = replies.drains();
-        loop {
-            let mut changes = match node.client.changes(&program).await {
-                Ok(changes) => changes,
-                Err(error) => {
-                    tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
-                    tokio::time::sleep(backend::retry_delay(2)).await;
-                    continue;
-                }
-            };
-            while let Some(change) = changes.next().await {
-                let item = match change {
-                    Ok(change) => Ok(methods::encode(&Some(change.height))),
-                    Err(_) => break,
-                };
-                if !replies.subscription_item(&mut drained, id, item).await {
-                    return;
-                }
+    if start(
+        guest,
+        id,
+        follow_changes(node, program, items, CHANGES_IDLE),
+    ) {
+        guest.live_subscriptions.push(subscribed);
+    }
+}
+
+/// `module.changes`' loop: the program's socket, opened again whenever it
+/// closes, fails or stays silent for `idle`.
+async fn follow_changes(node: Node, program: String, mut items: Items, idle: std::time::Duration) {
+    use futures::StreamExt as _;
+    loop {
+        let mut changes = match node.client.changes(&program).await {
+            Ok(changes) => changes,
+            Err(error) => {
+                tracing::debug!(target: "ducktape::app", %error, program, "changes stream not opened");
+                tokio::time::sleep(backend::retry_delay(2)).await;
+                continue;
             }
-            // the socket closed: the node restarted or the link dropped. Say
-            // so once (the view re-reads) and open it again.
-            if !replies
-                .subscription_item(&mut drained, id, Ok(methods::encode(&None::<u64>)))
-                .await
-            {
+        };
+        while let Ok(Some(change)) = tokio::time::timeout(idle, changes.next()).await {
+            let item = match change {
+                Ok(change) => Ok(methods::encode(&Some(change.height))),
+                Err(_) => break,
+            };
+            if !items.send(item).await {
                 return;
             }
-            tokio::time::sleep(backend::retry_delay(1)).await;
         }
-    });
-    if started {
-        guest.live_subscriptions.push(subscribed);
+        // the socket closed or went silent: the node restarted or the link
+        // dropped. Say so once (the view re-reads) and open it again.
+        if !items.send(Ok(methods::encode(&None::<u64>))).await {
+            return;
+        }
+        tokio::time::sleep(backend::retry_delay(1)).await;
     }
 }
 
@@ -493,8 +520,11 @@ pub(super) fn blob_get(node: Node, ask: Vec<u8>) -> Answered {
             ("sha1", 20) => abi::BlobId::Sha1(digest.try_into().expect("20 bytes")),
             _ => return Err(malformed("id is `sha256:<hex>` or `sha1:<hex>`")),
         };
-        // absent is `None`, never a refusal: the ask itself did not fail
-        let Some(framed) = node.client.blob(id).await.map_err(refused)? else {
+        // absent is `None`, never a refusal: the ask itself did not fail.
+        // Read no further than the cap and the blob's header (`kind len\0`,
+        // under 32 bytes) in its borsh `Option<Vec<u8>>` (5)
+        let cap = MAX_BLOB_BYTES + 64;
+        let Some(framed) = node.client.blob(id, cap).await.map_err(refused)? else {
             return Ok(methods::encode(&None::<Vec<u8>>));
         };
         let body =

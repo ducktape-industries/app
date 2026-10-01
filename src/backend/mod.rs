@@ -66,6 +66,9 @@ pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
             refusal::NODE_FAILED,
             format!("no answer came back: {sentence}"),
         ),
+        error @ Error::TooLarge { .. } => {
+            view_wire::Error::new(refusal::TOO_LARGE, error.to_string())
+        }
     }
 }
 

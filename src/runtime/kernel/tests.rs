@@ -58,6 +58,123 @@ pub(super) fn respond(stream: &mut std::net::TcpStream, status: &str, body: &[u8
     stream.write_all(body).unwrap();
 }
 
+/// What a [`FakeNode`] does with a request on one route.
+#[derive(Clone)]
+pub(super) enum Mode {
+    /// `200 OK` with the body, at once.
+    Answer(Vec<u8>),
+    /// `200 OK` with the body once the hold is over: a recovering node.
+    After(std::time::Duration, Vec<u8>),
+    /// Reads the request and never answers, until the client hangs up.
+    Stall,
+    /// Reads the request and closes the connection.
+    Close,
+    /// `200 OK` with a blob's borsh `Some(framed)` `len` bytes long, sent
+    /// for as long as the client reads, its `Content-Length` declared or
+    /// the body chunked. What got out goes to [`FakeNode::streamed`].
+    Stream { len: usize, declared: bool },
+    /// A websocket that opens and says nothing, until the client hangs up.
+    Silent,
+}
+
+/// A node on a local socket whose routes each answer one [`Mode`], one
+/// thread per connection; a request line names its route by prefix.
+pub(super) struct FakeNode {
+    pub(super) node: node::Node,
+    /// Connections taken so far.
+    pub(super) accepted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The bytes each [`Mode::Stream`] got out before the client hung up.
+    pub(super) streamed: tokio::sync::mpsc::UnboundedReceiver<usize>,
+}
+
+pub(super) fn fake_node(routes: Vec<(&'static str, Mode)>) -> FakeNode {
+    use std::sync::atomic::Ordering;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let node = node::Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+    };
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (streamed, sent) = tokio::sync::mpsc::unbounded_channel();
+    let counted = accepted.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let (routes, streamed) = (routes.clone(), streamed.clone());
+            std::thread::spawn(move || serve(stream, &routes, &streamed));
+        }
+    });
+    FakeNode {
+        node,
+        accepted,
+        streamed: sent,
+    }
+}
+
+/// One connection to a [`FakeNode`]: its route's mode, played out.
+fn serve(
+    mut stream: std::net::TcpStream,
+    routes: &[(&'static str, Mode)],
+    streamed: &tokio::sync::mpsc::UnboundedSender<usize>,
+) {
+    use std::io::{Read as _, Write as _};
+    // the request line, peeked: a websocket's handshake reads it itself
+    let mut head = [0; 256];
+    let peeked = stream.peek(&mut head).unwrap_or(0);
+    let line = String::from_utf8_lossy(&head[..peeked]).into_owned();
+    let path = line.split(' ').nth(1).unwrap_or_default();
+    let Some((_, mode)) = routes.iter().find(|(route, _)| path.starts_with(route)) else {
+        panic!("no route for {line:?}");
+    };
+    // what a held connection waits on: the client hanging up
+    let hung_up =
+        |stream: &mut std::net::TcpStream| while matches!(stream.read(&mut [0; 64]), Ok(1..)) {};
+    if let Mode::Silent = mode {
+        let mut socket = tokio_tungstenite::tungstenite::accept(stream).unwrap();
+        while socket.read().is_ok() {}
+        return;
+    }
+    read_request(&mut stream);
+    match mode {
+        Mode::Answer(body) => respond(&mut stream, "200 OK", body),
+        Mode::After(hold, body) => {
+            std::thread::sleep(*hold);
+            respond(&mut stream, "200 OK", body);
+        }
+        Mode::Stall => hung_up(&mut stream),
+        Mode::Close => drop(stream),
+        Mode::Stream { len, declared } => {
+            let head = match declared {
+                true => format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n"),
+                false => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".into(),
+            };
+            let mut sent = 0;
+            let mut body = vec![0; 64 << 10];
+            body[0] = 1;
+            body[1..5].copy_from_slice(&(*len as u32 - 5).to_le_bytes());
+            let mut out = stream.write_all(head.as_bytes());
+            while out.is_ok() && sent < *len {
+                let chunk = &body[..body.len().min(len - sent)];
+                out = match declared {
+                    true => stream.write_all(chunk),
+                    false => write!(stream, "{:x}\r\n", chunk.len())
+                        .and_then(|()| stream.write_all(chunk))
+                        .and_then(|()| stream.write_all(b"\r\n")),
+                };
+                if out.is_ok() {
+                    sent += chunk.len();
+                }
+                body[..5].fill(0);
+            }
+            if out.is_ok() && !declared {
+                let _ = stream.write_all(b"0\r\n\r\n");
+            }
+            let _ = streamed.send(sent);
+        }
+        Mode::Silent => unreachable!(),
+    }
+}
+
 /// The reason `kind` is refused for, asked by a guest declaring `declared`;
 /// `None` if it is not refused at once.
 fn refused_with(declared: &[Capability], kind: &str) -> Option<String> {

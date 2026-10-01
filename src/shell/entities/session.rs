@@ -282,8 +282,11 @@ impl Session {
         let chain = ducklink::ChainId::of(&status.network, &status.genesis)
             .map_or_else(|| status.network.clone(), |chain| chain.to_string());
         let network = status.network.clone();
+        // the connection's one client: the views', the roster's and the
+        // sign-in calls'
+        let client = backend::RpcClient::new(origin.clone());
         let left = self.account.update(cx, |account, cx| {
-            account.take_up(keyring, origin.clone(), network.clone(), cx)
+            account.take_up(keyring, client.clone(), network.clone(), cx)
         });
         backend::note_endpoint(backend::RecentEndpoint {
             url: origin.clone(),
@@ -306,11 +309,7 @@ impl Session {
         );
         self.misses = 0;
         self.apply_status(&status, cx);
-        drop(crate::runtime::connected(
-            &backend::RpcClient::new(origin),
-            &network,
-            &chain,
-        ));
+        drop(crate::runtime::connected(&client, &network, &chain));
         if left {
             cx.emit(SessionEvent::LeftNetwork);
         }

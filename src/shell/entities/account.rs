@@ -77,9 +77,10 @@ pub(crate) struct Account {
     screen: Entity<Slice<Screen>>,
     /// A new recovery key's 24 words, while its screens show.
     phrase: Option<Secret>,
-    /// The node and network the account is on (`Session`'s, given as the
-    /// network is taken up): what the sign-in calls are asked of.
-    node: String,
+    /// The node and network the account is on (`Session`'s connection,
+    /// given as the network is taken up): what the sign-in calls are asked
+    /// of. Off a network, a client of no node.
+    client: backend::RpcClient,
     network: String,
     /// Where this network's keys live on this device
     /// ([`backend::bind_keyring`]): the name alone is not enough, two chains
@@ -116,7 +117,7 @@ impl Account {
             state: AccountState::default(),
             screen,
             phrase: None,
-            node: String::new(),
+            client: backend::RpcClient::new(""),
             network: String::new(),
             keyring: String::new(),
             approve_code: String::new(),
@@ -155,7 +156,12 @@ impl Account {
     }
 
     fn client(&self) -> backend::RpcClient {
-        backend::RpcClient::new(self.node.clone())
+        self.client.clone()
+    }
+
+    /// The node the account is on; empty off a network.
+    fn node(&self) -> &str {
+        self.client.endpoint()
     }
 
     /// The step's failure goes with the next keystroke in any of its fields.
@@ -168,9 +174,19 @@ impl Account {
         self.edit(|state| state.error = error, cx);
     }
 
+    /// The step left (a back, a close) with its call still out: the call is
+    /// dropped, never to land, and the next try is not refused as busy. A
+    /// node that stalls holds the step only until the person leaves it.
+    fn drop_call(&mut self, cx: &mut Context<Self>) {
+        if self.call.take().is_some() {
+            self.edit(|state| state.busy = false, cx);
+        }
+    }
+
     // ---------- the network ----------
 
-    /// The network `keyring` names becomes the one in hand, on `node`.
+    /// The network `keyring` names becomes the one in hand, on `client`'s
+    /// node.
     /// Another chain than the last (a switch, not a second node of the same
     /// network): nothing of the last one carries over (its seated key, its
     /// account, any sign-in half done), and the key step comes first; `true`
@@ -179,7 +195,7 @@ impl Account {
     pub(crate) fn take_up(
         &mut self,
         keyring: backend::Keyring,
-        node: String,
+        client: backend::RpcClient,
         network: String,
         cx: &mut Context<Self>,
     ) -> bool {
@@ -192,7 +208,7 @@ impl Account {
             self.show(Screen::Unlock { awaiting: false }, cx);
         }
         self.keyring = keyring.dir;
-        self.node = node;
+        self.client = client;
         self.network = network;
         let key_exists = backend::key_exists(&self.keyring);
         self.edit(|state| state.key_exists = key_exists, cx);
@@ -211,7 +227,7 @@ impl Account {
         self.link = None;
         self.passkey = None;
         self.phrase = None;
-        self.node.clear();
+        self.client = backend::RpcClient::new("");
         self.network.clear();
         self.keyring.clear();
         self.approve_code.clear();
@@ -426,26 +442,33 @@ impl Account {
         let Ok(key) = backend::hex_decode(&self.state.signer_key) else {
             return;
         };
-        if key.is_empty() || self.node.is_empty() {
+        if key.is_empty() || self.node().is_empty() {
             return;
         }
         let client = self.client();
         let (node, network, signer) = (
-            self.node.clone(),
+            self.node().to_owned(),
             self.network.clone(),
             self.state.signer_key.clone(),
         );
         let work = async move {
-            match backend::identity::account_of_key(&client, &network, key).await {
-                Ok(account) => Some(account),
-                Err(error) => {
+            let lookup = backend::identity::account_of_key(&client, &network, key);
+            match tokio::time::timeout(backend::noded::ANSWER_DEADLINE, lookup).await {
+                Ok(Ok(account)) => Some(account),
+                Ok(Err(error)) => {
                     tracing::debug!(target: "ducktape::app", %error, "account not resolved");
+                    None
+                }
+                Err(_) => {
+                    tracing::debug!(target: "ducktape::app", "account lookup unanswered");
                     None
                 }
             }
         };
         // never cancelled: a block landing mid-lookup would otherwise drop
-        // it, and `resolved` discards an answer for another node or key
+        // it, and `resolved` discards an answer for another node or key. A
+        // node that never answers one is given up on at its deadline, so
+        // lookups do not pile up one per block
         spawn_on_runtime(cx, work, move |this, account, cx| {
             if let Some(account) = account {
                 this.resolved(&node, &signer, account, cx);
@@ -468,7 +491,7 @@ impl Account {
         cx: &mut Context<Self>,
     ) {
         let _timed = timed();
-        if node != self.node || key != self.state.signer_key {
+        if node != self.node() || key != self.state.signer_key {
             return;
         }
         if self.screen(cx) == (Screen::Unlock { awaiting: true }) {
@@ -498,6 +521,9 @@ impl Account {
 
     pub(crate) fn phrase_cancel(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
+        if matches!(self.screen(cx), Screen::Phrase { .. }) {
+            self.drop_call(cx);
+        }
         self.leave_phrase(cx);
     }
 
@@ -585,6 +611,7 @@ impl Account {
     pub(crate) fn recover_cancel(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if self.screen(cx) == Screen::Recover {
+            self.drop_call(cx);
             self.show(
                 Screen::Account {
                     step: AccountStep::Name,
@@ -856,6 +883,7 @@ impl Account {
     pub(crate) fn create_later(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         if matches!(self.screen(cx), Screen::Account { .. }) {
+            self.drop_call(cx);
             self.show(Screen::Desk, cx);
         }
         self.clear_error(cx);
@@ -937,9 +965,11 @@ impl Account {
         );
     }
 
-    /// The dialog closed, however: what it found and its failure go.
+    /// The dialog closed, however: what it found, its failure and its call
+    /// out go.
     pub(crate) fn approve_closed(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
+        self.drop_call(cx);
         self.approve_found = None;
         self.edit(
             |state| {
@@ -964,7 +994,8 @@ impl Account {
             },
             cx,
         );
-        let work = async move { backend::join::find_request(&code).await };
+        let client = self.client();
+        let work = async move { backend::join::find_request(&client, &code).await };
         self.call = Some(spawn_on_runtime(cx, work, |this, found, cx| {
             this.approve_found(found, cx)
         }));
@@ -1045,10 +1076,17 @@ impl Account {
         cx.notify();
     }
 
+    /// A sign-in call a test holds out, as a submit leaves it.
+    #[cfg(test)]
+    pub(crate) fn seed_call(&mut self, call: Task<()>, cx: &mut Context<Self>) {
+        self.call = Some(call);
+        self.edit(|state| state.busy = true, cx);
+    }
+
     /// The node and network a test's account is on.
     #[cfg(test)]
     pub(crate) fn seed_network(&mut self, node: &str, network: &str, keyring: &str) {
-        self.node = node.into();
+        self.client = backend::RpcClient::new(node);
         self.network = network.into();
         self.keyring = keyring.into();
     }

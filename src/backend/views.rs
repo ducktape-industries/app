@@ -20,6 +20,10 @@ use super::{RpcClient, cache_dir};
 
 pub const VIEW_SECTION: &str = "ducktape.view";
 
+/// The most a program's code blob may be, framed: the view inside it is
+/// compiled, so no view is near it.
+const MAX_PROGRAM_BYTES: usize = 64 << 20;
+
 /// One roster entry, as the rail lists it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Program {
@@ -120,7 +124,7 @@ pub async fn program_bytes(
         return Ok((bytes, "disk"));
     }
     let framed = client
-        .blob(*code)
+        .blob(*code, MAX_PROGRAM_BYTES)
         .await
         .map_err(fetch_error)?
         .ok_or(Fetch::NotHeld)?;
@@ -182,6 +186,7 @@ fn fetch_error(error: super::noded::Error) -> Fetch {
         super::noded::Error::Refused(refusal) | super::noded::Error::Decode(refusal) => {
             Fetch::Refused(refusal.sentence)
         }
+        error @ super::noded::Error::TooLarge { .. } => Fetch::Refused(error.to_string()),
         other => Fetch::Unreachable(other.to_string()),
     }
 }
