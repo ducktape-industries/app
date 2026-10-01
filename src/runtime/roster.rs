@@ -52,7 +52,9 @@ pub(crate) struct Roster(Arc<Mutex<Vec<crate::backend::views::Program>>>);
 
 impl Roster {
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<crate::backend::views::Program>> {
-        lock(&self.0)
+        self.0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// A roster of its own that lists `modules`, for a test to draw or
