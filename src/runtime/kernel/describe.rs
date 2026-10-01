@@ -78,7 +78,9 @@ async fn module(node: &Node, code: abi::BlobId) -> Result<Option<Arc<Module>>, w
     let bytes = match views::program_bytes(&node.client, &code).await {
         Ok((bytes, _)) => bytes,
         // the transport: retried by the node method's loop
-        Err(Fetch::Unreachable(reason)) => return Err(wire::Error::new("rpc_client", reason)),
+        Err(Fetch::Unreachable(reason)) => {
+            return Err(wire::Error::new(refusal::RPC_CLIENT, reason));
+        }
         // not held yet, or not the code asked for: nothing now, asked again later
         Err(_) => return Ok(None),
     };
@@ -180,7 +182,7 @@ mod tests {
             .build()
             .unwrap();
         let refused = runtime.block_on(describe(node(), vec![9])).unwrap_err();
-        assert_eq!(refused.code, "malformed_request");
+        assert_eq!(refused.code, refusal::MALFORMED_REQUEST);
         let ask = methods::encode(&("unlisted".to_owned(), vec![1u8]));
         let answer = runtime.block_on(describe(node(), ask)).unwrap();
         assert_eq!(methods::decode::<Description>(&answer), Ok(None));
