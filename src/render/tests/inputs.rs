@@ -261,7 +261,9 @@ fn a_focused_field_wears_one_ring_on_its_own_box(cx: &mut gpui_kit::TestAppConte
     assert_eq!(node, (16., 276.), "the field's node is its box");
     let end = tree
         .read_with(&native, |tree, _| {
-            tree.measured_bounds(&[named_id("row"), named_id("end")])
+            tree.bounds
+                .get(&[named_id("row"), named_id("end")][..])
+                .copied()
         })
         .unwrap();
     assert_eq!(
@@ -435,7 +437,7 @@ fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContex
         native.update(|window, cx| window.render_frame(cx));
         let bounds = tree
             .read_with(&native, |tree, _| {
-                tree.measured_bounds(&[named_id("document")])
+                tree.bounds.get(&[named_id("document")][..]).copied()
             })
             .unwrap();
         assert_eq!(bounds.size, size(px(240.), px(expected)));
@@ -483,7 +485,9 @@ fn a_shrunk_editor_is_as_tall_as_all_of_its_lines(cx: &mut gpui_kit::TestAppCont
     native.update(|window, cx| window.render_frame(cx));
     let bounds = tree
         .read_with(&native, |tree, _| {
-            tree.measured_bounds(&[named_id("card"), named_id("document")])
+            tree.bounds
+                .get(&[named_id("card"), named_id("document")][..])
+                .copied()
         })
         .unwrap();
     let lines = f32::from(bounds.size.height) / leading;

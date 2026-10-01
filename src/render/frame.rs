@@ -6,11 +6,6 @@ use super::commands::walk_authored_paths;
 use super::*;
 
 impl ViewTree {
-    #[cfg(test)]
-    pub(crate) fn measured_bounds(&self, path: &[wire::ElementIdWire]) -> Option<Bounds<Pixels>> {
-        self.bounds.get(path).copied()
-    }
-
     pub fn set_editor_store(
         &mut self,
         store: crate::editor::wire::EditorStore,

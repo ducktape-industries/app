@@ -141,7 +141,9 @@ mod tests {
         let root = boxed(Some("card"), 200., 100., vec![drawing]);
         let (redraws, tree, native) = redraws_at_rest(root, cx);
         assert_eq!(redraws, 0, "the two measures fight over one entry");
-        let card = tree.read_with(&native, |tree, _| tree.measured_bounds(&[named_id("card")]));
+        let card = tree.read_with(&native, |tree, _| {
+            tree.bounds.get(&[named_id("card")][..]).copied()
+        });
         assert_eq!(card.map(|card| card.size), Some(size(px(200.), px(100.))));
     }
 }

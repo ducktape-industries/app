@@ -71,13 +71,21 @@ mod resource_limits {
         assert!(!rgba_fits(8192, 8192));
         assert!(!rgba_fits(u32::MAX, u32::MAX));
         assert!(
+            // sized right, so only `rgba_fits` can refuse it
             decode_image(&wire::ImageData::Rgba {
-                width: u32::MAX,
-                height: u32::MAX,
-                pixels: Vec::new(),
+                width: 8193,
+                height: 1,
+                pixels: vec![0; 8193 * 4],
             })
             .is_none()
         );
+        // the decoder's own limit passes an 8-bit grayscale picture its RGBA
+        // expansion would not fit
+        let mut png = Vec::new();
+        image::GrayImage::new(4097, 4096)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        assert!(decode_image(&wire::ImageData::Encoded(png)).is_none());
     }
 
     #[test]

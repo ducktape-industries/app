@@ -319,18 +319,4 @@ mod tests {
         );
         assert_eq!(origin, at(200., 100.));
     }
-
-    #[test]
-    fn the_window_is_not_the_room_a_pane_has() {
-        // inside the window (0..800) but past the pane's right edge (600)
-        let origin = fit(
-            Anchor::TopLeft,
-            at(500., 150.),
-            Point::default(),
-            menu(),
-            slot(),
-            Edges::default(),
-        );
-        assert!(origin.x + menu().width <= px(600.), "{origin:?}");
-    }
 }

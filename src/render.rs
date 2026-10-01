@@ -281,7 +281,7 @@ impl ViewTree {
         self.row = self.next_row.take();
         use wire::Node;
         let element = match node {
-            Node::Text(view_wire::TextNode { .. }) => self.text(node, cx),
+            Node::Text(view_wire::TextNode { .. }) => self.text(node),
             Node::Space { style } => div().refine_style(style).into_any_element(),
             Node::UniformList { .. } => self.uniform_list(node, window, cx),
             Node::List { .. } => self.variable_list(node, cx),

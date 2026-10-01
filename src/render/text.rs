@@ -36,7 +36,7 @@ thread_local! {
 
 /// Whether a paragraph painted in `clip` takes part in the selection while
 /// a drag that began in `drag` is held.
-pub(super) fn joins_drag(drag: Option<Bounds<Pixels>>, clip: Bounds<Pixels>) -> bool {
+fn joins_drag(drag: Option<Bounds<Pixels>>, clip: Bounds<Pixels>) -> bool {
     drag.is_none_or(|drag| drag == clip)
 }
 
@@ -264,7 +264,7 @@ fn paint_picked_link(
 }
 
 impl ViewTree {
-    pub(super) fn text(&mut self, node: &wire::Node, cx: &mut Context<Self>) -> AnyElement {
+    pub(super) fn text(&mut self, node: &wire::Node) -> AnyElement {
         let wire::Node::Text(view_wire::TextNode {
             id, style, content, ..
         }) = node
@@ -285,14 +285,6 @@ impl ViewTree {
             // itself stays out of the AX tree so it is not a second,
             // empty-named node carrying the same content as its value.
             .child(gpui_kit::Text::new_inaccessible(content.clone().into()));
-        #[cfg(test)]
-        let element = if id.is_some() {
-            element.child(self.measure(&self.authored_path, cx))
-        } else {
-            element
-        };
-        #[cfg(not(test))]
-        let _ = cx;
         announce(element, accessible(node)).into_any_element()
     }
 

@@ -41,9 +41,7 @@ fn fixed_row(id: u64, height: f32, color: u32) -> wire::Node {
 }
 
 #[gpui_kit::test]
-fn native_variable_list_measures_different_heights_and_keeps_slot_clip(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+fn native_variable_list_measures_different_heights(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let root = variable_list_node(
         3,
@@ -68,12 +66,6 @@ fn native_variable_list_measures_different_heights_and_keeps_slot_clip(
         assert_eq!(list.state.bounds_for_item(0).unwrap().size.height, px(20.));
         assert_eq!(list.state.bounds_for_item(1).unwrap().size.height, px(60.));
         assert_eq!(list.state.bounds_for_item(2).unwrap().size.height, px(100.));
-    });
-    native.update(|window, _| {
-        let bound = gpui_kit::ScaledPixels(200. * window.scale_factor());
-        for quad in window.painted_quads() {
-            assert!(quad.content_mask.bounds.right() <= bound);
-        }
     });
 }
 

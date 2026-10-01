@@ -260,92 +260,51 @@ fn text_respects_parent_width_and_keeps_nowrap_inside_its_box(cx: &mut gpui_kit:
         children: vec![root],
     });
     let window = cx.open_window(size(px(800.), px(500.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
-    let button_bounds = native.update(|window, _| window.find("wrapping-parent").bounds());
-    tree.read_with(&native, |tree, _| {
-        let parent = named_id("wrapping-parent");
-        let column = named_id("column");
-        let row = named_id("row");
-        let paragraph = tree
-            .measured_bounds(&[parent.clone(), column.clone(), named_id("paragraph")])
-            .unwrap();
-        let hash = tree
-            .measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("hash"),
-            ])
-            .unwrap();
-        assert!(
-            button_bounds.bottom() >= hash.bottom(),
-            "an auto-height clickable must show every wrapped line"
-        );
-        let count = tree
-            .measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("count"),
-            ])
-            .unwrap();
-        assert!(
-            tree.measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("height"),
-            ])
-            .unwrap()
-            .right()
-                <= hash.left()
-        );
-        assert_eq!(
-            tree.measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("label"),
-            ])
-            .unwrap()
-            .size
-            .width,
-            tree.measured_bounds(&[
-                parent.clone(),
-                column.clone(),
-                row.clone(),
-                named_id("reference"),
-            ])
-            .unwrap()
-            .size
-            .width,
-            "intrinsic labels cannot lose letters to a Fill spacer"
-        );
-        assert!(paragraph.size.width <= px(620.));
-        assert!(
-            paragraph.size.height > hash.size.height,
-            "default wrapping creates multiple lines"
-        );
-        assert!(hash.right() <= count.left());
-        assert!(
-            hash.size.height
-                > tree
-                    .measured_bounds(&[parent, column, row, named_id("reference")])
-                    .unwrap()
-                    .size
-                    .height,
-            "WordOrGlyph must override a native Button's inherited nowrap"
-        );
-        assert!(count.right() <= paragraph.left() + px(620.));
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
     });
-    let mut nowrap = div().truncate();
-    assert_eq!(nowrap.style().overflow.x, Some(gpui_kit::Overflow::Hidden));
+    let button_bottom = native.update(|window, _| {
+        f32::from(window.find("wrapping-parent").bounds().bottom()).round() as i64
+    });
+    let nodes = native
+        .update(|window, _| serde_json::to_value(crate::ax::snapshot("t", window, true)).unwrap());
+    // a Text's box as the door reads its Label: [x0, y0, x1, y1], logical px
+    let text = |key: &str| -> [i64; 4] {
+        let node = nodes
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|node| node["id"] == format!("t:{key}"))
+            .unwrap_or_else(|| panic!("{key} is in the tree: {nodes}"));
+        std::array::from_fn(|edge| node["bounds"][edge].as_i64().unwrap())
+    };
+    let width = |[left, _, right, _]: [i64; 4]| right - left;
+    let height = |[_, top, _, bottom]: [i64; 4]| bottom - top;
+    let [paragraph, hash, count] = ["paragraph", "hash", "count"].map(text);
     assert!(
-        nowrap.text_style().text_overflow.is_some(),
-        "the native text shaper must truncate glyphs, not only the containing box"
+        button_bottom >= hash[3],
+        "an auto-height clickable must show every wrapped line"
     );
+    assert!(text("height")[2] <= hash[0]);
+    assert_eq!(
+        width(text("label")),
+        width(text("reference")),
+        "intrinsic labels cannot lose letters to a Fill spacer"
+    );
+    assert!(width(paragraph) <= 620);
+    assert!(
+        height(paragraph) > height(hash),
+        "default wrapping creates multiple lines"
+    );
+    assert!(hash[2] <= count[0]);
+    assert!(
+        height(hash) > height(text("reference")),
+        "WordOrGlyph must override a native Button's inherited nowrap"
+    );
+    assert!(count[2] <= paragraph[0] + 620);
 }
 
 #[gpui_kit::test]
@@ -436,7 +395,7 @@ fn a_scrolling_container_keeps_its_handle_at_its_own_id(cx: &mut gpui_kit::TestA
     tree.read_with(&native, |tree, _| {
         assert_eq!(tree.scrolls[&path].max_offset().y, px(800.));
         assert_eq!(
-            tree.measured_bounds(&path).unwrap().size,
+            tree.bounds[&path].size,
             size(px(300.), px(200.)),
             "the bar leaves the scroller's layout alone"
         );

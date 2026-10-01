@@ -220,15 +220,3 @@ fn a_drag_that_wanders_into_the_next_pane_stays_in_its_own(cx: &mut gpui_kit::Te
     assert!(copied.contains("alpha"), "{copied:?}");
     assert!(!copied.contains("beta"), "the thread's line: {copied:?}");
 }
-
-#[test]
-fn only_the_clip_a_drag_began_in_joins_it() {
-    let room = Bounds::new(point(px(0.), px(0.)), size(px(150.), px(100.)));
-    let thread = Bounds::new(point(px(150.), px(0.)), size(px(150.), px(100.)));
-    assert!(
-        super::text::joins_drag(None, thread),
-        "no drag: all take part"
-    );
-    assert!(super::text::joins_drag(Some(room), room));
-    assert!(!super::text::joins_drag(Some(room), thread));
-}

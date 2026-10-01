@@ -123,7 +123,7 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
             path.push(named_id("room-column"));
         }
         path.push(named_id(key));
-        tree.read_with(&native, |tree, _| tree.measured_bounds(&path))
+        tree.read_with(&native, |tree, _| tree.bounds.get(&path).copied())
             .unwrap_or_else(|| panic!("{key} was measured"))
     };
     let (sidebar, error, composer) = (bounds("sidebar"), bounds("error"), bounds("composer"));
@@ -365,7 +365,9 @@ fn an_unchanged_guest_tree_is_not_drawn_again(cx: &mut gpui_kit::TestAppContext)
         frame(&mut native);
     }
     assert_eq!(tree.read_with(&native, |tree, _| tree.renders), settled);
-    let card = tree.read_with(&native, |tree, _| tree.measured_bounds(&[named_id("card")]));
+    let card = tree.read_with(&native, |tree, _| {
+        tree.bounds.get(&[named_id("card")][..]).copied()
+    });
     assert_eq!(card.map(|card| card.size), Some(size(px(200.), px(100.))));
 }
 
