@@ -31,6 +31,7 @@ struct DoorFile {
 /// `$XDG_RUNTIME_DIR/ducktape/ax-door.json`, else the app's cache directory:
 /// never the state directory, which is `~/Library/Logs` on macOS, where
 /// support bundles collect.
+#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 fn door_file() -> Result<PathBuf, String> {
     match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
         Some(dir) => Ok(PathBuf::from(dir).join("ducktape").join("ax-door.json")),
@@ -73,6 +74,7 @@ fn write_door_file(path: PathBuf, door: &DoorFile) -> std::io::Result<Written> {
 /// Opens the door when `DUCKTAPE_AX_DOOR` asks for it; the calls it takes
 /// arrive on the returned channel for [`serve`], and the door file stays
 /// while the [`Written`] does.
+#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 pub(crate) fn open() -> Option<(futures::channel::mpsc::UnboundedReceiver<Call>, Written)> {
     open_env(
         std::env::var("DUCKTAPE_AX_DOOR").ok().as_deref(),
@@ -96,15 +98,22 @@ fn open_env(
             return None;
         }
     };
+    // the door file's path is settled before the port is taken: a door no
+    // client can learn of is never opened
+    let file = match file {
+        Ok(file) => file,
+        Err(error) => {
+            tracing::warn!(target: "ducktape::app", reason = "ax_door_file_unwritten", %error, "the test door stays shut");
+            return None;
+        }
+    };
     let opened = bind(port).and_then(|listener| Ok((listener.local_addr()?.port(), listener)));
     let (port, listener) = match opened {
         Ok(opened) => opened,
         Err(error) => {
             // a door file left by a run before names a door that is not
             // this app's: a client must not take its token to that port
-            if let Ok(path) = &file {
-                let _ = std::fs::remove_file(path);
-            }
+            let _ = std::fs::remove_file(&file);
             tracing::warn!(target: "ducktape::app", reason = "ax_door_unbound", %error, "the test door stays shut");
             return None;
         }
@@ -128,9 +137,7 @@ fn open_env(
     // written once the thread is up, so the file never names a door no one
     // answers; on a failure here the thread stays, and no client can learn
     // its token
-    let written =
-        file.and_then(|path| write_door_file(path, &door).map_err(|error| error.to_string()));
-    let written = match written {
+    let written = match write_door_file(file, &door) {
         Ok(written) => written,
         Err(error) => {
             tracing::warn!(target: "ducktape::app", reason = "ax_door_file_unwritten", %error, "the test door stays shut");
@@ -201,7 +208,7 @@ fn accept(
             stream: &stream,
             until: Instant::now() + patience,
         };
-        let reply = match read_request(reading) {
+        let reply = match read_request(reading, token) {
             Err(_) => Reply::new(400, json!({ "error": "not an HTTP/1.1 request" })),
             Ok((_, _, auth, _)) if !same(auth.as_deref().unwrap_or_default(), token) => {
                 Reply::new(401, json!({ "error": "the door's token is required" }))
@@ -261,8 +268,11 @@ fn whole_line(reader: &mut impl std::io::BufRead, line: &mut String) -> std::io:
 
 /// Method, target, bearer token and body: the request line and headers in
 /// [`HEAD_MAX`] bytes and [`HEADERS_MAX`] lines, the body in [`BODY_MAX`].
+/// The body is read only for the caller that holds `token`; any other gets
+/// it empty, unread.
 fn read_request(
     source: impl std::io::Read,
+    token: &str,
 ) -> std::io::Result<(String, String, Option<String>, Vec<u8>)> {
     let invalid = || std::io::Error::from(std::io::ErrorKind::InvalidData);
     let mut reader = BufReader::new(source.take(HEAD_MAX));
@@ -294,6 +304,9 @@ fn read_request(
     }
     if length > BODY_MAX {
         return Err(invalid());
+    }
+    if !same(auth.as_deref().unwrap_or_default(), token) {
+        return Ok((method, target, auth, Vec::new()));
     }
     // the body is past the head's cap: what the reader holds, and `length`
     // bytes more at most
@@ -382,9 +395,17 @@ fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Reply> {
         .map_err(|error| Reply::new(400, json!({ "error": error.to_string() })))
 }
 
+/// Longest the CLI waits on the door for one read or write: over the longest
+/// wait the door serves ([`MAX_DEADLINE`]), so a slow answer is not cut off.
+#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
+const CALL_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// One call to the door: its status and body.
+#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 fn call(door: &DoorFile, method: &str, target: &str, body: &str) -> std::io::Result<(u16, String)> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, door.port))?;
+    stream.set_read_timeout(Some(CALL_TIMEOUT))?;
+    stream.set_write_timeout(Some(CALL_TIMEOUT))?;
     write!(
         stream,
         "{method} {target} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -402,6 +423,7 @@ fn call(door: &DoorFile, method: &str, target: &str, body: &str) -> std::io::Res
     Ok((status, body.to_owned()))
 }
 
+#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 const USAGE: &str = "usage: ducktape-app ax tree [--window W] [--view V] [--compact] [--bounds]
        ducktape-app ax actions [--window W] [--view V]
        ducktape-app ax act <id> <press|focus|set_value|type|increment|decrement|expand|collapse|context_menu|scroll_into_view> [value]
@@ -421,6 +443,7 @@ fn point(word: &str) -> Option<[f32; 2]> {
 
 /// `ducktape-app ax …`: prints the door's JSON. Exit 0 answered, 1 not
 /// found, refused or timed out, 2 the door is not open.
+#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 pub(crate) fn cli(args: &[String]) -> i32 {
     let Some((method, target, body)) = request(args) else {
         eprintln!("{USAGE}");
@@ -622,7 +645,7 @@ mod tests {
     fn a_head_is_read_to_its_cap_and_no_further() {
         let sent = 1 << 20;
         let mut endless = std::io::repeat(b'A').take(sent);
-        assert!(read_request(&mut endless).is_err());
+        assert!(read_request(&mut endless, TOKEN).is_err());
         assert_eq!(sent - endless.limit(), HEAD_MAX);
     }
 
@@ -637,16 +660,16 @@ mod tests {
                 "X-Pad: b\r\n".repeat(headers)
             )
         };
-        assert!(read_request(head(HEADERS_MAX).as_bytes()).is_ok());
-        assert!(read_request(head(HEADERS_MAX + 1).as_bytes()).is_err());
-        assert!(read_request(&b"GET /tree HTTP/1.1\r\nX-Pad: b\r\n"[..]).is_err());
+        assert!(read_request(head(HEADERS_MAX).as_bytes(), TOKEN).is_ok());
+        assert!(read_request(head(HEADERS_MAX + 1).as_bytes(), TOKEN).is_err());
+        assert!(read_request(&b"GET /tree HTTP/1.1\r\nX-Pad: b\r\n"[..], TOKEN).is_err());
         let body = "b".repeat(64 << 10);
         let near = format!(
-            "POST /act HTTP/1.1\r\nX-Pad: {}\r\nContent-Length: {}\r\n\r\n{body}",
+            "POST /act HTTP/1.1\r\nAuthorization: Bearer {TOKEN}\r\nX-Pad: {}\r\nContent-Length: {}\r\n\r\n{body}",
             "a".repeat(15 << 10),
             body.len()
         );
-        let (_, _, _, read) = read_request(near.as_bytes()).unwrap();
+        let (_, _, _, read) = read_request(near.as_bytes(), TOKEN).unwrap();
         assert_eq!(read, body.as_bytes());
     }
 
@@ -807,6 +830,29 @@ mod tests {
         std::fs::write(&path, r#"{"port":1,"token":"stale"}"#).unwrap();
         assert!(open_env(Some(&port), None, Ok(path.clone())).is_none());
         assert!(!path.exists(), "the stale door file stayed");
+    }
+
+    /// A door file path that cannot be made leaves no listener: nothing is
+    /// bound, so the port stays free.
+    #[test]
+    fn a_door_with_no_file_path_binds_nothing() {
+        let held = bind(0).unwrap();
+        let port = held.local_addr().unwrap().port();
+        drop(held);
+        assert!(open_env(Some(&port.to_string()), None, Err("no cache dir".into())).is_none());
+        bind(port).expect("the port was taken by a door no client can use");
+    }
+
+    /// A wrong token with a large declared body is 401 at once: the caller
+    /// never sends the body, and the door does not wait for it.
+    #[test]
+    fn a_wrong_token_is_refused_without_reading_the_body() {
+        let (port, seen) = door(false, Duration::from_secs(30));
+        let head = format!(
+            "POST /act HTTP/1.1\r\nAuthorization: Bearer wrong\r\nContent-Length: {BODY_MAX}\r\n\r\n"
+        );
+        assert_eq!(send(port, head.as_bytes()).unwrap().0, 401);
+        assert!(seen.try_recv().is_err());
     }
 
     /// `POST /key` and `POST /act` carry at most [`MAX_TEXT`] characters in
