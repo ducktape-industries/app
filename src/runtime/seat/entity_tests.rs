@@ -664,13 +664,11 @@ fn a_route_reaches_an_open_view(cx: &mut TestAppContext) {
 fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
     const MODULE: &str = "clipboard-test";
     let encode = |requests: Vec<wire::Request>| {
-        let frame = wire::encode(&wire::Frame {
+        crate::runtime::wat_frame(&wire::Frame {
             root: Some(wire::Node::empty()),
             requests,
             ..Default::default()
-        });
-        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
-        (bytes, frame.len() as u32)
+        })
     };
     let (ask, ask_len) = encode(vec![wire::Request {
         id: 5,

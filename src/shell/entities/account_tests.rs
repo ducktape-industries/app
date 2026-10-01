@@ -3,7 +3,7 @@
 //! the desktop does on the account's events (a lock's toast, a new
 //! account's Help, a network left).
 use super::super::{WindowKey, WindowKind};
-use super::tests::{desk_of, session};
+use super::tests::{active, desk_of, modules, session};
 use super::{Account, AccountStep, Chain, Entities, Screen, Session, Slice};
 use crate::backend;
 use crate::ui::layout::{EMPTY, HELP};
@@ -678,18 +678,6 @@ fn desktop(cx: &mut TestAppContext) -> (Entities, WindowKey) {
         desk.split(EMPTY, cx);
     });
     (entities, key)
-}
-
-fn modules(entities: &Entities, key: WindowKey, cx: &mut TestAppContext) -> Vec<&'static str> {
-    desk_of(entities, key, cx).read_with(cx, |desk, _| {
-        desk.get().panes.iter().map(|pane| pane.module).collect()
-    })
-}
-
-fn active(entities: &Entities, cx: &TestAppContext) -> Option<&'static str> {
-    entities
-        .windows
-        .read_with(cx, |windows, _| windows.active())
 }
 
 /// Locking says so: the account's toast reaches the notice.

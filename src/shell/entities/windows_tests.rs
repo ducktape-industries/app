@@ -1,7 +1,7 @@
 //! The windows, moved by their methods (windows.rs), and what the app-wide
 //! entities around them do on their own: a toast's clock, a pref's write,
 //! the theme's sync, the network left.
-use super::tests::{desk_of, entities, notifies};
+use super::tests::{active, desk_of, entities, modules, notifies};
 use super::{Entities, Overlay, SessionState};
 use crate::runtime::WindowKey;
 use crate::shell::WindowKind;
@@ -37,16 +37,6 @@ fn console(cx: &mut TestAppContext) -> (Entities, WindowKey) {
         desk.seed("chat", cx);
     });
     (app, key)
-}
-
-fn modules(app: &Entities, key: WindowKey, cx: &TestAppContext) -> Vec<&'static str> {
-    desk_of(app, key, cx).read_with(cx, |desk, _| {
-        desk.get().panes.iter().map(|pane| pane.module).collect()
-    })
-}
-
-fn active(app: &Entities, cx: &TestAppContext) -> Option<&'static str> {
-    app.windows.read_with(cx, |windows, _| windows.active())
 }
 
 fn window_count(app: &Entities, cx: &TestAppContext) -> usize {

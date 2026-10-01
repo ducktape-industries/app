@@ -203,15 +203,22 @@ pub(crate) fn seat_for_test(module: &'static str, min_width: u32) {
     seat_drawing_for_test(module, min_width, wire::Node::empty());
 }
 
+/// `frame` encoded as the string of a WAT `data` segment, and its length.
+#[cfg(test)]
+pub(crate) fn wat_frame(frame: &wire::Frame) -> (String, u32) {
+    let frame = wire::encode(frame);
+    let bytes = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
+    (bytes, frame.len() as u32)
+}
+
 /// [`seat_for_test`], its view drawing `root` on every tick.
 #[cfg(test)]
 pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: wire::Node) {
-    let frame = wire::encode(&wire::Frame {
+    let (bytes, len) = wat_frame(&wire::Frame {
         root: Some(root),
         ..Default::default()
     });
-    let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
-    let tick = wire::abi::pack(65536, frame.len() as u32);
+    let tick = wire::abi::pack(65536, len);
     let code = Module::new(
         guest::engine(),
         format!(
@@ -234,13 +241,11 @@ pub(crate) fn seat_drawing_for_test(module: &'static str, min_width: u32, root: 
 #[cfg(test)]
 pub(crate) fn seat_busy_for_test(module: &'static str, min_width: u32, busy_ticks: u32) {
     let encode = |busy| {
-        let frame = wire::encode(&wire::Frame {
+        wat_frame(&wire::Frame {
             root: Some(wire::Node::empty()),
             busy,
             ..Default::default()
-        });
-        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
-        (bytes, frame.len() as u32)
+        })
     };
     let (busy, busy_len) = encode(true);
     let (quiet, quiet_len) = encode(false);
@@ -279,13 +284,11 @@ pub(crate) fn seat_frames_for_test(
     then: wire::Node,
 ) {
     let encode = |root, busy| {
-        let frame = wire::encode(&wire::Frame {
+        wat_frame(&wire::Frame {
             root: Some(root),
             busy,
             ..Default::default()
-        });
-        let bytes: String = frame.iter().map(|byte| format!("\\{byte:02x}")).collect();
-        (bytes, frame.len() as u32)
+        })
     };
     let (first, first_len) = encode(first, true);
     let (then, then_len) = encode(then, false);

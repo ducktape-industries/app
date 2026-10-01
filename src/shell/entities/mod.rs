@@ -181,6 +181,22 @@ pub(crate) mod tests {
         })
     }
 
+    /// The modules window `key`'s desk shows, pane by pane.
+    pub(crate) fn modules(
+        app: &Entities,
+        key: crate::runtime::WindowKey,
+        cx: &gpui_kit::TestAppContext,
+    ) -> Vec<&'static str> {
+        desk_of(app, key, cx).read_with(cx, |desk, _| {
+            desk.get().panes.iter().map(|pane| pane.module).collect()
+        })
+    }
+
+    /// The active program, if any.
+    pub(crate) fn active(app: &Entities, cx: &gpui_kit::TestAppContext) -> Option<&'static str> {
+        app.windows.read_with(cx, |windows, _| windows.active())
+    }
+
     /// Counts `entity`'s notifies while the subscription lives.
     pub(crate) fn notifies<T: 'static>(
         entity: &Entity<T>,
