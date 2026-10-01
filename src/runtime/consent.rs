@@ -363,10 +363,11 @@ mod tests {
         assert!(said("registry-b", None).starts_with("Program registry-b asks"));
     }
 
-    /// Claim: no program id reads as the system. A program named `system`,
-    /// or `System` (landed before the registry refused that spelling), asks
-    /// as "Program <id>", its id the part set in mono; only a program bound
-    /// to a role asks as "System", with no id to set.
+    /// Claim: no program id reads as the system. A program named `system`
+    /// asks as "Program system", its id the part set in mono; only a
+    /// program bound to a role asks as "System", with no id to set. An id
+    /// outside the one spelling (`System`, `"\nSystem"`) never reaches the
+    /// card: the roster leaves it off (`seat::tests`).
     #[test]
     fn no_program_id_asks_as_the_system() {
         let suspend = abi::encode(&identity::Op::Suspend { account: 12 });
@@ -378,16 +379,12 @@ mod tests {
         let asked = |program: &str| {
             needed(program, Some(&roles), identity::MODULE, &suspend, Some(7)).unwrap()
         };
-        for program in ["System", "system"] {
-            let words = asked(program);
-            assert_eq!(
-                words.said,
-                format!(
-                    "Program {program} asks to suspend agent #12. It stops acting until it is resumed."
-                )
-            );
-            assert_eq!(words.id.map(|id| &words.said[id]), Some(program));
-        }
+        let words = asked("system");
+        assert_eq!(
+            words.said,
+            "Program system asks to suspend agent #12. It stops acting until it is resumed."
+        );
+        assert_eq!(words.id.map(|id| &words.said[id]), Some("system"));
         let system = asked("valset");
         assert_eq!(
             (system.said.as_str(), system.id),
