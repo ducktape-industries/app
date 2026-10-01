@@ -1,11 +1,12 @@
 //! Image, Svg and Canvas nodes. A picture's bytes cross the wire once;
 //! later frames name it by the guest's content hash, and the tree draws
 //! that hash from the seat's [`PictureBytes`]. Rasters decoded from them
-//! are cached in `images`. `qr` is the shell's (sign-in); no wire node
+//! are cached in [`Rasters`]. `qr` is the shell's (sign-in); no wire node
 //! draws one.
 use super::picture_resources::{cache_fits, decode_image};
 use super::*;
 use crate::render::native_id;
+use std::{cell::RefCell, rc::Rc};
 
 /// A seat's picture bytes by content hash, each held once: the seat's
 /// store (`runtime::pictures`) owns and evicts them, and hands every tree
@@ -14,6 +15,125 @@ use crate::render::native_id;
 pub(crate) struct PictureBytes {
     pub(crate) raster: HashMap<u64, Arc<wire::ImageData>>,
     pub(crate) vector: HashMap<u64, Arc<[u8]>>,
+}
+
+/// The rasters decoded from a seat's picture bytes, by content hash: one
+/// cache for the seat's tree and the tooltip trees it opens, carried
+/// across a hot swap, and released with their atlas tiles when the seat
+/// drops (`ViewTree::release`). Past the caps (`picture_resources`) it
+/// evicts the rasters drawn least recently before the current frame, whose
+/// bytes the seat still holds to decode again; a raster that does not fit
+/// beside the current frame's is refused, and its Image draws the guest's
+/// fallback.
+#[derive(Default)]
+pub(crate) struct Rasters {
+    /// Each raster, and the frame that last drew it.
+    held: HashMap<u64, (Arc<RenderImage>, u64)>,
+    bytes: usize,
+    /// The frame the seat's tree adopted last (`ViewTree::replace`).
+    frame: u64,
+    /// The first refusal is logged; later ones are the same story.
+    refused: bool,
+}
+
+/// [`Rasters`] as the seat's trees share it.
+pub(crate) type SharedRasters = Rc<RefCell<Rasters>>;
+
+fn raster_len(image: &RenderImage) -> usize {
+    image.as_bytes(0).map_or(0, <[u8]>::len)
+}
+
+impl Rasters {
+    /// A new frame was adopted: what the last one drew may now be evicted.
+    pub(super) fn next_frame(&mut self) {
+        self.frame += 1;
+    }
+
+    /// Decodes `data` under `hash` unless it is held, and marks it drawn by
+    /// the current frame. `false` when it did not fit beside what the
+    /// current frame draws.
+    fn remember(
+        &mut self,
+        hash: u64,
+        data: &wire::ImageData,
+        mut window: Option<&mut Window>,
+        cx: &mut App,
+    ) -> bool {
+        if matches!(
+            data,
+            wire::ImageData::Resource(_) | wire::ImageData::Refusal(_)
+        ) {
+            return true;
+        }
+        if let Some((_, drawn)) = self.held.get_mut(&hash) {
+            *drawn = self.frame;
+            return true;
+        }
+        if !self.make_room(1, window.as_deref_mut(), cx) {
+            return false;
+        }
+        let Some(image) = decode_image(data) else {
+            return true;
+        };
+        let len = raster_len(&image);
+        if !self.make_room(len, window, cx) {
+            return false;
+        }
+        self.bytes += len;
+        self.held.insert(hash, (Arc::new(image), self.frame));
+        true
+    }
+
+    /// Evicts the rasters drawn least recently, never one the current frame
+    /// drew, until `additional` bytes and one more raster fit. `false` when
+    /// they still do not.
+    fn make_room(
+        &mut self,
+        additional: usize,
+        mut window: Option<&mut Window>,
+        cx: &mut App,
+    ) -> bool {
+        while !cache_fits(self.held.len(), self.bytes, additional) {
+            // ponytail: a scan per eviction, over at most `MAX_PICTURES`
+            let Some(hash) = (self.held.iter())
+                .filter(|(_, (_, drawn))| *drawn < self.frame)
+                .min_by_key(|(_, (_, drawn))| *drawn)
+                .map(|(hash, _)| *hash)
+            else {
+                return false;
+            };
+            if let Some((image, _)) = self.held.remove(&hash) {
+                self.bytes -= raster_len(&image);
+                cx.drop_image(image, window.as_deref_mut());
+            }
+        }
+        true
+    }
+
+    fn log_refusal(&mut self) {
+        if !std::mem::replace(&mut self.refused, true) {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "module_view_image_cache_full",
+                held = self.bytes,
+                rasters = self.held.len(),
+                "module view images past the seat's raster cache; drawing their fallback"
+            );
+        }
+    }
+
+    fn get(&self, hash: u64) -> Option<Arc<RenderImage>> {
+        self.held.get(&hash).map(|(image, _)| image.clone())
+    }
+
+    /// Drops every raster and its atlas tiles in every window. Called
+    /// outside any window's update, so `drop_image` reaches them all.
+    fn release(&mut self, cx: &mut App) {
+        self.bytes = 0;
+        for (_, (image, _)) in self.held.drain() {
+            cx.drop_image(image, None);
+        }
+    }
 }
 
 mod svg_canvas;
@@ -94,12 +214,11 @@ impl ViewTree {
             unreachable!()
         };
         // the bytes the node brings, else the seat's under its hash
-        let pictures = self.pictures.clone();
-        let data = match source {
+        let data: Option<Arc<[u8]>> = match source {
             wire::SvgSource::Data {
                 bytes: Some(bytes), ..
-            } => Some(bytes.as_slice()),
-            wire::SvgSource::Data { hash, bytes: None } => pictures.vector.get(hash).map(|b| &**b),
+            } => Some(Arc::from(bytes.as_slice())),
+            wire::SvgSource::Data { hash, bytes: None } => self.pictures.vector.get(hash).cloned(),
             _ => None,
         };
         let mut element = div();
@@ -113,13 +232,14 @@ impl ViewTree {
                 .with_rotation(radians(transformation.rotate));
         element = match source {
             wire::SvgSource::Data { .. } => match data {
-                Some(bytes) if !svg_data_allowed(bytes) => {
+                Some(bytes) if !svg_data_allowed(&bytes) => {
                     element.child("Compressed SVG data refused")
                 }
                 Some(bytes) => element.child(guarded_svg_paint(
-                    SvgPaintSource::data(bytes),
+                    SvgPaintSource::data(&bytes),
+                    Some(bytes.clone()),
                     svg()
-                        .data(bytes)
+                        .data(&bytes)
                         .with_transformation(native_transform)
                         .size_full(),
                 )),
@@ -128,6 +248,7 @@ impl ViewTree {
             wire::SvgSource::Asset(path) if safe_asset_path(path) => {
                 element.child(guarded_svg_paint(
                     SvgPaintSource::asset(path.clone()),
+                    None,
                     svg()
                         .path(path.clone())
                         .with_transformation(native_transform)
@@ -182,35 +303,17 @@ impl ViewTree {
         }
     }
 
-    pub(super) fn remember_image(&mut self, hash: u64, data: &wire::ImageData) {
-        if matches!(
-            data,
-            wire::ImageData::Resource(_) | wire::ImageData::Refusal(_)
-        ) {
-            return;
-        }
-        if self.images.contains_key(&hash) {
-            return;
-        }
-        let used = self
-            .images
-            .values()
-            .map(|image| image.as_bytes(0).map_or(0, <[u8]>::len))
-            .sum();
-        if !cache_fits(self.images.len(), used, 1) {
-            return;
-        }
-        let Some(image) = decode_image(data) else {
-            return;
-        };
-        if !cache_fits(
-            self.images.len(),
-            used,
-            image.as_bytes(0).map_or(0, <[u8]>::len),
-        ) {
-            return;
-        }
-        self.images.insert(hash, Arc::new(image));
+    /// The raster under `hash`, decoded from `data` unless held; `false`
+    /// when the cache had no room for it (`Rasters::remember`). `window` is
+    /// the one being drawn, if any, so an eviction drops its tiles too.
+    pub(super) fn remember_image(
+        &mut self,
+        hash: u64,
+        data: &wire::ImageData,
+        window: Option<&mut Window>,
+        cx: &mut App,
+    ) -> bool {
+        self.images.borrow_mut().remember(hash, data, window, cx)
     }
 
     pub(super) fn image_frame(
@@ -220,8 +323,20 @@ impl ViewTree {
     ) -> Option<Arc<RenderImage>> {
         match data {
             Some(wire::ImageData::Resource(_) | wire::ImageData::Refusal(_)) => None,
-            _ => self.images.get(&hash).cloned(),
+            _ => self.images.borrow().get(hash),
         }
+    }
+
+    /// The raster held under `hash`, for a test to find its atlas tiles.
+    #[cfg(test)]
+    pub(crate) fn image_for_test(&self, hash: u64) -> Option<Arc<RenderImage>> {
+        self.images.borrow().get(hash)
+    }
+
+    /// The seat is dropping this tree: its rasters leave every window's
+    /// atlas. Never on a hot swap, whose next tree carries them.
+    pub(crate) fn release(&mut self, cx: &mut App) {
+        self.images.borrow_mut().release(cx);
     }
 
     pub(super) fn picture(
@@ -248,9 +363,7 @@ impl ViewTree {
         let data = data
             .as_ref()
             .or_else(|| pictures.raster.get(hash).map(|data| &**data));
-        if let Some(data) = data {
-            self.remember_image(*hash, data);
-        }
+        let full = data.is_some_and(|data| !self.remember_image(*hash, data, Some(window), cx));
         let mut element = div();
         *element.style() = style.clone();
         match data {
@@ -264,7 +377,16 @@ impl ViewTree {
                 element = element.child("Host image resource unavailable")
             }
             _ => {
-                if let Some(image) = self.image_frame(*hash, data) {
+                if full {
+                    // a picture the cache has no room for draws the
+                    // guest's fallback, as a refused one does
+                    self.images.borrow_mut().log_refusal();
+                    if let Some(child) =
+                        Self::image_state(*loading, *fallback, state_children, true)
+                    {
+                        element = element.child(self.node(child, window, cx));
+                    }
+                } else if let Some(image) = self.image_frame(*hash, data) {
                     element = element.child(
                         img(image)
                             .size_full()

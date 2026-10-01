@@ -24,7 +24,7 @@ pub(super) fn guest() -> Guest {
 
 /// One request off `stream` to a fake node: its request line, and the
 /// body its Content-Length gives.
-pub(super) fn read_request(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
+pub(in crate::runtime) fn read_request(stream: &mut std::net::TcpStream) -> (String, Vec<u8>) {
     use std::io::{BufRead as _, Read as _};
     let mut reader = std::io::BufReader::new(stream);
     let mut request = String::new();
@@ -49,7 +49,7 @@ pub(super) fn read_request(stream: &mut std::net::TcpStream) -> (String, Vec<u8>
 }
 
 /// A fake node's answer on `stream`: `status`, then `body`.
-pub(super) fn respond(stream: &mut std::net::TcpStream, status: &str, body: &[u8]) {
+pub(in crate::runtime) fn respond(stream: &mut std::net::TcpStream, status: &str, body: &[u8]) {
     use std::io::Write as _;
     write!(
         stream,

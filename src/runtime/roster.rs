@@ -165,19 +165,25 @@ impl Roster {
             .iter()
             .map(|program| intern(&program.name))
             .collect();
-        let registry = registry().lock().expect("module views");
+        let registry = lock(registry());
         programs
             .into_iter()
             .map(|module| {
                 let seat = registry
                     .iter()
                     .find_map(|((name, _), seat)| (*name == module).then_some(seat))
-                    .map(|seat| seat.lock().expect("module view lock"));
+                    .map(|seat| lock(seat));
                 let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
                         (guest.name.clone(), None, false)
                     }
-                    Some(Slot::Ready(_)) => (module.to_owned(), None, false),
+                    // compiled, not started: as ready to open as a drawn view
+                    Some(Slot::Compiled { name, .. }) if !name.is_empty() => {
+                        (name.clone(), None, false)
+                    }
+                    Some(Slot::Ready(_) | Slot::Compiled { .. }) => {
+                        (module.to_owned(), None, false)
+                    }
                     Some(Slot::Empty) => (module.to_owned(), None, true),
                     Some(Slot::Failed(_)) => (module.to_owned(), Some("Failed"), false),
                     // No seat yet (a pane just let go of it, the roster hasn't
@@ -203,7 +209,7 @@ impl Roster {
 
 /// A node was connected: every seat is asked again of it, and the roster
 /// is read so the rail lists what the network runs.
-pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str) -> Loads {
+pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str) {
     let snapshot = {
         let mut connection = connection().lock().expect("views rpc");
         connection.rev += 1;
@@ -212,112 +218,131 @@ pub fn connected(client: &crate::backend::RpcClient, network: &str, chain: &str)
         connection.chain = chain.to_owned();
         connection.clone()
     };
-    Loads {
-        _threads: vec![spawn_roster_read(snapshot)],
-    }
+    spawn_roster_read(snapshot, || {});
 }
 
 /// The node moved (a block landed): the roster is read again, and a
 /// program whose code changed is loaded again, under a new generation, and
-/// swapped in place when ready. One check in flight at a time; a block
-/// that lands during one is covered by the next. Cheap when nothing moved.
-pub fn deployments_checked() -> Loads {
+/// swapped in place when ready. One read in flight at a time; a block that
+/// lands during one is covered by the next. The read alone holds that
+/// latch: the loads it queues land on their own. Cheap when nothing moved.
+pub fn deployments_checked() {
     static IN_FLIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     use std::sync::atomic::Ordering;
     if IN_FLIGHT.swap(true, Ordering::SeqCst) {
-        return Loads {
-            _threads: Vec::new(),
-        };
+        return;
     }
     let snapshot = connection().lock().expect("views rpc").clone();
-    if snapshot.client.is_none() {
+    if snapshot.client.is_none()
+        || !spawn_roster_read(snapshot, || IN_FLIGHT.store(false, Ordering::SeqCst))
+    {
         IN_FLIGHT.store(false, Ordering::SeqCst);
-        return Loads {
-            _threads: Vec::new(),
-        };
-    }
-    Loads {
-        _threads: vec![std::thread::spawn(move || {
-            let read = spawn_roster_read(snapshot);
-            let _ = read.join();
-            IN_FLIGHT.store(false, Ordering::SeqCst);
-        })],
     }
 }
 
-pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle<()> {
-    std::thread::spawn(move || {
-        let Some(client) = asked_of.client.as_ref() else {
+/// [`read_roster`] of the app's roster and seats on a thread of its own,
+/// then `then`, even after a read that panicked (the panic hook logs it);
+/// `false`, said in app.log, when the OS gives no thread.
+fn spawn_roster_read(asked_of: Connection, then: impl FnOnce() + Send + 'static) -> bool {
+    let spawned = std::thread::Builder::new()
+        .name("roster".into())
+        .spawn(move || {
+            let read = std::panic::AssertUnwindSafe(|| read_roster(asked_of, roster(), registry()));
+            let _ = std::panic::catch_unwind(read);
+            then();
+        });
+    if let Err(error) = &spawned {
+        tracing::warn!(
+            target: "ducktape::app",
+            reason = "roster_unread",
+            error = %error,
+            "no thread to read the node's programs on"
+        );
+    }
+    spawned.is_ok()
+}
+
+/// One read of the node's programs into `roster`, and of `registry`'s
+/// seats against it: a program that left gives up its seat, a new one is
+/// seated (instance 0), and every seat whose code moved, or that was never
+/// asked of this node, is queued a load. The read is over once they are
+/// queued: nothing waits on a load, which lands in its seat on its own.
+pub(super) fn read_roster(asked_of: Connection, roster: &Roster, registry: &Registry) {
+    let Some(client) = asked_of.client.as_ref() else {
+        return;
+    };
+    let read = crate::perf::time(crate::perf::Key::Shell, "roster");
+    let programs = handle().block_on(crate::backend::views::programs(client, &asked_of.network));
+    drop(read);
+    let programs = match programs {
+        Ok(programs) => programs,
+        Err(error) => {
+            tracing::warn!(
+                target: "ducktape::app",
+                reason = "roster_unreadable",
+                error = %error,
+                "the node's programs were not listed"
+            );
             return;
-        };
-        let read = crate::perf::time(crate::perf::Key::Shell, "roster");
-        let programs =
-            handle().block_on(crate::backend::views::programs(client, &asked_of.network));
-        drop(read);
-        let programs = match programs {
-            Ok(programs) => programs,
-            Err(error) => {
-                tracing::warn!(
-                    target: "ducktape::app",
-                    reason = "roster_unreadable",
-                    error = %error,
-                    "the node's programs were not listed"
-                );
-                return;
-            }
-        };
-        let loads = {
-            let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
-            if node_since_left {
-                return;
-            }
-            let mut registry = registry().lock().expect("module views");
-            let names: Vec<&'static str> = programs.iter().map(|p| intern(&p.name)).collect();
-            // a program the roster no longer lists gives up its seat
-            for gone in registry
-                .keys()
-                .copied()
-                .filter(|(module, _)| !names.contains(module))
-                .collect::<Vec<_>>()
-            {
-                if let Some(retired) = registry.get(&gone) {
-                    retired.lock().expect("module view lock").retire();
-                }
-                if gone.1 == 0 {
-                    registry.remove(&gone);
-                }
-            }
-            let previous = relist(roster(), programs.clone());
-            let mut loads = Vec::new();
-            for module in &names {
-                if !registry.keys().any(|(name, _)| name == module) {
-                    registry.insert((*module, 0), Mounted::seat());
-                }
-            }
-            for ((module, _), seat) in registry.iter() {
-                let Some(program) = programs.iter().find(|program| program.name == *module) else {
-                    continue;
-                };
-                let mut locked = seat.lock().expect("module view lock");
-                let same_code = previous
-                    .iter()
-                    .any(|old| old.name == program.name && old.code == program.code);
-                let asked_of_this_node = locked.generation > 0 && locked.rev == asked_of.rev;
-                let code = code_digest(&program.code);
-                if !locked.reload_due(same_code, asked_of_this_node, code, Instant::now()) {
-                    continue;
-                }
-                locked.rev = asked_of.rev;
-                let generation = locked.start();
-                drop(locked);
-                loads.push(spawn_load(module, seat, generation, asked_of.clone()));
-            }
-            loads
-        };
-        for load in loads {
-            let _ = load.join();
         }
-    })
+    };
+    let loads = {
+        let node_since_left = connection().lock().expect("views rpc").rev != asked_of.rev;
+        if node_since_left {
+            return;
+        }
+        let mut registry = lock(registry);
+        let names: Vec<&'static str> = programs.iter().map(|p| intern(&p.name)).collect();
+        // a program the roster no longer lists gives up its seat
+        for gone in registry
+            .keys()
+            .copied()
+            .filter(|(module, _)| !names.contains(module))
+            .collect::<Vec<_>>()
+        {
+            if let Some(retired) = registry.get(&gone) {
+                lock(retired).retire();
+            }
+            if gone.1 == 0 {
+                registry.remove(&gone);
+            }
+        }
+        let previous = relist(roster, programs.clone());
+        let mut loads = Vec::new();
+        for module in &names {
+            if !registry.keys().any(|(name, _)| name == module) {
+                registry.insert((*module, 0), Mounted::seat());
+            }
+        }
+        for ((module, _), seat) in registry.iter() {
+            let Some(program) = programs.iter().find(|program| program.name == *module) else {
+                continue;
+            };
+            let mut locked = lock(seat);
+            let same_code = previous
+                .iter()
+                .any(|old| old.name == program.name && old.code == program.code);
+            let asked_of_this_node = locked.generation > 0 && locked.rev == asked_of.rev;
+            let code = code_digest(&program.code);
+            if !locked.reload_due(same_code, asked_of_this_node, code, Instant::now()) {
+                continue;
+            }
+            locked.rev = asked_of.rev;
+            loads.push(Load {
+                module,
+                seat: seat.clone(),
+                generation: locked.start(),
+                asked_of: asked_of.clone(),
+                code: Some((program.code, program.bare)),
+            });
+        }
+        loads
+    };
+    // the registry let go first: a load that cannot get a thread installs
+    // its failure under the seat's lock
+    for load in loads {
+        queue(load);
+    }
 }
 
 /// What a link names, as far as the app can tell without the chain in
@@ -559,6 +584,28 @@ mod rail_tests {
             .expect("listed module appears in the rail");
         assert_eq!(row.label, module);
         assert_eq!(row.note, Some("Loading"));
+        assert!(!row.empty);
+    }
+
+    /// A seat preloaded only as far as compiled is a row ready to open,
+    /// named as its manifest names it, as a drawn view's is: the census
+    /// opens a view by that name.
+    #[test]
+    fn a_compiled_seat_is_listed_by_its_manifest_name() {
+        let module = "rail-tests-compiled";
+        let seat = Mounted::seat();
+        lock(&seat).slot = Slot::Compiled {
+            name: "Compiled view".into(),
+            min_width: 320,
+        };
+        lock(registry()).insert((module, 0), seat);
+        let row = Roster::listing(&[module])
+            .rail()
+            .into_iter()
+            .find(|row| row.module == module)
+            .expect("listed module appears in the rail");
+        lock(registry()).remove(&(module, 0));
+        assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
         assert!(!row.empty);
     }
 

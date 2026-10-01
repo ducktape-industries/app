@@ -87,7 +87,7 @@ impl Seat {
         let instance = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let theme = cx.observe_global::<gpui_kit::component::Theme>(|this, cx| this.turn(cx));
         let mounted = mounted(module, instance);
-        let mut woken = mounted.lock().expect("module view lock").wake.subscribe();
+        let mut woken = lock(&mounted).wake.subscribe();
         let wake = cx.spawn(async move |this, cx| {
             while woken.changed().await.is_ok() {
                 if this.update(cx, |this, cx| this.turn(cx)).is_err() {
@@ -207,7 +207,7 @@ impl Seat {
     #[must_use]
     pub(crate) fn hide(&mut self) -> Vec<Intent> {
         let mounted = self.mounted.clone();
-        let mut locked = mounted.lock().expect("module view lock");
+        let mut locked = lock(&mounted);
         let Mounted { slot, props, .. } = &mut *locked;
         let Slot::Ready(guest) = slot else {
             return Vec::new();
@@ -242,9 +242,8 @@ impl Seat {
             self.turns += 1;
         }
         let mounted = self.mounted.clone();
-        let mut locked = mounted.lock().expect("module view lock");
+        let mut locked = lock(&mounted);
         let shown = Instant::now();
-        locked.shown = Some(shown);
         let module = self.module;
         let Mounted { slot, props, .. } = &mut *locked;
         let guest = match slot {
@@ -261,6 +260,7 @@ impl Seat {
                 drop(locked);
                 return self.show_standin(standin, cx);
             }
+            // on its way, or compiled and being started for this pane
             loading => {
                 let standin = Standin {
                     title: None,
@@ -433,7 +433,7 @@ impl Seat {
         let seat = self.mounted.clone();
         self._tree_events = Some(
             cx.subscribe(&tree, move |this, _, event: &wire::Event, cx| {
-                let mut locked = seat.lock().expect("module view lock");
+                let mut locked = lock(&seat);
                 let Slot::Ready(guest) = &mut locked.slot else {
                     return;
                 };
@@ -493,7 +493,7 @@ impl Seat {
             window.on_next_frame(move |window, _| {
                 window.on_next_frame(move |window, cx| {
                     let _ = this.update(cx, |this, cx| {
-                        let mut locked = seat.lock().expect("module view lock");
+                        let mut locked = lock(&seat);
                         let Slot::Ready(guest) = &mut locked.slot else {
                             return;
                         };
@@ -535,10 +535,7 @@ impl Seat {
 
 impl Drop for Seat {
     fn drop(&mut self) {
-        registry()
-            .lock()
-            .expect("module views")
-            .remove(&(self.module, self.instance));
+        lock(registry()).remove(&(self.module, self.instance));
         // the module's row may now be read off another seat, or say Loading
         rail_moved();
     }

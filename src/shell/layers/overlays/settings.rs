@@ -31,7 +31,8 @@ pub(super) struct Page {
 #[cfg(any(test, feature = "ax-door"))]
 pub(crate) struct Kept {
     app: crate::shell::entities::Entities,
-    prefs: serde_json::Value,
+    /// None when the file could not be read: then nothing is put back.
+    prefs: Option<serde_json::Value>,
     asking: std::collections::BTreeSet<String>,
 }
 
@@ -48,7 +49,7 @@ impl Kept {
             .downcast::<super::super::WindowRoot>();
         let app = view.ok()?.read(cx).app.clone();
         Some(Self {
-            prefs: crate::backend::read_prefs(),
+            prefs: crate::backend::read_prefs().ok(),
             asking: app.notifications.read(cx).center().lock().asking.clone(),
             app,
         })
@@ -57,8 +58,8 @@ impl Kept {
     /// Back as it stood: the file written only where it differs, then read
     /// again into `Prefs` (the theme follows), and the views asking put back.
     pub(crate) fn restore(self, cx: &mut gpui_kit::App) {
-        if crate::backend::read_prefs() != self.prefs {
-            crate::backend::write_prefs(&self.prefs);
+        if let Some(prefs) = self.prefs {
+            crate::backend::edit_prefs(|now| *now = prefs);
         }
         self.app.prefs.update(cx, |prefs, cx| prefs.reload(cx));
         self.app.notifications.update(cx, |notifications, cx| {

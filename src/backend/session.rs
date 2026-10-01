@@ -22,9 +22,35 @@ struct Signer {
 /// for loading this key and "lock" for dropping it — not the runtime's
 /// seat, the slot a program's view is mounted in. Never held across an
 /// await: a write takes its copy of the key and lets go before it asks the
-/// node anything, so nothing waits on another's ask (and a task on the
-/// shell's executor is never woken from a runtime thread for it).
+/// node anything, so a seat or a lock never waits on a write's ask (and a
+/// task on the shell's executor is never woken from a runtime thread for
+/// it). What a write does wait for is its signer's [`Turn`].
 static SIGNER: std::sync::Mutex<Option<Signer>> = std::sync::Mutex::new(None);
+
+/// A signer's writes go one at a time: the sequence is read, the frame
+/// signed and submitted, and the node's receipt is back before the next
+/// read. Two in flight at once would both read the same next sequence and
+/// the node would refuse the second frame (`reason::SEQUENCE`). Per
+/// signer, so one key's queue never waits on another's.
+// ponytail: entries are never pruned; bounded by the keys seated in one
+// process's life (a handful).
+fn turn_of(signer: &[u8]) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+    type Turns = std::collections::HashMap<Vec<u8>, std::sync::Arc<tokio::sync::Mutex<()>>>;
+    static TURNS: std::sync::Mutex<Option<Turns>> = std::sync::Mutex::new(None);
+    TURNS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get_or_insert_with(Turns::new)
+        .entry(signer.to_vec())
+        .or_default()
+        .clone()
+}
+
+/// One write's hold on its signer ([`seated_frame`]): the caller keeps it
+/// until the node's receipt is back, so the next write's sequence read sees
+/// what this one moved. Dropped on the way out of a failed read, which sent
+/// nothing.
+pub(crate) struct Turn(#[allow(dead_code)] tokio::sync::OwnedMutexGuard<()>);
 
 fn seat() -> std::sync::MutexGuard<'static, Option<Signer>> {
     SIGNER
@@ -73,19 +99,25 @@ pub(crate) async fn lock_signer() -> bool {
 }
 
 /// A write: signed with the seated key at the sequence the node says is
-/// that signer's next.
+/// that signer's next, once it is this write's [`Turn`]. The caller holds
+/// the turn through its submit.
 pub(crate) async fn seated_frame(
     client: &RpcClient,
     network: &str,
     target: &str,
     payload: Vec<u8>,
-) -> Result<Vec<u8>, Error> {
+) -> Result<(Vec<u8>, Turn), Error> {
     let key = seat()
         .as_ref()
         .map(|signer| signer.key.clone())
         .ok_or_else(locked_seat)?;
-    let seq = next_seq(client, key.public_key().as_ref()).await?;
-    Ok(Frame::sign(&key, network.as_bytes(), seq, target, payload).encode())
+    let signer = key.public_key();
+    let turn = Turn(turn_of(signer.as_ref()).lock_owned().await);
+    let seq = next_seq(client, signer.as_ref()).await?;
+    Ok((
+        Frame::sign(&key, network.as_bytes(), seq, target, payload).encode(),
+        turn,
+    ))
 }
 
 /// The sequence the node expects next from `signer`.
