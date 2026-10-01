@@ -405,7 +405,7 @@ draws nothing.
   and which is in front, and the program in front (`active`: the focused
   pane's, wherever it is, from an observer of every desk, or the one a
   pick or a link just opened). Its methods are what crosses windows:
-  `open` (an OS window, deferred) / `raise` / `closed_id` / `quit`,
+  `open` (an OS window, deferred) / `raise` / `forget_closed` / `quit`,
   `close_pane`, `pop_out` and `pop_in` (a pane keeps its `instance` on
   the way out and back), `select_view`, `open_help` / `help_asked`,
   `open_link` (read against `Session`'s chain: this chain's link routes
@@ -445,7 +445,7 @@ draws nothing.
   `Prefs::set_appearance`) and the console (`Windows::open(Console)`), then
   wires what arrives from outside: open-URL requests and the links a
   banner posts (`Windows::open_link`, `Windows::posted`), a window closing
-  (`Windows::closed_id`), the AX door (`Windows::served`,
+  (`Windows::forget_closed`), the AX door (`Windows::served`,
   `Seats::settle`), the Quit action (`Windows::quit`). The entities and
   the tray live until the app quits.
 - **Layers.** `layers::WindowRoot` (`layers/root.rs`, one thin uncached

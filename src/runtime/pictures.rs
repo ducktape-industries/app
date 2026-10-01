@@ -68,8 +68,8 @@ impl Pictures {
     }
 }
 
-/// `root` without its pictures' bytes, their hashes kept: the tree as the
-/// guest remembers it.
+/// Drops every picture's bytes from `root`, their hashes kept: the tree
+/// as the guest remembers it.
 pub(super) fn strip(root: &mut wire::Node) {
     root.for_each_mut(&mut |node| match node {
         wire::Node::Svg {
