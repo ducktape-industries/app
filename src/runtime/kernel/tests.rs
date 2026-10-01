@@ -416,6 +416,89 @@ fn link_open_needs_an_activation_and_takes_it() {
     assert_eq!(guest.intents.len(), 1);
 }
 
+/// A screen reader's press on a view's link is one gesture: AccessKit's
+/// Click (what the AX door's `press` sends) is the link's own click, once,
+/// with the one activation the host stamps for it, and the view's
+/// `link.open` on that click goes out. No stamp refuses it `needs_gesture`;
+/// a second click on the same press asks twice and the second is refused.
+#[gpui_kit::test]
+fn a_readers_press_on_a_link_opens_it_once(cx: &mut gpui_kit::TestAppContext) {
+    use gpui_kit::Styled as _;
+    use gpui_kit::accesskit::{Action, ActionRequest, TreeId};
+    cx.update(gpui_kit::init);
+    let link = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("docs".into())),
+        style: gpui_kit::div().size_full().style().clone(),
+        interactivity: wire::Interactivity {
+            role: Some(gpui_kit::Role::Link),
+            aria: wire::Aria {
+                label: Some("the docs".into()),
+                ..Default::default()
+            },
+            on_click: Some(7),
+            ..Default::default()
+        },
+        children: Vec::new(),
+    });
+    let window = cx.open_window(
+        gpui_kit::size(gpui_kit::px(200.), gpui_kit::px(40.)),
+        |_, _| crate::render::ViewTree::new(link),
+    );
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    let events = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let seen = events.clone();
+    let _subscription = native.update(|_, cx| {
+        cx.subscribe(&tree, move |_, event: &wire::Event, _| {
+            seen.borrow_mut().push(event.clone());
+        })
+    });
+    native.update(|window, cx| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        let target = window
+            .a11y_tree()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|(_, node)| node.label() == Some("the docs"))
+            .map(|(id, _)| *id)
+            .expect("the link is in the tree");
+        window.dispatch_a11y_action(
+            ActionRequest {
+                action: Action::Click,
+                target_tree: TreeId::ROOT,
+                target_node: target,
+                data: None,
+            },
+            cx,
+        );
+    });
+    // the seat hands the tree's stamp to the guest at its next turn
+    // (`a_trees_activation_reaches_its_guest_on_the_next_turn`), and the
+    // view asks to open its link on each click it hears
+    let mut guest = guest();
+    guest.activation = tree.read_with(&native, |tree, _| tree.take_activation());
+    let mut refusals = Vec::new();
+    for (id, event) in events.borrow().iter().enumerate() {
+        if let wire::Event::Click { handler: 7, .. } = event {
+            guest.answer(
+                link_request(id as u64 + 1, "https://example.com/docs"),
+                &None,
+            );
+            refusals.push(refusal_code(&mut guest));
+        }
+    }
+    assert_eq!(
+        refusals,
+        [None],
+        "one click, its link admitted: {:?}",
+        events.borrow()
+    );
+    assert_eq!(guest.intents.len(), 1);
+}
+
 /// Four links a minute per view, each on its own activation; the fifth is
 /// refused `link_limit` until the window moves on.
 #[test]

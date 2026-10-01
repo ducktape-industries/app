@@ -449,19 +449,12 @@ impl EmptyPane {
                 .py(px(10.))
                 .cursor_pointer()
                 .when(picked, |row| row.bg(ink.surface))
+                // assistive technology's press is this click too (gpui-pre
+                // runs it on this window's row, not on whatever window
+                // covers its middle)
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.open_here(index, module, window, cx);
                 }))
-                // assistive technology's press lands on this window's row,
-                // not on whatever window covers its middle (gpui's own
-                // Click is a pointer press there)
-                .on_a11y_action(AccessibleAction::Click, {
-                    let this = cx.entity().downgrade();
-                    move |_, window, cx| {
-                        let _ =
-                            this.update(cx, |this, cx| this.open_here(index, module, window, cx));
-                    }
-                })
                 .child(div().text_color(ink.ink).child(name))
                 .child(
                     sans(400, 13.)
@@ -704,13 +697,8 @@ fn mode_switch(
         }
         cx.notify();
     };
-    let this = cx.entity().downgrade();
     let module = side("empty-window/module", "Module", mode == Mode::Module)
-        .on_click(cx.listener(move |this, _, window, cx| pick(this, window, cx)))
-        // on this window's switch, as a row's press is on its row
-        .on_a11y_action(AccessibleAction::Click, move |_, window, cx| {
-            let _ = this.update(cx, |this, cx| pick(this, window, cx));
-        });
+        .on_click(cx.listener(move |this, _, window, cx| pick(this, window, cx)));
     let chat = side("empty-window/chat", "Chat", mode == Mode::Chat)
         .opacity(0.3)
         .cursor_not_allowed()
