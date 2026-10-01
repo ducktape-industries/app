@@ -3,7 +3,8 @@
 //! 1. `collect` maps each mounted `Node::Editor`, by `AuthoredPath`, to a
 //!    `Field`; fields naming the same document share one `Document`.
 //! 2. The store asks the guest for text it lacks (`request_document`) and
-//!    the text arrives as an `IncomingTransfer`.
+//!    the text arrives as an `IncomingTransfer`. A document replaced while
+//!    its text is on the way ends that transfer for the guest too (`Failed`).
 //! 3. Each native edit and each claimed key is queued as a `QueuedInput` and
 //!    handled one at a time per document. A native edit is committed at
 //!    once and waits in `Phase::Acknowledgment` until the guest's next frame
@@ -365,6 +366,8 @@ fn collect(
 mod native;
 mod protocol;
 mod store;
+#[cfg(test)]
+mod tests;
 use native::*;
 
 /// Seeds `text` into `store` by answering the document request the store

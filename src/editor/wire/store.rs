@@ -86,8 +86,19 @@ impl Store {
                 .get(&incoming.id.document)
                 .is_none_or(|d| d.reference.reset != incoming.id.reset)
         });
-        if stale_incoming {
-            self.incoming = None;
+        // The guest keeps its sender for this id until it hears
+        // `Acknowledged` or `Failed`, and while one is open it refuses the
+        // next request with `Limit`, which stops the view. A stale mirror
+        // needs no such word: the `Cancelled` of its request, above, is the
+        // one that ends the guest's receiver.
+        if stale_incoming && let Some(incoming) = self.incoming.take() {
+            self.events.push(view_wire::Event::EditorDocument {
+                handler: incoming.handler,
+                message: DocumentMessage::Failed {
+                    id: incoming.id,
+                    reason: view_wire::editor_document::EditorTransferError::Aborted,
+                },
+            });
         }
         let stale_outgoing = self.outgoing.as_ref().is_some_and(|outgoing| {
             self.documents
