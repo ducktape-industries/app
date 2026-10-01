@@ -786,8 +786,8 @@ fn six() -> Vec<gpui_kit::AnyElement> {
     ]
 }
 
-/// The first snapshot shows three stops of a Tab cycle of six: N + 1
-/// presses end on the first shown one, and the walk goes on round.
+/// The first snapshot shows three stops of a Tab cycle of six: the walk
+/// goes on past them, round the whole cycle.
 #[gpui_kit::test]
 fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     cx: &mut gpui_kit::TestAppContext,
@@ -806,6 +806,53 @@ fn the_walk_goes_round_a_cycle_longer_than_the_first_snapshot_shows(
     });
     assert!(fails(&report, "AX-021").is_empty(), "{report:?}");
     assert_eq!(report.presses, 7);
+}
+
+/// The presses a walk of `native` takes.
+fn presses(native: &mut gpui_kit::VisualTestContext) -> usize {
+    use gpui_kit::test::TestWindowExt as _;
+    let snap = |window: &mut Window, cx: &mut App| {
+        window.activate_a11y();
+        window.render_frame(cx);
+        window.render_frame(cx);
+        crate::ax::snapshot("w", window, true)
+    };
+    native
+        .update(|window, cx| audit(&observe(window, cx, "w", true, |_| true, snap), false).presses)
+}
+
+/// A 40 px button `id` that offers focus and is no Tab stop, as a
+/// composite's chosen row does.
+fn offer(id: &'static str, top: f32) -> gpui_kit::AnyElement {
+    use gpui_kit::*;
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(id)
+        .focusable()
+        .absolute()
+        .left(px(0.))
+        .top(px(top))
+        .size(px(40.))
+        .into_any_element()
+}
+
+/// A window of one stop, the keys on it: Tab stays there, `escape tab`
+/// stays there, and that is the focus back on the first stop. The walk
+/// ends on it, though two nodes offer focus.
+#[gpui_kit::test]
+fn the_walk_ends_on_a_first_stop_that_keeps_the_keys(cx: &mut gpui_kit::TestAppContext) {
+    let mut native = stops_window(cx, || vec![stop("only", 0.), offer("row", 50.)], 1);
+    assert_eq!(presses(&mut native), 2);
+}
+
+/// No stop and the keys nowhere: the first press puts the focus nowhere,
+/// and ends the walk, though a node offers focus.
+#[gpui_kit::test]
+fn the_walk_ends_on_a_first_press_that_puts_the_focus_nowhere(cx: &mut gpui_kit::TestAppContext) {
+    let mut native = stops_window(cx, || vec![offer("row", 0.)], 0);
+    native.update(|window, cx| window.blur(cx));
+    assert_eq!(presses(&mut native), 1);
 }
 
 /// A `view/x` element at the right of the window, around `inside`.
