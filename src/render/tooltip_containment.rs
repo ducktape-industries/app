@@ -9,9 +9,10 @@
 //! sits and closes as gpui's does (gpui-pre `div.rs`,
 //! `register_tooltip_mouse_handlers`; `window.rs`, `prepaint_tooltip`).
 //!
-//! The content renders in a child `ViewTree` whose events the source tree
-//! re-emits with its one-shot user activation, so the runtime accepts a
-//! click inside the tooltip as the user's.
+//! The content renders in a child `ViewTree` (with its source tree's
+//! pictures) whose events the source tree re-emits, taking over its
+//! activation, so the runtime accepts a click inside the tooltip as the
+//! user's.
 use super::*;
 use gpui_kit::{AvailableSpace, ContentMask, ScrollWheelEvent, Subscription, Task, WeakEntity};
 use std::{cell::Cell, rc::Rc, time::Duration};
@@ -179,12 +180,17 @@ impl ViewTree {
         let at = open.at?;
         if open.content.is_none() {
             let content = content(&self.root, &open.source, open.character_index)?;
-            let child = cx.new(|_| ViewTree::new(content));
+            // the source tree's pictures: the content names them as its
+            // source does
+            let pictures = self.pictures.clone();
+            let child = cx.new(|_| {
+                let mut child = ViewTree::new(content);
+                child.set_pictures(pictures);
+                child
+            });
             let subscription = cx.subscribe(&child, |tree, child, event: &wire::Event, cx| {
-                let child = child.read(cx);
-                let handler = child.user_activation.get();
-                if child.take_user_activation(event).is_some() {
-                    tree.user_activation.set(handler);
+                if let Some(at) = child.read(cx).take_activation() {
+                    tree.activation.set(Some(at));
                 }
                 cx.emit(event.clone());
             });
@@ -641,8 +647,8 @@ mod tests {
             .collect();
         assert_eq!(clicks.len(), 1, "tooltip click must reach the parent once");
         parent.read_with(&native, |parent, _| {
-            assert!(parent.take_user_activation(clicks[0]).is_some());
-            assert!(parent.take_user_activation(clicks[0]).is_none());
+            assert!(parent.take_activation().is_some());
+            assert!(parent.take_activation().is_none());
         });
     }
 

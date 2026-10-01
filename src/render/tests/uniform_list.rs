@@ -210,8 +210,5 @@ fn uniform_list_click_uses_native_identity_and_records_user_activation(
             event: wire::click::Click::Mouse { .. }
         }
     )));
-    assert_eq!(
-        tree.read_with(&native, |tree, _| tree.user_activation.get()),
-        Some(42)
-    );
+    assert!(tree.read_with(&native, |tree, _| tree.take_activation().is_some()));
 }

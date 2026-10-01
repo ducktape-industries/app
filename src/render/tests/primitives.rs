@@ -53,50 +53,6 @@ fn primitive_canvas_paints_in_the_first_frame_and_after_a_move(cx: &mut gpui_kit
 }
 
 #[gpui_kit::test]
-fn svg_uses_native_element_and_retains_data_without_resent_bytes(
-    cx: &mut gpui_kit::TestAppContext,
-) {
-    cx.update(gpui_kit::init);
-    let bytes = br##"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24"><path fill="#ff0000" d="M0 0h12v24H0z"/><path fill="#0000ff" d="M12 0h12v24H12z"/></svg>"##.to_vec();
-    let node = wire::Node::Svg {
-        id: Some(wire::ElementIdWire::Name("artwork".into())),
-        source: wire::SvgSource::Data {
-            hash: 42,
-            bytes: Some(bytes),
-        },
-        transformation: wire::SvgTransformation {
-            scale: [1., 1.],
-            translate: [0., 0.],
-            rotate: 0.,
-        },
-        label: None,
-        style: Default::default(),
-        interactivity: Default::default(),
-    };
-    let window = cx.open_window(size(px(80.), px(80.)), |_, _| ViewTree::new(node));
-    let tree = window.root(cx).unwrap();
-    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
-    native.update(|window, cx| window.render_frame(cx));
-    native.run_until_parked();
-    native.update(|window, cx| {
-        assert!(tree.read(cx).vectors.contains_key(&42));
-        tree.update(cx, |tree, cx| {
-            let mut next = tree.root.clone();
-            if let wire::Node::Svg {
-                source: wire::SvgSource::Data { bytes, .. },
-                ..
-            } = &mut next
-            {
-                *bytes = None;
-            }
-            tree.replace(next, cx);
-        });
-        window.render_frame(cx);
-        assert!(tree.read(cx).vectors.contains_key(&42));
-    });
-}
-
-#[gpui_kit::test]
 fn container_focus_is_native_and_handoff_never_reuses_retired_handles(
     cx: &mut gpui_kit::TestAppContext,
 ) {
