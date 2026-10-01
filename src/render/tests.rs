@@ -285,6 +285,8 @@ mod host_ids;
 mod inputs;
 mod layout;
 mod links;
+#[cfg(target_os = "linux")]
+pub(super) mod picture_pixels;
 mod picture_presentation;
 mod primitives;
 mod rich_tooltip;

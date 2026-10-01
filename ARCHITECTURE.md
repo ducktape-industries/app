@@ -666,7 +666,8 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   half-size stream backlog; `LOADERS` 4 loads at once and
   `views::MAX_PROGRAMS` 256 roster entries; `layout::MAX_PANES` 8; a per-window SVG raster
   budget (`render/svg_limits.rs`: 256 MiB charged at each raster's real
-  size, 4096 keys, for the window's life); a per-seat cache of decoded
+  size, 4096 keys, evicting the least recently drawn rasters no frame
+  shows, whose atlas tiles leave with them); a per-seat cache of decoded
   pictures (`render/pictures.rs` `Rasters`: 64 MiB / 4096, evicting the
   least recently drawn; its atlas tiles leave every window when the seat
   drops); picture decode size limits (`render/picture_resources.rs`).
@@ -727,8 +728,9 @@ House words, and where one word means several things.
   entity one pane's view lives in, made and dropped by `Seats`, stepping
   its guest from its wakes (`turn`).
 - **slot** — `seat::Slot`, what a seat holds (Loading … Ready … Failed).
-  Also the **slot mask** in `render/`: the pane box a view is clipped to,
-  applied to tooltips (`tooltip_containment::SlotMask`).
+  Also the **pane layer** in `render/`: the pane box a view's tree, its
+  tooltips and its deferred draws are clipped to (`deferred::Layer`, a gpui
+  `TooltipLayer` at `GUEST_CEILING`).
 - **generation** — the seat's load counter; a finished load installs only
   if it is still current, and `Seat.generation` names the
   guest instance it drew. Unrelated: the `generation` the identity program
