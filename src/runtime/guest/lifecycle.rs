@@ -507,6 +507,9 @@ impl Guest {
         Ok(Self {
             connection_rev: connection().lock().expect("views rpc").rev,
             user_activation: None,
+            gestured: false,
+            link_opened: false,
+            links: Vec::new(),
             module,
             instance: 0,
             name: String::new(),

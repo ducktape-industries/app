@@ -64,18 +64,23 @@ impl ViewTree {
                 layer = layer
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(move |_, _, _, cx| cx.emit(wire::Event::Message(message))),
+                        cx.listener(move |this, _, _, cx| {
+                            this.user_activation.set(Some(message));
+                            cx.emit(wire::Event::Message(message))
+                        }),
                     )
-                    .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+                    .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
                         if event.keystroke.key == "escape" {
                             cx.stop_propagation();
+                            this.user_activation.set(Some(message));
                             cx.emit(wire::Event::Message(message));
                         }
                     }));
             }
-            // a dialog takes the keyboard when it opens; a popup's view
-            // moves focus itself (widget commands)
-            if let Some(entry) = entry.as_ref().filter(|_| opened) {
+            // a dialog takes the keyboard when it opens, if its guest may
+            // move the keys (`Seat::may_move_keys`); a popup's view moves
+            // focus itself (widget commands)
+            if let Some(entry) = entry.as_ref().filter(|_| opened && self.keys_grant) {
                 dialog_entry(entry, window, cx);
             }
             let content = div()

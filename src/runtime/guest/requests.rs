@@ -33,6 +33,20 @@ pub(crate) fn target_names_mounted_node(root: &wire::Node, target: &[wire::Eleme
     contains(root, &mut Vec::new(), target)
 }
 
+/// A key pressed in a native editor, on its way to the guest's binding.
+fn is_editor_key(event: &wire::Event) -> bool {
+    matches!(
+        event,
+        wire::Event::EditorRequest {
+            request: view_wire::EditorRequest {
+                input: view_wire::EditorRequestInput::Key { .. },
+                ..
+            },
+            ..
+        }
+    )
+}
+
 impl Guest {
     pub(crate) fn sync_theme(&mut self, dark: bool) {
         if self.theme_dark != Some(dark) {
@@ -55,6 +69,11 @@ impl Guest {
         }
         self.sync_props(props);
         self.pending.extend(self.inputs.drain());
+        // a key the writer pressed in a native editor is a gesture in this
+        // view too: it reaches the guest here, not through the tree's events
+        if self.pending.iter().any(is_editor_key) {
+            self.user_activation = Some(());
+        }
         if let Err(error) = self.inputs.ready() {
             self.fault = Some(error);
             return false;
@@ -104,10 +123,13 @@ impl Guest {
                 false => self.refuse(request.id, "tick_limit", "too many requests this tick"),
             }
         }
-        self.user_activation = None;
+        // the gesture admits this redraw's requests and no later one's
+        self.gestured = self.user_activation.take().is_some();
+        self.link_opened = false;
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
-            self.widget_commands.retain(|(request, _)| *request != id);
+            self.widget_commands
+                .retain(|(request, _, _)| *request != id);
             if self.props_subscription == Some(id) {
                 self.props_subscription = None;
             }
@@ -227,6 +249,26 @@ impl Guest {
         }
     }
 
+    /// Whether a command moves the keyboard: the ones the seat's
+    /// `may_move_keys` gates. Exhaustive for the same reason as
+    /// `command_target`.
+    pub(crate) fn moves_keys(command: &wire::WidgetCommand) -> bool {
+        use wire::WidgetCommand as C;
+        match command {
+            C::Focus { .. } | C::FocusHandle { .. } | C::FocusNext | C::FocusPrevious => true,
+            C::EditorAction { .. }
+            | C::CursorFront { .. }
+            | C::CursorEnd { .. }
+            | C::Cursor { .. }
+            | C::SelectAll { .. }
+            | C::Select { .. }
+            | C::Snap { .. }
+            | C::SnapEnd { .. }
+            | C::ScrollTo { .. }
+            | C::ScrollBy { .. } => false,
+        }
+    }
+
     /// Whether the typed path this command names is in the tree the guest is
     /// showing RIGHT NOW. A press is answered a frame or more after it was
     /// made, and a live view replaces its frame between the two — so the
@@ -261,7 +303,11 @@ impl Guest {
             Ok(command)
         })();
         match admitted {
-            Ok(command) => self.widget_commands.push((id, command)),
+            // judged when it runs, frames later: it keeps this redraw's gesture
+            Ok(command) => {
+                let gestured = self.user_activation.is_some();
+                self.widget_commands.push((id, command, gestured));
+            }
             Err(error) => self.refuse(id, "invalid_widget_command", error),
         }
     }
@@ -277,22 +323,23 @@ impl Guest {
         }
         self.widget_commands
             .iter()
-            .take_while(|(_, command)| matches!(command, wire::WidgetCommand::Focus { .. }))
+            .take_while(|(_, command, _)| matches!(command, wire::WidgetCommand::Focus { .. }))
             .count()
     }
 
     /// Called on this guest's mounted tree with the commands that can run
-    /// now. A command whose target left the tree in the meantime is answered
-    /// with that, never performed.
+    /// now, each with whether its redraw had a gesture. A command whose
+    /// target left the tree in the meantime is answered with that, never
+    /// performed.
     pub(crate) fn execute_widget_commands(
         &mut self,
-        mut execute: impl FnMut(wire::WidgetCommand) -> Result<Vec<u8>, String>,
+        mut execute: impl FnMut(wire::WidgetCommand, bool) -> Result<Vec<u8>, String>,
     ) {
         let runnable = self.runnable_widget_commands();
         let commands: Vec<_> = self.widget_commands.drain(..runnable).collect();
-        for (id, command) in commands {
+        for (id, command, gestured) in commands {
             let result = match self.target_is_mounted(&command) {
-                true => execute(command)
+                true => execute(command, gestured)
                     .map_err(|error| wire::Error::new("widget_command_failed", error)),
                 false => Err(wire::Error::new(
                     "widget_unmounted",

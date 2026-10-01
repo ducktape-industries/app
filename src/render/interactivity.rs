@@ -220,7 +220,8 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
     cx: &mut Context<ViewTree>,
 ) -> E {
     if let Some(handler) = interactivity.on_key_down {
-        element = element.on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+        element = element.on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+            this.user_activation.set(Some(handler));
             cx.emit(wire::Event::KeyDown {
                 handler,
                 phase: wire::DispatchPhase::Bubble,
@@ -229,13 +230,15 @@ fn apply_keyboard<E: StatefulInteractiveElement>(
         }));
     }
     if let Some(handler) = interactivity.capture_key_down {
-        element = element.capture_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
-            cx.emit(wire::Event::KeyDown {
-                handler,
-                phase: wire::DispatchPhase::Capture,
-                event: event.into(),
-            });
-        }));
+        element =
+            element.capture_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                this.user_activation.set(Some(handler));
+                cx.emit(wire::Event::KeyDown {
+                    handler,
+                    phase: wire::DispatchPhase::Capture,
+                    event: event.into(),
+                });
+            }));
     }
     if let Some(handler) = interactivity.on_key_up {
         element = element.on_key_up(cx.listener(move |_, event: &KeyUpEvent, _, cx| {

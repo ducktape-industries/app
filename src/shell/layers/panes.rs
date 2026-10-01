@@ -70,7 +70,7 @@ pub(in crate::shell) struct PaneLayer {
     pub(in crate::shell) holding: Option<pane_hold::Holding>,
     /// The pointer holds a pane: see `pane_drag.rs`.
     pub(in crate::shell) drag: Option<pane_drag::Drag>,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 4],
 }
 
 impl EventEmitter<Drawn> for PaneLayer {}
@@ -95,6 +95,11 @@ impl PaneLayer {
                 this.reconcile(window, cx)
             }),
             cx.observe_in(&seats, window, |this, _, window, cx| {
+                this.reconcile(window, cx)
+            }),
+            // what opened over the desk takes the keys from every seat
+            // until it closes (`reconcile`'s `keys_free`)
+            cx.observe_in(&overlays, window, |this, _, window, cx| {
                 this.reconcile(window, cx)
             }),
             // every draw of the layer ends in the keys' handoff
@@ -132,19 +137,23 @@ impl PaneLayer {
         self.desk.read(cx).get().clone()
     }
 
-    /// The desk or the seats moved: a view for every pane, none for a pane
-    /// that left, and each seat told whether its pane is in front (a
-    /// compare, never a turn). A view pane whose seat is not there yet gets
-    /// its view when `Seats` says the seat came.
+    /// The desk, the seats or what is open over the desk moved: a view for
+    /// every pane, none for a pane that left, and each seat told whether
+    /// its guest may move the keys with no gesture (a compare, never a
+    /// turn): its pane in front, nothing open over the desk, no hold. A
+    /// view pane whose seat is not there yet gets its view when `Seats`
+    /// says the seat came.
     fn reconcile(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let layout = self.layout(cx);
         let here = |instance: &u64| layout.panes.iter().any(|pane| pane.instance == *instance);
         self.pane_keys.retain(|instance, _| here(instance));
         self.views.retain(|instance, _| here(instance));
+        let desk_keys = self.overlays.read(cx).get().is_none() && layout.held.is_none();
         for (index, pane) in layout.panes.iter().enumerate() {
             let seat = self.seats.read(cx).seat(pane.instance);
             if let Some(seat) = &seat {
-                seat.update(cx, |seat, _| seat.set_focused(index == layout.focused));
+                let keys_free = desk_keys && index == layout.focused;
+                seat.update(cx, |seat, _| seat.set_keys_free(keys_free));
             }
             match self.views.get(&pane.instance) {
                 // the seat its view waited for came: the view is made again

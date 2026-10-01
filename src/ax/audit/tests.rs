@@ -1225,7 +1225,9 @@ async fn composites_audit(
     let window = cx.open_window(
         gpui_kit::size(gpui_kit::px(400.), gpui_kit::px(300.)),
         |window, cx| {
-            let tree = cx.new(|_| crate::render::ViewTree::new(screen(&active)));
+            // a front pane with nothing over the desk: its dialogs may take the keys
+            let tree =
+                cx.new(|_| crate::render::ViewTree::new(screen(&active)).with_keys_grant(true));
             gpui_kit::component::Root::new(tree, window, cx)
         },
     );

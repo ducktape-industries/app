@@ -89,6 +89,10 @@ const MAX_REPLY_BYTES: usize = 32 << 20;
 /// against a queue only a redraw empties.
 const MAX_STREAM_BACKLOG_EVENTS: usize = MAX_REPLY_EVENTS / 2;
 const MAX_STREAM_BACKLOG_BYTES: usize = MAX_REPLY_BYTES / 2;
+/// `link.open`s one view may have admitted in the last `LINK_WINDOW`,
+/// each on its own gesture; past it a request is refused `link_limit`.
+const MAX_LINKS_PER_WINDOW: usize = 4;
+const LINK_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn host_fault(error: impl std::fmt::Display) -> wire::Error {
     wire::Error::new("host_fault", error.to_string())
@@ -237,9 +241,23 @@ pub(super) fn answer(
         (Capability::Module, "changes") => changes(guest, id, payload),
         (Capability::Chain, "heads") => heads(guest, id, payload),
         // the one way out: a `duck://` link, or an `https://` one for the
-        // system browser; any other scheme is refused here, at the method
+        // system browser; any other scheme is refused here, at the method.
+        // Only a gesture opens one, one per gesture, inside the budget:
+        // a view on a clock never opens a tab or reseats the desk.
         (Capability::Link, "open") => match methods::decode::<String>(payload) {
             Ok(link) if openable(&link) => {
+                if guest.user_activation.is_none() || guest.link_opened {
+                    guest.refuse(id, "needs_gesture", "`link.open` needs a press or key");
+                    return true;
+                }
+                let now = std::time::Instant::now();
+                guest.links.retain(|opened| now - *opened < LINK_WINDOW);
+                if guest.links.len() >= MAX_LINKS_PER_WINDOW {
+                    guest.refuse(id, "link_limit", "too many links opened this minute");
+                    return true;
+                }
+                guest.links.push(now);
+                guest.link_opened = true;
                 guest.intents.push(Intent::OpenLink(link));
                 guest.reply(id, Ok(Vec::new()));
             }

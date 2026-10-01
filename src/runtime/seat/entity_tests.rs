@@ -534,6 +534,7 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
             wire::WidgetCommand::Focus {
                 target: vec![wire::ElementIdWire::Name("filter".into())],
             },
+            true,
         ));
     };
     crate::runtime::seat_drawing_for_test(MODULE, 320, field);
@@ -614,6 +615,115 @@ fn widget_commands_run_after_the_tree_mounted(cx: &mut TestAppContext) {
     );
 }
 
+/// The gate on a guest moving the keys (`Seat::may_move_keys`), on the
+/// real command path: a view whose pane is not in front, or is in front
+/// under something open over the desk or a hold (`keys_free` false, as
+/// `PaneLayer` says it), takes no focus with no gesture, by `Focus` or
+/// `FocusHandle`; with its redraw's gesture it does; with its keys free
+/// it does without one.
+#[gpui_kit::test]
+fn a_view_moves_the_keys_only_with_a_gesture_or_its_keys_free(cx: &mut TestAppContext) {
+    const MODULE: &str = "focus-gate-test";
+    let field = wire::Node::Input {
+        options: wire::InputOptions {
+            label: "Filter".into(),
+            ..Default::default()
+        },
+        id: wire::ElementIdWire::Name("filter".into()),
+        placeholder: String::new(),
+        value: String::new(),
+        on_input: Some(1),
+        on_submit: None,
+        secure: false,
+        style: div().w(px(200.)).h(px(24.)).style().clone(),
+    };
+    let mut button = view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("button".into())),
+        style: div().w(px(200.)).h(px(24.)).style().clone(),
+        interactivity: Default::default(),
+        children: Vec::new(),
+    };
+    button.interactivity.focus_handle = Some(9);
+    let root = wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("root".into())),
+        style: Default::default(),
+        interactivity: Default::default(),
+        children: vec![field, wire::Node::Container(button)],
+    });
+    crate::runtime::seat_drawing_for_test(MODULE, 320, root);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let ask = |seat: &Entity<Seat>, native: &mut VisualTestContext, command, gestured| {
+        {
+            let mounted = mounted_of(seat, native);
+            let mut locked = mounted.lock().unwrap();
+            let Slot::Ready(guest) = &mut locked.slot else {
+                panic!("seated")
+            };
+            guest.widget_commands.push((7, command, gestured));
+        }
+        let woken = seat.clone();
+        native.update(|window, _| {
+            window.on_next_frame(move |_, cx| {
+                woken.update(cx, |seat, cx| seat.wake(cx));
+            });
+        });
+        native.update(|window, cx| window.simulate_next_frame(cx));
+        native.run_until_parked();
+        for _ in 0..2 {
+            native.update(|window, cx| window.simulate_next_frame(cx));
+            native.update(|window, cx| window.draw(cx).clear(cx));
+            native.run_until_parked();
+        }
+    };
+    let focus = wire::WidgetCommand::Focus {
+        target: vec![wire::ElementIdWire::Name("filter".into())],
+    };
+    let handle = wire::WidgetCommand::FocusHandle { handle: 9 };
+    let input_focused = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            let tree = seat.read(cx).tree().expect("mounted");
+            let input = tree.read(cx).first_input_for_test().expect("a field");
+            gpui_kit::Focusable::focus_handle(input.read(cx), cx).is_focused(window)
+        })
+    };
+    let button_focused = |native: &mut VisualTestContext| {
+        native.update(|window, cx| {
+            let tree = seat.read(cx).tree().expect("mounted");
+            tree.read(cx)
+                .guest_focus_for_test(9)
+                .expect("drawn")
+                .is_focused(window)
+        })
+    };
+    // a fresh seat's keys are not free until the pane layer says so
+    assert!(!seat.read_with(&native, |seat, _| seat.keys_free()));
+    ask(&seat, &mut native, focus.clone(), false);
+    assert!(
+        !input_focused(&mut native),
+        "Focus took the keys with no gesture"
+    );
+    ask(&seat, &mut native, handle.clone(), false);
+    assert!(
+        !button_focused(&mut native),
+        "FocusHandle took the keys with no gesture"
+    );
+    ask(&seat, &mut native, handle, true);
+    assert!(
+        button_focused(&mut native),
+        "a gestured FocusHandle was refused"
+    );
+    native.update(|window, cx| window.blur(cx));
+    ask(&seat, &mut native, focus.clone(), true);
+    assert!(input_focused(&mut native), "a gestured Focus was refused");
+    native.update(|window, cx| window.blur(cx));
+    seat.update(&mut native, |seat, _| seat.set_keys_free(true));
+    ask(&seat, &mut native, focus, false);
+    assert!(
+        input_focused(&mut native),
+        "a front pane with free keys was refused"
+    );
+}
+
 /// A program that leaves the roster gives up its seat: the pane shows the
 /// "no view" standin, not its frozen tree: the retire itself wakes the
 /// seat, since no clock redraws the window.
@@ -681,6 +791,8 @@ fn a_clipboard_answer_reaches_the_view(cx: &mut TestAppContext) {
             panic!("seated")
         };
         guest.capabilities.push(Capability::Clipboard);
+        // the read is asked on the first redraw, which has the gesture
+        guest.user_activation = Some(());
     }
     let (seat, _, native) = open(cx, MODULE, false);
     native.run_until_parked();

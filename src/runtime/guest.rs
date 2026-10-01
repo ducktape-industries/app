@@ -28,7 +28,17 @@ pub(super) enum Restored {
 pub(super) struct Guest {
     /// Node requests belong to the network selected when this instance starts.
     pub(crate) connection_rev: u64,
+    /// A real press or key in this view since the last redraw: the gesture
+    /// `link.open`, the clipboard and a focus move need (`redraw` takes it).
     pub(crate) user_activation: Option<()>,
+    /// Whether the last redraw had that gesture: what the tree drawn from
+    /// it may do on its own (a dialog's auto-focus).
+    pub(crate) gestured: bool,
+    /// One gesture admits one `link.open`: set by the one it admitted,
+    /// cleared with the gesture.
+    pub(crate) link_opened: bool,
+    /// When each recent `link.open` was admitted, for the per-minute budget.
+    pub(crate) links: Vec<std::time::Instant>,
     pub(crate) module: &'static str,
     /// The seat entity showing this seat (`Seat.instance`;
     /// 0 for a preloaded seat no tab has claimed): with `module`, the key
@@ -50,8 +60,9 @@ pub(super) struct Guest {
     pub(crate) pending: Vec<wire::Event>,
     pub(crate) theme_dark: Option<bool>,
     /// Requests wait for the native layout of a frame that still mounts
-    /// their target, inside this instance only.
-    pub(crate) widget_commands: Vec<(u64, wire::WidgetCommand)>,
+    /// their target, inside this instance only; each carries whether the
+    /// redraw that asked it had a gesture.
+    pub(crate) widget_commands: Vec<(u64, wire::WidgetCommand, bool)>,
     /// The last frame, its `root` kept across `unchanged` ticks and patched
     /// in place by a frame that carries patches instead of a tree.
     pub(crate) frame: wire::Frame,

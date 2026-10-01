@@ -931,6 +931,60 @@ fn a_hidden_seats_intents_still_arrive(cx: &mut TestAppContext) {
     );
 }
 
+/// The shell half of `Seat::may_move_keys`, as `PaneLayer` pushes it: a
+/// seat's keys are free only while its pane is in front, nothing is open
+/// over the desk and no hold is on; the back pane's never are.
+#[gpui_kit::test]
+fn a_seats_keys_are_free_only_in_front_with_nothing_over_the_desk(cx: &mut TestAppContext) {
+    const FRONT: &str = "pane-keys-front-view";
+    const BACK: &str = "pane-keys-back-view";
+    let (app, _, view, mut native) = console(cx);
+    crate::runtime::seat_for_test(BACK, 400);
+    crate::runtime::seat_for_test(FRONT, 400);
+    pane(&view, PaneMessage::Select(BACK), &mut native);
+    pane(&view, PaneMessage::Split(FRONT), &mut native);
+    let keys_free = |module: &str, native: &mut VisualTestContext| {
+        native.update(|_, cx| {
+            let layout = view.read(cx).layout(cx);
+            let pane = layout
+                .panes
+                .iter()
+                .find(|pane| pane.module == module)
+                .expect("the pane opened");
+            let seat = app.seats.read(cx).seat(pane.instance).expect("seated");
+            seat.read(cx).keys_free()
+        })
+    };
+    assert!(
+        keys_free(FRONT, &mut native),
+        "the front pane's keys are free"
+    );
+    assert!(
+        !keys_free(BACK, &mut native),
+        "a back pane's keys are never free"
+    );
+    show(&view, Some(Overlay::Spotlight), &mut native);
+    native.run_until_parked();
+    assert!(!keys_free(FRONT, &mut native), "free under Spotlight");
+    show(&view, None, &mut native);
+    native.run_until_parked();
+    assert!(
+        keys_free(FRONT, &mut native),
+        "not free again once Spotlight closed"
+    );
+    let front = native.update(|_, cx| view.read(cx).layout(cx).focused);
+    pane(&view, PaneMessage::Hold(front), &mut native);
+    assert!(
+        !keys_free(FRONT, &mut native),
+        "free while the keyboard holds the pane"
+    );
+    pane(&view, PaneMessage::Release { keep: true }, &mut native);
+    assert!(
+        keys_free(FRONT, &mut native),
+        "not free again after the hold"
+    );
+}
+
 /// A view's link (`link.open`) is routed by `Seats` to `Windows::open_link`
 /// on the seat's next turn: the listed view opens on the console's desk,
 /// comes to the front and is handed the route.

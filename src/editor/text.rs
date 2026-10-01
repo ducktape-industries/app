@@ -178,7 +178,11 @@ impl TextEditor {
             self.move_cursor(cursor, cx);
             self.install(window, cx);
         }
-        self.input.read(cx).focus_handle(cx).focus(window, cx);
+        // a cursor command moves the caret where it is; only Focus takes
+        // the keys, and only past the seat's gate
+        if matches!(command, wire::WidgetCommand::Focus { .. }) {
+            self.input.read(cx).focus_handle(cx).focus(window, cx);
+        }
         self.sync(window, cx);
         true
     }

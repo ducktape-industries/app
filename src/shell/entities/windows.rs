@@ -635,7 +635,12 @@ impl Windows {
         }
     }
 
+    /// A link's notice up; the same one again while it is up says nothing
+    /// new, so it is not restarted either.
     fn notice(&self, said: String, cx: &mut App) {
+        if self.shared.toast.read(cx).get() == &said {
+            return;
+        }
         self.shared
             .toast
             .update(cx, |toast, cx| toast.show(said, cx));

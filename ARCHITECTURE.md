@@ -216,8 +216,13 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    addressed to a generation or revision no longer seated, takes the
    one-shot **user activation** (`ViewTree::take_user_activation`) onto
    `guest.user_activation`, pushes the event onto `guest.pending` and
-   turns. A guest hears only what its elements' own listeners emit: no
-   window-wide input (pointer moves, keys, IME, file drops) reaches it.
+   turns. The mark is the view's **gesture** for that redraw: `link.open`
+   (one per gesture, four a minute), `clipboard.read`/`write` and every
+   focus-moving `host.widget` command need it, or (focus only) the pane's
+   keys to be free (`Seat::may_move_keys`); a key in a native editor marks
+   it too (`Guest::redraw`). A guest hears only what its elements' own
+   listeners emit: no window-wide input (pointer moves, keys, IME, file
+   drops) reaches it.
    The multi-line editor is its own loop: `Node::Editor` mounts
    a `TextEditor` (`editor/text.rs`) whose edits become `EditorStore`
    transactions (`editor/wire.rs`); claimed key chords go to the guest for
@@ -715,8 +720,9 @@ House words, and where one word means several things.
   gesture: the renderer records the handler a pointer pressed
   (`ViewTree.user_activation`), `take_user_activation` matches it against
   the emitted event, tooltips forward it to their source tree. The widget
-  copies it onto `guest.user_activation`, which `redraw` clears; nothing in
-  the kernel reads it yet.
+  copies it onto `guest.user_activation`, which `redraw` spends: `link.open`,
+  the clipboard and the focus-moving widget commands are refused
+  `needs_gesture` without it.
 - **widget command** — a `host.widget` request acting on a native control
   (focus, next/previous, scroll, cursor, editor action); its **target** is
   an id suffix matched against mounted authored paths.

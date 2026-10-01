@@ -210,6 +210,7 @@ fn node_methods_answer_for_the_missing_node_first() {
 fn open_link_refuses_any_scheme_but_duck_and_https() {
     let open = |link: &str| {
         let mut guest = guest();
+        guest.user_activation = Some(());
         guest.answer(
             wire::Request {
                 id: 5,
@@ -234,6 +235,122 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
         assert_eq!(open(link), (Some("malformed_request".into()), 0), "{link}");
     }
 }
+/// A `link.open` request as a view sends it.
+fn link_request(id: u64, link: &str) -> wire::Request {
+    wire::Request {
+        id,
+        kind: "link.open".into(),
+        payload: methods::encode(&link.to_owned()),
+    }
+}
+
+/// `link.open` needs the redraw's gesture, and one gesture admits one
+/// link: a view on a clock, or one handed a route by an OS `duck://`
+/// link, opens nothing.
+#[test]
+fn link_open_needs_a_gesture_and_one_gesture_admits_one_link() {
+    let mut guest = guest();
+    guest.answer(link_request(1, "https://example.com/a"), &None);
+    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
+    // a route the OS handed the view (`Windows::open_seat`) is no gesture
+    guest.route_subscriptions.push(2);
+    crate::runtime::route_to("request-test", "tx/1".into());
+    guest.sync_route();
+    guest.answer(link_request(3, "duck://request-test/tx/1"), &None);
+    assert_eq!(refusal_code(&mut guest).as_deref(), Some("needs_gesture"));
+    assert!(guest.intents.is_empty(), "a link opened with no gesture");
+    guest.user_activation = Some(());
+    guest.answer(link_request(4, "https://example.com/a"), &None);
+    assert_eq!(refusal_code(&mut guest), None);
+    guest.answer(link_request(5, "https://example.com/b"), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some("needs_gesture"),
+        "a second link on the same gesture"
+    );
+    assert_eq!(guest.intents.len(), 1);
+}
+
+/// Four links a minute per view, each on its own gesture; the fifth is
+/// refused `link_limit` until the window moves on.
+#[test]
+fn link_open_refuses_the_fifth_link_in_a_minute() {
+    let mut guest = guest();
+    for id in 1..=4 {
+        guest.user_activation = Some(());
+        guest.link_opened = false;
+        guest.answer(link_request(id, "https://example.com/"), &None);
+        assert_eq!(refusal_code(&mut guest), None, "link {id}");
+    }
+    guest.user_activation = Some(());
+    guest.link_opened = false;
+    guest.answer(link_request(5, "https://example.com/"), &None);
+    assert_eq!(refusal_code(&mut guest).as_deref(), Some("link_limit"));
+    assert_eq!(guest.intents.len(), 4);
+    // a minute on, the oldest is forgotten and one more goes through
+    guest.links[0] -= std::time::Duration::from_secs(61);
+    guest.user_activation = Some(());
+    guest.link_opened = false;
+    guest.answer(link_request(6, "https://example.com/"), &None);
+    assert_eq!(refusal_code(&mut guest), None);
+    assert_eq!(guest.intents.len(), 5);
+}
+
+/// The clipboard is read and written only on a gesture.
+#[test]
+fn the_clipboard_needs_a_gesture() {
+    let request = |id: u64, kind: &str| wire::Request {
+        id,
+        kind: kind.into(),
+        payload: methods::encode(&"copied".to_owned()),
+    };
+    let mut guest = guest();
+    for (id, kind) in [(1, "clipboard.read"), (2, "clipboard.write")] {
+        guest.answer(request(id, kind), &None);
+        assert_eq!(
+            refusal_code(&mut guest).as_deref(),
+            Some("needs_gesture"),
+            "{kind}"
+        );
+    }
+    guest.user_activation = Some(());
+    for (id, kind) in [(3, "clipboard.read"), (4, "clipboard.write")] {
+        guest.answer(request(id, kind), &None);
+        assert_eq!(refusal_code(&mut guest), None, "{kind} with a gesture");
+    }
+}
+
+/// A `host.widget` command runs frames after it was asked: it carries
+/// its own redraw's gesture to the seat's gate, never a later one's.
+#[test]
+fn a_widget_command_carries_its_redraws_gesture() {
+    let mut guest = guest();
+    guest.frame.root = Some(wire::Node::Container(view_wire::ContainerNode {
+        id: Some(wire::ElementIdWire::Name("box".into())),
+        style: Default::default(),
+        interactivity: Default::default(),
+        children: Vec::new(),
+    }));
+    let focus = wire::WidgetCommand::Focus {
+        target: vec![wire::ElementIdWire::Name("box".into())],
+    };
+    guest.widget_request(1, &wire::encode(&focus));
+    guest.user_activation = Some(());
+    guest.widget_request(2, &wire::encode(&focus));
+    let gestured: Vec<_> = guest
+        .widget_commands
+        .iter()
+        .map(|(id, _, gestured)| (*id, *gestured))
+        .collect();
+    assert_eq!(gestured, [(1, false), (2, true)]);
+    let mut seen = Vec::new();
+    guest.execute_widget_commands(|_, gestured| {
+        seen.push(gestured);
+        Ok(Vec::new())
+    });
+    assert_eq!(seen, [false, true]);
+}
+
 #[test]
 fn system_kinds_route_to_the_node_handler() {
     for (capability, operation) in [

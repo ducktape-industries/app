@@ -392,6 +392,66 @@ fn a_focused_editor_wears_the_ring_on_the_views_box(cx: &mut gpui_kit::TestAppCo
     assert_eq!(border(&mut native), ink);
 }
 
+/// A cursor command moves the caret where it is and takes no keys: only
+/// `Focus` does, and only through the seat's gate.
+#[gpui_kit::test]
+fn a_cursor_command_moves_the_caret_without_taking_the_keys(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let root = wire::Node::Editor {
+        id: named_id("document"),
+        style: div().w(px(240.)).h(px(80.)).style().clone(),
+        label: None,
+        binding: None,
+        placeholder: String::new(),
+        document: wire::editor_document::EditorDocumentRef {
+            document: "ring".into(),
+            reset: 1,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: "some words".len() as u32,
+        },
+        on_document: 0,
+        editable: true,
+    };
+    let (tree, mut native) = with_editors(root, Some("some words"), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let path = [named_id("document")];
+    let run = |native: &mut gpui_kit::VisualTestContext, command: wire::WidgetCommand| {
+        native.update(|window, cx| {
+            let editor_mount::EditorView::Text(editor) =
+                &tree.read(cx).editors[path.as_slice()].view;
+            let editor = editor.clone();
+            editor.update(cx, |editor, cx| editor.widget_command(&command, window, cx));
+            editor.read(cx).is_focused(window, cx)
+        })
+    };
+    assert!(
+        !run(
+            &mut native,
+            wire::WidgetCommand::CursorEnd {
+                target: path.to_vec()
+            }
+        ),
+        "CursorEnd took the keys"
+    );
+    assert!(
+        !run(
+            &mut native,
+            wire::WidgetCommand::SelectAll {
+                target: path.to_vec()
+            }
+        ),
+        "SelectAll took the keys"
+    );
+    assert!(run(
+        &mut native,
+        wire::WidgetCommand::Focus {
+            target: path.to_vec()
+        }
+    ));
+}
+
 #[gpui_kit::test]
 fn editor_obeys_authored_size_and_height_limits(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);

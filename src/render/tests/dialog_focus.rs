@@ -36,7 +36,7 @@ fn screen(open: bool) -> wire::Node {
 fn a_closed_dialog_gives_focus_back_to_its_opener(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
-        ViewTree::new(screen(false))
+        ViewTree::new(screen(false)).with_keys_grant(true)
     });
     let tree = window.root(cx).unwrap();
     let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
@@ -64,6 +64,32 @@ fn a_closed_dialog_gives_focus_back_to_its_opener(cx: &mut gpui_kit::TestAppCont
     );
 }
 
+/// A dialog whose guest may not move the keys (`ViewTree::keys_grant`
+/// false: a background pane, or under Spotlight, with no gesture) opens
+/// without taking them: the keys stay where they were.
+#[gpui_kit::test]
+fn a_dialog_takes_no_keys_without_the_grant(cx: &mut gpui_kit::TestAppContext) {
+    cx.update(gpui_kit::init);
+    let window = cx.open_window(size(px(300.), px(200.)), |_, _| {
+        ViewTree::new(screen(false))
+    });
+    let tree = window.root(cx).unwrap();
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
+    native.update(|window, cx| window.render_frame(cx));
+    let opener = tree
+        .read_with(&native, |tree, _| tree.guest_focus_targets.get(&1).cloned())
+        .expect("the opener is drawn");
+    native.update(|window, cx| opener.focus(window, cx));
+    tree.update(&mut native, |tree, cx| tree.replace(screen(true), cx));
+    native.update(|window, cx| window.render_frame(cx));
+    native.run_until_parked();
+    assert_eq!(
+        native.update(|window, cx| window.focused(cx)).as_ref(),
+        Some(&opener),
+        "the dialog took the keyboard with no grant"
+    );
+}
+
 /// The guest focus handle that has the keys, if one has.
 fn holder(
     tree: &gpui_kit::Entity<ViewTree>,
@@ -85,7 +111,7 @@ fn tab_goes_round_a_view_dialog_and_never_out(cx: &mut gpui_kit::TestAppContext)
     use gpui_kit::AppContext as _;
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(200.)), |window, cx| {
-        let tree = cx.new(|_| ViewTree::new(screen(false)));
+        let tree = cx.new(|_| ViewTree::new(screen(false)).with_keys_grant(true));
         gpui_kit::component::Root::new(tree, window, cx)
     });
     let tree = window

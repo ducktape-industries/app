@@ -196,6 +196,10 @@ pub struct ViewTree {
     presentation: NativePresentation,
     /// The handler a real gesture last pressed; `take_user_activation` spends it once.
     user_activation: std::cell::Cell<Option<u32>>,
+    /// Whether the guest whose frame this is may move the keys on its own
+    /// (`Seat::may_move_keys` for the redraw that made it): a dialog that
+    /// opens in it takes the keyboard only then.
+    keys_grant: bool,
     /// The pane box this tree is clipped to, for its tooltip windows.
     slot_mask: tooltip_containment::SlotMask,
     /// The seat this tree draws for, once a widget owns it: its renders and
@@ -217,6 +221,7 @@ impl ViewTree {
     pub fn new(root: wire::Node) -> Self {
         Self {
             user_activation: Default::default(),
+            keys_grant: false,
             slot_mask: Default::default(),
             root,
             focus_targets: HashMap::new(),
@@ -260,6 +265,12 @@ impl ViewTree {
     #[cfg(test)]
     pub(crate) fn first_input_for_test(&self) -> Option<Entity<InputState>> {
         self.fields.values().next().map(|field| field.state.clone())
+    }
+
+    /// The native handle behind a guest focus handle, for a test to ask who has the keys.
+    #[cfg(test)]
+    pub(crate) fn guest_focus_for_test(&self, handle: u64) -> Option<FocusHandle> {
+        self.guest_focus_targets.get(&handle).cloned()
     }
 
     fn node(

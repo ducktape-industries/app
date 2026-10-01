@@ -29,13 +29,19 @@ pub(super) fn answer(
     id: u64,
     payload: &[u8],
 ) -> bool {
-    match (capability, operation) {
-        (Capability::Clipboard, "read") => queue(guest, id, Request::Read),
-        (Capability::Clipboard, "write") => match methods::decode::<String>(payload) {
-            Ok(text) => queue(guest, id, Request::Write(text)),
-            Err(error) => guest.refuse(id, "malformed_request", error),
-        },
+    let request = match (capability, operation) {
+        (Capability::Clipboard, "read") => Ok(Request::Read),
+        (Capability::Clipboard, "write") => methods::decode::<String>(payload).map(Request::Write),
         _ => return false,
+    };
+    // what the person copied elsewhere is read, and replaced, only on
+    // their press or key in this view; a view on a clock never sees it
+    match request {
+        _ if guest.user_activation.is_none() => {
+            guest.refuse(id, "needs_gesture", "the clipboard needs a press or key")
+        }
+        Ok(request) => queue(guest, id, request),
+        Err(error) => guest.refuse(id, "malformed_request", error),
     }
     true
 }

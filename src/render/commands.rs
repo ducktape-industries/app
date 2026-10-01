@@ -67,8 +67,9 @@ pub(crate) fn dialog_exit(opener: WeakFocusHandle, window: &mut Window, cx: &mut
 
 impl ViewTree {
     /// `Some` when `event` came from a real gesture on this tree — a click,
-    /// press or select whose handler is the one the last gesture recorded —
-    /// spending the mark, so an activation is granted once.
+    /// press, select, key or submit whose handler is the one the last
+    /// gesture recorded — spending the mark, so an activation is granted
+    /// once.
     pub(crate) fn take_user_activation(&self, event: &wire::Event) -> Option<()> {
         let message = match event {
             wire::Event::Message(message)
@@ -80,6 +81,12 @@ impl ViewTree {
             }
             | wire::Event::Select {
                 handler: message, ..
+            }
+            | wire::Event::KeyDown {
+                handler: message, ..
+            }
+            | wire::Event::Input {
+                handler: message, ..
             } => message,
             _ => return None,
         };
@@ -88,6 +95,16 @@ impl ViewTree {
             return None;
         }
         self.user_activation.take().map(|_| ())
+    }
+
+    /// See `keys_grant`: set by the seat for the frame it hands over.
+    pub(crate) fn set_keys_grant(&mut self, keys_grant: bool) {
+        self.keys_grant = keys_grant;
+    }
+
+    pub(crate) fn with_keys_grant(mut self, keys_grant: bool) -> Self {
+        self.keys_grant = keys_grant;
+        self
     }
 
     pub fn execute_widget_command(
