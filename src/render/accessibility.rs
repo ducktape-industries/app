@@ -372,6 +372,11 @@ impl ViewTree {
             tabbed(handle.clone(), interactivity)
         });
         element = super::interactivity::apply(element, interactivity, focus_handle, cx);
+        // assistive technology's press is this click too: gpui-pre answers
+        // AccessKit's Click on an element with click listeners by running
+        // them (a keyboard click on its bounds), wherever it is drawn, so
+        // the reader's press is the node's, with the one activation a
+        // pointer's or Enter's has
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {
@@ -382,54 +387,8 @@ impl ViewTree {
                     });
                 },
             ));
-            // assistive technology's press is this node's click, sent here
-            // and not left to gpui: its own Click is a pointer press at the
-            // node's middle with no hit test, which lands on whatever is
-            // drawn there when the node is scrolled out of its list or lies
-            // under another (the shell's rows answer it the same way). It
-            // is the reader's press, so it grants user activation as a
-            // pointer's does (the AX door presses this way too).
-            let tree = cx.entity().downgrade();
-            let path = self.authored_path.clone();
-            element = element.on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, _, cx| {
-                let _ = tree.update(cx, |this, cx| {
-                    let event = pressed_at(this.nearest_bounds(&path).center());
-                    this.activate();
-                    cx.emit(wire::Event::Click { handler, event });
-                });
-            });
         }
         element
-    }
-
-    /// The bounds measured at `path` on the last frame, or at the nearest
-    /// path above it that measures (`measure` is on identified containers,
-    /// editors and sensors; a picture or a list sits on its ancestor's).
-    // ponytail: a pressable picture or list is pressed at its measured
-    // ancestor's middle; measure it once a view reads a press on one that closely.
-    fn nearest_bounds(&self, path: &[wire::ElementIdWire]) -> Bounds<Pixels> {
-        (0..=path.len())
-            .rev()
-            .find_map(|end| self.bounds.get(&path[..end]))
-            .copied()
-            .unwrap_or_default()
-    }
-}
-
-/// The click a left press and release at `position` is on the wire: what a
-/// view hears for a pointer's click there, and what gpui's own Click made
-/// of a press from assistive technology.
-fn pressed_at(position: Point<Pixels>) -> wire::click::Click {
-    let down = wire::click::ButtonEvent {
-        button: wire::click::MouseButton::Left,
-        position,
-        modifiers: Default::default(),
-        click_count: 1,
-    };
-    wire::click::Click::Mouse {
-        up: down.clone(),
-        down,
-        first_mouse: false,
     }
 }
 

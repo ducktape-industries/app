@@ -229,8 +229,8 @@ fn pressable(
 /// row 5 at 200..240, outside the list and inside the window, so the door
 /// shows it; a button of the view's lies right there. gpui's own Click was
 /// a pointer press at the row's middle with no hit test: it clicked the
-/// button. The click is a left press at the row's middle, as that one
-/// was, and grants user activation, as a pointer's press does.
+/// button. The click is the row's own, a keyboard click on its bounds as
+/// Enter's is, and grants user activation, as a pointer's press does.
 #[gpui_kit::test]
 fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
     cx: &mut gpui_kit::TestAppContext,
@@ -312,17 +312,17 @@ fn a_press_on_a_view_row_scrolled_out_of_its_list_is_that_rows_click(
     let [
         wire::Event::Click {
             handler: 15,
-            event: wire::click::Click::Mouse { down, up, .. },
+            event: wire::click::Click::Keyboard { button, bounds },
         },
     ] = &events[..]
     else {
         panic!("row 5's click alone, not {events:?}");
     };
-    for press in [down, up] {
-        assert_eq!(press.button, wire::click::MouseButton::Left);
-        assert_eq!(press.click_count, 1);
-        assert_eq!(press.position, gpui_kit::point(px(100.), px(220.)));
-    }
+    assert_eq!(*button, wire::click::KeyboardButton::Enter);
+    assert_eq!(
+        *bounds,
+        gpui_kit::Bounds::new(gpui_kit::point(px(0.), px(200.)), size(px(200.), px(40.)))
+    );
     tree.read_with(&native, |tree, _| {
         assert!(
             tree.take_activation().is_some(),
