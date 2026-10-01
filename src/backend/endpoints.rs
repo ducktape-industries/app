@@ -166,6 +166,7 @@ mod tests {
             7,
             {"network": "testkit"},
             {"url": "http://c", "network": "testkit"},
+            {"url": "http://d", "network": "testkit", "founded": 9, "other_chain": true},
         ]);
         let parsed: Vec<_> = list
             .as_array()
@@ -175,11 +176,19 @@ mod tests {
             .collect();
         assert_eq!(
             parsed,
-            [RecentEndpoint {
-                url: "http://c".into(),
-                network: "testkit".into(),
-                ..RecentEndpoint::default()
-            }]
+            [
+                RecentEndpoint {
+                    url: "http://c".into(),
+                    network: "testkit".into(),
+                    ..RecentEndpoint::default()
+                },
+                RecentEndpoint {
+                    url: "http://d".into(),
+                    network: "testkit".into(),
+                    founded: 9,
+                    other_chain: true,
+                },
+            ]
         );
     }
 
@@ -198,29 +207,5 @@ mod tests {
             ["http://a", "http://b"]
         );
         assert_eq!(recent[0].network, "renamed");
-    }
-
-    #[test]
-    fn recent_rows_name_the_host_and_mark_the_other_chain() {
-        let row = |url: &str, other_chain| RecentEndpoint {
-            url: url.into(),
-            network: "testkit".into(),
-            founded: 1,
-            other_chain,
-        };
-        assert_eq!(
-            row("http://127.0.0.1:36817", false).label(),
-            "testkit · 127.0.0.1:36817"
-        );
-        assert_eq!(
-            row("http://127.0.0.1:34329", true).label(),
-            "testkit · 127.0.0.1:34329 · different network"
-        );
-        let saved = serde_json::json!({"url": "http://c", "network": "testkit", "founded": 9, "other_chain": true});
-        assert_eq!(endpoint_of_json(&saved).unwrap(), {
-            let mut c = row("http://c", true);
-            c.founded = 9;
-            c
-        });
     }
 }

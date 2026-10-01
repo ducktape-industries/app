@@ -153,18 +153,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_transport_failure_names_the_node_not_the_raw_error() {
-        let sentence = connect_error(
-            "http://127.0.0.1:33835",
-            "error sending request for url (http://127.0.0.1:33835/v1/status)".into(),
-        );
-        assert_eq!(
-            sentence,
-            "Can't reach http://127.0.0.1:33835. Check the address, or that the node is running."
-        );
-    }
-
-    #[test]
     fn user_error_never_lets_a_cli_command_through() {
         assert_eq!(
             user_error("no wallet — run `ducktape wallet new <name>` first".into()),

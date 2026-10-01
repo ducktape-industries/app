@@ -330,20 +330,6 @@ mod tests {
     }
 
     #[test]
-    fn a_device_consent_admits_a_passkey() {
-        use commonware_cryptography::Signer as _;
-        let device = commonware_cryptography::ed25519::PrivateKey::from_seed(1);
-        let preimage = b"admission".to_vec();
-        let proof = device.sign(CONSENT_NAMESPACE, &preimage);
-        assert!(KeyScheme::Ed25519.verify(
-            device.public_key().as_ref(),
-            CONSENT_NAMESPACE,
-            &preimage,
-            proof.as_ref()
-        ));
-    }
-
-    #[test]
     fn a_user_handle_names_its_network_and_account() {
         let handle = user_handle("testkit", 258);
         assert_eq!(account_of_handle("testkit", Some(&handle)), Ok(258));

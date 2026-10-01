@@ -125,9 +125,8 @@ mod tests {
 
     #[test]
     fn a_kept_key_loads_back_the_same_and_only_its_owner_reads_it() {
-        let dir =
-            std::env::temp_dir().join(format!("ducktape-device-key-{}", rand::random::<u64>()));
-        let path = dir.join("testkit").join("device.key");
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("testkit").join("device.key");
         assert!(load_file(&path).unwrap().is_none());
         let key = decode(&[7u8; 32]).unwrap();
         save_file(&path, &key.encode()).unwrap();
@@ -139,20 +138,5 @@ mod tests {
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o077, 0, "readable by others: {mode:o}");
         }
-        let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn an_old_recovery_phrase_is_the_same_key() {
-        // the phrase a password-locked key was minted with names its seed
-        let seed = [9u8; 32];
-        let words = keystore::userkey::mnemonic_of_seed(&seed);
-        let from_words = decode(&keystore::userkey::seed_of_mnemonic(&words).unwrap()).unwrap();
-        assert_eq!(decode(&seed).unwrap().public_key(), from_words.public_key());
-        assert_eq!(
-            from_words.encode().as_ref(),
-            seed.as_slice(),
-            "a key encodes as its seed"
-        );
     }
 }

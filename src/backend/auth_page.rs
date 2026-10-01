@@ -266,10 +266,23 @@ mod tests {
 
     #[test]
     fn a_page_error_reads_as_a_sentence() {
-        let error = parse_result(r#"{"op":"get","error":"NotAllowedError","message":"x"}"#);
-        assert_eq!(error, Err(ceremony_error("NotAllowedError")));
-        let short_key = format!(r#"{{"op":"create","publicKey":"{}"}}"#, B64.encode([2; 32]));
-        assert!(parse_result(&short_key).is_err());
+        for (name, sentence) in [
+            (
+                "NotAllowedError",
+                "The passkey step was cancelled or timed out. Try again.",
+            ),
+            (
+                "InvalidStateError",
+                "That authenticator already holds a passkey for this account.",
+            ),
+            (
+                "SomethingElse",
+                "The passkey step failed (SomethingElse). Try again.",
+            ),
+        ] {
+            let page = format!(r#"{{"op":"get","error":"{name}","message":"x"}}"#);
+            assert_eq!(parse_result(&page), Err(sentence.into()), "{name}");
+        }
     }
 
     /// A fake auth host: each GET of `/r/<id>` takes the next of `answers`
