@@ -1,11 +1,11 @@
 //! The door's view of one window: `Window::a11y_tree` turned into the node
 //! list every read serves. [`snapshot`] walks the tree in paint order under
-//! the topmost modal, drops what is hidden, zero-sized or off the viewport,
-//! masks what is secret, and words the states and actions; [`door_ids`]
-//! gives each node its stable id. The rest are the shapes of answers:
-//! [`compact`], [`offers`], [`delta`], [`nearest`].
+//! the topmost modal, drops what is hidden, zero-sized, off the viewport or
+//! outside an ancestor it keeps, masks what is secret, and words the states
+//! and actions; [`door_ids`] gives each node its stable id. The rest are the
+//! shapes of answers: [`compact`], [`offers`], [`delta`], [`nearest`].
 use super::*;
-use gpui_kit::accesskit::{HasPopup, Invalid, Live, Orientation};
+use gpui_kit::accesskit::{HasPopup, Invalid, Live, Orientation, Rect};
 
 /// The actions the door offers, each with its word: a node supporting one
 /// is offered it, and `/act` performs each word (`actions::perform`).
@@ -154,6 +154,10 @@ impl Properties {
 /// The visible nodes of `window`'s last tree, in tree order; empty before
 /// the window has built one. An active modal returns only its reachable
 /// subtree, matching what the door promises a screen reader can reach.
+/// Visible means inside the window and inside every ancestor the snapshot
+/// keeps: the tree carries no clip of its own, and a scroller's rows past
+/// its edge are inside the window and off the screen (the walk's `clipped`
+/// assumes the same of every ancestor).
 pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode> {
     let Some(update) = window.a11y_tree() else {
         return Vec::new();
@@ -162,19 +166,30 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
         update.nodes.iter().map(|(id, node)| (*id, node)).collect();
     let scale = f64::from(window.scale_factor());
     let viewport = window.viewport_size();
-    let (width, height) = (
+    let viewport = Rect::new(
+        0.,
+        0.,
         f64::from(viewport.width) * scale,
         f64::from(viewport.height) * scale,
     );
     // each node's id prefix (`<window>:` or `<window>:<module>/`), scope
-    // and path segments, and its parent's index in `out`; the ids
-    // themselves are resolved once all are known. A synthetic child's own
-    // segment is its role, and after the first of that role under one
-    // node, its place among them: `Link`, `Link2`.
+    // and path segments, its parent's index in `out` and the clip its
+    // ancestors leave it; the ids themselves are resolved once all are
+    // known. A synthetic child's own segment is its role, and after the
+    // first of that role under one node, its place among them: `Link`,
+    // `Link2`.
     let mut out: Vec<AxNode> = Vec::new();
     let mut paths: Vec<(String, Vec<String>)> = Vec::new();
     let mut parents: Vec<Option<usize>> = Vec::new();
-    type Frame = (NodeId, String, String, Vec<String>, Option<usize>, String);
+    type Frame = (
+        NodeId,
+        String,
+        String,
+        Vec<String>,
+        Option<usize>,
+        String,
+        Rect,
+    );
     let mut stack: Vec<Frame> = Vec::new();
     let root = update.tree.as_ref().map_or(NodeId(0), |tree| tree.root);
     let push_children = |stack: &mut Vec<Frame>,
@@ -182,7 +197,8 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                          prefix: &str,
                          scope: &str,
                          path: &[String],
-                         parent: Option<usize>| {
+                         parent: Option<usize>,
+                         clip: Rect| {
         let Some(node) = nodes.get(&id) else { return };
         let mut seen: HashMap<Role, usize> = HashMap::new();
         let segments: Vec<String> = node
@@ -210,6 +226,7 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
                 path.to_vec(),
                 parent,
                 segment,
+                clip,
             ));
         }
     };
@@ -225,10 +242,19 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             Vec::new(),
             None,
             String::new(),
+            viewport,
         )),
-        None => push_children(&mut stack, root, &format!("{name}:"), name, &[], None),
+        None => push_children(
+            &mut stack,
+            root,
+            &format!("{name}:"),
+            name,
+            &[],
+            None,
+            viewport,
+        ),
     }
-    while let Some((id, prefix, scope, mut path, parent, segment)) = stack.pop() {
+    while let Some((id, prefix, scope, mut path, parent, segment, clip)) = stack.pop() {
         let Some(node) = nodes.get(&id) else { continue };
         if node.is_hidden() {
             continue;
@@ -250,18 +276,18 @@ pub(crate) fn snapshot(name: &str, window: &Window, bounds: bool) -> Vec<AxNode>
             }
         };
         let rect = node.bounds();
-        let shown = rect.is_none_or(|r| {
-            r.width() > 0.
-                && r.height() > 0.
-                && r.x1 > 0.
-                && r.y1 > 0.
-                && r.x0 < width
-                && r.y0 < height
-        });
-        // a node the snapshot drops is no one's parent: its children's is
-        // the nearest one it keeps
+        // `intersect` never goes negative: a node past the clip meets it in
+        // nothing, and so does a zero-sized one
+        let shown = rect.is_none_or(|r| !r.intersect(clip).is_empty());
+        // a node the snapshot drops is no one's parent and clips nothing: its
+        // children's parent is the nearest one it keeps, and their clip the
+        // one it was given
         let ancestor = if shown { Some(out.len()) } else { parent };
-        push_children(&mut stack, id, &prefix, &scope, &path, ancestor);
+        let clip = match rect.filter(|_| shown) {
+            Some(r) => r.intersect(clip),
+            None => clip,
+        };
+        push_children(&mut stack, id, &prefix, &scope, &path, ancestor, clip);
         if !shown {
             continue;
         }
@@ -841,5 +867,78 @@ mod offer_tests {
         });
         let performed: Vec<_> = MORE.iter().map(|(action, _)| *action).collect();
         assert_eq!(*done.borrow(), performed);
+    }
+}
+#[cfg(test)]
+mod clip_tests {
+    //! A node is shown only inside every ancestor the snapshot keeps.
+    use super::*;
+    use gpui_kit::test::TestWindowExt as _;
+    use gpui_kit::{
+        Context, InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
+        StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
+    };
+
+    /// A 100 px list clipping five 40 px rows: the third straddles its
+    /// edge, the last two sit past it, inside the window.
+    struct Clipped;
+
+    impl Render for Clipped {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .id("list")
+                .w(px(100.))
+                .h(px(100.))
+                .flex()
+                .flex_col()
+                .overflow_hidden()
+                .role(Role::ListBox)
+                .aria_label("Rows")
+                .children((0..5).map(|index| {
+                    div()
+                        .id(SharedString::from(format!("row{index}")))
+                        .w(px(100.))
+                        .h(px(40.))
+                        .flex_shrink_0()
+                        .role(Role::ListBoxOption)
+                        .aria_label(format!("Row {index}"))
+                        .on_click(|_, _, _| {})
+                }))
+        }
+    }
+
+    /// The rows a list scrolls past its edge are inside the window and off
+    /// the screen: the door shows none of them, and presses none (a press
+    /// lands at the node's centre, on whatever is drawn there); a row the
+    /// edge cuts is on the screen.
+    #[gpui_kit::test]
+    fn the_door_shows_a_node_only_inside_every_ancestor_it_keeps(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
+        cx.update(gpui_kit::init);
+        let window = cx.open_window(size(px(300.), px(300.)), |_, _| Clipped);
+        let mut native = VisualTestContext::from_window(window.into(), cx);
+        native.update(|window, cx| {
+            window.activate_a11y();
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let nodes = snapshot("t", window, true);
+            let rows: Vec<(&str, Option<[i32; 4]>)> = nodes
+                .iter()
+                .filter(|node| node.role == "ListBoxOption")
+                .map(|node| (node.name.as_str(), node.bounds))
+                .collect();
+            assert_eq!(
+                rows,
+                [
+                    ("Row 0", Some([0, 0, 100, 40])),
+                    ("Row 1", Some([0, 40, 100, 80])),
+                    ("Row 2", Some([0, 80, 100, 120])),
+                ]
+            );
+            assert!(!super::super::actions::perform_by_id(
+                "t", window, cx, "t:row3", "press", ""
+            ));
+        });
     }
 }
