@@ -43,6 +43,7 @@ pub(crate) use session::{
     lock_signer, next_seq, query_frame, seat_key, seated_frame, seated_key, seated_sign,
 };
 
+use std::path::Path;
 use std::time::Duration;
 
 /// A refusal the NODE or the PROGRAM authored, carried through with its
@@ -80,7 +81,7 @@ pub(crate) fn user_error(message: String) -> String {
     // new <name>``) is a hint for a terminal, not a sentence for a screen —
     // catch every shape of it here, once, rather than in each caller.
     if message.contains("`ducktape ") {
-        return "This device's key needs attention — try Restore or New key.".into();
+        return "This device's key needs attention. Try again, or read without a key.".into();
     }
     message
 }
@@ -99,6 +100,42 @@ pub(crate) fn connect_error(origin: &str, message: String) -> String {
         );
     }
     user_error(message)
+}
+
+/// Writes `bytes` to `path` whole or not at all: into a temp file beside
+/// it, synced, then renamed over it. A crash or a full disk mid-write
+/// leaves the old file (or none), never a torn one. `private`: only this
+/// user can read it (unix).
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut name = path
+        .file_name()
+        .ok_or_else(|| std::io::Error::other("no file name"))?
+        .to_os_string();
+    name.push(".tmp");
+    let temp = path.with_file_name(name);
+    // a temp left by a cut write keeps its mode when reopened: start afresh
+    let _ = std::fs::remove_file(&temp);
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if private {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    #[cfg(not(unix))]
+    let _ = private;
+    let written = options
+        .open(&temp)
+        .and_then(|mut file| {
+            file.write_all(bytes)?;
+            file.sync_all()
+        })
+        .and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
 }
 
 /// One id, unique on this device, for a record a view mints.
@@ -168,12 +205,60 @@ mod tests {
     fn user_error_never_lets_a_cli_command_through() {
         assert_eq!(
             user_error("no wallet — run `ducktape wallet new <name>` first".into()),
-            "This device's key needs attention — try Restore or New key."
+            "This device's key needs attention. Try again, or read without a key."
         );
         assert_eq!(
             user_error("corrupt or wrong password".into()),
             "Wrong password."
         );
+    }
+
+    /// A write cut short (here by a file-size limit of 0 in a child run of
+    /// this test, the way a full disk cuts it) leaves the file it was
+    /// replacing whole; one that lands replaces it, readable by its owner
+    /// only, and leaves no temp behind.
+    #[cfg(unix)]
+    #[test]
+    fn a_write_cut_short_leaves_the_old_file_whole() {
+        const CUT: &str = "DUCKTAPE_TEST_CUT_WRITE";
+        if let Some(path) = std::env::var_os(CUT) {
+            let cut = atomic_write(Path::new(&path), &[1u8; 32], true);
+            assert!(cut.is_err(), "the write was not cut short");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device.key");
+        std::fs::write(&path, [7u8; 32]).unwrap();
+        let test = concat!(
+            module_path!(),
+            "::a_write_cut_short_leaves_the_old_file_whole"
+        );
+        let test = test.split_once("::").unwrap().1;
+        let child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                r#"trap "" XFSZ; ulimit -f 0 && exec "$0" --exact "$1" --test-threads=1"#,
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .arg(test)
+            .env(CUT, &path)
+            .output()
+            .unwrap();
+        let said = String::from_utf8_lossy(&child.stdout);
+        assert!(
+            child.status.success() && said.contains("1 passed"),
+            "{}: {said}",
+            child.status
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), [7u8; 32], "torn");
+        assert!(!dir.path().join("device.key.tmp").exists());
+
+        atomic_write(&path, &[1u8; 32], true).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), [1u8; 32]);
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o077, 0, "readable by others: {mode:o}");
+        assert!(!dir.path().join("device.key.tmp").exists());
     }
 
     #[test]

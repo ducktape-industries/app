@@ -251,13 +251,9 @@ impl Account {
         let legacy = self.state.key_exists;
         let work = async move {
             let opened =
-                tokio::task::spawn_blocking(move || match backend::device_key::load(&keyring)? {
-                    Some(key) => Ok(Some(key)),
-                    None if legacy => Ok(None),
-                    None => backend::device_key::mint(&keyring).map(Some),
-                })
-                .await
-                .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
+                tokio::task::spawn_blocking(move || backend::device_key::open(&keyring, legacy))
+                    .await
+                    .unwrap_or_else(|_| Err("opening this device's key did not finish".into()));
             match opened {
                 Ok(Some(key)) => Ok(Some(backend::seat_key(key).await)),
                 Ok(None) => Ok(None),
