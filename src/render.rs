@@ -200,8 +200,10 @@ pub struct ViewTree {
     presentation: NativePresentation,
     /// The handler a real gesture last pressed; `take_user_activation` spends it once.
     user_activation: std::cell::Cell<Option<u32>>,
-    /// The pane box this tree is clipped to, for its tooltip windows.
+    /// The pane box this tree is clipped to, for its tooltips.
     slot_mask: tooltip_containment::SlotMask,
+    /// The tooltip open from a source in this tree.
+    tooltip: Option<tooltip_containment::Open>,
     /// The seat this tree draws for, once a widget owns it: its renders and
     /// their time are counted there (docs/perf.md).
     perf_key: Option<crate::perf::Key>,
@@ -222,6 +224,7 @@ impl ViewTree {
         Self {
             user_activation: Default::default(),
             slot_mask: Default::default(),
+            tooltip: None,
             root,
             focus_targets: HashMap::new(),
             guest_focus_targets: HashMap::new(),
@@ -302,6 +305,7 @@ impl ViewTree {
             Node::Anchored { .. } => self.anchored(node, window, cx),
             Node::Editor { .. } => self.editor(node, window, cx),
         };
+        let element = self.tooltip_source(node, element);
         if entered_scope {
             self.authored_path.pop();
         }
@@ -341,11 +345,12 @@ impl Render for ViewTree {
         // Carried-over state is for the first render of a new tree only:
         // whatever it did not claim is dropped.
         self.presentation = NativePresentation::default();
+        let tooltip = self.tooltip_layer(cx);
         let slot_mask = self.slot_mask.clone();
         // Host-owned clip box around the guest root (guest style never
         // reaches it). The zero-size canvas records this box's content mask
-        // into `slot_mask`, which tooltip windows (`tooltip_containment::
-        // build`) use to stay inside this pane.
+        // into `slot_mask`, which the tree's tooltip (`tooltip_containment`),
+        // last in the box, uses to stay inside this pane.
         div()
             .relative()
             .size_full()
@@ -361,5 +366,6 @@ impl Render for ViewTree {
                 .size_0(),
             )
             .child(node)
+            .children(tooltip)
     }
 }

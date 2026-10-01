@@ -133,6 +133,20 @@ impl Element for SlotDeferred {
     }
 }
 
+/// Runs `f` inside a guest deferral, then restores the outer state, on
+/// unwind too: a panic caught mid-frame (the gpui test harness catches
+/// one per test) leaves no later frame drawing in place.
+fn inside<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            INSIDE.set(self.0);
+        }
+    }
+    let _outer = Restore(INSIDE.replace(true));
+    f()
+}
+
 /// A deferred guest child: prepaints as inside a deferral (`INSIDE`).
 struct Inside(AnyElement);
 
@@ -173,9 +187,7 @@ impl Element for Inside {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let outer = INSIDE.replace(true);
-        self.0.prepaint(window, cx);
-        INSIDE.set(outer);
+        inside(|| self.0.prepaint(window, cx));
     }
 
     fn paint(
@@ -312,5 +324,13 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    /// A panic caught inside a deferral leaves the thread outside it.
+    #[test]
+    fn a_caught_panic_leaves_no_deferral_inside() {
+        let caught = std::panic::catch_unwind(|| inside(|| panic!("prepaint")));
+        assert!(caught.is_err());
+        assert!(!INSIDE.get(), "a caught panic left the thread inside");
     }
 }
