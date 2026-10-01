@@ -908,14 +908,14 @@ fn a_swap_refused_at_install_is_asked_again() {
     let (code, alive) = (&code, &alive);
     let prepared = |event: bool| {
         move |load: &Load, timing: &mut LoadTiming| {
-            let fresh = Guest::instantiate(load.module, &code, load.module).unwrap();
+            let fresh = Guest::instantiate(load.module, code, load.module).unwrap();
             let mut ticks = 0;
             let fresh = Guest::replacement(
                 fresh,
-                &alive,
+                alive,
                 &mut ticks,
                 &load.seat,
-                &code,
+                code,
                 load.module,
                 timing,
             )
@@ -938,7 +938,7 @@ fn a_swap_refused_at_install_is_asked_again() {
     load.land(prepared(true));
     {
         let locked = lock(&seat);
-        assert!(matches!(&locked.slot, Slot::Ready(old) if Arc::ptr_eq(&old.alive, &alive)));
+        assert!(matches!(&locked.slot, Slot::Ready(old) if Arc::ptr_eq(&old.alive, alive)));
         let code = code_digest(&::abi::BlobId::Sha256([7; 32]));
         let retry = locked.retry.as_ref().expect("the refused swap is held off");
         assert_eq!(retry.code, Some(code), "under the code the roster names");
@@ -965,10 +965,7 @@ fn a_swap_refused_at_install_is_asked_again() {
     let Slot::Ready(seated) = &locked.slot else {
         panic!("no view seated");
     };
-    assert!(
-        !Arc::ptr_eq(&seated.alive, &alive),
-        "asked again, it landed"
-    );
+    assert!(!Arc::ptr_eq(&seated.alive, alive), "asked again, it landed");
     assert_eq!(count(seated), 103, "with the state the view held then");
     assert!(locked.retry.is_none());
 }
