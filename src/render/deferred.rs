@@ -1,7 +1,29 @@
 //! A deferred guest draw retains its slot's content mask.
 //! GPUI's generic Deferred intentionally passes no mask; that behavior would
 //! let guest overlays draw above host chrome after the slot has been painted.
+//!
+//! A guest draw defers in the first round and below the host's band. gpui
+//! paints deferred draws by priority alone, but hit-tests them by round
+//! first: each draw's hitboxes go in as it prepaints, round by round, and a
+//! draw deferred while another prepaints is in the next round, over every
+//! draw of the one before whatever its priority (gpui-pre `window.rs`,
+//! `prepaint_deferred_draws`, `Frame::hit_test`). So a guest `Deferred` met
+//! inside another draws in place, and the depth stays one whatever the
+//! guest nests (gpui also asserts it under ten).
 use super::*;
+use std::cell::Cell;
+
+/// The host's band, over every priority a guest may ask for (at most 16,
+/// `deferred`): the host's layers over the desk (its dialogs, the bar's
+/// menus, the footer) defer at `HOST_BAND + n`, so no guest draw paints or
+/// takes a click above them.
+pub(crate) const HOST_BAND: usize = 1000;
+
+thread_local! {
+    /// A guest deferral is prepainting now: a `Deferred` met inside it
+    /// draws in place.
+    static INSIDE: Cell<bool> = const { Cell::new(false) };
+}
 
 impl ViewTree {
     pub(super) fn deferred(
@@ -22,12 +44,16 @@ impl ViewTree {
 
 pub(super) fn deferred(child: AnyElement, priority: usize) -> SlotDeferred {
     SlotDeferred {
-        child: Some(child),
+        child: Some(Inside(child).into_any_element()),
         priority: priority.min(16),
     }
 }
 
+/// A guest `Deferred`: its child drawn after the window's other draws and
+/// painted inside the slot's mask, or in place when met inside another
+/// deferral.
 pub(super) struct SlotDeferred {
+    /// Held until prepaint, and on through paint when drawn in place.
     child: Option<AnyElement>,
     priority: usize,
 }
@@ -73,8 +99,15 @@ impl Element for SlotDeferred {
         _bounds: Bounds<Pixels>,
         _request_layout: &mut (),
         window: &mut Window,
-        _cx: &mut App,
+        cx: &mut App,
     ) {
+        if INSIDE.get() {
+            self.child
+                .as_mut()
+                .expect("deferred child before prepaint")
+                .prepaint(window, cx);
+            return;
+        }
         let child = self.child.take().expect("deferred child is drawn once");
         window.defer_draw(
             child,
@@ -91,9 +124,71 @@ impl Element for SlotDeferred {
         _bounds: Bounds<Pixels>,
         _request_layout: &mut (),
         _prepaint: &mut (),
-        _window: &mut Window,
-        _cx: &mut App,
+        window: &mut Window,
+        cx: &mut App,
     ) {
+        if let Some(child) = &mut self.child {
+            child.paint(window, cx);
+        }
+    }
+}
+
+/// A deferred guest child: prepaints as inside a deferral (`INSIDE`).
+struct Inside(AnyElement);
+
+impl IntoElement for Inside {
+    type Element = Self;
+    fn into_element(self) -> Self {
+        self
+    }
+}
+
+impl Element for Inside {
+    type RequestLayoutState = ();
+    type PrepaintState = ();
+
+    fn id(&self) -> Option<ElementId> {
+        None
+    }
+    fn source_location(&self) -> Option<&'static core::panic::Location<'static>> {
+        None
+    }
+
+    fn request_layout(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> (LayoutId, ()) {
+        (self.0.request_layout(window, cx), ())
+    }
+
+    fn prepaint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let outer = INSIDE.replace(true);
+        self.0.prepaint(window, cx);
+        INSIDE.set(outer);
+    }
+
+    fn paint(
+        &mut self,
+        _id: Option<&GlobalElementId>,
+        _inspector_id: Option<&InspectorElementId>,
+        _bounds: Bounds<Pixels>,
+        _request_layout: &mut (),
+        _prepaint: &mut (),
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        self.0.paint(window, cx);
     }
 }
 
@@ -143,5 +238,79 @@ mod tests {
             }
         })
         .unwrap();
+    }
+
+    /// Eleven nested guest `Deferred`s, as the sanitizer passes them, draw
+    /// without tripping gpui's deferred-depth assert, and the innermost
+    /// paints: nested directly, and through list rows (drawn as the list
+    /// prepaints, after the tree has rendered).
+    #[gpui_kit::test]
+    fn nested_guest_deferrals_draw_in_place(cx: &mut gpui_kit::TestAppContext) {
+        const DEPTH: usize = 11;
+        fn leaf() -> wire::Node {
+            let style = gpui_kit::StyleRefinement::default()
+                .size(px(20.))
+                .bg(rgb(0xff00ff));
+            wire::Node::Container(view_wire::ContainerNode {
+                id: None,
+                style,
+                interactivity: Default::default(),
+                children: Vec::new(),
+            })
+        }
+        fn deferred(content: wire::Node) -> wire::Node {
+            wire::Node::Deferred {
+                priority: 16,
+                content: Box::new(content),
+            }
+        }
+        // each level a list whose one row is the next level
+        fn listed(level: usize, path: &mut Vec<wire::ElementIdWire>) -> wire::Node {
+            if level == DEPTH {
+                return leaf();
+            }
+            let id = wire::ElementIdWire::Name(format!("list-{level}").into());
+            path.push(id.clone());
+            let own = path.clone();
+            let row = listed(level + 1, path);
+            path.pop();
+            deferred(wire::Node::UniformList {
+                id,
+                path: own,
+                route: 1,
+                style: gpui_kit::StyleRefinement::default().size(px(40.)),
+                interactivity: Default::default(),
+                count: 1,
+                measure_index: 0,
+                sizing: wire::list::UniformListSizing::Auto,
+                horizontal_sizing: wire::list::UniformListHorizontalSizing::FitList,
+                y_flipped: false,
+                scroll_request: None,
+                indices: vec![0],
+                children: vec![row],
+            })
+        }
+        cx.update(gpui_kit::init);
+        let direct = (0..DEPTH).fold(leaf(), |node, _| deferred(node));
+        for root in [direct, listed(0, &mut Vec::new())] {
+            let mut frame = wire::Frame {
+                root: Some(root),
+                ..Default::default()
+            };
+            wire::sanitize(&mut frame).unwrap();
+            let root = frame.root.unwrap();
+            let window = cx.open_window(size(px(200.), px(200.)), move |_, _| ViewTree::new(root));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.draw(cx).clear(cx);
+                assert!(
+                    window
+                        .painted_quads()
+                        .iter()
+                        .any(|quad| quad.background.as_solid() == Some(rgb(0xff00ff).into())),
+                    "the innermost content paints"
+                );
+            })
+            .unwrap();
+        }
     }
 }

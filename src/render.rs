@@ -28,7 +28,7 @@ mod accessibility;
 mod anchored;
 mod canvas;
 mod commands;
-mod deferred;
+pub(crate) mod deferred;
 mod editor_mount;
 mod frame;
 mod inputs;

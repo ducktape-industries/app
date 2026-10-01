@@ -16,6 +16,7 @@
 use super::super::entities::{Desk, Entities, Observed, Overlays, Prefs, Screen, Slice};
 use super::super::{WindowKey, WindowKind, ink, layout, theme};
 use super::{BAR, Chrome, LauncherLayer, OverlayLayer, PaneLayer, StatusDot, ToastView};
+use crate::render::deferred::HOST_BAND;
 use gpui_kit::{
     AnyView, AppContext as _, Context, Entity, FocusHandle, IntoElement, ParentElement as _,
     Render, StyleRefinement, Styled as _, Subscription, Window, deferred, div, px,
@@ -229,8 +230,10 @@ impl Render for WindowRoot {
             window.on_next_frame(move |_, _| drop(switching));
         }
         let layer = || StyleRefinement::default().absolute().inset_0();
-        // the footer, over an open menu (deferred too) as it paints today
-        let toast = deferred(AnyView::from(self.toast.clone()).cached(layer())).with_priority(2);
+        // the footer, over an open menu or dialog; all three in the host's
+        // band, over anything a view defers
+        let toast = deferred(AnyView::from(self.toast.clone()).cached(layer()))
+            .with_priority(HOST_BAND + 3);
         let launcher = self.kind == WindowKind::Console && !self.on_desk(cx);
         let content = match (launcher, &self.launcher) {
             // The launcher (the sign-in and unlock screens) is drawn
@@ -255,10 +258,9 @@ impl Render for WindowRoot {
                             .flex_shrink_0(),
                     )
                 });
-                let overlays = self
-                    .overlay_layer
-                    .clone()
-                    .map(|layer_view| AnyView::from(layer_view).cached(layer()));
+                let overlays = self.overlay_layer.clone().map(|layer_view| {
+                    deferred(AnyView::from(layer_view).cached(layer())).with_priority(HOST_BAND)
+                });
                 div()
                     .id("console")
                     .size_full()
