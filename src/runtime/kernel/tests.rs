@@ -728,6 +728,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     };
     let mut guest = guest();
     guest.targets = vec![identity::MODULE.into()];
+    // the card names the program, never the manifest's own word for itself
     guest.name = "Chat".into();
     // locked: refused before anything is asked
     handle().block_on(backend::lock_signer());
@@ -752,10 +753,9 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     };
     guest.answer(request(2), &None);
     assert_eq!(refusal_code(&mut guest), None, "the request waits");
-    let (first, view, words) = consent::front().expect("an ask waits");
-    assert_eq!(view, "Chat");
+    let (first, words) = consent::front().expect("an ask waits");
     assert!(
-        words.said.starts_with("Chat asks to remove a key"),
+        words.said.starts_with("request-test asks to remove a key"),
         "{words:?}"
     );
     assert!(guest.intents.contains(&Intent::Consent));
@@ -778,7 +778,7 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
     // Approve: the task goes on to the node (its sequence read is the
     // fake node's one answer, which is no sequence, so the op ends there)
     guest.answer(request(4), &None);
-    let (second, _, _) = consent::front().expect("an ask waits");
+    let (second, _) = consent::front().expect("an ask waits");
     assert_ne!(first, second);
     assert!(!consent::answer(second, true));
     match awaited(&mut guest) {

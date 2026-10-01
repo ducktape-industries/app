@@ -236,7 +236,7 @@ pub(super) fn answer(
             let Some(call) = node::targeted(guest, id, payload, "op.submit") else {
                 return true;
             };
-            match super::consent::needed(&guest.name, &call.target, &call.body) {
+            match super::consent::needed(guest.module, &call.target, &call.body) {
                 None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
                 Some(words) => node::spawn_consented(guest, id, payload, words),
             }

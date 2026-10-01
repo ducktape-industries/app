@@ -15,7 +15,7 @@ impl OverlayLayer {
     /// (`Windows`), refuses it.
     pub(super) fn consent(&self, cx: &App) -> AnyElement {
         let ink = Ink::of(self.prefs.read(cx).get().dark());
-        let Some((id, _, words)) = consent::front() else {
+        let Some((id, words)) = consent::front() else {
             // answered already; the layer redraws closed
             return div().into_any_element();
         };

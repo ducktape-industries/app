@@ -249,7 +249,7 @@ impl Windows {
                     account.update(cx, |account, cx| account.approve_closed(cx));
                 }
                 if open == Some(Overlay::Consent) {
-                    asked = crate::runtime::consent::front().map(|(id, _, _)| id);
+                    asked = crate::runtime::consent::front().map(|(id, _)| id);
                 } else if before == Some(Overlay::Consent)
                     && let Some(id) = asked.take()
                     && crate::runtime::consent::answer(id, false)

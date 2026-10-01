@@ -32,8 +32,6 @@ pub(crate) struct Ask {
     pub(crate) id: u64,
     pub(crate) module: &'static str,
     pub(crate) instance: u64,
-    /// The view's manifest name, as the sentence names it.
-    pub(crate) view: String,
     pub(crate) words: Words,
     tell: tokio::sync::oneshot::Sender<bool>,
 }
@@ -50,12 +48,10 @@ fn lock() -> std::sync::MutexGuard<'static, VecDeque<Ask>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The front ask, as the dialog draws it: its id, the view's name and its
-/// words. `None` while nothing waits.
-pub(crate) fn front() -> Option<(u64, String, Words)> {
-    lock()
-        .front()
-        .map(|ask| (ask.id, ask.view.clone(), ask.words.clone()))
+/// The front ask, as the dialog draws it: its id and its words. `None`
+/// while nothing waits.
+pub(crate) fn front() -> Option<(u64, Words)> {
+    lock().front().map(|ask| (ask.id, ask.words.clone()))
 }
 
 /// The person's answer to ask `id`: Approve (`true`) lets the op's task go
@@ -81,15 +77,19 @@ pub(crate) fn refuse_all() {
 }
 
 /// Whether an `op.submit` to `target` carrying `body` needs the person's
-/// yes, and the words to ask it with (`view` is the view's name).
-pub(super) fn needed(view: &str, target: &str, body: &[u8]) -> Option<Words> {
+/// yes, and the words to ask it with. `program` is the requesting view's
+/// program id, the roster's name for it: a view's manifest name is the
+/// view's own word, and a hostile one would pick a name that reads as
+/// someone else's (or carries a bidi override). The id is the one the
+/// chain lists it under.
+pub(super) fn needed(program: &str, target: &str, body: &[u8]) -> Option<Words> {
     if target != identity::MODULE {
         return None;
     }
     let Ok(op) = abi::decode::<identity::Op>(body) else {
         return Some(Words {
             said: format!(
-                "{view} asks your key to sign an identity operation this app cannot read."
+                "{program} asks your key to sign an identity operation this app cannot read."
             ),
             shown: None,
         });
@@ -97,19 +97,19 @@ pub(super) fn needed(view: &str, target: &str, body: &[u8]) -> Option<Words> {
     match op {
         identity::Op::RemoveKey { key, .. } => Some(Words {
             said: format!(
-                "{view} asks to remove a key from your account. Approve only if you meant to."
+                "{program} asks to remove a key from your account. Approve only if you meant to."
             ),
             shown: Some(crate::backend::join::fingerprint(&key)),
         }),
         identity::Op::Revoke { account } => Some(Words {
             said: format!(
-                "{view} asks to revoke agent #{account}. Its keys stop working for good."
+                "{program} asks to revoke agent #{account}. Its keys stop working for good."
             ),
             shown: Some(format!("#{account}")),
         }),
         identity::Op::Suspend { account } => Some(Words {
             said: format!(
-                "{view} asks to suspend agent #{account}. It stops acting until it is resumed."
+                "{program} asks to suspend agent #{account}. It stops acting until it is resumed."
             ),
             shown: Some(format!("#{account}")),
         }),
@@ -150,7 +150,6 @@ pub(super) fn ask(
         id: NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         module: guest.module,
         instance: guest.instance,
-        view: guest.name.clone(),
         words,
         tell,
     });
@@ -164,18 +163,19 @@ mod tests {
     use super::*;
 
     /// Claim: exactly the ops that drop or stop a key or an agent are
-    /// asked, by name; an op this app cannot read is asked too, never
-    /// passed; every other identity op, and any other program, is not.
+    /// asked, naming the requesting program; an op this app cannot read is
+    /// asked too, never passed; every other identity op, and any other
+    /// program, is not.
     #[test]
     fn the_ops_that_remove_or_suspend_are_asked_and_nothing_else_is() {
-        let asked = |op: &identity::Op| needed("Chat", identity::MODULE, &abi::encode(op));
+        let asked = |op: &identity::Op| needed("chat", identity::MODULE, &abi::encode(op));
         let removed = asked(&identity::Op::RemoveKey {
             account: 7,
             key: vec![1, 2, 3],
         })
         .unwrap();
         assert!(
-            removed.said.starts_with("Chat asks to remove a key"),
+            removed.said.starts_with("chat asks to remove a key"),
             "{removed:?}"
         );
         assert_eq!(
@@ -204,9 +204,9 @@ mod tests {
         ] {
             assert_eq!(asked(&op), None, "{op:?}");
         }
-        let unread = needed("Chat", identity::MODULE, &[0xff, 0xff]).unwrap();
+        let unread = needed("chat", identity::MODULE, &[0xff, 0xff]).unwrap();
         assert!(unread.said.contains("cannot read"), "{unread:?}");
         assert_eq!(unread.shown, None);
-        assert_eq!(needed("Chat", "chat", &[0xff, 0xff]), None);
+        assert_eq!(needed("chat", "chat", &[0xff, 0xff]), None);
     }
 }
