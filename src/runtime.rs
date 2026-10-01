@@ -46,6 +46,15 @@ pub(crate) fn handle() -> tokio::runtime::Handle {
     kernel::handle()
 }
 
+/// A lock the window thread and the loaders share, taken even after a
+/// thread panicked holding it: a panic on a loader never takes the window
+/// thread, and every window with it, down on its next turn.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::path::PathBuf;
@@ -132,13 +141,13 @@ pub(crate) fn route_to(module: &'static str, route: String) {
         .expect("pending routes")
         .insert(module, route);
     // registry, then seat: the order `retry` takes them in
-    let registry = registry().lock().expect("module views");
+    let registry = lock(registry());
     for seat in registry
         .iter()
         .filter(|((name, _), _)| *name == module)
         .map(|(_, seat)| seat)
     {
-        seat.lock().expect("module view lock").wake.send_replace(());
+        lock(seat).wake.send_replace(());
     }
 }
 
@@ -182,16 +191,14 @@ fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32) {
 /// The narrowest `module`'s view is laid out, in px, once one of its seats
 /// holds it drawn; `None` while it loads, failed, or has none.
 pub(crate) fn min_width(module: &str) -> Option<f32> {
-    let registry = registry().lock().expect("module views");
+    let registry = lock(registry());
     registry
         .iter()
         .filter(|((name, _), _)| *name == module)
-        .find_map(
-            |(_, seat)| match &seat.lock().expect("module view lock").slot {
-                Slot::Ready(guest) => Some(guest.min_width as f32),
-                _ => None,
-            },
-        )
+        .find_map(|(_, seat)| match &lock(seat).slot {
+            Slot::Ready(guest) => Some(guest.min_width as f32),
+            _ => None,
+        })
 }
 
 /// Every seat of `module` holds a drawn view whose manifest says

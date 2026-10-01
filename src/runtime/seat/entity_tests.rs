@@ -632,6 +632,31 @@ fn a_retired_program_shows_no_view(cx: &mut TestAppContext) {
     );
 }
 
+/// A loader that panics holding a seat's lock poisons it. The window
+/// thread's next turn still takes the lock and draws what the seat holds,
+/// where an `expect` on it panicked, and took every window with it.
+#[gpui_kit::test]
+fn a_poisoned_seat_still_draws(cx: &mut TestAppContext) {
+    const MODULE: &str = "poisoned-seat-test";
+    crate::runtime::seat_for_test(MODULE, 320);
+    let (seat, _, native) = open(cx, MODULE, false);
+    let mounted = mounted_of(&seat, &native);
+    let held = mounted.clone();
+    let _ = std::thread::spawn(move || {
+        let _held = held.lock();
+        panic!("a loader panicked holding the seat");
+    })
+    .join();
+    assert!(mounted.is_poisoned());
+    lock(&mounted).retire();
+    native.run_until_parked();
+    let words = seat.read_with(&native, |s, _| s.standin().map(|s| s.words.clone()));
+    assert!(
+        words.as_deref().is_some_and(|w| w.contains("has no")),
+        "the poisoned seat drew nothing new: {words:?}"
+    );
+}
+
 /// A link's route to a view that is already open (`Layout::open` only
 /// focuses it): the seat is woken, so the route does not wait for an
 /// unrelated turn.

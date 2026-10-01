@@ -80,14 +80,9 @@ impl Guest {
         let runtime = handle();
         timing.started = Some(Instant::now());
         timing.path = "first";
-        let instance = mounted.lock().expect("module view lock").instance;
+        let instance = lock(mounted).instance;
         let key = crate::perf::Key::View { module, instance };
-        let show = |stage: Slot| {
-            mounted
-                .lock()
-                .expect("module view lock")
-                .show(generation, stage)
-        };
+        let show = |stage: Slot| lock(mounted).show(generation, stage);
         show(Slot::Fetching {
             received: 0,
             total: None,
@@ -133,7 +128,7 @@ impl Guest {
             // it: the replacement is seated only against that very
             // instance at that very tick count
             let mut against = {
-                let locked = mounted.lock().expect("module view lock");
+                let locked = lock(mounted);
                 match &locked.slot {
                     Slot::Ready(old) if old.hash == Some(hash) => return Ok(Loaded::Unchanged),
                     Slot::Ready(old) => Some((old.alive.clone(), old.ticks)),
@@ -223,7 +218,7 @@ impl Guest {
         timing: &mut LoadTiming,
     ) -> Result<Self, Failure> {
         let snapshot = {
-            let mut locked = mounted.lock().expect("module view lock");
+            let mut locked = lock(mounted);
             let Slot::Ready(old) = &mut locked.slot else {
                 return Err(Failure::Refused(
                     "the view left while its replacement was prepared".into(),

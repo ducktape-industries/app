@@ -22,9 +22,6 @@ pub(super) struct Mounted {
     /// again. Cleared by any load that comes back, so only a repeated
     /// failure on the same code widens the gap.
     pub(super) retry: Option<Retry>,
-    /// When a tab last drew this seat: a load for a seat on screen does not
-    /// queue for the link.
-    pub(super) shown: Option<Instant>,
     /// The seat's load wake: signalled by an install, a stage shown and a
     /// retry, so the `Seat` turns once for each instead of asking for a
     /// frame per frame while a load is on its way.
@@ -68,7 +65,6 @@ impl Mounted {
             props: None,
             generation: 0,
             retry: None,
-            shown: None,
             wake: tokio::sync::watch::Sender::new(()),
         }))
     }
@@ -254,11 +250,11 @@ pub(super) fn registry() -> &'static Registry {
 
 /// Claim a preloaded seat or create a distinct guest for this view instance.
 pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>> {
-    let mut registry = registry().lock().expect("module views");
+    let mut registry = lock(registry());
     let seat = registry.remove(&(module, 0)).unwrap_or_else(Mounted::seat);
     registry.insert((module, instance), seat.clone());
     let snapshot = connection().lock().expect("views rpc").clone();
-    let mut locked = seat.lock().expect("module view lock");
+    let mut locked = lock(&seat);
     locked.instance = instance;
     if let Slot::Ready(guest) = &mut locked.slot {
         guest.instance = instance;
@@ -282,14 +278,14 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
 /// left. A failure goes back to loading, and a stopped view gives up its
 /// seat, so what lands is a fresh instance rather than a swap against it.
 pub(crate) fn retry(module: &'static str, instance: u64) -> Loads {
-    let registry = registry().lock().expect("module views");
+    let registry = lock(registry());
     let Some(seat) = registry.get(&(module, instance)) else {
         return Loads {
             _threads: Vec::new(),
         };
     };
     let snapshot = connection().lock().expect("views rpc").clone();
-    let mut locked = seat.lock().expect("module view lock");
+    let mut locked = lock(seat);
     let stopped = matches!(&locked.slot, Slot::Ready(guest) if guest.fault.is_some());
     if stopped || matches!(locked.slot, Slot::Failed(_)) {
         locked.slot = Slot::Loading;
@@ -327,7 +323,7 @@ pub(super) fn spawn_load(
         let loaded = Guest::load(module, &asked_of, generation, &loading, &mut timing);
         // the window thread holds this lock while it ticks the seat
         let waited = Instant::now();
-        let mut locked = loading.lock().expect("module view lock");
+        let mut locked = lock(&loading);
         timing.lock_wait = waited.elapsed();
         let key = crate::perf::Key::View {
             module,

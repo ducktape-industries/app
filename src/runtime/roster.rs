@@ -52,9 +52,7 @@ pub(crate) struct Roster(Arc<Mutex<Vec<crate::backend::views::Program>>>);
 
 impl Roster {
     pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, Vec<crate::backend::views::Program>> {
-        self.0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        lock(&self.0)
     }
 
     /// A roster of its own that lists `modules`, for a test to draw or
@@ -167,14 +165,14 @@ impl Roster {
             .iter()
             .map(|program| intern(&program.name))
             .collect();
-        let registry = registry().lock().expect("module views");
+        let registry = lock(registry());
         programs
             .into_iter()
             .map(|module| {
                 let seat = registry
                     .iter()
                     .find_map(|((name, _), seat)| (*name == module).then_some(seat))
-                    .map(|seat| seat.lock().expect("module view lock"));
+                    .map(|seat| lock(seat));
                 let (label, note, empty) = match seat.as_ref().map(|seat| &seat.slot) {
                     Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
                         (guest.name.clone(), None, false)
@@ -273,7 +271,7 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
             if node_since_left {
                 return;
             }
-            let mut registry = registry().lock().expect("module views");
+            let mut registry = lock(registry());
             let names: Vec<&'static str> = programs.iter().map(|p| intern(&p.name)).collect();
             // a program the roster no longer lists gives up its seat
             for gone in registry
@@ -283,7 +281,7 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                 .collect::<Vec<_>>()
             {
                 if let Some(retired) = registry.get(&gone) {
-                    retired.lock().expect("module view lock").retire();
+                    lock(retired).retire();
                 }
                 if gone.1 == 0 {
                     registry.remove(&gone);
@@ -300,7 +298,7 @@ pub(super) fn spawn_roster_read(asked_of: Connection) -> std::thread::JoinHandle
                 let Some(program) = programs.iter().find(|program| program.name == *module) else {
                     continue;
                 };
-                let mut locked = seat.lock().expect("module view lock");
+                let mut locked = lock(seat);
                 let same_code = previous
                     .iter()
                     .any(|old| old.name == program.name && old.code == program.code);
