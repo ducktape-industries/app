@@ -110,13 +110,13 @@ fn a_method_is_reached_only_through_its_declared_capability() {
             .collect();
         assert_eq!(
             refused_with(&others, kind).as_deref(),
-            Some("undeclared_capability"),
+            Some(refusal::UNDECLARED_CAPABILITY),
             "{kind} undeclared"
         );
         assert!(
             !matches!(
                 refused_with(&[family], kind).as_deref(),
-                Some("undeclared_capability" | "unknown_request")
+                Some(refusal::UNDECLARED_CAPABILITY | refusal::UNKNOWN_REQUEST)
             ),
             "{kind} declared"
         );
@@ -124,7 +124,7 @@ fn a_method_is_reached_only_through_its_declared_capability() {
     // an unknown kind is still unknown, declared or not
     assert_eq!(
         refused_with(&[], "chat.props").as_deref(),
-        Some("unknown_request")
+        Some(refusal::UNKNOWN_REQUEST)
     );
 }
 
@@ -161,7 +161,7 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
         };
         assert_eq!(answered, id as u64);
         assert!(done);
-        assert_eq!(refusal.code, "unknown_request");
+        assert_eq!(refusal.code, refusal::UNKNOWN_REQUEST);
         assert!(refusal.message.contains(kind));
     }
     assert!(guest.pending.is_empty());
@@ -182,7 +182,7 @@ fn node_methods_answer_for_the_missing_node_first() {
         assert!(
             matches!(guest.pending.pop(), Some(wire::Event::Response {
                 id: 7, result: Err(refusal), done: true
-            }) if refusal.code == "not_connected"),
+            }) if refusal.code == refusal::NOT_CONNECTED),
             "{capability:?}.{operation}"
         );
     }
@@ -214,7 +214,11 @@ fn open_link_refuses_any_scheme_but_duck_and_https() {
         "duck://",
         "",
     ] {
-        assert_eq!(open(link), (Some("malformed_request".into()), 0), "{link}");
+        assert_eq!(
+            open(link),
+            (Some(refusal::MALFORMED_REQUEST.into()), 0),
+            "{link}"
+        );
     }
 }
 #[test]
