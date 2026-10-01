@@ -1251,12 +1251,13 @@ fn escape_bound(window: &Window, cx: &App) -> bool {
 
 /// The reading of one window, `name` as its snapshots name it, `keep` the
 /// scopes it is asked about: `snap` once, and with `walk`, `tab` through the
-/// window's own key dispatch, `snap` after each: N + 1 times (N: nodes
-/// offering focus in the first snapshot, counted before `keep` filters),
-/// and on until focus has come back to where the first press put it. A
-/// stop the first snapshot does not show (scrolled away, drawn since) makes
-/// the Tab cycle longer than N + 1; the walk still goes all the way round,
-/// up to 4 (M + 1) presses, M the most stops a snapshot has shown so far.
+/// window's own key dispatch, `snap` after each, until the first press that
+/// brings focus back to where the first press put it (a first press that
+/// puts it nowhere ends the walk): once round the Tab cycle, stops the
+/// first snapshot does not show (scrolled away, drawn since) included, up
+/// to 4 (M + 1) presses, M the most nodes offering focus a snapshot has
+/// shown so far (counted before `keep` filters). Those nodes are no floor:
+/// a composite and its chosen row both offer focus and are one stop.
 /// A Tab that leaves the focus where it was (a guest editor keeps Tab for
 /// its indent) is followed by `escape tab`, the way out Help gives (owner,
 /// 2026-09-28), once until the focus moves, and never under a modal:
@@ -1307,12 +1308,11 @@ pub(crate) struct Observer<K, S> {
     probed: std::collections::HashSet<String>,
     /// the focus the last key was pressed from
     from: Option<FocusHandle>,
-    /// the Tab walk: presses taken, N and M, the handle the first press
+    /// the Tab walk: presses taken, M, the handle the first press
     /// gave the focus (the handle, not the node: a stop off the viewport
     /// has no node), whether the focus has come back to it, the next key,
     /// and whether `escape` was pressed since the focus last moved
     presses: usize,
-    stops: usize,
     most: usize,
     first: Option<FocusHandle>,
     round: bool,
@@ -1342,7 +1342,6 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
             probed: Default::default(),
             from: None,
             presses: 0,
-            stops: 0,
             most: 0,
             first: None,
             round: false,
@@ -1351,7 +1350,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
         };
         let (nodes, outside, stops) = observer.look(window, cx);
         observer.reading.take(nodes, outside, window, cx);
-        (observer.stops, observer.most) = (stops, stops);
+        observer.most = stops;
         // after the first snap: a read switches the tree on and draws it
         observer.reading.modal = tree::modal_active(window);
         let first = std::mem::take(&mut observer.reading.snapshots[0]);
@@ -1404,7 +1403,7 @@ impl<K: Fn(&str) -> bool, S: FnMut(&mut Window, &mut App) -> Vec<AxNode>> Observ
                 .arrows
                 .extend(self.probe.take().map(|probe| probe.arrows));
         }
-        let done = self.presses > self.stops && (self.round || self.first.is_none());
+        let done = self.presses > 0 && (self.round || self.first.is_none());
         if !self.walk || done || self.presses >= 4 * (self.most + 1) {
             return false;
         }

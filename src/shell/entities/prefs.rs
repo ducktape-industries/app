@@ -88,6 +88,7 @@ impl Slice<Prefs> {
 
     /// Everything read off disk again: the door's walk put the prefs file
     /// back (`layers::Kept::restore`).
+    #[cfg(any(test, feature = "ax-door"))]
     pub(crate) fn reload(&mut self, cx: &mut Context<Self>) {
         let _timed = timed();
         let loaded = Prefs::load();
