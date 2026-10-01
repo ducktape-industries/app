@@ -24,11 +24,10 @@
 //! macOS the notification centre's delegate hearing the default action on a
 //! banner that names its row (in its `userInfo`).
 
-use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::Instant;
 
-use super::kernel::spawn_reply;
+use super::kernel::{in_order, spawn_reply};
 use super::wire::methods::{self, Capability, Delivery, Notification, refusal};
 use super::{Guest, Intent};
 
@@ -160,31 +159,6 @@ fn seen(guest: &mut Guest, id: u64, payload: &[u8]) {
     guest.reply(id, Ok(methods::encode(&())));
 }
 
-/// A view's banners reach the desktop one at a time, in the order its
-/// notices came: raised concurrently, a burst's "N more" could land before
-/// the last banners it counts. One task per view on the kernel runtime runs
-/// its jobs one after another, each on the blocking pool (an OS call).
-fn in_order(module: &str, job: impl FnOnce() + Send + 'static) {
-    type Job = Box<dyn FnOnce() + Send>;
-    static QUEUES: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<Job>>>> =
-        OnceLock::new();
-    let mut queues = QUEUES
-        .get_or_init(Mutex::default)
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let queue = queues.entry(module.to_owned()).or_insert_with(|| {
-        let (queue, mut jobs) = tokio::sync::mpsc::unbounded_channel::<Job>();
-        super::kernel::handle().spawn(async move {
-            while let Some(job) = jobs.recv().await {
-                // a job that panicked is a banner not raised; the next goes on
-                let _ = tokio::task::spawn_blocking(job).await;
-            }
-        });
-        queue
-    });
-    let _ = queue.send(Box::new(job));
-}
-
 /// What opens a clicked banner's link: the shell's, handed over at startup
 /// ([`on_open_link`]) so this layer never calls up into it.
 static OPEN_LINK: OnceLock<fn(String)> = OnceLock::new();
@@ -214,7 +188,7 @@ fn clicked(entry: u64) {
 
 // Each platform module exposes `post(&Notice, row: Option<u64>) -> raised`
 // and `withdraw(tag)`. Both block on OS calls and run only through
-// `in_order`, on the blocking pool; a click on a banner calls back
+// `in_order` under the view's module, on the blocking pool; a click on a banner calls back
 // `clicked(row)`.
 #[cfg(target_os = "macos")]
 mod macos;

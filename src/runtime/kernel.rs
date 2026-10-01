@@ -64,6 +64,7 @@
 //! A refusal's code is one of [`refusal`]'s, or the node's or the program's
 //! own, carried through.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -145,6 +146,33 @@ pub(super) fn handle() -> tokio::runtime::Handle {
             recv.recv().expect("the kernel runtime came up")
         })
         .clone()
+}
+
+/// Jobs under one name run one after another, in the order they were
+/// queued, each on the blocking pool (an OS call or a file): a view's
+/// banners (`notify`, under its module), so a burst's "N more" never lands
+/// before the banners it counts, and a view's store file (`store`, under
+/// its path), so a `get` reads the `set` before it. One task per name on
+/// [`handle`] runs them.
+pub(super) fn in_order(name: &str, job: impl FnOnce() + Send + 'static) {
+    type Job = Box<dyn FnOnce() + Send>;
+    static QUEUES: OnceLock<Mutex<HashMap<String, tokio::sync::mpsc::UnboundedSender<Job>>>> =
+        OnceLock::new();
+    let mut queues = QUEUES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let queue = queues.entry(name.to_owned()).or_insert_with(|| {
+        let (queue, mut jobs) = tokio::sync::mpsc::unbounded_channel::<Job>();
+        handle().spawn(async move {
+            while let Some(job) = jobs.recv().await {
+                // a job that panicked is lost alone; the next goes on
+                let _ = tokio::task::spawn_blocking(job).await;
+            }
+        });
+        queue
+    });
+    let _ = queue.send(Box::new(job));
 }
 
 /// Routes one kernel request; `false` when the kind is not the kernel's.

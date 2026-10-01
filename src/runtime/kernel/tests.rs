@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 mod node_methods;
 
 /// A guest holding every capability, its code doing nothing.
-pub(super) fn guest() -> Guest {
+pub(in crate::runtime) fn guest() -> Guest {
     let code = wasmtime::Module::new(
         super::super::guest::engine(),
         r#"(module
