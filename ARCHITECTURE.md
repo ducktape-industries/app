@@ -105,7 +105,7 @@ quit) are `Windows`' methods.
 | **`views-kernel`** (one tokio current-thread runtime) | the I/O driver for every `reqwest`/WebSocket; view-originated node calls (`kernel/node.rs` `spawn_retrying`/`spawn_retrying_unsent`/`spawn_no_retry`, `changes`, `heads`); the banner queue (`notify::in_order`); its blocking pool runs `module.describe`, OS banners and device-key opening | `kernel::handle` |
 | **one `std::thread` per view load** | fetch, verify, compile, instantiate, snapshot/restore (`Guest::load`) | `seat::spawn_load` |
 | **roster read thread** | `/v1/programs` and the seat reconciliation on connect and on each new block | `roster::spawn_roster_read` |
-| **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller); each request is forwarded to the window thread | `ax/http.rs` |
+| **`ax-door`** | TCP accept and HTTP parsing, one request per connection in turn (a long `/wait` holds the next caller; a connection has 5 s to send its request, whose head is capped at 16 KiB before the token is read); each request is forwarded to the window thread | `ax/http.rs` |
 | **freedesktop listener** (non-macOS) | banner clicks off the session bus | `runtime/notify/freedesktop.rs` |
 | GPUI background executor | timers only (clock wake-ups, sensor delays, spin, the door's settle polls) | — |
 
@@ -588,10 +588,11 @@ and `shell/layers/launcher/` (screens), `shell/layers/overlays/approve.rs`;
   `render.rs`.
 - **The door** (`src/ax.rs`, `src/ax/{http,tree,actions}.rs`). Off unless
   `DUCKTAPE_AX_DOOR=<port|0>` is set (0 picks a port). `ax::open`
-  binds 127.0.0.1 only and writes `{port, token}` to
-  `$XDG_RUNTIME_DIR/ducktape/ax-door.json` (else the state dir) mode 0600;
-  the `ax-door` thread parses HTTP and forwards each `Request` over a
-  channel to `ax::serve` on the window thread. Endpoints: `GET /tree`
+  binds 127.0.0.1 only, starts the `ax-door` thread, then writes
+  `{port, token}` to `$XDG_RUNTIME_DIR/ducktape/ax-door.json` (else the
+  cache dir) mode 0600, and removes it on quit (and a stale one when its
+  port will not bind); the `ax-door` thread parses HTTP and forwards each
+  `Request` over a channel to `ax::serve` on the window thread. Endpoints: `GET /tree`
   (`?compact`, `?bounds`, `?window`, `?view`), `GET /actions`, `POST /act`,
   `POST /key`, `GET /keys`, `POST /drag`, `POST /wait`, and `POST /reveal`
   only with `DUCKTAPE_AX_DOOR_PRIVATE=1`. Every read settles the seats

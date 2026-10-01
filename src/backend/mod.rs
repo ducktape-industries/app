@@ -27,7 +27,7 @@ mod session;
 pub(crate) mod views;
 
 pub use app_dirs::app_log_path;
-pub(crate) use app_dirs::{cache_dir, config_dir, state_dir};
+pub(crate) use app_dirs::{cache_dir, config_dir};
 pub(crate) use endpoints::{
     DEFAULT_ENDPOINT, ENDPOINT_REFUSAL, RecentEndpoint, endpoint_origin, forget_endpoint, host_of,
     note_endpoint, recent_endpoints,
