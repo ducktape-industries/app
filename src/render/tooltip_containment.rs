@@ -218,8 +218,9 @@ mod tests {
 
     #[gpui_kit::test]
     fn native_tooltip_paint_and_hitbox_stay_inside_source_slot(cx: &mut gpui_kit::TestAppContext) {
-        let (mut native, _, events) = show_tooltip(cx, 91, false);
-        native.update(|window, _| {
+        // hoverable: it stays open while the pointer is on its own box
+        let (mut native, _, events) = show_tooltip(cx, 91, true);
+        let outside = native.update(|window, _| {
             let quads: Vec<_> = window
                 .painted_quads()
                 .into_iter()
@@ -227,16 +228,23 @@ mod tests {
                 .collect();
             assert!(!quads.is_empty(), "native tooltip did not paint");
             let bound = gpui_kit::ScaledPixels(40. * window.scale_factor());
-            for quad in quads {
+            for quad in &quads {
                 let mask = quad.content_mask.bounds;
                 assert!(mask.origin.x >= gpui_kit::ScaledPixels(0.));
                 assert!(mask.origin.y >= gpui_kit::ScaledPixels(0.));
                 assert!(mask.origin.x + mask.size.width <= bound, "{mask:?}");
                 assert!(mask.origin.y + mask.size.height <= bound, "{mask:?}");
             }
+            // on the tooltip's own 120px box, past the 40px slot
+            let origin = quads[0].bounds.origin;
+            let scale = window.scale_factor();
+            point(
+                px(origin.x.as_f32() / scale + 100.),
+                px(origin.y.as_f32() / scale + 10.),
+            )
         });
-        native.simulate_mouse_move(point(px(80.), px(20.)), None, Default::default());
-        native.simulate_click(point(px(80.), px(20.)), Default::default());
+        native.simulate_mouse_move(outside, None, Default::default());
+        native.simulate_click(outside, Default::default());
         assert!(
             events.borrow().is_empty(),
             "clipped tooltip accepted an outside click"

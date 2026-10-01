@@ -160,10 +160,11 @@ fn a_wrapped_notice_neither_starves_its_column_nor_its_neighbours_paint(
     });
 }
 
+/// A container's hover and active styles are gpui's own: the pointer over
+/// it paints the hover colour, a press the active one, and both go when the
+/// pointer leaves.
 #[gpui_kit::test]
-fn styled_container_uses_native_interactivity_and_typed_identity(
-    cx: &mut gpui_kit::TestAppContext,
-) {
+fn a_containers_hover_and_active_styles_are_wired_natively(cx: &mut gpui_kit::TestAppContext) {
     cx.update(gpui_kit::init);
     let mut base = div().w(px(120.)).h(px(40.)).bg(rgb(0x20242c));
     let mut hover = div().bg(rgb(0x303846));
@@ -173,42 +174,38 @@ fn styled_container_uses_native_interactivity_and_typed_identity(
         style: base.style().clone(),
         interactivity: wire::Interactivity {
             role: Some(gpui_kit::Role::Button),
-            aria: Default::default(),
             focusable: true,
-            group: Some("card".into()),
             hover: Some(hover.style().clone()),
             active: Some(active.style().clone()),
-            group_hover: Some(wire::GroupRefinement {
-                group: "card".into(),
-                style: hover.style().clone(),
-            }),
-            group_active: Some(wire::GroupRefinement {
-                group: "card".into(),
-                style: active.style().clone(),
-            }),
             on_click: Some(42),
             ..Default::default()
         },
         children: vec![text("interactive-label", "Click")],
     });
     let window = cx.open_window(size(px(200.), px(100.)), |_, _| ViewTree::new(root));
-    let tree = window.root(cx).unwrap();
-    let handle = window.into();
-    let mut native = gpui_kit::VisualTestContext::from_window(handle, cx);
-    let (events, _subscription) = emitted(&tree, &mut native);
+    let mut native = gpui_kit::VisualTestContext::from_window(window.into(), cx);
     native.update(|window, cx| window.render_frame(cx));
     native.update(|window, cx| window.render_frame(cx));
-    native.update(|window, cx| window.click("interactive", cx));
-    assert!(events.borrow().iter().any(|event| matches!(
-        event,
-        wire::Event::Click {
-            handler: 42,
-            event: wire::click::Click::Mouse { .. }
-        }
-    )));
-    assert!(tree.read_with(&native, |tree, _| {
-        tree.mounted.contains(&vec![named_id("interactive")])
-    }));
+    let painted = |native: &mut gpui_kit::VisualTestContext| {
+        native.update(|window, cx| {
+            window.render_frame(cx);
+            let colors = window
+                .painted_quads()
+                .iter()
+                .filter_map(|quad| quad.background.as_solid())
+                .collect::<Vec<_>>();
+            [0x20242c, 0x303846, 0x405060].map(|color| colors.contains(&rgb(color).into()))
+        })
+    };
+    let over = point(px(60.), px(20.));
+    native.simulate_mouse_move(over, None, Default::default());
+    assert_eq!(painted(&mut native), [false, true, false], "hovered");
+    native.simulate_mouse_down(over, gpui_kit::MouseButton::Left, Default::default());
+    assert_eq!(painted(&mut native), [false, false, true], "pressed");
+    native.simulate_mouse_up(over, gpui_kit::MouseButton::Left, Default::default());
+    assert_eq!(painted(&mut native), [false, true, false], "released");
+    native.simulate_mouse_move(point(px(180.), px(80.)), None, Default::default());
+    assert_eq!(painted(&mut native), [true, false, false], "left");
 }
 
 #[gpui_kit::test]
