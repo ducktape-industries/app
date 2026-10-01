@@ -261,6 +261,33 @@ mod tests {
         assert_eq!(named, [(9, false)], "named by hash alone");
     }
 
+    /// A hot swap carries the drawn view's pictures to its replacement:
+    /// the replacement's own join them, and the drawn view's bytes win a
+    /// hash both hold.
+    #[test]
+    fn a_swap_carries_the_drawn_views_pictures_and_the_first_bytes_win() {
+        let mut old = Pictures::default();
+        old.adopt(&mut vector(7, Some(b"first".to_vec())), "test");
+        let mut fresh = Pictures::default();
+        let mut first_tree = wire::Node::Container(view_wire::ContainerNode {
+            id: None,
+            style: Default::default(),
+            interactivity: Default::default(),
+            children: vec![
+                vector(7, Some(b"conflicting".to_vec())),
+                vector(9, Some(b"new".to_vec())),
+            ],
+        });
+        fresh.adopt(&mut first_tree, "test");
+        assert!(
+            !old.carry(fresh, &mut first_tree, "test"),
+            "under the budget"
+        );
+        assert_eq!(held_vector(&old, 7).as_deref(), Some(&b"first"[..]));
+        assert_eq!(held_vector(&old, 9).as_deref(), Some(&b"new"[..]));
+        assert_eq!(old.bytes(), 8);
+    }
+
     #[test]
     fn host_image_resource_survives_a_patch_and_remount() {
         let mut pictures = Pictures::default();
