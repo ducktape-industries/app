@@ -37,7 +37,6 @@
 //! else: a release build has no door to open and no client for one. The
 //! tests compile it without the feature for the trees it reads, so its
 //! server half has no caller there.
-#![cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 use futures::StreamExt as _;
 use gpui_kit::accesskit::{
     Action, ActionData, ActionRequest, NodeId, Role, Toggled, TreeId, TreeUpdate,
@@ -275,6 +274,7 @@ impl Reply {
     }
 
     /// The reply, answered off the trees of `revision` ([`Seen`]).
+    #[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
     fn revised(self, revision: u64) -> Self {
         Self {
             revision: Some(revision),
@@ -341,6 +341,7 @@ fn bounded(ms: u64) -> Duration {
 }
 
 /// Answers the door's calls on the app's thread until the door is gone.
+#[cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 pub(crate) async fn serve(
     mut calls: futures::channel::mpsc::UnboundedReceiver<Call>,
     door: Door<'_>,
