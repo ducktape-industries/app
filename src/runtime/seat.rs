@@ -1,7 +1,8 @@
 use super::*;
 
 /// One seat: the load state, props and retry hold-off of one view instance
-/// of one module (instance 0 is the preloaded seat no tab has claimed yet).
+/// of one module (instance 0 is the preloaded seat no tab has claimed yet:
+/// compiled, never started).
 /// Shared by the tab's widget on the window thread and the loader thread,
 /// which swaps a finished load in place; the tab polls it while loading.
 pub(super) struct Mounted {
@@ -160,6 +161,13 @@ pub(super) enum Slot {
     },
     /// Verified; its code compiles.
     Compiling,
+    /// Compiled, and not started: a seat no pane has claimed keeps only
+    /// what its view's manifest says, the name the rail lists it by and
+    /// the narrowest it is laid out. The pane that claims it starts it.
+    Compiled {
+        name: String,
+        min_width: u32,
+    },
     Ready(Box<Guest>),
     /// The active deployment verified, and it ships no view.
     Empty,
@@ -257,17 +265,19 @@ pub(super) fn mounted(module: &'static str, instance: u64) -> Arc<Mutex<Mounted>
         guest.instance = instance;
     }
     let first = locked.generation == 0;
-    let load =
-        (first && (snapshot.client.is_some() || view_override(module).is_some())).then(|| {
-            locked.rev = snapshot.rev;
-            Load {
-                module,
-                seat: seat.clone(),
-                generation: locked.start(),
-                asked_of: snapshot,
-                code,
-            }
-        });
+    let asked = snapshot.client.is_some() || view_override(module).is_some();
+    // a seat preloaded only as far as compiled: this pane's load starts it
+    let compiled = matches!(locked.slot, Slot::Compiled { .. });
+    let load = (first && asked || compiled).then(|| {
+        locked.rev = snapshot.rev;
+        Load {
+            module,
+            seat: seat.clone(),
+            generation: locked.start(),
+            asked_of: snapshot,
+            code,
+        }
+    });
     drop(locked);
     drop(registry);
     if let Some(load) = load {
@@ -474,6 +484,9 @@ impl Load {
                 },
             );
         }
+        // claimed while it preloaded: the pane's own load starts it
+        let claimed = locked.instance != 0 && matches!(locked.slot, Slot::Compiled { .. });
+        let start = claimed.then(|| locked.start());
         rail_moved();
         locked.wake.send_replace(());
         timing.install = installed.elapsed();
@@ -485,6 +498,10 @@ impl Load {
             );
             crate::perf::record(key, "install", timing.install.as_micros() as u64);
             timing.log(module);
+        }
+        drop(locked);
+        if let Some(generation) = start {
+            queue(Load { generation, ..self });
         }
     }
 }
@@ -547,6 +564,9 @@ fn install(
         }
         Loaded::Empty => {
             *slot = Slot::Empty;
+        }
+        Loaded::Compiled { name, min_width } => {
+            *slot = Slot::Compiled { name, min_width };
         }
         // the same tab, the same surface handle, the same host-side
         // input text and pictures: only the instance behind them moves
@@ -614,6 +634,8 @@ pub(super) enum Loaded {
     },
     /// The deployment ships no view.
     Empty,
+    /// The view compiles, and was not started: no pane holds the seat.
+    Compiled { name: String, min_width: u32 },
 }
 
 /// A load that came back with no view, and the view bytes it failed on —

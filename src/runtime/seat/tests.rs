@@ -1,3 +1,4 @@
+use super::super::roster::read_roster;
 use super::*;
 
 /// The table on [`Mounted::reload_due`], row by row.
@@ -281,4 +282,107 @@ fn a_stalled_load_does_not_hold_the_roster_read() {
         .recv_timeout(Duration::from_secs(10))
         .expect("the roster read waited on the load it queued");
     eventually("the load is held by the node", || node.held().0 == 1);
+}
+
+/// A program no pane has opened is compiled for the rail and never
+/// started: its `init` does not run. Here `init` traps, so a load that
+/// started the view fails: the preload lands compiled, named by its
+/// manifest, and only the load of the pane that claims the seat runs
+/// `init`, and fails on it.
+#[test]
+fn an_unopened_program_runs_no_init() {
+    let manifest = format!(
+        "ducktape.view.manifest\\nLazy\\n\\n\\n320\\n{}",
+        wire::WIRE_ID
+    );
+    let view = wat::parse_str(format!(
+        r#"(module
+        (@custom "{}" "{manifest}")
+        (memory (export "memory") 1)
+        (func (export "alloc") (param i32) (result i32) i32.const 64)
+        (func (export "init") unreachable)
+        (func (export "tick") (param i32 i32) (result i64) unreachable)
+        (func (export "snapshot") (result i64) unreachable)
+        (func (export "restore") (param i32 i32) (result i64) unreachable))"#,
+        wire::manifest::MANIFEST_SECTION
+    ))
+    .unwrap();
+    let code = blob_id(&view);
+    let listed = module_registry::View {
+        name: "lazy-view".into(),
+        view: code,
+    };
+    let node = FakeNode::new(Vec::new(), vec![listed], vec![view]);
+    let (roster, registry) = (Roster::default(), Registry::default());
+    read_roster(node.asked_of.clone(), &roster, &registry);
+    let seat = lock(&registry)[&("lazy-view", 0)].clone();
+    eventually("the preload landed", || !lock(&seat).slot.loading());
+    assert!(
+        matches!(&lock(&seat).slot, Slot::Compiled { name, min_width: 320 } if name == "Lazy"),
+        "the unopened view did not land compiled and unstarted"
+    );
+    // a pane claims the seat: its load starts the view
+    let generation = {
+        let mut locked = lock(&seat);
+        locked.instance = 7;
+        locked.start()
+    };
+    queue(Load {
+        module: "lazy-view",
+        seat: seat.clone(),
+        generation,
+        asked_of: node.asked_of.clone(),
+        code: Some((code, true)),
+    });
+    eventually(
+        "the claiming pane's load ran init",
+        || matches!(&lock(&seat).slot, Slot::Failed(failure) if failure.to_string().contains("init trapped")),
+    );
+}
+
+/// A pane that claims a seat preloaded only as far as compiled starts its
+/// view: the seat leaves `Compiled` for a load of its own (with no node in
+/// a test, a failure offering Retry), where its pane said "Loading" for good.
+#[test]
+fn a_pane_starts_the_view_its_seat_compiled() {
+    const MODULE: &str = "claimed-compiled-seat";
+    let preloaded = Mounted::seat();
+    lock(&preloaded).slot = Slot::Compiled {
+        name: "Claimed".into(),
+        min_width: 320,
+    };
+    lock(registry()).insert((MODULE, 0), preloaded);
+    let seat = mounted(MODULE, 7001);
+    eventually("the claiming pane's load ran", || {
+        matches!(lock(&seat).slot, Slot::Failed(_))
+    });
+    lock(registry()).remove(&(MODULE, 7001));
+}
+
+/// A pane that claims a seat while its preload is on the way: the preload
+/// lands compiled, and the pane's own load starts the view.
+#[test]
+fn a_seat_claimed_during_its_preload_is_started() {
+    let seat = Mounted::seat();
+    let generation = {
+        let mut locked = lock(&seat);
+        locked.instance = 7;
+        locked.start()
+    };
+    let preload = Load {
+        module: "claimed-during-preload",
+        seat: seat.clone(),
+        generation,
+        asked_of: Connection::default(),
+        code: None,
+    };
+    preload.land(|_, _| {
+        Ok(Loaded::Compiled {
+            name: "Claimed".into(),
+            min_width: 320,
+        })
+    });
+    eventually("the claiming pane's own load ran", || {
+        matches!(lock(&seat).slot, Slot::Failed(_))
+    });
 }

@@ -34,12 +34,15 @@ impl Guest {
     /// A view comes from the roster's `code` for `module` on the connected
     /// node — nothing else, so with no node there is nothing to load yet,
     /// and no file is ever opened for it unless the developer's override
-    /// ([`override_views_from`]) supplies one. Over an empty seat the view
+    /// ([`override_views_from`]) supplies one. A seat no pane holds yet
+    /// (instance 0) stops at the compiled code: `Compiled`, its manifest
+    /// read, nothing instantiated or run; the pane that claims it loads it
+    /// again, past that. Over an empty seat a pane holds the view
     /// is `init`ed. With a view of the module already drawn, the same code
     /// is `Unchanged`, and different code is prepared as its replacement
     /// (`replacement`): instantiated without `init`, restored from the drawn
     /// view's snapshot, its first tree verified, and handed to the seat to
-    /// swap in. Overridden, Missing, Ready and Failed each log one
+    /// swap in. Overridden, Missing, Compiled, Ready and Failed each log one
     /// `view_source` line here (the seat logs `Swapped`); every load that
     /// got past the roster fills `timing`, which the seat logs as one
     /// `view_load` line once the load is installed. Each stage is also a
@@ -59,9 +62,19 @@ impl Guest {
         let logged = |hash: Option<&[u8; 32]>, state: &str, reason: &str| {
             log_source(module, hash, state, generation, reason);
         };
+        let instance = lock(mounted).instance;
         if let Some(path) = view_override(module) {
             let reason = format!("DUCKTAPE_VIEWS_DIR developer override: {}", path.display());
             logged(None, "Overridden", &reason);
+            if instance == 0 {
+                let shown = path.display().to_string();
+                let bytes = std::fs::read(&path).map_err(|error| {
+                    before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
+                })?;
+                Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
+                let (name, _, min_width) = manifest_of(&bytes);
+                return Ok(Loaded::Compiled { name, min_width });
+            }
             return Self::load_from(module, &path)
                 .map(|guest| Loaded::Fresh(Box::new(guest)))
                 .map_err(|reason| before_any_candidate(Failure::Refused(reason)));
@@ -81,7 +94,6 @@ impl Guest {
         let runtime = handle();
         timing.started = Some(Instant::now());
         timing.path = "first";
-        let instance = lock(mounted).instance;
         let key = crate::perf::Key::View { module, instance };
         let show = |stage: Slot| lock(mounted).show(generation, stage);
         show(Slot::Fetching {
@@ -156,6 +168,11 @@ impl Guest {
                 1,
             );
             let (name, capabilities, min_width) = manifest_of(&view_bytes);
+            // a seat no pane holds stops here: the rail reads its name off
+            // the manifest, and the pane that claims it starts it
+            if instance == 0 && against.is_none() {
+                return Ok(Loaded::Compiled { name, min_width });
+            }
             let instantiated = Instant::now();
             let mut fresh = Self::instantiate(module, &code, &shown).map_err(Failure::Refused)?;
             timing.instantiate = instantiated.elapsed();
@@ -191,6 +208,10 @@ impl Guest {
                 "Ready"
             }
             Ok(Loaded::Unchanged) => "Unchanged",
+            Ok(Loaded::Compiled { .. }) => {
+                logged(Some(&hash), "Compiled", "");
+                "Compiled"
+            }
             Ok(_) => "Swap",
             Err(failure) => {
                 logged(Some(&hash), "Failed", &failure.to_string());

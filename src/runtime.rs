@@ -34,7 +34,7 @@ pub use seat::override_views_from;
 pub(crate) use seat::{Failure, NODE_UNREACHABLE, Seat};
 
 use guest::Guest;
-use roster::{Connection, code_digest, connection, rail_moved, read_roster};
+use roster::{Connection, code_digest, connection, rail_moved};
 use seat::{
     Load, LoadTiming, Loaded, Mounted, Registry, Slot, Unloaded, log_source, queue, registry,
     view_override,
@@ -194,7 +194,7 @@ fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32) {
 }
 
 /// The narrowest `module`'s view is laid out, in px, once one of its seats
-/// holds it drawn; `None` while it loads, failed, or has none.
+/// holds it drawn or compiled; `None` while it loads, failed, or has none.
 pub(crate) fn min_width(module: &str) -> Option<f32> {
     let registry = lock(registry());
     registry
@@ -202,6 +202,7 @@ pub(crate) fn min_width(module: &str) -> Option<f32> {
         .filter(|((name, _), _)| *name == module)
         .find_map(|(_, seat)| match &lock(seat).slot {
             Slot::Ready(guest) => Some(guest.min_width as f32),
+            Slot::Compiled { min_width, .. } => Some(*min_width as f32),
             _ => None,
         })
 }

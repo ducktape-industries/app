@@ -250,6 +250,7 @@ impl Seat {
                 drop(locked);
                 return self.show_standin(standin, cx);
             }
+            // on its way, or compiled and being started for this pane
             loading => {
                 let standin = Standin {
                     title: None,

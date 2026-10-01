@@ -177,7 +177,13 @@ impl Roster {
                     Some(Slot::Ready(guest)) if !guest.name.is_empty() => {
                         (guest.name.clone(), None, false)
                     }
-                    Some(Slot::Ready(_)) => (module.to_owned(), None, false),
+                    // compiled, not started: as ready to open as a drawn view
+                    Some(Slot::Compiled { name, .. }) if !name.is_empty() => {
+                        (name.clone(), None, false)
+                    }
+                    Some(Slot::Ready(_) | Slot::Compiled { .. }) => {
+                        (module.to_owned(), None, false)
+                    }
                     Some(Slot::Empty) => (module.to_owned(), None, true),
                     Some(Slot::Failed(_)) => (module.to_owned(), Some("Failed"), false),
                     // No seat yet (a pane just let go of it, the roster hasn't
@@ -576,6 +582,28 @@ mod rail_tests {
             .expect("listed module appears in the rail");
         assert_eq!(row.label, module);
         assert_eq!(row.note, Some("Loading"));
+        assert!(!row.empty);
+    }
+
+    /// A seat preloaded only as far as compiled is a row ready to open,
+    /// named as its manifest names it, as a drawn view's is: the census
+    /// opens a view by that name.
+    #[test]
+    fn a_compiled_seat_is_listed_by_its_manifest_name() {
+        let module = "rail-tests-compiled";
+        let seat = Mounted::seat();
+        lock(&seat).slot = Slot::Compiled {
+            name: "Compiled view".into(),
+            min_width: 320,
+        };
+        lock(registry()).insert((module, 0), seat);
+        let row = Roster::listing(&[module])
+            .rail()
+            .into_iter()
+            .find(|row| row.module == module)
+            .expect("listed module appears in the rail");
+        lock(registry()).remove(&(module, 0));
+        assert_eq!((row.label.as_str(), row.note), ("Compiled view", None));
         assert!(!row.empty);
     }
 

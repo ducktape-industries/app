@@ -148,7 +148,7 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    (16 modules, 32 MiB of source).
 4. **Seat / mount.** A **seat** is `seat::Mounted`, one per
    `(module, instance)` in `seat::registry`, holding a `Slot`:
-   `Loading → Fetching → Compiling → Ready(Guest) | Empty | Failed(Failure)`,
+   `Loading → Fetching → Compiling → Compiled | Ready(Guest) | Empty | Failed(Failure)`,
    and a `wake` (`watch::Sender<()>`) the loader signals when a load
    installs, a stage shows or a retry is asked. A pane's entity is
    `runtime::Seat` (`seat/entity.rs`), made by `Seats::reconcile`
@@ -157,6 +157,13 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    pane's `instance`; it is `place`d in the window whose desk holds the
    pane. `Seat::new` claims
    seat `(module, 0)` or makes a new one and subscribes to its `wake`.
+   A preloaded seat (instance 0, no pane) stops at the compiled code:
+   `Compiled` keeps the manifest's name and minimum width, which the rail
+   and the layout read, and no instance exists and no `init` runs for a
+   program nobody opened. The pane that claims it loads it again (the
+   blob and the code come from the caches), past that point; a seat
+   claimed while its preload is on the way gets that load once the
+   preload lands.
    `Guest::instantiate` builds a store with `StoreLimits` (`MEMORY_LIMIT`)
    and binds `Exports` (`memory`, `alloc`, `init`, `tick`, `snapshot`,
    `restore`); `Guest::load` then runs `init` on a fresh view, or `restore`
