@@ -387,12 +387,14 @@ impl ViewTree {
             // node's middle with no hit test, which lands on whatever is
             // drawn there when the node is scrolled out of its list or lies
             // under another (the shell's rows answer it the same way). It
-            // grants no user activation, as a link's does not.
+            // is the reader's press, so it grants user activation as a
+            // pointer's does (the AX door presses this way too).
             let tree = cx.entity().downgrade();
             let path = self.authored_path.clone();
             element = element.on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, _, cx| {
                 let _ = tree.update(cx, |this, cx| {
                     let event = pressed_at(this.nearest_bounds(&path).center());
+                    this.user_activation.set(Some(handler));
                     cx.emit(wire::Event::Click { handler, event });
                 });
             });
