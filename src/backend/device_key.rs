@@ -54,27 +54,28 @@ fn kept(entry: &keyring::Entry) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
 }
 
 /// The key screen's sentence for a store that answered with an error: what
-/// to do about it. The store's own words go to the log.
+/// to do about it. The store's own words go to the log. On Linux a store
+/// that refuses may be no keyring at all (none made yet, no daemon), whose
+/// way out is the file store; two keys under one name is not that case,
+/// and a file there would only make a third.
 fn refused(error: keyring::Error) -> String {
     tracing::info!(target: "ducktape::keys", %error, "OS key store refused");
+    let no_keyring = match cfg!(target_os = "linux") {
+        true => {
+            " If this device has no keyring, start the app with DUCKTAPE_DEVICE_KEY_STORE=file to keep its key in a file."
+        }
+        false => "",
+    };
     match error {
-        keyring::Error::NoStorageAccess(_) => {
-            "The system's key store is locked. Unlock it, then Try again.".into()
-        }
-        keyring::Error::Ambiguous(_) => format!(
-            "The system's key store holds more than one {SERVICE} key for this network, so none is used. Remove the one this device doesn't use, then Try again."
+        keyring::Error::NoStorageAccess(_) => format!(
+            "The system's key store is locked or has no keyring yet. Unlock it or make one, then try again.{no_keyring}"
         ),
-        _ => {
-            let headless = match cfg!(target_os = "linux") {
-                true => {
-                    " With no keyring running on Linux, start the app with DUCKTAPE_DEVICE_KEY_STORE=file to keep this device's key in a file."
-                }
-                false => "",
-            };
-            format!(
-                "The system's key store said no or didn't answer. If it asks, allow this app, then Try again.{headless}"
-            )
-        }
+        keyring::Error::Ambiguous(_) => format!(
+            "The system's key store holds more than one {SERVICE} key for this network, so none is used. Remove the one this device doesn't use, then try again."
+        ),
+        _ => format!(
+            "The system's key store said no or didn't answer. If it asks, allow this app, then try again.{no_keyring}"
+        ),
     }
 }
 
@@ -214,8 +215,10 @@ mod tests {
 
     /// A locked keyring, a dismissed or denied prompt, two entries: the
     /// store's key stays, nothing is made, nothing goes to a file, and the
-    /// key screen says what to do. The store answers the next call (the
-    /// prompt allowed the second time), as in the audit's R3.
+    /// key screen says what to do: on Linux, where a refusal may be no
+    /// keyring at all, that includes the file store (not for two entries,
+    /// where a file would only make a third key). The store answers the
+    /// next call (the prompt allowed the second time), as in the audit's R3.
     #[test]
     fn a_store_that_refuses_never_mints_and_never_writes() {
         let dir = tempfile::tempdir().unwrap();
@@ -228,9 +231,15 @@ mod tests {
         ];
         for refusal in refusals {
             let shown = refusal.to_string();
+            let two_keys = matches!(refusal, keyring::Error::Ambiguous(_));
             let entry = store(Some(&account), Some(refusal));
             let sentence = open_in(Some(&entry), &file, false).expect_err(&shown);
-            assert!(sentence.contains("Try again"), "{shown}: {sentence}");
+            assert!(sentence.contains("try again"), "{shown}: {sentence}");
+            assert_eq!(
+                sentence.contains("DUCKTAPE_DEVICE_KEY_STORE=file"),
+                cfg!(target_os = "linux") && !two_keys,
+                "{shown}: {sentence}"
+            );
             assert_eq!(
                 held(&entry).as_deref(),
                 Some(account.encode().as_ref()),
@@ -238,16 +247,6 @@ mod tests {
             );
             assert!(!file.exists(), "{shown}: a key went to the file");
         }
-        let entry = store(
-            Some(&account),
-            Some(keyring::Error::PlatformFailure(platform("no daemon"))),
-        );
-        let sentence = open_in(Some(&entry), &file, false).unwrap_err();
-        assert_eq!(
-            sentence.contains("DUCKTAPE_DEVICE_KEY_STORE=file"),
-            cfg!(target_os = "linux"),
-            "{sentence}"
-        );
     }
 
     /// First contact: the store answers that it holds nothing, a key is made

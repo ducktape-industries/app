@@ -84,7 +84,7 @@ pub(crate) fn user_error(message: String) -> String {
     // new <name>``) is a hint for a terminal, not a sentence for a screen —
     // catch every shape of it here, once, rather than in each caller.
     if message.contains("`ducktape ") {
-        return "This device's key needs attention. Try again, or read without a key.".into();
+        return "This device's key needs attention: try again, or read without a key.".into();
     }
     message
 }
@@ -105,20 +105,19 @@ pub(crate) fn connect_error(origin: &str, message: String) -> String {
     user_error(message)
 }
 
-/// Writes `bytes` to `path` whole or not at all: into a temp file beside
-/// it, synced, then renamed over it. A crash or a full disk mid-write
-/// leaves the old file (or none), never a torn one. `private`: only this
-/// user can read it (unix).
+/// Writes `bytes` to `path` whole or not at all: into a temp file of its
+/// own beside it, synced, renamed over it, then the directory synced. A
+/// crash or a full disk mid-write leaves the old file (or none), never a
+/// torn one; two writers racing each land whole, the last rename wins.
+/// `private`: only this user can read it (unix).
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io::Result<()> {
     use std::io::Write as _;
-    let mut name = path
+    let name = path
         .file_name()
         .ok_or_else(|| std::io::Error::other("no file name"))?
-        .to_os_string();
-    name.push(".tmp");
-    let temp = path.with_file_name(name);
-    // a temp left by a cut write keeps its mode when reopened: start afresh
-    let _ = std::fs::remove_file(&temp);
+        .to_string_lossy();
+    let pid = std::process::id().to_string();
+    let temp = path.with_file_name(format!(".{name}.{}.tmp", fresh_id(&pid)));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -138,7 +137,16 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8], private: bool) -> std::io:
     if written.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
-    written
+    written?;
+    // the rename itself survives a power cut only once its directory is synced
+    #[cfg(unix)]
+    std::fs::File::open(
+        path.parent()
+            .filter(|dir| !dir.as_os_str().is_empty())
+            .unwrap_or(Path::new(".")),
+    )?
+    .sync_all()?;
+    Ok(())
 }
 
 /// One id, unique on this device, for a record a view mints.
@@ -211,7 +219,7 @@ mod tests {
     fn user_error_never_lets_a_cli_command_through() {
         assert_eq!(
             user_error("no wallet — run `ducktape wallet new <name>` first".into()),
-            "This device's key needs attention. Try again, or read without a key."
+            "This device's key needs attention: try again, or read without a key."
         );
         assert_eq!(
             user_error("corrupt or wrong password".into()),
@@ -257,14 +265,53 @@ mod tests {
             child.status
         );
         assert_eq!(std::fs::read(&path).unwrap(), [7u8; 32], "torn");
-        assert!(!dir.path().join("device.key.tmp").exists());
+        assert_eq!(only_files(dir.path()), ["device.key"]);
 
         atomic_write(&path, &[1u8; 32], true).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), [1u8; 32]);
         use std::os::unix::fs::PermissionsExt as _;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o077, 0, "readable by others: {mode:o}");
-        assert!(!dir.path().join("device.key.tmp").exists());
+        assert_eq!(only_files(dir.path()), ["device.key"]);
+    }
+
+    #[cfg(unix)]
+    fn only_files(dir: &Path) -> Vec<String> {
+        let names = std::fs::read_dir(dir).unwrap();
+        let mut names: Vec<_> = names
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Writers racing on one file each write a temp of their own: every
+    /// write lands whole and says so, and the file ends as one writer's
+    /// bytes, never another's half or nothing.
+    #[cfg(unix)]
+    #[test]
+    fn writers_racing_on_one_file_each_land_whole() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("device.key");
+        let writers: Vec<_> = (1..=8u8)
+            .map(|writer| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    (0..100)
+                        .map(|_| atomic_write(&path, &[writer; 4096], true))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        for writer in writers {
+            for written in writer.join().unwrap() {
+                written.unwrap();
+            }
+        }
+        let kept = std::fs::read(&path).unwrap();
+        assert_eq!(kept.len(), 4096, "torn");
+        assert!(kept.iter().all(|byte| *byte == kept[0]), "mixed");
+        assert_eq!(only_files(dir.path()), ["device.key"]);
     }
 
     #[test]
