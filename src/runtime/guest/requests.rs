@@ -346,6 +346,7 @@ impl Guest {
         let events = std::mem::take(&mut self.pending);
         let bytes = wire::encode(&events);
         perf::record(key, "events_bytes", bytes.len() as u64);
+        self.editor_moved = false;
         arm(&mut self.store);
         let called = perf::time(key, "tick.call");
         let answer = self
@@ -434,8 +435,9 @@ impl Guest {
                     }
                     self.frame_reports = reports;
                     self.report_display_truncation();
-                    if let Err(error) = self.inputs.frame(&frame) {
-                        self.fault = Some(error);
+                    match self.inputs.frame(&frame) {
+                        Ok(moved) => self.editor_moved = moved,
+                        Err(error) => self.fault = Some(error),
                     }
                     self.pending.extend(self.inputs.drain());
                 }

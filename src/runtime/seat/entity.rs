@@ -3,13 +3,16 @@
 //! a busy frame) ends in one `turn`, never in a draw. What the pane draws
 //! is read off the seat: its `ViewTree`, or the `Standin` to show instead.
 //!
-//! One tick per draw: a turn that ticked the guest holds the seat until its
-//! tree has drawn (`render::Drawn`; every tick dirties the tree); a turn
-//! asked for meanwhile runs right after the draw. So every frame the guest
-//! makes is drawn before it makes the next, as when it ticked on the draw
-//! path: the first draw of a fresh view shows its first frame (the keys a
-//! pane hands its first control go by it), and a reply's chain of ticks
-//! advances one frame per draw.
+//! One tick per draw: a turn whose tick gave the tree something to draw (a
+//! new tree, or a moved editor document) dirties the tree and holds the
+//! seat until it has drawn (`render::Drawn`); a turn asked for meanwhile
+//! runs right after the draw. So every frame the guest makes is drawn
+//! before it makes the next, as when it ticked on the draw path: the first
+//! draw of a fresh view shows its first frame (the keys a pane hands its
+//! first control go by it), and a reply's chain of ticks advances one
+//! frame per draw. A tick that answered `unchanged` and moved no document
+//! draws nothing and holds nothing: the tree the pane shows is the tree the
+//! guest would send.
 use super::standin::{Standin, stage_words};
 use super::*;
 use gpui_kit::{AnyWindowHandle, Context, Entity, EventEmitter, Subscription};
@@ -218,9 +221,9 @@ impl Seat {
     /// Every wake ends here: a reply, a clock item, a `ViewTree` event,
     /// moved props, the theme, a load landing, a busy frame, the AX door
     /// before a read (`Seats::settle`). Never a draw, never a window
-    /// callback (those go through `wake`). While a tick waits for its draw,
-    /// the turn waits too (`Drawn` runs it): one tick per draw, as when the
-    /// guest ticked on the draw path.
+    /// callback (those go through `wake`). While a tick that changed what
+    /// the tree draws waits for its draw, the turn waits too (`Drawn` runs
+    /// it): one tick per draw, as when the guest ticked on the draw path.
     pub(crate) fn turn(&mut self, cx: &mut Context<Self>) {
         if self.holding {
             self.owed = true;
@@ -302,11 +305,15 @@ impl Seat {
         let intents = std::mem::take(&mut guest.intents);
         let min_width = guest.min_width as f32;
         let ticked = ticks != guest.ticks;
+        // a frame that moved a field's document needs the tree's render
+        // (`TextEditor::sync` runs there), fresh tree or not
+        let editor_moved = ticked && guest.editor_moved;
         let first_tree = ticks == 0 && guest.ticks == 1;
         drop(locked);
 
-        // a pane draws a placed seat's tree; nothing draws an unplaced one
-        self.holding = ticked && self.window.is_some();
+        // a pane draws a placed seat's tree; nothing draws an unplaced one,
+        // and nothing redraws for a tick that gave the tree nothing new
+        self.holding = (fresh.is_some() || editor_moved) && self.window.is_some();
         if self.standin.take().is_some() {
             cx.notify();
         }
@@ -331,7 +338,7 @@ impl Seat {
                 // first to find it seated, to its tree mounted
                 crate::perf::record(key, "first_tree", shown.elapsed().as_micros() as u64);
             }
-        } else if ticked && let Some(tree) = &self.tree {
+        } else if editor_moved && let Some(tree) = &self.tree {
             tree.update(cx, |_, cx| cx.notify());
         }
         if commands > 0 {

@@ -168,13 +168,16 @@ roster ─► blob ─► ducktape.view ─► compile ─► seat ─► tick �
    `BUSY_FRAME` timer, never back to back). `turn` is entered at app level
    only: anything reachable from a window callback or an entity method
    goes through `Seat::wake` = `cx.defer(turn)`, because `turn` updates the
-   window itself. One tick per draw: a turn that ticked holds the seat
-   until its tree has drawn (`render::Drawn`, sent by every render; a tick
-   dirties the tree), and a turn asked for meanwhile runs right after the
-   draw. So every frame the guest makes is drawn before the next, as when
-   it ticked on the draw path: the first draw of a fresh view shows its
-   first frame (the keys a pane hands its first control go by it) and a
-   reply's chain of ticks advances one frame per draw. The AX door turns
+   window itself. One tick per draw: a turn whose tick gave the tree
+   something to draw (a new tree, or a moved editor document) dirties the
+   tree and holds the seat until it has drawn (`render::Drawn`, sent by
+   every render), and a turn asked for meanwhile runs right after the
+   draw; a tick that answered `unchanged` and moved no document dirties
+   nothing and holds nothing. So every frame the guest makes is drawn
+   before the next, as when it ticked on the draw path: the first draw of
+   a fresh view shows its first frame (the keys a pane hands its first
+   control go by it) and a reply's chain of ticks advances one frame per
+   draw. The AX door turns
    every seat before a read
    (`Seats::settle`), so the tree it draws has what the guest has answered,
    as the draw itself took in; the door's task yields to no reply wake

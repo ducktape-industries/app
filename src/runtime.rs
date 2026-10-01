@@ -301,6 +301,50 @@ pub(crate) fn frames_code(first: &wire::Frame, first_ticks: u32, then: &wire::Fr
     .unwrap()
 }
 
+/// [`seat_for_test`], its view answering `frames` in order, one per tick,
+/// and the last one on every tick after: an `unchanged` frame after a full
+/// one is a guest with nothing new to show.
+#[cfg(test)]
+pub(crate) fn seat_ticking_for_test(module: &'static str, min_width: u32, frames: &[wire::Frame]) {
+    assert!(!frames.is_empty(), "a view answers at least one frame");
+    let mut data = String::new();
+    let mut arms = String::new();
+    for (nth, frame) in frames.iter().enumerate() {
+        let (bytes, len) = wat_frame(frame);
+        assert!(len < 4096, "test frames fit their pages");
+        let at = 65536 + 4096 * nth as u32;
+        data += &format!("(data (i32.const {at}) \"{bytes}\")\n");
+        let tick = wire::abi::pack(at, len);
+        // the nth tick answers the nth frame; the last frame answers the rest
+        if nth + 1 < frames.len() {
+            arms += &format!(
+                "global.get $n i32.const {} i32.le_u if (result i64) i64.const {tick} else ",
+                nth + 1
+            );
+        } else {
+            arms += &format!("i64.const {tick}{}", " end".repeat(nth));
+        }
+    }
+    let code = Module::new(
+        guest::engine(),
+        format!(
+            r#"(module
+            (memory (export "memory") 2)
+            (global $n (mut i32) (i32.const 0))
+            {data}
+            (func (export "alloc") (param i32) (result i32) i32.const 64)
+            (func (export "init"))
+            (func (export "tick") (param i32 i32) (result i64)
+                global.get $n i32.const 1 i32.add global.set $n
+                {arms})
+            (func (export "snapshot") (result i64) unreachable)
+            (func (export "restore") (param i32 i32) (result i64) unreachable))"#
+        ),
+    )
+    .unwrap();
+    seat_code_for_test(module, min_width, code);
+}
+
 /// An intent `module`'s seat `instance` will hand over on its next update,
 /// as a `host.badge` or `link.open` request would leave it.
 #[cfg(test)]

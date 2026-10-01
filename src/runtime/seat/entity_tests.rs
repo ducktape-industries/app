@@ -746,6 +746,124 @@ fn a_seat_ticks_once_per_draw_of_its_tree(cx: &mut TestAppContext) {
     );
 }
 
+/// A tick the guest answers `unchanged` gives the tree nothing to draw: the
+/// tree is not re-rendered for it (before, every tick notified the tree, so
+/// an idle view's whole tree was rebuilt per clock item and per reply with
+/// nothing to show), and the seat holds nothing for it, so the next wake
+/// still turns.
+#[gpui_kit::test]
+fn an_unchanged_tick_redraws_nothing_and_holds_nothing(cx: &mut TestAppContext) {
+    const MODULE: &str = "unchanged-tick-test";
+    let _on = crate::perf::on_for_test();
+    crate::runtime::seat_ticking_for_test(
+        MODULE,
+        320,
+        &[
+            wire::Frame {
+                root: Some(wire::Node::empty()),
+                ..Default::default()
+            },
+            wire::Frame {
+                unchanged: true,
+                ..Default::default()
+            },
+        ],
+    );
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    native.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    native.run_until_parked();
+    assert_eq!((ticks_of(&seat, &native), renders_of(MODULE)), (1, 1));
+    // no draw asked for here: the harness draws a window only once
+    // something dirtied it (a notified tree did, before)
+    for props in [b"one".as_slice(), b"two".as_slice()] {
+        native.update(|_, cx| {
+            seat.update(cx, |seat, cx| seat.set_props(props.to_vec(), cx));
+        });
+        native.run_until_parked();
+    }
+    assert_eq!(
+        ticks_of(&seat, &native),
+        3,
+        "moved props tick the guest; an unchanged tick holds no turn back"
+    );
+    assert_eq!(renders_of(MODULE), 1, "an unchanged tick dirties nothing");
+    // a draw asked for by something else leaves the cached tree alone too
+    native.update(|window, cx| {
+        window.draw(cx).clear(cx);
+    });
+    native.run_until_parked();
+    assert_eq!(
+        renders_of(MODULE),
+        1,
+        "an unchanged tick does not re-render the tree"
+    );
+}
+
+/// An `unchanged` frame that carries editor traffic still renders the
+/// tree: `TextEditor::sync` reads the store's projection at the tree's
+/// render, so a field shows a guest's decision or document only through
+/// one. The message here matches no transfer (a transfer id carries the
+/// guest store's own instance number, which a baked test frame cannot
+/// know): the frame carrying it is what asks for the render.
+#[gpui_kit::test]
+fn an_unchanged_tick_with_editor_traffic_redraws(cx: &mut TestAppContext) {
+    const MODULE: &str = "unchanged-editor-test";
+    use wire::editor_document::{EditorDocumentMessage as Message, EditorTransferId};
+    let _on = crate::perf::on_for_test();
+    crate::runtime::seat_ticking_for_test(
+        MODULE,
+        320,
+        &[
+            wire::Frame {
+                root: Some(wire::Node::empty()),
+                ..Default::default()
+            },
+            wire::Frame {
+                unchanged: true,
+                editor_documents: vec![Message::Acknowledged {
+                    id: EditorTransferId {
+                        instance: 0,
+                        document: "doc".into(),
+                        reset: 1,
+                        serial: 0,
+                        attempt: 0,
+                    },
+                }],
+                ..Default::default()
+            },
+            wire::Frame {
+                unchanged: true,
+                ..Default::default()
+            },
+        ],
+    );
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let mut tick = |props: &[u8]| {
+        if !props.is_empty() {
+            seat.update(&mut native, |seat, cx| seat.set_props(props.to_vec(), cx));
+            native.run_until_parked();
+        }
+        native.update(|window, cx| {
+            window.draw(cx).clear(cx);
+        });
+        native.run_until_parked();
+        (ticks_of(&seat, &native), renders_of(MODULE))
+    };
+    assert_eq!(tick(b""), (1, 1));
+    assert_eq!(
+        tick(b"one"),
+        (2, 2),
+        "the unchanged frame with editor traffic re-rendered the tree"
+    );
+    assert_eq!(
+        tick(b"two"),
+        (3, 2),
+        "an unchanged tick that moved nothing draws nothing"
+    );
+}
+
 /// A seat claimed or dropped moves what `Roster::rail` reads, so each wakes
 /// the rail; so do a retry (its row reads Loading again), the load it
 /// starts (its row leaves Loading) and a roster read that moved the list. The only test that installs the app's
