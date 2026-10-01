@@ -615,37 +615,63 @@ mod tests {
                     );
                     guarded_svg_paint(
                         SvgPaintSource::Data(Arc::from(icon.as_bytes())),
-                        svg().data(icon.as_bytes()).size(px(24.)),
+                        svg()
+                            .data(icon.as_bytes())
+                            .size(px(24.))
+                            .text_color(gpui_kit::black()),
                     )
                 }))
         }
     }
 
     /// The window ledger's cost, measured: one window drawing 4,096
-    /// distinct 24px icons through gpui's rasteriser, the ledger's key cap.
-    /// gpui's test atlas keeps no pixels: a GPU holds each icon's alpha
-    /// mask, a fifth of its charge. Run alone: `cargo test
-    /// a_window_of_icons_at_the_key_cap -- --ignored --exact --nocapture`.
-    #[gpui_kit::test]
+    /// distinct 24px icons through gpui's rasteriser, the ledger's key cap,
+    /// into wgpu's atlas (`rendering_app`). With no GPU, Mesa's software
+    /// Vulkan keeps the atlas in this process, so resident memory counts
+    /// it. The window is drawn and read back empty first, so the readback
+    /// target is not counted. Run alone: `cargo test
+    /// render::svg_limits::tests::a_window_of_icons_at_the_key_cap --
+    /// --ignored --exact --nocapture`.
+    #[cfg(target_os = "linux")]
+    #[test]
     #[ignore = "measurement: prints resident memory and the ledger, asserts nothing of them"]
-    fn a_window_of_icons_at_the_key_cap(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
+    fn a_window_of_icons_at_the_key_cap() {
+        let mut cx = crate::render::tests::picture_pixels::rendering_app();
+        let window = cx
+            .open_window(size(px(1536.), px(1536.)), |_, cx| {
+                cx.new(|_| RealIcons { count: 0 })
+            })
+            .unwrap();
+        let drawn = |cx: &mut gpui_kit::HeadlessAppContext| {
+            let (scale, ledger, refusals) = cx
+                .update_window(window.into(), |_, window, cx| {
+                    window.draw(cx).clear(cx);
+                    (
+                        window.scale_factor(),
+                        svg_admitted_bytes(window.window_handle().window_id(), cx),
+                        window.painted_quads().len(),
+                    )
+                })
+                .unwrap();
+            // the renderer uploads the frame's tiles when it draws it
+            cx.capture_screenshot(window.into()).unwrap();
+            (scale, ledger, refusals)
+        };
+        drawn(&mut cx);
         let before = crate::render::tests::resident_mib();
-        let window = cx.open_window(size(px(1536.), px(1536.)), |_, _| RealIcons {
-            count: MAX_WINDOW_SVG_RASTERS,
-        });
-        cx.update_window(window.into(), |_, window, cx| {
-            window.draw(cx).clear(cx);
-            let after = crate::render::tests::resident_mib();
-            println!(
-                "{MAX_WINDOW_SVG_RASTERS} icons at scale {}: ledger {} B, {} refusal quads, resident +{:.1} MiB",
-                window.scale_factor(),
-                svg_admitted_bytes(window.window_handle().window_id(), cx),
-                window.painted_quads().len(),
-                after - before,
-            );
+        cx.update(|cx| {
+            window.update(cx, |icons, _, cx| {
+                icons.count = MAX_WINDOW_SVG_RASTERS;
+                cx.notify();
+            })
         })
         .unwrap();
+        let (scale, ledger, refusals) = drawn(&mut cx);
+        let after = crate::render::tests::resident_mib();
+        println!(
+            "{MAX_WINDOW_SVG_RASTERS} icons at scale {scale}: ledger {ledger} B, {refusals} refusal quads, resident +{:.1} MiB",
+            after - before,
+        );
     }
 
     #[gpui_kit::test]
