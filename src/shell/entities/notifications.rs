@@ -116,6 +116,7 @@ impl Notifications {
 
     /// The views asking, put back as they stood (the door's walk,
     /// `layers::Kept::restore`).
+    #[cfg(any(test, feature = "ax-door"))]
     pub(crate) fn restore_asking(&mut self, asking: BTreeSet<String>, cx: &mut Context<Self>) {
         self.center.lock().asking = asking;
         self.refresh(cx);

@@ -32,6 +32,12 @@
 //! controls its Help lists with a chord (AX-114).
 //! Every read draws the window it reads, and every answer carries
 //! `X-Ax-Revision` ([`Seen`]): unchanged while the trees it read are.
+//!
+//! Compiled with the `ax-door` feature (the kit and qa builds) and nowhere
+//! else: a release build has no door to open and no client for one. The
+//! tests compile it without the feature for the trees it reads, so its
+//! server half has no caller there.
+#![cfg_attr(not(feature = "ax-door"), allow(dead_code))]
 use futures::StreamExt as _;
 use gpui_kit::accesskit::{
     Action, ActionData, ActionRequest, NodeId, Role, Toggled, TreeId, TreeUpdate,
@@ -40,9 +46,9 @@ use gpui_kit::{AnyWindowHandle, App, AsyncApp, ElementId, Window};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
-use std::io::{BufRead as _, BufReader, Read as _, Write as _};
+use std::io::{BufReader, Read as _, Write as _};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 mod actions;
@@ -51,8 +57,9 @@ mod http;
 mod tree;
 
 use actions::{current, drag_by_id, perform_by_id, press_keys, read, reveal, shortcuts};
+#[cfg(feature = "ax-door")]
 pub(crate) use http::{cli, open};
-pub(crate) use tree::{AxNode, VIEW_MARK, snapshot};
+pub(crate) use tree::{AxNode, snapshot};
 use tree::{compact, delta, nearest, offers};
 
 #[derive(Debug, Default, PartialEq)]
@@ -162,6 +169,13 @@ fn yes() -> bool {
     true
 }
 
+/// Most characters in `keys` or `text` (`POST /key`) or `value` (`POST
+/// /act`): the door dispatches a key for each, all in one update.
+const MAX_TEXT: usize = 4_096;
+
+/// Most moves in one `POST /drag`, all dispatched in one update.
+const MAX_STEPS: u32 = 1_000;
+
 /// `POST /drag`: what a mouse sends to one window — a left press at `from`,
 /// `steps` moves with the button held, a release at `to`. Logical px; with
 /// `id`, local to that node's painted bounds, else window coordinates.
@@ -171,7 +185,8 @@ pub(crate) struct Drag {
     id: Option<String>,
     from: [f32; 2],
     to: [f32; 2],
-    /// moves between press and release, 4 unless given, never 0
+    /// moves between press and release, 4 unless given, never 0, never
+    /// more than [`MAX_STEPS`]
     #[serde(default)]
     steps: Option<u32>,
     /// without `id`: the window that gets it; else as `/key` picks one
@@ -196,6 +211,9 @@ impl Drag {
         }
         match self.steps {
             Some(0) => Err(refuse("steps is 1 or more")),
+            Some(steps) if steps > MAX_STEPS => {
+                Err(refuse(&format!("steps is {MAX_STEPS} or fewer")))
+            }
             Some(steps) => Ok(steps),
             None => Ok(4),
         }
@@ -286,8 +304,9 @@ impl Seen {
 /// A request and where its answer goes.
 pub(crate) type Call = (Request, std::sync::mpsc::Sender<Reply>);
 
-/// One window the door serves: its door name (`console`, `console2`, …),
-/// the shell's key for it, and its handle.
+/// One window the door serves: its door name (`console`, `console2`, …,
+/// kept for the window's life: `Windows::served`), the shell's key for it,
+/// and its handle.
 pub(crate) type Served = (String, crate::runtime::WindowKey, AnyWindowHandle);
 
 /// What the door serves: the windows, by name, and the seats behind them.
@@ -710,6 +729,29 @@ mod tests {
     fn a_deadline_is_capped() {
         assert_eq!(bounded(u64::MAX), MAX_DEADLINE);
         assert_eq!(bounded(2000), Duration::from_secs(2));
+    }
+
+    /// A drag of more than [`MAX_STEPS`] moves is 400, not an update that
+    /// dispatches them all.
+    #[test]
+    fn drag_steps_are_capped() {
+        let drag = |steps| Drag {
+            id: None,
+            from: [0., 0.],
+            to: [10., 10.],
+            steps: Some(steps),
+            window: None,
+            deadline_ms: None,
+        };
+        assert_eq!(drag(MAX_STEPS).checked(), Ok(MAX_STEPS));
+        assert_eq!(
+            drag(MAX_STEPS + 1).checked().map_err(|reply| reply.status),
+            Err(400)
+        );
+        assert_eq!(
+            drag(u32::MAX).checked().map_err(|reply| reply.status),
+            Err(400)
+        );
     }
 
     /// A served window under a key no window of a test running beside

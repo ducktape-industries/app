@@ -32,6 +32,7 @@ mod approve;
 mod settings;
 mod spotlight;
 
+#[cfg(any(test, feature = "ax-door"))]
 pub(crate) use settings::Kept;
 
 /// The layer drew what opened: the keys go into it now.
