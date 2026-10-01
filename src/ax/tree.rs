@@ -747,40 +747,6 @@ mod offer_tests {
         StatefulInteractiveElement as _, Styled as _, VisualTestContext, div, px, size,
     };
 
-    /// A node that advertises an action `/act` has no arm for.
-    struct Scroller;
-
-    impl Render for Scroller {
-        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-            div()
-                .id("scroller")
-                .size(px(100.))
-                .role(Role::ScrollView)
-                .aria_label("Rows")
-                .on_a11y_action(AccessibleAction::ScrollDown, |_, _, _| {})
-        }
-    }
-
-    /// The door offers only what `/act` performs: a node advertising
-    /// ScrollDown is offered nothing for it.
-    #[gpui_kit::test]
-    fn the_door_offers_no_action_it_cannot_perform(cx: &mut gpui_kit::TestAppContext) {
-        cx.update(gpui_kit::init);
-        let window = cx.open_window(size(px(200.), px(200.)), |_, _| Scroller);
-        let mut native = VisualTestContext::from_window(window.into(), cx);
-        let actions = native.update(|window, cx| {
-            window.activate_a11y();
-            window.render_frame(cx);
-            window.render_frame(cx);
-            snapshot("t", window, false)
-                .into_iter()
-                .find(|node| node.role == "ScrollView")
-                .expect("the scroller is in the tree")
-                .actions
-        });
-        assert!(actions.is_empty(), "{actions:?}");
-    }
-
     /// Every action the door has a word for beyond press, focus and
     /// set_value, and what each performed.
     const MORE: [(AccessibleAction, &str); 6] = [
@@ -802,7 +768,9 @@ mod offer_tests {
                     .id("stepper")
                     .size(px(100.))
                     .role(Role::SpinButton)
-                    .aria_label("Count"),
+                    .aria_label("Count")
+                    // handled, but the door has no word for it
+                    .on_a11y_action(AccessibleAction::ScrollDown, |_, _, _| {}),
                 |element, (action, _)| {
                     let done = self.0.clone();
                     let action = *action;
@@ -814,7 +782,8 @@ mod offer_tests {
 
     /// A node that handles increment, decrement, expand, collapse, a context
     /// menu or scrolling into view is offered each, only while it does, and
-    /// `/act` performs each on it (AX-116).
+    /// `/act` performs each on it (AX-116); one it has no word for
+    /// (ScrollDown) is not offered.
     #[gpui_kit::test]
     fn the_door_offers_and_performs_each_action_a_node_handles(cx: &mut gpui_kit::TestAppContext) {
         cx.update(gpui_kit::init);
