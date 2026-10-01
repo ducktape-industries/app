@@ -110,7 +110,7 @@ impl Guest {
             logged(Some(&hash), "Missing", "");
             timing.hash = Some(hash);
             timing.outcome = "Missing";
-            return Ok(Loaded::Empty(hash));
+            return Ok(Loaded::Empty);
         };
         timing.blob = blob;
         crate::perf::count(
@@ -126,7 +126,8 @@ impl Guest {
             use sha2::Digest as _;
             sha2::Sha256::digest(&view_bytes).into()
         };
-        let shown = format!("{module} view @ {}", hex_short(&hash));
+        // the first six bytes: how a view is named in logs and errors
+        let shown = format!("{module} view @ {}", crate::backend::hex_encode(&hash[..6]));
         let outcome = (|| -> Result<Loaded, Failure> {
             // the instance in the slot, if the deployment is a new one for
             // it: the replacement is seated only against that very

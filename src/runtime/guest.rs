@@ -131,12 +131,6 @@ impl Drop for Guest {
     }
 }
 
-/// The first six bytes of a hash as hex: how a view is named in logs and
-/// errors.
-pub(super) fn hex_short(hash: &[u8; 32]) -> String {
-    hash[..6].iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 /// A tick may cancel up to twice what it may request.
 pub(super) const MAX_CANCELS_PER_TICK: usize = 2 * MAX_REQUESTS_PER_TICK;
 

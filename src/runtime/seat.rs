@@ -402,7 +402,7 @@ fn install(
                 guest.reconnect(current_rev);
             }
         }
-        Loaded::Empty(_) => {
+        Loaded::Empty => {
             *slot = Slot::Empty;
         }
         // the same tab, the same surface handle, the same host-side
@@ -476,10 +476,8 @@ pub(super) enum Loaded {
         alive: Arc<()>,
         ticks: u64,
     },
-    /// The deployment ships no view. Nothing reads the hash any more; it
-    /// goes when `Guest::load` (guest/lifecycle.rs) stops handing it over.
-    #[allow(dead_code)]
-    Empty([u8; 32]),
+    /// The deployment ships no view.
+    Empty,
 }
 
 /// A load that came back with no view, and the view bytes it failed on —

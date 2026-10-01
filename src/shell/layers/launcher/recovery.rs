@@ -47,7 +47,7 @@ impl LauncherLayer {
                 failed.then(|| alert("unlock-error", account.error.clone(), &ink)),
                 &ink,
             ))
-            .child(buttons([self.button(
+            .child(buttons([ink::button(
                 "recover-submit",
                 match account.busy {
                     true => "Adding…",
@@ -124,7 +124,7 @@ impl LauncherLayer {
             .flex()
             .items_center()
             .gap(px(16.))
-            .child(self.button(
+            .child(ink::button(
                 "phrase-done",
                 "I wrote them down",
                 Kind::Primary,
@@ -137,7 +137,7 @@ impl LauncherLayer {
                 "Nobody can recover them for you.",
                 ink.muted,
             ))
-            .child(self.link(
+            .child(link_running(
                 "phrase-cancel",
                 "Not now",
                 self.on_account(Account::phrase_cancel),
@@ -213,7 +213,7 @@ impl LauncherLayer {
                     .items_center()
                     .gap(px(16.))
                     .mt(px(4.))
-                    .child(self.button(
+                    .child(ink::button(
                         "phrase-check",
                         "Confirm",
                         Kind::Primary,
@@ -221,7 +221,7 @@ impl LauncherLayer {
                         account.busy,
                         &ink,
                     ))
-                    .child(self.link(
+                    .child(link_running(
                         "phrase-show",
                         "See the words again",
                         self.on_account(Account::phrase_show_again),

@@ -219,7 +219,6 @@ pub(super) enum Kind {
 /// `<button>`: `height 44px; padding 0 18px; border 1.5px solid ink;
 /// font 500 15px`, filled for [`Kind::Primary`]. Off or busy, it reads at
 /// 0.3 ([`Press`]). Pressed, it runs `run`.
-#[allow(clippy::too_many_arguments, reason = "one button, seven facts")]
 pub(super) fn button(
     id: impl Into<ElementId>,
     text: impl Into<SharedString>,
