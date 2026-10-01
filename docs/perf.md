@@ -146,7 +146,7 @@ there.
 | Entity method per call | nothing | every entity method (`shell/entities/`) keyed by the domain the reducer's arms had (the reducer is gone, with its `dispatch` timer; the names stay, since qa's hang rule reads them, §4.2 rule 5): `Desk` as `reducer.pane`, `Windows`, `Toast` and `Prefs` as `reducer.desk`, `Notifications` as `reducer.notify`, `Overlays` as `reducer.overlay`, `Session` as `reducer.connect`, `Account` as `reducer.sign_in`. **Never key by the argument**: the entities' methods take passwords, codes and phrases. Calls arrive three ways — synchronously from input listeners (`pane_message`, keys, screens), from a frame's callback (`PaneLayer::shown`: the desk's size and its seed, measured in the pane layer's prepaint and called from `window.on_next_frame`, never from the draw), and from the entities' own tasks, observers and subscriptions | H `reducer.<domain>` (W) | free |
 | Pane / window switch | nothing (ducktape-70's temporary `pane_message` mark and `pane_stage` span) | start at `WindowRoot::pane_message` / `open_view` (`shell/panes.rs`), `Windows::raise` (`shell/entities/windows.rs`) or `WindowRoot::new`'s activation observer (`shell/layers/root.rs`), each through `WindowRoot::start_switch`; end with `window.on_next_frame` scheduled from the `WindowRoot::render` that shows the switch. Next-frame callbacks run at the start of the frame after the switched one was presented, so this is an upper bound high by one frame interval | H `switch` (W, ms) | 70 (`panes.rs`), free (`entities/windows.rs`, `layers/root.rs`) |
 | Animation frames | `a_frame_is_cheap` test in `shell/figure.rs` (under 15 ms at test opt-level 1) | `Spin::render` (`shell/spin.rs`): time `Figure::frame`, and the interval between renders. `Spin::run` paces with a background timer plus `cx.notify()`, never `request_animation_frame`, so gpui's present-interval histogram and its inactive-window throttle both miss it | H `figure.frame`, H `figure.interval` (W) | free |
-| Idle frames per second | nothing (#347's PR body: idle drawing over 5 s at 979 ms before, 334 ms after; the ~20 idle frames/s per window and the pulse as its driver are ducktape-70's session notes, not in the PR) | count `WindowRoot::render` per window over a quiet interval (`renders`), and each layer's own render beside it (`renders.chrome`, `renders.launcher`, `renders.panes`, `renders.pane.<n>`, `renders.strip.<n>`, `renders.overlays`, `renders.toast`, `renders.dot`, `renders.empty`, `renders.help`: §5 names the view each counts); door draws (`ax::actions::current` forces one per read) counted separately. Known idle drivers: the status-dot pulse (`status_bar::pulse`, `shell/status_bar.rs`, an `Animation::repeat().with_max_fps(30.)` drawn by `layers::StatusDot`, an uncached root sibling over the bar's empty well, so a pulse draws the dot and the root and leaves the cached bar alone: `renders.dot` ≈ `renders`, `renders.chrome` flat), the node menu and the reconnecting bar; capped, gpui's animation element paces itself with a background timer and `cx.notify` on the view drawing it) — cheap since #347 but still ~20 frames/s while motion is on, each a `WindowRoot::render` whose cached layers hit; the Spin figure's 33 ms timer on an empty desk. The clocks no longer draw an idle window (next row). Why the root is not cached: a view skips its render only when it is itself `.cached()`, clean, and no cached ancestor is re-rendering; a cached view that renders again renders every cached view inside it again (`gpui:src/view.rs`, the cached miss path sets `window.refreshing`); and a program's tick dirties the root, its ancestor. So a cached root spared the pulse's frames would redraw every program's tree on every program's tick, the #347 class (tried 2026-09-29: with the window cached, three model notifies took a seated tree from 2 renders to 5). The root is therefore thin and uncached, and the caches are its siblings' (P5, P6) | C `renders.<window>`, C `renders.<layer>` per window, C `door_draws` (D) | free / a3 |
+| Idle frames per second | nothing (#347's PR body: idle drawing over 5 s at 979 ms before, 334 ms after; the ~20 idle frames/s per window and the pulse as its driver are ducktape-70's session notes, not in the PR) | count `WindowRoot::render` per window over a quiet interval (`renders`), and each layer's own render beside it (`renders.chrome`, `renders.launcher`, `renders.panes`, `renders.pane.<n>`, `renders.strip.<n>`, `renders.overlays`, `renders.toast`, `renders.dot`, `renders.empty`, `renders.help`: §5 names the view each counts); door draws (`ax::actions::current` forces one per read) counted separately. Known idle drivers, motion on: the designed animations, which wake on gpui-pre's one frame grid (`App::until_next_animation_frame`: the next multiple of 1 / fps since the app's animation epoch), so animations at one fps share their frames. They are the status-dot pulse (`status_bar::pulse`, `shell/status_bar.rs`, an `Animation::repeat().with_max_fps(30.)` drawn by `layers::StatusDot`, an uncached root sibling over the bar's empty well, so a pulse draws the dot and the root and leaves the cached bar alone: `renders.dot` ≈ `renders`, `renders.chrome` flat), the node menu and the reconnecting bar (capped, gpui's animation element arms its timer for the next grid line and `cx.notify`s the view drawing it), and the Spin figure on an empty pane (`Spin::run` waits for the next grid line at `figure::FPS`, 30, and moves by the time that passed). Together they draw one frame per grid line, 30 a second per window, each a `WindowRoot::render` whose cached layers hit. With motion reduced (the system's ask, or the Motion switch off) neither the pulse nor the figure draws: §4.2 rule 3 judges the idle window so, and the animations apart, with motion on. The clocks no longer draw an idle window (next row). Why the root is not cached: a view skips its render only when it is itself `.cached()`, clean, and no cached ancestor is re-rendering; a cached view that renders again renders every cached view inside it again (`gpui:src/view.rs`, the cached miss path sets `window.refreshing`); and a program's tick dirties the root, its ancestor. So a cached root spared the pulse's frames would redraw every program's tree on every program's tick, the #347 class (tried 2026-09-29: with the window cached, three model notifies took a seated tree from 2 renders to 5). The root is therefore thin and uncached, and the caches are its siblings' (P5, P6) | C `renders.<window>`, C `renders.<layer>` per window, C `door_draws` (D) | free / a3 |
 | The clocks draw only what they move | `a_still_chain_draws_no_frame` (`shell/layers/root_tests.rs`): the node's 2 s status poll lands the same height six times (once with no answer), and neither the root, nor any layer's `renders.*`, nor the pane's tree draws; no `shell.dispatch` key is recorded. Idle probe (2026-09-29, the brief's no-read recipe: Forge opened from Spotlight, cache on, a seeded stage at 1 s blocks, release builds, two runs each), window renders over 5 s: motion off 25 / 23 before, 3 / 3 after; motion on 121 / 122 before, 107 / 109 after (the pulse); dispatches 30 / 30 before, 14 / 14 after (the reducer, its beat and its `dispatch` timer are gone since) | No clock beats for the whole app: each timer belongs to the entity whose value it moves, and a layer draws only for the entities it observes. The node's 2 s status poll is `Session`'s own (`shell/entities/session.rs`, on the executor's timer): its answer writes `Chain` compare-before-notify, so a still chain draws nothing, a moved height draws only the layers reading `Chain`, and `heard` restamps without a notify (`an_unchanged_status_poll_notifies_nothing`, `a_moved_height_notifies_the_chain_and_not_the_session`, `heard_moves_without_a_notify`, `entities/session_tests.rs`). A toast takes itself down on its own 3.6 s timer (`Toast::show`, `shell/entities/toast.rs`): one notify up, one down, no tick between. An open node or bell menu ages its rows on its own 1 s timer (`layers::Chrome`), alive only while it is open. A roster read or a load that moved the rail's rows wakes `Rail` on `runtime::changes_channel`, and a seat wakes on its own `wake`: neither waits for a clock. Before, an idle connected app re-rendered each window 1 + 1000/300 + 0.5 ≈ 4.8 times a second from the clocks alone; now once or twice per moved height on a live chain (the poll and the account read it starts), and not at all on a still one. The `renders.<window>` counter above is the measure | | free |
 | `rail()` per roster change | nothing | `Roster::rail` locks the roster, the registry and every seat mutex. `entities::Rail::refresh` calls it once per burst on `runtime::changes_channel` (a roster read that found the list changed, a load installed, a seat claimed, retried or dropped); the bar (`layers::Chrome`), the pane strip (`layers::Strip`, through `panes::label`), the empty panes (`layers::EmptyPane`) and the dialogs (`layers::OverlayLayer`) read the `Rail`'s rows, so an idle app calls it 0 times | H `rail` (W), C `rail.calls` (D) | free (`roster.rs`) |
 | Synchronous I/O on the window thread | nothing | `backend::session::read_prefs`/`write_prefs`; `store::answer` and `notify::Center::flush`, timed where they run, on the blocking pool and off the window thread (`io.store.*` per request, one queue per view file; `io.notify_save` once per view redraw or person's action, not per post); `backend::RpcClient::new` (`backend/noded.rs`) builds a new `reqwest::Client` per call: once per connection (`Session::connect_answered`, shared by the views, the roster and the sign-in calls), and the status poll one per connect (`Session::status_source`) that it asks through | H `io.<site>` (W) | free |
@@ -478,16 +478,19 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      ViewTree in `Seat::turn`. Renders far above ticks is a
      notify loop: the #347 class of bug, and this is its regression gate
      (only meaningful with `cache_on: true`, §4.3);
-   - per window, the root and its layers (§5 names the view each counts):
-     root `renders.<window>` ≤ seconds / 2 + 2 with motion off (nothing
-     beats: a window draws only what moved, at most a new height per 2 s
-     status poll and the account read it starts); ≤ 25 × seconds with
-     motion on (each pulse of `layers::StatusDot` draws the dot and the
-     root; the pulse is capped at 30 fps, `with_max_fps`, and the budget
-     moves to 30 × seconds only if a measured root count passes 125 per
-     5 s, which none below does); `renders.chrome` ≤ seconds / 2 + 2 in
-     both modes (the dot is the bar's sibling, so a pulse leaves the bar
-     cached);
+   - the window is taken **with motion reduced**: the runner asks through
+     the door (`POST /motion {"reduce": true}`, ax-door builds), lets the
+     ask's own frame draw (0.5 s: the ask redraws every window, and a wake
+     armed before it draws once more and arms nothing), then resets, idles
+     and reads; it takes the ask back after. **Idle means zero frames**
+     of the window's own, and any such frame is a bug. A frame the bar
+     draws for a new height (the 2 s status poll on a live chain, and the
+     account read it starts) or a view's tick draws is something that
+     moved, not the app idling, so per window, the root and its layers
+     (§5 names the view each counts): root `renders.<window>` ≤
+     `renders.chrome` + the views' `ticks`, with no slack;
+     `renders.chrome` ≤ seconds / 2 + 2 (at most a new height per 2 s
+     status poll);
      `renders.pane.<n>` ≤ root `renders` (a `PaneView` is uncached and
      draws with the root, never more); `renders.overlays` and
      `renders.toast` ≤ 2; a view's `draws` ≤ root `renders`;
@@ -501,24 +504,49 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
      cached ancestor, its layer or its view's tree, and the root: the idle
      recipe Tabs the keys onto a button first); no menu open (the node
      menu and the bell tick their ages every second, and the node menu's
-     pulse draws the bar); the node answering (the reconnecting bar pulses
-     in the footer, `renders.toast`); and no empty pane in a served window
-     (each `layers::EmptyPane` draws the Spin figure, paced at
-     33 ms by `Spin::run` whatever the window's activity; `renders.empty`
-     counts its frames). A rail row saying `Loading` is no precondition: no
-     frame loop waits on it (the seat wakes on its own `wake`, the rail on
-     `runtime::changes_channel`). Measured, release, Xvfb 1280×800, the
-     stage seeded at 1 s blocks, Forge open with the keys on a button,
+     pulse draws the bar); and the node answering (the reconnecting bar
+     pulses in the footer, `renders.toast`). An empty pane is no
+     precondition: with motion reduced its Spin figure stops and the
+     window draws nothing (`a_still_desk_draws_no_frame`,
+     `src/shell/panes_tests.rs`). A rail row saying `Loading` is no
+     precondition either: no frame loop waits on it (the seat wakes on its
+     own `wake`, the rail on `runtime::changes_channel`). Measured,
+     release, Xvfb 1280×800, the stage seeded at 1 s blocks, Forge open
+     with the keys on a button,
      5 s windows (the idle probe, 2026-09-30), on the s12 build (#403,
      `cab059c6`), three runs per setting: motion off root 2, 2, 3 (a frame
      per status poll, each moving the height at 1 s blocks; the third
      window caught three polls); motion on 107, 107, 105 (about 21 a
-     second, under 125 per 5 s: the budget stays 25 × seconds);
+     second: the pulse alone, before the shared grid);
      `renders.chrome` 2, 2, 3 motion off and 2 in every motion-on run;
      `renders.pane.0` and forge `draws` equal to the root in every run;
      forge ViewTree `renders` 0 on 0 ticks; `renders.overlays`,
      `renders.toast` and `door_draws` 0.
    - idle drawing time per 5 s ≤ 500 ms (334 measured), report-only.
+   - **Animations**, motion on: the same 2 s, taken just before the ask
+     for less motion, after a reset and with no door call. Per window,
+     root `renders` ≤ (30 + 3) × seconds. 30 is the designed animations'
+     declared fps (the pulse's `with_max_fps(30.)`, the figure's
+     `figure::FPS`); they share one frame grid, so together they draw 30
+     frames a second, not 30 each. The slack, 3 a second, is six frames
+     in a 2 s window, each named: one grid line more than 30 × seconds
+     (the window holds the lines at both ends); up to three frames off
+     the grid that the idle line already allows (a new height per 2 s
+     status poll, seconds / 2 + 2); and two for a split wake (the dot's
+     and the figure's wakes for one grid line expire microseconds apart,
+     and now and then draw apart: gpui-pre#17 named the risk, and one
+     census window below drew 63 with the figure at 60 and one new
+     height). It stays far under the 30 more a second that a second,
+     unshared clock would add (two clocks out of phase each draw their
+     own frame). A ceiling, not a detector: on a box whose wakes
+     run late, two unshared clocks can stay under it. Measured by the
+     census (release, Xvfb 1280×800, a seeded stage at 1 s blocks, the
+     empty desk at its end, 2 s windows, 2026-10-01, two runs each): with
+     the dot and the figure on the grid, root 61 and 63 (the figure's
+     `renders.empty` 60 in both), and with motion reduced root 1 and 1,
+     each the bar's frame for a new height (`renders.chrome` 1), so zero
+     idle frames; with the figure still on its own 33 ms timer, root 82
+     and 81 (the figure 42 and 41), over the line.
 4. **Switch budget** (the keys-only scenario, §4.3): full view redraws per
    window switch (`misses` delta) ≤ 20 per window (11–14 measured; 57–67 was
    the bug); drawing time per frame p95 ≤ 6 ms, report-only (2.5–3.5
@@ -617,10 +645,10 @@ Design:
   and `run_mission` (`qa/src/mission.rs`). Python: after the step loop and
   at the end of `Walk.run_mission` in `walk.py`.
 - **How**: `POST /perf/reset` at scenario start; at its end `GET /perf`
-  through the door client (`qa/src/door.rs` `call`), then the idle window
-  (§4.2 rule 3), then a second `GET /perf`. Write both as a `perf.jsonl`
-  line beside `transcript.jsonl`; put the breaches in the scenario's
-  result.
+  through the door client (`qa/src/door.rs` `call`), then the animations
+  window and the idle window (§4.2 rule 3), each ended by a `GET /perf`.
+  Write the three as a `perf.jsonl` line beside `transcript.jsonl`; put
+  the breaches in the scenario's result.
 - **Failure**: an over-budget D metric or a steady-phase hang fails the
   scenario as `perf-over-budget <module|window> <metric> <value> > <budget>`.
   Oracles cannot do this: they see trees and context, not the door.
