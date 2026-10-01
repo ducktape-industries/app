@@ -41,7 +41,7 @@ impl Relay {
     /// A fresh slot on `page`'s origin — the page accepts only its own.
     pub(super) fn at(page: &str) -> Result<Relay, String> {
         Ok(Relay {
-            http: reqwest::Client::new(),
+            http: super::noded::http(),
             url: slot_url(page, &B64.encode(rand::random::<[u8; 32]>()))?,
             every: POLL,
         })
@@ -87,8 +87,9 @@ pub(super) fn slot(page: &str, code: &str, side: &str) -> Result<String, String>
     slot_url(page, &B64.encode(hash.finalize()))
 }
 
-pub(super) async fn post(url: &str, json: String) -> Result<(), String> {
-    let reply = reqwest::Client::new()
+/// `json` into the slot at `url`, over the connection's `http`.
+pub(super) async fn post(http: &reqwest::Client, url: &str, json: String) -> Result<(), String> {
+    let reply = http
         .post(url)
         .header("content-type", "application/x-www-form-urlencoded")
         .body(format!("result={}", url_encode(&json)))
@@ -106,9 +107,10 @@ pub(super) async fn post(url: &str, json: String) -> Result<(), String> {
     }
 }
 
-/// One GET of a slot: its message, or `None` while nothing has arrived.
-pub(super) async fn take(url: &str) -> Result<Option<String>, String> {
-    let reply = reqwest::Client::new()
+/// One GET of a slot, over the connection's `http`: its message, or `None`
+/// while nothing has arrived.
+pub(super) async fn take(http: &reqwest::Client, url: &str) -> Result<Option<String>, String> {
+    let reply = http
         .get(url)
         .send()
         .await

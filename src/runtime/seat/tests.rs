@@ -292,7 +292,7 @@ fn a_stalled_load_does_not_hold_the_roster_read() {
 #[test]
 fn an_unopened_program_runs_no_init() {
     let manifest = format!(
-        "ducktape.view.manifest\\nLazy\\n\\n\\n320\\n{}",
+        "ducktape.view.manifest\\nLazy\\n\\n\\n320\\n{}\\n",
         wire::WIRE_ID
     );
     let view = wat::parse_str(format!(

@@ -20,6 +20,7 @@
 //! `clipboard`, `notify` and `store` import what they need by name.
 
 mod clipboard;
+pub(crate) mod consent;
 mod guest;
 mod kernel;
 pub(crate) mod notify;
@@ -45,6 +46,20 @@ use seat::{
 /// the pooled sockets another loader reuses.
 pub(crate) fn handle() -> tokio::runtime::Handle {
     kernel::handle()
+}
+
+/// The app's quit hook (`shell::launch`, the one every quit path reaches):
+/// the notification log handed over, then a wait on every in-order queue
+/// (store files, the log, banners), then `kept` dropped. The returned
+/// future is the wait; gpui gives it `SHUTDOWN_TIMEOUT` (200 ms).
+pub(crate) fn quitting(
+    center: &notify::CenterHandle,
+    kept: impl Sized,
+) -> impl Future<Output = ()> {
+    center.lock().flush();
+    let drained = kernel::drain();
+    drop(kept);
+    drained
 }
 
 /// A lock the window thread and the loaders share, taken even after a
@@ -85,8 +100,9 @@ impl WindowKey {
     }
 }
 
-/// What a view asked the app itself to do: `host.badge`, `link.open`, or a
-/// `notify.post` that changed the centre.
+/// What a view asked the app itself to do: `host.badge`, `link.open`, a
+/// `notify.post` that changed the centre, or an `op.submit` waiting on the
+/// person's yes.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Intent {
     /// `host.badge`: its unread count on the menu bar; 0 or less clears it.
@@ -98,6 +114,9 @@ pub enum Intent {
     /// A view was seated in its tab, first or after a new deployment: its
     /// minimum width is known, and the desk widens a window under it.
     Seated,
+    /// An `op.submit` waits on the person's confirmation (`consent`): the
+    /// console shows the front of the queue.
+    Consent,
 }
 
 /// Instruction budget for one call into a view: a ceiling that ends a
@@ -186,9 +205,16 @@ pub(crate) mod pictures;
 /// The name a view's manifest gives it, the capabilities it declares and
 /// the narrowest it is laid out; empty and 0 for one whose manifest cannot
 /// be read (`compile` refuses those before a seat).
-fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32) {
+fn manifest_of(bytes: &[u8]) -> (String, Vec<Capability>, u32, Vec<String>) {
     view_wire::manifest::read_manifest(bytes)
-        .map(|manifest| (manifest.name, manifest.capabilities, manifest.min_width))
+        .map(|manifest| {
+            (
+                manifest.name,
+                manifest.capabilities,
+                manifest.min_width,
+                manifest.targets,
+            )
+        })
         .unwrap_or_default()
 }
 

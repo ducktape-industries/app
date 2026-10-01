@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 mod node_methods;
 
 /// A guest holding every capability, its code doing nothing.
-pub(super) fn guest() -> Guest {
+pub(in crate::runtime) fn guest() -> Guest {
     let code = wasmtime::Module::new(
         super::super::guest::engine(),
         r#"(module
@@ -18,7 +18,24 @@ pub(super) fn guest() -> Guest {
     .unwrap();
     let mut guest = Guest::instantiate("request-test", &code, "request test").unwrap();
     guest.capabilities = Capability::ALL.to_vec();
+    guest.targets = vec!["registry".into()];
     guest
+}
+
+/// The in-order queue `name` held by a job that waits for the returned
+/// sender to send or drop, so every job queued behind it waits too.
+pub(in crate::runtime) fn held(name: &str) -> std::sync::mpsc::Sender<()> {
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    in_order(name, move || {
+        let _ = released.recv();
+    });
+    release
+}
+
+/// Whether `future` is still waiting, polled once.
+pub(in crate::runtime) fn waiting<F: Future>(future: std::pin::Pin<&mut F>) -> bool {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    future.poll(&mut cx).is_pending()
 }
 
 /// One request off `stream` to a fake node: its request line, and the
@@ -57,6 +74,118 @@ pub(in crate::runtime) fn respond(stream: &mut std::net::TcpStream, status: &str
     )
     .unwrap();
     stream.write_all(body).unwrap();
+}
+
+/// What a [`FakeNode`] does with a request on one route.
+#[derive(Clone)]
+pub(super) enum Mode {
+    /// `200 OK` with the body, at once.
+    Answer(Vec<u8>),
+    /// `200 OK` with the body once the hold is over: a recovering node.
+    After(std::time::Duration, Vec<u8>),
+    /// Reads the request and never answers, until the client hangs up.
+    Stall,
+    /// Reads the request and closes the connection.
+    Close,
+    /// `307 Temporary Redirect` to the URL: a node sending the request on.
+    Redirect(String),
+    /// `200 OK` with a blob's borsh `Some(framed)` `len` bytes long, sent
+    /// for as long as the client reads, its `Content-Length` declared or
+    /// the body chunked. What got out goes to [`FakeNode::streamed`].
+    Stream { len: usize, declared: bool },
+}
+
+/// A node on a local socket whose routes each answer one [`Mode`], one
+/// thread per connection; a request line names its route by prefix.
+pub(super) struct FakeNode {
+    pub(super) node: node::Node,
+    /// Connections taken so far.
+    pub(super) accepted: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    /// The bytes each [`Mode::Stream`] got out before the client hung up.
+    pub(super) streamed: tokio::sync::mpsc::UnboundedReceiver<usize>,
+}
+
+pub(super) fn fake_node(routes: Vec<(&'static str, Mode)>) -> FakeNode {
+    use std::sync::atomic::Ordering;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let node = node::Node {
+        client: RpcClient::new(format!("http://{}", listener.local_addr().unwrap())),
+        network: "test-network".into(),
+    };
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (streamed, sent) = tokio::sync::mpsc::unbounded_channel();
+    let counted = accepted.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            counted.fetch_add(1, Ordering::SeqCst);
+            let (routes, streamed) = (routes.clone(), streamed.clone());
+            std::thread::spawn(move || serve(stream, &routes, &streamed));
+        }
+    });
+    FakeNode {
+        node,
+        accepted,
+        streamed: sent,
+    }
+}
+
+/// One connection to a [`FakeNode`]: its route's mode, played out.
+fn serve(
+    mut stream: std::net::TcpStream,
+    routes: &[(&'static str, Mode)],
+    streamed: &tokio::sync::mpsc::UnboundedSender<usize>,
+) {
+    use std::io::{Read as _, Write as _};
+    let (line, _) = read_request(&mut stream);
+    let path = line.split(' ').nth(1).unwrap_or_default();
+    let Some((_, mode)) = routes.iter().find(|(route, _)| path.starts_with(route)) else {
+        panic!("no route for {line:?}");
+    };
+    // what a held connection waits on: the client hanging up
+    let hung_up =
+        |stream: &mut std::net::TcpStream| while matches!(stream.read(&mut [0; 64]), Ok(1..)) {};
+    match mode {
+        Mode::Answer(body) => respond(&mut stream, "200 OK", body),
+        Mode::After(hold, body) => {
+            std::thread::sleep(*hold);
+            respond(&mut stream, "200 OK", body);
+        }
+        Mode::Stall => hung_up(&mut stream),
+        Mode::Close => drop(stream),
+        Mode::Redirect(to) => write!(
+            stream,
+            "HTTP/1.1 307 Temporary Redirect\r\nLocation: {to}\r\nContent-Length: 0\r\n\r\n"
+        )
+        .unwrap(),
+        Mode::Stream { len, declared } => {
+            let head = match declared {
+                true => format!("HTTP/1.1 200 OK\r\nContent-Length: {len}\r\n\r\n"),
+                false => "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n".into(),
+            };
+            let mut sent = 0;
+            let mut body = vec![0; 64 << 10];
+            body[0] = 1;
+            body[1..5].copy_from_slice(&(*len as u32 - 5).to_le_bytes());
+            let mut out = stream.write_all(head.as_bytes());
+            while out.is_ok() && sent < *len {
+                let chunk = &body[..body.len().min(len - sent)];
+                out = match declared {
+                    true => stream.write_all(chunk),
+                    false => write!(stream, "{:x}\r\n", chunk.len())
+                        .and_then(|()| stream.write_all(chunk))
+                        .and_then(|()| stream.write_all(b"\r\n")),
+                };
+                if out.is_ok() {
+                    sent += chunk.len();
+                }
+                body[..5].fill(0);
+            }
+            if out.is_ok() && !declared {
+                let _ = stream.write_all(b"0\r\n\r\n");
+            }
+            let _ = streamed.send(sent);
+        }
+    }
 }
 
 /// The reason `kind` is refused for, asked by a guest declaring `declared`;
@@ -168,18 +297,34 @@ fn unknown_kinds_finish_with_a_typed_refusal() {
     assert!(guest.pending.is_empty());
 }
 
+/// The one `connection()` is the process's: a test that sets it, or
+/// counts on it being unset, holds this for its whole run.
+fn connection_serial() -> std::sync::MutexGuard<'static, ()> {
+    static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    SERIAL
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// A node method routes to the node handler, which answers for the missing
 /// node before it reads the request; chain and invite kinds route there
-/// too. What the request says is judged by `query` itself, below.
+/// too. What the request says is judged by `query` itself, below. The one
+/// exception is the envelope's target, read first (`targeted`): the
+/// manifest gate comes before the node, as the capability gate does.
 #[test]
 fn node_methods_answer_for_the_missing_node_first() {
-    for (capability, operation) in [
-        (Capability::Module, "query"),
-        (Capability::Chain, "status"),
-        (Capability::Invite, "create"),
+    let _connection = connection_serial();
+    let to_registry = methods::encode(&methods::Call {
+        target: "registry".into(),
+        body: b"not borsh".to_vec(),
+    });
+    for (capability, operation, payload) in [
+        (Capability::Module, "query", to_registry.as_slice()),
+        (Capability::Chain, "status", b"not borsh"),
+        (Capability::Invite, "create", b"not borsh"),
     ] {
         let mut guest = guest();
-        assert!(answer(&mut guest, capability, operation, 7, b"not borsh"));
+        assert!(answer(&mut guest, capability, operation, 7, payload, &None));
         assert!(
             matches!(guest.pending.pop(), Some(wire::Event::Response {
                 id: 7, result: Err(refusal), done: true
@@ -454,7 +599,6 @@ fn host_session_is_program_independent_and_tracks_updates() {
     let mut guest = guest();
     let props = Some(super::super::props(
         true,
-        true,
         "test-network",
         "abcd",
         None,
@@ -480,10 +624,8 @@ fn host_session_is_program_independent_and_tracks_updates() {
     let decoded: methods::Session = methods::decode(&bytes).unwrap();
     assert_eq!(decoded.endpoint, "http://127.0.0.1:19001");
     assert_eq!((decoded.signer.as_str(), decoded.account), ("abcd", None));
-    assert!(decoded.dark);
     // the key's account resolves: the same subscription hears it
     let changed = Some(super::super::props(
-        false,
         true,
         "test-network",
         "abcd",
@@ -632,4 +774,216 @@ fn routed_kind(line: &str) -> Option<String> {
         .find(|c| format!("{c:?}") == variant)?;
     let word = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_lowercase() || b == b'_');
     word(operation).then(|| format!("{}.{operation}", capability.as_str()))
+}
+
+/// A node method reaches only a program the view's manifest lists among
+/// its targets: `op.submit`, `module.query` and `module.changes` to any
+/// other are refused `undeclared_target` before anything is signed or
+/// subscribed; to a listed one they pass the gate (and meet the missing
+/// node next).
+#[test]
+fn a_node_method_reaches_only_a_declared_target() {
+    let _connection = connection_serial();
+    let call = |target: &str| {
+        methods::encode(&methods::Call {
+            target: target.into(),
+            body: Vec::new(),
+        })
+    };
+    let named = |program: &str| methods::encode(&program.to_owned());
+    for (kind, to_identity, to_chat) in [
+        ("op.submit", call("identity"), call("chat")),
+        ("module.query", call("identity"), call("chat")),
+        ("module.changes", named("identity"), named("chat")),
+    ] {
+        let mut guest = guest();
+        guest.targets = vec!["chat".into()];
+        let request = |id, payload| wire::Request {
+            id,
+            kind: kind.into(),
+            payload,
+        };
+        guest.answer(request(1, to_identity), &None);
+        assert_eq!(
+            refusal_code(&mut guest).as_deref(),
+            Some(refusal::UNDECLARED_TARGET),
+            "{kind} to an unlisted program"
+        );
+        guest.answer(request(2, to_chat), &None);
+        assert_eq!(
+            refusal_code(&mut guest).as_deref(),
+            Some(refusal::NOT_CONNECTED),
+            "{kind} to a listed program passes the gate"
+        );
+    }
+}
+
+/// The reply a task delivered, waited for; `None` after two seconds.
+fn awaited(guest: &mut Guest) -> Option<wire::Event> {
+    for _ in 0..200 {
+        let mut events = Vec::new();
+        guest.replies.drain_into(&mut events).unwrap();
+        if let Some(event) = events.pop() {
+            return Some(event);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    None
+}
+
+/// An `op.submit` of an identity op that removes a key waits for the
+/// person: nothing is signed or sent until they approve on the console,
+/// Cancel refuses it `consent_refused`, a second ask while one waits is
+/// refused at once, and with no key seated it is refused `session_locked`
+/// before anyone is asked.
+#[test]
+fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
+    use super::super::consent;
+    use commonware_codec::DecodeExt as _;
+    let _seat = backend::seat_serial();
+    let _connection = connection_serial();
+    let _queue = consent::serial();
+    let remove = methods::encode(&methods::Call {
+        target: identity::MODULE.into(),
+        body: abi::encode(&identity::Op::RemoveKey {
+            account: 7,
+            key: vec![1, 2, 3],
+        }),
+    });
+    let request = |id| wire::Request {
+        id,
+        kind: "op.submit".into(),
+        payload: remove.clone(),
+    };
+    let mut guest = guest();
+    guest.targets = vec![identity::MODULE.into()];
+    // the card names the program, never the manifest's own word for itself
+    guest.name = "Chat".into();
+    // no press behind it: refused before anything is asked, even locked
+    handle().block_on(backend::lock_signer());
+    guest.answer(request(1), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some(refusal::NEEDS_GESTURE)
+    );
+    // locked: refused before anything is asked
+    guest.activation = Some(Instant::now());
+    guest.answer(request(1), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some(refusal::SESSION_LOCKED)
+    );
+    assert!(consent::front().is_none());
+    // seated and connected: the ask waits, nothing reaches the node
+    let key = commonware_cryptography::ed25519::PrivateKey::decode([7u8; 32].as_slice()).unwrap();
+    handle().block_on(backend::seat_key(key));
+    let (node, server) = node_methods::node_server(
+        "POST /v1/get HTTP/1.1",
+        vec![("200 OK", b"not a sequence".to_vec())],
+    );
+    *super::super::connection().lock().unwrap() = super::super::Connection {
+        client: Some(node.client.clone()),
+        network: node.network.clone(),
+        chain: "test-network#1".into(),
+        rev: guest.connection_rev,
+    };
+    // the props say the seated key holds account 7, the one the op names
+    let props = Some(super::super::props(true, "test-network#1", "", Some(7), ""));
+    guest.activation = Some(Instant::now());
+    guest.answer(request(2), &props);
+    assert_eq!(refusal_code(&mut guest), None, "the request waits");
+    let (first, words) = consent::front().expect("an ask waits");
+    assert!(
+        words
+            .said
+            .starts_with("request-test asks to remove a key from your account"),
+        "{words:?}"
+    );
+    assert!(guest.intents.contains(&Intent::Consent));
+    // a second ask while the first waits
+    guest.activation = Some(Instant::now());
+    guest.answer(request(3), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some(refusal::CONSENT_REFUSED)
+    );
+    // Cancel: refused, and the node was never asked
+    assert!(!consent::answer(first, false), "nothing waits behind it");
+    match awaited(&mut guest) {
+        Some(wire::Event::Response {
+            id: 2,
+            result: Err(refusal),
+            ..
+        }) => assert_eq!(refusal.code, refusal::CONSENT_REFUSED),
+        other => panic!("{other:?}"),
+    }
+    // Approve: the task goes on to the node (its sequence read is the
+    // fake node's one answer, which is no sequence, so the op ends there)
+    // the in-flight budget spent: refused before the card goes up (the ask
+    // is the request's own slot, so Approve could lead nowhere)
+    let held: Vec<_> = (0..MAX_IN_FLIGHT)
+        .map(|_| guest.replies.admit().expect("within budget"))
+        .collect();
+    guest.activation = Some(Instant::now());
+    guest.answer(request(6), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some(refusal::IN_FLIGHT_LIMIT)
+    );
+    assert!(consent::front().is_none(), "nothing asked");
+    drop(held);
+    // resubmitted after Cancel with no new press: no second card
+    guest.intents.clear();
+    guest.answer(request(5), &None);
+    assert_eq!(
+        refusal_code(&mut guest).as_deref(),
+        Some(refusal::NEEDS_GESTURE)
+    );
+    assert!(consent::front().is_none(), "nothing asked");
+    assert!(!guest.intents.contains(&Intent::Consent));
+    // with no account resolved the card does not call it the person's own
+    guest.activation = Some(Instant::now());
+    guest.answer(request(4), &None);
+    let (second, words) = consent::front().expect("an ask waits");
+    assert_ne!(first, second);
+    assert!(
+        words
+            .said
+            .starts_with("request-test asks to remove a key from agent #7"),
+        "{words:?}"
+    );
+    assert!(
+        words
+            .shown
+            .as_deref()
+            .is_some_and(|shown| shown.starts_with("#7 · ")),
+        "{words:?}"
+    );
+    assert!(!consent::answer(second, true));
+    match awaited(&mut guest) {
+        Some(wire::Event::Response {
+            id: 4,
+            result: Err(refusal),
+            ..
+        }) => assert_ne!(refusal.code, refusal::CONSENT_REFUSED, "{refusal:?}"),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        server.join().unwrap().len(),
+        1,
+        "one sequence read, after Approve"
+    );
+    // the view torn down with an ask waiting: the ask goes with it (its
+    // task, aborted, lets go of the ask on the runtime's next turn)
+    guest.activation = Some(Instant::now());
+    guest.answer(request(7), &None);
+    assert!(consent::front().is_some(), "an ask waits");
+    drop(guest);
+    let gone = (0..200).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        consent::front().is_none()
+    });
+    assert!(gone, "the ask is withdrawn with its view");
+    *super::super::connection().lock().unwrap() = Default::default();
+    handle().block_on(backend::lock_signer());
 }

@@ -10,6 +10,15 @@ use tokio::net::{TcpListener, TcpStream};
 
 use super::auth_page::{Outcome, parse_result};
 
+/// How long one local connection has to send its request: a client that
+/// connects and says nothing (a browser's spare preconnect, any local
+/// process) is dropped, and the next connection is heard.
+const READ_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The longest request or header line read: the page's POST carries a few
+/// short headers.
+const MAX_LINE: u64 = 8 * 1024;
+
 /// One-shot, on an ephemeral 127.0.0.1 port. The port is no secret, so the
 /// callback path carries 32 random bytes and only a POST to that path ends
 /// the wait.
@@ -41,7 +50,8 @@ impl Listener {
                 .accept()
                 .await
                 .map_err(|error| format!("Lost the browser's connection: {error}"))?;
-            let Ok((method, path, body)) = read_request(&mut stream).await else {
+            let read = tokio::time::timeout(READ_DEADLINE, read_request(&mut stream)).await;
+            let Ok(Ok((method, path, body))) = read else {
                 continue;
             };
             let result = (path == self.path && method == "POST")
@@ -67,14 +77,14 @@ pub(super) async fn read_request(
 ) -> std::io::Result<(String, String, Vec<u8>)> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
-    reader.read_line(&mut line).await?;
+    read_line(&mut reader, &mut line).await?;
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or_default().to_owned();
     let path = parts.next().unwrap_or_default().to_owned();
     let mut length = 0usize;
     loop {
         line.clear();
-        if reader.read_line(&mut line).await? == 0 || line.trim().is_empty() {
+        if read_line(&mut reader, &mut line).await? == 0 || line.trim().is_empty() {
             break;
         }
         if let Some((name, value)) = line.split_once(':')
@@ -87,6 +97,21 @@ pub(super) async fn read_request(
     let mut body = vec![0; length.min(64 * 1024)];
     reader.read_exact(&mut body).await?;
     Ok((method, path, body))
+}
+
+/// One line onto `line`, refused past [`MAX_LINE`] bytes.
+async fn read_line(
+    reader: &mut BufReader<&mut TcpStream>,
+    line: &mut String,
+) -> std::io::Result<usize> {
+    let read = reader.take(MAX_LINE).read_line(line).await?;
+    if read as u64 == MAX_LINE && !line.ends_with('\n') {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "a request line past the bound",
+        ));
+    }
+    Ok(read)
 }
 
 async fn respond(stream: &mut TcpStream, status: &str, said: &str) {
@@ -180,6 +205,63 @@ mod tests {
             .unwrap();
         assert_eq!(answer.status(), 200);
         assert_eq!(waiting.await.unwrap(), Ok(Outcome::Created(key)));
+    }
+
+    /// A local client that connects first and says nothing (a browser's
+    /// spare preconnect, any process on the box) is dropped at its read
+    /// deadline: the page's POST behind it is answered, not left waiting for
+    /// the ceremony's five minutes.
+    #[tokio::test]
+    async fn a_stalled_local_client_does_not_hold_up_the_answer() {
+        let listener = Listener::bind().await.unwrap();
+        let callback = listener.callback_url();
+        let port = callback
+            .split(':')
+            .nth(2)
+            .unwrap()
+            .split('/')
+            .next()
+            .unwrap();
+        let waiting = tokio::spawn(listener.wait());
+        let _stalled = TcpStream::connect(format!("127.0.0.1:{port}"))
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let key = testkit::passkey_pubkey(&testkit::passkey(3));
+        let result = format!(r#"{{"op":"create","publicKey":"{}"}}"#, B64.encode(&key));
+        let answer = reqwest::Client::new()
+            .post(&callback)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(format!("result={}", url_encode(&result)))
+            .send();
+        let within = READ_DEADLINE + std::time::Duration::from_secs(3);
+        let answer = tokio::time::timeout(within, answer)
+            .await
+            .expect("the POST waits behind the stalled client")
+            .unwrap();
+        assert_eq!(answer.status(), 200);
+        assert_eq!(waiting.await.unwrap(), Ok(Outcome::Created(key)));
+    }
+
+    /// A request line with no end in sight is refused at the bound, not
+    /// grown until the deadline.
+    #[tokio::test]
+    async fn a_request_line_past_the_bound_is_refused() {
+        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client
+            .write_all(&[b'a'; 2 * MAX_LINE as usize])
+            .await
+            .unwrap();
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let read =
+            tokio::time::timeout(std::time::Duration::from_secs(2), read_request(&mut stream))
+                .await
+                .expect("still reading the line");
+        assert_eq!(read.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 
     /// `Session`'s real status source reaches a node over the wire: one

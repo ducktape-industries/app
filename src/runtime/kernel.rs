@@ -64,6 +64,7 @@
 //! A refusal's code is one of [`refusal`]'s, or the node's or the program's
 //! own, carried through.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 
@@ -84,9 +85,10 @@ const MAX_IN_FLIGHT: usize = 256;
 /// each one list a view has no reason to grow.
 const MAX_SUBSCRIPTIONS: usize = 256;
 /// Answers waiting in [`Replies`] between two redraws, by count and by
-/// bytes; exceeding either stops the view for good.
+/// bytes; exceeding either stops the view for good. The bytes are what one
+/// node answer may carry at most: a bigger one is refused unread.
 const MAX_REPLY_EVENTS: usize = 1024;
-const MAX_REPLY_BYTES: usize = 32 << 20;
+const MAX_REPLY_BYTES: usize = backend::noded::MAX_BODY_BYTES;
 /// The share of the reply budget SUBSCRIPTIONS may fill before they stop
 /// reading their sources: a request answers once, a subscription forever,
 /// against a queue only a redraw empties.
@@ -118,6 +120,7 @@ use node::{
     blob_get, block, blocks, changes, heads, invite, network, query, spawn_no_retry,
     spawn_retrying, spawn_retrying_unsent, status, submit,
 };
+use replies::InFlight;
 pub(super) use replies::Replies;
 
 /// The one current-thread tokio runtime every async I/O in the app runs
@@ -147,6 +150,63 @@ pub(super) fn handle() -> tokio::runtime::Handle {
         .clone()
 }
 
+/// Jobs under one name run one after another, in the order they were
+/// queued, each on the blocking pool (an OS call or a file): a view's
+/// banners (`notify`, under its module), so a burst's "N more" never lands
+/// before the banners it counts, a view's store file (`store`, under its
+/// path), so a `get` reads the `set` before it, and the notification log
+/// (under its path). One task per name on [`handle`] runs them; [`drain`]
+/// waits on every one of them as the app quits.
+pub(super) fn in_order(name: &str, job: impl FnOnce() + Send + 'static) {
+    let mut queues = queues();
+    let queue = queues.entry(name.to_owned()).or_insert_with(|| {
+        let (queue, mut jobs) = tokio::sync::mpsc::unbounded_channel::<Job>();
+        handle().spawn(async move {
+            while let Some(job) = jobs.recv().await {
+                // a job that panicked is lost alone; the next goes on
+                let _ = tokio::task::spawn_blocking(job).await;
+            }
+        });
+        queue
+    });
+    let _ = queue.send(Box::new(job));
+}
+
+/// Done once every job queued so far under every [`in_order`] name has
+/// run: one more job behind each queue's last, and they run in order. The
+/// app's quit waits on it (`runtime::quitting`), so a `set` a view was
+/// answered, or a log the centre handed over, is on disk before the
+/// process ends.
+pub(super) fn drain() -> impl Future<Output = ()> {
+    let ran: Vec<_> = queues()
+        .values()
+        .map(|queue| {
+            let (tell, told) = tokio::sync::oneshot::channel::<()>();
+            let _ = queue.send(Box::new(move || {
+                let _ = tell.send(());
+            }));
+            told
+        })
+        .collect();
+    async move {
+        for told in ran {
+            let _ = told.await;
+        }
+    }
+}
+
+type Job = Box<dyn FnOnce() + Send>;
+type Queues = HashMap<String, tokio::sync::mpsc::UnboundedSender<Job>>;
+
+/// [`in_order`]'s queues by name.
+fn queues() -> std::sync::MutexGuard<'static, Queues> {
+    static QUEUES: OnceLock<Mutex<Queues>> = OnceLock::new();
+    QUEUES
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 /// Routes one kernel request; `false` when the kind is not the kernel's.
 pub(super) fn answer(
     guest: &mut Guest,
@@ -154,6 +214,7 @@ pub(super) fn answer(
     operation: &str,
     id: u64,
     payload: &[u8],
+    props: &Option<Vec<u8>>,
 ) -> bool {
     if super::clipboard::answer(guest, capability, operation, id, payload)
         || super::notify::answer(guest, capability, operation, id, payload)
@@ -211,7 +272,9 @@ pub(super) fn answer(
             guest.sync_route();
         }
         (Capability::Module, "query") => {
-            spawn_retrying(guest, id, payload, query, "host_call.module.query")
+            if node::targeted(guest, id, payload, "module.query").is_some() {
+                spawn_retrying(guest, id, payload, query, "host_call.module.query")
+            }
         }
         (Capability::Chain, "status") => {
             spawn_retrying(guest, id, payload, status, "host_call.chain.status")
@@ -228,8 +291,23 @@ pub(super) fn answer(
         (Capability::Invite, "create") => {
             spawn_no_retry(guest, id, payload, invite, "host_call.invite.create")
         }
+        // a write: to a declared target, and where the op removes or
+        // suspends a key or an agent, after the person's native yes
         (Capability::Op, "submit") => {
-            spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit")
+            let Some(call) = node::targeted(guest, id, payload, "op.submit") else {
+                return true;
+            };
+            // the account the seated key holds, as the app resolved it
+            // (`roster::props`): the card tells the person's own account
+            // from an agent's by it
+            let own = props
+                .as_deref()
+                .and_then(|props| wire::methods::decode::<wire::methods::Session>(props).ok())
+                .and_then(|session| session.account);
+            match super::consent::needed(guest.module, &call.target, &call.body, own) {
+                None => spawn_retrying_unsent(guest, id, payload, submit, "host_call.op.submit"),
+                Some(words) => node::spawn_consented(guest, id, payload, words),
+            }
         }
         (Capability::Blob, "get") => {
             spawn_retrying(guest, id, payload, blob_get, "host_call.blob.get")

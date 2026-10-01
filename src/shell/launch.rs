@@ -52,6 +52,20 @@ pub(crate) fn run() {
             }
         })
         .detach();
+        // an ask's request gone: the card follows it off the console
+        let mut consent = crate::runtime::consent::changes_channel();
+        let consent_windows = windows.downgrade();
+        cx.spawn(async move |cx: &mut AsyncApp| {
+            while consent.next().await.is_some() {
+                if consent_windows
+                    .update(cx, |windows, cx| windows.sync_consent(cx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        })
+        .detach();
         let posted_windows = windows.downgrade();
         cx.spawn(async move |cx: &mut AsyncApp| {
             while let Some(posted) = posted.next().await {
@@ -133,10 +147,10 @@ pub(crate) fn run() {
         // until the app quits
         let mut kept = Some((tray, entities));
         cx.on_app_quit(move |_| {
-            drop(kept.take());
             // the one hook every quit path reaches
+            let drained = crate::runtime::quitting(crate::runtime::notify::center(), kept.take());
             crate::perf::summary();
-            async {}
+            drained
         })
         .detach();
     });

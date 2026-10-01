@@ -14,6 +14,8 @@ pub(crate) enum Overlay {
     Spotlight,
     /// "Add a device…".
     Approve,
+    /// A view's op waiting on the person's yes (`runtime::consent`).
+    Consent,
     Settings(SettingsPage),
     /// The network switcher.
     Network,

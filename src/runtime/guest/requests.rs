@@ -108,6 +108,8 @@ impl Guest {
                 ),
             }
         }
+        // what those requests logged reaches the disk once, off this thread
+        notify::center().lock().flush();
         for id in std::mem::take(&mut self.frame.cancels) {
             self.clipboard.cancel(id);
             self.widget_commands.retain(|(request, _)| *request != id);
@@ -189,7 +191,7 @@ impl Guest {
             return;
         }
         // the kernel contract first: what every view may ask, module-free
-        if kernel::answer(self, capability, operation, id, &payload) {
+        if kernel::answer(self, capability, operation, id, &payload, props) {
             return;
         }
         match (capability, operation) {

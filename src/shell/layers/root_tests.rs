@@ -998,3 +998,88 @@ fn a_cached_toast_sits_at_the_foot(cx: &mut TestAppContext) {
         );
     }
 }
+
+/// A view's `Deferred`, drawn like the dialog over it, stays under the
+/// host's dialog: inside the pane, where the view's draw lies, the scrim
+/// paints over it and takes the click meant for it (here closing the
+/// dialog), the deferral one deep or nested (a nested one draws in place,
+/// in gpui's first round of deferred draws, under the host's band).
+#[gpui_kit::test]
+fn a_views_deferred_draw_stays_under_a_dialog(cx: &mut TestAppContext) {
+    use gpui_kit::Styled as _;
+    use view_wire as wire;
+    const MAGENTA: u32 = 0xff00ff;
+    let lookalike = || {
+        let mut style = gpui_kit::div()
+            .absolute()
+            .inset_0()
+            .bg(gpui_kit::rgb(MAGENTA));
+        wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name("lookalike".into())),
+            style: style.style().clone(),
+            interactivity: wire::Interactivity {
+                on_click: Some(1),
+                occlude: true,
+                ..Default::default()
+            },
+            children: Vec::new(),
+        })
+    };
+    let deferred = |content| wire::Node::Deferred {
+        priority: 16,
+        content: Box::new(content),
+    };
+    let views = [
+        ("root-deferred-view", deferred(lookalike())),
+        ("root-nested-view", deferred(deferred(lookalike()))),
+    ];
+    for (module, root) in views {
+        let (app, _, view, mut native) = console(cx);
+        let root = wire::Node::Container(view_wire::ContainerNode {
+            id: Some(wire::ElementIdWire::Name("slot".into())),
+            style: gpui_kit::div().size_full().relative().style().clone(),
+            interactivity: Default::default(),
+            children: vec![root],
+        });
+        crate::runtime::seat_drawing_for_test(module, 400, root);
+        set_motion(&app, false, &mut native);
+        pane(&view, PaneMessage::Select(module), &mut native);
+        for _ in 0..4 {
+            frame(&mut native);
+        }
+        super::tests::show(&view, Some(Overlay::Approve), &mut native);
+        for _ in 0..3 {
+            frame(&mut native);
+        }
+        let quads = quads(&mut native);
+        let scale = native.update(|window, _| window.scale_factor());
+        let guest = quads
+            .iter()
+            .find(|quad| quad.background.as_solid() == Some(gpui_kit::rgb(MAGENTA).into()))
+            .unwrap_or_else(|| panic!("{module}: the view's deferred draw paints"));
+        let scrim = quads
+            .iter()
+            .find(|quad| {
+                quad.background
+                    .as_solid()
+                    .is_some_and(|color| (color.a - 0.6).abs() < 0.01)
+            })
+            .expect("the dialog's scrim paints");
+        assert!(
+            guest.order < scrim.order,
+            "{module}: the view's draw {} over the scrim {}",
+            guest.order,
+            scrim.order
+        );
+        // the view's bottom-left corner: inside its draw, under the scrim,
+        // away from the dialog's card
+        let at = gpui_kit::point(
+            gpui_kit::px(guest.bounds.origin.x.0 / scale + 8.),
+            gpui_kit::px((guest.bounds.origin.y.0 + guest.bounds.size.height.0) / scale - 8.),
+        );
+        native.simulate_click(at, gpui_kit::Modifiers::none());
+        frame(&mut native);
+        let open = native.update(|_, cx| *view.read(cx).overlays().read(cx).get());
+        assert_eq!(open, None, "{module}: the view took the scrim's click");
+    }
+}

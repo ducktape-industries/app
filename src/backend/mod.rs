@@ -34,13 +34,15 @@ pub(crate) use endpoints::{
 };
 pub(crate) use key_dir::{Keyring, bind_keyring, key_exists, keystore_root, session_key_path};
 pub(crate) use noded::{Client as RpcClient, Layer, Status as NodeStatus};
+#[cfg(test)]
+pub(crate) use prefs::prefs_reads;
 pub(crate) use prefs::{
     Appearance, edit_prefs, load_appearance, load_motion, read_prefs, save_appearance, save_motion,
 };
 #[cfg(test)]
 pub(crate) use session::seat_serial;
 pub(crate) use session::{
-    lock_signer, next_seq, query_frame, seat_key, seated_frame, seated_key, seated_sign,
+    lock_signer, next_seq, query_frame, seat_key, seated, seated_frame, seated_key, seated_sign,
 };
 
 use std::path::Path;
@@ -67,6 +69,9 @@ pub(crate) fn refused(error: noded::Error) -> view_wire::Error {
             refusal::NODE_FAILED,
             format!("no answer came back: {sentence}"),
         ),
+        error @ Error::TooLarge { .. } => {
+            view_wire::Error::new(refusal::TOO_LARGE, error.to_string())
+        }
     }
 }
 
