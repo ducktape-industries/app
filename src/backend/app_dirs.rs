@@ -27,7 +27,8 @@ pub(crate) fn state_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_STATE_HOME", ".local/state", "Library/Logs")
 }
 
-/// rebuildable caches (the view bytes read out of program blobs).
+/// rebuildable caches (the view bytes read out of program blobs), and the AX
+/// door's file where there is no `$XDG_RUNTIME_DIR`.
 pub(crate) fn cache_dir() -> Result<PathBuf, String> {
     platform_dir("XDG_CACHE_HOME", ".cache", "Library/Caches")
 }

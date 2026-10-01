@@ -1,5 +1,5 @@
 //! The clipboard, read and written on the window thread for one guest.
-use super::wire::methods::{self, Capability};
+use super::wire::methods::{self, Capability, refusal};
 use super::{Guest, Seat};
 use gpui_kit::{ClipboardEntry, Context};
 
@@ -29,20 +29,32 @@ pub(super) fn answer(
     id: u64,
     payload: &[u8],
 ) -> bool {
-    match (capability, operation) {
-        (Capability::Clipboard, "read") => queue(guest, id, Request::Read),
-        (Capability::Clipboard, "write") => match methods::decode::<String>(payload) {
-            Ok(text) => queue(guest, id, Request::Write(text)),
-            Err(error) => guest.refuse(id, "malformed_request", error),
-        },
+    let request = match (capability, operation) {
+        (Capability::Clipboard, "read") => Ok(Request::Read),
+        (Capability::Clipboard, "write") => methods::decode::<String>(payload).map(Request::Write),
         _ => return false,
+    };
+    // what the person copied elsewhere is read, and replaced, only on
+    // their activation, which the ask takes; a view on a clock never sees it
+    match request {
+        Ok(_) if !guest.take_activation() => guest.refuse(
+            id,
+            refusal::NEEDS_GESTURE,
+            "the clipboard needs a press or key",
+        ),
+        Ok(request) => queue(guest, id, request),
+        Err(error) => guest.refuse(id, refusal::MALFORMED_REQUEST, error),
     }
     true
 }
 
 fn queue(guest: &mut Guest, id: u64, request: Request) {
     if guest.clipboard.pending.len() >= MAX_PENDING {
-        guest.refuse(id, "in_flight_limit", "too many pending clipboard requests");
+        guest.refuse(
+            id,
+            refusal::IN_FLIGHT_LIMIT,
+            "too many pending clipboard requests",
+        );
         return;
     }
     guest.clipboard.pending.push((id, request));

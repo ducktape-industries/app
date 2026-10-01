@@ -133,6 +133,55 @@ fn pop_out_and_back_in_keep_the_pane(cx: &mut TestAppContext) {
     assert_eq!(modules(&app, console, cx), ["chat", "files", EMPTY]);
 }
 
+/// The AX door names a window for its life: the console closing renames
+/// no other window, and the console opening after it is "console" again.
+#[gpui_kit::test]
+fn a_window_keeps_its_door_name(cx: &mut TestAppContext) {
+    let (app, console) = console(cx);
+    let desk = desk_of(&app, console, cx);
+    desk.update(cx, |desk, cx| desk.split("files", cx));
+    app.windows
+        .update(cx, |windows, cx| windows.pop_out(console, 1, None, cx));
+    cx.run_until_parked();
+    let popped_key = popped(&app, console, cx);
+    let names = |cx: &TestAppContext| {
+        app.windows.read_with(cx, |windows, _| {
+            windows
+                .served()
+                .into_iter()
+                .map(|(name, key, _)| (key, name))
+                .collect::<Vec<_>>()
+        })
+    };
+    let before = names(cx);
+    assert_eq!(before.len(), 2);
+    assert_eq!(before[0], (console, "console".to_owned()));
+    let popped_name = before[1].1.clone();
+    assert_ne!(popped_name, "console");
+    let handle = app
+        .windows
+        .read_with(cx, |windows, _| windows.handles()[&console]);
+    cx.update_window(handle, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        names(cx),
+        [(popped_key, popped_name.clone())],
+        "the pop-out kept its name"
+    );
+    app.windows
+        .update(cx, |windows, cx| windows.raise_console(cx));
+    cx.run_until_parked();
+    let reopened = app
+        .windows
+        .read_with(cx, |windows, _| windows.console())
+        .expect("a console");
+    assert_eq!(
+        names(cx),
+        [(popped_key, popped_name), (reopened, "console".to_owned())]
+    );
+}
+
 /// A link, read against the chain in hand: on this chain the seat opens
 /// and its view is handed the route; another chain's link opens the seat,
 /// routes nothing, and says why; a view nobody lists opens nothing.
@@ -171,6 +220,33 @@ fn a_link_opens_the_seat_and_a_bad_one_toasts(cx: &mut TestAppContext) {
     assert_eq!(
         modules(&app, key, cx),
         ["chat", "link-test-here", "link-test-away"]
+    );
+}
+
+/// The same link notice while it is up is not shown again, so a view
+/// repeating a bad link cannot keep the notice up past its time.
+#[gpui_kit::test]
+fn a_repeated_link_notice_does_not_restart_the_toast(cx: &mut TestAppContext) {
+    let (app, _) = console(cx);
+    listed(&app, &["notice-test"], cx);
+    let toast = |cx: &TestAppContext| app.toast.read_with(cx, |toast, _| toast.get().clone());
+    let open = |cx: &mut TestAppContext| {
+        app.windows.update(cx, |windows, cx| {
+            windows.open_link("duck://testkit-0a1b2c3d/notice-test-nowhere/x", cx)
+        })
+    };
+    open(cx);
+    assert!(toast(cx).contains("notice-test-nowhere"), "{:?}", toast(cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(3000));
+    cx.run_until_parked();
+    open(cx);
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(700));
+    cx.run_until_parked();
+    assert!(
+        toast(cx).is_empty(),
+        "the repeated notice restarted the toast"
     );
 }
 

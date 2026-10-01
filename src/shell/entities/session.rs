@@ -40,6 +40,9 @@ pub(crate) struct SessionState {
     pub(crate) connected: bool,
     /// A connect attempt is out.
     pub(crate) connecting: bool,
+    /// The node that attempt reaches for: the address it was started
+    /// with, whatever is typed since. Empty when none is out.
+    pub(crate) reaching: String,
     /// Connected, but the last [`LOST_AFTER`] status polls went unanswered.
     pub(crate) reconnecting: bool,
     /// The node the views are on.
@@ -220,6 +223,7 @@ impl Session {
                 state.endpoint_error.clear();
                 state.error.clear();
                 state.connecting = true;
+                state.reaching = origin.clone();
             },
             cx,
         );
@@ -246,10 +250,16 @@ impl Session {
     ) {
         let _timed = timed();
         self.connect = None;
-        self.edit(|state| state.connecting = false, cx);
+        self.edit(
+            |state| {
+                state.connecting = false;
+                state.reaching.clear();
+            },
+            cx,
+        );
         let status = match answer {
             Ok(status) => status,
-            Err(error) => return self.connect_failed(error, cx),
+            Err(error) => return self.connect_failed(origin, error, cx),
         };
         crate::perf::mark("connected");
         // refused like a node that never answered: a switch keeps the
@@ -260,11 +270,11 @@ impl Session {
                 status.contract,
                 backend::noded::NODE_CONTRACT
             );
-            return self.connect_failed(error, cx);
+            return self.connect_failed(origin, error, cx);
         }
         let keyring = match backend::bind_keyring(&status.network, status.time) {
             Ok(keyring) => keyring,
-            Err(error) => return self.connect_failed(error, cx),
+            Err(error) => return self.connect_failed(origin, error, cx),
         };
         let other_chain = keyring.other_chain;
         // the chain id `duck://` links name: the network and its genesis
@@ -313,19 +323,18 @@ impl Session {
         self.start_poll(STATUS_EVERY, cx);
     }
 
-    /// The node was not reached. A switch that did not land: the network
-    /// in hand stays as it was, and the failure is said over it.
-    fn connect_failed(&mut self, error: String, cx: &mut Context<Self>) {
+    /// The node at `origin` was not reached. A switch that did not land:
+    /// the network in hand stays as it was, and the failure is said over it.
+    fn connect_failed(&mut self, origin: String, error: String, cx: &mut Context<Self>) {
         // a node this device reached before is named by its network, the
         // way the Recent list names it
-        let endpoint = self.state.endpoint.clone();
         let who = self
             .state
             .recent_endpoints
             .iter()
-            .find(|entry| entry.url == endpoint && !entry.network.is_empty())
+            .find(|entry| entry.url == origin && !entry.network.is_empty())
             .map(|entry| format!("{} ({})", entry.network, entry.url))
-            .unwrap_or(endpoint);
+            .unwrap_or(origin);
         let error = backend::connect_error(&who, error);
         if self.state.connected {
             self.edit(|state| state.endpoint = state.connected_rpc.clone(), cx);
@@ -438,6 +447,7 @@ impl Session {
             |state| {
                 state.connected = false;
                 state.connecting = false;
+                state.reaching.clear();
                 state.reconnecting = false;
                 state.connected_rpc.clear();
                 state.network.clear();

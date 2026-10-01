@@ -83,7 +83,7 @@ async fn binary_queries_preserve_signed_payloads_raw_replies_and_node_refusals()
     ] {
         assert_eq!(
             query(node.clone(), ask).await.unwrap_err().code,
-            "malformed_request"
+            refusal::MALFORMED_REQUEST
         );
     }
 }
@@ -99,7 +99,7 @@ async fn a_node_without_the_network_route_is_refused_at_once() {
     );
     let refused = network(node, Vec::new()).await.unwrap_err();
     server.join().unwrap();
-    assert_eq!(refused.code, "unknown_request");
+    assert_eq!(refused.code, refusal::UNKNOWN_REQUEST);
     assert_eq!(
         refused.message,
         "This node doesn't report its validators' votes. Update the node."
@@ -140,7 +140,7 @@ async fn system_status_preserves_borsh_and_refusals() {
     server.join().unwrap();
     assert_eq!(
         status(node, b"{}".to_vec()).await.unwrap_err().code,
-        "malformed_request"
+        refusal::MALFORMED_REQUEST
     );
     let (node, server) = node_server(
         "GET /v1/status HTTP/1.1",
@@ -297,7 +297,7 @@ async fn block_methods_carry_the_archive_s_blocks_as_method_types() {
     server.join().unwrap();
     assert_eq!(
         block(node, b"x".to_vec()).await.unwrap_err().code,
-        "malformed_request"
+        refusal::MALFORMED_REQUEST
     );
 }
 
@@ -363,7 +363,7 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
     for ask in [Vec::new(), mint(0), b"7".to_vec()] {
         assert_eq!(
             invite(node.clone(), ask).await.unwrap_err().code,
-            "malformed_request"
+            refusal::MALFORMED_REQUEST
         );
     }
     for (http, body, reason) in [
@@ -375,7 +375,7 @@ async fn invite_preserves_blob_notes_ttl_and_typed_refusals() {
         // a core built after it dropped /v1/invite answers a bare 404, not
         // the node's own refusal envelope — that must read as "this node
         // doesn't do invites", not the raw transport error.
-        ("404 Not Found", Vec::new(), "invite_unsupported"),
+        ("404 Not Found", Vec::new(), refusal::INVITE_UNSUPPORTED),
     ] {
         let (node, server) = node_server("POST /v1/invite HTTP/1.1", vec![(http, body)]);
         let refusal = invite(node, mint(1)).await.unwrap_err();

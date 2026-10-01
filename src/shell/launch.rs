@@ -100,7 +100,15 @@ pub(crate) fn run() {
                 .update(cx, |session, cx| session.connect(target, cx));
         }
         first_present(cx);
-        if let Some(calls) = crate::ax::open() {
+        #[cfg(feature = "ax-door")]
+        if let Some((calls, written)) = crate::ax::open() {
+            // the door file goes as the app quits
+            let mut written = Some(written);
+            cx.on_app_quit(move |_| {
+                drop(written.take());
+                async {}
+            })
+            .detach();
             let door_windows = windows.downgrade();
             let door_seats = entities.seats.downgrade();
             cx.spawn(async move |cx: &mut AsyncApp| {

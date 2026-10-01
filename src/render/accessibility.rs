@@ -227,7 +227,8 @@ impl ViewTree {
     /// rest in one `a11y::Patch`, each advertised action routed back as
     /// `Event::A11yAction`, then the guest focus handle (made once per
     /// id, kept in `guest_focus_targets`), the rest of the interactivity
-    /// through `interactivity::apply`, and `on_click`. A picture with no role
+    /// through `interactivity::apply`, and `on_click`, which is assistive
+    /// technology's Click on the node too. A picture with no role
     /// takes `accessible`'s (a labelled one is an Image); a roled node with
     /// no label is named by the text it draws, and a Status or Alert with no
     /// value speaks it as its value too (macOS reads the value). Each setter
@@ -374,15 +375,61 @@ impl ViewTree {
         if let Some(handler) = interactivity.on_click {
             element = element.on_click(cx.listener(
                 move |this, event: &gpui_kit::ClickEvent, _, cx| {
-                    this.user_activation.set(Some(handler));
+                    this.activate();
                     cx.emit(wire::Event::Click {
                         handler,
                         event: event.into(),
                     });
                 },
             ));
+            // assistive technology's press is this node's click, sent here
+            // and not left to gpui: its own Click is a pointer press at the
+            // node's middle with no hit test, which lands on whatever is
+            // drawn there when the node is scrolled out of its list or lies
+            // under another (the shell's rows answer it the same way). It
+            // is the reader's press, so it grants user activation as a
+            // pointer's does (the AX door presses this way too).
+            let tree = cx.entity().downgrade();
+            let path = self.authored_path.clone();
+            element = element.on_a11y_action(gpui_kit::AccessibleAction::Click, move |_, _, cx| {
+                let _ = tree.update(cx, |this, cx| {
+                    let event = pressed_at(this.nearest_bounds(&path).center());
+                    this.activate();
+                    cx.emit(wire::Event::Click { handler, event });
+                });
+            });
         }
         element
+    }
+
+    /// The bounds measured at `path` on the last frame, or at the nearest
+    /// path above it that measures (`measure` is on identified containers,
+    /// editors and sensors; a picture or a list sits on its ancestor's).
+    // ponytail: a pressable picture or list is pressed at its measured
+    // ancestor's middle; measure it once a view reads a press on one that closely.
+    fn nearest_bounds(&self, path: &[wire::ElementIdWire]) -> Bounds<Pixels> {
+        (0..=path.len())
+            .rev()
+            .find_map(|end| self.bounds.get(&path[..end]))
+            .copied()
+            .unwrap_or_default()
+    }
+}
+
+/// The click a left press and release at `position` is on the wire: what a
+/// view hears for a pointer's click there, and what gpui's own Click made
+/// of a press from assistive technology.
+fn pressed_at(position: Point<Pixels>) -> wire::click::Click {
+    let down = wire::click::ButtonEvent {
+        button: wire::click::MouseButton::Left,
+        position,
+        modifiers: Default::default(),
+        click_count: 1,
+    };
+    wire::click::Click::Mouse {
+        up: down.clone(),
+        down,
+        first_mouse: false,
     }
 }
 
@@ -428,7 +475,6 @@ impl ViewTree {
         });
         NativePresentation {
             images: self.images.clone(),
-            vectors: self.vectors.clone(),
             focused_container: self.focus_targets.iter().find_map(|(key, (kind, handle))| {
                 handle.is_focused(window).then(|| (key.clone(), *kind))
             }),
@@ -442,7 +488,6 @@ impl ViewTree {
     /// dropped after it (`Render for ViewTree`).
     pub(crate) fn with_presentation(mut self, mut presentation: NativePresentation) -> Self {
         self.images = std::mem::take(&mut presentation.images);
-        self.vectors = std::mem::take(&mut presentation.vectors);
         self.presentation = presentation;
         self
     }

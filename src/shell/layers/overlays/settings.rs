@@ -5,7 +5,7 @@
 use super::super::super::ink::{self, Ink, mono, sans, words};
 use super::{OverlayLayer, dialog_fit, scrim};
 use crate::a11y::Control as _;
-use crate::shell::entities::{Entities, Overlay, Prefs, SettingsPage, Slice};
+use crate::shell::entities::{Overlay, Prefs, SettingsPage, Slice};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{App, Context, Window};
 use std::cell::Cell;
@@ -28,12 +28,14 @@ pub(super) struct Page {
 /// drive in memory (the theme, which views are asking). The door's walk
 /// keeps it before its arrows pick a radio group's choices, and a pick
 /// saves, and puts it back after (docs/ax.md §1.1).
+#[cfg(any(test, feature = "ax-door"))]
 pub(crate) struct Kept {
-    app: Entities,
+    app: crate::shell::entities::Entities,
     prefs: serde_json::Value,
     asking: std::collections::BTreeSet<String>,
 }
 
+#[cfg(any(test, feature = "ax-door"))]
 impl Kept {
     /// The app behind `window` as it stands; none for a window that is not
     /// the shell's.

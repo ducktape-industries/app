@@ -351,6 +351,7 @@ fn json_of(metrics: &[&Metric]) -> serde_json::Value {
 }
 
 /// Clears every counter and sample; the startup marks stay.
+#[cfg(any(test, feature = "ax-door"))]
 pub(crate) fn reset() {
     let mut registry = registry();
     registry.metrics.clear();

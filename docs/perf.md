@@ -106,13 +106,13 @@ loop runs on the window thread inside `Seat::turn`
 | Frame bytes | nothing (the `MAX_FRAME_BYTES` refusal in `guest::shape`) | `Exports::tick` answer length; `wire::encode(&events)` length in `Guest::tick` | H `frame_bytes`, H `events_bytes` (D) | a3 |
 | Frame kind, busy, node count | nothing | after `guest::shape` in `Guest::tick`: `frame.root.is_some()`, `frame.patches.len()`, `frame.unchanged`, `frame.busy`; the node count from a `root.for_each_mut` walk (view-wire has no `count`), only when `frame_rev` bumps (O(n), so only when on) | C `frame.{full,patch,unchanged}`, C `busy_ticks`, G `nodes` (D) | a3 |
 | Sanitize truncations | a `display_text_truncated` warn (`Guest::report_display_truncation`) | `reports.local` after `guest::shape` | C `truncations` (D) | a3 |
-| Tree merge and replace | nothing | `guest::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone, `Pictures::hydrate`, `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
+| Tree merge and replace | nothing | `guest::merge` (patch frames clone the held tree before applying); `Seat::turn`, the `fresh` branch: root clone (`Guest::drawn`; picture bytes are shared, not cloned), `native_root`, `ViewTree::replace` (`src/render/commands.rs`) | H `merge`, H `replace` (W) | a3 / 70 |
 | ViewTree render | `ViewTree.renders`, `#[cfg(test)]` only (`src/render.rs`) | `ViewTree::render` (`Render` impl); promote the counter out of `cfg(test)` | C `renders` (D), H `render` (W) | 70 |
 | Cache hit / miss per view | nothing | On the cached path (`layers::PaneView` draws the seat's tree as a cached `AnyView`, with or without a11y) gpui reuses the last prepaint when bounds, content mask and text style match, the entity is not dirty and the window is not refreshing (`gpui:src/view.rs`, the `AnyView` `prepaint` reuse branch); otherwise it calls `ViewTree::render` again. So `draws` = `PaneView` draws of the seat, `misses` = `ViewTree` renders, `hits = draws − misses`. Before #347 every draw was a miss | C `draws` (D); `misses`, `hits` derived | 70 |
 | Full redraws per interaction | nothing (#347 measured it with temporary spans: 57–67 per window switch before, 11–14 after) | the `misses` delta between two door reads around the interaction | derived (D) | 70 |
 | Refresh causes | nothing | every `window.refresh()` caller in `src` is a cache-buster for all cached views in that window (`gpui:src/view.rs`, `!window.refreshing`). Today there are two, both in `src/render/text.rs`: the selection path (post-#347 `refresh_on_change`, only when the shown selection changes; before it, gpui-base's `refresh_window_on_change`) and the drag mouse-up handler (`MouseUpEvent` while `DRAG_CLIP` is set). `Window::activate_a11y` also refreshes, and so does gpui when the input turns from the pointer to the keys or back (the focus ring follows it). A focus move does not: the pinned fork (gpui-pre#9) draws the view that drew the old focus and the one that draws the new, with their ancestors, so a view that reads at its render a focus handle drawn outside its own subtree (neither by it nor by a view under it) stays stale unless it observes focus (`on_focus`/`on_blur`); no view in `src` draws from such a read (audited 2026-10-01). The two views' draw is held by `shell::layers::root_tests::a_focus_move_re_renders_two_layers_not_the_window`. Count per site | C `refresh.<site>` (D) | free (`text.rs`) |
 | gpui layout / paint per view | nothing. gpui's own histograms are behind the fork's `profiler` feature (§1) | `input::Observe` (`src/runtime/input.rs`) wraps the guest element: `Observe::prepaint` runs render + layout + prepaint for a cached `AnyView`, `Observe::paint` the paint. Per view only on the cached path, which the tree takes with or without a11y | H `layout`, H `paint` (W) | a3 |
-| Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) is insert-only, never evicts; sum `raster`/`vector` byte lengths when on | G `picture_bytes` (D) | free |
+| Pictures | nothing | `Pictures::adopt` (`src/runtime/pictures.rs`) keeps a running byte total, held under `MAX_PICTURE_BYTES` (64 MiB) by eviction | G `picture_bytes` (D) | free |
 | Linear memory | nothing (the `MEMORY_LIMIT` trap) | `Exports.memory.data_size(&store)` after `Guest::tick` | G `memory` max (D) | a3 |
 | Snapshot on the way out | nothing | `Guest::snapshot` (covered above) | | a3 |
 | Faults | warns `module_view_trapped` (`Guest::tick`), `module_view_unloadable` (`seat::spawn_load`) | same sites | C `faults` (D) | a3 / free |
@@ -220,8 +220,9 @@ pub(crate) fn retire(module: &'static str, instance: u64) // one `view_perf` lin
   run before the `Guest` exists. The registry is a leaf lock; reading it
   never takes a seat lock.
 - Windows are keyed by `WindowKey` (`src/runtime.rs`). The door names
-  windows positionally (`console`, `console2`, … in `Windows::served`),
-  which shifts when one closes, so the snapshot carries both.
+  windows `console`, `console2`, … (`Windows::served`: the console
+  `console`, any other `console<key>`), each for its life, and the
+  snapshot carries both.
 
 **Cost when off.** `on()` is an atomic load. `time` returns `None` before
 touching the clock; `count`/`gauge`/`record` return before the lock. ducktape-70 reports that
@@ -375,8 +376,24 @@ only when on and only when the tree changed.
 
 Measured so far (fold in, attribute, do not over-trust):
 
-- Fuel, heaviest ticks, `src/runtime.rs` doc: chat ~72M, forge ~45M,
-  explorer ~26M.
+- Fuel, heaviest ticks, #291 (`3a2d63c3`, 2026-09-24, the commit that set
+  `FUEL_PER_TICK` to 250M): chat ~72M, forge ~45M, explorer ~26M. A manual
+  per-tick fuel trace, screen and stage not recorded, before the qa gate
+  existed.
+- Explorer, qa's `a11y-census` on a freshly seeded stage (`kit up`,
+  `kit seed`, the seed inside the 1,000-block window). The heaviest tick is
+  one render of the Transactions page, 50 rows and 1,074 wire nodes
+  (`nodes.max`). `fuel.tick.max` read 111.95–114.43M in all 89 such runs on
+  record before modules#232 (2026-09-29 to 10-01). modules#232 (`62e52242`)
+  made the SDK's diff move a replaced subtree instead of copying it:
+  96,763,257 in the census at the `dev` heads (2026-10-01: app `cf8384cd`,
+  modules `62e52242`, qa `24a1e33a`), and 96.7–96.8M in every seeded
+  census on record since.
+  Without the seed the explorer reads less: 18.8M at 218 nodes when every
+  block in the window was empty (2026-09-29), 57–59M at 394 nodes once the
+  seed had aged out of the window, and 53–61M at 467–468 nodes in
+  `perf-drive`, which never opens Transactions. #291's 26M fits a
+  near-empty window.
 - #347 (`193c9a21`), seeded stage, three windows, Xvfb, measured with
   ducktape-70's temporary spans before and after the fix. These replace the
   earlier `view_tree.render` ~2.9 ms figure, which was taken with the cache
@@ -416,9 +433,40 @@ Rules, in `qa`'s `perf-budgets.json`, keyed by module and by window:
 2. **Regression budget**: baseline × 1.25 on the D metrics — fuel max and
    p95, frame bytes max, nodes max, requests max, truncations, snapshot
    bytes, memory max, picture bytes, view bytes — refreshed from a green
-   run on `dev`. Starting points: chat 72M → 90M, forge 45M → 56M, explorer
-   26M → 33M. Gate on `max` and counts since the last reset, never on
-   equality: inputs vary with when replies and blocks land.
+   run on `dev`. For `fuel.tick.max` a run is green when the steps that
+   produce the metric pass, whatever AX audits fail elsewhere in it.
+   Starting points: chat 72M → 90M, forge 45M → 56M, explorer 26M → 33M;
+   the explorer's was refreshed to 96.8M → 121M (below). Gate on `max` and
+   counts since the last reset, never on equality: inputs vary with when
+   replies and blocks land.
+
+   The explorer's refresh, and the procedure for the next one. Bring up a
+   fresh stage and seed it (`kit up`, `kit seed`), run qa's `a11y-census`
+   with the app and the views at the `dev` heads, and read
+   `views.explorer.fuel.tick.max` from the end snapshot in the run's
+   `perf.jsonl`. The run is green for this metric when "open the
+   Transactions page" and "audit Explorer: transactions" pass, and it is a
+   baseline only when it drew the full Transactions page: explorer
+   `nodes.max` 1,074 today, and a run far under that had a seed that had
+   aged out of the window. The budget is the reading × 1.25, rounded to
+   the million. At or over rule 1's ceiling it would be no regression
+   budget: the ceiling reports the same tick without it.
+
+   Refreshed 2026-10-01: 96,763,257 × 1.25 = 120,954,071, so 121M. The run
+   is the census at the `dev` heads (app `cf8384cd`, modules `62e52242`, qa
+   `24a1e33a`): 93 of its 94 steps passed, both Transactions steps among
+   them, and the one that failed is the Chat reaction-picker audit. The 33M
+   it replaces was never reachable on a seeded stage (113M before
+   modules#232), and 113M × 1.25 is over rule 1.
+
+   What holds the explorer's fuel, in order: this budget (a tick over 121M
+   is reported, 25% over the baseline), rule 1 at 125M (4M above it), and
+   the 250M kill (§4.1). Nothing in `perf-budgets.json` reports a
+   regression under 25%, and of this rule's D metrics the file holds only
+   the fuel max for the explorer. `--perf-baseline <run-dir>` (§4.4) is the
+   check that compares every D metric with a recorded run (fuel p95 and
+   nodes max among them), and no census run passes it today. Every line
+   here is a report: `breach_fails_the_scenario` is false.
 3. **Idle budget**: after a scenario settles, `POST /perf/reset`, wait 2 s
    with **no door calls**, then `GET /perf`:
    - `busy_ticks == 0`;

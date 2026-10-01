@@ -17,19 +17,26 @@ pub(super) fn build(
     content: wire::Node,
     cx: &mut App,
 ) -> gpui_kit::AnyView {
-    let mask = parent
+    // the source view's clip and its pictures: a tooltip names them as
+    // its source tree does
+    let (mask, pictures) = parent
         .upgrade()
-        .map(|parent| parent.read(cx).slot_mask.clone())
+        .map(|parent| {
+            let parent = parent.read(cx);
+            (parent.slot_mask.clone(), parent.pictures.clone())
+        })
         .unwrap_or_default();
-    let child = cx.new(|_| ViewTree::new(content));
+    let child = cx.new(|_| {
+        let mut child = ViewTree::new(content);
+        child.set_pictures(pictures);
+        child
+    });
     cx.new(|cx| {
         let subscription = cx.subscribe(&child, move |_, source, event: &wire::Event, cx| {
-            let source = source.read(cx);
-            let handler = source.user_activation.get();
-            let activated = source.take_user_activation(event).is_some();
+            let activation = source.read(cx).take_activation();
             let _ = parent.update(cx, |parent, cx| {
-                if activated {
-                    parent.user_activation.set(handler);
+                if let Some(at) = activation {
+                    parent.activation.set(Some(at));
                 }
                 cx.emit(event.clone());
             });
@@ -257,8 +264,8 @@ mod tests {
             .collect();
         assert_eq!(clicks.len(), 1, "tooltip click must reach the parent once");
         parent.read_with(&native, |parent, _| {
-            assert!(parent.take_user_activation(clicks[0]).is_some());
-            assert!(parent.take_user_activation(clicks[0]).is_none());
+            assert!(parent.take_activation().is_some());
+            assert!(parent.take_activation().is_none());
         });
     }
 

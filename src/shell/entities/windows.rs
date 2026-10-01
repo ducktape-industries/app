@@ -170,16 +170,18 @@ impl Windows {
         self.console.and_then(|key| self.by_window.get(&key))
     }
 
-    /// The windows as the AX door names them: the first "console", the
-    /// rest "console2", "console3", …
+    /// The windows as the AX door names them, each name kept for the
+    /// window's life: the console "console", any other "console<key>"; in a
+    /// run, "console2", "console3", … as they open, a closed one's name
+    /// never reused.
+    #[cfg(any(test, feature = "ax-door"))]
     pub(crate) fn served(&self) -> Vec<crate::ax::Served> {
         self.handles
             .iter()
-            .enumerate()
-            .map(|(nth, (key, handle))| {
-                let name = match nth {
-                    0 => "console".to_owned(),
-                    nth => format!("console{}", nth + 1),
+            .map(|(key, handle)| {
+                let name = match self.console == Some(*key) {
+                    true => "console".to_owned(),
+                    false => format!("console{}", key.0),
                 };
                 (name, *key, *handle)
             })
@@ -635,7 +637,12 @@ impl Windows {
         }
     }
 
+    /// A link's notice up; the same one again while it is up says nothing
+    /// new, so it is not restarted either.
     fn notice(&self, said: String, cx: &mut App) {
+        if self.shared.toast.read(cx).get() == &said {
+            return;
+        }
         self.shared
             .toast
             .update(cx, |toast, cx| toast.show(said, cx));
