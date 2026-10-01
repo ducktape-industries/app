@@ -6,7 +6,7 @@
 //! routes what a seat asks for: a badge to `Rail`, a notice to
 //! `Notifications`, a view seated to the desks holding it, a link to
 //! `Windows`.
-use super::{Account, Notifications, Prefs, Rail, Session, Slice, Windows};
+use super::{Account, Notifications, Rail, Session, Windows};
 use crate::runtime::{Intent, Seat, WindowKey};
 use crate::ui::layout::Layout;
 use gpui_kit::{AnyWindowHandle, App, AppContext as _, Context, Entity, Subscription, WeakEntity};
@@ -23,7 +23,6 @@ pub(crate) struct Seats {
     map: BTreeMap<u64, Placed>,
     session: Entity<Session>,
     account: Entity<Account>,
-    prefs: Entity<Slice<Prefs>>,
     rail: Entity<Rail>,
     notifications: Entity<Notifications>,
     /// The windows the seats are placed in (`follow`). Weak: `Windows`
@@ -40,7 +39,6 @@ impl Seats {
     pub(crate) fn new(
         session: &Entity<Session>,
         account: &Entity<Account>,
-        prefs: &Entity<Slice<Prefs>>,
         rail: &Entity<Rail>,
         notifications: &Entity<Notifications>,
         cx: &mut Context<Self>,
@@ -51,11 +49,9 @@ impl Seats {
             _observing: vec![
                 cx.observe(session, |this, _, cx| this.props_moved(cx)),
                 cx.observe(account, |this, _, cx| this.props_moved(cx)),
-                cx.observe(prefs, |this, _, cx| this.props_moved(cx)),
             ],
             session: session.clone(),
             account: account.clone(),
-            prefs: prefs.clone(),
             rail: rail.clone(),
             notifications: notifications.clone(),
             windows: WeakEntity::new_invalid(),
@@ -97,12 +93,11 @@ impl Seats {
 
     /// What every view is handed as its props: the node the views are on
     /// (not the address being typed or tried, a switch in flight), the
-    /// chain, the seated key and its account, dark or not.
+    /// chain, the seated key and its account.
     fn encode(&self, cx: &App) -> Vec<u8> {
         let session = self.session.read(cx).get();
         let account = self.account.read(cx).get();
         crate::runtime::props(
-            self.prefs.read(cx).get().dark(),
             session.connected,
             &session.chain,
             &account.signer_key,
@@ -239,6 +234,12 @@ impl Seats {
                     windows.update(cx, |windows, cx| windows.open_link(&link, cx));
                 }
             }
+            // the person is asked on the console, whichever window the
+            // view is in
+            Intent::Consent => match self.windows.upgrade() {
+                Some(windows) => windows.update(cx, |windows, cx| windows.sync_consent(cx)),
+                None => crate::runtime::consent::refuse_all(),
+            },
         }
     }
 

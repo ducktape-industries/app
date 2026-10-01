@@ -72,7 +72,7 @@ impl Guest {
                     before_any_candidate(Failure::Refused(format!("{shown}: {error}")))
                 })?;
                 Self::compile(&bytes, &shown).map_err(before_any_candidate)?;
-                let (name, _, min_width) = manifest_of(&bytes);
+                let (name, _, min_width, _) = manifest_of(&bytes);
                 return Ok(Loaded::Compiled { name, min_width });
             }
             return Self::load_from(module, &path)
@@ -167,7 +167,7 @@ impl Guest {
                 },
                 1,
             );
-            let (name, capabilities, min_width) = manifest_of(&view_bytes);
+            let (name, capabilities, min_width, targets) = manifest_of(&view_bytes);
             // a seat no pane holds stops here: the rail reads its name off
             // the manifest, and the pane that claims it starts it
             if instance == 0 && against.is_none() {
@@ -181,6 +181,7 @@ impl Guest {
             crate::perf::record(key, "fuel.instantiate", fresh.fuel_used());
             fresh.name = name;
             fresh.capabilities = capabilities;
+            fresh.targets = targets;
             fresh.min_width = min_width;
             fresh.deployed(hash);
             let fresh = match &mut against {
@@ -441,7 +442,12 @@ impl Guest {
     ) -> Result<Self, String> {
         let code = Self::compile(bytes, shown).map_err(|failure| failure.to_string())?;
         let mut guest = Self::instantiate(module, &code, shown)?;
-        (guest.name, guest.capabilities, guest.min_width) = manifest_of(bytes);
+        (
+            guest.name,
+            guest.capabilities,
+            guest.min_width,
+            guest.targets,
+        ) = manifest_of(bytes);
         guest.init(shown)?;
         Ok(guest)
     }
@@ -529,6 +535,7 @@ impl Guest {
             instance: 0,
             name: String::new(),
             capabilities: Vec::new(),
+            targets: Vec::new(),
             min_width: 0,
             undeclared_logged: Vec::new(),
             store,
