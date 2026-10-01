@@ -233,7 +233,7 @@ impl Seats {
             // the person is asked on the console, whichever window the
             // view is in
             Intent::Consent => match self.windows.upgrade() {
-                Some(windows) => windows.update(cx, |windows, cx| windows.ask_consent(cx)),
+                Some(windows) => windows.update(cx, |windows, cx| windows.sync_consent(cx)),
                 None => crate::runtime::consent::refuse_all(),
             },
         }

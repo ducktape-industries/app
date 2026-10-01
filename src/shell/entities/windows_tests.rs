@@ -516,7 +516,7 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
     overlays.update(cx, |it, cx| it.open(Overlay::Approve, cx));
     let _told = consent::queue("chat", 0, words.clone()).expect("queued");
     app.windows
-        .update(cx, |windows, cx| windows.ask_consent(cx));
+        .update(cx, |windows, cx| windows.sync_consent(cx));
     cx.run_until_parked();
     assert_eq!(open(cx), Some(Overlay::Approve), "the ask waits its turn");
     let (asked, _) = consent::front().expect("still waiting");
@@ -531,7 +531,7 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
     assert_eq!(open(cx), None);
     let _told = consent::queue("chat", 0, words).expect("queued");
     app.windows
-        .update(cx, |windows, cx| windows.ask_consent(cx));
+        .update(cx, |windows, cx| windows.sync_consent(cx));
     cx.run_until_parked();
     assert_eq!(
         open(cx),
@@ -542,4 +542,43 @@ fn a_views_ask_never_replaces_an_open_dialog(cx: &mut TestAppContext) {
     consent::answer(asked, false);
     overlays.update(cx, |it, cx| it.close(Overlay::Consent, cx));
     cx.run_until_parked();
+}
+
+/// A card whose request is gone (refused after it was queued, or its view
+/// torn down) follows it off: the shell's sync closes it, and nothing is
+/// left for Approve to tell.
+#[gpui_kit::test]
+fn a_card_follows_its_request_off(cx: &mut TestAppContext) {
+    use crate::runtime::consent;
+    let _queue = consent::serial();
+    let (app, key) = console(cx);
+    let overlays = app
+        .windows
+        .read_with(cx, |windows, _| windows.own(key).unwrap().overlays.clone());
+    let told = consent::queue(
+        "chat",
+        0,
+        consent::Words {
+            said: "chat asks to suspend agent #3.".into(),
+            shown: Some("#3".into()),
+        },
+    )
+    .expect("queued");
+    app.windows
+        .update(cx, |windows, cx| windows.sync_consent(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        overlays.read_with(cx, |it, _| *it.get()),
+        Some(Overlay::Consent)
+    );
+    drop(told);
+    app.windows
+        .update(cx, |windows, cx| windows.sync_consent(cx));
+    cx.run_until_parked();
+    assert_eq!(
+        overlays.read_with(cx, |it, _| *it.get()),
+        None,
+        "the card went with its request"
+    );
+    assert_eq!(consent::front(), None);
 }

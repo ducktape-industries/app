@@ -435,23 +435,27 @@ impl Windows {
         }
     }
 
-    /// A view's op waits on the person (`runtime::consent`): the console
-    /// shows the front of the queue. With no console to ask in, every ask
-    /// is refused at once. A view's ask never replaces a dialog the person
-    /// has open: its card is the same frame as "Add a device…"'s second
-    /// screen, Approve in the same spot, and a view in a pop-out window
-    /// could land it under a press meant for that. It opens over a bare
-    /// desk, or once the open dialog closes (`make_own`'s observer).
-    pub(crate) fn ask_consent(&mut self, cx: &mut Context<Self>) {
+    /// The console's card follows the consent queue (`runtime::consent`):
+    /// a view's op waits on the person, and the console shows the front of
+    /// the queue; the front withdrawn (its request gone), the card follows
+    /// it off. With no console to ask in, every ask is refused at once. A
+    /// view's ask never replaces a dialog the person has open: its card is
+    /// the same frame as "Add a device…"'s second screen, Approve in the
+    /// same spot, and a view in a pop-out window could land it under a
+    /// press meant for that. It opens over a bare desk, or once the open
+    /// dialog closes (`make_own`'s observer).
+    pub(crate) fn sync_consent(&mut self, cx: &mut Context<Self>) {
         let Some(own) = self.console_own() else {
             return crate::runtime::consent::refuse_all();
         };
+        let waiting = crate::runtime::consent::front().is_some();
         own.overlays
-            .update(cx, |overlays, cx| match overlays.get() {
-                None => overlays.open(Overlay::Consent, cx),
+            .update(cx, |overlays, cx| match (overlays.get(), waiting) {
+                (None, true) => overlays.open(Overlay::Consent, cx),
                 // on the front, which may have moved
-                Some(Overlay::Consent) => cx.notify(),
-                Some(_) => {}
+                (Some(Overlay::Consent), true) => cx.notify(),
+                (Some(Overlay::Consent), false) => overlays.close(Overlay::Consent, cx),
+                _ => {}
             });
     }
 

@@ -191,7 +191,7 @@ fn spawn_method(
     method: NodeMethod,
     retry_on: Option<fn(&wire::Error) -> bool>,
     stage: &'static str,
-    consent: Option<(InFlight, tokio::sync::oneshot::Receiver<bool>)>,
+    consent: Option<(InFlight, super::super::consent::Told)>,
 ) {
     let ask = payload.to_vec();
     let Some(node) = connected(guest, id) else {
@@ -211,8 +211,8 @@ fn spawn_method(
     let asked = crate::perf::on().then(std::time::Instant::now);
     let attempts_stage = crate::perf::suffixed(stage, ".attempts");
     run(guest, id, slot, async move {
-        if let Some(told) = told
-            && told.await != Ok(true)
+        if let Some(mut told) = told
+            && told.answer().await != Some(true)
         {
             replies.item(
                 id,

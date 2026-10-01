@@ -845,6 +845,17 @@ fn an_identity_key_op_waits_for_the_person_and_cancel_refuses_it() {
         1,
         "one sequence read, after Approve"
     );
+    // the view torn down with an ask waiting: the ask goes with it (its
+    // task, aborted, lets go of the ask on the runtime's next turn)
+    guest.activation = Some(Instant::now());
+    guest.answer(request(7), &None);
+    assert!(consent::front().is_some(), "an ask waits");
+    drop(guest);
+    let gone = (0..200).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        consent::front().is_none()
+    });
+    assert!(gone, "the ask is withdrawn with its view");
     *super::super::connection().lock().unwrap() = Default::default();
     handle().block_on(backend::lock_signer());
 }

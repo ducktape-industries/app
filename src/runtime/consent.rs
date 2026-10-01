@@ -27,6 +27,53 @@ pub(crate) struct Words {
     pub(crate) shown: Option<String>,
 }
 
+/// The request's end of its ask: what its task waits on for the person's
+/// yes. An ask lives only as long as its request: this dropped unanswered
+/// (the request refused after it was queued, its task aborted with its
+/// view torn down), the ask is withdrawn, and the shell told to sync the
+/// card (`changes_channel`), so no card stays up whose Approve goes
+/// nowhere.
+pub(crate) struct Told(tokio::sync::oneshot::Receiver<bool>);
+
+impl Told {
+    /// The person's answer; `None` when nobody can answer any more.
+    pub(super) async fn answer(&mut self) -> Option<bool> {
+        (&mut self.0).await.ok()
+    }
+}
+
+impl Drop for Told {
+    fn drop(&mut self) {
+        moved();
+    }
+}
+
+/// The shell's wake: one message each time an ask's request let go of it,
+/// from whichever thread did. Installing it replaces the one before; the
+/// app installs one (`launch`); a test syncs by hand.
+pub(crate) fn changes_channel() -> futures::channel::mpsc::UnboundedReceiver<()> {
+    let (send, receive) = futures::channel::mpsc::unbounded();
+    *changes()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(send);
+    receive
+}
+
+fn changes() -> &'static Mutex<Option<futures::channel::mpsc::UnboundedSender<()>>> {
+    static CHANGES: OnceLock<Mutex<Option<futures::channel::mpsc::UnboundedSender<()>>>> =
+        OnceLock::new();
+    CHANGES.get_or_init(Mutex::default)
+}
+
+fn moved() {
+    if let Some(send) = &*changes()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    {
+        let _ = send.unbounded_send(());
+    }
+}
+
 /// One confirmation a view waits on.
 pub(crate) struct Ask {
     pub(crate) id: u64,
@@ -42,10 +89,13 @@ pub(crate) fn waiting() -> &'static Mutex<VecDeque<Ask>> {
     WAITING.get_or_init(Mutex::default)
 }
 
+/// The queue, less every ask whose request let go of it (`Told`).
 fn lock() -> std::sync::MutexGuard<'static, VecDeque<Ask>> {
-    waiting()
+    let mut waiting = waiting()
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    waiting.retain(|ask| !ask.tell.is_closed());
+    waiting
 }
 
 /// The front ask, as the dialog draws it: its id and its words. `None`
@@ -135,14 +185,10 @@ pub(super) fn needed(program: &str, target: &str, body: &[u8], own: Option<u64>)
     }
 }
 
-/// Queues the ask for `guest`'s request and tells the shell; the receiver
-/// is what the request's task waits on. `None`, with the request refused,
-/// while another ask of this view waits.
-pub(super) fn ask(
-    guest: &mut Guest,
-    id: u64,
-    words: Words,
-) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+/// Queues the ask for `guest`'s request and tells the shell; the `Told`
+/// is what the request's task waits on, and holds the ask in the queue.
+/// `None`, with the request refused, while another ask of this view waits.
+pub(super) fn ask(guest: &mut Guest, id: u64, words: Words) -> Option<Told> {
     let told = queue(guest.module, guest.instance, words);
     match told {
         Some(_) => guest.intents.push(super::Intent::Consent),
@@ -157,11 +203,7 @@ pub(super) fn ask(
 
 /// The ask itself, queued for view (`module`, `instance`); `None` while
 /// another of that view's waits. The shell is not told here (`ask` is).
-pub(crate) fn queue(
-    module: &'static str,
-    instance: u64,
-    words: Words,
-) -> Option<tokio::sync::oneshot::Receiver<bool>> {
+pub(crate) fn queue(module: &'static str, instance: u64, words: Words) -> Option<Told> {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let mut waiting = lock();
     if waiting
@@ -178,7 +220,7 @@ pub(crate) fn queue(
         words,
         tell,
     });
-    Some(told)
+    Some(Told(told))
 }
 
 /// The queue is one for the process: a test that queues an ask holds this
@@ -256,5 +298,30 @@ mod tests {
         assert!(unread.said.contains("cannot read"), "{unread:?}");
         assert_eq!(unread.shown, None);
         assert_eq!(needed("chat", "chat", &[0xff, 0xff], Some(7)), None);
+    }
+
+    /// Claim: an ask is in the queue exactly as long as its request holds
+    /// its `Told`; let go of unanswered, it is gone from the front, it no
+    /// longer blocks the view's next ask, and the shell is woken to sync.
+    #[test]
+    fn an_ask_lives_only_as_long_as_its_request() {
+        let _queue = serial();
+        let mut woken = changes_channel();
+        let words = Words {
+            said: "x".into(),
+            shown: None,
+        };
+        let told = queue("t", 1, words.clone()).expect("queued");
+        let (id, _) = front().expect("waits");
+        assert!(queue("t", 1, words.clone()).is_none(), "one per view");
+        drop(told);
+        assert_eq!(front(), None, "withdrawn with its request");
+        assert!(woken.try_recv().is_ok(), "the shell is told");
+        assert!(!answer(id, true), "nothing to answer");
+        let told = queue("t", 1, words).expect("the view may ask again");
+        let (next, _) = front().unwrap();
+        assert_ne!(id, next);
+        assert!(!answer(next, false));
+        drop(told);
     }
 }
