@@ -68,6 +68,19 @@ impl Pictures {
     }
 }
 
+/// `root` without its pictures' bytes, their hashes kept: the tree as the
+/// guest remembers it.
+pub(super) fn strip(root: &mut wire::Node) {
+    root.for_each_mut(&mut |node| match node {
+        wire::Node::Svg {
+            source: wire::SvgSource::Data { bytes, .. },
+            ..
+        } => *bytes = None,
+        wire::Node::Image { data, .. } => *data = None,
+        _ => {}
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

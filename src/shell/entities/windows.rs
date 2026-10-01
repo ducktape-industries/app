@@ -28,7 +28,7 @@ use crate::ui::layout::{self, Layout};
 use futures::StreamExt as _;
 use futures::channel::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Context, Pixels, Subscription,
+    AnyWindowHandle, App, AppContext as _, AsyncApp, Bounds, Context, Entity, Pixels, Subscription,
     WeakEntity, Window, WindowBounds, WindowId, px, size,
 };
 use std::collections::BTreeMap;
@@ -426,9 +426,22 @@ impl Windows {
         }
     }
 
+    /// Forgets each window the platform closes ([`Self::closed_id`]), a
+    /// step after the close.
+    pub(crate) fn forget_closed(this: &Entity<Self>, cx: &mut App) {
+        let windows = this.downgrade();
+        cx.on_window_closed(move |cx, id| {
+            let windows = windows.clone();
+            cx.defer(move |cx| {
+                let _ = windows.update(cx, |windows, cx| windows.closed_id(id, cx));
+            });
+        })
+        .detach();
+    }
+
     /// The platform says window `id` is gone: it is forgotten, its own
     /// entities with it.
-    pub(crate) fn closed_id(&mut self, id: WindowId, cx: &mut Context<Self>) {
+    fn closed_id(&mut self, id: WindowId, cx: &mut Context<Self>) {
         let key = self
             .handles
             .iter()

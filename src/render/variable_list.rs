@@ -77,7 +77,9 @@ impl ViewTree {
             }
         });
         if created {
-            apply_initial_commands(list, commands);
+            for command in commands {
+                scroll(list, command);
+            }
         } else if list.revision != *revision {
             apply_commands(list, commands);
             list.revision = *revision;
@@ -185,25 +187,25 @@ impl ViewTree {
     }
 }
 
-fn apply_initial_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
-    for command in commands {
-        match *command {
-            wire::ListCommand::ScrollTo(offset) => list.state.scroll_to(gpui_kit::ListOffset {
-                item_ix: offset.item_ix,
-                offset_in_item: px(offset.offset_in_item),
-            }),
-            wire::ListCommand::ScrollToEnd => list.state.scroll_to_end(),
-            wire::ListCommand::ScrollToRevealItem(index) => list.state.scroll_to_reveal_item(index),
-            wire::ListCommand::SetFollowMode { tail } => list.state.set_follow_mode(if tail {
-                FollowMode::Tail
-            } else {
-                FollowMode::Normal
-            }),
-            wire::ListCommand::PauseFollowingTail => list.state.pause_following_tail(),
-            wire::ListCommand::Reset { .. }
-            | wire::ListCommand::Splice { .. }
-            | wire::ListCommand::Remeasure { .. } => {}
-        }
+/// Moves `list` as a scroll `command` says; a command on its rows moves
+/// nothing here.
+fn scroll(list: &mut VariableList, command: &wire::ListCommand) {
+    match *command {
+        wire::ListCommand::ScrollTo(offset) => list.state.scroll_to(gpui_kit::ListOffset {
+            item_ix: offset.item_ix,
+            offset_in_item: px(offset.offset_in_item),
+        }),
+        wire::ListCommand::ScrollToEnd => list.state.scroll_to_end(),
+        wire::ListCommand::ScrollToRevealItem(index) => list.state.scroll_to_reveal_item(index),
+        wire::ListCommand::SetFollowMode { tail } => list.state.set_follow_mode(if tail {
+            FollowMode::Tail
+        } else {
+            FollowMode::Normal
+        }),
+        wire::ListCommand::PauseFollowingTail => list.state.pause_following_tail(),
+        wire::ListCommand::Reset { .. }
+        | wire::ListCommand::Splice { .. }
+        | wire::ListCommand::Remeasure { .. } => {}
     }
 }
 
@@ -291,18 +293,11 @@ fn apply_commands(list: &mut VariableList, commands: &[wire::ListCommand]) {
                 let start = start.min(count);
                 list.state.remeasure_items(start..end.clamp(start, count));
             }
-            wire::ListCommand::ScrollTo(offset) => list.state.scroll_to(gpui_kit::ListOffset {
-                item_ix: offset.item_ix,
-                offset_in_item: px(offset.offset_in_item),
-            }),
-            wire::ListCommand::ScrollToEnd => list.state.scroll_to_end(),
-            wire::ListCommand::ScrollToRevealItem(index) => list.state.scroll_to_reveal_item(index),
-            wire::ListCommand::SetFollowMode { tail } => list.state.set_follow_mode(if tail {
-                FollowMode::Tail
-            } else {
-                FollowMode::Normal
-            }),
-            wire::ListCommand::PauseFollowingTail => list.state.pause_following_tail(),
+            wire::ListCommand::ScrollTo(_)
+            | wire::ListCommand::ScrollToEnd
+            | wire::ListCommand::ScrollToRevealItem(_)
+            | wire::ListCommand::SetFollowMode { .. }
+            | wire::ListCommand::PauseFollowingTail => scroll(list, command),
         }
     }
 }

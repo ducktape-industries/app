@@ -2,7 +2,7 @@
 //! with every outside source of events wired to the entity it moves:
 //! open-URL requests and the links a banner posts (`Windows::open_link`),
 //! the tray (it follows `Session`, `Chain` and `Prefs`; its rows call
-//! `Windows` and `Prefs`), a window closing (`Windows::closed_id`), the
+//! `Windows` and `Prefs`), a window closing (`Windows::forget_closed`), the
 //! AX door (`Windows::served`, `Seats::settle`), quitting
 //! (`Windows::quit`). Fonts and the theme are registered here too.
 
@@ -87,14 +87,7 @@ pub(crate) fn run() {
             }
         })
         .detach();
-        let weak = windows.downgrade();
-        cx.on_window_closed(move |cx, id| {
-            let weak = weak.clone();
-            cx.defer(move |cx| {
-                let _ = weak.update(cx, |windows, cx| windows.closed_id(id, cx));
-            });
-        })
-        .detach();
+        entities::Windows::forget_closed(&windows, cx);
         // the first window is the console; it draws the connect screen
         // until a node answers
         windows.update(cx, |windows, cx| {

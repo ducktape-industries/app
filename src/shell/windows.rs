@@ -3,7 +3,7 @@
 //! screen (`remove`). Opening one is `entities::Windows`'.
 
 use super::layout;
-use gpui_kit::{Bounds, Pixels, Size, point, px, size};
+use gpui_kit::{Bounds, Pixels, Point, Size, point, px, size};
 
 /// A window's size before the person resizes it.
 pub(in crate::shell) const WINDOW_SIZE: (f32, f32) = (1280., 800.);
@@ -29,14 +29,8 @@ pub(in crate::shell) fn cascade(
     display: Option<Bounds<Pixels>>,
 ) -> Bounds<Pixels> {
     let extent = size(px(WINDOW_SIZE.0), px(WINDOW_SIZE.1));
-    let mut origin = point(source.origin.x + px(CASCADE), source.origin.y + px(CASCADE));
-    if let Some(display) = display {
-        let right = display.origin.x + display.size.width - extent.width;
-        let bottom = display.origin.y + display.size.height - extent.height;
-        origin.x = origin.x.min(right).max(display.origin.x);
-        origin.y = origin.y.min(bottom).max(display.origin.y);
-    }
-    Bounds::new(origin, extent)
+    let origin = point(source.origin.x + px(CASCADE), source.origin.y + px(CASCADE));
+    inside(origin, extent, display)
 }
 
 /// Where the launcher sits when the desk shrinks to it: centred in
@@ -63,10 +57,20 @@ pub(in crate::shell) fn unseated(
         return cascade(source, display);
     };
     let extent = size(px(frame.w.max(min_w)), px(frame.h.max(POPOUT_MIN)));
-    let mut origin = point(
+    let origin = point(
         source.origin.x + px(frame.x),
         source.origin.y + px(super::layers::BAR + frame.y),
     );
+    inside(origin, extent, display)
+}
+
+/// `extent` at `origin`, pulled back inside `display` where it would hang
+/// off an edge, and never past its top-left corner.
+fn inside(
+    mut origin: Point<Pixels>,
+    extent: Size<Pixels>,
+    display: Option<Bounds<Pixels>>,
+) -> Bounds<Pixels> {
     if let Some(display) = display {
         let right = display.origin.x + display.size.width - extent.width;
         let bottom = display.origin.y + display.size.height - extent.height;
@@ -88,7 +92,7 @@ pub(in crate::shell) fn release_window_input(
 
 /// Takes a window off the screen, its input let go first. Deferred:
 /// releasing input draws the window, and the caller is most often in the
-/// middle of updating it. `on_window_closed` (launch.rs) then forgets it.
+/// middle of updating it. `Windows::forget_closed` then forgets it.
 pub(in crate::shell) fn remove(window: gpui_kit::AnyWindowHandle, cx: &mut gpui_kit::App) {
     cx.defer(move |cx| {
         let _ = window.update(cx, |_, window, cx| {

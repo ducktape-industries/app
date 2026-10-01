@@ -443,14 +443,7 @@ fn install(
             if let Some(root) = &mut fresh.frame.root {
                 fresh.pictures.hydrate(root);
                 old.pictures.adopt(root);
-                root.for_each_mut(&mut |node| match node {
-                    wire::Node::Svg {
-                        source: wire::SvgSource::Data { bytes, .. },
-                        ..
-                    } => *bytes = None,
-                    wire::Node::Image { data, .. } => *data = None,
-                    _ => {}
-                });
+                super::pictures::strip(root);
             }
             fresh.pictures = std::mem::take(&mut old.pictures);
             fresh.instance = *instance;

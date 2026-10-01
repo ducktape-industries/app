@@ -94,14 +94,7 @@ pub(in crate::shell) fn open_console(
     let app = cx.update(|cx| {
         let app = entities::Entities::for_test(roster, center, cx);
         // a window that closes is forgotten, as `launch::run` wires it
-        let windows = app.windows.downgrade();
-        cx.on_window_closed(move |cx, id| {
-            let windows = windows.clone();
-            cx.defer(move |cx| {
-                let _ = windows.update(cx, |windows, cx| windows.closed_id(id, cx));
-            });
-        })
-        .detach();
+        entities::Windows::forget_closed(&app.windows, cx);
         app.session.update(cx, |it, cx| it.seed(session, cx));
         app.chain.update(cx, |it, cx| {
             it.set(chain, cx);

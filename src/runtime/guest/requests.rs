@@ -402,14 +402,7 @@ impl Guest {
                             // The guest remembers its tree without the
                             // picture bytes; the tree its patches build on
                             // has to be that one.
-                            root.for_each_mut(&mut |node| match node {
-                                wire::Node::Svg {
-                                    source: wire::SvgSource::Data { bytes, .. },
-                                    ..
-                                } => *bytes = None,
-                                wire::Node::Image { data, .. } => *data = None,
-                                _ => {}
-                            });
+                            crate::runtime::pictures::strip(root);
                             // O(n) over the tree: only with perf on, and
                             // only on a tick that changed it
                             if perf::on() {

@@ -2,7 +2,7 @@
 //! entities around them do on their own: a toast's clock, a pref's write,
 //! the theme's sync, the network left.
 use super::tests::{active, desk_of, entities, modules, notifies};
-use super::{Entities, Overlay, SessionState};
+use super::{Entities, Overlay, SessionState, Windows};
 use crate::runtime::WindowKey;
 use crate::shell::WindowKind;
 use crate::ui::layout::{EMPTY, Frame, MAX_PANES};
@@ -17,14 +17,7 @@ fn console(cx: &mut TestAppContext) -> (Entities, WindowKey) {
     let app = cx.update(|cx| {
         gpui_kit::init(cx);
         let app = entities(cx);
-        let windows = app.windows.downgrade();
-        cx.on_window_closed(move |cx, id| {
-            let windows = windows.clone();
-            cx.defer(move |cx| {
-                let _ = windows.update(cx, |windows, cx| windows.closed_id(id, cx));
-            });
-        })
-        .detach();
+        Windows::forget_closed(&app.windows, cx);
         app
     });
     let at = Bounds::new(point(px(0.), px(0.)), size(px(1280.), px(800.)));
