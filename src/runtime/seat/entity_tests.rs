@@ -794,6 +794,100 @@ fn a_trees_activation_reaches_its_guest_on_the_next_turn(cx: &mut TestAppContext
     );
 }
 
+/// A view's own `host.widget` cursor command on its editor is no input: the
+/// guest ends its turn with no activation to spend on the clipboard or a link.
+#[gpui_kit::test]
+fn a_guests_own_cursor_command_grants_it_no_activation(cx: &mut TestAppContext) {
+    use view_wire::editor_document::{EditorDocumentMessage as Message, EditorTransfer};
+    const MODULE: &str = "self-stamp-test";
+    const TEXT: &[u8] = b"some words";
+    let target = vec![wire::ElementIdWire::Name("document".into())];
+    let root = wire::Node::Editor {
+        id: target[0].clone(),
+        style: div().w(px(240.)).h(px(80.)).style().clone(),
+        label: None,
+        binding: None,
+        placeholder: String::new(),
+        document: wire::editor_document::EditorDocumentRef {
+            document: "doc".into(),
+            reset: 1,
+            text_revision: 0,
+            revision: 0,
+            cursor: Default::default(),
+            byte_len: TEXT.len() as u32,
+        },
+        on_document: 0,
+        editable: true,
+    };
+    crate::runtime::seat_drawing_for_test(MODULE, 320, root);
+    let (seat, _, mut native) = open(cx, MODULE, false);
+    let with_guest = |native: &VisualTestContext, f: &mut dyn FnMut(&mut Guest)| {
+        let mounted = mounted_of(&seat, native);
+        let mut locked = mounted.lock().unwrap();
+        let Slot::Ready(guest) = &mut locked.slot else {
+            panic!("seated")
+        };
+        f(guest)
+    };
+    // the host asked for the document; the guest delivers it
+    with_guest(&native, &mut |guest| {
+        let mut events = guest.inputs.drain();
+        events.extend(guest.pending.iter().cloned());
+        let (id, target) = events
+            .into_iter()
+            .find_map(|event| match event {
+                wire::Event::EditorDocument {
+                    message: Message::Request { id, target },
+                    ..
+                } => Some((id, target)),
+                _ => None,
+            })
+            .expect("the document was asked for");
+        guest
+            .inputs
+            .frame(&wire::Frame {
+                editor_documents: vec![
+                    Message::Transfer(EditorTransfer::Begin {
+                        id: id.clone(),
+                        target,
+                    }),
+                    Message::Transfer(EditorTransfer::Chunk {
+                        id: id.clone(),
+                        index: 0,
+                        bytes: TEXT.to_vec(),
+                    }),
+                    Message::Transfer(EditorTransfer::Complete { id }),
+                ],
+                ..Default::default()
+            })
+            .unwrap();
+    });
+    native.run_until_parked();
+    let mut activation = None;
+    with_guest(&native, &mut |guest| {
+        guest.widget_commands.push((
+            7,
+            wire::WidgetCommand::SelectAll {
+                target: target.clone(),
+            },
+        ));
+    });
+    seat.update(&mut native, |seat, cx| seat.wake(cx));
+    for _ in 0..3 {
+        native.update(|window, cx| window.simulate_next_frame(cx));
+        native.update(|window, cx| window.draw(cx).clear(cx));
+        native.run_until_parked();
+    }
+    with_guest(&native, &mut |guest| {
+        assert!(guest.widget_commands.is_empty(), "SelectAll was never run");
+        activation = guest.activation;
+    });
+    assert!(
+        activation.is_none(),
+        "the guest's own SelectAll gave it an activation"
+    );
+}
+
 /// A program that leaves the roster gives up its seat: the pane shows the
 /// "no view" standin, not its frozen tree: the retire itself wakes the
 /// seat, since no clock redraws the window.

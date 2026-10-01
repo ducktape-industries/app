@@ -194,7 +194,7 @@ fn a_dialog_wrapped_around_its_opener_takes_the_keys(cx: &mut gpui_kit::TestAppC
     use gpui_kit::AppContext as _;
     cx.update(gpui_kit::init);
     let window = cx.open_window(size(px(300.), px(200.)), |window, cx| {
-        let tree = cx.new(|_| ViewTree::new(wrapped(false)));
+        let tree = cx.new(|_| ViewTree::new(wrapped(false)).with_keys_grant(true));
         gpui_kit::component::Root::new(tree, window, cx)
     });
     let tree = window

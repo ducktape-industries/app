@@ -538,6 +538,40 @@ fn a_key_in_a_native_editor_activates_the_view_and_escape_does_not(
             "typing did not activate the view"
         );
     });
+    native.simulate_mouse_down(
+        gpui_kit::point(px(5.), px(5.)),
+        gpui_kit::MouseButton::Left,
+        Default::default(),
+    );
+    native.update(|window, cx| window.render_frame(cx));
+    tree.read_with(&native, |tree, _| {
+        assert!(
+            tree.take_activation().is_some(),
+            "a press on the field did not activate the view"
+        );
+    });
+    // the view's own cursor commands are no input: they stamp nothing
+    for command in [
+        wire::WidgetCommand::CursorFront {
+            target: path.to_vec(),
+        },
+        wire::WidgetCommand::SelectAll {
+            target: path.to_vec(),
+        },
+    ] {
+        native.update(|window, cx| {
+            tree.update(cx, |tree, cx| {
+                tree.execute_widget_command(command, window, cx).unwrap();
+            });
+            window.render_frame(cx);
+        });
+        tree.read_with(&native, |tree, _| {
+            assert!(
+                tree.take_activation().is_none(),
+                "the view's own cursor command activated it"
+            );
+        });
+    }
 }
 
 #[gpui_kit::test]
